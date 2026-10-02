@@ -2746,6 +2746,67 @@ func sidecarSecurityFields(files []goSourceFile) []string {
 	return problems
 }
 
+// There is one Run contract class (atc.RunContractV2, enforced by the
+// pipeline_run_birth_contract constraint), so a Run behaves one way whatever
+// its row says: no production code may branch on the class. A comparison with
+// the class, or a switch on it, is the seam a second class would grow behind.
+func TestNoRunCodeBranchesOnTheContractClass(t *testing.T) {
+	files := productionGoFiles(t, func(rel string) bool {
+		return strings.HasPrefix(filepath.ToSlash(rel), "atc/")
+	})
+	for _, problem := range contractClassBranches(files) {
+		t.Error(problem + ". Every Run is v2; behave the same for all of them.")
+	}
+}
+
+// contractClassBranches reports every comparison with, or switch on, a Run's
+// contract class: ContractVersion() or a RunContract* constant on either side
+// of == or !=, a switch whose tag is ContractVersion(), and a case naming a
+// RunContract* constant.
+func contractClassBranches(files []goSourceFile) []string {
+	if len(files) == 0 {
+		return []string{"the contract-class scan matched no file; the rule would pass vacuously"}
+	}
+	isClass := func(expr ast.Expr) bool {
+		switch e := expr.(type) {
+		case *ast.CallExpr:
+			if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+				return sel.Sel.Name == "ContractVersion"
+			}
+		case *ast.SelectorExpr:
+			return strings.HasPrefix(e.Sel.Name, "RunContract")
+		case *ast.Ident:
+			return strings.HasPrefix(e.Name, "RunContract")
+		}
+		return false
+	}
+	var problems []string
+	for _, source := range files {
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.BinaryExpr:
+				if (n.Op == token.EQL || n.Op == token.NEQ) && (isClass(n.X) || isClass(n.Y)) {
+					problems = append(problems, fmt.Sprintf("%s compares a Run's contract class", source.rel))
+				}
+			case *ast.SwitchStmt:
+				if n.Tag != nil && isClass(n.Tag) {
+					problems = append(problems, fmt.Sprintf("%s switches on a Run's contract class", source.rel))
+				}
+			case *ast.CaseClause:
+				for _, value := range n.List {
+					if isClass(value) {
+						problems = append(problems, fmt.Sprintf("%s has a case for a Run contract class", source.rel))
+					}
+				}
+			}
+			return true
+		})
+	}
+	sort.Strings(problems)
+
+	return problems
+}
+
 // kubernetesReach reports every run package whose linked dependencies include
 // a Kubernetes client or the JetBridge runtime. deps maps each run package to
 // its `go list -deps` listing.
@@ -2881,6 +2942,25 @@ func TestTheRunContractGuardsFailOnAnEmptyScan(t *testing.T) {
 		}
 		if problems := sidecarSecurityFields([]goSourceFile{parse("s.go", "package a\ntype SidecarConfig struct { Name string; Image string }\n")}); len(problems) != 0 {
 			t.Errorf("the sidecar rule objected to ordinary fields: %v", problems)
+		}
+	})
+
+	t.Run("contract class branches", func(t *testing.T) {
+		if problems := contractClassBranches(nil); len(problems) == 0 {
+			t.Error("the contract-class rule passed on a scan of no file")
+		}
+		for name, src := range map[string]string{
+			"comparison": "package a\nfunc f(r R) bool { return r.ContractVersion() == atc.RunContractV2 }\n",
+			"negation":   "package a\nfunc f(r R) bool { return atc.RunContractV2 != r.ContractVersion() }\n",
+			"switch":     "package a\nfunc f(r R) { switch r.ContractVersion() { default: } }\n",
+			"case":       "package a\nfunc f(v V) { switch v { case RunContractV2: } }\n",
+		} {
+			if problems := contractClassBranches([]goSourceFile{parse("a.go", src)}); len(problems) == 0 {
+				t.Errorf("the contract-class rule missed a %s", name)
+			}
+		}
+		if problems := contractClassBranches([]goSourceFile{parse("a.go", "package a\nfunc f(r R) P { return P{ContractVersion: r.ContractVersion()} }\n")}); len(problems) != 0 {
+			t.Errorf("the contract-class rule objected to presenting the class: %v", problems)
 		}
 	})
 

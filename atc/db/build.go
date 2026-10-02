@@ -711,7 +711,7 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 		}
 		// Once the Run publishes, a repeated exact completion is harmless, but
 		// changing a selected build would contradict its immutable observation.
-		if run.ContractVersion() == atc.RunContractV2 && run.Status() != atc.RunStatusRunning {
+		if run.Status() != atc.RunStatusRunning {
 			var complete bool
 			var previous BuildStatus
 			if err := tx.QueryRow(`SELECT completed,status FROM builds WHERE id=$1`, b.id).Scan(&complete, &previous); err != nil {
