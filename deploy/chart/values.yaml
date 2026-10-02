@@ -382,6 +382,11 @@ rbac:
   # pod inherits it, so this is for a single-tenant cluster whose pipelines
   # are its own tests.
   brineLive: false
+  # -- When set, the chart renders this ServiceAccount and binds the brine
+  # live ClusterRole to it instead of the task ServiceAccount. Map the brine
+  # job and main/one-off to it with kubernetes.stepPodGrants, and no other
+  # step pod carries the role.
+  brineLiveServiceAccount: ""
 
 # -- ServiceAccount configuration
 serviceAccount:

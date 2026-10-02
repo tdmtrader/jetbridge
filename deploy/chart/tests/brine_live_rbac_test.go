@@ -26,6 +26,9 @@ func TestBrineLiveRBACBindsTheTaskServiceAccount(t *testing.T) {
 	}{
 		{"the default task SA", []string{"rbac.brineLive=true"}, "default"},
 		{"the configured task SA", []string{"rbac.brineLive=true", "kubernetes.serviceAccount=brine-live"}, "brine-live"},
+		// With a step pod grant identity of its own, the brine live tier stops
+		// riding the task SA every step pod runs as.
+		{"its own ServiceAccount", []string{"rbac.brineLive=true", "kubernetes.serviceAccount=step-default", "rbac.brineLiveServiceAccount=concourse-brine-live"}, "concourse-brine-live"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,6 +109,29 @@ func grants(role *rbacv1.ClusterRole, group, resource, verb string) bool {
 			continue
 		}
 		if contains(rule.Verbs, verb) || contains(rule.Verbs, "*") {
+			return true
+		}
+	}
+	return false
+}
+
+// rbac.brineLiveServiceAccount renders that ServiceAccount, in the release
+// namespace, so the step pod grant naming it has something to run as.
+func TestBrineLiveServiceAccountIsRenderedOnlyWhenNamed(t *testing.T) {
+	const releaseNamespace = "brine-rbac-ns"
+	named := renderInNamespace(t, releaseNamespace, "rbac.brineLive=true", "rbac.brineLiveServiceAccount=concourse-brine-live")
+	if !hasServiceAccount(named, "concourse-brine-live", releaseNamespace) {
+		t.Error("rbac.brineLiveServiceAccount rendered no ServiceAccount of that name in the release namespace")
+	}
+	if unnamed := renderInNamespace(t, releaseNamespace, "rbac.brineLive=true"); hasServiceAccount(unnamed, "concourse-brine-live", releaseNamespace) {
+		t.Error("a ServiceAccount was rendered without rbac.brineLiveServiceAccount")
+	}
+}
+
+func hasServiceAccount(rendered, name, namespace string) bool {
+	for _, chunk := range strings.Split(rendered, "\n---") {
+		if strings.Contains(chunk, "kind: ServiceAccount") && strings.Contains(chunk, "name: "+name+"\n") &&
+			strings.Contains(chunk, "namespace: "+namespace) {
 			return true
 		}
 	}

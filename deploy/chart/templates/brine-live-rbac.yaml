@@ -1,4 +1,16 @@
 {{- if and .Values.rbac.create .Values.rbac.brineLive }}
+{{- with .Values.rbac.brineLiveServiceAccount }}
+---
+# The brine live tier's own identity. A step pod grant maps the brine job and
+# team main's one-off builds to it, so no other step pod carries this role.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ . }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" $ | nindent 4 }}
+{{- end }}
 ---
 # What the brine live tier (atc/worker/jetbridge/brine/live) does from inside
 # a task pod with BRINE_KUBE_CONTEXT=in-cluster: creates a brine-runtime-*
@@ -67,7 +79,7 @@ metadata:
     {{- include "concourse.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.kubernetes.serviceAccount | default "default" }}
+    name: {{ .Values.rbac.brineLiveServiceAccount | default .Values.kubernetes.serviceAccount | default "default" }}
     namespace: {{ .Release.Namespace }}
 roleRef:
   kind: ClusterRole
