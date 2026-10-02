@@ -18,7 +18,7 @@
   {{- if empty $bucket }}
     {{- fail "artifactDaemon.hangar.bucket (or inherited durable.bucket) is required when Hangar is enabled" }}
   {{- end }}
-  {{- if and (empty .Values.artifactDaemon.tls.existingSecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
+  {{- if and (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
     {{- fail "artifactDaemon.hangar.allowGeneratedKey=true is required to generate hangar.key; offline/GitOps rendering must use artifactDaemon.tls.existingSecret" }}
   {{- end }}
   {{- $scratch := clean .Values.artifactDaemon.hangar.scratchPath }}
@@ -138,7 +138,11 @@ spec:
             {{- end }}
             {{- end }}
             - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
+            {{- if .Values.artifactDaemon.hangar.keySecret }}
+            - --hangar-warrant-key=/etc/concourse/hangar-warrant-key/hangar.key
+            {{- else }}
             - --hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
+            {{- end }}
             - --hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
             - --hangar-max-content-bytes={{ .Values.artifactDaemon.hangar.maxContentBytes | int64 }}
             - --hangar-max-entries={{ .Values.artifactDaemon.hangar.maxEntries | int64 }}
@@ -244,6 +248,11 @@ spec:
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
+            {{- if and $hangarEnabled .Values.artifactDaemon.hangar.keySecret }}
+            - name: hangar-warrant-key
+              mountPath: /etc/concourse/hangar-warrant-key
+              readOnly: true
+            {{- end }}
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
@@ -269,10 +278,18 @@ spec:
                 path: tls.key
               - key: ca.crt
                 path: ca.crt
-              {{- if $hangarEnabled }}
+              {{- if and $hangarEnabled (not .Values.artifactDaemon.hangar.keySecret) }}
               - key: hangar.key
                 path: hangar.key
               {{- end }}
+        {{- if and $hangarEnabled .Values.artifactDaemon.hangar.keySecret }}
+        - name: hangar-warrant-key
+          secret:
+            secretName: {{ .Values.artifactDaemon.hangar.keySecret }}
+            items:
+              - key: hangar.key
+                path: hangar.key
+        {{- end }}
         {{- if $hangarEnabled }}
         - name: hangar-scratch
           {{- if .Values.artifactDaemon.hangar.scratchSizeLimit }}
