@@ -149,7 +149,11 @@ spec:
             - --add-local-user={{ trim . }}
             {{- end }}
             {{- end }}
-            - --main-team-local-user={{ .Values.web.mainTeamLocalUser }}
+            {{- range splitList "," .Values.web.mainTeamLocalUser }}
+            {{- if trim . }}
+            - --main-team-local-user={{ trim . }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.web.tls.enabled }}
             # TLS
             - --tls-bind-port={{ .Values.web.tls.bindPort }}
