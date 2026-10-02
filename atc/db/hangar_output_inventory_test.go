@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,7 +52,7 @@ var _ = Describe("the Hangar inventory cursor", func() {
 
 	activateEpoch := func() {
 		GinkgoHelper()
-		_, err := dbConn.Exec(`
+		err := postgresrunner.ExecAsActivationRole(dbConn, `
 			INSERT INTO hangar_output_activation_epochs
 				(epoch_id, base_state, output_state, base_attestation, output_attestation,
 				 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
@@ -352,7 +353,7 @@ var _ = Describe("the Hangar operation leases", func() {
 		Expect(err).NotTo(HaveOccurred())
 		repository = db.NewHangarOutputRepository(consumer)
 
-		_, err = dbConn.Exec(`
+		err = postgresrunner.ExecAsActivationRole(dbConn, `
 			INSERT INTO hangar_output_activation_epochs
 				(epoch_id, base_state, output_state, base_attestation, output_attestation,
 				 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,

@@ -337,8 +337,13 @@ func (runner *Runner) Truncate() {
 
 // TRUNCATE ... RESTART IDENTITY rewinds every sequence to its start value, so
 // the spread has to be reapplied here as well as on the template.
+//
+// session_replication_role = replica skips ordinary triggers for this cleanup
+// session only, so the activation epochs' guard (only the activation database
+// role writes them) does not refuse a test resetting its own database.
 const truncateSQL = `
 			SET client_min_messages TO WARNING;
+			SET session_replication_role = replica;
 
 			CREATE OR REPLACE FUNCTION truncate_tables() RETURNS void AS $$
 			DECLARE

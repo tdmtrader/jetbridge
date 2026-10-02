@@ -2,6 +2,7 @@ package runs_test
 
 import (
 	"context"
+	"github.com/concourse/concourse/atc/postgresrunner"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/runs"
@@ -73,11 +74,11 @@ var _ = Describe("a Hangar output epoch rotation", func() {
 
 	rotate := func() {
 		GinkgoHelper()
-		_, err := dbConn.Exec(`UPDATE hangar_output_activation_epochs
+		err := postgresrunner.ExecAsActivationRole(dbConn, `UPDATE hangar_output_activation_epochs
 			SET output_state='disabled', base_state='disabled', revision=revision+1, updated_at=now()
 			WHERE epoch_id=$1`, rotatedFrom)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`
+		err = postgresrunner.ExecAsActivationRole(dbConn, `
 			INSERT INTO hangar_output_activation_epochs
 				(epoch_id, base_state, output_state, base_attestation, output_attestation,
 				 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,

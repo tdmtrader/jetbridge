@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"slices"
 	"strconv"
 	"time"
@@ -431,7 +432,7 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		Expect(other.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		execution := abortOverOpenExecution()
 		finishExecution(build, execution)
-		_, err := dbConn.Exec(`UPDATE hangar_output_activation_epochs SET output_state='disabled', base_state='disabled', revision=revision+1 WHERE epoch_id=1`)
+		err := postgresrunner.ExecAsActivationRole(dbConn, `UPDATE hangar_output_activation_epochs SET output_state='disabled', base_state='disabled', revision=revision+1 WHERE epoch_id=1`)
 		Expect(err).NotTo(HaveOccurred())
 
 		closurePass("worker")

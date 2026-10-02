@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"net/http"
 	"strconv"
 
@@ -108,7 +109,7 @@ func (displayName) DisplayUserId(_, _, username, _, _ string) string { return "d
 func createV2Run(database *realDB, template db.Pipeline) db.PipelineRun {
 	GinkgoHelper()
 	ctx := context.Background()
-	_, err := database.Conn.Exec(`
+	err := postgresrunner.ExecAsActivationRole(database.Conn, `
 		INSERT INTO hangar_output_activation_epochs
 			(epoch_id, base_state, output_state, base_attestation, output_attestation,
 			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,

@@ -1,6 +1,7 @@
 package postgresrunner
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -95,6 +96,51 @@ func (runner *Runner) EnsureActivationRole() {
 	Expect(err).NotTo(HaveOccurred())
 	_, err = admin.Exec("SELECT hangar_activation_grants()")
 	Expect(err).NotTo(HaveOccurred())
+}
+
+// SessionSource is anything that hands out a dedicated session: *sql.DB and
+// db.DbConn both do.
+type SessionSource interface {
+	Conn(context.Context) (*sql.Conn, error)
+}
+
+// ExecAsActivationRole runs one statement in its own transaction as the
+// activation database role, creating the role (with no login) and its grants
+// first if they are absent. It is how a fixture writes the activation epochs
+// once only that role may. conn's role must be able to create roles and SET
+// ROLE, as the runner's superuser can.
+func ExecAsActivationRole(conn SessionSource, query string, args ...any) error {
+	ctx := context.Background()
+	session, err := conn.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	var role string
+	if err := session.QueryRowContext(ctx, "SELECT hangar_activation_role_name()").Scan(&role); err != nil {
+		return err
+	}
+	if _, err := session.ExecContext(ctx, fmt.Sprintf(`DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %[1]s) THEN CREATE ROLE %[2]s NOLOGIN; END IF;
+	END $$`, quoteLiteral(role), quoteIdentifier(role))); err != nil {
+		return err
+	}
+	if _, err := session.ExecContext(ctx, "SELECT hangar_activation_grants()"); err != nil {
+		return err
+	}
+	tx, err := session.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL ROLE "+quoteIdentifier(role)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AsActivationRole runs fn inside tx as the activation database role, for a

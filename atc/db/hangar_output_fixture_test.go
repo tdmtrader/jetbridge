@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +29,7 @@ import (
 // One activation epoch. Storage policy configuration is operator-owned.
 func hangarActivateEpoch(ctx context.Context, repository *db.HangarOutputRepository) {
 	GinkgoHelper()
-	_, err := dbConn.Exec(`
+	err := postgresrunner.ExecAsActivationRole(dbConn, `
 		INSERT INTO hangar_output_activation_epochs
 			(epoch_id, base_state, output_state, base_attestation, output_attestation,
 			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,

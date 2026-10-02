@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"path/filepath"
 	"reflect"
 	"time"
@@ -75,7 +76,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 			_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0)
 		case "a disabled Hangar epoch":
 			// Reading a bound input is Hangar work under the input's epoch.
-			_, err = in.Source.Start.DB.Conn.Exec(`UPDATE hangar_output_activation_epochs
+			err = postgresrunner.ExecAsActivationRole(in.Source.Start.DB.Conn, `UPDATE hangar_output_activation_epochs
 				SET output_state='disabled', base_state='disabled', revision=revision+1, updated_at=now() WHERE epoch_id=$1`, int64(hangarEpoch))
 		case "edited template":
 			updated := definition.Template

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -40,7 +41,11 @@ func activationFixture(t *testing.T) (activation.Epochs, *sql.DB) {
 
 	postmaster.CreateTestDBFromTemplate()
 	conn := postmaster.OpenDB()
+	// The activation commands run as the activation database role, and only
+	// that role may write the epochs; conn stays the owner for setup reads.
+	role := postmaster.ActivationRoleDB()
 	t.Cleanup(func() {
+		_ = role.Close()
 		_ = conn.Close()
 		postmaster.DropTestDB()
 	})
@@ -57,7 +62,7 @@ func activationFixture(t *testing.T) (activation.Epochs, *sql.DB) {
 			existing)
 	}
 
-	return activation.Epochs{DB: conn}, conn
+	return activation.Epochs{DB: role}, conn
 }
 
 func baseEvidence() activation.Evidence {
@@ -729,7 +734,11 @@ func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
 func mustExec(t *testing.T, conn *sql.DB, statement string, arguments ...any) {
 	t.Helper()
 
-	if _, err := conn.Exec(statement, arguments...); err != nil {
+	exec := func() error { _, err := conn.Exec(statement, arguments...); return err }
+	if strings.Contains(statement, "hangar_output_activation_epochs") {
+		exec = func() error { return postgresrunner.ExecAsActivationRole(conn, statement, arguments...) }
+	}
+	if err := exec(); err != nil {
 		t.Fatalf("preparing the case (%s): %v", statement, err)
 	}
 }
@@ -822,7 +831,7 @@ func TestTheSchemaIsWhatMakesTheBaseReadinessLineTrue(t *testing.T) {
 	mustAttestAndEnableBase(t, epochs, epoch)
 	mustAttestOutputOnly(t, epochs, epoch)
 
-	_, err := conn.Exec(`UPDATE hangar_output_activation_epochs
+	err := postgresrunner.ExecAsActivationRole(conn, `UPDATE hangar_output_activation_epochs
 		SET base_state = 'draining', revision = revision + 1 WHERE epoch_id = $1`, int64(epoch))
 	if err == nil {
 		t.Fatal("the base facet was moved out of readiness while the output facet is attested. " +

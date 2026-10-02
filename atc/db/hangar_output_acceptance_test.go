@@ -328,7 +328,8 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		// A second handle on the same test database, because `activation.Epochs`
 		// takes a *sql.DB and this suite's `dbConn` is a db.DbConn. It is the
 		// same database and the same rows; what differs is the API.
-		conn := postgresRunner.OpenDB()
+		// The activation database role: only it may move the epoch.
+		conn := postgresRunner.ActivationRoleDB()
 		DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
 		epochs := activation.Epochs{DB: conn}
 

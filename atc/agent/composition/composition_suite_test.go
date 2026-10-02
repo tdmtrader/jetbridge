@@ -148,7 +148,7 @@ const testEpoch int64 = 1
 // attestation, and the durable Run activation marker admitting that epoch.
 func activateVersionedAdmission(conn db.DbConn) {
 	GinkgoHelper()
-	_, err := conn.Exec(`
+	err := postgresrunner.ExecAsActivationRole(conn, `
 		INSERT INTO hangar_output_activation_epochs
 			(epoch_id, base_state, output_state, base_attestation, output_attestation,
 			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,

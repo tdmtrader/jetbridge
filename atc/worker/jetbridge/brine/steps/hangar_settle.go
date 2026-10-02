@@ -26,6 +26,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -352,7 +353,7 @@ func openActivationEpoch(jdb JetbridgeDB, cohort ...string) error {
 		attestation = string(body)
 	}
 
-	if _, err := jdb.Conn.Exec(`
+	if err := postgresrunner.ExecAsActivationRole(jdb.Conn, `
 		INSERT INTO hangar_output_activation_epochs
 			(epoch_id, base_state, output_state, base_attestation, output_attestation,
 			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
