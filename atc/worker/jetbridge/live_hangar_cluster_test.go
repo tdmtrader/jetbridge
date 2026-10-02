@@ -1,0 +1,1719 @@
+// hangar_live only, never live: this contract creates a namespace, cluster
+// roles and bindings, a ValidatingAdmissionPolicy and its binding, impersonates
+// a ServiceAccount and runs the artifact daemon and output daemon on a node's
+// host ports -- cluster-scope work a namespaced live-tier account cannot do and
+// must not do against the deployed cluster. Its CI home is the
+// hangar-cluster-contract job in deploy/k8s-e2e-pipeline.yml, which stands up a
+// throwaway K3s cluster, loads the image this contract names into it, and hands
+// it a cluster-admin kubeconfig; build-and-vet only compiles it.
+//go:build hangar_live
+
+package jetbridge
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
+
+	"github.com/concourse/concourse/atc/hangaroutput"
+	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
+)
+
+// liveClusterImageEnv names the image every JetBridge container in the chart
+// runs: concourse (web, the bootstrap Jobs, its ENTRYPOINT), artifact-daemon,
+// hangar-store, hangar-output-daemon, hangar-output-inventory,
+// hangar-output-reclaimer and hangar-output-activate under
+// /usr/local/concourse/bin, plus a shell. It must already be loaded into the
+// cluster's container runtime (the chart is rendered with
+// image.pullPolicy=Never) and carry a tag other than latest.
+const liveClusterImageEnv = "HANGAR_CLUSTER_IMAGE"
+
+const (
+	liveClusterFieldManager = "argocd-controller"
+	liveClusterSyncWait     = 12 * time.Minute
+	liveClusterStoreID      = "contract-store-1"
+	liveClusterTenant       = "contract-tenant"
+	liveClusterEpoch        = 1
+	liveClusterReceiptKeyID = "receipt-1"
+	liveClusterControlKeyID = "control-1"
+	liveClusterBootstrapTag = "concourse-hangar-bootstrap"
+)
+
+// TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt is the
+// hangar_secret_bootstrap contract on a real API server (its T11): the chart's
+// own render, with the bootstrap and every Hangar consumer on, applied the way
+// Argo applies it -- sync waves ascending, the bootstrap Job a Sync hook at its
+// wave that is deleted and recreated on every sync (BeforeHookCreation), and
+// the database step a PostSync hook run only once everything is healthy.
+//
+// It cannot be ONE first sync with everything on, and that is a property of the
+// product rather than of this test. A fresh install with every consumer on
+// never becomes Healthy: the artifact daemon proves its disk credential against
+// the store at startup and exits while the store's initialize render holds it
+// at zero replicas, and the inventory and reclaimer controllers exit on their
+// first lease claim until `begin` has written the activation epoch row their
+// leases reference -- which needs the connection-string Secret the PostSync
+// database step writes only after a Healthy sync. So the contract syncs the
+// runbook's order (hangar_stores_enabled_in_cluster S1-S7, then S10 and S13
+// with the activation mode cleared), and every sync after the first is a
+// re-run of the bootstrap.
+//
+// It proves:
+//
+//  1. the bootstrap identity cannot mint a service-account token Secret: before
+//     the bootstrap's first run, impersonating its ServiceAccount, a create of
+//     a kubernetes.io/service-account-token Secret under an inventory name it
+//     has not created yet is refused by the ValidatingAdmissionPolicy, while a
+//     labelled Opaque Secret under the same name would be admitted;
+//  2. across six syncs, each recreating the bootstrap Job, every inventory
+//     Secret keeps its UID and is byte-identical, and the policy and its
+//     binding keep their UIDs;
+//  3. a publication receipt signed with the receipt key after the first
+//     bootstrap run verifies, through web's own ring loader, after every later
+//     one; each ring holds exactly the public halves of its purpose's keys and
+//     no symmetric key;
+//  4. every consumer completes its first use of the generated Secrets: web
+//     starts with capture on (its startup refuses a ring it cannot load); the
+//     output daemon accepts web's control-plane client certificate over mTLS
+//     on a route that requires one; the artifact daemon publishes into the
+//     disk store as `input` and verifies a materialization warrant signed with
+//     the generated warrant key; the disk store serves `publisher` a create
+//     and a read, the inventory controller's first sweep records the unmarked
+//     object that create left, the reclaimer controller's passes run, and
+//     `reclaimer` stats and deletes the object.
+func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T) {
+	cluster := newLiveCluster(t, "hc", 40*time.Minute)
+	names := cluster.names
+
+	policyChecked := false
+	first := cluster.sync("S1-S2 bootstrap and disk init", cluster.through("S1", "S2"), liveSyncOptions{
+		beforeWave: func(wave int) {
+			if wave == -1 && !policyChecked {
+				cluster.assertPolicyRefusesTokenSecret(names.warrant)
+				policyChecked = true
+			}
+		},
+	})
+	if !policyChecked {
+		t.Fatal("the render had no sync wave -1, so the bootstrap Job is not the Sync hook the policy and RBAC waves precede")
+	}
+
+	inventory := cluster.inventory()
+	snapshot := cluster.snapshotSecrets(inventory)
+	policies := cluster.policyUIDs()
+	bootstrapJob := names.release + "-hangar-bootstrap"
+	jobs := map[types.UID]string{}
+	recordJob := func(label string, result liveSyncResult) {
+		t.Helper()
+		uid := result.hooks[bootstrapJob]
+		if uid == "" {
+			t.Fatalf("%s: the bootstrap Job did not run as a hook", label)
+		}
+		if previous, seen := jobs[uid]; seen {
+			t.Fatalf("%s: the bootstrap Job has the UID it had at %s; a Sync hook is recreated each sync", label, previous)
+		}
+		jobs[uid] = label
+	}
+	recordJob("S1-S2", first)
+	receipt := cluster.signReceipt(names.receipt)
+
+	resync := func(label string, sets []string) liveSyncResult {
+		t.Helper()
+		result := cluster.sync(label, sets, liveSyncOptions{})
+		recordJob(label, result)
+		cluster.assertSecretsUnchanged(label, snapshot)
+		cluster.assertPolicyUIDs(label, policies)
+		cluster.assertReceiptVerifies(label, inventory, receipt)
+		return result
+	}
+
+	resync("S3 store up", cluster.through("S1", "S2", "S3"))
+	resync("S4-S7 strict inputs, base workloads, begin", cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S7"))
+
+	// Before the controllers exist, so their FIRST sweep is what finds it.
+	probe := cluster.storePublisherRoundTrip()
+
+	everything := cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S10", "S13")
+	resync("S10+S13 every consumer on", everything)
+
+	cluster.assertRingsArePublicHalves(inventory)
+	cluster.assertWebLoadedRings(inventory)
+	cluster.assertOutputDaemonAcceptsWebClient()
+	cluster.assertArtifactDaemonUsesWarrantKey()
+	cluster.assertControllersSwept(probe)
+
+	resync("re-sync 1", everything)
+	resync("re-sync 2", everything)
+	cluster.assertOutputDaemonAcceptsWebClient()
+}
+
+// liveClusterNames are the Secret and object names a release composes. The
+// inventory Secrets are named here exactly as an operator names them in
+// values; the bootstrap creates them.
+type liveClusterNames struct {
+	release, namespace string
+
+	warrant, storeTLS, storeCredentials, control, capability     string
+	outputTLS, outputClient, receipt, materialize, dsn, runInput string
+
+	daemonTLS, resolve, postgres, readControlCA string
+}
+
+func newLiveClusterNames(release, namespace string) liveClusterNames {
+	return liveClusterNames{
+		release: release, namespace: namespace,
+		warrant:          release + "-hangar-warrant-key",
+		storeTLS:         release + "-hangar-store-tls",
+		storeCredentials: release + "-hangar-store-credentials",
+		control:          release + "-hangar-control-key-e1",
+		capability:       release + "-hangar-capability-key",
+		outputTLS:        release + "-hangar-output-tls",
+		outputClient:     release + "-hangar-output-client-tls",
+		receipt:          release + "-hangar-receipt-key-e1",
+		materialize:      release + "-hangar-materialize-key",
+		dsn:              release + "-hangar-activation-dsn",
+		runInput:         release + "-run-input-signing-key",
+		// Operator-owned, outside the bootstrap inventory: the artifact
+		// daemon's pinned TLS Secret and resolve key, the database password
+		// the bundled PostgreSQL and web share, and the read-control CA.
+		daemonTLS:     release + "-artifact-daemon-tls",
+		resolve:       release + "-artifact-daemon-resolve",
+		postgres:      release + "-postgresql-connection",
+		readControlCA: release + "-read-control-ca",
+	}
+}
+
+func (names liveClusterNames) storeService() string { return names.release + "-hangar-store" }
+func (names liveClusterNames) storeDNS() string {
+	return names.storeService() + "." + names.namespace + ".svc"
+}
+func (names liveClusterNames) outputDaemonServerName() string {
+	return names.release + "-hangar-output-daemon." + names.namespace + ".svc"
+}
+
+// liveCluster is one release of the chart in its own namespace on a disposable
+// cluster, and the Argo-shaped sync that converges it.
+type liveCluster struct {
+	t          *testing.T
+	ctx        context.Context
+	rest       *rest.Config
+	client     kubernetes.Interface
+	dynamic    dynamic.Interface
+	mapper     meta.RESTMapper
+	names      liveClusterNames
+	repository string
+	tag        string
+	node       string
+	nodeIP     string
+	hostPath   string
+
+	ca               liveDiskCA
+	daemonClientCert []byte
+	daemonClientKey  []byte
+	postgresPassword string
+	applied          map[string]liveArgoObject
+}
+
+func newLiveCluster(t *testing.T, release string, budget time.Duration) *liveCluster {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("real K3s execution of the chart is CI-only on macOS")
+	}
+	image := os.Getenv(liveClusterImageEnv)
+	colon := strings.LastIndex(image, ":")
+	if colon <= 0 || colon == len(image)-1 || strings.Contains(image[colon:], "/") || strings.HasSuffix(image, ":latest") {
+		t.Fatalf("%s must name a repository:tag image (not :latest) holding every JetBridge binary, loaded into the cluster; got %q", liveClusterImageEnv, image)
+	}
+
+	restConfig, err := clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+	if err != nil {
+		t.Fatalf("load the kubeconfig: %v", err)
+	}
+	restConfig.QPS, restConfig.Burst = 50, 100
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dyn, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disco, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	t.Cleanup(cancel)
+
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil || len(nodes.Items) != 1 {
+		t.Fatalf("the contract needs exactly one node (the daemons it dials hold host ports there): count=%d err=%v", len(nodes.Items), err)
+	}
+	node := nodes.Items[0]
+	nodeIP := ""
+	for _, address := range node.Status.Addresses {
+		if address.Type == corev1.NodeInternalIP {
+			nodeIP = address.Address
+		}
+	}
+	if nodeIP == "" {
+		t.Fatalf("node %s has no InternalIP", node.Name)
+	}
+
+	namespace := release + "-" + liveDiskRandomHex(t, 3)
+	cluster := &liveCluster{
+		t: t, ctx: ctx, rest: restConfig, client: client, dynamic: dyn,
+		mapper: restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(disco)),
+		names:  newLiveClusterNames(release, namespace), repository: image[:colon], tag: image[colon+1:],
+		node: node.Name, nodeIP: nodeIP, hostPath: "/var/concourse/" + namespace,
+		applied: map[string]liveArgoObject{},
+	}
+
+	// A previous contract on this cluster leaves its facet labels behind if
+	// its daemons were killed rather than stopped; a wait on a label must
+	// see this release's daemons write it.
+	cluster.clearNodeLabels()
+
+	if _, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create namespace %s: %v", namespace, err)
+	}
+	t.Cleanup(cluster.teardown)
+	// Registered after teardown, so it runs first: a failure dumps the pods'
+	// logs before the namespace takes them away.
+	t.Cleanup(func() {
+		if t.Failed() {
+			liveDiskDiagnostics(t, client, namespace, node.Name)
+		}
+	})
+
+	cluster.createOperatorObjects()
+	return cluster
+}
+
+// createOperatorObjects makes what an operator provides outside the bootstrap
+// inventory, as concourse.home does: the artifact daemon's pinned TLS Secret
+// and resolve key, the database password Secret, and the CA the output
+// daemon trusts for its read-control URL.
+func (cluster *liveCluster) createOperatorObjects() {
+	t, names := cluster.t, cluster.names
+	cluster.ca = newLiveDiskCA(t)
+	daemonDNS := daemonServerName(names.release+"-artifact-daemon", names.namespace)
+	serverCert, serverKey := cluster.ca.issue(t, daemonDNS, []string{daemonDNS, "*." + daemonDNS}, []net.IP{net.ParseIP(cluster.nodeIP)},
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth})
+	cluster.daemonClientCert, cluster.daemonClientKey = cluster.ca.issue(t, "concourse web", nil, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	cluster.postgresPassword = liveDiskRandomHex(t, 16)
+
+	for name, data := range map[string]map[string][]byte{
+		names.daemonTLS: {"tls.crt": serverCert, "tls.key": serverKey, "ca.crt": cluster.ca.certPEM,
+			"client.crt": cluster.daemonClientCert, "client.key": cluster.daemonClientKey},
+		names.resolve:  {"resolve.key": liveDiskRandomBytes(t, 32)},
+		names.postgres: {"POSTGRES_PASSWORD": []byte(cluster.postgresPassword)},
+	} {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.namespace}, Data: data}
+		if _, err := cluster.client.CoreV1().Secrets(names.namespace).Create(cluster.ctx, secret, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create operator Secret %s: %v", name, err)
+		}
+	}
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: names.readControlCA, Namespace: names.namespace},
+		Data: map[string]string{"ca.crt": string(cluster.ca.certPEM)}}
+	if _, err := cluster.client.CoreV1().ConfigMaps(names.namespace).Create(cluster.ctx, configMap, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create the read-control CA ConfigMap: %v", err)
+	}
+}
+
+func (cluster *liveCluster) clearNodeLabels() {
+	current, err := cluster.client.CoreV1().Nodes().Get(cluster.ctx, cluster.node, metav1.GetOptions{})
+	if err != nil {
+		cluster.t.Fatalf("get node %s: %v", cluster.node, err)
+	}
+	changed := false
+	for _, key := range []string{"concourse.dev/artifact-cache", "concourse.dev/hangar-v1", executioncontrol.ReadyLabel, output.ReadyLabel} {
+		if _, found := current.Labels[key]; found {
+			delete(current.Labels, key)
+			changed = true
+		}
+	}
+	if changed {
+		if _, err := cluster.client.CoreV1().Nodes().Update(cluster.ctx, current, metav1.UpdateOptions{}); err != nil {
+			cluster.t.Fatalf("clear node %s's facet labels: %v", cluster.node, err)
+		}
+	}
+}
+
+// teardown deletes the namespace and every cluster-scoped object the syncs
+// applied, and waits for the namespace to go: the next contract on this
+// cluster binds the same host ports.
+func (cluster *liveCluster) teardown() {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	for _, object := range cluster.applied {
+		if !object.namespaced {
+			_ = cluster.dynamic.Resource(object.gvr).Delete(ctx, object.obj.GetName(), metav1.DeleteOptions{})
+		}
+	}
+	_ = cluster.client.CoreV1().Namespaces().Delete(ctx, cluster.names.namespace, metav1.DeleteOptions{})
+	for {
+		_, err := cluster.client.CoreV1().Namespaces().Get(ctx, cluster.names.namespace, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			cluster.t.Logf("namespace %s was still terminating when teardown gave up", cluster.names.namespace)
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// runbookStep returns one step's values from the hangar_stores_enabled_in_cluster
+// rollout runbook, as deploy/chart/tests/hangar_cluster_rollout_test.go renders
+// them, named for this release.
+func (cluster *liveCluster) runbookStep(id string) []string {
+	names := cluster.names
+	switch id {
+	case "S1":
+		return []string{
+			"hangarBootstrap.enabled=true", "hangarBootstrap.database.enabled=true",
+			fmt.Sprintf("hangarOutput.activationEpoch=%d", liveClusterEpoch),
+			"hangarOutput.executionControl.keySecret=" + names.control,
+			"hangarOutput.executionControl.keyID=" + liveClusterControlKeyID,
+			"hangarOutput.capabilityKeySecret=" + names.capability,
+			"hangarOutput.daemon.tls.existingSecret=" + names.outputTLS,
+			"hangarOutput.daemon.tls.clientSecret=" + names.outputClient,
+			"hangarOutput.receipt.keyID=" + liveClusterReceiptKeyID,
+			"hangarOutput.receipt.privateKeySecret=" + names.receipt,
+			"hangarOutput.materializationKeySecret=" + names.materialize,
+			"hangarOutput.database.existingSecret=" + names.dsn,
+			"hangarStorage.disk.tls.existingSecret=" + names.storeTLS,
+			"hangarStorage.disk.credentials.existingSecret=" + names.storeCredentials,
+			"artifactDaemon.hangar.keySecret=" + names.warrant,
+		}
+	case "S2":
+		return []string{"hangarStorage.disk.enabled=true", "hangarStorage.disk.storeID=" + liveClusterStoreID,
+			"hangarStorage.disk.storageClass=local-path", "hangarStorage.disk.size=1Gi", "hangarStorage.disk.initialize=true"}
+	case "S3":
+		return []string{"hangarStorage.disk.initialize=false"}
+	case "S4":
+		return []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=disk", "artifactDaemon.hangar.bucket=inputs"}
+	case "S5":
+		return []string{"artifactDaemon.hangar.webEnabled=true"}
+	case "S6":
+		return []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi"}
+	case "S7":
+		return []string{"hangarOutput.activation.job.mode=begin"}
+	case "S8":
+		return []string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=base"}
+	case "S9":
+		return []string{"hangarOutput.activation.job.mode=enable", "hangarOutput.activation.job.facet=base"}
+	case "S10":
+		// The read-control URL is never dialed here: no read is served.
+		return []string{"hangarOutput.activation.job.mode=", "hangarOutput.activation.job.facet=",
+			"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=" + liveClusterTenant,
+			"hangarOutput.readControlURL=https://" + names.release + "-web." + names.namespace + ".svc",
+			"hangarOutput.readControlCA.configMap=" + names.readControlCA, "hangarOutput.readControlCA.key=ca.crt"}
+	case "S11":
+		return []string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=output"}
+	case "S12":
+		return []string{"hangarOutput.activation.job.mode=enable", "hangarOutput.activation.job.facet=output"}
+	case "S13":
+		return []string{"hangarOutput.activation.job.mode=", "hangarOutput.activation.job.facet=",
+			"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=" + names.runInput}
+	}
+	cluster.t.Fatalf("no runbook step %q", id)
+	return nil
+}
+
+// through accumulates runbook steps, in order, over the release's own values.
+func (cluster *liveCluster) through(ids ...string) []string {
+	names := cluster.names
+	sets := []string{
+		"fullnameOverride=" + names.release,
+		"image.repository=" + cluster.repository, "image.tag=" + cluster.tag, "image.pullPolicy=Never",
+		"artifactDaemon.tls.existingSecret=" + names.daemonTLS,
+		"artifactDaemon.resolveCapability.existingSecret=" + names.resolve,
+		// Per release, so a second contract on this node never opens the
+		// first one's output control ledger.
+		"artifactDaemon.hostPath=" + cluster.hostPath,
+		"hangarOutput.daemon.controlPath=" + cluster.hostPath + "/hangar-output-control",
+		"hangarOutput.daemon.stepsPath=" + cluster.hostPath + "/hangar-output-steps",
+		"postgresql.existingSecret=" + names.postgres, "postgresql.passwordSecretKey=POSTGRES_PASSWORD",
+		"postgresql.persistence.size=1Gi",
+		// Nothing reaches web from outside the cluster here, and a
+		// LoadBalancer would have K3s bind web's ports on the node.
+		"service.type=ClusterIP",
+	}
+	for _, id := range ids {
+		sets = append(sets, cluster.runbookStep(id)...)
+	}
+	return sets
+}
+
+// render runs `helm template` over the whole chart in this checkout.
+func (cluster *liveCluster) render(sets []string) []*unstructured.Unstructured {
+	t := cluster.t
+	t.Helper()
+	chart := filepath.Join("..", "..", "..", "deploy", "chart")
+	args := []string{"template", cluster.names.release, chart, "--namespace", cluster.names.namespace,
+		"-f", filepath.Join(chart, "tests", "testdata", "required-values.yaml")}
+	for _, set := range sets {
+		args = append(args, "--set", set)
+	}
+	out, err := exec.Command("helm", args...).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			t.Fatalf("helm template: %v\n%s", err, exitErr.Stderr)
+		}
+		t.Fatalf("helm template: %v", err)
+	}
+	return liveClusterDecode(t, out)
+}
+
+func liveClusterDecode(t *testing.T, rendered []byte) []*unstructured.Unstructured {
+	t.Helper()
+	var objects []*unstructured.Unstructured
+	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(rendered)))
+	for {
+		doc, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("split the chart render: %v", err)
+		}
+		if len(bytes.TrimSpace(stripYAMLComments(doc))) == 0 {
+			continue
+		}
+		object := &unstructured.Unstructured{}
+		if err := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&object.Object); err != nil {
+			t.Fatalf("decode a rendered manifest: %v\n%s", err, doc)
+		}
+		if object.GetKind() == "" || object.GetName() == "" {
+			t.Fatalf("a rendered manifest has no kind or name:\n%s", doc)
+		}
+		objects = append(objects, object)
+	}
+	return objects
+}
+
+// liveArgoObject is one rendered object as Argo classifies it.
+type liveArgoObject struct {
+	obj        *unstructured.Unstructured
+	gvr        schema.GroupVersionResource
+	namespaced bool
+	hook       string
+	wave       int
+}
+
+func (object liveArgoObject) key() string {
+	return object.gvr.String() + "/" + object.obj.GetNamespace() + "/" + object.obj.GetName()
+}
+
+type liveSyncOptions struct {
+	// beforeWave runs before a wave's objects are applied.
+	beforeWave func(wave int)
+	// mutate may change an object before it is applied.
+	mutate func(object *unstructured.Unstructured)
+	// unwatched names objects whose health the sync does not wait for, and
+	// stopBeforePostSync leaves the sync where an interrupted one stops.
+	unwatched          map[string]bool
+	stopBeforePostSync bool
+}
+
+type liveSyncResult struct {
+	rendered []*unstructured.Unstructured
+	hooks    map[string]types.UID
+}
+
+func (result liveSyncResult) only(t *testing.T, kind, name string) *unstructured.Unstructured {
+	t.Helper()
+	for _, object := range result.rendered {
+		if object.GetKind() == kind && object.GetName() == name {
+			return object.DeepCopy()
+		}
+	}
+	t.Fatalf("the render holds no %s %s", kind, name)
+	return nil
+}
+
+var liveArgoKindOrder = []string{
+	"Namespace", "NetworkPolicy", "ResourceQuota", "LimitRange", "PodDisruptionBudget", "ServiceAccount",
+	"Secret", "ConfigMap", "StorageClass", "PersistentVolume", "PersistentVolumeClaim",
+	"CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding",
+	"Service", "DaemonSet", "Pod", "ReplicaSet", "Deployment", "StatefulSet", "Job", "CronJob", "Ingress",
+}
+
+func liveArgoKindRank(kind string) int {
+	for index, known := range liveArgoKindOrder {
+		if known == kind {
+			return index
+		}
+	}
+	return len(liveArgoKindOrder)
+}
+
+// sync converges the release on one render the way an automated Argo sync
+// with pruning does: PreSync hooks; then each sync wave in ascending order,
+// its resources applied (kind order within a wave) and its Sync hooks
+// recreated, waiting for all of them to be healthy before the next wave;
+// pruning what the render no longer holds; and PostSync hooks once
+// everything is healthy. A hook with BeforeHookCreation -- Argo's default --
+// is deleted and created again, so it runs on every sync.
+func (cluster *liveCluster) sync(label string, sets []string, options liveSyncOptions) liveSyncResult {
+	t := cluster.t
+	t.Helper()
+	started := time.Now()
+	t.Logf("sync %q: begin", label)
+	rendered := cluster.render(sets)
+	result := liveSyncResult{rendered: rendered, hooks: map[string]types.UID{}}
+
+	var resources, preSync, postSync []liveArgoObject
+	syncHooks := map[int][]liveArgoObject{}
+	waves := map[int]bool{}
+	for _, raw := range rendered {
+		object := raw.DeepCopy()
+		if options.mutate != nil {
+			options.mutate(object)
+		}
+		classified := cluster.classify(object)
+		switch classified.hook {
+		case "":
+			resources = append(resources, classified)
+			waves[classified.wave] = true
+		case "PreSync":
+			preSync = append(preSync, classified)
+		case "Sync":
+			syncHooks[classified.wave] = append(syncHooks[classified.wave], classified)
+			waves[classified.wave] = true
+		case "PostSync":
+			postSync = append(postSync, classified)
+		default:
+			t.Fatalf("%s %s carries hook %q, which this sync does not model", object.GetKind(), object.GetName(), classified.hook)
+		}
+	}
+
+	for _, hook := range preSync {
+		result.hooks[hook.obj.GetName()] = cluster.runHook(label, hook)
+	}
+
+	ordered := make([]int, 0, len(waves))
+	for wave := range waves {
+		ordered = append(ordered, wave)
+	}
+	sort.Ints(ordered)
+	current := map[string]liveArgoObject{}
+	for _, wave := range ordered {
+		if options.beforeWave != nil {
+			options.beforeWave(wave)
+		}
+		var inWave []liveArgoObject
+		for _, resource := range resources {
+			if resource.wave == wave {
+				inWave = append(inWave, resource)
+			}
+		}
+		sort.SliceStable(inWave, func(i, j int) bool {
+			return liveArgoKindRank(inWave[i].obj.GetKind()) < liveArgoKindRank(inWave[j].obj.GetKind())
+		})
+		for _, resource := range inWave {
+			cluster.apply(resource)
+			current[resource.key()] = resource
+		}
+		for _, hook := range syncHooks[wave] {
+			result.hooks[hook.obj.GetName()] = cluster.runHook(label, hook)
+		}
+		var watched []liveArgoObject
+		for _, resource := range inWave {
+			if !options.unwatched[resource.obj.GetName()] {
+				watched = append(watched, resource)
+			}
+		}
+		cluster.waitHealthy(fmt.Sprintf("%s, wave %d", label, wave), watched)
+	}
+
+	for key, previous := range cluster.applied {
+		if _, kept := current[key]; !kept {
+			cluster.prune(previous)
+		}
+	}
+	cluster.applied = current
+
+	if options.stopBeforePostSync {
+		t.Logf("sync %q: stopped before PostSync after %s", label, time.Since(started).Round(time.Second))
+		return result
+	}
+	for _, hook := range postSync {
+		result.hooks[hook.obj.GetName()] = cluster.runHook(label, hook)
+	}
+	t.Logf("sync %q: Synced and Healthy after %s", label, time.Since(started).Round(time.Second))
+	return result
+}
+
+func (cluster *liveCluster) classify(object *unstructured.Unstructured) liveArgoObject {
+	t := cluster.t
+	t.Helper()
+	gvk := object.GroupVersionKind()
+	mapping, err := cluster.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		t.Fatalf("map %s: %v", gvk, err)
+	}
+	classified := liveArgoObject{obj: object, gvr: mapping.Resource, namespaced: mapping.Scope.Name() == meta.RESTScopeNameNamespace}
+	if classified.namespaced {
+		object.SetNamespace(cluster.names.namespace)
+	} else {
+		object.SetNamespace("")
+	}
+	annotations := object.GetAnnotations()
+	classified.hook = annotations["argocd.argoproj.io/hook"]
+	if raw, found := annotations["argocd.argoproj.io/sync-wave"]; found {
+		wave, err := strconv.Atoi(raw)
+		if err != nil {
+			t.Fatalf("%s %s has sync-wave %q", object.GetKind(), object.GetName(), raw)
+		}
+		classified.wave = wave
+	}
+	if policy := annotations["argocd.argoproj.io/hook-delete-policy"]; classified.hook != "" && policy != "" && policy != "BeforeHookCreation" {
+		t.Fatalf("%s %s has hook-delete-policy %q; only BeforeHookCreation is modelled", object.GetKind(), object.GetName(), policy)
+	}
+	return classified
+}
+
+func (cluster *liveCluster) resource(object liveArgoObject) dynamic.ResourceInterface {
+	if object.namespaced {
+		return cluster.dynamic.Resource(object.gvr).Namespace(cluster.names.namespace)
+	}
+	return cluster.dynamic.Resource(object.gvr)
+}
+
+func (cluster *liveCluster) apply(object liveArgoObject) {
+	t := cluster.t
+	t.Helper()
+	if _, err := cluster.resource(object).Apply(cluster.ctx, object.obj.GetName(), object.obj,
+		metav1.ApplyOptions{FieldManager: liveClusterFieldManager, Force: true}); err != nil {
+		t.Fatalf("apply %s %s: %v", object.obj.GetKind(), object.obj.GetName(), err)
+	}
+}
+
+func (cluster *liveCluster) prune(object liveArgoObject) {
+	t := cluster.t
+	t.Helper()
+	background := metav1.DeletePropagationBackground
+	err := cluster.resource(object).Delete(cluster.ctx, object.obj.GetName(), metav1.DeleteOptions{PropagationPolicy: &background})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("prune %s %s: %v", object.obj.GetKind(), object.obj.GetName(), err)
+	}
+	cluster.waitGone(object)
+}
+
+func (cluster *liveCluster) waitGone(object liveArgoObject) {
+	t := cluster.t
+	t.Helper()
+	for {
+		_, err := cluster.resource(object).Get(cluster.ctx, object.obj.GetName(), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("get %s %s: %v", object.obj.GetKind(), object.obj.GetName(), err)
+		}
+		liveDiskPause(t, cluster.ctx, object.obj.GetKind()+" "+object.obj.GetName()+" to be deleted")
+	}
+}
+
+// runHook deletes the hook's previous incarnation, creates it again and waits
+// for it to complete, returning the new object's UID.
+func (cluster *liveCluster) runHook(label string, hook liveArgoObject) types.UID {
+	t := cluster.t
+	t.Helper()
+	if hook.obj.GetKind() != "Job" {
+		t.Fatalf("hook %s %s is not a Job", hook.obj.GetKind(), hook.obj.GetName())
+	}
+	background := metav1.DeletePropagationBackground
+	err := cluster.resource(hook).Delete(cluster.ctx, hook.obj.GetName(), metav1.DeleteOptions{PropagationPolicy: &background})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete hook %s: %v", hook.obj.GetName(), err)
+	}
+	cluster.waitGone(hook)
+	created, err := cluster.resource(hook).Create(cluster.ctx, hook.obj, metav1.CreateOptions{FieldManager: liveClusterFieldManager})
+	if err != nil {
+		t.Fatalf("%s: create hook %s: %v", label, hook.obj.GetName(), err)
+	}
+	cluster.waitJobComplete(label, hook.obj.GetName())
+	return created.GetUID()
+}
+
+func (cluster *liveCluster) waitJobComplete(label, name string) {
+	t := cluster.t
+	t.Helper()
+	for {
+		job, err := cluster.client.BatchV1().Jobs(cluster.names.namespace).Get(cluster.ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("%s: get Job %s: %v", label, name, err)
+		}
+		done, failed := liveJobState(job)
+		if done {
+			return
+		}
+		if failed {
+			t.Fatalf("%s: Job %s failed:\n%s", label, name, cluster.jobLogs(name))
+		}
+		liveDiskPause(t, cluster.ctx, label+": Job "+name)
+	}
+}
+
+func liveJobState(job *batchv1.Job) (complete, failed bool) {
+	for _, condition := range job.Status.Conditions {
+		if condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch condition.Type {
+		case batchv1.JobComplete:
+			complete = true
+		case batchv1.JobFailed:
+			failed = true
+		}
+	}
+	return complete, failed
+}
+
+// jobLogs is every log of every pod a Job made. These Jobs log names, kinds,
+// public fingerprints and transitions only.
+func (cluster *liveCluster) jobLogs(name string) string {
+	return cluster.podLogs("job-name=" + name)
+}
+
+func (cluster *liveCluster) podLogs(selector string) string {
+	pods, err := cluster.client.CoreV1().Pods(cluster.names.namespace).List(cluster.ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return err.Error()
+	}
+	var logs strings.Builder
+	for _, pod := range pods.Items {
+		for _, container := range pod.Spec.Containers {
+			raw, err := cluster.client.CoreV1().Pods(cluster.names.namespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: container.Name}).DoRaw(cluster.ctx)
+			if err != nil {
+				raw = []byte(err.Error())
+			}
+			fmt.Fprintf(&logs, "--- %s/%s (%s):\n%s\n", pod.Name, container.Name, pod.Status.Phase, raw)
+		}
+	}
+	return logs.String()
+}
+
+// waitHealthy waits for Argo's built-in health of each object: a Deployment or
+// DaemonSet fully rolled out and available, a Job complete, a PVC bound.
+// Anything else is healthy once applied.
+func (cluster *liveCluster) waitHealthy(label string, objects []liveArgoObject) {
+	t := cluster.t
+	t.Helper()
+	deadline := time.Now().Add(liveClusterSyncWait)
+	lastReport := time.Now()
+	for {
+		var pending []string
+		for _, object := range objects {
+			if reason := cluster.unhealthy(label, object); reason != "" {
+				pending = append(pending, object.obj.GetKind()+" "+object.obj.GetName()+": "+reason)
+			}
+		}
+		if len(pending) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: not Healthy after %s:\n  %s", label, liveClusterSyncWait, strings.Join(pending, "\n  "))
+		}
+		if time.Since(lastReport) > time.Minute {
+			t.Logf("%s: waiting on %s", label, strings.Join(pending, "; "))
+			lastReport = time.Now()
+		}
+		liveDiskPause(t, cluster.ctx, label+" to be Healthy")
+	}
+}
+
+func (cluster *liveCluster) unhealthy(label string, object liveArgoObject) string {
+	t := cluster.t
+	t.Helper()
+	live, err := cluster.resource(object).Get(cluster.ctx, object.obj.GetName(), metav1.GetOptions{})
+	if err != nil {
+		return err.Error()
+	}
+	switch object.obj.GetKind() {
+	case "Deployment":
+		var deployment appsv1.Deployment
+		liveClusterFromUnstructured(t, live, &deployment)
+		want := int32(1)
+		if deployment.Spec.Replicas != nil {
+			want = *deployment.Spec.Replicas
+		}
+		status := deployment.Status
+		if status.ObservedGeneration < deployment.Generation || status.UpdatedReplicas != want ||
+			status.Replicas != want || status.AvailableReplicas != want {
+			return fmt.Sprintf("updated %d, available %d, total %d of %d", status.UpdatedReplicas, status.AvailableReplicas, status.Replicas, want)
+		}
+	case "DaemonSet":
+		var daemonSet appsv1.DaemonSet
+		liveClusterFromUnstructured(t, live, &daemonSet)
+		status := daemonSet.Status
+		if status.ObservedGeneration < daemonSet.Generation || status.DesiredNumberScheduled == 0 ||
+			status.UpdatedNumberScheduled != status.DesiredNumberScheduled || status.NumberAvailable != status.DesiredNumberScheduled {
+			return fmt.Sprintf("updated %d, available %d of %d", status.UpdatedNumberScheduled, status.NumberAvailable, status.DesiredNumberScheduled)
+		}
+	case "Job":
+		var job batchv1.Job
+		liveClusterFromUnstructured(t, live, &job)
+		complete, failed := liveJobState(&job)
+		if failed {
+			t.Fatalf("%s: Job %s failed:\n%s", label, job.Name, cluster.jobLogs(job.Name))
+		}
+		if !complete {
+			return "running"
+		}
+	case "PersistentVolumeClaim":
+		var claim corev1.PersistentVolumeClaim
+		liveClusterFromUnstructured(t, live, &claim)
+		if claim.Status.Phase != corev1.ClaimBound {
+			return string(claim.Status.Phase)
+		}
+	}
+	return ""
+}
+
+func liveClusterFromUnstructured(t *testing.T, object *unstructured.Unstructured, into any) {
+	t.Helper()
+	if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(object.Object, into); err != nil {
+		t.Fatalf("convert %s %s: %v", object.GetKind(), object.GetName(), err)
+	}
+}
+
+// liveInventoryEntry is the slice of a bootstrap inventory entry this
+// contract reads back from the chart's inventory ConfigMap.
+type liveInventoryEntry struct {
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	Key   string `json:"key"`
+	Ring  string `json:"ring"`
+	Epoch int64  `json:"epoch"`
+	KeyID string `json:"keyID"`
+}
+
+func (cluster *liveCluster) inventory() []liveInventoryEntry {
+	t := cluster.t
+	t.Helper()
+	configMap, err := cluster.client.CoreV1().ConfigMaps(cluster.names.namespace).Get(cluster.ctx, cluster.names.release+"-hangar-bootstrap-inventory", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get the bootstrap inventory ConfigMap: %v", err)
+	}
+	var inventory struct {
+		Entries []liveInventoryEntry `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(configMap.Data["inventory.json"]), &inventory); err != nil {
+		t.Fatalf("decode the bootstrap inventory: %v", err)
+	}
+	kinds := map[string]int{}
+	for _, entry := range inventory.Entries {
+		kinds[entry.Kind]++
+	}
+	// Every kind the inventory can declare, with every consumer on.
+	for kind, want := range map[string]int{"random32": 4, "ed25519": 2, "store-tokens": 1, "ca": 1, "tls-server": 1, "tls-client": 1, "tls-bundle": 1, "ring": 1, "dsn": 1} {
+		if kinds[kind] != want {
+			t.Fatalf("the bootstrap inventory declares %d %s entries, want %d (all: %v)", kinds[kind], kind, want, kinds)
+		}
+	}
+	return inventory.Entries
+}
+
+func liveInventoryNamed(t *testing.T, inventory []liveInventoryEntry, kind string) liveInventoryEntry {
+	t.Helper()
+	for _, entry := range inventory {
+		if entry.Kind == kind {
+			return entry
+		}
+	}
+	t.Fatalf("the bootstrap inventory has no %s entry", kind)
+	return liveInventoryEntry{}
+}
+
+func (cluster *liveCluster) secret(name string) *corev1.Secret {
+	cluster.t.Helper()
+	secret, err := cluster.client.CoreV1().Secrets(cluster.names.namespace).Get(cluster.ctx, name, metav1.GetOptions{})
+	if err != nil {
+		cluster.t.Fatalf("get Secret %s: %v", name, err)
+	}
+	return secret
+}
+
+type liveSecretSnapshot struct {
+	uid  types.UID
+	kind corev1.SecretType
+	data map[string][]byte
+}
+
+func (cluster *liveCluster) snapshotSecrets(inventory []liveInventoryEntry) map[string]liveSecretSnapshot {
+	snapshot := map[string]liveSecretSnapshot{}
+	for _, entry := range inventory {
+		secret := cluster.secret(entry.Name)
+		if secret.Labels["app.kubernetes.io/managed-by"] != liveClusterBootstrapTag {
+			cluster.t.Fatalf("inventory Secret %s does not carry the bootstrap label", entry.Name)
+		}
+		snapshot[entry.Name] = liveSecretSnapshot{uid: secret.UID, kind: secret.Type, data: secret.Data}
+	}
+	return snapshot
+}
+
+// assertSecretsUnchanged names the Secret and data key that moved, never a
+// value.
+func (cluster *liveCluster) assertSecretsUnchanged(label string, snapshot map[string]liveSecretSnapshot) {
+	t := cluster.t
+	t.Helper()
+	for name, before := range snapshot {
+		after := cluster.secret(name)
+		if after.UID != before.uid || after.Type != before.kind {
+			t.Errorf("%s: inventory Secret %s was replaced (UID %s -> %s, type %s -> %s)", label, name, before.uid, after.UID, before.kind, after.Type)
+			continue
+		}
+		keys := map[string]bool{}
+		for key := range before.data {
+			keys[key] = true
+		}
+		for key := range after.Data {
+			keys[key] = true
+		}
+		for key := range keys {
+			if !bytes.Equal(before.data[key], after.Data[key]) {
+				t.Errorf("%s: inventory Secret %s key %s is not byte-identical to the first sync's", label, name, key)
+			}
+		}
+	}
+}
+
+func (cluster *liveCluster) policyUIDs() map[string]types.UID {
+	t := cluster.t
+	t.Helper()
+	name := cluster.names.release + "-hangar-bootstrap"
+	policy, err := cluster.client.AdmissionregistrationV1().ValidatingAdmissionPolicies().Get(cluster.ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get the bootstrap ValidatingAdmissionPolicy: %v", err)
+	}
+	binding, err := cluster.client.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Get(cluster.ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get the bootstrap ValidatingAdmissionPolicyBinding: %v", err)
+	}
+	return map[string]types.UID{"policy": policy.UID, "binding": binding.UID}
+}
+
+func (cluster *liveCluster) assertPolicyUIDs(label string, before map[string]types.UID) {
+	cluster.t.Helper()
+	after := cluster.policyUIDs()
+	for which, uid := range before {
+		if after[which] != uid {
+			cluster.t.Errorf("%s: the bootstrap admission %s was replaced (UID %s -> %s); it is a plain resource and must never be absent while the Role grants create", label, which, uid, after[which])
+		}
+	}
+}
+
+// assertPolicyRefusesTokenSecret runs before the bootstrap's first run, so the
+// name is in the policy's list and the Role's, and no Secret holds it yet: a
+// refusal here is the policy's and cannot be an AlreadyExists.
+func (cluster *liveCluster) assertPolicyRefusesTokenSecret(name string) {
+	t := cluster.t
+	t.Helper()
+	names := cluster.names
+	policyName := names.release + "-hangar-bootstrap"
+	if _, err := cluster.client.CoreV1().Secrets(names.namespace).Get(cluster.ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("inventory name %s is already in use before the bootstrap ran (err %v)", name, err)
+	}
+
+	impersonated := rest.CopyConfig(cluster.rest)
+	impersonated.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + names.namespace + ":" + policyName}
+	asBootstrap, err := kubernetes.NewForConfig(impersonated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{"app.kubernetes.io/managed-by": liveClusterBootstrapTag}
+	token := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.namespace, Labels: labels,
+			Annotations: map[string]string{corev1.ServiceAccountNameKey: "default"}},
+		Type: corev1.SecretTypeServiceAccountToken,
+	}
+	refusedByPolicy := func(err error) bool {
+		return err != nil && (apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) &&
+			strings.Contains(err.Error(), "ValidatingAdmissionPolicy") && strings.Contains(err.Error(), policyName) &&
+			strings.Contains(err.Error(), "only Opaque or kubernetes.io/tls")
+	}
+
+	// A new policy reaches the admission chain a moment after it is stored,
+	// and a new RoleBinding reaches the authorizer a moment after that. Wait
+	// with dry runs, which pass through admission and persist nothing, so an
+	// early create can never mint the token this is about.
+	deadline := time.Now().Add(time.Minute)
+	for {
+		_, err := asBootstrap.CoreV1().Secrets(names.namespace).Create(cluster.ctx, token, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+		if refusedByPolicy(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("as the bootstrap identity, a dry-run service-account token Secret %s was not refused by the admission policy; last answer: %v", name, err)
+		}
+		liveDiskPause(t, cluster.ctx, "the bootstrap admission policy to be enforced")
+	}
+
+	_, err = asBootstrap.CoreV1().Secrets(names.namespace).Create(cluster.ctx, token, metav1.CreateOptions{})
+	if !refusedByPolicy(err) {
+		t.Fatalf("as the bootstrap identity, creating a service-account token Secret under the unused inventory name %s was not refused by the admission policy: %v", name, err)
+	}
+	t.Logf("the bootstrap identity's service-account token Secret was refused: %v", err)
+	if _, err := cluster.client.CoreV1().Secrets(names.namespace).Get(cluster.ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("after the refusal, Secret %s exists (err %v)", name, err)
+	}
+
+	// The control: the same identity, name and label, as an Opaque Secret,
+	// is admitted. So the refusal was the type rule and not RBAC or the name.
+	opaque := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.namespace, Labels: labels},
+		Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"probe": []byte("dry run")}}
+	if _, err := asBootstrap.CoreV1().Secrets(names.namespace).Create(cluster.ctx, opaque, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+		t.Fatalf("as the bootstrap identity, a dry-run labelled Opaque Secret %s was refused, so the token refusal proves nothing about the policy's type rule: %v", name, err)
+	}
+}
+
+// signReceipt signs a publication receipt with the generated receipt key, as
+// the output daemon does, and returns it.
+func (cluster *liveCluster) signReceipt(secretName string) output.Receipt {
+	t := cluster.t
+	t.Helper()
+	private := liveEd25519Private(t, secretName, cluster.secret(secretName).Data["receipt.key"])
+	signer, err := output.NewReceiptSigner(liveClusterReceiptKeyID, liveClusterEpoch, private, output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := signer.Sign(liveReceiptClaims(t))
+	if err != nil {
+		t.Fatalf("sign a publication receipt with the generated receipt key: %v", err)
+	}
+	return receipt
+}
+
+func liveReceiptClaims(t *testing.T) output.ReceiptClaims {
+	t.Helper()
+	execution := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Fence: 1}
+	name := output.OutputName("result")
+	ref := hangar.TreeRef{Scope: "contract", Digest: hangar.Digest("sha256:" + strings.Repeat("ab", 32)), Generation: 1}
+	return output.ReceiptClaims{
+		ProtocolVersion:      output.ProtocolVersion,
+		ReceiptVersion:       output.ReceiptDomain,
+		Execution:            execution,
+		ActivationEpoch:      liveClusterEpoch,
+		HandoffID:            output.HandoffID(uuid.NewString()),
+		ProducerCheckpointID: output.OpaqueID("checkpoint-" + uuid.NewString()),
+		ReservationID:        output.ReservationID(uuid.NewString()),
+		ChallengeNonce:       "nonce-" + uuid.NewString(),
+		ChallengeIssuedAt:    output.NewTimestamp(time.Now().UTC()),
+		Incarnation: output.SourceIncarnation{
+			ExecutionID: execution.ExecutionID, NodeUID: "node-uid", HandleGeneration: 1, Output: name,
+		},
+		Output:        name,
+		CaptureFence:  1,
+		WriterFence:   1,
+		Ref:           ref,
+		Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
+		MarkerVersion: output.MarkerVersion,
+	}
+}
+
+func liveEd25519Private(t *testing.T, name string, raw []byte) ed25519.PrivateKey {
+	t.Helper()
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		t.Fatalf("Secret %s holds no PEM key", name)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("Secret %s's key is not PKCS#8: %v", name, err)
+	}
+	private, ok := parsed.(ed25519.PrivateKey)
+	if !ok {
+		t.Fatalf("Secret %s's key is a %T, not Ed25519", name, parsed)
+	}
+	return private
+}
+
+// ringFiles writes the ring Secret web mounts to disk, the way the kubelet
+// projects it, and returns the directory.
+func (cluster *liveCluster) ringFiles(inventory []liveInventoryEntry) string {
+	t := cluster.t
+	t.Helper()
+	ring := cluster.secret(liveInventoryNamed(t, inventory, "ring").Name)
+	if len(ring.Data) != 2 {
+		keys := make([]string, 0, len(ring.Data))
+		for key := range ring.Data {
+			keys = append(keys, key)
+		}
+		t.Fatalf("the ring Secret holds %v; want exactly receipt-keys.json and control-keys.json", keys)
+	}
+	dir := t.TempDir()
+	for _, key := range []string{"receipt-keys.json", "control-keys.json"} {
+		if err := os.WriteFile(filepath.Join(dir, key), ring.Data[key], 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// assertReceiptVerifies loads the ring Secret through web's own loader and
+// verifies the receipt with web's verifier.
+func (cluster *liveCluster) assertReceiptVerifies(label string, inventory []liveInventoryEntry, receipt output.Receipt) {
+	t := cluster.t
+	t.Helper()
+	ring, err := hangaroutput.LoadReceiptKeyRing(filepath.Join(cluster.ringFiles(inventory), "receipt-keys.json"))
+	if err != nil {
+		t.Fatalf("%s: web's loader refuses the ring Secret: %v", label, err)
+	}
+	verifier, err := ring.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	if err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	if err := verifier.VerifySignature(receipt); err != nil {
+		t.Errorf("%s: a publication receipt signed after the first bootstrap run does not verify against the ring: %v", label, err)
+	}
+}
+
+// assertRingsArePublicHalves: each ring holds exactly the public half of its
+// purpose's key for this activation epoch, and no symmetric key appears in
+// either ring in any encoding.
+func (cluster *liveCluster) assertRingsArePublicHalves(inventory []liveInventoryEntry) {
+	t := cluster.t
+	t.Helper()
+	dir := cluster.ringFiles(inventory)
+	receipts, err := hangaroutput.LoadReceiptKeyRing(filepath.Join(dir, "receipt-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls, err := hangaroutput.LoadControlKeyRing(filepath.Join(dir, "control-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range inventory {
+		if entry.Kind != "ed25519" {
+			continue
+		}
+		public := base64.StdEncoding.EncodeToString(liveEd25519Private(t, entry.Name, cluster.secret(entry.Name).Data[entry.Key]).Public().(ed25519.PublicKey))
+		switch entry.Ring {
+		case "receipt":
+			if len(receipts.Keys) != 1 || receipts.Keys[0].ID != entry.KeyID || int64(receipts.Keys[0].Epoch) != entry.Epoch || receipts.Keys[0].PublicKey != public || receipts.ActiveKeyID != entry.KeyID {
+				t.Errorf("the receipt ring %+v is not exactly the public half of %s (key id %s, epoch %d)", receipts, entry.Name, entry.KeyID, entry.Epoch)
+			}
+		case "control":
+			if len(controls.Keys) != 1 || int64(controls.Keys[0].Epoch) != entry.Epoch || controls.Keys[0].PublicKey != public {
+				t.Errorf("the control ring %+v is not exactly the public half of %s (epoch %d)", controls, entry.Name, entry.Epoch)
+			}
+		default:
+			t.Errorf("Ed25519 entry %s names ring %q", entry.Name, entry.Ring)
+		}
+	}
+	rings, err := os.ReadFile(filepath.Join(dir, "receipt-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlRing, err := os.ReadFile(filepath.Join(dir, "control-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rings = append(rings, controlRing...)
+	for _, entry := range inventory {
+		if entry.Kind != "random32" {
+			continue
+		}
+		key := cluster.secret(entry.Name).Data[entry.Key]
+		if len(key) != 32 {
+			t.Fatalf("symmetric key %s is %d bytes", entry.Name, len(key))
+		}
+		for _, encoded := range [][]byte{key, []byte(base64.StdEncoding.EncodeToString(key)), []byte(base64.RawStdEncoding.EncodeToString(key)), []byte(hex.EncodeToString(key))} {
+			if bytes.Contains(rings, encoded) {
+				t.Errorf("symmetric key %s appears in a ring", entry.Name)
+			}
+		}
+	}
+}
+
+// assertWebLoadedRings: web's startup reads both rings and refuses to run on
+// one it cannot load or that names another activation epoch, so a Ready web
+// whose live spec mounts the ring Secret and turns capture on is a web that
+// loaded both.
+func (cluster *liveCluster) assertWebLoadedRings(inventory []liveInventoryEntry) {
+	t := cluster.t
+	t.Helper()
+	name := cluster.names.release + "-web"
+	deployment, err := cluster.client.AppsV1().Deployments(cluster.names.namespace).Get(cluster.ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(deployment.Spec.Template.Spec.Containers[0].Args, " ")
+	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-output-receipt-keys=", "--kubernetes-hangar-output-control-keys=", "--kubernetes-hangar-warrant-key=", "--run-input-signing-key="} {
+		if !strings.Contains(args, flag) {
+			t.Fatalf("web runs without %s", flag)
+		}
+	}
+	ring := liveInventoryNamed(t, inventory, "ring").Name
+	mounted := false
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Secret != nil && volume.Secret.SecretName == ring {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("web does not mount the ring Secret %s", ring)
+	}
+	if deployment.Status.AvailableReplicas < 1 || deployment.Status.UpdatedReplicas != deployment.Status.Replicas {
+		t.Fatalf("web is not available on its current spec: %+v", deployment.Status)
+	}
+}
+
+// outputDaemonClient presents web's control-plane client certificate, from
+// the Secret web mounts, and verifies the output daemon's server certificate
+// against the name the chart hands both halves.
+func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Client {
+	t := cluster.t
+	t.Helper()
+	secret := cluster.secret(cluster.names.outputClient)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(secret.Data["ca.crt"]) {
+		t.Fatalf("Secret %s's ca.crt holds no certificate", cluster.names.outputClient)
+	}
+	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: cluster.names.outputDaemonServerName()}
+	if withCertificate {
+		certificate, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
+		if err != nil {
+			t.Fatalf("Secret %s is not a key pair: %v", cluster.names.outputClient, err)
+		}
+		config.Certificates = []tls.Certificate{certificate}
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = config
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second}
+}
+
+// assertOutputDaemonAcceptsWebClient dials the output daemon where web does,
+// the node's IP on its host port. Web itself makes this call only for an
+// execution under an enabled base facet, which this contract does not run, so
+// the contract presents web's mounted client Secret itself.
+func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
+	t := cluster.t
+	t.Helper()
+	handshakeURL := fmt.Sprintf("https://%s:7781/capture/v1/handshake", cluster.nodeIP)
+	body, status := liveGet(t, cluster.ctx, cluster.outputDaemonClient(true), handshakeURL)
+	if status != http.StatusOK {
+		t.Fatalf("the output daemon refused web's client certificate on the capture handshake: %d %s", status, body)
+	}
+	var handshake output.ExtensionHandshake
+	if err := json.Unmarshal(body, &handshake); err != nil {
+		t.Fatalf("decode the capture handshake: %v", err)
+	}
+	if err := handshake.Validate(); err != nil {
+		t.Fatalf("the capture handshake does not validate: %v", err)
+	}
+	if handshake.ReceiptPublicKeyID != liveClusterReceiptKeyID || handshake.Base.ControlKeyID != liveClusterControlKeyID || handshake.Base.ActivationEpoch != liveClusterEpoch {
+		t.Fatalf("the output daemon reports %+v, want receipt key %s, control key %s, epoch %d", handshake, liveClusterReceiptKeyID, liveClusterControlKeyID, liveClusterEpoch)
+	}
+	if body, status := liveGet(t, cluster.ctx, cluster.outputDaemonClient(false), handshakeURL); status != http.StatusUnauthorized {
+		t.Fatalf("without a client certificate the capture handshake answered %d %s; it requires one, so the 200 above proves nothing about web's", status, body)
+	}
+}
+
+func liveGet(t *testing.T, ctx context.Context, client *http.Client, address string) ([]byte, int) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET %s: %v", address, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body, response.StatusCode
+}
+
+// assertArtifactDaemonUsesWarrantKey publishes a tree through the artifact
+// daemon -- which writes it into the disk store's input namespace as `input`
+// -- and has a generated step pod materialize it under a warrant signed with
+// the generated warrant key, which the daemon verifies.
+func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
+	t := cluster.t
+	t.Helper()
+	names := cluster.names
+	liveDiskWaitNodeLabel(t, cluster.ctx, cluster.client, cluster.node, "concourse.dev/hangar-v1", "ready")
+	dir := t.TempDir()
+	certPath, keyPath, caPath := filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key"), filepath.Join(dir, "ca.crt")
+	for path, data := range map[string][]byte{certPath: cluster.daemonClientCert, keyPath: cluster.daemonClientKey, caPath: cluster.ca.certPEM} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := names.release + "-artifact-daemon"
+	daemon := newLiveDiskDaemon(t, fmt.Sprintf("https://%s:%d", cluster.nodeIP, liveDiskPort), daemonServerName(service, names.namespace), certPath, keyPath, cluster.ca.certPool())
+	tree := liveDiskTree(t, map[string]string{"literal [x]": "payload", "nested/run.sh": "run"}, []string{"empty", "nested"}, map[string]string{"latest": "nested/run.sh"})
+	published := daemon.publish(t, cluster.ctx, tree, http.StatusCreated)
+
+	signer, err := hangar.NewWarrantSigner(cluster.secret(names.warrant).Data["hangar.key"], 5*time.Minute, nil)
+	if err != nil {
+		t.Fatalf("the generated warrant key does not make a signer: %v", err)
+	}
+	cfg := NewConfig(names.namespace, os.Getenv("KUBECONFIG"))
+	cfg.ArtifactDaemonNamespace = names.namespace
+	cfg.ArtifactDaemonService = service
+	cfg.ArtifactDaemonHostPath = cluster.hostPath
+	cfg.ArtifactDaemonPort = liveDiskPort
+	cfg.ArtifactDaemonTLSEnabled = true
+	cfg.ArtifactDaemonTLSCert, cfg.ArtifactDaemonTLSKey, cfg.ArtifactDaemonTLSCACert = certPath, keyPath, caPath
+	cfg.ArtifactHelperImage = "alpine:latest"
+	cfg.HangarEnabled = true
+	cfg.HangarWarrantSigner = signer
+	liveDiskMaterialize(t, cluster.ctx, cluster.client, cfg, "bootstrap-warrant-"+liveDiskRandomHex(t, 3), published.Ref)
+}
+
+// liveStoreProbe is the unmarked object the publisher round trip leaves in the
+// output namespace for the inventory controller's first sweep to find.
+type liveStoreProbe struct {
+	key        string
+	generation int64
+}
+
+// store is a client of the disk store through a port-forward to its pod,
+// verifying its certificate against the Service name the bootstrap issued it
+// for and presenting one generated role token.
+type liveStore struct {
+	t        *testing.T
+	ctx      context.Context
+	base     string
+	client   *http.Client
+	storeID  string
+	tokens   map[string]string
+	shutdown func()
+}
+
+func (cluster *liveCluster) store() *liveStore {
+	t := cluster.t
+	t.Helper()
+	names := cluster.names
+	port, stop := cluster.forward("app.kubernetes.io/component=hangar-store", 7783)
+	tlsSecret := cluster.secret(names.storeTLS)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(tlsSecret.Data["ca.crt"]) {
+		t.Fatalf("Secret %s's ca.crt holds no certificate", names.storeTLS)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: names.storeDNS()}
+	credentials := cluster.secret(names.storeCredentials)
+	tokens := map[string]string{}
+	for _, role := range []string{"input", "publisher", "inventory", "reclaimer"} {
+		tokens[role] = strings.TrimSpace(string(credentials.Data[role]))
+	}
+	return &liveStore{t: t, ctx: cluster.ctx, base: fmt.Sprintf("https://127.0.0.1:%d", port),
+		client: &http.Client{Transport: transport, Timeout: time.Minute}, storeID: liveClusterStoreID, tokens: tokens, shutdown: stop}
+}
+
+func (store *liveStore) do(role, method, operation string, query url.Values, body []byte) (int, []byte) {
+	t := store.t
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(store.ctx, method, store.base+"/v1/"+operation+"?"+query.Encode(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+store.tokens[role])
+	request.Header.Set("X-Hangar-Store-ID", store.storeID)
+	response, err := store.client.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s as %s: %v", method, operation, role, err)
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	if err != nil {
+		t.Fatalf("read %s %s as %s: %v", method, operation, role, err)
+	}
+	if got := response.Header.Get("X-Hangar-Store-ID"); got != store.storeID {
+		t.Fatalf("%s as %s: the store answered as %q, want %q", operation, role, got, store.storeID)
+	}
+	return response.StatusCode, answer
+}
+
+// storePublisherRoundTrip creates an unmarked object under the prefix the
+// inventory sweeps and reads it back, as `publisher`.
+func (cluster *liveCluster) storePublisherRoundTrip() liveStoreProbe {
+	t := cluster.t
+	t.Helper()
+	store := cluster.store()
+	defer store.shutdown()
+	namespace := cluster.outputNamespace()
+	key := namespace.ListPrefix() + "hangar-cluster-contract/" + liveDiskRandomHex(t, 4)
+	content := []byte("an object with no marker: the inventory owes it a disposition")
+	query := url.Values{"bucket": {"outputs"}, "key": {key}}
+	status, body := store.do("publisher", http.MethodPost, "create", query, content)
+	if status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("create as publisher: %d %s", status, body)
+	}
+	var attrs struct{ Generation int64 }
+	if err := json.Unmarshal(body, &attrs); err != nil || attrs.Generation <= 0 {
+		t.Fatalf("create as publisher answered %s (%v)", body, err)
+	}
+	query.Set("generation", strconv.FormatInt(attrs.Generation, 10))
+	status, read := store.do("publisher", http.MethodGet, "read", query, nil)
+	if status != http.StatusOK || !bytes.Equal(read, content) {
+		t.Fatalf("read back as publisher: %d, %d bytes, want %d", status, len(read), len(content))
+	}
+	// Distinct principals: the inventory role lists and stats, and may not write.
+	if status, body := store.do("inventory", http.MethodPost, "create", url.Values{"bucket": {"outputs"}, "key": {key + "-inventory"}}, content); status != http.StatusForbidden {
+		t.Fatalf("a create as inventory answered %d %s; the store must refuse it", status, body)
+	}
+	return liveStoreProbe{key: key, generation: attrs.Generation}
+}
+
+func (cluster *liveCluster) outputNamespace() output.OutputNamespace {
+	cluster.t.Helper()
+	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
+		Store: output.StoreDisk, StoreID: liveClusterStoreID, Bucket: "outputs",
+		TenantID: liveClusterTenant, ActivationEpoch: liveClusterEpoch,
+	})
+	if err != nil {
+		cluster.t.Fatal(err)
+	}
+	return namespace
+}
+
+// assertControllersSwept: the inventory controller's first sweep listed the
+// output namespace as `inventory` and recorded the probe as debt; the
+// reclaimer's admission and delete passes ran under their leases. The
+// reclaimer's passes make no store call when nothing is admitted, so the
+// probe is then stat'd and deleted as `reclaimer`.
+func (cluster *liveCluster) assertControllersSwept(probe liveStoreProbe) {
+	t := cluster.t
+	t.Helper()
+	db, stop := cluster.database()
+	defer stop()
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		var reason string
+		err := db.QueryRowContext(cluster.ctx, `SELECT reason FROM hangar_inventory_debt WHERE activation_epoch = $1 AND object_key = $2`, liveClusterEpoch, probe.key).Scan(&reason)
+		if err == nil {
+			if reason != string(output.DebtUnmanagedObject) {
+				t.Fatalf("the inventory recorded the unmarked probe as %q, want %q", reason, output.DebtUnmanagedObject)
+			}
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("read inventory debt: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the inventory controller's sweep never recorded the probe object\n%s", cluster.deploymentLogs("hangar-output-inventory"))
+		}
+		liveDiskPause(t, cluster.ctx, "the inventory controller's first sweep")
+	}
+	for {
+		rows, err := db.QueryContext(cluster.ctx, `SELECT kind FROM hangar_operation_leases WHERE activation_epoch = $1`, liveClusterEpoch)
+		if err != nil {
+			t.Fatalf("read operation leases: %v", err)
+		}
+		held := map[string]bool{}
+		for rows.Next() {
+			var kind string
+			if err := rows.Scan(&kind); err != nil {
+				t.Fatal(err)
+			}
+			held[kind] = true
+		}
+		rows.Close()
+		if held[string(output.OperationInventory)] && held[string(output.OperationReclaimAdmission)] && held[string(output.OperationReclaimDelete)] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation leases held at epoch %d: %v; want inventory, reclaim admission and reclaim delete\n%s", liveClusterEpoch, held, cluster.deploymentLogs("hangar-output-reclaimer"))
+		}
+		liveDiskPause(t, cluster.ctx, "the reclaimer controller's first passes")
+	}
+	for component, kinds := range map[string][]output.OperationKind{
+		"hangar-output-inventory": {output.OperationInventory},
+		"hangar-output-reclaimer": {output.OperationReclaimAdmission, output.OperationReclaimDelete},
+	} {
+		logs := cluster.deploymentLogs(component)
+		for _, kind := range kinds {
+			if !liveClusterPassLogged(logs, kind) {
+				t.Fatalf("%s logged no successful %s pass:\n%s", component, kind, logs)
+			}
+		}
+		cluster.assertNoRestarts(component)
+	}
+
+	store := cluster.store()
+	defer store.shutdown()
+	query := url.Values{"bucket": {"outputs"}, "key": {probe.key}, "generation": {strconv.FormatInt(probe.generation, 10)}}
+	if status, body := store.do("reclaimer", http.MethodGet, "stat", query, nil); status != http.StatusOK {
+		t.Fatalf("stat as reclaimer: %d %s", status, body)
+	}
+	if status, body := store.do("reclaimer", http.MethodDelete, "delete", query, nil); status != http.StatusNoContent {
+		t.Fatalf("delete as reclaimer: %d %s", status, body)
+	}
+	if status, _ := store.do("publisher", http.MethodGet, "stat", query, nil); status != http.StatusNotFound {
+		t.Fatalf("after the reclaimer's delete, a stat answered %d, want 404", status)
+	}
+}
+
+// liveClusterPassLogged finds a controller's `hangar-output-pass` line for the
+// kind with class ok. The line is a lager JSON record.
+func liveClusterPassLogged(logs string, kind output.OperationKind) bool {
+	for _, line := range strings.Split(logs, "\n") {
+		var record struct {
+			Message string `json:"message"`
+			Data    struct {
+				Kind  string `json:"kind"`
+				Class string `json:"class"`
+			} `json:"data"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(line)), &record) != nil {
+			continue
+		}
+		if strings.HasSuffix(record.Message, "hangar-output-pass") && record.Data.Kind == string(kind) && record.Data.Class == "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+func (cluster *liveCluster) componentPods(component string) []corev1.Pod {
+	cluster.t.Helper()
+	pods, err := cluster.client.CoreV1().Pods(cluster.names.namespace).List(cluster.ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/component=" + component})
+	if err != nil {
+		cluster.t.Fatalf("list %s pods: %v", component, err)
+	}
+	return pods.Items
+}
+
+func (cluster *liveCluster) deploymentLogs(component string) string {
+	var logs strings.Builder
+	for _, pod := range cluster.componentPods(component) {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		raw, err := cluster.client.CoreV1().Pods(cluster.names.namespace).GetLogs(pod.Name, &corev1.PodLogOptions{}).DoRaw(cluster.ctx)
+		if err != nil {
+			raw = []byte(err.Error())
+		}
+		logs.Write(raw)
+	}
+	return logs.String()
+}
+
+func (cluster *liveCluster) assertNoRestarts(component string) {
+	cluster.t.Helper()
+	for _, pod := range cluster.componentPods(component) {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.RestartCount != 0 {
+				cluster.t.Fatalf("%s pod %s restarted %d times; its first start must have succeeded", component, pod.Name, status.RestartCount)
+			}
+		}
+	}
+}
+
+// forward opens a port-forward to the one Ready pod under selector and
+// returns the local port.
+func (cluster *liveCluster) forward(selector string, port int) (int, func()) {
+	t := cluster.t
+	t.Helper()
+	pod := liveDiskWaitOneReady(t, cluster.ctx, cluster.client, cluster.names.namespace, selector, "")
+	transport, upgrader, err := spdy.RoundTripperFor(cluster.rest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := cluster.client.CoreV1().RESTClient().Post().Resource("pods").Namespace(cluster.names.namespace).Name(pod.Name).SubResource("portforward").URL()
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, target)
+	stop, ready := make(chan struct{}), make(chan struct{})
+	forwarder, err := portforward.NewOnAddresses(dialer, []string{"127.0.0.1"}, []string{fmt.Sprintf("0:%d", port)}, stop, ready, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := make(chan error, 1)
+	go func() { failed <- forwarder.ForwardPorts() }()
+	select {
+	case <-ready:
+	case err := <-failed:
+		t.Fatalf("port-forward to %s:%d: %v", pod.Name, port, err)
+	case <-time.After(30 * time.Second):
+		t.Fatalf("port-forward to %s:%d never became ready", pod.Name, port)
+	}
+	ports, err := forwarder.GetPorts()
+	if err != nil || len(ports) != 1 {
+		t.Fatalf("port-forward ports %v: %v", ports, err)
+	}
+	return int(ports[0].Local), func() { close(stop) }
+}
+
+// database is a connection to the bundled PostgreSQL as web's user.
+func (cluster *liveCluster) database() (*sql.DB, func()) {
+	t := cluster.t
+	t.Helper()
+	port, stop := cluster.forward("app.kubernetes.io/component=database", 5432)
+	db, err := sql.Open("pgx", fmt.Sprintf("host=127.0.0.1 port=%d user=concourse dbname=concourse sslmode=disable password=%s", port, cluster.postgresPassword))
+	if err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, func() { _ = db.Close(); stop() }
+}

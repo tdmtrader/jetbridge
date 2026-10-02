@@ -490,6 +490,184 @@ jobs:
           kill $DOCKERD_PID 2>/dev/null || true
           exit "${STATUS}"
 
+# The Hangar bootstrap and activation on a real API server
+# (live_hangar_cluster_test.go). The contract renders the WHOLE chart from this
+# checkout -- bundled PostgreSQL, web, the bootstrap's admission policy, RBAC,
+# Sync-hook Job and PostSync database Job, the disk store, the artifact daemon,
+# the output daemon and both output controllers -- and applies each runbook
+# step the way an automated Argo sync does: waves ascending, hooks recreated
+# every sync, PostSync after Healthy, pruning what a render drops. It checks
+# that the bootstrap's Secrets and admission objects survive every re-sync
+# unchanged, that its identity cannot mint a service-account token Secret,
+# and that every consumer completes its first use of what it generated.
+#
+# Modelled on hangar-disk-store-contract and for the same reasons a job of its
+# own: it needs an image holding every JetBridge binary and a cluster of its
+# own (cluster roles, an admission policy, host ports on the one node). Off the
+# gating chain -- nothing is `passed:` on it -- and in serial_groups:
+# [k8s-tests] only so two DinD clusters never share a worker.
+#
+# The image is built here: every binary the chart runs, static, on busybox at
+# /usr/local/concourse/bin, with concourse as its ENTRYPOINT (web and the
+# bootstrap Jobs pass only args). It is imported into the cluster's containerd
+# with postgres:16 (the bundled database), alpine (the materialization init)
+# and busybox (the step pod's main container). The contract reads the image
+# name from HANGAR_CLUSTER_IMAGE and renders the chart with
+# image.pullPolicy=Never.
+- name: hangar-cluster-contract
+  serial: true
+  serial_groups: [k8s-tests]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-kind-runner]
+  - get: repo
+    passed: [build-kind-runner]
+  - task: hangar-cluster-contract
+    privileged: true
+    timeout: 90m
+    attempts: 2
+    config:
+      platform: linux
+      inputs:
+      - name: repo
+      rootfs_uri: *kind_runner_image
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          K3S_IMAGE="rancher/k3s:v1.31.6-k3s1"
+          CLUSTER="hangar-cluster-k3s"
+          KUBECONFIG_PATH=/tmp/hangar-cluster-kubeconfig
+          CLUSTER_IMAGE="concourse-hangar-cluster:contract"
+          IMAGE_DIR=/tmp/hangar-cluster-image
+
+          echo "=== Pre-compiling before Docker (avoids CPU contention with containerd) ==="
+          go mod download
+          go test -c -tags hangar_live -o /dev/null ./atc/worker/jetbridge/
+          mkdir -p ${IMAGE_DIR}
+          for command in concourse artifact-daemon hangar-store hangar-output-daemon \
+                         hangar-output-inventory hangar-output-reclaimer hangar-output-activate; do
+            echo "--- building ${command}"
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o ${IMAGE_DIR}/${command} ./cmd/${command}
+          done
+
+          echo "=== Starting Docker daemon (DinD) ==="
+          killall -9 dockerd containerd 2>/dev/null || true
+          sleep 1
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
+          mkdir -p /var/lib/docker /run/containerd
+          mount -t tmpfs -o size=10G tmpfs /var/lib/docker 2>/dev/null || true
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
+                  --dns=8.8.8.8 \
+                  --log-level=warn &
+          DOCKERD_PID=$!
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+          docker info >/dev/null
+
+          echo "=== Pulling images ==="
+          docker pull ${K3S_IMAGE}
+          docker pull busybox:latest
+          docker pull alpine:latest
+          docker pull postgres:16
+
+          echo "=== Building the JetBridge image ==="
+          mkdir -p ${IMAGE_DIR}/fly-assets
+          printf '%s\n' \
+            'FROM busybox:latest' \
+            'COPY concourse artifact-daemon hangar-store hangar-output-daemon hangar-output-inventory hangar-output-reclaimer hangar-output-activate /usr/local/concourse/bin/' \
+            'COPY fly-assets /usr/local/concourse/fly-assets' \
+            'ENV PATH=/usr/local/concourse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+            'ENTRYPOINT ["/usr/local/concourse/bin/concourse"]' \
+            > ${IMAGE_DIR}/Dockerfile
+          docker build -t ${CLUSTER_IMAGE} ${IMAGE_DIR}
+
+          echo "=== Creating the disposable K3s cluster ==="
+          # Same shape as hangar-disk-store-contract. The local-path
+          # provisioner stays enabled: the database's and the store's PVCs
+          # bind to it.
+          docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+          docker run -d --name ${CLUSTER} \
+            --privileged --cgroupns=host \
+            --tmpfs /run --tmpfs /var/run \
+            -e K3S_KUBECONFIG_MODE=644 \
+            -p 127.0.0.1:6443:6443 \
+            ${K3S_IMAGE} \
+            server --disable=traefik --disable=metrics-server --tls-san=127.0.0.1
+
+          echo "Waiting for the node controller to sync..."
+          READY=0
+          for i in $(seq 1 90); do
+            if docker logs ${CLUSTER} 2>&1 | grep -q "Node controller sync successful"; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "${READY}" -ne 1 ]; then
+            echo "K3s never reported a synced node controller:"
+            docker logs ${CLUSTER} 2>&1 | tail -80
+            docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+            kill $DOCKERD_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          docker cp ${CLUSTER}:/etc/rancher/k3s/k3s.yaml ${KUBECONFIG_PATH}
+          chmod 600 ${KUBECONFIG_PATH}
+          kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes -o wide
+
+          echo "=== Loading images into the cluster's containerd ==="
+          docker save busybox:latest alpine:latest postgres:16 ${CLUSTER_IMAGE} -o /tmp/hangar-cluster-images.tar
+          docker cp /tmp/hangar-cluster-images.tar ${CLUSTER}:/tmp/hangar-cluster-images.tar
+          rm -f /tmp/hangar-cluster-images.tar
+          docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/hangar-cluster-images.tar
+          docker exec ${CLUSTER} rm -f /tmp/hangar-cluster-images.tar
+
+          export KUBECONFIG=${KUBECONFIG_PATH}
+          export HANGAR_CLUSTER_IMAGE=${CLUSTER_IMAGE}
+          echo "KUBECONFIG=$KUBECONFIG HANGAR_CLUSTER_IMAGE=$HANGAR_CLUSTER_IMAGE"
+
+          echo "=== Running the Hangar cluster contracts ==="
+          # A renamed test silently matches nothing and `go test` exits 0.
+          FOUND=$(grep -c -E 'func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt\(' \
+            atc/worker/jetbridge/live_hangar_cluster_test.go || true)
+          if [ "${FOUND}" -ne 1 ]; then
+            echo "the -run regex names one contract and ${FOUND} were found; a rename went one way" >&2
+            exit 1
+          fi
+
+          STATUS=0
+          go test -tags hangar_live -v -count=1 -timeout 80m \
+            -run '^TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt$' \
+            ./atc/worker/jetbridge/ || STATUS=1
+
+          if [ "${STATUS}" -ne 0 ]; then
+            # The contract logs pods, container logs and events itself before
+            # its namespace goes; this is the cluster around it.
+            echo "=== CONTRACT FAILED -- dumping diagnostics ==="
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get pods,pvc,jobs -A -o wide || true
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes --show-labels || true
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get events -A --sort-by=.lastTimestamp | tail -60 || true
+            docker logs ${CLUSTER} 2>&1 | tail -80 || true
+            echo "--- End diagnostics ---"
+          else
+            echo "=== Hangar cluster contracts passed on K3s ==="
+          fi
+
+          docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+          kill $DOCKERD_PID 2>/dev/null || true
+          exit "${STATUS}"
+
 # Durable Run cancellation on a real kubelet (the brine disposable-kubelet
 # tier, atc/worker/jetbridge/brine/kubelet/.brine). Like the Hangar contracts
 # above it relabels a node into the output-plane cohort and runs a node-local
