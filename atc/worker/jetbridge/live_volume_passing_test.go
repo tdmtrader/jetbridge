@@ -33,7 +33,7 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeGet},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Dir:       "/tmp/build/workdir",
 			Outputs:   runtime.OutputPaths{"my-resource": "/tmp/build/workdir/my-resource"},
 		},
@@ -87,7 +87,7 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Dir:       "/tmp/build/workdir",
 			Inputs: []runtime.Input{
 				{
@@ -147,7 +147,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Dir:       "/tmp/build/workdir",
 			Outputs:   runtime.OutputPaths{"build-output": "/tmp/build/workdir/build-output"},
 		},
@@ -200,7 +200,7 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Dir:       "/tmp/build/workdir",
 			Inputs: []runtime.Input{
 				{
@@ -270,7 +270,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Dir:       "/tmp/build/workdir",
 			Outputs:   runtime.OutputPaths{"data": "/tmp/build/workdir/data"},
 		},
@@ -346,7 +346,7 @@ func TestLiveVolumeDataIntegrity(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Dir:       "/tmp/build/workdir",
 			Inputs: []runtime.Input{
 				{

@@ -98,7 +98,7 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 
 		spec := runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		}
 		stdout := &firstWriteClock{}
 		pio := runtime.ProcessIO{Stdout: stdout, Stderr: &bytes.Buffer{}}

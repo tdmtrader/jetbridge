@@ -148,7 +148,7 @@ func TestLivePodStartupTimeout(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeGet},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
 		delegate,
 	)

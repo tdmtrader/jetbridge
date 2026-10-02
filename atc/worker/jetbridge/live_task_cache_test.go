@@ -56,7 +56,7 @@ func TestLiveHostPathTaskCacheSurvivesPodRestart(t *testing.T) {
 				Dir:               "/tmp/build/live-cache",
 				Caches:            []string{"cache"},
 				TaskCacheIdentity: identity,
-				ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+				ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			},
 			delegate,
 		)

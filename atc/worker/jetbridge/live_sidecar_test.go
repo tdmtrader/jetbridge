@@ -154,7 +154,7 @@ func TestLiveSidecarViaWorkerAPI(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Sidecars: []atc.SidecarConfig{
 				{
 					Name:    "helper-sidecar",

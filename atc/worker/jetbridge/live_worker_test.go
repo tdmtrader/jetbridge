@@ -147,7 +147,7 @@ func TestLiveWorkerTaskExecution(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
 		delegate,
 	)
@@ -194,7 +194,7 @@ func TestLiveWorkerNonZeroExit(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
 		delegate,
 	)
@@ -239,7 +239,7 @@ func TestLiveWorkerExecMode(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeGet},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
 		delegate,
 	)
@@ -296,7 +296,7 @@ func TestLiveWorkerPodSurvivesCompletion(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
 		delegate,
 	)
@@ -355,7 +355,7 @@ func TestLiveWorkerHijackExistingPod(t *testing.T) {
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
 			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
 		delegate,
 	)
