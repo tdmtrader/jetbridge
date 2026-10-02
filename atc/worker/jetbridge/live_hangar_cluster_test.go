@@ -487,7 +487,10 @@ func (cluster *liveCluster) through(ids ...string) []string {
 		"hangarOutput.daemon.controlPath=" + cluster.hostPath + "/hangar-output-control",
 		"hangarOutput.daemon.stepsPath=" + cluster.hostPath + "/hangar-output-steps",
 		"postgresql.existingSecret=" + names.postgres, "postgresql.passwordSecretKey=POSTGRES_PASSWORD",
-		"postgresql.persistence.size=1Gi",
+		// The chart's PostgreSQL runs as uid 999 on a subPath, and a
+		// local-path volume's subPath is created root-owned, so initdb cannot
+		// take it. Nothing here restarts the database; its own layer will do.
+		"postgresql.persistence.enabled=false",
 		// Nothing reaches web from outside the cluster here, and a
 		// LoadBalancer would have K3s bind web's ports on the node.
 		"service.type=ClusterIP",
