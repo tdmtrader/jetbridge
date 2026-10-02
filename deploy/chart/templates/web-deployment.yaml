@@ -215,7 +215,11 @@ spec:
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- if .Values.artifactDaemon.hangar.webEnabled }}
             - --kubernetes-hangar-enabled
+            {{- if .Values.artifactDaemon.hangar.keySecret }}
+            - --kubernetes-hangar-warrant-key=/etc/concourse/hangar-warrant-key/hangar.key
+            {{- else }}
             - --kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
+            {{- end }}
             - --kubernetes-hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
@@ -386,6 +390,11 @@ spec:
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
+            {{- if and .Values.artifactDaemon.hangar.webEnabled .Values.artifactDaemon.hangar.keySecret }}
+            - name: hangar-warrant-key
+              mountPath: /etc/concourse/hangar-warrant-key
+              readOnly: true
+            {{- end }}
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
@@ -472,10 +481,18 @@ spec:
                 path: client.key
               - key: ca.crt
                 path: ca.crt
-              {{- if .Values.artifactDaemon.hangar.webEnabled }}
+              {{- if and .Values.artifactDaemon.hangar.webEnabled (not .Values.artifactDaemon.hangar.keySecret) }}
               - key: hangar.key
                 path: hangar.key
               {{- end }}
+        {{- if and .Values.artifactDaemon.hangar.webEnabled .Values.artifactDaemon.hangar.keySecret }}
+        - name: hangar-warrant-key
+          secret:
+            secretName: {{ .Values.artifactDaemon.hangar.keySecret }}
+            items:
+              - key: hangar.key
+                path: hangar.key
+        {{- end }}
         - name: resolve-capability
           secret:
             secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret }}
@@ -491,11 +508,19 @@ spec:
             secretName: {{ .Values.hangarOutput.daemon.tls.clientSecret }}
         {{- if .Values.hangarOutput.enabled }}
         - name: hangar-output-receipt-keys
+          {{- if include "concourse.hangarBootstrap.ringEnabled" . }}
+          secret:
+            # The bootstrap's ring Secret: PUBLIC verification material it
+            # composed from the keys' public halves. A Secret only because the
+            # bootstrap may create nothing else; nothing in it can sign.
+            secretName: {{ include "concourse.hangarBootstrap.ringName" . }}
+          {{- else }}
           configMap:
             # PUBLIC verification material only. The private half is mounted in
             # the output daemon Pod and nowhere else; a public key cannot sign,
             # which is what makes this a ConfigMap rather than a Secret.
             name: {{ include "concourse.hangarOutput.receiptKeysName" . }}
+          {{- end }}
         - name: hangar-output-materialize
           secret:
             # The read-warrant key. The control plane MINTS warrants, so it holds
