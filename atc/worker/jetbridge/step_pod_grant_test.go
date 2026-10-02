@@ -234,6 +234,12 @@ var _ = Describe("Step pod grants", func() {
 		Expect(pods.Items).To(BeEmpty())
 	})
 
+	It("keeps a privilege-only grant's pods on the default ServiceAccount", func() {
+		config.StepPodGrants = append(config.StepPodGrants, grant("name=dind,owner=main/jetbridge/unit,privileged=true"))
+		worker := newWorker(database.BuildFactory)
+		Expect(runStep(worker, "privilege-only", metadataFor(jobBuild(pipeline, "unit"), db.ContainerTypeTask), runtime.ContainerSpec{})).To(Equal(defaultAccount))
+	})
+
 	It("leaves every pod on the configured ServiceAccount when no grant is configured", func() {
 		config.StepPodGrants = nil
 		worker := newWorker(database.BuildFactory)
@@ -249,13 +255,22 @@ var _ = Describe("ParseStepPodGrant", func() {
 			_, err := jetbridge.ParseStepPodGrant(value)
 			Expect(err).To(MatchError(ContainSubstring(reason)))
 		},
-		Entry("an unknown key", "name=a,owner=main/p/j,service-account=sa,privileged=true", `unknown key "privileged"`),
+		Entry("an unknown key", "name=a,owner=main/p/j,service-account=sa,host-network=true", `unknown key "host-network"`),
+		Entry("a non-boolean privileged", "name=a,owner=main/p/j,service-account=sa,privileged=yes", "privileged"),
+		Entry("no ServiceAccount and no privilege", "name=a,owner=main/p/j", "service-account"),
 		Entry("another team's one-off", "name=a,owner=other/one-off,service-account=sa", "only team main's one-off"),
 		Entry("a two-segment job", "name=a,owner=main/p,service-account=sa", "want <team>/<pipeline>/<job>"),
 		Entry("a non-identifier segment", "name=a,owner=main/../j,service-account=sa", `".." is not an identifier`),
 		Entry("an invalid ServiceAccount", "name=a,owner=main/p/j,service-account=Not_A_Name", "service-account"),
 		Entry("a repeated key", "name=a,name=b,owner=main/p/j,service-account=sa", "name given twice"),
 	)
+
+	It("accepts a privileged grant with no ServiceAccount", func() {
+		grant, err := jetbridge.ParseStepPodGrant("name=dind,owner=main/k8s-e2e/k8s-integration-tests,privileged=true")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(grant.Privileged).To(BeTrue())
+		Expect(grant.ServiceAccount).To(BeEmpty())
+	})
 
 	It("refuses two grants with one owner or one name", func() {
 		one, err := jetbridge.ParseStepPodGrant("name=a,owner=main/p/j,service-account=sa")

@@ -185,6 +185,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-base-resource-type", "custom=registry.example/custom:1",
 		"--kubernetes-step-pod-grant", "name=brine-live,owner=main/one-off,service-account=concourse-brine-live",
 		"--kubernetes-step-pod-grant", "name=release,owner=main/jetbridge/release,service-account=jetbridge-releaser",
+		"--kubernetes-step-pod-grant", "name=dind,owner=main/k8s-e2e/k8s-integration-tests,privileged=true",
 	}); err != nil {
 		// Required flags unrelated to the runtime (the session signing key and
 		// the like) are checked after every given flag has been applied.
@@ -249,6 +250,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		StepPodGrants: []jetbridge.StepPodGrant{
 			{Name: "brine-live", Owner: jetbridge.StepPodOwner{Team: "main", OneOff: true}, ServiceAccount: "concourse-brine-live"},
 			{Name: "release", Owner: jetbridge.StepPodOwner{Team: "main", Pipeline: "jetbridge", Job: "release"}, ServiceAccount: "jetbridge-releaser"},
+			{Name: "dind", Owner: jetbridge.StepPodOwner{Team: "main", Pipeline: "k8s-e2e", Job: "k8s-integration-tests"}, Privileged: true},
 		},
 	}
 	if !reflect.DeepEqual(rt.config, want) {

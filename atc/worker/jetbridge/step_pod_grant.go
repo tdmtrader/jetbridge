@@ -14,9 +14,14 @@ import (
 // (--kubernetes-step-pod-grant); nothing a pipeline, task, resource type, API
 // caller or fly user supplies can name one or select a ServiceAccount.
 type StepPodGrant struct {
-	Name           string
-	Owner          StepPodOwner
+	Name  string
+	Owner StepPodOwner
+	// ServiceAccount is empty for a grant that only allows privilege: its
+	// pods run as the default step pod identity's account, with no token.
 	ServiceAccount string
+	// Privileged allows the owner's step pods to run privileged
+	// (step_pod_privilege_gate).
+	Privileged bool
 }
 
 // A StepPodOwner is who a build belongs to, as far as grants are concerned:
@@ -47,13 +52,14 @@ type StepPodBuilds interface {
 }
 
 // stepPodIdentity is what a step pod runs as. grant is empty for the default
-// step pod identity.
+// step pod identity; ownAccount is false when the pod runs as the default
+// account, whether or not a grant allows it privilege.
 type stepPodIdentity struct {
 	grant          string
 	serviceAccount string
+	ownAccount     bool
+	privileged     bool
 }
-
-func (identity stepPodIdentity) granted() bool { return identity.grant != "" }
 
 // identifierSegment is a team, pipeline or job name as atc.ValidateIdentifier
 // accepts it.
@@ -61,7 +67,9 @@ var identifierSegment = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}
 
 // ParseStepPodGrant parses one --kubernetes-step-pod-grant value:
 //
-//	name=<grant>,owner=<team>/<pipeline>/<job>|main/one-off,service-account=<sa>
+//	name=<grant>,owner=<team>/<pipeline>/<job>|main/one-off[,service-account=<sa>][,privileged=true|false]
+//
+// A grant names a ServiceAccount, allows privilege, or both.
 func ParseStepPodGrant(value string) (StepPodGrant, error) {
 	var grant StepPodGrant
 	seen := map[string]bool{}
@@ -82,6 +90,14 @@ func ParseStepPodGrant(value string) (StepPodGrant, error) {
 			owner = val
 		case "service-account":
 			grant.ServiceAccount = val
+		case "privileged":
+			switch val {
+			case "true":
+				grant.Privileged = true
+			case "false":
+			default:
+				return StepPodGrant{}, fmt.Errorf("step pod grant %q: privileged must be true or false, not %q", value, val)
+			}
 		default:
 			return StepPodGrant{}, fmt.Errorf("step pod grant %q: unknown key %q", value, key)
 		}
@@ -95,8 +111,13 @@ func ParseStepPodGrant(value string) (StepPodGrant, error) {
 		return StepPodGrant{}, fmt.Errorf("step pod grant %q: %w", value, err)
 	}
 	grant.Owner = parsedOwner
-	if errs := validation.IsDNS1123Subdomain(grant.ServiceAccount); len(errs) > 0 {
-		return StepPodGrant{}, fmt.Errorf("step pod grant %q: service-account %q: %s", value, grant.ServiceAccount, strings.Join(errs, "; "))
+	if grant.ServiceAccount == "" && !grant.Privileged {
+		return StepPodGrant{}, fmt.Errorf("step pod grant %q: a grant needs a service-account, privileged=true, or both", value)
+	}
+	if grant.ServiceAccount != "" {
+		if errs := validation.IsDNS1123Subdomain(grant.ServiceAccount); len(errs) > 0 {
+			return StepPodGrant{}, fmt.Errorf("step pod grant %q: service-account %q: %s", value, grant.ServiceAccount, strings.Join(errs, "; "))
+		}
 	}
 
 	return grant, nil
@@ -198,7 +219,11 @@ func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (step
 	}
 	for _, grant := range identities.grants {
 		if grant.Owner == owner {
-			return stepPodIdentity{grant: grant.Name, serviceAccount: grant.ServiceAccount}, nil
+			identity := stepPodIdentity{grant: grant.Name, serviceAccount: identities.defaultAccount, privileged: grant.Privileged}
+			if grant.ServiceAccount != "" {
+				identity.serviceAccount, identity.ownAccount = grant.ServiceAccount, true
+			}
+			return identity, nil
 		}
 	}
 	return identities.defaultIdentity(), nil
