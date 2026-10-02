@@ -223,6 +223,17 @@
 {{- end -}}
 {{- end -}}
 
+{{- if include "concourse.hangarBootstrap.ringEnabled" . -}}
+{{- /* The bootstrap composes the rings from the keys' public halves; a ring
+       also declared in values would be a second answer to "which key checks
+       this". */ -}}
+{{- if or $output.executionControl.publicKeys $output.receipt.publicKeys $output.receipt.referencedEpochs -}}
+{{- fail "hangarBootstrap composes the verification rings: leave hangarOutput.executionControl.publicKeys, hangarOutput.receipt.publicKeys and hangarOutput.receipt.referencedEpochs empty, and list earlier activation epochs in hangarBootstrap.referencedKeys" -}}
+{{- end -}}
+{{- if not $output.executionControl.keyID -}}
+{{- fail "hangarOutput.executionControl.keyID is required: the cohort reports it over the attestation handshake." -}}
+{{- end -}}
+{{- else -}}
 {{- $controlEpochs := dict -}}
 {{- range $entry := $output.executionControl.publicKeys -}}
 {{- $epoch := toString $entry.epoch -}}
@@ -266,6 +277,7 @@
 {{- range $referenced := $output.receipt.referencedEpochs -}}
 {{- if not (hasKey $epochs (toString $referenced)) -}}
 {{- fail (printf "hangarOutput.receipt.referencedEpochs names epoch %v and hangarOutput.receipt.publicKeys has no entry for it. Public verification material is retained while any durable state references its epoch -- a reservation, a receipt, a recovery row -- and dropping it makes those receipts unverifiable forever rather than merely unusable." $referenced) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

@@ -11,7 +11,7 @@ reservation, a receipt, a recovery row -- because dropping one makes those
 receipts unverifiable forever rather than merely unusable. Rotation ADDS an
 entry under a new activation epoch; it never replaces a key in place.
 */}}
-{{- if .Values.hangarOutput.enabled }}
+{{- if and .Values.hangarOutput.enabled (not (include "concourse.hangarBootstrap.ringEnabled" .)) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
