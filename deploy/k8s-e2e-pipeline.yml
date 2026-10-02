@@ -525,7 +525,7 @@ jobs:
     passed: [build-kind-runner]
   - task: hangar-cluster-contract
     privileged: true
-    timeout: 90m
+    timeout: 120m
     attempts: 2
     config:
       platform: linux
@@ -639,16 +639,19 @@ jobs:
 
           echo "=== Running the Hangar cluster contracts ==="
           # A renamed test silently matches nothing and `go test` exits 0.
-          FOUND=$(grep -c -E 'func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt\(' \
-            atc/worker/jetbridge/live_hangar_cluster_test.go || true)
-          if [ "${FOUND}" -ne 1 ]; then
-            echo "the -run regex names one contract and ${FOUND} were found; a rename went one way" >&2
+          # Both contracts, in ONE cluster stand-up; each runs its own release
+          # in its own namespace and waits for the other's to go.
+          FOUND=$(grep -c -E 'func (TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt|TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp)\(' \
+            atc/worker/jetbridge/live_hangar_cluster_test.go atc/worker/jetbridge/live_hangar_activation_test.go \
+            | awk -F: '{s+=$2} END {print s}')
+          if [ "${FOUND}" -ne 2 ]; then
+            echo "the -run regex names two contracts and ${FOUND} were found; a rename went one way" >&2
             exit 1
           fi
 
           STATUS=0
-          go test -tags hangar_live -v -count=1 -timeout 80m \
-            -run '^TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt$' \
+          go test -tags hangar_live -v -count=1 -timeout 100m \
+            -run '^TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt$|^TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp$' \
             ./atc/worker/jetbridge/ || STATUS=1
 
           if [ "${STATUS}" -ne 0 ]; then
