@@ -81,3 +81,34 @@ func firstLines(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// privileged: true adds the key, and lets serviceAccount be left out.
+func TestAPrivilegedStepPodGrantRendersThePrivilegeKey(t *testing.T) {
+	out := render(t,
+		"kubernetes.stepPodGrants[0].name=brine",
+		"kubernetes.stepPodGrants[0].owner=main/jetbridge/brine",
+		"kubernetes.stepPodGrants[0].serviceAccount=concourse-brine-live",
+		"kubernetes.stepPodGrants[0].privileged=true",
+		"kubernetes.stepPodGrants[1].name=dind",
+		"kubernetes.stepPodGrants[1].owner=main/k8s-e2e/k8s-integration-tests",
+		"kubernetes.stepPodGrants[1].privileged=true",
+	)
+	for _, want := range []string{
+		"--kubernetes-step-pod-grant=name=brine,owner=main/jetbridge/brine,service-account=concourse-brine-live,privileged=true\"",
+		"--kubernetes-step-pod-grant=name=dind,owner=main/k8s-e2e/k8s-integration-tests,privileged=true\"",
+	} {
+		if !strings.Contains(webDeployment(t, out), want) {
+			t.Errorf("web lacks %s", want)
+		}
+	}
+}
+
+func TestAStepPodGrantNeedsAServiceAccountOrPrivilege(t *testing.T) {
+	cmd := exec.Command("helm", "template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml",
+		"--set", "kubernetes.stepPodGrants[0].name=empty",
+		"--set", "kubernetes.stepPodGrants[0].owner=main/p/j")
+	cmd.Dir = repoRoot(t)
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "stepPodGrants[0]") {
+		t.Errorf("a grant with neither a ServiceAccount nor privilege rendered (err %v): %s", err, firstLines(string(out), 3))
+	}
+}

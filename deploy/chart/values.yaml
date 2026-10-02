@@ -209,7 +209,9 @@ kubernetes:
   # pipeline, or main/one-off for team main's one-off builds. Every other
   # build's pods run as serviceAccount above, the default step pod identity.
   # Only this configuration selects a grant; nothing in a pipeline can.
-  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: concourse-brine-live}]
+  # privileged: true lets the owner's step pods run privileged; such a grant
+  # may leave serviceAccount out and keep the default identity's account.
+  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: concourse-brine-live, privileged: true}]
   stepPodGrants: []
 
   # -- Pod startup timeout
