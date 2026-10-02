@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Read-only: which ServiceAccounts can reach a Hangar bootstrap Secret.
+
+    hack/hangar-trusted-readers --trusted <file> [--namespace cicd] [--inventory-configmap NAME]
+
+For every ServiceAccount in the cluster it asks `kubectl auth can-i --list`
+what the account may do in the release namespace, and reports the accounts
+outside the trusted set that may:
+
+  - get, list or watch a Secret holding an inventory name;
+  - create pods/exec or pods/attach, patch pods/ephemeralcontainers, or create
+    serviceaccounts/token (each reads or impersonates a consumer);
+  - create, update or patch pods or any pod-template kind (deployments,
+    replicasets, statefulsets, daemonsets, jobs, cronjobs), any of which can
+    mount a Secret.
+
+The trusted set (proposal amendments M-4, M-5) is the file's `namespace:name`
+lines, every ServiceAccount in kube-system (the control plane), and every
+identity web's step pod grants name (they are trusted readers when they hold
+pods create). It exits non-zero when any other account has such access. It
+changes nothing.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+
+POD_TEMPLATE_KINDS = ["pods", "deployments.apps", "replicasets.apps", "statefulsets.apps",
+                      "daemonsets.apps", "jobs.batch", "cronjobs.batch"]
+ROW = re.compile(r"^(\S+)\s+\[(.*?)\]\s+\[(.*?)\]\s+\[(.*?)\]\s*$")
+
+
+def kubectl(*args):
+    return subprocess.run(["kubectl", *args], check=True, capture_output=True, text=True).stdout
+
+
+def rules_for(account, namespace):
+    """The account's resource rules in namespace: (resource, names, verbs)."""
+    out = kubectl("auth", "can-i", "--list", f"--as=system:serviceaccount:{account}", "-n", namespace)
+    rules = []
+    for line in out.splitlines()[1:]:
+        match = ROW.match(line)
+        if not match:
+            continue
+        resource, _, names, verbs = match.groups()
+        rules.append((resource, set(names.split()), set(verbs.split())))
+    return rules
+
+
+def allows(rules, verb, resource, name=None):
+    for rule_resource, names, verbs in rules:
+        resource_match = rule_resource in (resource, "*", "*.*") or \
+            (rule_resource.startswith("*.") and resource.endswith(rule_resource[1:]))
+        if not resource_match:
+            continue
+        if not (verb in verbs or "*" in verbs):
+            continue
+        if names and (name is None or name not in names):
+            continue
+        return True
+    return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--trusted", required=True, help="file of namespace:name lines; # starts a comment")
+    parser.add_argument("--namespace", default="cicd")
+    parser.add_argument("--inventory-configmap", default="concourse-hangar-bootstrap-inventory")
+    parser.add_argument("--web-deployment", default="concourse-web")
+    args = parser.parse_args()
+
+    trusted = set()
+    with open(args.trusted) as listing:
+        for line in listing:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                trusted.add(line)
+
+    # Before the bootstrap runs there is no inventory yet; then any Secret
+    # counts, which is the stricter question.
+    try:
+        inventory = json.loads(json.loads(kubectl("get", "configmap", args.inventory_configmap, "-n", args.namespace,
+                                                  "-o", "json"))["data"]["inventory.json"])
+        names = [entry["name"] for entry in inventory["entries"]]
+    except subprocess.CalledProcessError:
+        names = None
+
+    web = json.loads(kubectl("get", "deployment", args.web_deployment, "-n", args.namespace, "-o", "json"))
+    for arg in web["spec"]["template"]["spec"]["containers"][0].get("args", []):
+        if arg.startswith("--kubernetes-step-pod-grant="):
+            for field in arg.split("=", 1)[1].split(","):
+                if field.startswith("service-account="):
+                    trusted.add(f"{args.namespace}:{field.split('=', 1)[1]}")
+
+    accounts = json.loads(kubectl("get", "serviceaccounts", "-A", "-o", "json"))["items"]
+    findings = []
+    for item in accounts:
+        account = f"{item['metadata']['namespace']}:{item['metadata']['name']}"
+        if account in trusted or item["metadata"]["namespace"] == "kube-system":
+            continue
+        rules = rules_for(account, args.namespace)
+        reaches = []
+        if names is None:
+            if any(resource == "secrets" or resource in ("*", "*.*") for resource, _, verbs in rules
+                   if "get" in verbs or "*" in verbs):
+                reaches.append("get secrets")
+        for name in names or []:
+            if allows(rules, "get", "secrets", name):
+                reaches.append(f"get secrets/{name}")
+        for verb in ("list", "watch"):
+            if allows(rules, verb, "secrets"):
+                reaches.append(f"{verb} secrets")
+        for verb, resource in (("create", "pods/exec"), ("create", "pods/attach"),
+                               ("patch", "pods/ephemeralcontainers"), ("create", "serviceaccounts/token")):
+            if allows(rules, verb, resource):
+                reaches.append(f"{verb} {resource}")
+        for kind in POD_TEMPLATE_KINDS:
+            for verb in ("create", "update", "patch"):
+                if allows(rules, verb, kind):
+                    reaches.append(f"{verb} {kind}")
+        if reaches:
+            findings.append((account, reaches))
+
+    scope = f"{len(names)} inventory Secrets" if names is not None else "no inventory yet (any Secret)"
+    print(f"== {len(accounts)} ServiceAccounts; {scope} in {args.namespace}; "
+          f"{len(trusted)} trusted plus kube-system")
+    for account, reaches in findings:
+        print(f"FAIL: {account} may {', '.join(sorted(set(reaches)))}")
+    if not findings:
+        print("ok: no ServiceAccount outside the trusted set can reach an inventory Secret")
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
