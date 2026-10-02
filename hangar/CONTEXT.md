@@ -222,3 +222,22 @@ The product-neutral protocol (classify, observe finish, request a
 source-preserving stop, may cleanup) that capture extends. A read of the
 node's stored, signed start sits beside it for a control plane that never
 retained one; it admits and signs nothing.
+
+### Deployment
+
+**Disk store**:
+The persistent-volume store one cluster runs for both strict inputs and
+the output plane, each in a namespace of its own. Initialized exactly once;
+its store ID is its identity.
+
+**Bootstrap inventory**:
+The one declared list of Secrets a Hangar deployment needs: each entry's
+name, material, the purpose of each key and its consumers. The bootstrap
+creates an absent entry and never replaces, rotates or deletes one.
+_Avoid_: inventory (alone; that is the output plane's sweep)
+
+**Activation database role**:
+The PostgreSQL role the activation, drain and reconcile-integrity commands
+run as. It holds exactly the operations those commands perform, and a
+trigger refuses any other writer of the activation epochs.
+_Avoid_: role (alone; that is a storage persona)

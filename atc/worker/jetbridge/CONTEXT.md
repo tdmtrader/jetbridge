@@ -39,6 +39,12 @@ one.
 _Avoid_: grant (alone; that is the agentic context's MCP authorization),
 service account mapping
 
+**Trusted reader**:
+An identity allowed to obtain Hangar keys: the bootstrap inventory's
+consumers, web, the cluster administrators the operator lists, and every
+identity a step pod grant gives privilege or `pods create`. The privilege
+gate keeps the set closed: no pipeline can join it by asking.
+
 **Default step pod identity**:
 What a step pod outside every step pod grant runs as: the configured
 ServiceAccount, with no Kubernetes permissions and no API token mounted.
