@@ -17,8 +17,10 @@
 #       Every step pod in $STEP_POD_NAMESPACE (default cicd): derives its
 #       build's owner as the runtime does (fly curl /api/v1/builds/<id>) and the
 #       grant web's own --kubernetes-step-pod-grant args give it, and fails on a
-#       wrong ServiceAccount or a token outside a grant. With --non-step it also
-#       fails on any other pod there running under `default` with a token.
+#       wrong ServiceAccount, a token outside a grant, or privilege (a
+#       privileged container, an added capability, a host namespace, a hostPath
+#       outside the step's own directories) beyond the grant. With --non-step it
+#       also fails on any other pod there running under `default` with a token.
 #
 # The runtime is the authority on identities; this reads the same rules from
 # outside to produce evidence. FLY_TARGET (default home) and WEB_DEPLOYMENT
@@ -29,6 +31,8 @@ ns=${STEP_POD_NAMESPACE:-cicd}
 fly_target=${FLY_TARGET:-home}
 web=${WEB_DEPLOYMENT:-concourse-web}
 failed=0
+results=$(mktemp)
+trap 'rm -f "$results"' EXIT
 
 fail() { echo "FAIL: $*"; failed=1; }
 
@@ -74,7 +78,9 @@ verbs() {
 			answer=$(kubectl auth can-i "$verb" "$resource" -n "$namespace" --as="$subject" 2>/dev/null || true)
 		fi
 		[ "$answer" = yes ] || echo "FAIL: $subject cannot $verb $resource in $namespace"
-	done | tee /dev/stderr | grep -q '^FAIL' && failed=1
+	done > "$results"
+	cat "$results"
+	grep '^FAIL' "$results" >/dev/null && failed=1
 	return 0
 }
 
@@ -94,39 +100,64 @@ pods() {
 	default_sa=$(echo "$args" | sed -n 's/^--kubernetes-service-account=//p')
 	[ -n "$default_sa" ] || default_sa=default
 	grants=$(echo "$args" | sed -n 's/^--kubernetes-step-pod-grant=//p')
+	artifact_root=$(echo "$args" | sed -n 's/^--kubernetes-artifact-daemon-host-path=//p')
+	cache_root=$(echo "$args" | sed -n 's/^--kubernetes-cache-host-path=//p')
+	[ -n "$cache_root" ] || cache_root="$artifact_root/caches"
 	echo "== step pods in $ns (default identity: $default_sa; $(echo "$grants" | grep -c . || true) grant(s))"
 
-	kubectl get pods -n "$ns" -l concourse.ci/handle -o json | jq -r '.items[] | [
+	kubectl get pods -n "$ns" -l concourse.ci/handle -o json | jq -r --arg root "$artifact_root" --arg cache "$cache_root" '
+	def within($parent): . as $p | ($p | startswith($parent + "/")) and ($p | contains("/../") | not);
+	.items[] | . as $pod | [
 		.metadata.name,
 		(.metadata.labels["concourse.ci/build-id"] // "0"),
 		(.metadata.labels["concourse.ci/type"] // ""),
 		(.spec.serviceAccountName // "default"),
 		(if .spec.automountServiceAccountToken == false then "no" else "yes" end),
-		(if any(.spec.volumes[]?; .projected.sources[]?.serviceAccountToken) then "yes" else "no" end)
-	] | @tsv' | while IFS="$(printf '\t')" read -r pod build kind sa automount projected; do
+		(if any(.spec.volumes[]?; .projected.sources[]?.serviceAccountToken) then "yes" else "no" end),
+		([ (.spec.containers + (.spec.initContainers // []))[]
+			| select(.securityContext.privileged == true or ((.securityContext.capabilities.add // []) | length) > 0)
+			| .name ] + [ ("hostNetwork", "hostPID", "hostIPC") as $ns | select($pod.spec[$ns] == true) | $ns ]
+			| join(",")),
+		([ .spec.volumes[]? | select(.hostPath) | .hostPath.path as $path
+			| select(
+				($path != $root) and
+				($path | within($root + "/steps/" + $pod.metadata.labels["concourse.ci/handle"]) | not) and
+				($path != ($root + "/steps/" + ($pod.metadata.annotations["concourse.dev/hangar-reserved-directory"] // "\u0000"))) and
+				($path | within($cache) | not))
+			| $path ] | join(","))
+	] | join("|")' | while IFS='|' read -r pod build kind sa automount projected escalation stray; do
 		want=$default_sa
 		grant=""
+		privileged=no
 		if [ "$kind" != check ] && [ "$build" != 0 ]; then
 			owner=$(owner_of "$build")
 			if [ -n "$owner" ]; then
 				line=$(echo "$grants" | grep -E ",owner=$owner," || true)
 				if [ -n "$line" ]; then
 					grant=$(echo "$line" | sed -n 's/^name=\([^,]*\),.*/\1/p')
-					want=$(echo "$line" | sed -n 's/.*,service-account=\([^,]*\)$/\1/p')
+					own=$(echo "$line" | sed -n 's/.*,service-account=\([^,]*\).*/\1/p')
+					[ -n "$own" ] && want=$own
+					case "$line" in *,privileged=true*) privileged=yes ;; esac
 				fi
 			fi
 		fi
 		token=no
 		[ "$automount" = yes ] && token=yes
 		[ "$projected" = yes ] && token=yes
-		if [ "$sa" != "$want" ]; then
+		if [ -n "$stray" ]; then
+			echo "FAIL: $pod (build $build) mounts host paths outside its step: $stray"
+		elif [ -n "$escalation" ] && [ "$privileged" = no ]; then
+			echo "FAIL: $pod (build $build) holds privilege no grant allows: $escalation"
+		elif [ "$sa" != "$want" ]; then
 			echo "FAIL: $pod (build $build) runs as $sa, its build resolves to $want"
 		elif [ -z "$grant" ] && [ "$token" = yes ]; then
 			echo "FAIL: $pod (build $build) has an API token outside any grant"
 		else
 			echo "ok:   $pod (build $build) $sa${grant:+ via grant $grant}"
 		fi
-	done | tee /dev/stderr | grep -q '^FAIL' && failed=1
+	done > "$results"
+	cat "$results"
+	grep '^FAIL' "$results" >/dev/null && failed=1
 
 	if [ "$non_step" = --non-step ]; then
 		echo "== other pods in $ns under default with a token"
