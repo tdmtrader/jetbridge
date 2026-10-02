@@ -53,6 +53,7 @@ var flagSurfaces = []flagSurface{
 	{template: "hangar-store.yaml", pkg: "./cmd/hangar-store"},
 	{template: "hangar-output-reclaimer.yaml", pkg: "./cmd/hangar-output-reclaimer"},
 	{template: "hangar-output-activation-job.yaml", pkg: "./cmd/hangar-output-activate"},
+	{template: "hangar-bootstrap-job.yaml", pkg: "./cmd/concourse"},
 }
 
 // expectedFlagSurfaces is the floor, and it is a NUMBER rather than a list on
@@ -62,7 +63,7 @@ var flagSurfaces = []flagSurface{
 // what it covers -- and the drift it exists to catch is exactly the kind that
 // arrives with "this template moved". A count that must not fall makes the
 // deletion a decision somebody writes down.
-const expectedFlagSurfaces = 7
+const expectedFlagSurfaces = 8
 
 var (
 	// "- --flag", "- --flag=value", "- --flag={{ .Values.x }}"
