@@ -124,11 +124,9 @@ Secret rather than a refusal to replace the old one.
 
 {{- if .Values.hangarBootstrap.database.enabled -}}
 {{- with $out.database.existingSecret -}}
-{{- /* The inventory and reclaimer controllers read it too until they move
-       to web's credential (hangar_activation_db_role B2). */ -}}
 {{- $entries = append $entries (dict "name" . "kind" "dsn"
   "purposes" (dict "dsn" "the activation database role's connection string")
-  "consumers" (list "hangar-output-activation" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
+  "consumers" (list "hangar-output-activation")) -}}
 {{- end -}}
 {{- end -}}
 

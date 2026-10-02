@@ -1959,3 +1959,50 @@ func TestTheControllersHaveSomewhereToWrite(t *testing.T) {
 		}
 	}
 }
+
+// The inventory and reclaimer controllers run as web's database user, never
+// the activation database role (hangar_activation_db_role B2): their
+// connection string has no password, and PGPASSWORD comes from web's Secret
+// when there is one.
+func TestTheControllersUseWebsDatabaseCredential(t *testing.T) {
+	for name, sets := range map[string][]string{
+		"an existing Secret": {"postgresql.existingSecret=op-db-password"},
+		"bundled PostgreSQL": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := renderOutput(t, sets...)
+			found := 0
+			for _, doc := range documentsIn(t, out) {
+				component, pod := podOf(t, doc)
+				if component != outputInventoryComponent && component != outputReclaimerComponent {
+					continue
+				}
+				found++
+				env := map[string]corev1.EnvVar{}
+				for _, variable := range pod.Containers[0].Env {
+					env[variable.Name] = variable
+				}
+				dsn := env["HANGAR_OUTPUT_DSN"]
+				if dsn.ValueFrom != nil || strings.Contains(dsn.Value, "password") || !strings.Contains(dsn.Value, "user=") {
+					t.Errorf("%s's HANGAR_OUTPUT_DSN is %+v, want web's user and no password", component, dsn)
+				}
+				password, ok := env["PGPASSWORD"]
+				if !ok {
+					t.Errorf("%s has no PGPASSWORD", component)
+				}
+				if len(sets) > 0 && (password.ValueFrom == nil || password.ValueFrom.SecretKeyRef == nil ||
+					password.ValueFrom.SecretKeyRef.Name != "op-db-password") {
+					t.Errorf("%s's PGPASSWORD is %+v, want it from postgresql.existingSecret", component, password)
+				}
+				for _, volume := range pod.Volumes {
+					if volume.Secret != nil && volume.Secret.SecretName == "op-activation-db" {
+						t.Errorf("%s mounts the activation database role's Secret", component)
+					}
+				}
+			}
+			if found != 2 {
+				t.Fatalf("found %d controllers in the render, want the inventory and reclaimer", found)
+			}
+		})
+	}
+}

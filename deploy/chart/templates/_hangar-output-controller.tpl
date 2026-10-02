@@ -89,11 +89,22 @@ this comment is why the `}}` below is not `-}}`.
             # connection string -- user and password included -- into
             # /proc/<pid>/cmdline, which is world-readable inside the
             # container; /proc/<pid>/environ is not.
+            #
+            # The controllers run as web's database user (hangar_activation_db_role
+            # B2): the activation database role holds only what the activation
+            # commands do. The connection string carries no password; pgx reads
+            # PGPASSWORD, supplied exactly as web's password is.
             - name: HANGAR_OUTPUT_DSN
+              value: {{ printf "host=%s port=%s dbname=%s user=%s sslmode=%s" (include "concourse.postgresHost" $root) (include "concourse.postgresPort" $root) $root.Values.postgresql.database $root.Values.postgresql.user $root.Values.postgresql.sslmode | quote }}
+            - name: PGPASSWORD
+              {{- if $root.Values.postgresql.existingSecret }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ $root.Values.hangarOutput.database.existingSecret }}
-                  key: dsn
+                  name: {{ $root.Values.postgresql.existingSecret }}
+                  key: {{ $root.Values.postgresql.passwordSecretKey }}
+              {{- else }}
+              value: {{ $root.Values.postgresql.password | quote }}
+              {{- end }}
           volumeMounts:
             {{- if eq $root.Values.hangarOutput.store "disk" }}
             {{- include "concourse.hangarStorage.clientMount" $root | nindent 12 }}
