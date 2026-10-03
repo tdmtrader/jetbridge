@@ -317,9 +317,9 @@ func (g *skyDisplayUserIdGenerator) DisplayUserId(connector, userid, username, p
 	// For unconfigured connector, applies a default rule.
 	if preferredUsername != "" {
 		return preferredUsername
-	} else if userid != "" {
-		return userid
-	} else {
-		return username
 	}
+	if userid != "" {
+		return userid
+	}
+	return username
 }
