@@ -150,13 +150,6 @@ func (builder Builder) createContainer(workerName string, owner db.ContainerOwne
 	return container, nil
 }
 
-func (builder Builder) WithCreatingContainer(workerName string, owner db.ContainerOwner, metadata db.ContainerMetadata) SetupFunc {
-	return func(scenario *Scenario) error {
-		_, err := builder.createContainer(workerName, owner, metadata)
-		return err
-	}
-}
-
 func (builder Builder) WithCreatedContainer(workerName string, owner db.ContainerOwner, metadata db.ContainerMetadata) SetupFunc {
 	return func(scenario *Scenario) error {
 		container, err := builder.createContainer(workerName, owner, metadata)
