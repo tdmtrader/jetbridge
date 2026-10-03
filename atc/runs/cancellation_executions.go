@@ -189,7 +189,13 @@ func recoverCancellationOutcome(ctx context.Context, source executionOutcomeReco
 }
 
 func (s *CancellationExecutions) transaction(ctx context.Context, fn func(db.Tx) error) error {
-	tx, err := s.Conn.BeginTx(ctx, nil)
+	return inTransaction(ctx, s.Conn, fn)
+}
+
+// inTransaction runs fn in one transaction on conn and commits it only when fn
+// succeeds.
+func inTransaction(ctx context.Context, conn db.DbConn, fn func(db.Tx) error) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

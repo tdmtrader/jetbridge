@@ -260,15 +260,7 @@ func cancellationSourceDebt(err error) db.RunCancellationDebt {
 }
 
 func (s *CancellationSources) transaction(ctx context.Context, fn func(db.Tx) error) error {
-	tx, err := s.Conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer db.Rollback(tx)
-	if err = fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return inTransaction(ctx, s.Conn, fn)
 }
 
 type cancellationTransactor struct {
