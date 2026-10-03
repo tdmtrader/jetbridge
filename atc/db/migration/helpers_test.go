@@ -63,6 +63,7 @@ func ExpectTeamWithGithubProvider(dbConn *sql.DB, team, clientId, clientSecret s
 }
 
 func ExpectTeamWithNoAuthProvider(dbConn *sql.DB, team string, noauth bool) {
+	GinkgoHelper()
 
 	auth := fetchTeamAuth(dbConn, team)
 
