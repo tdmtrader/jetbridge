@@ -35,11 +35,7 @@ func (command *TeamsCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(teams)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(teams)
 	}
 
 	var headers ui.TableRow
