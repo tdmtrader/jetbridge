@@ -21,7 +21,6 @@ import Parser
         , chompWhile
         , getChompedString
         , keyword
-        , map
         , oneOf
         , run
         , spaces
