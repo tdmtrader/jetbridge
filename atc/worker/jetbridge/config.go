@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -85,9 +86,7 @@ var DefaultResourceTypeImages = map[string]string{
 // Entries without an "=" separator are silently skipped.
 func MergeResourceTypeImages(overrides []string) map[string]string {
 	merged := make(map[string]string, len(DefaultResourceTypeImages))
-	for k, v := range DefaultResourceTypeImages {
-		merged[k] = v
-	}
+	maps.Copy(merged, DefaultResourceTypeImages)
 	for _, entry := range overrides {
 		name, image, ok := strings.Cut(entry, "=")
 		if !ok || name == "" || image == "" {
