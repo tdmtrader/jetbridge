@@ -99,7 +99,7 @@ func (p *pipelinePauser) PausePipelines(ctx context.Context, daysSinceLastBuild 
 		// and the pause: the run reclaimer deletes the pipelines row, and
 		// lockPipelineRunForPayload then reports it gone. That is a race, not a
 		// failure, and it must not abandon the rest of the sweep.
-		if errors.Is(err, ErrPipelineRunPayloadGone) || errors.Is(err, ErrPipelineRunNotFound) {
+		if errors.Is(err, ErrPipelineRunPayloadGone) || errors.Is(err, errPipelineRunNotFound) {
 			logger.Info("skipped-reclaimed-run-payload", loggingData)
 			continue
 		}

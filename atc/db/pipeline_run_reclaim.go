@@ -150,7 +150,7 @@ func (l *pipelineRunReclaimLifecycle) DestroyReclaimableRun(runID int) (bool, er
 	}
 
 	run, err := lockPipelineRun(tx, runID)
-	if err == ErrPipelineRunNotFound {
+	if err == errPipelineRunNotFound {
 		return false, nil
 	}
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	ErrPipelineRunNotFound    = errors.New("pipeline run not found")
+	errPipelineRunNotFound    = errors.New("pipeline run not found")
 	ErrPipelineRunNotRunning  = errors.New("pipeline run is not running")
 	ErrPipelineRunPayloadGone = errors.New("pipeline run payload is missing")
 	ErrPipelineRunOneOffBuild = errors.New("pipeline run payload cannot create one-off builds")
@@ -26,7 +26,7 @@ func lockPipelineRun(tx Tx, runID int) (PipelineRun, error) {
 		RunWith(tx).
 		QueryRow())
 	if err == sql.ErrNoRows {
-		return nil, ErrPipelineRunNotFound
+		return nil, errPipelineRunNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -239,7 +239,7 @@ func lockPipelineRunForPayload(tx Tx, pipelineID, hydratedRunID int) (PipelineRu
 		return nil, false, nil
 	}
 	run, err := lockPipelineRun(tx, int(observedRunID.Int64))
-	if errors.Is(err, ErrPipelineRunNotFound) && hydratedRunID != 0 {
+	if errors.Is(err, errPipelineRunNotFound) && hydratedRunID != 0 {
 		return nil, false, ErrPipelineRunPayloadGone
 	}
 	if err != nil {
