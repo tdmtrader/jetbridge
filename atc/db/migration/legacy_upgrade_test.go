@@ -660,6 +660,8 @@ func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
 }
 
 func verifyJetBridgeSchemaChanges(db *sql.DB) {
+	GinkgoHelper()
+
 	// Verify component columns were dropped
 	for _, col := range []string{"interval", "last_ran", "paused"} {
 		var exists bool
