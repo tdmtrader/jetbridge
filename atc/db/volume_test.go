@@ -1019,8 +1019,7 @@ var _ = Describe("Volume", func() {
 
 	Context("when worker is no longer in database", func() {
 		BeforeEach(func() {
-			var err error
-			_, err = volumeRepository.CreateContainerVolume(defaultTeam.ID(), defaultWorker.Name(), defaultCreatingContainer, "/path/to/volume")
+			_, err := volumeRepository.CreateContainerVolume(defaultTeam.ID(), defaultWorker.Name(), defaultCreatingContainer, "/path/to/volume")
 			Expect(err).ToNot(HaveOccurred())
 		})
 
