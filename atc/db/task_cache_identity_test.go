@@ -115,7 +115,7 @@ var _ = Describe("Run task cache scope", func() {
 	// entirely and the task cache collector only deletes DB rows. Growth is
 	// therefore unbounded and unreclaimable, so a run payload gets no cache
 	// scope at all unless the template asks for one.
-	runPayloadEntryBuild := func(name string, config atc.Config) db.Build {
+	payloadEntryBuild := func(name string, config atc.Config) db.Build {
 		GinkgoHelper()
 
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: name}, config, 0, false)
@@ -154,7 +154,7 @@ var _ = Describe("Run task cache scope", func() {
 	}
 
 	It("resolves no cache scope and writes no task_caches rows for a template that does not opt in", func() {
-		build := runPayloadEntryBuild("default-cache-scope-template", atc.Config{
+		build := payloadEntryBuild("default-cache-scope-template", atc.Config{
 			Template: true,
 			Jobs:     atc.JobConfigs{{Name: "deploy"}},
 		})
