@@ -204,6 +204,7 @@ var _ = Describe("PipelineRunFactory", func() {
 
 	It("rejects paused, archived, non-template, and instanced bases without allocation", func() {
 		assertNotAllocated := func(pipeline db.Pipeline, expected error) {
+			GinkgoHelper()
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
