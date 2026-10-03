@@ -2,6 +2,7 @@ package opa
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -68,7 +69,7 @@ func ParseOpaResult(bytesResult []byte, opaConfig OpaConfig) (opaResult, error) 
 			case string:
 				messages = append(messages, v)
 			default:
-				return opaResult{}, fmt.Errorf("invalid messages")
+				return opaResult{}, errors.New("invalid messages")
 			}
 		}
 	}
