@@ -1997,11 +1997,12 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 
 	// The shared volume's hostPath should use the output name as subdir
 	for _, vol := range volumes {
-		if vol.HostPath != nil && strings.Contains(vol.HostPath.Path, "/shared") {
-			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-100", "shared")
-			if vol.HostPath.Path != expectedPath {
-				t.Errorf("shared volume hostPath = %s, want %s", vol.HostPath.Path, expectedPath)
-			}
+		if vol.HostPath == nil || !strings.Contains(vol.HostPath.Path, "/shared") {
+			continue
+		}
+		expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-100", "shared")
+		if vol.HostPath.Path != expectedPath {
+			t.Errorf("shared volume hostPath = %s, want %s", vol.HostPath.Path, expectedPath)
 		}
 	}
 }
