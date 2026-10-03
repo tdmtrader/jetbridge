@@ -26,7 +26,7 @@ import Concourse
         ( Causality
         , CausalityDirection(..)
         )
-import Concourse.BuildStatus exposing (BuildStatus(..))
+import Concourse.BuildStatus
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Graph exposing (Edge, Graph, Node)
