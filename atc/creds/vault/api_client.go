@@ -2,6 +2,7 @@ package vault
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -142,7 +143,7 @@ func (ac *APIClient) Login() (time.Duration, error) {
 	if ac.authConfig.Backend == "ldap" || ac.authConfig.Backend == "okta" || ac.authConfig.Backend == "userpass" {
 		username, ok := ac.loginParams()["username"].(string)
 		if !ok {
-			err := fmt.Errorf("failed to assert username as string")
+			err := errors.New("failed to assert username as string")
 			logger.Error("failed", err)
 			return time.Second, err
 		}
