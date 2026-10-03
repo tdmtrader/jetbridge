@@ -42,12 +42,7 @@ func (l *SigningKeyLifecycler) Run(_ context.Context) error {
 		return err
 	}
 
-	err = l.removeSupercededKeys(db.SigningKeyTypeEC)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return l.removeSupercededKeys(db.SigningKeyTypeEC)
 }
 
 // you must have hold SigningKeyLifecycleLock before using this!
