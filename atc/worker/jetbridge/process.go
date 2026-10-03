@@ -676,15 +676,16 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 
 	// Emit image.pulling when a container enters ContainerCreating.
 	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "ContainerCreating" && !t.pullingImages[cs.Name] {
-			t.pullingImages[cs.Name] = true
-			span.AddEvent("image.pulling",
-				oteltrace.WithAttributes(
-					attribute.String("container.name", cs.Name),
-					attribute.String("container.image", cs.Image),
-				),
-			)
+		if cs.State.Waiting == nil || cs.State.Waiting.Reason != "ContainerCreating" || t.pullingImages[cs.Name] {
+			continue
 		}
+		t.pullingImages[cs.Name] = true
+		span.AddEvent("image.pulling",
+			oteltrace.WithAttributes(
+				attribute.String("container.name", cs.Name),
+				attribute.String("container.image", cs.Image),
+			),
+		)
 	}
 
 	// Emit image.pulled when a container transitions out of ContainerCreating.
