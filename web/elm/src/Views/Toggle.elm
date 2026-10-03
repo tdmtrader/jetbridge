@@ -3,7 +3,7 @@ module Views.Toggle exposing (TextDirection(..), toggleSwitch)
 import Assets
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, href, style)
-import Message.Message exposing (DomID(..), Message(..))
+import Message.Message exposing (Message(..))
 import Routes
 
 
