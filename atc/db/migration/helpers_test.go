@@ -29,6 +29,7 @@ func SetupResource(dbConn *sql.DB, resource, config string) {
 }
 
 func ExpectResourceWithType(dbConn *sql.DB, resourceName, resourceType string) {
+	GinkgoHelper()
 
 	Expect(fetchResourceType(dbConn, resourceName)).To(Equal(resourceType))
 }
