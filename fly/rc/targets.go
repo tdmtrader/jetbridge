@@ -53,19 +53,6 @@ func flyrcPath() string {
 	return filepath.Join(userHomeDir(), ".flyrc")
 }
 
-func LogoutTarget(targetName TargetName) error {
-	return updateTargets(func(flyTargets Targets) error {
-
-		if target, ok := flyTargets[targetName]; ok {
-			if target.Token != nil {
-				*target.Token = TargetToken{}
-			}
-		}
-
-		return nil
-	})
-}
-
 func DeleteTarget(targetName TargetName) error {
 	return updateTargets(func(flyTargets Targets) error {
 		delete(flyTargets, targetName)
