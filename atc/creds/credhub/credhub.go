@@ -46,7 +46,6 @@ func (c CredHubAtc) Get(secretPath string) (any, *time.Time, bool, error) {
 
 func (c CredHubAtc) findCred(path string) (credentials.Credential, bool, error) {
 	var cred credentials.Credential
-	var err error
 
 	ch, err := c.CredHub.CredHub()
 	if err != nil {
