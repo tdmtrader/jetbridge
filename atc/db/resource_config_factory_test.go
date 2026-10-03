@@ -14,7 +14,6 @@ var _ = Describe("ResourceConfigFactory", func() {
 	var build db.Build
 
 	BeforeEach(func() {
-		var err error
 		job, found, err := defaultPipeline.Job("some-job")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
