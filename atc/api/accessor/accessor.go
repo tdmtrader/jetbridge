@@ -174,12 +174,7 @@ func (a *access) TeamNames() []string {
 }
 
 func (a *access) hasPermission(roles []string) bool {
-	for _, role := range roles {
-		if a.hasRequiredRole(role) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(roles, a.hasRequiredRole)
 }
 
 func (a *access) hasRequiredRole(role string) bool {
