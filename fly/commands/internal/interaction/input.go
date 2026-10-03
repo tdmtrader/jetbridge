@@ -51,8 +51,6 @@ func (i InputModel) Init() tea.Cmd {
 }
 
 func (i InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -64,6 +62,7 @@ func (i InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	var cmd tea.Cmd
 	i.input, cmd = i.input.Update(msg)
 	return i, cmd
 }
