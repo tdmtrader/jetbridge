@@ -11,13 +11,15 @@ func NewVersionSourceFromPlan(getPlan *atc.GetPlan) VersionSource {
 		return &StaticVersionSource{
 			version: *getPlan.Version,
 		}
-	} else if getPlan.VersionFrom != nil {
+	}
+
+	if getPlan.VersionFrom != nil {
 		return &DynamicVersionSource{
 			planID: *getPlan.VersionFrom,
 		}
-	} else {
-		return &EmptyVersionSource{}
 	}
+
+	return &EmptyVersionSource{}
 }
 
 type VersionSource interface {
