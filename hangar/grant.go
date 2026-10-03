@@ -81,17 +81,17 @@ func (signer *WarrantSigner) Sign(ref TreeRef, handle, volume string) (string, e
 		return "", fmt.Errorf("hangar: sign materialization warrant: %w", err)
 	}
 	if !validMaterializationSegment(handle) || !validMaterializationSegment(volume) {
-		return "", fmt.Errorf("hangar: sign materialization warrant: handle and volume must be canonical path segments")
+		return "", errors.New("hangar: sign materialization warrant: handle and volume must be canonical path segments")
 	}
 	now := signer.clock().UTC()
 	issuedAt, ok := exactUnixNano(now)
 	if now.IsZero() || !ok || issuedAt <= 0 {
-		return "", fmt.Errorf("hangar: sign materialization warrant: clock is outside the supported range")
+		return "", errors.New("hangar: sign materialization warrant: clock is outside the supported range")
 	}
 	expires := now.Add(signer.ttl)
 	expiresAt, ok := exactUnixNano(expires)
 	if !ok || expiresAt <= issuedAt || expiresAt-issuedAt != signer.ttl.Nanoseconds() {
-		return "", fmt.Errorf("hangar: sign materialization warrant: expiry is outside the supported range")
+		return "", errors.New("hangar: sign materialization warrant: expiry is outside the supported range")
 	}
 	nonce := make([]byte, warrantNonceLen)
 	if _, err := io.ReadFull(signer.random, nonce); err != nil {
@@ -113,7 +113,7 @@ func (signer *WarrantSigner) Sign(ref TreeRef, handle, volume string) (string, e
 	raw := append(payload, mac.Sum(nil)...)
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	if len(payload) > maxWarrantBytes || len(token) > maxWarrantBytes {
-		return "", fmt.Errorf("hangar: materialization warrant exceeds maximum size")
+		return "", errors.New("hangar: materialization warrant exceeds maximum size")
 	}
 	return token, nil
 }
