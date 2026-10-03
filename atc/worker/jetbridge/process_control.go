@@ -713,7 +713,7 @@ const firstWriterFence = output.WriterFence(1)
 // executions with no capture extension: nothing below mentions one.
 func (p *execProcess) stopPreservingSource(ctx context.Context) (bool, error) {
 	if p.exact == nil {
-		return false, fmt.Errorf("the exact execution was never admitted")
+		return false, errors.New("the exact execution was never admitted")
 	}
 	logger := lagerctx.FromContext(ctx).Session("source-preserving-stop", lager.Data{
 		"execution": string(p.control.Identity.ExecutionID),
