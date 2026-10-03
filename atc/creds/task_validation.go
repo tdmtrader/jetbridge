@@ -5,25 +5,25 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
-type TaskEnvValidator struct {
+type taskEnvValidator struct {
 	variablesResolver vars.Variables
 	rawTaskEnv        atc.TaskEnv
 }
 
-func NewTaskEnvValidator(variables vars.Variables, params atc.TaskEnv) TaskEnvValidator {
-	return TaskEnvValidator{
+func NewTaskEnvValidator(variables vars.Variables, params atc.TaskEnv) taskEnvValidator {
+	return taskEnvValidator{
 		variablesResolver: variables,
 		rawTaskEnv:        params,
 	}
 }
 
-func (s TaskEnvValidator) Validate() error {
+func (s taskEnvValidator) Validate() error {
 	return s.ValidateWithReferenceExclusion(nil)
 }
 
 // ValidateWithReferenceExclusion validates while leaving every reference
 // matched by excludeReference in place.
-func (s TaskEnvValidator) ValidateWithReferenceExclusion(excludeReference vars.ReferenceExclusion) error {
+func (s taskEnvValidator) ValidateWithReferenceExclusion(excludeReference vars.ReferenceExclusion) error {
 	var params atc.TaskEnv
 	return evaluateWithReferenceExclusion(s.variablesResolver, s.rawTaskEnv, &params, excludeReference)
 }
