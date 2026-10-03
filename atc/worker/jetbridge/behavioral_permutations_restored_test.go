@@ -31,16 +31,6 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func permDaemonSetConfig() Config {
-	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/artifact-store",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
-	}
-}
-
 func permEmptyDirConfig() Config {
 	return Config{
 		Namespace: "test-ns",
@@ -177,7 +167,7 @@ func assertSidecarMounts(t *testing.T, c *Container, spec runtime.ContainerSpec,
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_MultipleInputsNoOutputs(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
@@ -205,7 +195,7 @@ func TestBuildVolumeMounts_MultipleInputsNoOutputs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_MixedOverlap(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
@@ -255,7 +245,7 @@ func TestBuildVolumeMounts_MixedOverlap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_AllOverlapping(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
@@ -284,7 +274,7 @@ func TestBuildVolumeMounts_AllOverlapping(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_NoOverlap(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
@@ -309,7 +299,7 @@ func TestBuildVolumeMounts_NoOverlap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_PutContainer(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypePut,
@@ -336,7 +326,7 @@ func TestBuildVolumeMounts_PutContainer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_GetContainer(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/resource",
 		Type: db.ContainerTypeGet,
@@ -358,7 +348,7 @@ func TestBuildVolumeMounts_GetContainer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_CheckContainer(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/check",
 		Type: db.ContainerTypeCheck,
@@ -397,7 +387,7 @@ func TestBuildVolumeMounts_CheckContainer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildVolumeMounts_SidecarWithCaches(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
@@ -447,7 +437,7 @@ func TestBuildVolumeMounts_SidecarWithScratch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildArtifactInitContainers_MultipleInputs(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
@@ -494,7 +484,7 @@ func TestBuildArtifactInitContainers_MultipleInputs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildSidecarContainers_GetsAllMountsInDaemonSetMode(t *testing.T) {
-	cfg := permDaemonSetConfig()
+	cfg := testDaemonConfig()
 	spec := runtime.ContainerSpec{
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
