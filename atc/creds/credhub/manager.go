@@ -149,7 +149,7 @@ func (manager CredHubManager) Health() (*creds.HealthResponse, error) {
 }
 
 func (manager CredHubManager) NewSecretsFactory(logger lager.Logger) (creds.SecretsFactory, error) {
-	return NewCredHubFactory(logger, manager.Client, manager.PathPrefix), nil
+	return newCredHubFactory(logger, manager.Client, manager.PathPrefix), nil
 }
 
 type LazyCredhub struct {

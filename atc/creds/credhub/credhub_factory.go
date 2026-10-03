@@ -11,7 +11,7 @@ type credhubFactory struct {
 	prefix  string
 }
 
-func NewCredHubFactory(logger lager.Logger, credhub *LazyCredhub, prefix string) *credhubFactory {
+func newCredHubFactory(logger lager.Logger, credhub *LazyCredhub, prefix string) *credhubFactory {
 	return &credhubFactory{
 		credhub: credhub,
 		logger:  logger,
