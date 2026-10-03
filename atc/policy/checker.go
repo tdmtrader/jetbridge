@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -178,14 +179,7 @@ func (c *AgentChecker) ShouldSkipAction(action string) bool {
 }
 
 func inArray(array []string, target string) bool {
-	found := false
-	for _, ele := range array {
-		if ele == target {
-			found = true
-			break
-		}
-	}
-	return found
+	return slices.Contains(array, target)
 }
 
 func (c *AgentChecker) Check(input PolicyCheckInput) (PolicyCheckResult, error) {
