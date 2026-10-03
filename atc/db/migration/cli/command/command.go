@@ -93,12 +93,7 @@ func renderGoMigrationToFile(filePath string, state migrationInfo) error {
 		return err
 	}
 
-	err = tmpl.Execute(migrationFile, state)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tmpl.Execute(migrationFile, state)
 }
 
 func (c *GenerateCommand) GenerateGoMigration() error {
