@@ -19,10 +19,11 @@ type ExecutionPreparer interface {
 }
 
 func (w *Worker) bindStartCheck(c *Container, owner db.ContainerOwner, spec runtime.ContainerSpec) {
-	if w.executionPreparer != nil {
-		c.checkStart = func(ctx context.Context) error { return w.executionPreparer.CheckStart(ctx, owner, spec) }
-		c.recordWitness = func(ctx context.Context, witness executioncontrol.Acknowledgement) error {
-			return w.executionPreparer.RecordWitness(ctx, owner, witness)
-		}
+	if w.executionPreparer == nil {
+		return
+	}
+	c.checkStart = func(ctx context.Context) error { return w.executionPreparer.CheckStart(ctx, owner, spec) }
+	c.recordWitness = func(ctx context.Context, witness executioncontrol.Acknowledgement) error {
+		return w.executionPreparer.RecordWitness(ctx, owner, witness)
 	}
 }
