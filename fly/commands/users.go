@@ -48,11 +48,7 @@ func (command *ActiveUsersCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(users)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(users)
 	}
 
 	headers := ui.TableRow{
