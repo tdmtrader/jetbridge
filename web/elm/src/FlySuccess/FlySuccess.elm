@@ -17,7 +17,6 @@ import Html exposing (Html)
 import Html.Attributes exposing (attribute, href, id, style, value)
 import Html.Events exposing (onClick, onMouseEnter, onMouseLeave)
 import Login.Login as Login
-import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (DomID(..), Message(..))
 import Message.Subscription as Subscription
