@@ -62,11 +62,7 @@ func (c *GenerateCommand) GenerateSQLMigration() error {
 	if err != nil {
 		return err
 	}
-	err = os.WriteFile(path.Join(c.MigrationDirectory, downMigrationFileName), []byte(contents), 0644)
-	if err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(path.Join(c.MigrationDirectory, downMigrationFileName), []byte(contents), 0644)
 }
 
 type migrationInfo struct {
