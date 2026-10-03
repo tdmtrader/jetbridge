@@ -5,7 +5,7 @@ import (
 )
 
 var (
-	ErrAuthConfigEmpty   = errors.New("auth config for the team must not be empty")
+	errAuthConfigEmpty   = errors.New("auth config for the team must not be empty")
 	ErrAuthConfigInvalid = errors.New("auth config for the team does not have users and groups configured")
 )
 
@@ -23,7 +23,7 @@ type TeamAuth map[string]map[string][]string
 
 func (auth TeamAuth) Validate() error {
 	if len(auth) == 0 {
-		return ErrAuthConfigEmpty
+		return errAuthConfigEmpty
 	}
 
 	for _, config := range auth {
