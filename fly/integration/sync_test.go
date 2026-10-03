@@ -165,6 +165,8 @@ func readBinary(path string) []byte {
 }
 
 func expectBinaryToMatch(path string, expectedBinary []byte) {
+	GinkgoHelper()
+
 	contents, err := os.ReadFile(path)
 	Expect(err).NotTo(HaveOccurred())
 
