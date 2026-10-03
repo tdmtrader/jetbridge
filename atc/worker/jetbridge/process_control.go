@@ -437,7 +437,7 @@ func (p *execProcess) finishExactCommand(ctx context.Context, outcome executionc
 func (p *execProcess) recordExactOutcome(ctx context.Context, outcome executioncontrol.ExitOutcome,
 	kind executioncontrol.AcknowledgementKind) error {
 	if p.exact == nil {
-		return fmt.Errorf("the exact execution was never admitted")
+		return errors.New("the exact execution was never admitted")
 	}
 	ctx, cancel := detachedLedgerContext(ctx)
 	defer cancel()
