@@ -197,7 +197,7 @@ func (manager *VaultManager) NewSecretsFactory(logger lager.Logger) (creds.Secre
 			}
 		}
 
-		manager.ReAuther = NewReAuther(
+		manager.ReAuther = newReAuther(
 			logger,
 			manager.Client,
 			manager.Auth.BackendMaxTTL,

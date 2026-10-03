@@ -49,7 +49,7 @@ func testWithoutVaultErrors(t *testing.T) {
 		Delay:        1 * time.Second,
 	}
 	logger := lagertest.NewTestLogger("vault-test")
-	ra := NewReAuther(logger, ma, 10*time.Second, 1*time.Second, 64*time.Second)
+	ra := newReAuther(logger, ma, 10*time.Second, 1*time.Second, 64*time.Second)
 	select {
 	case <-ra.LoggedIn():
 	case <-time.After(1 * time.Second):
@@ -109,7 +109,7 @@ func testExponentialBackoff(t *testing.T) {
 		LoginError:   fmt.Errorf("Could not login to Vault"),
 	}
 	logger := lagertest.NewTestLogger("vault-test")
-	ra := NewReAuther(logger, ma, 0, 1*time.Second, maxRetryInterval)
+	ra := newReAuther(logger, ma, 0, 1*time.Second, maxRetryInterval)
 
 	select {
 	case <-ra.LoggedIn():

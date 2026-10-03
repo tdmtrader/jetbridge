@@ -33,8 +33,8 @@ type ReAuther struct {
 	logger lager.Logger
 }
 
-// NewReAuther with a retry time and a max retry time.
-func NewReAuther(logger lager.Logger, auther Auther, maxTTL, retry, max time.Duration) *ReAuther {
+// newReAuther with a retry time and a max retry time.
+func newReAuther(logger lager.Logger, auther Auther, maxTTL, retry, max time.Duration) *ReAuther {
 	ra := &ReAuther{
 		auther: auther,
 		base:   retry,
