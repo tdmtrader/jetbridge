@@ -23,7 +23,8 @@ candidate. An ejected entry is never in a batch.
 **Verdict**: the runner's one result for a candidate: pass, fail, or none.
 
 **Decision**: what the core does with a batch after a verdict: land, eject,
-split, retry or recompose.
+split, retry, pause or recompose. No verdict retries, then pauses; it never
+ejects.
 
 **Ports**: Store (loads and saves the queue, refusing a stale write),
 Composer (merges a batch onto main into a candidate, or names the one

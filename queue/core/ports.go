@@ -5,7 +5,7 @@ import "context"
 // Verdict is a Runner's one result for a candidate: pass, fail, or none.
 type Verdict string
 
-// Decision is what the core does with a batch: land, eject, split, retry, recompose.
+// Decision is what the core does with a batch: land, eject, split, retry, pause, recompose.
 type Decision string
 
 // Store loads and saves entries. Save is a compare-and-swap on version.
