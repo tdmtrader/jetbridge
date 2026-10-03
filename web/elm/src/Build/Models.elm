@@ -4,7 +4,7 @@ module Build.Models exposing
     , toMaybe
     )
 
-import Build.Header.Models exposing (BuildPageType(..), CommentBarVisibility, CurrentOutput(..), HistoryItem)
+import Build.Header.Models exposing (BuildPageType, CommentBarVisibility, CurrentOutput(..), HistoryItem)
 import Build.Output.Models exposing (OutputModel)
 import Concourse
 import Concourse.BuildStatus as BuildStatus
