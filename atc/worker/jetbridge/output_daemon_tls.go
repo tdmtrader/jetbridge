@@ -68,11 +68,11 @@ func outputWgetTLSOptions() string {
 	return "--no-check-certificate"
 }
 
-// OutputDaemonTLSConfigured is the single predicate for "the ATC can speak to
+// outputDaemonTLSConfigured is the single predicate for "the ATC can speak to
 // the output daemon at all": the client certificate, its key and the daemon CA
 // must all be named. Anything less is not a weaker configuration, it is a
 // plane the ATC cannot make one call on.
-func OutputDaemonTLSConfigured(certPath, keyPath, caCertPath string) bool {
+func outputDaemonTLSConfigured(certPath, keyPath, caCertPath string) bool {
 	return certPath != "" && keyPath != "" && caCertPath != ""
 }
 
@@ -125,7 +125,7 @@ func ValidateOutputDaemonTLSFlags(certPath, keyPath, caCertPath string) error {
 // accept any listener on any node IP as the authority for that node's ledger.
 func newOutputDaemonHTTPClient(cfg Config, timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if OutputDaemonTLSConfigured(
+	if outputDaemonTLSConfigured(
 		cfg.OutputDaemonTLSCert, cfg.OutputDaemonTLSKey, cfg.OutputDaemonTLSCACert,
 	) {
 		tlsConfig, err := loadDaemonClientTLS(
