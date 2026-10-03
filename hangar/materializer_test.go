@@ -1046,9 +1046,6 @@ func (*strictMaterializerStore) EnsureTree(context.Context, Scope, Digest, io.Re
 func (*strictMaterializerStore) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) {
 	panic("unexpected InspectTree")
 }
-func (*strictMaterializerStore) DeleteTree(context.Context, TreeRef) error {
-	panic("unexpected DeleteTree")
-}
 
 type testTreeEntry struct {
 	name string
