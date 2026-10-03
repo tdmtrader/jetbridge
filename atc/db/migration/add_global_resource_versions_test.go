@@ -330,6 +330,8 @@ func setupResource(db *sql.DB) {
 }
 
 func setupVersionedResources(db *sql.DB) {
+	GinkgoHelper()
+
 	// Insert two enabled versions into the versioned resources table
 	for i := 1; i <= 2; i++ {
 		_, err := db.Exec("INSERT INTO versioned_resources(version, metadata, type, enabled, resource_id, check_order) VALUES($1, 'some-metadata', 'some-type', true, 1, $2)", fmt.Sprintf(`{"version": "v%d"}`, i), i)
