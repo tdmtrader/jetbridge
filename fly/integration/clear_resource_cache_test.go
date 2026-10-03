@@ -46,6 +46,7 @@ var _ = Describe("clear-resource-cache", func() {
 	}
 
 	no := func() {
+		GinkgoHelper()
 		Eventually(sess).Should(gbytes.Say(`are you sure\? \[yN\]: `))
 		fmt.Fprintf(stdin, "n\r")
 	}
