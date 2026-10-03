@@ -50,11 +50,7 @@ func (command *CurlCommand) Execute([]string) error {
 		return nil
 	}
 
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
+	return cmd.Run()
 }
 
 func (command *CurlCommand) makeFullUrl(host, path string) (string, error) {
