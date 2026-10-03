@@ -1,6 +1,5 @@
 module Dashboard.Group exposing
-    ( PipelineIndex
-    , Section
+    ( Section
     , hdView
     , ordering
     , pipelineNotSetView
@@ -41,10 +40,6 @@ ordering : { a | userState : UserState } -> Ordering Concourse.TeamName
 ordering session =
     Ordering.byFieldWith Tag.ordering (tag session)
         |> Ordering.breakTiesWith Ordering.natural
-
-
-type alias PipelineIndex =
-    Int
 
 
 type alias Section card =
