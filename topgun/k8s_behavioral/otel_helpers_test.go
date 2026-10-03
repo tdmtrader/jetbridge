@@ -46,11 +46,6 @@ func deployOTelCollector() {
 	Expect(waitCmd.Run()).To(Succeed(), "OTel collector pod not ready")
 }
 
-// otelCollectorAddress returns the in-cluster address of the OTel collector.
-func otelCollectorAddress() string {
-	return fmt.Sprintf("otel-collector.%s.svc.cluster.local:4317", config.Namespace)
-}
-
 // collectOTelMetricsFromCollector reads the metrics file from the collector pod
 // and returns raw JSON lines.
 func collectOTelMetricsFromCollector() []map[string]interface{} {
