@@ -87,7 +87,7 @@ func determineDirection(migrationName string) (string, error) {
 func determineMigrationStrategy(migrationName string) Strategy {
 	if strings.HasSuffix(migrationName, ".go") {
 		return GoMigration
-	} else {
-		return SQLMigration
 	}
+
+	return SQLMigration
 }
