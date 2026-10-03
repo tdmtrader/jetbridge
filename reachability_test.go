@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -538,13 +539,7 @@ func packageOf(root, path string) string {
 }
 
 func containsString(haystack []string, needle string) bool {
-	for _, candidate := range haystack {
-		if candidate == needle {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 func repositoryRoot() string {
