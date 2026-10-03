@@ -56,6 +56,8 @@ var _ = BeforeEach(func() {
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 func createTeam(name string) db.Team {
+	GinkgoHelper()
+
 	team, err := teamFactory.CreateTeam(atc.Team{Name: name})
 	Expect(err).NotTo(HaveOccurred())
 	return team
