@@ -54,11 +54,12 @@ func TestDiskWireTransportIsPrivateToAdaptersAndServer(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if name == "github.com/concourse/concourse/hangar/internal/disktransport" {
-				matched++
-				if !allowed[filepath.ToSlash(filepath.Dir(path))] {
-					t.Errorf("%s imports unrestricted disk wire transport", path)
-				}
+			if name != "github.com/concourse/concourse/hangar/internal/disktransport" {
+				continue
+			}
+			matched++
+			if !allowed[filepath.ToSlash(filepath.Dir(path))] {
+				t.Errorf("%s imports unrestricted disk wire transport", path)
 			}
 		}
 		return nil
