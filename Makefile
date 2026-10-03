@@ -1,4 +1,4 @@
-.PHONY: test-unit test-elm test-brine-guards test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-elm test-brine-guards test-queue test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~9 min)
 # Requires: PostgreSQL running locally
@@ -68,6 +68,11 @@ test-k8s-behavioral:
 test-brine-guards:
 	@echo "==> Running brine guard tests..."
 	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement' -count=1
+
+# Queue core tests (~1 sec). Nested module: root go test never reaches it.
+test-queue:
+	@echo "==> Running queue core tests..."
+	cd queue && go test ./... -count=1
 
 .PHONY: check-docker-tools
 check-docker-tools:
