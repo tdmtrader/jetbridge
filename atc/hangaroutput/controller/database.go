@@ -15,6 +15,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,6 +25,27 @@ import (
 
 	"github.com/concourse/concourse/hangar/output"
 )
+
+// DSNEnvironmentVariable is where an output-plane command reads its PostgreSQL
+// connection string when --database is not given, and is how the chart
+// supplies it.
+//
+// Not `--database=$(HANGAR_OUTPUT_DSN)`: the kubelet expands $(VAR) in args, so
+// the credential lands in /proc/<pid>/cmdline, which is world-readable inside
+// the container. /proc/<pid>/environ is readable only by the process's own uid.
+// The flag stays, because a developer running this by hand has no environment
+// set up for it and a flag is the honest way to say so.
+const DSNEnvironmentVariable = "HANGAR_OUTPUT_DSN"
+
+// ResolveDSN fills the connection string from the environment when the flag
+// left it empty.
+func ResolveDSN(dsn string) string {
+	if dsn != "" {
+		return dsn
+	}
+
+	return os.Getenv(DSNEnvironmentVariable)
+}
 
 // OpenDatabase opens one controller's connection.
 //

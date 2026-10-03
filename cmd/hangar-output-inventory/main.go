@@ -77,7 +77,7 @@ func run(ctx context.Context, config controllerConfig) error {
 		return err
 	}
 
-	conn, err := controller.OpenDatabase(resolveDSN(config.DSN), 2)
+	conn, err := controller.OpenDatabase(controller.ResolveDSN(config.DSN), 2)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/concourse/concourse/atc/hangaroutput/controller"
 )
 
 // The chart supplies the connection string in the ENVIRONMENT, not in argv, so
@@ -14,25 +16,25 @@ import (
 // The variable name is read out of the template rather than written twice: two
 // spellings of it is a Pod whose command finds nothing.
 func TestTheDatabaseCredentialIsReadFromTheEnvironmentTheChartSets(t *testing.T) {
-	t.Setenv(dsnEnvironmentVariable, "postgres://from-the-environment")
+	t.Setenv(controller.DSNEnvironmentVariable, "postgres://from-the-environment")
 
-	if got := resolveDSN(""); got != "postgres://from-the-environment" {
-		t.Errorf("resolveDSN of an empty flag is %q; the chart passes no --database and "+
+	if got := controller.ResolveDSN(""); got != "postgres://from-the-environment" {
+		t.Errorf("controller.ResolveDSN of an empty flag is %q; the chart passes no --database and "+
 			"this is the only path left", got)
 	}
-	if got := resolveDSN("postgres://explicit"); got != "postgres://explicit" {
-		t.Errorf("resolveDSN does not prefer an explicit flag: %q", got)
+	if got := controller.ResolveDSN("postgres://explicit"); got != "postgres://explicit" {
+		t.Errorf("controller.ResolveDSN does not prefer an explicit flag: %q", got)
 	}
 
 	template, err := os.ReadFile(filepath.Join("..", "..", "deploy", "chart", "templates", "hangar-output-activation-job.yaml"))
 	if err != nil {
 		t.Fatalf("reading the chart template: %v", err)
 	}
-	if !strings.Contains(string(template), "- name: "+dsnEnvironmentVariable) {
+	if !strings.Contains(string(template), "- name: "+controller.DSNEnvironmentVariable) {
 		t.Errorf("the chart template does not set %q; the command would read an unset "+
-			"variable and start with no connection string", dsnEnvironmentVariable)
+			"variable and start with no connection string", controller.DSNEnvironmentVariable)
 	}
-	if strings.Contains(string(template), "--database=$("+dsnEnvironmentVariable+")") {
+	if strings.Contains(string(template), "--database=$("+controller.DSNEnvironmentVariable+")") {
 		t.Error("the chart still expands the DSN into argv, where /proc/<pid>/cmdline " +
 			"exposes it to anything in the container")
 	}
