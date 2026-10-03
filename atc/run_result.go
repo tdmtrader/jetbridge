@@ -71,12 +71,12 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 			}
 			seenTasks[task.TaskID] = true
 			if len(seenTasks) > 256 {
-				return fmt.Errorf("a template may declare at most 256 stable tasks")
+				return errors.New("a template may declare at most 256 stable tasks")
 			}
 			if len(task.RunInputs) > 0 {
 				inputEdges += len(task.RunInputs)
 				if inputEdges > 256 {
-					return fmt.Errorf("a template may declare at most 256 input routes")
+					return errors.New("a template may declare at most 256 input routes")
 				}
 				if repeated {
 					return fmt.Errorf("input target %s cannot occur in a repeated step", task.TaskID)
@@ -94,7 +94,7 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 					seenInputs[input.Name] = true
 				}
 				if len(seenInputs) > 64 {
-					return fmt.Errorf("a template may declare at most 64 named inputs")
+					return errors.New("a template may declare at most 64 named inputs")
 				}
 			}
 			if task.RunResult != nil {
@@ -112,7 +112,7 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 				}
 				seenResults[task.RunResult.Name] = true
 				if len(seenResults) > 64 {
-					return fmt.Errorf("a template may declare at most 64 results")
+					return errors.New("a template may declare at most 64 results")
 				}
 				if !expected[job.Name] {
 					return fmt.Errorf("result producer %s is outside expected work", task.TaskID)
@@ -139,7 +139,7 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 		return nil, err
 	}
 	if len(mapping) > 256*1024 {
-		return nil, fmt.Errorf("Run task mapping exceeds 256 KiB")
+		return nil, errors.New("Run task mapping exceeds 256 KiB")
 	}
 	return declarations, nil
 }
