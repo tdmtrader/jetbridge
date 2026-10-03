@@ -1,6 +1,9 @@
 package atc
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // sensitiveBodyActions name the routes whose request body belongs only to the
 // authorized handler: session credentials, input bearers, uploaded trees and
@@ -30,12 +33,7 @@ func SensitiveBodyActions() []string {
 // RequestBodyIsSensitive reports whether middleware must leave action's body
 // unread.
 func RequestBodyIsSensitive(action string) bool {
-	for _, sensitive := range sensitiveBodyActions {
-		if action == sensitive {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(sensitiveBodyActions, action)
 }
 
 // RouteParamNames returns the `:name` path parameters the route table declares
