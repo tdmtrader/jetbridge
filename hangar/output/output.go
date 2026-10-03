@@ -127,10 +127,6 @@ var (
 	// daemon's wall clock.
 	ErrTimeout = errors.New("hangar/output: deadline exceeded")
 
-	// ErrSourceLost is a node that will not come back. It is terminal, it is a
-	// failure, and it may never be settled into a synthetic receipt.
-	ErrSourceLost = errors.New("hangar/output: source lost")
-
 	// ErrUnresolved is the honest answer when the exact outcome cannot yet be
 	// proved. It authorizes waiting and nothing else -- not capture, not
 	// release, not cleanup.
