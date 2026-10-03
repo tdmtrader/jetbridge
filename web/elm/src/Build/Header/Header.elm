@@ -32,7 +32,6 @@ import Message.ScrollDirection exposing (ScrollDirection(..))
 import Message.Subscription
     exposing
         ( Delivery(..)
-        , Subscription(..)
         )
 import Routes
 import SideBar.SideBar exposing (byPipelineId, lookupPipeline)
