@@ -27,7 +27,7 @@ import HoverState
 import Html exposing (Html)
 import Html.Attributes exposing (class)
 import Message.Effects exposing (Effect(..))
-import Message.Message exposing (DomID(..), Message(..))
+import Message.Message exposing (DomID(..), Message)
 import Routes exposing (StepID)
 import Time
 import Views.LoadingIndicator as LoadingIndicator
