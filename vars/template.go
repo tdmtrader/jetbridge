@@ -3,8 +3,9 @@ package vars
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
@@ -273,14 +274,7 @@ func (t varsTracker) ExtraError() error {
 }
 
 func names(mapWithNames map[string]struct{}) []string {
-	var names []string
-	for name, _ := range mapWithNames {
-		names = append(names, name)
-	}
-
-	sort.Strings(names)
-
-	return names
+	return slices.Sorted(maps.Keys(mapWithNames))
 }
 
 func identifier(varRef Reference) string {
