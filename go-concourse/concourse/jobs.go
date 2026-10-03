@@ -192,7 +192,7 @@ func (team *team) ClearTaskCache(pipelineRef atc.PipelineRef, jobName string, st
 
 	if err != nil {
 		return 0, err
-	} else {
-		return ctcResponse.CachesRemoved, nil
 	}
+
+	return ctcResponse.CachesRemoved, nil
 }
