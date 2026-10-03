@@ -156,11 +156,12 @@ func (m *Monitor) Initialize(logger lager.Logger, host string, attributes map[st
 	var emitter Emitter
 
 	for _, factory := range m.emitterFactories {
-		if factory.IsConfigured() {
-			emitter, err = factory.NewEmitter(attributes)
-			if err != nil {
-				return err
-			}
+		if !factory.IsConfigured() {
+			continue
+		}
+		emitter, err = factory.NewEmitter(attributes)
+		if err != nil {
+			return err
 		}
 	}
 
