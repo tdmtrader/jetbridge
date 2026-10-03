@@ -281,8 +281,12 @@ type validationCase struct {
 	Command string
 	// Tamper replaces the validate container's copy of the snapshot's base so
 	// the published change cannot apply to it. Its command then only touches
-	// a marker, which must not exist afterwards.
+	// Marker, which must not exist afterwards. The marker's path is absolute
+	// and fixed with the command: the command runs in the script's own
+	// scratch copy of the source, gone by the time the marker is checked, and
+	// the validation must record exactly this command.
 	Tamper  bool
+	Marker  string
 	Outcome string
 	// Exit is the command's recorded exit code; -1 when it did not run.
 	Exit int
@@ -302,7 +306,8 @@ func readyValidation(mode string) (validationCase, string, bool) {
 	case "validation fails":
 		return validationCase{Command: `test -f parser_test.go && echo "FAIL: parser_test.go" && exit 7`, Outcome: implement.ValidationFailed, Exit: 7}, surface, true
 	case "patch does not apply":
-		return validationCase{Tamper: true, Outcome: implement.ValidationNotApplied, Exit: -1}, surface, true
+		marker := filepath.Join(os.TempDir(), "implement-validate-ran-"+freshUUID())
+		return validationCase{Command: "touch '" + marker + "'", Tamper: true, Marker: marker, Outcome: implement.ValidationNotApplied, Exit: -1}, surface, true
 	}
 	return validationCase{}, "", false
 }
@@ -409,20 +414,17 @@ func runValidateTask(ctx context.Context, run submittedRun, client *implementcli
 				return err
 			}
 		}
-		command, marker := expected.Command, filepath.Join(container, "ran")
-		if expected.Tamper {
-			// The command runs in the script's own scratch copy of the
-			// source, which is gone by the time the marker is checked, so
-			// the marker's path is absolute.
-			command = "touch '" + marker + "'"
-		}
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-ec", script, "validate", command, "--run-id="+strconv.Itoa(run.RunID))
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-ec", script, "validate", expected.Command, "--run-id="+strconv.Itoa(run.RunID))
 		cmd.Dir = container
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("validate task failed instead of recording its outcome: %w: %s", err, out)
 		}
-		if _, err := os.Stat(marker); expected.Tamper && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("the validate command ran against a change that did not apply")
+		if expected.Tamper {
+			_, err := os.Stat(expected.Marker)
+			os.Remove(expected.Marker)
+			if !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("the validate command ran against a change that did not apply")
+			}
 		}
 		entries, err := os.ReadDir(filepath.Join(container, "validation"))
 		if err != nil || len(entries) != 1 || entries[0].Name() != implement.ValidationFile {
