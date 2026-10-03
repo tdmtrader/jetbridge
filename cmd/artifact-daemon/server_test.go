@@ -442,12 +442,13 @@ func TestGetResourceCache_StreamsDirectory(t *testing.T) {
 		if err != nil {
 			break
 		}
-		if hdr.Name == "version.txt" {
-			found = true
-			data, _ := io.ReadAll(tr)
-			if string(data) != "abc123" {
-				t.Errorf("expected abc123, got %q", string(data))
-			}
+		if hdr.Name != "version.txt" {
+			continue
+		}
+		found = true
+		data, _ := io.ReadAll(tr)
+		if string(data) != "abc123" {
+			t.Errorf("expected abc123, got %q", string(data))
 		}
 	}
 	if !found {
