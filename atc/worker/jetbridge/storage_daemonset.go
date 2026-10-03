@@ -968,7 +968,7 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 // POSTs the registration directly.
 func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, durableKey, volumeHandle, nodeName string) error {
 	if b.daemonClient == nil {
-		return fmt.Errorf("daemon client not configured")
+		return errors.New("daemon client not configured")
 	}
 
 	// Resolve the disk path from the locator or by convention.
