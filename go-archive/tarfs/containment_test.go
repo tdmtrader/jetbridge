@@ -43,6 +43,8 @@ func hardlink(name, target string) entry {
 }
 
 func tarOf(entries ...entry) io.Reader {
+	GinkgoHelper()
+
 	buf := new(bytes.Buffer)
 	w := tar.NewWriter(buf)
 	for _, e := range entries {
