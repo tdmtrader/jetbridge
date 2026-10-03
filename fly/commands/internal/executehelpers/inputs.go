@@ -99,9 +99,8 @@ func DetermineInputs(
 			if !found {
 				if taskInput.Optional {
 					continue
-				} else {
-					return nil, nil, nil, nil, fmt.Errorf("missing required input `%s`", taskInput.Name)
 				}
+				return nil, nil, nil, nil, fmt.Errorf("missing required input `%s`", taskInput.Name)
 			}
 		}
 
