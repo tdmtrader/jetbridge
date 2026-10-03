@@ -176,8 +176,7 @@ func (command *BuildsCommand) validatePipelineBuilds(builds []atc.Build, current
 		return nil, err
 	}
 
-	var found bool
-	builds, _, found, err = currentTeam.PipelineBuilds(
+	builds, _, found, err := currentTeam.PipelineBuilds(
 		command.Pipeline.Ref(),
 		page,
 	)
