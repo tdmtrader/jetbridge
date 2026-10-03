@@ -702,25 +702,26 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 
 	// Emit init container completion/failure events.
 	for _, cs := range pod.Status.InitContainerStatuses {
-		if cs.State.Terminated != nil && !t.completedInits[cs.Name] {
-			t.completedInits[cs.Name] = true
-			if cs.State.Terminated.ExitCode == 0 {
-				span.AddEvent("init.container.completed",
-					oteltrace.WithAttributes(
-						attribute.String("container.name", cs.Name),
-						attribute.String("container.image", cs.Image),
-					),
-				)
-			} else {
-				span.AddEvent("init.container.failed",
-					oteltrace.WithAttributes(
-						attribute.String("container.name", cs.Name),
-						attribute.String("container.image", cs.Image),
-						attribute.String("reason", cs.State.Terminated.Reason),
-						attribute.Int64("exit.code", int64(cs.State.Terminated.ExitCode)),
-					),
-				)
-			}
+		if cs.State.Terminated == nil || t.completedInits[cs.Name] {
+			continue
+		}
+		t.completedInits[cs.Name] = true
+		if cs.State.Terminated.ExitCode == 0 {
+			span.AddEvent("init.container.completed",
+				oteltrace.WithAttributes(
+					attribute.String("container.name", cs.Name),
+					attribute.String("container.image", cs.Image),
+				),
+			)
+		} else {
+			span.AddEvent("init.container.failed",
+				oteltrace.WithAttributes(
+					attribute.String("container.name", cs.Name),
+					attribute.String("container.image", cs.Image),
+					attribute.String("reason", cs.State.Terminated.Reason),
+					attribute.Int64("exit.code", int64(cs.State.Terminated.ExitCode)),
+				),
+			)
 		}
 	}
 
