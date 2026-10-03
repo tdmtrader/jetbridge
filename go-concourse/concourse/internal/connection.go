@@ -79,7 +79,7 @@ func (connection *connection) HTTPClient() *http.Client {
 
 // Deprecated
 func (connection *connection) Send(passedRequest Request, passedResponse *Response) error {
-	req, err := connection.createHTTPRequest(passedRequest)
+	req, err := newHTTPRequest(connection.requestGenerator, passedRequest)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (connection *connection) send(req *http.Request, returnResponseBody bool, p
 // Deprecated
 func (connection *connection) ConnectToEventStream(passedRequest Request) (*sse.EventSource, error) {
 	source, err := sse.Connect(connection.httpClient, time.Second, func() *http.Request {
-		request, reqErr := connection.createHTTPRequest(passedRequest)
+		request, reqErr := newHTTPRequest(connection.requestGenerator, passedRequest)
 		if reqErr != nil {
 			panic("unexpected error creating request: " + reqErr.Error())
 		}
@@ -148,30 +148,6 @@ func (connection *connection) ConnectToEventStream(passedRequest Request) (*sse.
 	}
 
 	return source, nil
-}
-
-// Deprecated
-func (connection *connection) createHTTPRequest(passedRequest Request) (*http.Request, error) {
-	body := requestBody(passedRequest)
-
-	req, err := connection.requestGenerator.CreateRequest(
-		passedRequest.RequestName,
-		passedRequest.Params,
-		body,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	req.URL.RawQuery = passedRequest.Query.Encode()
-
-	for h, vs := range passedRequest.Header {
-		for _, v := range vs {
-			req.Header.Add(h, v)
-		}
-	}
-
-	return req, nil
 }
 
 // Deprecated

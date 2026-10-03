@@ -41,7 +41,7 @@ func NewHTTPAgent(apiURL string, httpClient *http.Client, tracing bool) HTTPAgen
 
 func (a *httpAgent) Send(request Request) (http.Response, error) {
 
-	req, err := a.createHTTPRequest(request)
+	req, err := newHTTPRequest(a.requestGenerator, request)
 	if err != nil {
 		return http.Response{}, err
 	}
@@ -78,10 +78,10 @@ func (a *httpAgent) send(req *http.Request) (http.Response, error) {
 	return *response, nil
 }
 
-func (a *httpAgent) createHTTPRequest(request Request) (*http.Request, error) {
+func newHTTPRequest(generator *rata.RequestGenerator, request Request) (*http.Request, error) {
 	body := requestBody(request)
 
-	req, err := a.requestGenerator.CreateRequest(
+	req, err := generator.CreateRequest(
 		request.RequestName,
 		request.Params,
 		body,
