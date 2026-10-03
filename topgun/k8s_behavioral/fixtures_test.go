@@ -12,25 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureTaskWithImage returns a pipeline with a task using a custom image.
-func fixtureTaskWithImage(jobName, image, script string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: %s}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, image, script)
-}
-
 // fixtureGetTaskPut returns a pipeline with a get -> task -> put flow.
 func fixtureGetTaskPut(jobName, resourceName, script string) string {
 	return fmt.Sprintf(`
