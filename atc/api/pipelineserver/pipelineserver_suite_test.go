@@ -64,6 +64,7 @@ func createTeam(name string) db.Team {
 // under test only read its identity or flip its paused/archived state, so one
 // job is enough to make it a valid config.
 func createPipeline(team db.Team, name string) db.Pipeline {
+	GinkgoHelper()
 	pipeline, _, err := team.SavePipeline(
 		atc.PipelineRef{Name: name},
 		atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
