@@ -729,12 +729,13 @@ func (t *podEventTracker) emitPodLifecycleEvents(ctx context.Context, pod *corev
 		if cs.Name == mainContainerName {
 			continue
 		}
-		if cs.State.Running != nil && !t.startedSidecars[cs.Name] {
-			t.startedSidecars[cs.Name] = true
-			span.AddEvent("sidecar.started",
-				oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
-			)
+		if cs.State.Running == nil || t.startedSidecars[cs.Name] {
+			continue
 		}
+		t.startedSidecars[cs.Name] = true
+		span.AddEvent("sidecar.started",
+			oteltrace.WithAttributes(attribute.String("container.name", cs.Name)),
+		)
 	}
 }
 
