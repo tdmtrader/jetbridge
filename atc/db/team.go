@@ -443,7 +443,7 @@ func (t *team) IsContainerWithinTeam(handle string, isCheck bool) (bool, error) 
 func (t *team) FindContainerByHandle(
 	handle string,
 ) (Container, bool, error) {
-	creatingContainer, createdContainer, err := t.findContainer(sq.Eq{"handle": handle})
+	creatingContainer, createdContainer, err := findContainerWhere(t.conn, sq.Eq{"handle": handle})
 	if err != nil {
 		return nil, false, err
 	}
@@ -484,7 +484,7 @@ func (t *team) FindContainersByMetadata(metadata ContainerMetadata) ([]Container
 func (t *team) FindCreatedContainerByHandle(
 	handle string,
 ) (CreatedContainer, bool, error) {
-	_, createdContainer, err := t.findContainer(sq.Eq{"handle": handle})
+	_, createdContainer, err := findContainerWhere(t.conn, sq.Eq{"handle": handle})
 	if err != nil {
 		return nil, false, err
 	}
@@ -1569,28 +1569,6 @@ func checkIfRowsUpdated(tx Tx, query string, params ...any) (bool, error) {
 	}
 
 	return true, nil
-}
-
-func (t *team) findContainer(whereClause sq.Sqlizer) (CreatingContainer, CreatedContainer, error) {
-	creating, created, destroying, _, err := scanContainer(
-		selectContainers().
-			Where(whereClause).
-			RunWith(t.conn).
-			QueryRow(),
-		t.conn,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil, nil
-		}
-		return nil, nil, err
-	}
-
-	if destroying != nil {
-		return nil, nil, nil
-	}
-
-	return creating, created, nil
 }
 
 func scanPipeline(p *pipeline, scan scannable) error {

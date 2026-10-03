@@ -138,7 +138,7 @@ func (worker *worker) FindContainer(owner ContainerOwner) (CreatingContainer, Cr
 		return nil, nil, nil
 	}
 
-	return worker.findContainer(sq.And{
+	return findContainerWhere(worker.conn, sq.And{
 		sq.Eq{"worker_name": worker.name},
 		ownerQuery,
 	})
@@ -200,28 +200,6 @@ func (worker *worker) CreateContainer(owner ContainerOwner, meta ContainerMetada
 		*metadata,
 		worker.conn,
 	), nil
-}
-
-func (worker *worker) findContainer(whereClause sq.Sqlizer) (CreatingContainer, CreatedContainer, error) {
-	creating, created, destroying, _, err := scanContainer(
-		selectContainers().
-			Where(whereClause).
-			RunWith(worker.conn).
-			QueryRow(),
-		worker.conn,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil, nil
-		}
-		return nil, nil, err
-	}
-
-	if destroying != nil {
-		return nil, nil, nil
-	}
-
-	return creating, created, nil
 }
 
 func (worker *worker) ActiveTasks() (int, error) {

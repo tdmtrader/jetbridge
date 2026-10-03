@@ -359,6 +359,30 @@ func scanContainer(row sq.RowScanner, conn DbConn) (CreatingContainer, CreatedCo
 	return nil, nil, nil, nil, nil
 }
 
+// findContainerWhere returns the creating or created container matching
+// whereClause, or neither when no row matches or the match is destroying.
+func findContainerWhere(conn DbConn, whereClause sq.Sqlizer) (CreatingContainer, CreatedContainer, error) {
+	creating, created, destroying, _, err := scanContainer(
+		selectContainers().
+			Where(whereClause).
+			RunWith(conn).
+			QueryRow(),
+		conn,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+
+	if destroying != nil {
+		return nil, nil, nil
+	}
+
+	return creating, created, nil
+}
+
 func (repository *containerRepository) DestroyFailedContainers() (int, error) {
 	result, err := psql.Update("containers").
 		Set("state", atc.ContainerStateDestroying).
