@@ -827,8 +827,7 @@ var _ = Describe("Volume", func() {
 
 			Expect(sourceVolume.Type()).To(Equal(db.VolumeType(db.VolumeTypeContainer)))
 
-			var workerResourceCache *db.UsedWorkerResourceCache
-			workerResourceCache, err = sourceVolume.InitializeResourceCache(resourceCache)
+			workerResourceCache, err := sourceVolume.InitializeResourceCache(resourceCache)
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(sourceVolume.Type()).To(Equal(db.VolumeType(db.VolumeTypeResource)))
