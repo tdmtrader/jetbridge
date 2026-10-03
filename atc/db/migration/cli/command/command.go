@@ -42,7 +42,8 @@ func NewGenerateCommand(migrationDir string, migrationName string, migrationType
 func (c *GenerateCommand) Execute(args []string) error {
 	if c.Type == SQL {
 		return c.GenerateSQLMigration()
-	} else if c.Type == Go {
+	}
+	if c.Type == Go {
 		return c.GenerateGoMigration()
 	}
 	return fmt.Errorf("unsupported migration type %s. Supported types include %s and %s", c.Type, SQL, Go)
