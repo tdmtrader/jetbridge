@@ -14,7 +14,6 @@ module Colors exposing
     , buildTooltipText
     , buttonDisabledGrey
     , card
-    , cliIconHover
     , dashboardPipelineHeaderText
     , dashboardText
     , dropdownFaded
@@ -399,15 +398,6 @@ flySuccessTokenCopied =
 resourceError : String
 resourceError =
     "#e67e22"
-
-
-
------
-
-
-cliIconHover : String
-cliIconHover =
-    ColorValues.white
 
 
 
