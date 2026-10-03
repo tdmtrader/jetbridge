@@ -304,47 +304,6 @@ func NewAuthenticatedTarget(
 	), nil
 }
 
-func NewBasicAuthTarget(
-	name TargetName,
-	url string,
-	teamName string,
-	insecure bool,
-	username string,
-	password string,
-	caCert string,
-	clientCertPath string,
-	clientKeyPath string,
-	tracing bool,
-) (Target, error) {
-	caCertPool, err := loadCACertPool(caCert)
-	if err != nil {
-		return nil, err
-	}
-
-	var clientCertificate []tls.Certificate
-	clientCertificate, err = loadClientCertificate(clientCertPath, clientKeyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	httpClient := basicAuthHttpClient(username, password, insecure, caCertPool, clientCertificate)
-	client := concourse.NewClient(url, httpClient, tracing)
-
-	return NewTarget(
-		name,
-		teamName,
-		url,
-		nil,
-		caCert,
-		caCertPool,
-		clientCertPath,
-		clientKeyPath,
-		clientCertificate,
-		insecure,
-		client,
-	), nil
-}
-
 func (t *target) Client() concourse.Client {
 	return t.client
 }
