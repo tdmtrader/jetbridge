@@ -195,14 +195,12 @@ func LoadUnauthenticatedTarget(
 		return nil, err
 	}
 
-	var clientCertificate []tls.Certificate
-
 	if clientCertPath == "" && clientKeyPath == "" {
 		clientCertPath = targetProps.ClientCertPath
 		clientKeyPath = targetProps.ClientKeyPath
 	}
 
-	clientCertificate, err = loadClientCertificate(clientCertPath, clientKeyPath)
+	clientCertificate, err := loadClientCertificate(clientCertPath, clientKeyPath)
 	if err != nil {
 		return nil, err
 	}
