@@ -3,6 +3,7 @@ package jetbridge
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -37,18 +38,18 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 	var empty corev1.Container
 	read := input.HangarRead
 	if !b.config.HangarEnabled || !b.config.OutputPlaneEnabled || read == nil || read.Validate() != nil || input.HangarTree == nil || input.Artifact != nil || read.Ref != *input.HangarTree {
-		return empty, fmt.Errorf("managed input requires the output plane and exact read authority")
+		return empty, errors.New("managed input requires the output plane and exact read authority")
 	}
 	name := volumeNameForMountPath(mounts, input.DestinationPath)
 	if name == "" || read.Destination.Handle != handle || read.Destination.Volume != name || hostPathForVolume(volumes, name) != filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, name) {
-		return empty, fmt.Errorf("managed input read authority does not match its node-local volume")
+		return empty, errors.New("managed input read authority does not match its node-local volume")
 	}
 	payload, err := json.Marshal(read)
 	if err != nil {
 		return empty, err
 	}
 	if len(payload) > maxHangarMaterializationBytes {
-		return empty, fmt.Errorf("managed input materialization exceeds its request bound")
+		return empty, errors.New("managed input materialization exceeds its request bound")
 	}
 	receipt, err := json.Marshal(read.Ref)
 	if err != nil {
