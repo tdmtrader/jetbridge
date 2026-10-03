@@ -171,9 +171,9 @@ func (team *team) ClearResourceVersions(pipelineRef atc.PipelineRef, resourceNam
 	err := team.connection.Send(request, &response)
 	if err != nil {
 		return 0, err
-	} else {
-		return crvResponse.VersionsRemoved, nil
 	}
+
+	return crvResponse.VersionsRemoved, nil
 }
 
 func (team *team) CopyResourceVersions(pipelineRef atc.PipelineRef, resourceName string, fromScopeID int) (int, error) {
