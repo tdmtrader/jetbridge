@@ -3,7 +3,6 @@ package runs
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -60,7 +59,7 @@ func (s *CancellationSources) ExecuteCancellationOperation(ctx context.Context, 
 		return db.CancellationUnavailable, db.ErrRunCancellationExternalWork
 	}
 	if s.Conn == nil || s.Factory == nil || s.Repository == nil || s.Source == nil || s.Coordinator == nil {
-		return db.CancellationUnavailable, fmt.Errorf("incomplete cancellation source handler")
+		return db.CancellationUnavailable, errors.New("incomplete cancellation source handler")
 	}
 	var in db.RunCancellationSource
 	err := s.transaction(ctx, func(tx db.Tx) error {
