@@ -133,9 +133,8 @@ type PrometheusConfig struct {
 // hashable. To work around this, we compute a string from the labels and use this as the keys of
 // the map.
 func serializeLabels(labels *prometheus.Labels) string {
-	var key string
 	names := slices.Sorted(maps.Values(*labels))
-	key = strings.Join(names, "_")
+	key := strings.Join(names, "_")
 
 	return key
 }
