@@ -10,18 +10,18 @@ import (
 
 var worker string
 
-// WorkerVariable names an installed jb-review-worker to use instead of
+// workerVariable names an installed jb-review-worker to use instead of
 // building one: the worker image's own, when these tests run against it.
-const WorkerVariable = "JB_WORKER_EXECUTABLE"
+const workerVariable = "JB_WORKER_EXECUTABLE"
 
 // Main runs a package's tests with cmd/jb-review-worker built once for all
 // of them. The worker binary is what Codex starts as every workload's tool
 // server (input-tools, workspace-tools), so a session under test serves its
 // tools through the production executable.
 func Main(m *testing.M) {
-	if installed := os.Getenv(WorkerVariable); installed != "" {
+	if installed := os.Getenv(workerVariable); installed != "" {
 		if !filepath.IsAbs(installed) {
-			fmt.Fprintf(os.Stderr, "$%s must be an absolute path\n", WorkerVariable)
+			fmt.Fprintf(os.Stderr, "$%s must be an absolute path\n", workerVariable)
 			os.Exit(1)
 		}
 		worker = installed
