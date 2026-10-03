@@ -1078,7 +1078,6 @@ var _ = Describe("Builds API", func() {
 			realBuildFactory = deps.buildFactory
 
 			var err error
-			var found bool
 			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
 			pipeline = database.SavePipeline(team, "pipeline1", atc.Config{
