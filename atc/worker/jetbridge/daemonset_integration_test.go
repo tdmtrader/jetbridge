@@ -1982,12 +1982,13 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 	// The shared path must be mounted in the sidecar
 	foundShared := false
 	for _, m := range sidecar.VolumeMounts {
-		if filepath.Clean(m.MountPath) == "/tmp/build/shared" {
-			foundShared = true
-			// The volume name should be input-*, not output-*
-			if !strings.HasPrefix(m.Name, "input-") {
-				t.Errorf("shared mount should use input volume, got %s", m.Name)
-			}
+		if filepath.Clean(m.MountPath) != "/tmp/build/shared" {
+			continue
+		}
+		foundShared = true
+		// The volume name should be input-*, not output-*
+		if !strings.HasPrefix(m.Name, "input-") {
+			t.Errorf("shared mount should use input volume, got %s", m.Name)
 		}
 	}
 	if !foundShared {
