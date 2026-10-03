@@ -2,8 +2,9 @@ package implement
 
 import (
 	"fmt"
-	"html"
 	"strings"
+
+	"github.com/concourse/concourse/agent/session"
 )
 
 // Markdown renders a verified change for a person: what the agent says it
@@ -22,19 +23,19 @@ func (s *Summary) markdown(patch []byte, v *Validation) string {
 	if !s.Complete {
 		state = "incomplete"
 	}
-	fmt.Fprintf(&b, "# Implementation: %s\n\n%s\n\n", state, markdownText(s.Summary))
+	fmt.Fprintf(&b, "# Implementation: %s\n\n%s\n\n", state, session.MarkdownText(s.Summary))
 	if s.RunID != nil {
 		fmt.Fprintf(&b, "Run: %d\n\n", *s.RunID)
 	}
 	fmt.Fprintf(&b, "Base: %s\n\nInput: %s\n\nPatch: %s\n\n", s.Provenance.BaseCommit, s.Provenance.InputDigest, s.PatchDigest)
-	fmt.Fprintf(&b, "Author: %s %s, model %s, %s\n\n", markdownText(s.Provenance.Provider), markdownText(s.Provenance.CodexVersion), markdownText(s.Provenance.ModelRequested), s.Provenance.ExecutionPolicy)
+	fmt.Fprintf(&b, "Author: %s %s, model %s, %s\n\n", session.MarkdownText(s.Provenance.Provider), session.MarkdownText(s.Provenance.CodexVersion), session.MarkdownText(s.Provenance.ModelRequested), s.Provenance.ExecutionPolicy)
 	b.WriteString("## Limitations\n\n")
 	for _, l := range s.Limitations {
-		fmt.Fprintf(&b, "- %s\n", markdownText(l))
+		fmt.Fprintf(&b, "- %s\n", session.MarkdownText(l))
 	}
 	b.WriteString("\n## Changed files\n\n")
 	for _, f := range s.ChangedFiles {
-		fmt.Fprintf(&b, "- %s %s\n", f.Status, markdownText(f.Path))
+		fmt.Fprintf(&b, "- %s %s\n", f.Status, session.MarkdownText(f.Path))
 	}
 	if v != nil {
 		b.WriteString("\n")
@@ -50,8 +51,4 @@ func (s *Summary) markdown(patch []byte, v *Validation) string {
 	}
 	b.WriteString(fence + "\n")
 	return b.String()
-}
-
-func markdownText(s string) string {
-	return strings.NewReplacer("\\", "\\\\", "`", "\\`", "[", "\\[", "]", "\\]", "*", "\\*", "_", "\\_", "#", "\\#").Replace(html.EscapeString(s))
 }

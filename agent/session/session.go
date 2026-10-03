@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"html"
 	"io"
 	"os"
 	"os/exec"
@@ -215,4 +216,10 @@ func (s *Session) Run(ctx context.Context, p Policy, prompt string, allow func(E
 		return errors.New("Codex did not complete its turn")
 	}
 	return nil
+}
+
+// MarkdownText escapes free text for a workload's Markdown report: HTML-escaped
+// first, then with each Markdown control character backslashed.
+func MarkdownText(s string) string {
+	return strings.NewReplacer("\\", "\\\\", "`", "\\`", "[", "\\[", "]", "\\]", "*", "\\*", "_", "\\_", "#", "\\#").Replace(html.EscapeString(s))
 }

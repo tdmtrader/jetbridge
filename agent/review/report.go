@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"os"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/concourse/concourse/agent/capture"
+	"github.com/concourse/concourse/agent/session"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -277,23 +277,19 @@ func validateAssessment(b *Bundle, a *Assessment) ([]string, error) {
 // Markdown renders the report itself; there is no separately authored narrative.
 func (r *Report) Markdown() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Code review: %s\n\n%s\n\n", r.Verdict, markdownText(r.Assessment.Summary))
+	fmt.Fprintf(&b, "# Code review: %s\n\n%s\n\n", r.Verdict, session.MarkdownText(r.Assessment.Summary))
 	fmt.Fprintf(&b, "Base: %s\n\nHead: %s\n\n", r.Provenance.BaseCommit, r.Provenance.HeadCommit)
 	for _, f := range r.Assessment.Findings {
 		fmt.Fprintf(&b, "## %s · %s · %s\n\n%s\n\n%s\n\nLocation: %s/%s:%d–%d\n\nRecommendation: %s\n\n",
-			f.ID, f.Severity, f.Dimension, markdownText(f.Title), markdownText(f.Explanation), f.Location.Side, markdownText(f.Location.Path), f.Location.StartLine, f.Location.EndLine, markdownText(f.Recommendation))
+			f.ID, f.Severity, f.Dimension, session.MarkdownText(f.Title), session.MarkdownText(f.Explanation), f.Location.Side, session.MarkdownText(f.Location.Path), f.Location.StartLine, f.Location.EndLine, session.MarkdownText(f.Recommendation))
 	}
 	b.WriteString("## Limitations\n\n")
 	for _, s := range r.Assessment.Limitations {
-		fmt.Fprintf(&b, "- %s\n", markdownText(s))
+		fmt.Fprintf(&b, "- %s\n", session.MarkdownText(s))
 	}
 	b.WriteString("\n## Reviewed files\n\n")
 	for _, s := range r.Assessment.ReviewedFiles {
-		fmt.Fprintf(&b, "- %s\n", markdownText(s))
+		fmt.Fprintf(&b, "- %s\n", session.MarkdownText(s))
 	}
 	return b.String()
-}
-
-func markdownText(s string) string {
-	return strings.NewReplacer("\\", "\\\\", "`", "\\`", "[", "\\[", "]", "\\]", "*", "\\*", "_", "\\_", "#", "\\#").Replace(html.EscapeString(s))
 }
