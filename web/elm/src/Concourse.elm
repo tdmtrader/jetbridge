@@ -97,7 +97,6 @@ module Concourse exposing
     , pipelineId
     , resourceId
     , resourceIdFromVersionedResourceId
-    , retrieveCSRFToken
     , runNumberFromInstanceVars
     , toInstanceGroupId
     , toPipelineId
@@ -149,11 +148,6 @@ type alias CSRFToken =
 csrfTokenHeaderName : String
 csrfTokenHeaderName =
     "X-Csrf-Token"
-
-
-retrieveCSRFToken : Dict String String -> Result String CSRFToken
-retrieveCSRFToken headers =
-    Dict.get (String.toLower csrfTokenHeaderName) (keysToLower headers) |> Result.fromMaybe "error CSRFToken not found"
 
 
 keysToLower : Dict String a -> Dict String a
