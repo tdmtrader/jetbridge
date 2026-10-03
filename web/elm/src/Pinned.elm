@@ -2,7 +2,6 @@ module Pinned exposing
     ( CommentState
     , ResourcePinState(..)
     , VersionPinState(..)
-    , finishPinning
     , pinState
     , quitUnpinning
     , stable
@@ -46,22 +45,6 @@ startPinningTo destination resourcePinState =
 
         PinnedDynamicallyTo comment version ->
             Switching comment version destination
-
-        x ->
-            x
-
-
-finishPinning :
-    (id -> Maybe version)
-    -> ResourcePinState version id CommentState
-    -> ResourcePinState version id CommentState
-finishPinning lookup resourcePinState =
-    case resourcePinState of
-        PinningTo b ->
-            lookup b
-                |> Maybe.map
-                    (PinnedDynamicallyTo { comment = "", pristineComment = "" })
-                |> Maybe.withDefault NotPinned
 
         x ->
             x
