@@ -1,7 +1,6 @@
 package topgun
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	testotel "github.com/concourse/concourse/testhelpers/otel"
 	"github.com/onsi/gomega/gexec"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/oauth2"
 
 	. "github.com/onsi/gomega"
 )
@@ -179,20 +177,4 @@ func RequestCredsInfo(webUrl, token string) ([]byte, error) {
 	Expect(err).NotTo(HaveOccurred())
 
 	return body, err
-}
-
-func FetchToken(webURL, username, password string) (*oauth2.Token, error) {
-	oauth2Config := oauth2.Config{
-		ClientID:     "fly",
-		ClientSecret: "Zmx5",
-		Endpoint:     oauth2.Endpoint{TokenURL: webURL + "/sky/issuer/token"},
-		Scopes:       []string{"openid", "profile", "email", "federated:id"},
-	}
-
-	token, err := oauth2Config.PasswordCredentialsToken(context.Background(), username, password)
-	if err != nil {
-		return nil, err
-	}
-
-	return token, nil
 }
