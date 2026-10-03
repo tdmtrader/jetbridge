@@ -26,6 +26,9 @@ var _ = Describe("Validate Pipeline", func() {
 			var err error
 
 			tmpdir, err = os.MkdirTemp("", "validate-test")
+			DeferCleanup(func() {
+				os.RemoveAll(tmpdir)
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			err = os.WriteFile(
@@ -172,10 +175,6 @@ jobs:
 			unknownKeyPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "unknown-key-pipeline.yml")), nil, nil, nil, nil)
 			dupkeyPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "dupkey-pipeline.yml")), nil, nil, nil, nil)
 			badTemplate = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "bad-template-pipeline.yml")), nil, nil, nil, nil)
-		})
-
-		AfterEach(func() {
-			os.RemoveAll(tmpdir)
 		})
 
 		It("validates a good pipeline", func() {
