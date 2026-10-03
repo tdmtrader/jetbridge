@@ -51,26 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureTaskWithTimeout returns a pipeline with a task that has a timeout.
-func fixtureTaskWithTimeout(jobName, timeout, script string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    timeout: %s
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, timeout, script)
-}
-
 // fixtureTaskWithRetries returns a pipeline with a task that has attempts.
 func fixtureTaskWithRetries(jobName string, attempts int, script string) string {
 	return fmt.Sprintf(`
