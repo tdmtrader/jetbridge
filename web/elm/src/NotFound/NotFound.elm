@@ -13,7 +13,7 @@ import Html exposing (Html)
 import Html.Attributes exposing (class, href, id, src)
 import Login.Login as Login
 import Message.Effects exposing (Effect(..))
-import Message.Message exposing (Message(..))
+import Message.Message exposing (Message)
 import Message.Subscription
     exposing
         ( Delivery(..)
