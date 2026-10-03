@@ -42,13 +42,13 @@ type Transport struct {
 func New(config Config) (*Transport, error) {
 	u, err := url.Parse(config.Endpoint)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return nil, fmt.Errorf("disk endpoint must be an HTTPS origin")
+		return nil, errors.New("disk endpoint must be an HTTPS origin")
 	}
 	if err := hangar.Scope(config.StoreID).Validate(); err != nil {
 		return nil, fmt.Errorf("disk identity: %w", err)
 	}
 	if config.Timeout <= 0 {
-		return nil, fmt.Errorf("disk timeout must be positive")
+		return nil, errors.New("disk timeout must be positive")
 	}
 	key, err := os.ReadFile(config.TokenFile)
 	if err != nil {
@@ -56,7 +56,7 @@ func New(config Config) (*Transport, error) {
 	}
 	token := strings.TrimSpace(string(key))
 	if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(token, "\r\n\x00") {
-		return nil, fmt.Errorf("disk credential must contain 32..4096 printable bytes")
+		return nil, errors.New("disk credential must contain 32..4096 printable bytes")
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if config.CACert != "" {
@@ -66,7 +66,7 @@ func New(config Config) (*Transport, error) {
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("invalid disk CA")
+			return nil, errors.New("invalid disk CA")
 		}
 		tlsConfig.RootCAs = pool
 	}
