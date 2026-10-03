@@ -3,7 +3,6 @@ module FlySuccess.Text exposing
     , copyTokenButton
     , copyTokenInput
     , firstParagraph
-    , flyLoginLinkText
     , pending
     , secondParagraph
     , sendTokenButton
@@ -100,9 +99,4 @@ copyTokenInput =
 
 sendTokenButton : String
 sendTokenButton =
-    "send token to fly directly"
-
-
-flyLoginLinkText : Line
-flyLoginLinkText =
     "send token to fly directly"
