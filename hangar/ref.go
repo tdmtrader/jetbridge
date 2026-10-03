@@ -1,6 +1,7 @@
 package hangar
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -12,15 +13,15 @@ type Scope string
 func (scope Scope) Validate() error {
 	raw := string(scope)
 	if len(raw) < 1 || len(raw) > 63 {
-		return fmt.Errorf("hangar: scope must contain 1 to 63 ASCII bytes")
+		return errors.New("hangar: scope must contain 1 to 63 ASCII bytes")
 	}
 	if !isLowerAlphanumeric(raw[0]) {
-		return fmt.Errorf("hangar: scope must start with a lowercase alphanumeric character")
+		return errors.New("hangar: scope must start with a lowercase alphanumeric character")
 	}
 	for i := 1; i < len(raw); i++ {
 		character := raw[i]
 		if !isLowerAlphanumeric(character) && character != '.' && character != '_' && character != '-' {
-			return fmt.Errorf("hangar: scope contains an invalid character")
+			return errors.New("hangar: scope contains an invalid character")
 		}
 	}
 	return nil
