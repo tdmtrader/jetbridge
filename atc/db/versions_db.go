@@ -658,9 +658,8 @@ func (cursor BuildCursor) OlderBuilds(idCol string) sq.Sqlizer {
 				sq.Lt{idCol: cursor.ID},
 			},
 		}
-	} else {
-		return sq.Expr("COALESCE(rerun_of, "+idCol+") < ?", cursor.ID)
 	}
+	return sq.Expr("COALESCE(rerun_of, "+idCol+") < ?", cursor.ID)
 }
 
 func (cursor BuildCursor) NewerBuilds(idCol string) sq.Sqlizer {
