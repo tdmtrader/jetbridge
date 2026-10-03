@@ -58,14 +58,14 @@ func Initialize(root, id string) error {
 		return err
 	}
 	if !filepath.IsAbs(root) {
-		return fmt.Errorf("disk root must be absolute")
+		return errors.New("disk root must be absolute")
 	}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
 	info, err := os.Lstat(root)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("disk root must be a real directory")
+		return errors.New("disk root must be a real directory")
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -74,7 +74,7 @@ func Initialize(root, id string) error {
 	// ext filesystems may have a provider-created lost+found directory.
 	for _, entry := range entries {
 		if entry.Name() != "lost+found" {
-			return fmt.Errorf("refusing to initialize nonempty disk root")
+			return errors.New("refusing to initialize nonempty disk root")
 		}
 	}
 	index := filepath.Join(root, "index.db")
