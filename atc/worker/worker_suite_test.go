@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
-	"github.com/concourse/concourse/atc/worker/workertest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -53,10 +52,6 @@ var _ = BeforeEach(func() {
 func TestWorker(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Worker Suite")
-}
-
-func Setup(setup ...workertest.SetupFunc) *workertest.Scenario {
-	return workertest.Setup(dbConn, lockFactory, setup...)
 }
 
 var Test = It
