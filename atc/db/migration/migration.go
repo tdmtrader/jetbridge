@@ -235,7 +235,7 @@ func (m *migrator) SupportedVersion() (int, error) {
 	}
 
 	if len(migrations) == 0 {
-		return 0, fmt.Errorf("no migrations")
+		return 0, errors.New("no migrations")
 	}
 
 	return migrations[len(migrations)-1].Version, nil
