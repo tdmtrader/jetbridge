@@ -15,13 +15,11 @@ type kubernetesFactory struct {
 }
 
 func NewKubernetesFactory(logger lager.Logger, client kubernetes.Interface, namespacePrefix string) *kubernetesFactory {
-	factory := &kubernetesFactory{
+	return &kubernetesFactory{
 		logger:          logger,
 		client:          client,
 		namespacePrefix: namespacePrefix,
 	}
-
-	return factory
 }
 
 func (factory *kubernetesFactory) NewSecrets() creds.Secrets {
