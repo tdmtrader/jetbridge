@@ -173,10 +173,9 @@ func (r *groupResolver) trySatisfyPassedConstraintsForInput(ctx context.Context,
 		if worked {
 			// resolving recursively worked!
 			break
-		} else {
-			span.SetStatus(codes.Error, "")
-			return false, db.NoSatisfiableBuilds, nil
 		}
+		span.SetStatus(codes.Error, "")
+		return false, db.NoSatisfiableBuilds, nil
 	}
 
 	// all passed constraints were satisfied
