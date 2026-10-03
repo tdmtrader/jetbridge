@@ -591,6 +591,8 @@ func insertV801FixtureData(db *sql.DB) {
 }
 
 func verifyFixtureDataPresent(db *sql.DB, preMigration bool) {
+	GinkgoHelper()
+
 	// Core pipeline data must survive migration unchanged
 	expectRowCount(db, "teams", 2)
 	expectRowCount(db, "pipelines", 3)
