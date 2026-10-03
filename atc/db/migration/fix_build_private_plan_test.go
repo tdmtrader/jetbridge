@@ -118,6 +118,8 @@ func ExpectBuildWithPlan(dbConn *sql.DB, name, expectedPlan string) {
 }
 
 func fetchBuildPlan(dbConn *sql.DB, name string) sql.NullString {
+	GinkgoHelper()
+
 	var plan sql.NullString
 	err := dbConn.QueryRow("SELECT private_plan FROM builds WHERE name = $1", name).Scan(&plan)
 	Expect(err).NotTo(HaveOccurred())
