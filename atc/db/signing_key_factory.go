@@ -2,7 +2,7 @@ package db
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
@@ -127,7 +127,7 @@ func (f *signingKeyFactory) GetNewestKey(keyType SigningKeyType) (SigningKey, er
 
 		return signingKey, nil
 	}
-	return nil, fmt.Errorf("no signing key found with specified type")
+	return nil, errors.New("no signing key found with specified type")
 }
 
 // the jwk type does not expose the kty header to us, so we have to infer it from the alg
