@@ -355,7 +355,7 @@ func (v *DaemonSetVolume) daemonHost(ctx context.Context) (string, error) {
 	}
 
 	if v.nodeIPResolver == nil {
-		return "", fmt.Errorf("no node IP resolver configured")
+		return "", errors.New("no node IP resolver configured")
 	}
 
 	nodeIP, err := v.nodeIPResolver.Resolve(ctx, v.sourceNode)
