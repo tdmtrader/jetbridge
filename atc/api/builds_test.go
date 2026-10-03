@@ -85,17 +85,6 @@ type buildsAPIBuildFactoryState struct {
 	buildCalls       []int
 }
 
-func cloneBuildsAPIPage(page db.Page) db.Page {
-	cloned := page
-	if page.From != nil {
-		cloned.From = db.NewIntPtr(*page.From)
-	}
-	if page.To != nil {
-		cloned.To = db.NewIntPtr(*page.To)
-	}
-	return cloned
-}
-
 func (state *buildsAPIBuildFactoryState) setVisibleBuildsError(err error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -122,7 +111,7 @@ func (state *buildsAPIBuildFactoryState) visibleBuildsCalls() []buildsAPIVisible
 	for i, call := range state.visibleCalls {
 		calls[i] = buildsAPIVisibleBuildsCall{
 			teamNames: append([]string(nil), call.teamNames...),
-			page:      cloneBuildsAPIPage(call.page),
+			page:      cloneAPIPage(call.page),
 		}
 	}
 	return calls
@@ -134,7 +123,7 @@ func (state *buildsAPIBuildFactoryState) allBuildsCalls() []db.Page {
 
 	calls := make([]db.Page, len(state.allCalls))
 	for i, call := range state.allCalls {
-		calls[i] = cloneBuildsAPIPage(call)
+		calls[i] = cloneAPIPage(call)
 	}
 	return calls
 }
@@ -154,7 +143,7 @@ func (factory *buildsAPIBuildFactory) VisibleBuilds(teamNames []string, page db.
 	factory.state.mu.Lock()
 	factory.state.visibleCalls = append(factory.state.visibleCalls, buildsAPIVisibleBuildsCall{
 		teamNames: append([]string(nil), teamNames...),
-		page:      cloneBuildsAPIPage(page),
+		page:      cloneAPIPage(page),
 	})
 	err := factory.state.visibleBuildsErr
 	factory.state.mu.Unlock()
@@ -167,7 +156,7 @@ func (factory *buildsAPIBuildFactory) VisibleBuilds(teamNames []string, page db.
 
 func (factory *buildsAPIBuildFactory) AllBuilds(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
 	factory.state.mu.Lock()
-	factory.state.allCalls = append(factory.state.allCalls, cloneBuildsAPIPage(page))
+	factory.state.allCalls = append(factory.state.allCalls, cloneAPIPage(page))
 	factory.state.mu.Unlock()
 
 	return factory.BuildFactory.AllBuilds(page)

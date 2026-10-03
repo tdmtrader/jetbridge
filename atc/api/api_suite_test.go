@@ -323,3 +323,14 @@ func TestAPI(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "API Suite")
 }
+
+func cloneAPIPage(page db.Page) db.Page {
+	cloned := page
+	if page.From != nil {
+		cloned.From = db.NewIntPtr(*page.From)
+	}
+	if page.To != nil {
+		cloned.To = db.NewIntPtr(*page.To)
+	}
+	return cloned
+}

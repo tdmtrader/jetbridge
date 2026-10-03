@@ -28,17 +28,6 @@ type teamsAPITeamState struct {
 	buildPages        []db.Page
 }
 
-func cloneTeamsAPIPage(page db.Page) db.Page {
-	cloned := page
-	if page.From != nil {
-		cloned.From = db.NewIntPtr(*page.From)
-	}
-	if page.To != nil {
-		cloned.To = db.NewIntPtr(*page.To)
-	}
-	return cloned
-}
-
 func (state *teamsAPITeamState) notifyCacherCallCount() int {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -51,7 +40,7 @@ func (state *teamsAPITeamState) buildPageSnapshot() []db.Page {
 
 	pages := make([]db.Page, len(state.buildPages))
 	for i, page := range state.buildPages {
-		pages[i] = cloneTeamsAPIPage(page)
+		pages[i] = cloneAPIPage(page)
 	}
 	return pages
 }
@@ -93,7 +82,7 @@ func (team *teamsAPITeam) Rename(name string) error {
 
 func (team *teamsAPITeam) Builds(page db.Page) ([]db.BuildForAPI, db.Pagination, error) {
 	team.state.mu.Lock()
-	team.state.buildPages = append(team.state.buildPages, cloneTeamsAPIPage(page))
+	team.state.buildPages = append(team.state.buildPages, cloneAPIPage(page))
 	err := team.state.buildsErr
 	team.state.mu.Unlock()
 	if err != nil {
