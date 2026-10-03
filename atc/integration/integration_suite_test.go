@@ -134,6 +134,8 @@ func setupTeam(atcURL string, team atc.Team) {
 }
 
 func setupPipeline(atcURL, teamName string, config []byte) {
+	GinkgoHelper()
+
 	ccClient := login(atcURL, "test", "test")
 	_, _, _, err := ccClient.Team(teamName).CreateOrUpdatePipelineConfig(atc.PipelineRef{Name: "pipeline-name"}, "0", config, false)
 	Expect(err).ToNot(HaveOccurred())
