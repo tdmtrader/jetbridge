@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/concourse/concourse/atc"
+	"slices"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -375,9 +376,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 		return nil, Pagination{}, err
 	}
 	if reverse {
-		for i, j := 0, len(builds)-1; i < j; i, j = i+1, j-1 {
-			builds[i], builds[j] = builds[j], builds[i]
-		}
+		slices.Reverse(builds)
 	}
 
 	if len(builds) == 0 {
