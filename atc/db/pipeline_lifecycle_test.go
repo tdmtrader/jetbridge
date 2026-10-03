@@ -244,6 +244,7 @@ var _ = Describe("PipelineLifecycle", func() {
 		})
 
 		pipelineBuildEventsExists := func(id int) bool {
+			GinkgoHelper()
 			var exists bool
 			err = dbConn.QueryRow(fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'pipeline_build_events_%d')", id)).Scan(&exists)
 			Expect(err).ToNot(HaveOccurred())
