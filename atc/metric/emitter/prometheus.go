@@ -2,10 +2,11 @@ package emitter
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -132,14 +133,8 @@ type PrometheusConfig struct {
 // hashable. To work around this, we compute a string from the labels and use this as the keys of
 // the map.
 func serializeLabels(labels *prometheus.Labels) string {
-	var (
-		key   string
-		names []string
-	)
-	for _, v := range *labels {
-		names = append(names, v)
-	}
-	sort.Strings(names)
+	var key string
+	names := slices.Sorted(maps.Values(*labels))
 	key = strings.Join(names, "_")
 
 	return key
