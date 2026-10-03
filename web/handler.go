@@ -30,7 +30,7 @@ func NewHandler(logger lager.Logger, livePublicDir string) (http.Handler, error)
 	webMux := http.NewServeMux()
 
 	webMux.Handle("/public/", PublicHandler(publicFS))
-	webMux.Handle("/robots.txt", RobotsHandler)
+	webMux.Handle("/robots.txt", robotsHandler)
 	webMux.Handle("/", IndexHandler(logger, publicFS, dynamic))
 
 	return webMux, nil
