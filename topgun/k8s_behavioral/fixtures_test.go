@@ -12,25 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureSimpleTask returns a pipeline with a single inline task job.
-func fixtureSimpleTask(jobName, script string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, script)
-}
-
 // fixtureTaskWithParams returns a pipeline with a task that has params.
 func fixtureTaskWithParams(jobName string, params map[string]string, script string) string {
 	paramsYAML := ""
