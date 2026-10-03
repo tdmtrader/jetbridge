@@ -294,9 +294,7 @@ func TestEveryCrashHalfSelectsExactlyOneLegalTransition(t *testing.T) {
 			// stopped here would pin its incarnation on the node forever.
 			crash: "after the receipt was registered, before the source was released",
 			record: func() output.HandoffRecord {
-				record := registeredCapture()
-
-				return record
+				return registeredCapture()
 			}(),
 			want:    TransitionReleaseSource,
 			notWant: []Transition{TransitionRegisterReceipt, TransitionPublish, TransitionNone},
