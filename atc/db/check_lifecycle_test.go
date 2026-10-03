@@ -66,6 +66,7 @@ var _ = Describe("Check Lifecycle", func() {
 		}
 
 		finish := func(build db.Build, scope db.ResourceConfigScope) {
+			GinkgoHelper()
 			err := build.Finish(db.BuildStatusSucceeded)
 			Expect(err).ToNot(HaveOccurred())
 			_, err = scope.UpdateLastCheckEndTime(true)
