@@ -72,7 +72,7 @@ var _ = Describe("bounding direct recursion", func() {
 		var buildID int
 		Expect(dbConn.QueryRow(
 			"SELECT id FROM builds WHERE pipeline_id = $1 ORDER BY id LIMIT 1",
-			run.PayloadPipelineID,
+			run.PayloadID,
 		).Scan(&buildID)).To(Succeed())
 
 		build, found, err := buildFactory.Build(buildID)

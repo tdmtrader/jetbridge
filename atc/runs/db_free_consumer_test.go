@@ -93,8 +93,8 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			Expect(run.ID).To(BeNumerically(">", 0))
 			Expect(run.Number).To(Equal(1))
 			Expect(run.TemplateID).To(BeNumerically(">", 0))
-			Expect(run.PayloadPipelineID).To(BeNumerically(">", 0))
-			Expect(run.PayloadPipelineID).NotTo(Equal(run.TemplateID))
+			Expect(run.PayloadID).To(BeNumerically(">", 0))
+			Expect(run.PayloadID).NotTo(Equal(run.TemplateID))
 			Expect(run.CreatedBy).To(Equal("member-id"))
 
 			// The hook saw the same run, before the caller committed.

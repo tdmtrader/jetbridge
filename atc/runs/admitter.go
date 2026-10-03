@@ -170,7 +170,7 @@ func (a *admitter) LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
 		return Run{}, err
 	}
 
-	run.PayloadPipelineID = int(payloadID.Int64)
+	run.PayloadID = int(payloadID.Int64)
 
 	return run, nil
 }
@@ -309,10 +309,10 @@ func portRun(creation db.RunCreation) Run {
 	payloadID, _ := creation.Run.InstancePipelineID()
 
 	return Run{
-		ID:                creation.Run.ID(),
-		Number:            creation.Run.Number(),
-		TemplateID:        creation.Run.TemplatePipelineID(),
-		PayloadPipelineID: payloadID,
-		CreatedBy:         creation.Run.CreatedBy(),
+		ID:         creation.Run.ID(),
+		Number:     creation.Run.Number(),
+		TemplateID: creation.Run.TemplatePipelineID(),
+		PayloadID:  payloadID,
+		CreatedBy:  creation.Run.CreatedBy(),
 	}
 }

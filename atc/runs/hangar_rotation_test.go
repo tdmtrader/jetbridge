@@ -130,7 +130,7 @@ var _ = Describe("a Hangar output epoch rotation", func() {
 		_, err = dbConn.Exec(`UPDATE builds SET status='failed', completed=true, end_time=now() WHERE pipeline_run_id=$1 AND NOT completed`, first.ID)
 		Expect(err).NotTo(HaveOccurred())
 		// The scheduler has seen its payload job: no scheduling is owed.
-		_, err = dbConn.Exec(`UPDATE jobs SET last_scheduled=now() WHERE pipeline_id=$1`, first.PayloadPipelineID)
+		_, err = dbConn.Exec(`UPDATE jobs SET last_scheduled=now() WHERE pipeline_id=$1`, first.PayloadID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect((&runs.ResultFinalizer{Conn: dbConn, Factory: runFactory}).Run(ctx)).To(Succeed())
 		s, completed := status(first.ID)

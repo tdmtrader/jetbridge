@@ -54,8 +54,8 @@ var _ = Describe("looking an admitted run up by id", func() {
 		Expect(looked.ID).To(BeNumerically(">", 0))
 		Expect(looked.Number).To(Equal(1))
 		Expect(looked.TemplateID).To(BeNumerically(">", 0))
-		Expect(looked.PayloadPipelineID).To(BeNumerically(">", 0))
-		Expect(looked.PayloadPipelineID).NotTo(Equal(looked.TemplateID))
+		Expect(looked.PayloadID).To(BeNumerically(">", 0))
+		Expect(looked.PayloadID).NotTo(Equal(looked.TemplateID))
 		Expect(looked.CreatedBy).To(Equal("member-id"))
 	})
 
