@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/concourse/concourse/atc"
 	"slices"
@@ -340,7 +341,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 			OrderBy(desc)
 	} else if page.From != nil && page.To != nil { // both
 		if *page.From > *page.To {
-			return nil, Pagination{}, fmt.Errorf("invalid range boundaries")
+			return nil, Pagination{}, errors.New("invalid range boundaries")
 		}
 
 		buildsQuery = buildsQuery.Where(
