@@ -18,7 +18,6 @@ module ColorValues exposing
     , grey70
     , grey80
     , grey90
-    , paused30
     , paused40
     , paused50
     , paused60
@@ -169,11 +168,6 @@ success100 =
 
 
 ------- PAUSED -------
-
-
-paused30 : String
-paused30 =
-    "#87CFFF"
 
 
 paused40 : String
