@@ -85,6 +85,15 @@ func (fn ReporterFunc) ReportPass(ctx context.Context, kind output.OperationKind
 	fn(ctx, kind, processed, class)
 }
 
+// LogPass reports a pass as one Info line on the context's logger: the kind,
+// the count and the class, and nothing else. The inventory and reclaimer
+// controllers wire it as their Reporter.
+func LogPass(ctx context.Context, kind output.OperationKind, processed int, class string) {
+	lagerctx.FromContext(ctx).Info("hangar-output-pass", lager.Data{
+		"kind": string(kind), "processed": processed, "class": class,
+	})
+}
+
 // Runner is one controller: one operation kind, one lease, one bounded pass.
 type Runner struct {
 	Kind            output.OperationKind

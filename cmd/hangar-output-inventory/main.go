@@ -100,7 +100,7 @@ func run(ctx context.Context, config controllerConfig) error {
 			Transactor: transactor,
 			Grace:      config.Grace,
 		},
-		Reporter: controller.ReporterFunc(logPass),
+		Reporter: controller.ReporterFunc(controller.LogPass),
 	}
 
 	return loop(ctx, runner, controller.Interval(output.OperationInventory, config.Interval))
@@ -127,10 +127,4 @@ func loop(ctx context.Context, runner *controller.Runner, interval time.Duration
 		case <-ticker.C:
 		}
 	}
-}
-
-func logPass(ctx context.Context, kind output.OperationKind, processed int, class string) {
-	lagerctx.FromContext(ctx).Info("hangar-output-pass", lager.Data{
-		"kind": string(kind), "processed": processed, "class": class,
-	})
 }

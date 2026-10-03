@@ -116,7 +116,7 @@ func run(ctx context.Context, config controllerConfig) error {
 			Batch:      config.Batch,
 			OwnerID:    owner,
 		},
-		Reporter: controller.ReporterFunc(logPass),
+		Reporter: controller.ReporterFunc(controller.LogPass),
 	}
 
 	deletes := &controller.Runner{
@@ -135,7 +135,7 @@ func run(ctx context.Context, config controllerConfig) error {
 			OwnerID:       owner,
 			Term:          term,
 		},
-		Reporter: controller.ReporterFunc(logPass),
+		Reporter: controller.ReporterFunc(controller.LogPass),
 	}
 
 	logger := lager.NewLogger("hangar-output-reclaimer")
@@ -223,10 +223,4 @@ func loop(ctx context.Context, runners []*controller.Runner, interval time.Durat
 		case <-woken:
 		}
 	}
-}
-
-func logPass(ctx context.Context, kind output.OperationKind, processed int, class string) {
-	lagerctx.FromContext(ctx).Info("hangar-output-pass", lager.Data{
-		"kind": string(kind), "processed": processed, "class": class,
-	})
 }
