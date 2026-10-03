@@ -53,11 +53,10 @@ func (s *Server) getResourceCausality(direction db.CausalityDirection, pipeline 
 				logger.Error("too-many-nodes", err, lager.Data{"resource-name": resourceName, "resource-config-version": versionID})
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				return
-			} else {
-				logger.Error("failed-to-fetch", err, lager.Data{"resource-name": resourceName, "resource-config-version": versionID})
-				w.WriteHeader(http.StatusInternalServerError)
-				return
 			}
+			logger.Error("failed-to-fetch", err, lager.Data{"resource-name": resourceName, "resource-config-version": versionID})
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
 		if !found {
