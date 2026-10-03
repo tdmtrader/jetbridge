@@ -28,10 +28,6 @@ type ErrPipelineNotFound struct {
 	PipelineName string
 }
 
-func (e ErrPipelineNotFound) Error() string {
-	return fmt.Sprintf("pipeline '%s' not found", e.PipelineName)
-}
-
 type ErrResourceNotFound struct {
 	ResourceName string
 }
