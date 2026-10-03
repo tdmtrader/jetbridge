@@ -577,6 +577,7 @@ func resourceCacheForOneOffBuild() (db.ResourceCache, db.Build) {
 }
 
 func resourceCacheForJobBuild() (db.ResourceCache, db.Build) {
+	GinkgoHelper()
 	build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
 	Expect(err).ToNot(HaveOccurred())
 	return createResourceCacheWithUser(db.ForBuild(build.ID())), build
