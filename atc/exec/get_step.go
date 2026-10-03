@@ -24,10 +24,6 @@ import (
 
 var GetResourceLockInterval = 5 * time.Second
 
-type ErrPipelineNotFound struct {
-	PipelineName string
-}
-
 type ErrResourceNotFound struct {
 	ResourceName string
 }
