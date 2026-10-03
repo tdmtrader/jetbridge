@@ -136,13 +136,5 @@ func (s *OutputStarter) reserve(ctx context.Context, in db.RunOutputTask) error 
 }
 
 func (s *OutputStarter) transaction(ctx context.Context, f func(db.Tx) error) error {
-	tx, err := s.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer db.Rollback(tx)
-	if err := f(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return inTransaction(ctx, s.conn, f)
 }

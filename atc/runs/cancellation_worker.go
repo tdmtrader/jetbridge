@@ -124,13 +124,5 @@ func (w *CancellationWorker) Run(parent context.Context) error {
 }
 
 func (w *CancellationWorker) transaction(ctx context.Context, fn func(db.Tx) error) error {
-	tx, err := w.Conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer db.Rollback(tx)
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return inTransaction(ctx, w.Conn, fn)
 }
