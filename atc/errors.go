@@ -4,10 +4,6 @@ import (
 	"fmt"
 )
 
-type MalformedConfigError struct {
-	UnmarshalError error
-}
-
 type MalformedStepError struct {
 	StepType string
 	Err      error
