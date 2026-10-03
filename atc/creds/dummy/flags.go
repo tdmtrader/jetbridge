@@ -20,10 +20,5 @@ func (pair *VarFlag) UnmarshalFlag(value string) error {
 
 	pair.Name = vs[0]
 
-	err := yaml.Unmarshal([]byte(vs[1]), &pair.Value)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return yaml.Unmarshal([]byte(vs[1]), &pair.Value)
 }
