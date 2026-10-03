@@ -9,7 +9,7 @@ package gcsclient
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/url"
 	"strings"
 
@@ -44,7 +44,7 @@ func New(ctx context.Context, endpoint string) (*storage.Client, error) {
 func NormalizeEndpoint(endpoint string) (string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("hangar: invalid GCS endpoint")
+		return "", errors.New("hangar: invalid GCS endpoint")
 	}
 	switch strings.TrimSuffix(parsed.Path, "/") {
 	case "":
@@ -52,7 +52,7 @@ func NormalizeEndpoint(endpoint string) (string, error) {
 	case "/storage/v1":
 		parsed.Path = "/storage/v1/"
 	default:
-		return "", fmt.Errorf("hangar: GCS endpoint path must be empty or /storage/v1/")
+		return "", errors.New("hangar: GCS endpoint path must be empty or /storage/v1/")
 	}
 
 	return parsed.String(), nil
