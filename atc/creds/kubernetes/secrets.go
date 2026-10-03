@@ -111,9 +111,11 @@ func (secrets Secrets) findSecret(namespace, name string) (*v1.Secret, bool, err
 
 	if err != nil && k8serr.IsNotFound(err) {
 		return nil, false, nil
-	} else if err != nil {
-		return nil, false, err
-	} else {
-		return secret, true, err
 	}
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	return secret, true, err
 }
