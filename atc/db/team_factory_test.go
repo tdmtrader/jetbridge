@@ -135,8 +135,7 @@ var _ = Describe("Team Factory", func() {
 
 		Context("when there is more than one team", func() {
 			BeforeEach(func() {
-				var err error
-				_, err = teamFactory.CreateTeam(atcTeam)
+				_, err := teamFactory.CreateTeam(atcTeam)
 				Expect(err).ToNot(HaveOccurred())
 				_, err = teamFactory.CreateTeam(atc.Team{
 					Name: "some-other-team",
