@@ -31,11 +31,7 @@ func (c CredHubAtc) NewSecretLookupPaths(teamName string, pipelineName string, a
 
 // Get retrieves the value and expiration of an individual secret
 func (c CredHubAtc) Get(secretPath string) (any, *time.Time, bool, error) {
-	var cred credentials.Credential
-	var found bool
-	var err error
-
-	cred, found, err = c.findCred(secretPath)
+	cred, found, err := c.findCred(secretPath)
 	if err != nil {
 		c.logger.Error("unable to retrieve credhub secret", err)
 		return nil, nil, false, err
