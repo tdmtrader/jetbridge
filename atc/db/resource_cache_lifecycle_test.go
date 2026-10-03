@@ -586,6 +586,7 @@ func resourceCacheForInMemoryBuild(buildId int, createTime time.Time) {
 }
 
 func countResourceCaches() int {
+	GinkgoHelper()
 	var result int
 	err := psql.Select("count(*)").
 		From("resource_caches").
