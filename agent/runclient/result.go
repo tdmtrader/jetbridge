@@ -17,6 +17,15 @@ import (
 // RunIdentified is a parsed result that names the Run which produced it.
 type RunIdentified interface{ RunID() int }
 
+// RunIDOrZero is the Run id a published document names, or zero when it names
+// none.
+func RunIDOrZero(id *int) int {
+	if id == nil {
+		return 0
+	}
+	return *id
+}
+
 // Result verifies the archive against its immutable Run binding before the
 // workload parses it, then requires the parsed result to name the same Run. No
 // caller-supplied tree, claim or credential is accepted. The tree passed to

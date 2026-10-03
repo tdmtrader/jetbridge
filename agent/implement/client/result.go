@@ -22,12 +22,7 @@ type Change struct {
 	raw []byte
 }
 
-func (c *Change) RunID() int {
-	if c.Summary.RunID == nil {
-		return 0
-	}
-	return *c.Summary.RunID
-}
+func (c *Change) RunID() int { return runclient.RunIDOrZero(c.Summary.RunID) }
 
 // Markdown renders the change for a person.
 func (c *Change) Markdown() string { return c.Summary.Markdown([]byte(c.Patch)) }

@@ -21,12 +21,7 @@ func (c *Client) Result(ctx context.Context, handle Handle, name string) (*revie
 
 type publishedReport struct{ report *review.Report }
 
-func (p publishedReport) RunID() int {
-	if p.report.RunID == nil {
-		return 0
-	}
-	return *p.report.RunID
-}
+func (p publishedReport) RunID() int { return runclient.RunIDOrZero(p.report.RunID) }
 
 func parseReviewReport(tree fs.FS) (runclient.RunIdentified, error) {
 	body, err := runclient.ReadResultFile(tree, "review.json", 16<<20)
