@@ -57,14 +57,13 @@ var _ = Describe("Extract", func() {
 		var err error
 
 		extractionDest, err = os.MkdirTemp("", "extracted")
+		DeferCleanup(func() {
+			os.RemoveAll(extractionDest)
+		})
 		Expect(err).NotTo(HaveOccurred())
 
 		extractionSrc, err = archiveFiles.TarStream()
 		Expect(err).NotTo(HaveOccurred())
-	})
-
-	AfterEach(func() {
-		os.RemoveAll(extractionDest)
 	})
 
 	JustBeforeEach(func() {
