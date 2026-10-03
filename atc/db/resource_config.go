@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -12,10 +11,6 @@ import (
 
 type BaseResourceTypeNotFoundError struct {
 	Name string
-}
-
-func (e BaseResourceTypeNotFoundError) Error() string {
-	return fmt.Sprintf("base resource type not found: %s", e.Name)
 }
 
 type ResourceConfig interface {
