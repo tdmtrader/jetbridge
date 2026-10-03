@@ -71,6 +71,7 @@ var _ = Describe("watch", func() {
 	}
 
 	watch := func(args ...string) {
+		GinkgoHelper()
 		watchWithArgs := append([]string{"watch"}, args...)
 
 		flyCmd := exec.Command(flyPath, append([]string{"-t", targetName}, watchWithArgs...)...)
