@@ -18,15 +18,14 @@ var _ = Describe("Targets", func() {
 	BeforeEach(func() {
 		var err error
 		tmpDir, err = os.MkdirTemp("", "fly-test")
+		DeferCleanup(func() {
+			os.RemoveAll(tmpDir)
+		})
 		Expect(err).ToNot(HaveOccurred())
 
 		os.Setenv("HOME", tmpDir)
 
 		flyrc = filepath.Join(userHomeDir(), ".flyrc")
-	})
-
-	AfterEach(func() {
-		os.RemoveAll(tmpDir)
 	})
 
 	Describe("LoadTargets", func() {
