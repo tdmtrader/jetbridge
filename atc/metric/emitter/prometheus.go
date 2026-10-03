@@ -134,9 +134,7 @@ type PrometheusConfig struct {
 // the map.
 func serializeLabels(labels *prometheus.Labels) string {
 	names := slices.Sorted(maps.Values(*labels))
-	key := strings.Join(names, "_")
-
-	return key
+	return strings.Join(names, "_")
 }
 
 // rePrometheusLabelInvalid matches any invalid characters we may have in our
