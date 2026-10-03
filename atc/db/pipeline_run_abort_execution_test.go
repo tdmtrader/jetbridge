@@ -41,6 +41,7 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 	)
 
 	cancellationRequested := func() (bool, string) {
+		GinkgoHelper()
 		var requested bool
 		var by string
 		Expect(dbConn.QueryRow(`SELECT cancel_requested_at IS NOT NULL, coalesce(cancel_requested_by,'') FROM pipeline_runs WHERE id=$1`,
