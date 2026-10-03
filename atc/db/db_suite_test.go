@@ -258,6 +258,8 @@ var _ = BeforeEach(func() {
 })
 
 func destroy(d interface{ Destroy() error }) {
+	GinkgoHelper()
+
 	err := d.Destroy()
 	Expect(err).ToNot(HaveOccurred())
 }
