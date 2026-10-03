@@ -2,6 +2,7 @@ package pipelinerunserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -204,7 +205,7 @@ func pipelineRunPage(r *http.Request) (db.Page, error) {
 	if value := r.FormValue(atc.PaginationQueryLimit); value != "" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 {
-			return db.Page{}, fmt.Errorf("invalid limit pagination value")
+			return db.Page{}, errors.New("invalid limit pagination value")
 		}
 		// This route is reachable by an unauthenticated viewer on an exposed
 		// template, so an unbounded caller-supplied limit is an unauthenticated
@@ -218,7 +219,7 @@ func pipelineRunPage(r *http.Request) (db.Page, error) {
 		page.Limit = limit
 	}
 	if page.From != nil && page.To != nil && *page.From > *page.To {
-		return db.Page{}, fmt.Errorf("invalid range boundaries")
+		return db.Page{}, errors.New("invalid range boundaries")
 	}
 	return page, nil
 }
