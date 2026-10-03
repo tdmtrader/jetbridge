@@ -110,6 +110,8 @@ func ExpectTeamWithBasicAuth(dbConn *sql.DB, team, username, password string) {
 }
 
 func ExpectTeamWithAuth(dbConn *sql.DB, team, expectedConfig string) {
+	GinkgoHelper()
+
 	auth := readTeamAuth(dbConn, team)
 	Expect(auth).To(MatchJSON(expectedConfig))
 }
