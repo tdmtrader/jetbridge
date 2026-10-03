@@ -107,7 +107,7 @@ func prepareLiveInitPod(w WorkerReady, handle string, missingInput bool) (*corev
 	// provides a controllable init process and sidecar; kubelet owns all status.
 	_, err := w.Clientset.CoreV1().Pods(w.Namespace).Create(w.Ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
+		Spec: corev1.PodSpec{AutomountServiceAccountToken: plantedNoToken(), RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
 			Volumes:        volumes,
 			InitContainers: []corev1.Container{{Name: initName, Image: "busybox:1.37.0", Command: []string{"sh", "-ec", initCommand}, VolumeMounts: mounts}},
 			Containers: []corev1.Container{

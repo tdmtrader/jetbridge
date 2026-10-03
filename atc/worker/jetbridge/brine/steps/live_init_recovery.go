@@ -26,7 +26,8 @@ func prepareLiveRetryInit(database JetbridgeDB, capture SpanCapture, rec *brine.
 	command := "n=0; [ ! -f /state/attempt ] || n=$(cat /state/attempt); n=$((n+1)); printf '%s' \"$n\" > /state/attempt; printf 'attempt=%s\\n' \"$n\"; if [ \"$n\" -eq 1 ]; then touch /state/gate-ready; while [ ! -f /state/start ]; do sleep 0.1; done; fi; if [ \"$n\" -gt 2 ]; then while [ ! -f /state/ready-data ]; do sleep 0.1; done; fi; cat /state/ready-data"
 	pods := w.Clientset.CoreV1().Pods(w.Namespace)
 	_, err = pods.Create(w.Ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: handle}, Spec: corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyOnFailure, TerminationGracePeriodSeconds: &grace,
+		AutomountServiceAccountToken: plantedNoToken(),
+		RestartPolicy:                corev1.RestartPolicyOnFailure, TerminationGracePeriodSeconds: &grace,
 		Volumes:        []corev1.Volume{{Name: "state", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 		InitContainers: []corev1.Container{{Name: initName, Image: "busybox:1.37.0", Command: []string{"sh", "-ec", command}, VolumeMounts: []corev1.VolumeMount{{Name: "state", MountPath: "/state"}}}},
 		Containers:     []corev1.Container{{Name: "main", Image: "busybox:1.37.0", Command: []string{"sleep", "600"}}},

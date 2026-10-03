@@ -66,7 +66,8 @@ func liveVolumeEvictionPod(handle string, gated bool) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: handle},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
+			AutomountServiceAccountToken: plantedNoToken(),
+			RestartPolicy:                corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
 			Volumes: []corev1.Volume{{Name: volume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &limit}}}},
 			Containers: []corev1.Container{{Name: "main", Image: "busybox:1.37.0",
 				Command:      []string{"sh", "-ec", "dd if=/dev/zero of=/scratch/payload bs=1048576 count=24 2>/dev/null; printf 'scratch-bytes='; wc -c < /scratch/payload; sleep 600"},

@@ -12,6 +12,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// plantedNoToken is the token setting the runtime's own step pods carry. A
+// planted pod the runtime then reuses must match it: a pod with the API token
+// mounted is an old-runtime pod, and the runtime refuses to reuse it.
+func plantedNoToken() *bool {
+	off := false
+	return &off
+}
+
 // These fixtures test lookup/interception of an existing pod, not creation of
 // a task pod by the worker. PID 1 can be asked to finish; only the kubelet
 // reports Running/Succeeded/Failed. All files belong to its emptyDir.
@@ -26,7 +34,8 @@ func createInterceptPodWithImage(w WorkerReady, name string, labels map[string]s
 	_, err := w.Clientset.CoreV1().Pods(w.Namespace).Create(w.Ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
+			AutomountServiceAccountToken: plantedNoToken(),
+			RestartPolicy:                corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
 			SecurityContext: &corev1.PodSecurityContext{RunAsUser: &user, RunAsNonRoot: &nonRoot, FSGroup: &user,
 				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 			Containers: []corev1.Container{{Name: "main", Image: image,

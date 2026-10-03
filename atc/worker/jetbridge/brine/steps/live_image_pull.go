@@ -30,7 +30,8 @@ func prepareLiveImagePull(database JetbridgeDB, capture SpanCapture, rec *brine.
 	pod, err := w.Clientset.CoreV1().Pods(w.Namespace).Create(w.Ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
+			AutomountServiceAccountToken: plantedNoToken(),
+			RestartPolicy:                corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
 			SchedulingGates: []corev1.PodSchedulingGate{{Name: startupSchedulingGate}},
 			Containers:      []corev1.Container{{Name: "main", Image: "busybox:1.37.0", ImagePullPolicy: corev1.PullAlways, Command: []string{"sleep", "600"}}},
 		},

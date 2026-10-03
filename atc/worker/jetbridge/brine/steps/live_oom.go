@@ -32,7 +32,7 @@ func liveOOMPod(handle string, restart corev1.RestartPolicy) *corev1.Pod {
 	grace := int64(1)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: handle},
-		Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace, Containers: []corev1.Container{{
+		Spec: corev1.PodSpec{AutomountServiceAccountToken: plantedNoToken(), RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace, Containers: []corev1.Container{{
 			Name: "main", Image: "busybox:1.37.0",
 			Command: []string{"sh", "-c", "while [ ! -f /tmp/brine-oom-go ]; do sleep 0.1; done; sleep 1; exec /tmp/brine-oom-hog 256"},
 		}, {
