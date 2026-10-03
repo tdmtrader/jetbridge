@@ -51,26 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureTaskWithRetries returns a pipeline with a task that has attempts.
-func fixtureTaskWithRetries(jobName string, attempts int, script string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    attempts: %d
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, attempts, script)
-}
-
 // fixtureTryStep returns a pipeline with a try step wrapping a task,
 // followed by a continuation task.
 func fixtureTryStep(jobName, tryScript, afterScript string) string {
