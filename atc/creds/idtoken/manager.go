@@ -1,6 +1,7 @@
 package idtoken
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,14 +49,14 @@ func NewManager(issuer string, signingKeyFactory db.SigningKeyFactory, config ma
 				}
 				m.tokenGenerator.Audience = aud
 			} else {
-				return nil, fmt.Errorf("invalid idtoken provider config: audience must be a list of strings")
+				return nil, errors.New("invalid idtoken provider config: audience must be a list of strings")
 			}
 
 		case "subject_scope":
 			if subjectScopeString, ok := value.(string); ok {
 				m.tokenGenerator.SubjectScope = SubjectScope(subjectScopeString)
 			} else {
-				return nil, fmt.Errorf("invalid idtoken provider config: subject_scope must be a string")
+				return nil, errors.New("invalid idtoken provider config: subject_scope must be a string")
 			}
 
 		case "expires_in":
@@ -65,14 +66,14 @@ func NewManager(issuer string, signingKeyFactory db.SigningKeyFactory, config ma
 					return nil, fmt.Errorf("invalid idtoken provider config: invalid expires_in value: %w", err)
 				}
 			} else {
-				return nil, fmt.Errorf("invalid idtoken provider config: expires_in must be a string")
+				return nil, errors.New("invalid idtoken provider config: expires_in must be a string")
 			}
 
 		case "algorithm":
 			if algorithmString, ok := value.(string); ok {
 				m.tokenGenerator.Algorithm = jose.SignatureAlgorithm(algorithmString)
 			} else {
-				return nil, fmt.Errorf("invalid idtoken provider config: algorithm must be a string")
+				return nil, errors.New("invalid idtoken provider config: algorithm must be a string")
 			}
 
 		default:
