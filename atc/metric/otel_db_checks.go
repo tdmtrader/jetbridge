@@ -63,10 +63,7 @@ func InitOTelDBChecks() {
 
 // RecordDBQueries records the number of database queries as an OTel counter.
 func RecordDBQueries(ctx context.Context, count float64) {
-	if dbQueriesCounter == nil {
-		return
-	}
-	dbQueriesCounter.Add(ctx, count)
+	addToCounter(ctx, dbQueriesCounter, count)
 }
 
 // RecordDBConnections records the number of open database connections as an OTel up-down counter.
@@ -83,10 +80,7 @@ func RecordDBConnections(ctx context.Context, count float64, dbName string) {
 
 // RecordChecksStarted records the number of checks started as an OTel counter.
 func RecordChecksStarted(ctx context.Context, count float64) {
-	if checksStartedCounter == nil {
-		return
-	}
-	checksStartedCounter.Add(ctx, count)
+	addToCounter(ctx, checksStartedCounter, count)
 }
 
 // RecordChecksFinished records the number of checks finished as an OTel counter.
@@ -103,8 +97,5 @@ func RecordChecksFinished(ctx context.Context, count float64, status string) {
 
 // RecordChecksEnqueued records the number of checks enqueued as an OTel counter.
 func RecordChecksEnqueued(ctx context.Context, count float64) {
-	if checksEnqueuedCounter == nil {
-		return
-	}
-	checksEnqueuedCounter.Add(ctx, count)
+	addToCounter(ctx, checksEnqueuedCounter, count)
 }

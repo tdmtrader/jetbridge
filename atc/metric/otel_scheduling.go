@@ -46,10 +46,7 @@ func InitOTelScheduling() {
 
 // RecordJobsScheduled records the number of jobs scheduled as an OTel counter.
 func RecordJobsScheduled(ctx context.Context, count float64) {
-	if jobsScheduledCounter == nil {
-		return
-	}
-	jobsScheduledCounter.Add(ctx, count)
+	addToCounter(ctx, jobsScheduledCounter, count)
 }
 
 // RecordJobsScheduling records the number of jobs currently being scheduled.

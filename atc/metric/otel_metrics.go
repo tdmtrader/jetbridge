@@ -143,18 +143,12 @@ func RecordK8sPodStartupDuration(ctx context.Context, duration time.Duration) {
 
 // RecordContainersCreated records the number of containers created as an OTel counter.
 func RecordContainersCreated(ctx context.Context, count float64) {
-	if containersCreatedCounter == nil {
-		return
-	}
-	containersCreatedCounter.Add(ctx, count)
+	addToCounter(ctx, containersCreatedCounter, count)
 }
 
 // RecordVolumesCreated records the number of volumes created as an OTel counter.
 func RecordVolumesCreated(ctx context.Context, count float64) {
-	if volumesCreatedCounter == nil {
-		return
-	}
-	volumesCreatedCounter.Add(ctx, count)
+	addToCounter(ctx, volumesCreatedCounter, count)
 }
 
 // RecordK8sPodFailure records a K8s pod failure with the reason (OOMKilled, Evicted, Error).
@@ -182,4 +176,12 @@ func RecordVolumeOperationDuration(ctx context.Context, duration time.Duration, 
 			attribute.String("op", op),
 		),
 	)
+}
+
+// addToCounter adds count to counter, unless the counter was never created.
+func addToCounter(ctx context.Context, counter otelmetric.Float64Counter, count float64) {
+	if counter == nil {
+		return
+	}
+	counter.Add(ctx, count)
 }

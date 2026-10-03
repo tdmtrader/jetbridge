@@ -63,10 +63,7 @@ func InitOTelBuildLifecycle() {
 
 // RecordBuildsStarted records the number of builds started as an OTel counter.
 func RecordBuildsStarted(ctx context.Context, count float64) {
-	if buildsStartedCounter == nil {
-		return
-	}
-	buildsStartedCounter.Add(ctx, count)
+	addToCounter(ctx, buildsStartedCounter, count)
 }
 
 // RecordBuildsRunning records the number of builds currently running.
@@ -91,10 +88,7 @@ func RecordBuildFinished(ctx context.Context, status string) {
 
 // RecordCheckBuildsStarted records the number of check builds started as an OTel counter.
 func RecordCheckBuildsStarted(ctx context.Context, count float64) {
-	if checkBuildsStartedCounter == nil {
-		return
-	}
-	checkBuildsStartedCounter.Add(ctx, count)
+	addToCounter(ctx, checkBuildsStartedCounter, count)
 }
 
 // RecordCheckBuildsRunning records the number of check builds currently running.
