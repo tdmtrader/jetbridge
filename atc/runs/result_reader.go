@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const MaxResultArchiveBytes int64 = 256 << 20
+const maxResultArchiveBytes int64 = 256 << 20
 
 // ResultSource reads through an authenticated node, without bucket credentials.
 type ResultSource interface {
@@ -76,13 +76,13 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	if err != nil {
 		return nil, err
 	}
-	archive, attributes, err := source.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: selected.Binding.Ref, Destination: destination, Warrant: warrant.Token}, MaxResultArchiveBytes)
+	archive, attributes, err := source.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: selected.Binding.Ref, Destination: destination, Warrant: warrant.Token}, maxResultArchiveBytes)
 	// If the transport failed, the node may still be staging. Its release or the
 	// existing abandoned-lease cleaner owns closure; guessing would end protection.
 	if err != nil {
 		return nil, err
 	}
-	tree, err := (hangar.Canonicalizer{TempDir: r.Scratch, MaxContentBytes: MaxResultArchiveBytes}).Capture(ctx, io.LimitReader(archive, MaxResultArchiveBytes+1))
+	tree, err := (hangar.Canonicalizer{TempDir: r.Scratch, MaxContentBytes: maxResultArchiveBytes}).Capture(ctx, io.LimitReader(archive, maxResultArchiveBytes+1))
 	err = errors.Join(err, archive.Close())
 	if err == nil && (tree.Digest != selected.Binding.Ref.Digest || tree.ByteSize != attributes.LogicalBytes) {
 		err = output.ErrCorrupt
