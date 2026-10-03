@@ -27,10 +27,11 @@ func evaluateWithReferenceExclusion(variablesResolver vars.Variables, in, out an
 		return err
 	}
 
-	return yaml.Unmarshal(bytes, out, useJSONNumber)
+	return yaml.Unmarshal(bytes, out, UseJSONNumber)
 }
 
-func useJSONNumber(decoder *json.Decoder) *json.Decoder {
+// UseJSONNumber is a yaml.Unmarshal option that decodes numbers as json.Number.
+func UseJSONNumber(decoder *json.Decoder) *json.Decoder {
 	decoder.UseNumber()
 	return decoder
 }
