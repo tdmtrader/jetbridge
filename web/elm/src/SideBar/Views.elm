@@ -9,7 +9,6 @@ module SideBar.Views exposing
 
 import Assets
 import Concourse
-import HoverState exposing (TooltipPosition(..))
 import Html exposing (Html)
 import Html.Attributes exposing (class, href, id)
 import Html.Events exposing (onClick, onMouseEnter, onMouseLeave)
