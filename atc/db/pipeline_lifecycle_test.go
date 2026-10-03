@@ -192,7 +192,7 @@ var _ = Describe("PipelineLifecycle", func() {
 			var payload db.Pipeline
 
 			BeforeEach(func() {
-				templatePipeline, _, saveErr := defaultTeam.SavePipeline(
+				template, _, saveErr := defaultTeam.SavePipeline(
 					atc.PipelineRef{Name: "archiver-template"},
 					atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}},
 					0,
@@ -201,7 +201,7 @@ var _ = Describe("PipelineLifecycle", func() {
 				Expect(saveErr).ToNot(HaveOccurred())
 
 				factory := db.NewPipelineRunFactory(dbConn, lockFactory)
-				creation, runErr := dbtest.CreateRun(dbConn, factory, context.Background(), templatePipeline, db.RunParams{}, defaultBuildCreatedBy)
+				creation, runErr := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, defaultBuildCreatedBy)
 				Expect(runErr).ToNot(HaveOccurred())
 
 				var found bool
