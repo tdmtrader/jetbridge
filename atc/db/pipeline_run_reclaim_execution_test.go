@@ -37,6 +37,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
 		create := func() db.RunCreation {
+			GinkgoHelper()
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
