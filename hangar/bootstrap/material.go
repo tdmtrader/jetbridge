@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-// RandomKeySize is the length of every symmetric key in the inventory.
-const RandomKeySize = 32
+// randomKeySize is the length of every symmetric key in the inventory.
+const randomKeySize = 32
 
 // MinimumTokenLength is the shortest store token the disk store accepts.
 const MinimumTokenLength = 32
@@ -31,7 +31,7 @@ const MinimumTokenLength = 32
 const certificateLifetime = 20 * 365 * 24 * time.Hour
 
 func randomKey() ([]byte, error) {
-	key := make([]byte, RandomKeySize)
+	key := make([]byte, randomKeySize)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
@@ -39,8 +39,8 @@ func randomKey() ([]byte, error) {
 }
 
 func validateRandomKey(key []byte) error {
-	if len(key) != RandomKeySize {
-		return fmt.Errorf("holds %d bytes, want exactly %d", len(key), RandomKeySize)
+	if len(key) != randomKeySize {
+		return fmt.Errorf("holds %d bytes, want exactly %d", len(key), randomKeySize)
 	}
 	return nil
 }
