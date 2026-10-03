@@ -4,7 +4,6 @@ import Concourse
 import Concourse.BuildStatus as BuildStatus
 import Concourse.Pagination as Pagination exposing (Page, Paginated)
 import Concourse.PipelineRun as PipelineRun exposing (PipelineRun)
-import Dict
 import Duration
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
