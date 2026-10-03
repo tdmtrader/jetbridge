@@ -297,11 +297,6 @@ func (event WorkerContainers) Emit(logger lager.Logger) {
 	)
 }
 
-type WorkerUnknownContainers struct {
-	WorkerName string
-	Containers int
-}
-
 type WorkerVolumes struct {
 	WorkerName string
 	Platform   string
