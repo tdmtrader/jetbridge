@@ -23,7 +23,7 @@ const RunCancellationLeaseTerm = time.Minute
 
 var (
 	ErrRunCancellationLeaseLost    = errors.New("cancellation worker lease expired or changed owner")
-	ErrRunCancellationLeaseInvalid = errors.New("invalid cancellation worker lease")
+	errRunCancellationLeaseInvalid = errors.New("invalid cancellation worker lease")
 )
 
 // ClaimRunCancellationLease owns no Run/domain locks and makes no external call.
@@ -75,7 +75,7 @@ func lockCancellationWorker(ctx context.Context, tx Tx) error {
 
 func cancellationLeaseInterval(owner string, term time.Duration) (string, error) {
 	if strings.TrimSpace(owner) == "" || len(owner) > 128 || term.Microseconds() < 1 || term > RunCancellationLeaseTerm {
-		return "", ErrRunCancellationLeaseInvalid
+		return "", errRunCancellationLeaseInvalid
 	}
 	return fmt.Sprintf("%d microseconds", term.Microseconds()), nil
 }
