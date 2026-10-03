@@ -131,19 +131,20 @@ func TestGetDirectory_SymlinksPreserved(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading tar: %v", err)
 		}
-		if hdr.Name == "link.txt" {
-			found = true
-			// With filepath.Walk, symlinks are followed, so link.txt appears
-			// as a regular file with the target's content.
-			if hdr.Typeflag == tar.TypeSymlink {
-				if hdr.Linkname != "target.txt" {
-					t.Errorf("symlink target: expected 'target.txt', got %q", hdr.Linkname)
-				}
-			} else if hdr.Typeflag == tar.TypeReg {
-				data, _ := io.ReadAll(tr)
-				if string(data) != "target" {
-					t.Errorf("link.txt content: expected 'target', got %q", string(data))
-				}
+		if hdr.Name != "link.txt" {
+			continue
+		}
+		found = true
+		// With filepath.Walk, symlinks are followed, so link.txt appears
+		// as a regular file with the target's content.
+		if hdr.Typeflag == tar.TypeSymlink {
+			if hdr.Linkname != "target.txt" {
+				t.Errorf("symlink target: expected 'target.txt', got %q", hdr.Linkname)
+			}
+		} else if hdr.Typeflag == tar.TypeReg {
+			data, _ := io.ReadAll(tr)
+			if string(data) != "target" {
+				t.Errorf("link.txt content: expected 'target', got %q", string(data))
 			}
 		}
 	}
