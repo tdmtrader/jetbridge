@@ -18,18 +18,18 @@ func NewRejectArchivedHandlerFactory(factory db.TeamFactory) RejectArchivedHandl
 }
 
 func (f RejectArchivedHandlerFactory) RejectArchived(handler http.Handler) http.Handler {
-	return RejectArchivedHandler{
+	return rejectArchivedHandler{
 		teamFactory:     f.teamFactory,
 		delegateHandler: handler,
 	}
 }
 
-type RejectArchivedHandler struct {
+type rejectArchivedHandler struct {
 	teamFactory     db.TeamFactory
 	delegateHandler http.Handler
 }
 
-func (ra RejectArchivedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (ra rejectArchivedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	teamName := r.URL.Query().Get(":team_name")
 	pipelineName := r.URL.Query().Get(":pipeline_name")
 	pipelineRef := atc.PipelineRef{Name: pipelineName}
