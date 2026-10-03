@@ -66,13 +66,13 @@ type resourceAPIPipeline struct {
 	resourceTypeOverrideName string
 }
 
-// resourceAPITemplatePipeline presents a persisted pipeline as a template so
+// resourceAPITemplate presents a persisted pipeline as a template so
 // the check handlers see the one field they must refuse on.
-type resourceAPITemplatePipeline struct {
+type resourceAPITemplate struct {
 	db.Pipeline
 }
 
-func (resourceAPITemplatePipeline) Template() bool { return true }
+func (resourceAPITemplate) Template() bool { return true }
 
 func (pipeline resourceAPIPipeline) Resource(name string) (db.Resource, bool, error) {
 	if pipeline.resource != nil && name == pipeline.resourceOverrideName {
@@ -1119,7 +1119,7 @@ var _ = Describe("Resources API", func() {
 			func(path string) {
 				factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
 				fixture.database.Deps.checkFactory = factory
-				fixture.overridePipeline(resourceAPITemplatePipeline{Pipeline: fixture.pipeline})
+				fixture.overridePipeline(resourceAPITemplate{Pipeline: fixture.pipeline})
 				response := requestResourceAPI(
 					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
 				)
@@ -1204,7 +1204,7 @@ var _ = Describe("Resources API", func() {
 		It("refuses a webhook check on a template pipeline", func() {
 			factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
 			fixture.database.Deps.checkFactory = factory
-			fixture.overridePipeline(resourceAPITemplatePipeline{Pipeline: fixture.pipeline})
+			fixture.overridePipeline(resourceAPITemplate{Pipeline: fixture.pipeline})
 			response := requestResourceAPI(
 				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
 			)
