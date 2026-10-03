@@ -139,6 +139,8 @@ func fetchTeamBasicAuth(dbConn *sql.DB, team string) map[string]string {
 }
 
 func readTeamAuth(dbConn *sql.DB, team string) []byte {
+	GinkgoHelper()
+
 	var auth []byte
 	err := dbConn.QueryRow("SELECT auth FROM teams WHERE name = $1", team).Scan(&auth)
 	Expect(err).NotTo(HaveOccurred())
