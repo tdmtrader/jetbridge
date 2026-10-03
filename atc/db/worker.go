@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -13,10 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
-)
-
-var (
-	ErrWorkerNotPresent = errors.New("worker not present in db")
 )
 
 type ContainerOwnerDisappearedError struct {
