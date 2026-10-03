@@ -184,6 +184,8 @@ var (
 // activationWrites parses the string literals of the activation package and
 // of ReconcilePolicyViolation for the columns they INSERT or UPDATE.
 func activationWrites() []columnWrite {
+	GinkgoHelper()
+
 	var literals []string
 	files, err := filepath.Glob("../../hangaroutput/activation/*.go")
 	Expect(err).NotTo(HaveOccurred())
