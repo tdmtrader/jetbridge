@@ -135,40 +135,40 @@ func (c *checkFactory) TryCreateCheck(ctx context.Context, checkable Checkable, 
 		logger.Debug("created-check-build", build.LagerData())
 
 		return build, true, nil
-	} else {
-		scopeID := checkable.ResourceConfigScopeID()
-		tracked := false
-		if !manuallyTriggered && scopeID != 0 {
-			if _, loaded := c.inFlightChecks.LoadOrStore(scopeID, struct{}{}); loaded {
-				logger.Debug("skipped-in-memory-check-already-in-flight")
-				return nil, false, nil
-			}
-			tracked = true
-		}
-
-		build, err := checkable.CreateInMemoryBuild(ctx, plan, c.sequenceGenerator)
-		if err != nil {
-			if tracked {
-				c.inFlightChecks.Delete(scopeID)
-			}
-			return nil, false, err
-		}
-
-		logger.Debug("created-in-memory-check-build", build.LagerData())
-
-		var toSend Build = build
-		if tracked {
-			toSend = &onFinishBuild{
-				Build: build,
-				onFinish: func() {
-					c.inFlightChecks.Delete(scopeID)
-				},
-			}
-		}
-		c.checkBuildChan <- toSend
-
-		return toSend, true, nil
 	}
+
+	scopeID := checkable.ResourceConfigScopeID()
+	tracked := false
+	if !manuallyTriggered && scopeID != 0 {
+		if _, loaded := c.inFlightChecks.LoadOrStore(scopeID, struct{}{}); loaded {
+			logger.Debug("skipped-in-memory-check-already-in-flight")
+			return nil, false, nil
+		}
+		tracked = true
+	}
+
+	build, err := checkable.CreateInMemoryBuild(ctx, plan, c.sequenceGenerator)
+	if err != nil {
+		if tracked {
+			c.inFlightChecks.Delete(scopeID)
+		}
+		return nil, false, err
+	}
+
+	logger.Debug("created-in-memory-check-build", build.LagerData())
+
+	var toSend Build = build
+	if tracked {
+		toSend = &onFinishBuild{
+			Build: build,
+			onFinish: func() {
+				c.inFlightChecks.Delete(scopeID)
+			},
+		}
+	}
+	c.checkBuildChan <- toSend
+
+	return toSend, true, nil
 }
 
 func (c *checkFactory) Resources() ([]Resource, error) {
