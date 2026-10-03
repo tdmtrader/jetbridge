@@ -2,7 +2,6 @@ module Favorites exposing (Model, handleDelivery, isInstanceGroupFavorited, isPi
 
 import Concourse exposing (PipelineGrouping(..))
 import EffectTransformer exposing (ET)
-import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
 import Message.Message exposing (DomID(..), Message(..))
 import Message.Subscription exposing (Delivery(..))
