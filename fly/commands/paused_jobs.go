@@ -9,7 +9,6 @@ import (
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
-	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/fatih/color"
 )
 
@@ -30,8 +29,7 @@ func (command *PausedJobsCommand) Execute([]string) error {
 		return err
 	}
 
-	var team concourse.Team
-	team, err = command.Team.LoadTeam(target)
+	team, err := command.Team.LoadTeam(target)
 	if err != nil {
 		return err
 	}
