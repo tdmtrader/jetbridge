@@ -28,15 +28,13 @@ func (client *client) SetWall(wall atc.Wall) error {
 		return err
 	}
 
-	err = client.connection.Send(internal.Request{
+	return client.connection.Send(internal.Request{
 		RequestName: atc.SetWall,
 		Body:        buffer,
 		Header: http.Header{
 			"Content-Type": {"application/json"},
 		},
 	}, &internal.Response{})
-
-	return err
 }
 
 func (client *client) ClearWall() error {
