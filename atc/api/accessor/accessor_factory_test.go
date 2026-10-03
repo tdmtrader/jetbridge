@@ -69,6 +69,7 @@ var _ = Describe("AccessorFactory", func() {
 				dummyRequest.Header.Set("Authorization", "bearer user1-token")
 
 				persistTeam := func(name, authenticatedUser string) {
+					GinkgoHelper()
 					_, err := fixture.TeamFactory.CreateTeam(atc.Team{
 						Name: name,
 						Auth: atc.TeamAuth{
