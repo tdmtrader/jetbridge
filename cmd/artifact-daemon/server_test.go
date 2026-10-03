@@ -513,12 +513,13 @@ func TestGetArtifact_ServesRegistryAlias(t *testing.T) {
 		if err != nil {
 			break
 		}
-		if hdr.Name == "data.txt" {
-			found = true
-			data, _ := io.ReadAll(tr)
-			if string(data) != "hello from cache" {
-				t.Errorf("expected 'hello from cache', got %q", string(data))
-			}
+		if hdr.Name != "data.txt" {
+			continue
+		}
+		found = true
+		data, _ := io.ReadAll(tr)
+		if string(data) != "hello from cache" {
+			t.Errorf("expected 'hello from cache', got %q", string(data))
 		}
 	}
 	if !found {
