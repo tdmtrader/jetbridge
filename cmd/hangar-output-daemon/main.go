@@ -64,10 +64,10 @@ func run(ctx context.Context, config Config, out *os.File) error {
 			return fmt.Errorf("resolve output daemon Node identity: %w", lookupErr)
 		}
 		if node.DeletionTimestamp != nil || node.UID == "" {
-			return fmt.Errorf("output daemon Node is unavailable")
+			return errors.New("output daemon Node is unavailable")
 		}
 		if config.NodeUID != "" && config.NodeUID != string(node.UID) {
-			return fmt.Errorf("configured output daemon UID differs from the Kubernetes Node UID")
+			return errors.New("configured output daemon UID differs from the Kubernetes Node UID")
 		}
 		config.NodeUID = string(node.UID)
 	}
