@@ -150,3 +150,4 @@ not fall. `make test-fly-integration` when the file is under `fly/`.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-10-03 | S1005:PgxListener.listenerLoop@atc/db/listener.go | rewritten | S1005 range-clause form: `for channel, _ := range l.channels {` became `for channel := range l.channels {`, the `_` dropped with its comma and `:=` kept; listenerLoop (line 88) encloses line 128; the loop body, its `l.conn.Exec` call and the comment above are untouched, and no call or receive changes count or order; numstat 1/1; gates `gofmt -l` clean, `go build ./...`, `go vet ./...`, `go vet -tags live,hangar_live ./atc/db`, and the g.sh diff showed only the one `<` S1005 line (atc/db has no ignored files, so one build) |

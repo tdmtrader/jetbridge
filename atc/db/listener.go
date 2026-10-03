@@ -125,7 +125,7 @@ func (l *PgxListener) listenerLoop() {
 				}
 
 				//listen to all channels again
-				for channel, _ := range l.channels {
+				for channel := range l.channels {
 					l.conn.Exec(ctx, fmt.Sprintf("LISTEN %s", channel))
 				}
 
