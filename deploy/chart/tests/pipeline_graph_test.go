@@ -866,8 +866,7 @@ func normalizeExclusion(pkg string) string {
 	pkg = strings.TrimSpace(pkg)
 	pkg = strings.TrimSuffix(pkg, "$")
 	pkg = strings.TrimPrefix(pkg, "./")
-	pkg = strings.TrimPrefix(pkg, "/")
-	return pkg
+	return strings.TrimPrefix(pkg, "/")
 }
 
 // TestThePipelineKeepsTheHangarWorkloadsOnWebsImage holds stores T7: the
