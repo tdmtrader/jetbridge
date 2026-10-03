@@ -47,6 +47,7 @@ func createTeam(name string) db.Team {
 	return team
 }
 func grantRole(team db.Team, role string) {
+	GinkgoHelper()
 	Expect(team.UpdateProviderAuth(atc.TeamAuth{role: {"users": {"test:some-user"}}})).To(Succeed())
 }
 func makeAdmin(team db.Team) {
