@@ -81,7 +81,7 @@ import Message.Subscription
         )
 import Ordering
 import Routes
-import ScreenSize exposing (ScreenSize(..))
+import ScreenSize
 import Set
 import SideBar.SideBar as SideBar exposing (byDatabaseId, lookupPipeline)
 import StrictEvents exposing (onScroll)
