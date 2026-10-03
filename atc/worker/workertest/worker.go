@@ -9,8 +9,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-type PoolFactory func(worker.Factory) worker.Pool
-
 type Worker interface {
 	Name() string
 	Setup(*Scenario)
