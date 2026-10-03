@@ -29,12 +29,10 @@ func TestSkyServer(t *testing.T) {
 }
 
 var _ = BeforeEach(func() {
-	var err error
-
 	dexServer = ghttp.NewTLSServer()
 
 	stateSigningKey = make([]byte, 32)
-	_, err = rand.Read(stateSigningKey)
+	_, err := rand.Read(stateSigningKey)
 	Expect(err).NotTo(HaveOccurred())
 
 	endpoint := oauth2.Endpoint{
