@@ -719,7 +719,8 @@ func (r *resource) Versions(page Page, versionFilter atc.Version) ([]atc.Resourc
 	`, r.id, oldestRCVCheckOrder.CheckOrder).Scan(&olderRCVId)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, Pagination{}, false, err
-	} else if err == nil {
+	}
+	if err == nil {
 		pagination.Older = &Page{
 			To:    &olderRCVId,
 			Limit: page.Limit,
@@ -736,7 +737,8 @@ func (r *resource) Versions(page Page, versionFilter atc.Version) ([]atc.Resourc
 	`, r.id, newestRCVCheckOrder.CheckOrder).Scan(&newerRCVId)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, Pagination{}, false, err
-	} else if err == nil {
+	}
+	if err == nil {
 		pagination.Newer = &Page{
 			From:  &newerRCVId,
 			Limit: page.Limit,
