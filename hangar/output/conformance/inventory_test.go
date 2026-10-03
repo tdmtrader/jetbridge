@@ -544,11 +544,12 @@ func TestAnUnmarkedObjectIsUnmanagedAndNotDebt(t *testing.T) {
 		}
 		found := false
 		for _, object := range page.Objects {
-			if object.ObjectKey == keys[0] {
-				found = true
-				if object.Managed {
-					t.Error("an unmarked object came back managed")
-				}
+			if object.ObjectKey != keys[0] {
+				continue
+			}
+			found = true
+			if object.Managed {
+				t.Error("an unmarked object came back managed")
 			}
 		}
 		if !found {
