@@ -51,38 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureAcrossStep returns a pipeline with a task using across with
-// static values.
-func fixtureAcrossStep(jobName, varName string, values []string, script string) string {
-	valuesYAML := ""
-	for _, v := range values {
-		valuesYAML += fmt.Sprintf(`"%s", `, v)
-	}
-	if len(valuesYAML) > 2 {
-		valuesYAML = valuesYAML[:len(valuesYAML)-2] // trim trailing comma+space
-	}
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: across-task
-    across:
-    - var: %s
-      values: [%s]
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      params:
-        VAL: ((.:%s))
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, varName, valuesYAML, varName, script)
-}
-
 // fixtureCustomResourceType returns a pipeline with a custom resource_type
 // definition and a resource using it.
 func fixtureCustomResourceType(jobName, typeName, typeImage, resourceName, script string) string {
