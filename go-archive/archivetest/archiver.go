@@ -115,12 +115,7 @@ func (files Archive) WriteTar(writer io.Writer) error {
 		}
 	}
 
-	err := w.Close()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return w.Close()
 }
 
 func (files Archive) WriteZip(writer io.Writer) error {
