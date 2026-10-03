@@ -103,6 +103,8 @@ func TestIntegration(t *testing.T) {
 }
 
 func login(atcURL, username, password string) concourse.Client {
+	GinkgoHelper()
+
 	oauth2Config := oauth2.Config{
 		ClientID:     "client-id",
 		ClientSecret: "client-secret",
