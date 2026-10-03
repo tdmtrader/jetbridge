@@ -31,3 +31,10 @@ Composer (merges a batch onto main into a candidate, or names the one
 conflicting entry), Runner (tests a candidate, reports one verdict), Lander
 (fast-forwards main, refusing if main moved), Notifier (tells an entry's
 owner what was decided).
+
+**Bisect**: how blame is proven in a red batch of several entries: split it
+into halves, try the first half first, and repeat on each red half. Only an
+entry that fails on its own is ejected; blame is never guessed.
+
+**Flake**: a red batch whose halves both pass. Its entries land and the flake
+is recorded against that batch; nobody is ejected.
