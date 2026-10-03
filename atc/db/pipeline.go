@@ -37,10 +37,6 @@ var pipelineObjectTables = []string{
 	"prototypes",
 }
 
-type ErrResourceNotFound struct {
-	Name string
-}
-
 type Pipeline interface {
 	ID() int
 	Name() string
