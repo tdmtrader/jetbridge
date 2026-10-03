@@ -20,7 +20,6 @@ module ColorValues exposing
     , grey90
     , paused40
     , paused70
-    , pinned40
     , pinned50
     , pinned60
     , pinned70
@@ -193,11 +192,6 @@ failure70 =
 
 
 ------- PINNED -------
-
-
-pinned40 : String
-pinned40 =
-    "#AF99FF"
 
 
 pinned50 : String
