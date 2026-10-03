@@ -117,6 +117,8 @@ func ExpectTeamWithAuth(dbConn *sql.DB, team, expectedConfig string) {
 }
 
 func ExpectTeamWithLegacyAuth(dbConn *sql.DB, team, expectedConfig string) {
+	GinkgoHelper()
+
 	auth := readTeamLegacyAuth(dbConn, team)
 	Expect(auth).To(MatchJSON(expectedConfig))
 }
