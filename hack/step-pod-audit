@@ -128,6 +128,7 @@ pods() {
 	] | join("|")' | while IFS='|' read -r pod build kind sa automount projected escalation stray; do
 		want=$default_sa
 		grant=""
+		own=""
 		privileged=no
 		if [ "$kind" != check ] && [ "$build" != 0 ]; then
 			owner=$(owner_of "$build")
@@ -150,8 +151,10 @@ pods() {
 			echo "FAIL: $pod (build $build) holds privilege no grant allows: $escalation"
 		elif [ "$sa" != "$want" ]; then
 			echo "FAIL: $pod (build $build) runs as $sa, its build resolves to $want"
-		elif [ -z "$grant" ] && [ "$token" = yes ]; then
-			echo "FAIL: $pod (build $build) has an API token outside any grant"
+		elif [ -z "$own" ] && [ "$token" = yes ]; then
+			# Only a grant's own ServiceAccount carries a token; a privilege-only
+			# grant keeps the default account, and with it no token.
+			echo "FAIL: $pod (build $build) has an API token outside a grant's own ServiceAccount"
 		else
 			echo "ok:   $pod (build $build) $sa${grant:+ via grant $grant}"
 		fi

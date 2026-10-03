@@ -289,11 +289,26 @@ echo "$out" | grep -qE '40[13]' || { echo "unexpected API failure: $out"; exit 9
 		t.Fatalf("the main container's check exited %d: %s", result.ExitStatus, stdout.String())
 	}
 
-	pods, err := clientset.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "concourse.ci/handle=" + handle})
-	if err != nil || len(pods.Items) != 1 {
-		t.Fatalf("the step's pod: %d found, err %v", len(pods.Items), err)
+	// The sidecar may still be pulling its image when the main check returns;
+	// wait for it to run or to have stopped, whichever comes first.
+	var pod corev1.Pod
+	for deadline := time.Now().Add(time.Minute); ; {
+		pods, err := clientset.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "concourse.ci/handle=" + handle})
+		if err != nil || len(pods.Items) != 1 {
+			t.Fatalf("the step's pod: %d found, err %v", len(pods.Items), err)
+		}
+		pod = pods.Items[0]
+		settled := false
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == "probe" && (status.State.Running != nil || status.State.Terminated != nil) {
+				settled = true
+			}
+		}
+		if settled || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Second)
 	}
-	pod := pods.Items[0]
 	if pod.Spec.ServiceAccountName != "default" {
 		t.Fatalf("serviceAccountName = %q, want the default identity's %q", pod.Spec.ServiceAccountName, "default")
 	}

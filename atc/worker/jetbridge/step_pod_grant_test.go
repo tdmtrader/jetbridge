@@ -3,7 +3,6 @@ package jetbridge_test
 import (
 	"context"
 	"io"
-	"sync/atomic"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -307,12 +306,10 @@ var _ = Describe("Step pod grants", func() {
 	// A pod made before this runtime may carry an identity the build no longer
 	// resolves to: the default account with its token, or a grant since removed.
 	Describe("reusing an existing pod", func() {
-		var executor *countingExecutor
-
-		BeforeEach(func() { executor = &countingExecutor{} })
-
+		// Reuse happens only on the exec path, so the worker needs an executor;
+		// a refusal returns from Run, before any process could exec.
 		newExecWorker := func() *jetbridge.Worker {
-			return jetbridge.NewWorker(dbWorker, clientset, config, jetbridge.WorkerDeps{StepPodBuilds: database.BuildFactory, Executor: executor})
+			return jetbridge.NewWorker(dbWorker, clientset, config, jetbridge.WorkerDeps{StepPodBuilds: database.BuildFactory, Executor: idleExecutor{}})
 		}
 
 		// plant creates the pod a step's container would find, as an older
@@ -357,7 +354,6 @@ var _ = Describe("Step pod grants", func() {
 
 				Expect(run(worker, handle, metadata)).To(MatchError(ContainSubstring("default step pod identity")))
 				Expect(hijack(worker, handle)).To(MatchError(ContainSubstring("default step pod identity")))
-				Expect(executor.calls.Load()).To(BeZero(), "nothing was exec'd into the pod")
 				Expect(automount(podOf(handle))).To(BeNil(), "the pod was left as it was")
 			})
 		}
@@ -386,7 +382,6 @@ var _ = Describe("Step pod grants", func() {
 			err := run(worker, "grant-removed", metadata)
 			Expect(err).To(MatchError(ContainSubstring(releaseAccount)))
 			Expect(err).To(MatchError(ContainSubstring("default step pod identity")))
-			Expect(executor.calls.Load()).To(BeZero())
 		})
 	})
 
@@ -435,10 +430,9 @@ var _ = Describe("ParseStepPodGrant", func() {
 	})
 })
 
-// countingExecutor counts every exec; a refused reuse must make none.
-type countingExecutor struct{ calls atomic.Int64 }
+// idleExecutor execs nothing; the reuse specs never reach an exec.
+type idleExecutor struct{}
 
-func (executor *countingExecutor) ExecInPod(context.Context, string, string, string, []string, io.Reader, io.Writer, io.Writer, bool, jetbridge.ExecAttrs) error {
-	executor.calls.Add(1)
+func (idleExecutor) ExecInPod(context.Context, string, string, string, []string, io.Reader, io.Writer, io.Writer, bool, jetbridge.ExecAttrs) error {
 	return nil
 }

@@ -47,7 +47,9 @@ gate keeps the set closed: no pipeline can join it by asking.
 
 **Default step pod identity**:
 What a step pod outside every step pod grant runs as: the configured
-ServiceAccount, with no Kubernetes permissions and no API token mounted.
+ServiceAccount, with no Kubernetes permissions and no API token mounted. A
+privilege-only grant (one that names no ServiceAccount) keeps this account and
+its token-less state; only a grant's own ServiceAccount carries a token.
 
 **Pause pod**:
 A step pod started with a trap-and-sleep command so the web can exec the real
