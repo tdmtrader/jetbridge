@@ -54,6 +54,7 @@ var _ = BeforeEach(func() {
 
 // createTeam registers a team the handlers can actually look up by name.
 func createTeam(name string) db.Team {
+	GinkgoHelper()
 	team, err := teamFactory.CreateTeam(atc.Team{Name: name})
 	Expect(err).NotTo(HaveOccurred())
 	return team
