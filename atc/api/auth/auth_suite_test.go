@@ -281,6 +281,8 @@ func doomedBuildFactory() db.BuildFactory {
 // every lookup through it fails the way a database outage would. It opens its
 // own connection: AfterEach asserts the suite's closes cleanly.
 func doomedTeamFactory() db.TeamFactory {
+	GinkgoHelper()
+
 	doomed := postgresRunner.OpenConn()
 	factory := db.NewTeamFactory(doomed, lockFactory)
 	Expect(doomed.Close()).To(Succeed())
