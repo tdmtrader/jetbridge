@@ -1072,11 +1072,12 @@ func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
 	}
 	found := false
 	for _, m := range cleanup.VolumeMounts {
-		if m.Name == artifactDaemonHostPathVolumeName {
-			found = true
-			if m.ReadOnly {
-				t.Error("cleanup init container should mount artifact hostPath writable")
-			}
+		if m.Name != artifactDaemonHostPathVolumeName {
+			continue
+		}
+		found = true
+		if m.ReadOnly {
+			t.Error("cleanup init container should mount artifact hostPath writable")
 		}
 	}
 	if !found {
