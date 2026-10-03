@@ -16,7 +16,7 @@ import (
 )
 
 func Start(env []string, command string, argv ...string) *gexec.Session {
-	TimestampedBy("running: " + command + " " + strings.Join(argv, " "))
+	timestampedBy("running: " + command + " " + strings.Join(argv, " "))
 
 	cmd := exec.Command(command, argv...)
 	cwd, err := os.Getwd()
@@ -31,7 +31,7 @@ func Start(env []string, command string, argv ...string) *gexec.Session {
 }
 
 func SpawnInteractive(stdin io.Reader, env []string, command string, argv ...string) *gexec.Session {
-	TimestampedBy("interactively running: " + command + " " + strings.Join(argv, " "))
+	timestampedBy("interactively running: " + command + " " + strings.Join(argv, " "))
 
 	cmd := exec.Command(command, argv...)
 	cwd, err := os.Getwd()
@@ -72,7 +72,7 @@ func mergeEnv(base, overrides []string) []string {
 	return result
 }
 
-func TimestampedBy(msg string) {
+func timestampedBy(msg string) {
 	By(fmt.Sprintf("[%.9f] %s", float64(time.Now().UnixNano())/1e9, msg))
 }
 
