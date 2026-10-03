@@ -38,3 +38,13 @@ entry that fails on its own is ejected; blame is never guessed.
 
 **Flake**: a red batch whose halves both pass. Its entries land and the flake
 is recorded against that batch; nobody is ejected.
+
+**Suspect**: an entry that the failed tests and its changed files point at as
+the likely cause of a red batch. Only the top suspect is used, once per batch.
+
+**Hint**: a suspect named before blame is proven. It is never enough to eject:
+the suspect runs alone first and is ejected only if it fails alone (a hit);
+the rest then run as one batch.
+
+**Miss**: a hint whose suspect passes alone. Nothing settles, the hint is
+dropped and the red batch is bisected as usual.
