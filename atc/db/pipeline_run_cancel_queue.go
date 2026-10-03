@@ -192,14 +192,15 @@ func (f *pipelineRunFactory) ClaimRunCancellationOperation(ctx context.Context, 
 			if !errors.Is(err, sql.ErrNoRows) {
 				return op, false, err
 			}
-			if cycle == 0 {
-				after = 0
-				if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM pipeline_run_cancellation_operations WHERE run_id=$1 AND kind=$2`, runID, string(kind)).Scan(&high); err != nil {
-					return op, false, err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE pipeline_run_cancellation_cursors SET after_id=0,high_water=$3,cycle=cycle+1 WHERE run_id=$1 AND kind=$2`, runID, string(kind), high); err != nil {
-					return op, false, err
-				}
+			if cycle != 0 {
+				continue
+			}
+			after = 0
+			if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM pipeline_run_cancellation_operations WHERE run_id=$1 AND kind=$2`, runID, string(kind)).Scan(&high); err != nil {
+				return op, false, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE pipeline_run_cancellation_cursors SET after_id=0,high_water=$3,cycle=cycle+1 WHERE run_id=$1 AND kind=$2`, runID, string(kind), high); err != nil {
+				return op, false, err
 			}
 		}
 	}
