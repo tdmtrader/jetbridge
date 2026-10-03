@@ -22,7 +22,6 @@ module ColorValues exposing
     , paused70
     , pinned80
     , pinned90
-    , success10
     , success100
     , success20
     , success30
@@ -102,11 +101,6 @@ grey100 =
 
 
 ------- SUCCESS -------
-
-
-success10 : String
-success10 =
-    "#DFF7EA"
 
 
 success20 : String
