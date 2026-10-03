@@ -256,16 +256,6 @@ func By(text string) {
 // Legacy flat-span API (kept for backward compatibility)
 // ---------------------------------------------------------------------------
 
-// ReportTestSpan is a Ginkgo ReportAfterEach handler that creates a single
-// flat span for each completed test case. Prefer StartTestSpan +
-// FinalizeTestSpan for nested spans.
-func ReportTestSpan(report ginkgo.SpecReport) {
-	if !configured {
-		return
-	}
-	emitTestSpan(report, "")
-}
-
 // ReportTestSpanWithPipeline returns a ReportAfterEach handler that includes
 // the pipeline name. This is the legacy flat-span API.
 func ReportTestSpanWithPipeline(pipelineNameFn func() string) func(ginkgo.SpecReport) {
