@@ -229,7 +229,7 @@ func validatePrivateHangarScratch(scratch, storage string) error {
 	}
 	info, err := os.Lstat(cleanScratch)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("Hangar scratch directory must be a real directory")
+		return errors.New("Hangar scratch directory must be a real directory")
 	}
 	resolvedScratch, err := filepath.EvalSymlinks(cleanScratch)
 	if err != nil {
@@ -256,7 +256,7 @@ func validatePrivateHangarScratch(scratch, storage string) error {
 	}
 	info, err = os.Lstat(cleanScratch)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
-		return fmt.Errorf("Hangar scratch directory must be a private 0700 directory")
+		return errors.New("Hangar scratch directory must be a private 0700 directory")
 	}
 	return nil
 }
