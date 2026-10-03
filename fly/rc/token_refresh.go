@@ -123,7 +123,7 @@ func (s *refreshingTokenSource) Token() (*oauth2.Token, error) {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, AuthHTTPClient(&http.Client{Transport: s.base}))
 		result, err := conf.TokenSource(ctx, &oauth2.Token{RefreshToken: current.RefreshToken}).Token()
 		if err != nil {
-			return RenewalError(err)
+			return renewalError(err)
 		}
 		renewed, err := TargetTokenFromOAuth(result, clientID)
 		if err != nil {
@@ -162,7 +162,7 @@ func TargetTokenFromOAuth(t *oauth2.Token, clientID string) (*TargetToken, error
 }
 
 // Do not include issuer bodies: they can contain tokens, connector data or credentials.
-func RenewalError(err error) error {
+func renewalError(err error) error {
 	var response *oauth2.RetrieveError
 	if errors.As(err, &response) && response.Response != nil && response.Response.StatusCode < 500 {
 		return errors.New("login renewal was rejected or expired; run fly login again")
