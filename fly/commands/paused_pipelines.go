@@ -47,9 +47,8 @@ func (command *PausedPipelinesCommand) Execute([]string) error {
 			return err
 		}
 		return nil
-	} else {
-		return command.render(pipelines)
 	}
+	return command.render(pipelines)
 }
 
 func (command *PausedPipelinesCommand) render(pipelines []atc.Pipeline) error {
