@@ -14,7 +14,7 @@ func NewVersionSourceFromPlan(getPlan *atc.GetPlan) VersionSource {
 	}
 
 	if getPlan.VersionFrom != nil {
-		return &DynamicVersionSource{
+		return &dynamicVersionSource{
 			planID: *getPlan.VersionFrom,
 		}
 	}
@@ -36,11 +36,11 @@ func (p *staticVersionSource) Version(RunState) (atc.Version, error) {
 
 var ErrResultMissing = errors.New("version is missing from previous step")
 
-type DynamicVersionSource struct {
+type dynamicVersionSource struct {
 	planID atc.PlanID
 }
 
-func (p *DynamicVersionSource) Version(state RunState) (atc.Version, error) {
+func (p *dynamicVersionSource) Version(state RunState) (atc.Version, error) {
 	var version atc.Version
 	if !state.Result(p.planID, &version) {
 		return atc.Version{}, ErrResultMissing
