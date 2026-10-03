@@ -10,10 +10,10 @@ import (
 type vaultManagerFactory struct{}
 
 func init() {
-	creds.Register("vault", NewVaultManagerFactory())
+	creds.Register("vault", newVaultManagerFactory())
 }
 
-func NewVaultManagerFactory() creds.ManagerFactory {
+func newVaultManagerFactory() creds.ManagerFactory {
 	return &vaultManagerFactory{}
 }
 
