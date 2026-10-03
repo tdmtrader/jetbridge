@@ -127,8 +127,7 @@ func sanitizeSegment(s string, maxLen int) string {
 		s = s[:maxLen]
 	}
 	// Trim trailing hyphen after truncation.
-	s = strings.TrimRight(s, "-")
-	return s
+	return strings.TrimRight(s, "-")
 }
 
 // hexSuffix extracts the first 8 hex characters from the handle by
