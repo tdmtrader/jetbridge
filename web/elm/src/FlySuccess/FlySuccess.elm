@@ -25,7 +25,6 @@ import Message.Subscription as Subscription
         , RawHttpResponse(..)
         , Subscription(..)
         )
-import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import Routes
 import Tooltip
 import UserState exposing (UserState)
