@@ -862,8 +862,7 @@ var _ = Describe("Team", func() {
 			var uwrc2 *db.UsedWorkerResourceCache
 
 			BeforeEach(func() {
-				var err error
-				_, err = workerFactory.SaveWorker(atcWorker2, 0)
+				_, err := workerFactory.SaveWorker(atcWorker2, 0)
 				Expect(err).ToNot(HaveOccurred())
 
 				creatingVolume, err := volumeRepository.CreateVolume(defaultTeam.ID(), atcWorker2.Name, db.VolumeTypeResource)
