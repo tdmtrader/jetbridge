@@ -129,3 +129,4 @@ can show as a later `}`.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-10-03 | continue:CheckForInputType@fly/commands/internal/executehelpers/inputs.go:i.Path != "" | rewritten | the `if` is the last statement of the `range inputMaps` body, has no `else` or init, and wraps 8 lines (the `os.Stat` call, its error return and the regular-file `switch`), the last of which does not leave; `i.Path != ""` negates by the table to `i.Path == ""` and names no `err`; the moved `fi, err :=` meet no earlier declaration in the loop body; no comment near the `if`, no label or `goto`; gates: gofmt, `git diff -w` 3/2, guardscan re-scan drops the key, `go build ./... && go vet ./...`, `make test-fly-integration` (601 passed) |

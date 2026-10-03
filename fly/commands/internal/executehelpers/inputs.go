@@ -121,15 +121,16 @@ func ConvertInputMappings(variables []flaghelpers.InputMappingPairFlag) map[stri
 
 func CheckForInputType(inputMaps []flaghelpers.InputPairFlag) error {
 	for _, i := range inputMaps {
-		if i.Path != "" {
-			fi, err := os.Stat(i.Path)
-			if err != nil {
-				return err
-			}
-			switch mode := fi.Mode(); {
-			case mode.IsRegular():
-				return errors.New(i.Path + " not a folder")
-			}
+		if i.Path == "" {
+			continue
+		}
+		fi, err := os.Stat(i.Path)
+		if err != nil {
+			return err
+		}
+		switch mode := fi.Mode(); {
+		case mode.IsRegular():
+			return errors.New(i.Path + " not a folder")
 		}
 	}
 	return nil
