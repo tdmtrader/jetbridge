@@ -43,11 +43,6 @@ jobs:
 `, jobName, mainScript, hookType, hookScript)
 }
 
-// fixtureTaskWithEnsure returns a pipeline with a task and an ensure step.
-func fixtureTaskWithEnsure(jobName, mainScript, ensureScript string) string {
-	return fixtureTaskWithHook(jobName, "ensure", mainScript, ensureScript)
-}
-
 // fixtureLoadVar returns a pipeline that produces a value, loads it,
 // and uses it in a subsequent task.
 func fixtureLoadVar(jobName, varName, produceScript, consumeScript string) string {
