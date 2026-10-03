@@ -107,13 +107,8 @@ func (c *GenerateCommand) GenerateGoMigration() error {
 		return err
 	}
 
-	err = renderGoMigrationToFile(path.Join(c.MigrationDirectory, downMigrationFileName), migrationInfo{
+	return renderGoMigrationToFile(path.Join(c.MigrationDirectory, downMigrationFileName), migrationInfo{
 		MigrationId: currentTime,
 		Direction:   "Down",
 	})
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
