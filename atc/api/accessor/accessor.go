@@ -266,11 +266,7 @@ func (a *access) IsAdmin() bool {
 
 func (a *access) IsSystem() bool {
 	if claim := a.claim(a.systemClaimKey); claim != "" {
-		for _, value := range a.systemClaimValues {
-			if value == claim {
-				return true
-			}
-		}
+		return slices.Contains(a.systemClaimValues, claim)
 	}
 	return false
 }
