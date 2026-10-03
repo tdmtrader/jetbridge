@@ -6,7 +6,7 @@ import Html exposing (Html)
 import Html.Attributes exposing (class, id)
 import Html.Events exposing (onClick, onMouseEnter, onMouseLeave)
 import Message.Effects exposing (toHtmlID)
-import Message.Message exposing (DomID(..), Message(..))
+import Message.Message exposing (DomID, Message(..))
 import UserState exposing (UserState)
 import Views.Icon as Icon
 import Views.Spinner as Spinner
