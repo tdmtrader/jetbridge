@@ -169,18 +169,6 @@ func RecordK8sPodFailure(ctx context.Context, reason string) {
 	)
 }
 
-// RecordWorkerHeartbeatAge records how long since the last successful worker heartbeat.
-func RecordWorkerHeartbeatAge(ctx context.Context, age time.Duration, workerName string) {
-	if workerHeartbeatAgeGauge == nil {
-		return
-	}
-	workerHeartbeatAgeGauge.Record(ctx, age.Seconds(),
-		otelmetric.WithAttributes(
-			attribute.String("worker", workerName),
-		),
-	)
-}
-
 // RecordVolumeOperationDuration records the duration of a K8s volume operation.
 // op is one of "stream_in" (tar write into a build pod) or "initialize" (cache
 // initialization). Cross-node reads are daemon-mediated (DaemonSetVolume) and
