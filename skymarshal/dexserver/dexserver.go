@@ -237,25 +237,26 @@ func newLocalUsers(config *DexConfig) map[string][]byte {
 	users := map[string][]byte{}
 
 	for username, password := range config.Users {
-		if username != "" && password != "" {
-
-			var hashed []byte
-
-			if _, err := bcrypt.Cost([]byte(password)); err != nil {
-				if hashed, err = bcrypt.GenerateFromPassword([]byte(password), 0); err != nil {
-
-					config.Logger.Error("bcrypt-local-user", err, lager.Data{
-						"username": username,
-					})
-
-					continue
-				}
-			} else {
-				hashed = []byte(password)
-			}
-
-			users[username] = hashed
+		if username == "" || password == "" {
+			continue
 		}
+
+		var hashed []byte
+
+		if _, err := bcrypt.Cost([]byte(password)); err != nil {
+			if hashed, err = bcrypt.GenerateFromPassword([]byte(password), 0); err != nil {
+
+				config.Logger.Error("bcrypt-local-user", err, lager.Data{
+					"username": username,
+				})
+
+				continue
+			}
+		} else {
+			hashed = []byte(password)
+		}
+
+		users[username] = hashed
 	}
 
 	return users
