@@ -247,16 +247,6 @@ func (refusal *OutputControlRefusal) Unwrap() error {
 	return nil
 }
 
-// Refused reports whether err is a typed daemon refusal, and what it said.
-func Refused(err error) (*OutputControlRefusal, bool) {
-	var refusal *OutputControlRefusal
-	if ok := asRefusal(err, &refusal); ok {
-		return refusal, true
-	}
-
-	return nil, false
-}
-
 func (client *OutputControlClient) Admit(ctx context.Context,
 	envelope executioncontrol.Envelope) (executioncontrol.ClassifyResult, error) {
 	var result executioncontrol.ClassifyResult
