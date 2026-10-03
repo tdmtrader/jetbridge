@@ -11,7 +11,6 @@ module Colors exposing
     , buildTabBorderColor
     , buildTabTextColor
     , buildTitleTextColor
-    , buildTooltipText
     , buttonDisabledGrey
     , card
     , dashboardPipelineHeaderText
@@ -447,15 +446,6 @@ metadataValueBackground =
 groupsBarBackground : String
 groupsBarBackground =
     "#2b2a2a"
-
-
-
-----
-
-
-buildTooltipText : String
-buildTooltipText =
-    "#ecf0f1"
 
 
 
