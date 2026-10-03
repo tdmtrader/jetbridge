@@ -3,7 +3,6 @@ package commands
 import (
 	"os"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
@@ -39,8 +38,7 @@ func (command *JobsCommand) Execute([]string) error {
 		return err
 	}
 
-	var jobs []atc.Job
-	jobs, err = team.ListJobs(command.Pipeline.Ref())
+	jobs, err := team.ListJobs(command.Pipeline.Ref())
 	if err != nil {
 		return err
 	}
