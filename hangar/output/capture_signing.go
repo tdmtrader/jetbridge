@@ -127,10 +127,6 @@ func NewCaptureStatementSigner(private ed25519.PrivateKey) (*CaptureStatementSig
 	return &CaptureStatementSigner{private: private}, nil
 }
 
-func (signer *CaptureStatementSigner) PublicKey() ed25519.PublicKey {
-	return signer.private.Public().(ed25519.PublicKey)
-}
-
 // SignCapture validates and signs a source-ledger statement. A statement that
 // contradicts itself must not become a signed one that contradicts itself.
 func (signer *CaptureStatementSigner) SignCapture(ack CaptureAcknowledgement) (CaptureAcknowledgement, error) {
