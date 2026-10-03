@@ -47,6 +47,7 @@ var _ = Describe("Check Lifecycle", func() {
 
 	Context("DB build", func() {
 		exists := func(b db.Build) bool {
+			GinkgoHelper()
 			found, err := b.Reload()
 			Expect(err).ToNot(HaveOccurred())
 			return found
