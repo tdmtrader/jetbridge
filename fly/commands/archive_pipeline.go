@@ -23,7 +23,12 @@ type ArchivePipelineCommand struct {
 }
 
 func (command *ArchivePipelineCommand) Validate() error {
-	_, err := command.Pipeline.Validate()
+	return validatePipelineFlag(command.Pipeline)
+}
+
+// validatePipelineFlag checks a command's pipeline flag, discarding its warnings.
+func validatePipelineFlag(flag *flaghelpers.PipelineFlag) error {
+	_, err := flag.Validate()
 	return err
 }
 

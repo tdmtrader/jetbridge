@@ -24,8 +24,7 @@ type GetPipelineCommand struct {
 }
 
 func (command *GetPipelineCommand) Validate() error {
-	_, err := command.Pipeline.Validate()
-	return err
+	return validatePipelineFlag(&command.Pipeline)
 }
 
 func (command *GetPipelineCommand) Execute(args []string) error {

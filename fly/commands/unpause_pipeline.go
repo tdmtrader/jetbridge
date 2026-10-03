@@ -17,8 +17,7 @@ type UnpausePipelineCommand struct {
 }
 
 func (command *UnpausePipelineCommand) Validate() error {
-	_, err := command.Pipeline.Validate()
-	return err
+	return validatePipelineFlag(command.Pipeline)
 }
 
 func (command *UnpausePipelineCommand) Execute(args []string) error {

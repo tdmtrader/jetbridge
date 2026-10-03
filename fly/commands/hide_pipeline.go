@@ -15,8 +15,7 @@ type HidePipelineCommand struct {
 }
 
 func (command *HidePipelineCommand) Validate() error {
-	_, err := command.Pipeline.Validate()
-	return err
+	return validatePipelineFlag(&command.Pipeline)
 }
 
 func (command *HidePipelineCommand) Execute(args []string) error {
