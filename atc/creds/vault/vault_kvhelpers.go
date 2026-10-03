@@ -88,7 +88,5 @@ func sanitizePath(path string) string {
 		path += "/"
 	}
 
-	path = strings.TrimPrefix(path, "/")
-
-	return path
+	return strings.TrimPrefix(path, "/")
 }
