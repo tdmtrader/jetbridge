@@ -81,7 +81,7 @@ func executionJournalFromIdentity(identity executioncontrol.ProcessIdentity) (st
 func (p *execProcess) recoverJournaledOutcome(ctx context.Context) (executioncontrol.ExitOutcome, executioncontrol.Acknowledgement, error) {
 	state, resource, ok := p.exactJournal()
 	if !ok {
-		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, fmt.Errorf("this command has no in-pod journal")
+		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, errors.New("this command has no in-pod journal")
 	}
 	// The caller has classified this identity as executing, so RecordStart is
 	// an idempotent read of its original start, not permission for a first start.
@@ -94,7 +94,7 @@ func (p *execProcess) recoverJournaledOutcome(ctx context.Context) (executioncon
 		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, err
 	}
 	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != p.control.Identity || start.ActivationEpoch != p.control.ActivationEpoch || start.PodUID != p.exact.podUID || start.ProcessIdentity != p.exactProcessIdentity() {
-		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, fmt.Errorf("retained start does not match the exact process")
+		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, errors.New("retained start does not match the exact process")
 	}
 	// A start the Run never retained is retained now, while the node still
 	// answers for it. No outcome may be recorded before it: once one exists
