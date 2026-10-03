@@ -45,12 +45,7 @@ func (f *userFactory) CreateOrUpdateUser(username, connector, sub string) error 
 		return err
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tx.Commit()
 }
 
 func (f *userFactory) GetAllUsers() ([]User, error) {
