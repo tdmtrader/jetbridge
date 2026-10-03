@@ -79,14 +79,14 @@ type LeaseControl struct {
 
 // Routes are the three paths, versioned and product-neutral.
 const (
-	LeaseValidatePath = "POST /read-lease/v1/validate"
+	leaseValidatePath = "POST /read-lease/v1/validate"
 	LeaseRenewPath    = "POST /read-lease/v1/renew"
 	LeaseReleasePath  = "POST /read-lease/v1/release"
 )
 
 func (control *LeaseControl) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle(LeaseValidatePath, control.serve(output.LeaseValidate))
+	mux.Handle(leaseValidatePath, control.serve(output.LeaseValidate))
 	mux.Handle(LeaseRenewPath, control.serve(output.LeaseRenew))
 	mux.Handle(LeaseReleasePath, control.serve(output.LeaseRelease))
 
