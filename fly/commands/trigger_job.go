@@ -46,9 +46,8 @@ func (command *TriggerJobCommand) Execute(args []string) error {
 	build, err = team.CreateJobBuild(pipelineRef, jobName)
 	if err != nil {
 		return err
-	} else {
-		fmt.Printf("started %s/%s #%s\n", pipelineRef.String(), jobName, build.Name)
 	}
+	fmt.Printf("started %s/%s #%s\n", pipelineRef.String(), jobName, build.Name)
 
 	if command.Watch {
 		terminate := make(chan os.Signal, 1)
