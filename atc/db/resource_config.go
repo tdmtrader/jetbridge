@@ -19,7 +19,6 @@ func (e BaseResourceTypeNotFoundError) Error() string {
 	return fmt.Sprintf("base resource type not found: %s", e.Name)
 }
 
-var ErrResourceConfigAlreadyExists = errors.New("resource config already exists")
 var ErrResourceConfigDisappeared = errors.New("resource config disappeared")
 var ErrResourceConfigParentDisappeared = errors.New("resource config parent disappeared")
 var ErrResourceConfigHasNoType = errors.New("resource config has no type")
