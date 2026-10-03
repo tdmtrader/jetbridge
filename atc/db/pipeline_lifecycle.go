@@ -91,12 +91,7 @@ func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
 		return err
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tx.Commit()
 }
 
 func archivePipelines(tx Tx, conn DbConn, lockFactory lock.LockFactory, rows *sql.Rows) error {
