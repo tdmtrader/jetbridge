@@ -1,6 +1,7 @@
 package jetbridge
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -70,7 +71,7 @@ func admitStepPod(pod *corev1.Pod, roots stepPodRoots) error {
 			switch {
 			case kind == hostPathArtifactRoot && init && container.Name == fetchInitContainerName:
 				if !mount.ReadOnly {
-					return fmt.Errorf("the fetch init container mounts the artifact daemon root writable")
+					return errors.New("the fetch init container mounts the artifact daemon root writable")
 				}
 			case kind == hostPathArtifactRoot && init && container.Name == cleanupInitContainerName:
 			case kind == hostPathArtifactRoot:
