@@ -68,11 +68,6 @@ func NewReaper(
 	}
 }
 
-// SetVolumeRepo sets the VolumeRepository used for cache volume cleanup.
-func (r *Reaper) SetVolumeRepo(repo db.VolumeRepository) {
-	r.volumeRepository = repo
-}
-
 // SetExecutor sets the PodExecutor used for cache directory cleanup.
 func (r *Reaper) SetExecutor(executor PodExecutor) {
 	r.executor = executor
