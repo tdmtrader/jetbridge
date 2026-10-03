@@ -25,8 +25,8 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
-// MaxLeaseAnswerBytes bounds a reply. An answer is a lease and a word.
-const MaxLeaseAnswerBytes = 1 << 16
+// maxLeaseAnswerBytes bounds a reply. An answer is a lease and a word.
+const maxLeaseAnswerBytes = 1 << 16
 
 // LeaseControlClient asks the control plane about one read lease.
 type LeaseControlClient struct {
@@ -130,7 +130,7 @@ func (client *LeaseControlClient) ask(ctx context.Context, operation LeaseOperat
 	}
 
 	var answer LeaseAnswer
-	if err := json.NewDecoder(io.LimitReader(response.Body, MaxLeaseAnswerBytes)).
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxLeaseAnswerBytes)).
 		Decode(&answer); err != nil {
 		return LeaseAnswer{}, fmt.Errorf("%w: the control plane's %s answer does not decode: %v",
 			ErrCorrupt, operation, err)
