@@ -190,13 +190,14 @@ func (atcConfig ATCConfig) showPipelineUpdateResult(pipeline atc.Pipeline, creat
 		panic("Something really went wrong!")
 	}
 
-	if pipeline.Paused {
-		fmt.Println("")
-		fmt.Println("the pipeline is currently paused. to unpause, either:")
-		fmt.Println("  - run the unpause-pipeline command:")
-		fmt.Println("    " + atcConfig.UnpausePipelineCommand())
-		fmt.Println("  - click play next to the pipeline in the web ui")
+	if !pipeline.Paused {
+		return
 	}
+	fmt.Println("")
+	fmt.Println("the pipeline is currently paused. to unpause, either:")
+	fmt.Println("  - run the unpause-pipeline command:")
+	fmt.Println("    " + atcConfig.UnpausePipelineCommand())
+	fmt.Println("  - click play next to the pipeline in the web ui")
 }
 
 func diff(existingConfig atc.Config, newConfig atc.Config) bool {
