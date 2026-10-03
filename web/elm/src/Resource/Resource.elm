@@ -82,7 +82,6 @@ import Message.Subscription as Subscription
         , Interval(..)
         , Subscription(..)
         )
-import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import Pinned exposing (ResourcePinState(..), VersionPinState(..))
 import RemoteData exposing (WebData)
 import Resource.Models as Models exposing (Model)
