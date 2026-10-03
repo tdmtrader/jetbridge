@@ -28,7 +28,7 @@ import Html.Attributes
         )
 import Html.Events exposing (onBlur, onFocus, onMouseEnter, onMouseLeave)
 import Html.Lazy
-import Message.Effects exposing (Effect(..), toHtmlID)
+import Message.Effects exposing (toHtmlID)
 import Message.Message as Message exposing (DomID(..), Message(..))
 import Routes
 import StrictEvents exposing (onLeftClick, onWheel)
