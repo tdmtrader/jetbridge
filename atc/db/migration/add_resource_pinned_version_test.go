@@ -16,6 +16,8 @@ var _ = Describe("Add resource pinned version", func() {
 	)
 
 	setupResourceVersions := func(db *sql.DB) {
+		GinkgoHelper()
+
 		_, err := db.Exec(`
 			INSERT INTO base_resource_types(id, name) VALUES
 			(1, 'some-type')
