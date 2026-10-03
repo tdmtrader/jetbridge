@@ -20,7 +20,7 @@ var _ = Describe("Validate Pipeline", func() {
 		var goodPipeline templatehelpers.YamlTemplateWithParams
 		var unknownKeyPipeline templatehelpers.YamlTemplateWithParams
 		var dupkeyPipeline templatehelpers.YamlTemplateWithParams
-		var badTemplatePipeline templatehelpers.YamlTemplateWithParams
+		var badTemplate templatehelpers.YamlTemplateWithParams
 
 		BeforeEach(func() {
 			var err error
@@ -171,7 +171,7 @@ jobs:
 			goodPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "good-pipeline.yml")), nil, nil, nil, nil)
 			unknownKeyPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "unknown-key-pipeline.yml")), nil, nil, nil, nil)
 			dupkeyPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "dupkey-pipeline.yml")), nil, nil, nil, nil)
-			badTemplatePipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "bad-template-pipeline.yml")), nil, nil, nil, nil)
+			badTemplate = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "bad-template-pipeline.yml")), nil, nil, nil, nil)
 		})
 
 		AfterEach(func() {
@@ -199,7 +199,7 @@ jobs:
 			Expect(err.Error()).To(ContainSubstring(`json: unknown field "anchors"`))
 		})
 		It("fails to validate a template whose declaration the server would reject", func() {
-			err := validatepipelinehelpers.Validate(badTemplatePipeline, false, false)
+			err := validatepipelinehelpers.Validate(badTemplate, false, false)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("configuration invalid"))
 		})
