@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -1246,12 +1247,7 @@ func requestScheduleForJobsUsingResource(tx Tx, resourceID int) error {
 type resourceVersionUpdater func(*atc.CausalityResourceVersion, *atc.CausalityBuild)
 
 func contains(lst []int, e int) bool {
-	for _, v := range lst {
-		if e == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(lst, e)
 }
 
 func causalityQuery(direction CausalityDirection) string {
