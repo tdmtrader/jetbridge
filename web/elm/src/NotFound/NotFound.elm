@@ -20,7 +20,6 @@ import Message.Subscription
         , Interval(..)
         , Subscription(..)
         )
-import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import NotFound.Model exposing (Model)
 import Routes
 import SideBar.SideBar as SideBar
