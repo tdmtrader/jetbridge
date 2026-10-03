@@ -82,7 +82,7 @@ func newPeerFallbackTestRig(t *testing.T, producerNode, producerIP string, trans
 		wire:      plainWire(t, 7780, httpClient.Transport),
 	}
 
-	vol := &DaemonSetVolume{
+	return &DaemonSetVolume{
 		key:            "h/o",
 		handle:         "h",
 		workerName:     "w",
@@ -91,7 +91,6 @@ func newPeerFallbackTestRig(t *testing.T, producerNode, producerIP string, trans
 		nodeIPResolver: resolver,
 		daemonClient:   dc,
 	}
-	return vol
 }
 
 func TestDaemonSetVolume_StreamOut_FallsBackToPeer_OnConnectionRefused(t *testing.T) {
