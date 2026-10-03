@@ -1124,8 +1124,7 @@ var _ = Describe("Job", func() {
 			Context("when the job is in serial groups", func() {
 				Context("when multiple jobs in the serial group is running", func() {
 					BeforeEach(func() {
-						var err error
-						_, err = job.CreateBuild(defaultBuildCreatedBy)
+						_, err := job.CreateBuild(defaultBuildCreatedBy)
 						Expect(err).NotTo(HaveOccurred())
 
 						otherSerialJob, found, err := pipeline.Job("other-serial-group-job")
