@@ -422,10 +422,11 @@ func (w *Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
 }
 
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {
-	if container != nil {
-		_, err := container.Failed()
-		if err != nil {
-			logger.Error("failed-to-mark-container-as-failed", err)
-		}
+	if container == nil {
+		return
+	}
+	_, err := container.Failed()
+	if err != nil {
+		logger.Error("failed-to-mark-container-as-failed", err)
 	}
 }
