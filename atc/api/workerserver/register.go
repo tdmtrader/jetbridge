@@ -13,8 +13,6 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 )
 
-type IntMetric int
-
 func (s *Server) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("register-worker")
 	var registration atc.Worker
