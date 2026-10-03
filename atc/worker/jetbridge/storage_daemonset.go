@@ -193,7 +193,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	for _, input := range inputs {
 		if input.HangarRead != nil {
 			if len(managedInits) >= maxHangarMaterializationItems {
-				return nil, fmt.Errorf("too many managed input materializations")
+				return nil, errors.New("too many managed input materializations")
 			}
 			init, err := b.managedInputInit(handle, input, podVolumes, mainMounts, len(managedInits))
 			if err != nil {
@@ -204,10 +204,10 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		}
 		if input.HangarTree != nil {
 			if !b.config.HangarEnabled {
-				return nil, fmt.Errorf("Hangar tree input requires Hangar to be enabled")
+				return nil, errors.New("Hangar tree input requires Hangar to be enabled")
 			}
 			if b.config.HangarWarrantSigner == nil {
-				return nil, fmt.Errorf("Hangar tree input requires a materialization warrant signer")
+				return nil, errors.New("Hangar tree input requires a materialization warrant signer")
 			}
 			if err := input.HangarTree.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid Hangar tree input: %w", err)
