@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -88,7 +89,7 @@ func (command *ExecuteCommand) Execute(args []string) error {
 	}
 
 	if len(outputs) > 0 && command.Background {
-		return fmt.Errorf("background execution cannot withstand outputs")
+		return errors.New("background execution cannot withstand outputs")
 	}
 
 	plan, err := executehelpers.CreateBuildPlan(
