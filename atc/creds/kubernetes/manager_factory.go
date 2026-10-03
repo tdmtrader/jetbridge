@@ -8,10 +8,10 @@ import (
 type kubernetesManagerFactory struct{}
 
 func init() {
-	creds.Register("kubernetes", NewKubernetesManagerFactory())
+	creds.Register("kubernetes", newKubernetesManagerFactory())
 }
 
-func NewKubernetesManagerFactory() creds.ManagerFactory {
+func newKubernetesManagerFactory() creds.ManagerFactory {
 	return &kubernetesManagerFactory{}
 }
 
