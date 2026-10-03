@@ -616,7 +616,7 @@ func verifyCaptureBoundary(
 		return fmt.Errorf("hangar: verify capture path identity at %q: %w", privateRoot, err)
 	}
 	if !os.SameFile(captureInfo, anchoredCaptureInfo) || !os.SameFile(captureInfo, pathCaptureInfo) {
-		return fmt.Errorf("hangar: capture path identity changed before success")
+		return errors.New("hangar: capture path identity changed before success")
 	}
 
 	anchoredExtractionInfo, err := extractionRoot.Stat(".")
@@ -634,7 +634,7 @@ func verifyCaptureBoundary(
 	if !os.SameFile(extractionInfo, anchoredExtractionInfo) ||
 		!os.SameFile(extractionInfo, captureExtractionInfo) ||
 		!os.SameFile(extractionInfo, pathExtractionInfo) {
-		return fmt.Errorf("hangar: extraction path identity changed before success")
+		return errors.New("hangar: extraction path identity changed before success")
 	}
 
 	anchoredArchiveInfo, err := captureRoot.Lstat("canonical.tar")
@@ -647,7 +647,7 @@ func verifyCaptureBoundary(
 	}
 	if !os.SameFile(archiveInfo, anchoredArchiveInfo) ||
 		!os.SameFile(archiveInfo, pathArchiveInfo) {
-		return fmt.Errorf("hangar: archive path identity changed before success")
+		return errors.New("hangar: archive path identity changed before success")
 	}
 	return nil
 }
