@@ -5,10 +5,6 @@ import (
 	"os"
 )
 
-func MustAsset(string) []byte {
-	panic("no assets")
-}
-
 func AssetInfo(string) (os.FileInfo, error) {
 	return nil, errors.New("no assets")
 }
