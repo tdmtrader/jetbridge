@@ -2285,8 +2285,6 @@ var _ = Describe("Pipelines API", func() {
 		var response *http.Response
 
 		JustBeforeEach(func() {
-			var err error
-
 			request, err := http.NewRequest("GET", server.URL+"/api/v1/teams/a-team/pipelines/a-pipeline/versions-db", nil)
 			Expect(err).NotTo(HaveOccurred())
 
