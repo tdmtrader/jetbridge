@@ -89,6 +89,8 @@ func startedBuildForAPI(team db.Team, plan atc.Plan) db.BuildForAPI {
 }
 
 func buildForAPI(build db.Build) db.BuildForAPI {
+	GinkgoHelper()
+
 	forAPI, found, err := buildFactory.BuildForAPI(build.ID())
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
