@@ -544,6 +544,7 @@ func TryRunMigrateAndVerifyResult(db *sql.DB, migrator migration.Migrator, versi
 }
 
 func SetupMigrationsHistoryTableToExistAtVersion(db *sql.DB, version int) {
+	GinkgoHelper()
 	_, err := db.Exec(`CREATE TABLE migrations_history(version bigint, tstamp timestamp with time zone, direction varchar, status varchar, dirty boolean)`)
 	Expect(err).NotTo(HaveOccurred())
 
