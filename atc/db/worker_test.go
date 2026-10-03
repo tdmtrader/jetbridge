@@ -157,8 +157,7 @@ var _ = Describe("Worker", func() {
 
 			Context("when the creating container is failed and gced", func() {
 				BeforeEach(func() {
-					var err error
-					_, err = creatingContainer.Failed()
+					_, err := creatingContainer.Failed()
 					Expect(err).ToNot(HaveOccurred())
 
 					containerRepository := NewContainerRepository(dbConn)
