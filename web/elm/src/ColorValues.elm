@@ -1,6 +1,5 @@
 module ColorValues exposing
     ( black
-    , error10
     , error100
     , error20
     , error30
@@ -346,11 +345,6 @@ pinned100 =
 
 
 ------- ERROR -------
-
-
-error10 : String
-error10 =
-    "#FAF0E1"
 
 
 error20 : String
