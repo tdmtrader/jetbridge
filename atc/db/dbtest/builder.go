@@ -158,13 +158,6 @@ func (builder Builder) createVolume(teamID int, workerName string, volumeType db
 	return builder.VolumeRepo.CreateVolumeWithHandle(handle, teamID, workerName, volumeType)
 }
 
-func (builder Builder) WithCreatingVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) SetupFunc {
-	return func(scenario *Scenario) error {
-		_, err := builder.createVolume(teamID, workerName, volumeType, handle)
-		return err
-	}
-}
-
 func (builder Builder) WithCreatedVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) SetupFunc {
 	return func(scenario *Scenario) error {
 		volume, err := builder.createVolume(teamID, workerName, volumeType, handle)
