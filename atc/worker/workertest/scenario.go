@@ -7,7 +7,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
-	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	. "github.com/onsi/gomega"
@@ -29,26 +28,6 @@ type Scenario struct {
 }
 
 type SetupFunc func(*Scenario)
-
-func Setup(dbConn db.DbConn, lockFactory lock.LockFactory, setup ...SetupFunc) *Scenario {
-	db := worker.NewDB(
-		db.NewWorkerFactory(dbConn, db.NewStaticWorkerCache(dummyLogger, dbConn, 0)),
-		db.NewTeamFactory(dbConn, lockFactory),
-		db.NewVolumeRepository(dbConn),
-		db.NewTaskCacheFactory(dbConn),
-		db.NewWorkerTaskCacheFactory(dbConn),
-		db.NewResourceCacheFactory(dbConn, lockFactory),
-		db.NewWorkerBaseResourceTypeFactory(dbConn),
-		lockFactory,
-	)
-	factory := &Factory{DB: db}
-	pool := worker.NewPool(
-		factory,
-		db,
-	)
-	builder := dbtest.NewBuilder(dbConn, lockFactory)
-	return setupWithPool(pool, factory, builder, setup...)
-}
 
 func setupWithPool(pool worker.Pool, factory *Factory, builder dbtest.Builder, setup ...SetupFunc) *Scenario {
 	scenario := &Scenario{
