@@ -159,6 +159,71 @@ Submission packages this capture under `bundle/` in the Run input. The template
 reads `source/bundle`, keeping Hangar's materialization receipt outside the sealed
 review inventory. Local capture and worker paths remain unchanged.
 
+## Landing a reviewed change
+
+`jb review land` reviews a committed change and, if the report passes a
+severity floor, pushes exactly the reviewed commit to `core` on the
+repository's `origin`:
+
+```sh
+jb review land --target YOUR_TARGET --auth-file /owner/selected/auth.json \
+  [--team TEAM] [--template review] [--repo .] [--head HEAD] \
+  [--block-at medium] [--state DIR] [--timeout 40m]
+```
+
+It runs these steps in order:
+
+1. Fetch `refs/heads/core` from `origin`. That commit is the base; there is no
+   `--base`. A head that is the base, or does not descend from it, is refused
+   before review.
+2. Capture `base..head` into `--state` (default `jb/land` under the user cache
+   directory, such as `~/.cache` on Linux or `~/Library/Caches` on macOS), one
+   directory per base/head pair holding `bundle/` and the invocation receipt
+   `receipt.json`. The state directory must be outside the repository, and, as
+   for `capture`, the whole worktree must be clean even when `--head` is not
+   `HEAD`.
+3. Submit the bundle through the same Run client as `submit` and
+   `review_submit`, then poll the Run until it is no longer running.
+4. Fetch the `findings` result and check its provenance against the local
+   bundle, as `render` does. A report for any other input is refused.
+5. Apply `--block-at` (`low`, `medium`, `high` or `blocker`). An `incomplete`
+   review always refuses. Otherwise, any finding at or above the floor refuses,
+   and findings below it are tolerated.
+6. Push `<head_commit>:refs/heads/core` to `origin` with
+   `--force-with-lease=refs/heads/core:<base_commit>`. The receiving repository
+   applies the update only if `core` still names the reviewed base, so a `core`
+   that moved on, was rolled back or was deleted during the review is refused
+   (rebase and run `land` again, which starts a new review), and the check is
+   made where the push lands even if `origin` pushes to a different URL than it
+   fetches from. Since the head descends from the base, the update is always a
+   fast-forward. No tags or submodules are pushed.
+
+Running `land` again for the same base and head with the same `--state` resumes
+rather than starting over: it reuses the saved bundle and invocation receipt, so
+a landing stopped by `--timeout`, an interrupt or a lost connection picks up the
+same Run, and a refused one can be re-evaluated at another `--block-at` without
+a second review. Delete the pair's directory to review it afresh. The push
+pushes the commits resolved locally, never ones the report names, and once it
+starts, `--timeout` and an interrupt no longer stop it (it has its own
+two-minute bound). Immediately before pushing, a landing whose review passed
+writes `passed.json` into the pair's directory, naming the base, head, bundle
+digest and Run number. If `core` already names the head and that pair's marker
+matches its verified bundle, a rerun reports `landed` rather than "nothing to
+land". A pair without the marker (never submitted, its Run failed, or refused)
+still reports "nothing to land", whoever moved `core`.
+
+Fetch and push inherit your environment, so they use your own git credentials
+for `origin`, but not a caller's `GIT_DIR`/`GIT_WORK_TREE` selection. Nothing in
+the cluster gains push access. The command prints one JSON line: `landed` (exit
+0) or `refused` (exit 1) with `reason`, `run_number`, `base_commit`,
+`head_commit`, `verdict` and the `blocking` finding IDs. A failure after
+submission (exit 1) prints the same line with an empty `outcome`, the
+`run_number` to inspect with `status` and `result`, and the error in `message`;
+a failure before submission prints only the error. The gate is a tool, not a
+policy the remote enforces: anyone with push rights can still push by hand. The
+pass/fail rule is `review.Evaluate`, a pure function over the report;
+`verdict()` and the `review/v1` schema are unchanged.
+
 ## Running one review
 
 [`codex-version`](../session/codex-version) and

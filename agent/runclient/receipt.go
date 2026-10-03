@@ -80,19 +80,45 @@ func openReceipt(ctx context.Context, path, input string) (*receiptFile, error) 
 		root.Close()
 		return nil, err
 	}
+	if err = waitLock(ctx, file.lock); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// LockFile takes an exclusive lock on the private file at path, creating it
+// if needed, and waits for it until ctx ends. It is the lock a receipt takes,
+// for state a caller keeps beside a receipt, such as the input it submits.
+// The returned function releases the lock.
+func LockFile(ctx context.Context, path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = waitLock(ctx, f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		unlockReceipt(f)
+		f.Close()
+	}, nil
+}
+
+// waitLock takes an exclusive lock on f, retrying until ctx ends.
+func waitLock(ctx context.Context, f *os.File) error {
 	for {
-		locked, err := tryReceiptLock(file.lock)
+		locked, err := tryReceiptLock(f)
 		if err != nil {
-			file.Close()
-			return nil, err
+			return err
 		}
 		if locked {
-			return file, nil
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			file.Close()
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-time.After(25 * time.Millisecond):
 		}
 	}

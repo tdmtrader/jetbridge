@@ -24,7 +24,7 @@ func main() {
 	}
 }
 
-const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|submit|status|result|apply [options]\n       jb mcp [options]"
+const usage = "usage: jb review capture|submit|land|render|schema|status|result|mcp [options]\n       jb implement capture|submit|status|result|apply [options]\n       jb mcp [options]"
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	if len(args) >= 1 && args[0] == "mcp" {
@@ -52,6 +52,8 @@ func reviewCommand(ctx context.Context, args []string, out, stderr io.Writer) er
 	switch args[1] {
 	case "submit":
 		return reviewSubmit(ctx, f, args[2:], out)
+	case "land":
+		return reviewLand(ctx, f, args[2:], out)
 	case "mcp":
 		return serveMCP(ctx, reviewMCPServer, f, args[2:])
 	case "result":
@@ -111,6 +113,6 @@ func reviewCommand(ctx context.Context, args []string, out, stderr io.Writer) er
 		_, err := out.Write(review.Schema())
 		return err
 	default:
-		return errors.New("available review commands: capture, submit, render, schema, status, result, mcp")
+		return errors.New("available review commands: capture, submit, land, render, schema, status, result, mcp")
 	}
 }

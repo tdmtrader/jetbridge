@@ -1,5 +1,7 @@
-// Package review captures committed changes and validates inspection-only reviews.
-// It has no dependency on JetBridge's scheduler, database or artifact runtime.
+// Package review captures committed changes, validates inspection-only reviews
+// and applies a landing policy to them; a landing's git fetch and push live
+// here, beside the sealed capture agent/capture provides. It has no dependency
+// on JetBridge's scheduler, database or artifact runtime.
 package review
 
 import (
