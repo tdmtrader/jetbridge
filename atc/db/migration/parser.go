@@ -43,8 +43,6 @@ func (p *Parser) ParseMigrationFilename(fileName string) (migration, error) {
 }
 
 func (p *Parser) ParseFileToMigration(migrationName string) (migration, error) {
-	var migrationContents string
-
 	migration, err := p.ParseMigrationFilename(migrationName)
 	if err != nil {
 		return migration, err
@@ -55,7 +53,7 @@ func (p *Parser) ParseFileToMigration(migrationName string) (migration, error) {
 		return migration, err
 	}
 
-	migrationContents = string(migrationBytes)
+	migrationContents := string(migrationBytes)
 	migration.Strategy = determineMigrationStrategy(migrationName)
 
 	switch migration.Strategy {
