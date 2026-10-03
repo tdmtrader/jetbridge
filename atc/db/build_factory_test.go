@@ -188,8 +188,7 @@ var _ = Describe("BuildFactory", func() {
 				b, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
 				Expect(err).NotTo(HaveOccurred())
 
-				var i bool
-				i, err = b.Interceptible()
+				i, err := b.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(i).To(BeTrue())
 
