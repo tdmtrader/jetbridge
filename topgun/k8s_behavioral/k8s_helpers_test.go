@@ -279,15 +279,6 @@ func containerByName(pod *corev1.Pod, name string) *corev1.Container {
 	return nil
 }
 
-// podAnnotation returns the value of the given annotation key, or
-// an empty string if the annotation does not exist.
-func podAnnotation(pod *corev1.Pod, key string) string {
-	if pod.Annotations == nil {
-		return ""
-	}
-	return pod.Annotations[key]
-}
-
 // waitForPodsWithLabelCount waits until the exact number of pods
 // matching the label selector exist, then returns them.
 func waitForPodsWithLabelCount(labelSelector string, count int) []corev1.Pod {
