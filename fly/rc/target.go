@@ -275,8 +275,7 @@ func NewAuthenticatedTarget(
 		return nil, err
 	}
 
-	var clientCertificate []tls.Certificate
-	clientCertificate, err = loadClientCertificate(clientCertPath, clientKeyPath)
+	clientCertificate, err := loadClientCertificate(clientCertPath, clientKeyPath)
 	if err != nil {
 		return nil, err
 	}
