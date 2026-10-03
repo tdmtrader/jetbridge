@@ -221,7 +221,7 @@ jobs:
          - ((branch))
 `
 
-	const instancedTemplatePipelineContent = `
+	const instancedTemplateContent = `
 ---
 template: true
 run_retention:
@@ -499,7 +499,7 @@ jobs:
 
 			Context("when an instanced target declares a template", func() {
 				BeforeEach(func() {
-					pipelineFileContent = instancedTemplatePipelineContent
+					pipelineFileContent = instancedTemplateContent
 				})
 
 				It("reports the declaration error without saving the pipeline", func() {
