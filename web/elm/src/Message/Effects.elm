@@ -15,7 +15,7 @@ import Api
 import Api.Endpoints as Endpoints
 import Assets
 import Base64
-import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, setViewportOf)
+import Browser.Dom exposing (Viewport, getViewport, getViewportOf, setViewportOf)
 import Browser.Navigation as Navigation
 import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
 import Concourse.BuildStatus exposing (BuildStatus)
