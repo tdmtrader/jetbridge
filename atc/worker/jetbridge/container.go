@@ -341,17 +341,6 @@ func (c *Container) outputPaths() map[string]bool {
 	return nil
 }
 
-// volumeForPath returns the Volume associated with the given mount path,
-// or nil if no matching volume is found.
-func (c *Container) volumeForPath(mountPath string) *Volume {
-	for _, v := range c.volumes {
-		if v.MountPath() == mountPath {
-			return v
-		}
-	}
-	return nil
-}
-
 // bindVolumesToPod sets the pod name on all deferred volumes so that
 // StreamIn/StreamOut can target the correct pod.
 func (c *Container) bindVolumesToPod(podName string) {
