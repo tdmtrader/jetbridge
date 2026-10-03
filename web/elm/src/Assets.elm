@@ -7,7 +7,7 @@ module Assets exposing
     , toString
     )
 
-import Concourse.BuildStatus exposing (BuildStatus(..))
+import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.PipelineStatus exposing (PipelineStatus(..))
 import Url.Builder
 
