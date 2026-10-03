@@ -98,7 +98,7 @@ func (validator *StepValidator) VisitTask(plan *TaskStep) error {
 		validator.pushContext(".config")
 
 		if err := plan.Config.Validate(); err != nil {
-			if validationErr, ok := err.(TaskValidationError); ok {
+			if validationErr, ok := err.(taskValidationError); ok {
 				for _, msg := range validationErr.Errors {
 					validator.recordError(msg)
 				}

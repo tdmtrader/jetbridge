@@ -84,11 +84,11 @@ func NewTaskConfig(configBytes []byte) (TaskConfig, error) {
 	return config, nil
 }
 
-type TaskValidationError struct {
+type taskValidationError struct {
 	Errors []string
 }
 
-func (err TaskValidationError) Error() string {
+func (err taskValidationError) Error() string {
 	return fmt.Sprintf("invalid task configuration:\n%s", strings.Join(err.Errors, "\n"))
 }
 
@@ -103,7 +103,7 @@ func (config TaskConfig) Validate() error {
 	errors = append(errors, config.validateOutputContainsNames()...)
 
 	if len(errors) > 0 {
-		return TaskValidationError{
+		return taskValidationError{
 			Errors: errors,
 		}
 	}
