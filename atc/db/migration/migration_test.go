@@ -561,6 +561,7 @@ func SetupSchemaMigrationsTable(db *sql.DB, version int, dirty bool) {
 }
 
 func SetupSchemaFromFile(db *sql.DB, path string) {
+	GinkgoHelper()
 	migrations, err := os.ReadFile(path)
 	Expect(err).NotTo(HaveOccurred())
 
