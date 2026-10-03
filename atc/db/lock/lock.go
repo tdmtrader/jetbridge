@@ -84,10 +84,6 @@ func NewDatabaseMigrationLockID() LockID {
 	return LockID{LockTypeDatabaseMigration}
 }
 
-func NewResourceScanningLockID() LockID {
-	return LockID{LockTypeResourceScanning}
-}
-
 func NewJobSchedulingLockID(jobID int) LockID {
 	return LockID{LockTypeJobScheduling, jobID}
 }
