@@ -19,7 +19,6 @@ module ColorValues exposing
     , grey80
     , grey90
     , paused40
-    , paused60
     , paused70
     , paused80
     , paused90
@@ -172,11 +171,6 @@ success100 =
 paused40 : String
 paused40 =
     "#4BAFF2"
-
-
-paused60 : String
-paused60 =
-    "#0969AB"
 
 
 paused70 : String
