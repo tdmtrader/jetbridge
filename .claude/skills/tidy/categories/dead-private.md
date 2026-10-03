@@ -132,3 +132,4 @@ rerun with `GOCACHE=$(mktemp -d)` and delete that directory afterwards. Under
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-10-03 | findJobByName@atc/configvalidate/validate.go | deleted | tier 1: `staticcheck -checks U1000 ./atc/configvalidate/` reported the func unused and the scan printed span 810-817 `part`; it ended the file, so the blank line 809 before it went too and no import was left unused (`go vet` clean); `git grep -nw findJobByName` now prints nothing; its last caller line `nextJob := findJobByName(nextJobName, pipelineConfig.Jobs)` was removed by 00dab50f5c (2026-01-07, "feat: allow glob patterning for get.passed"), 269 days old and not a tidy; gates `go build ./...`, `go vet ./...`, `GOOS=linux go vet ./atc/configvalidate/`, `gofmt -l` clean, U1000 rerun on the package empty, assertion count 0 before and after |

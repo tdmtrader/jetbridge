@@ -806,12 +806,3 @@ func validateCycle(c atc.Config) error {
 	}
 	return nil
 }
-
-func findJobByName(jobName string, jobs atc.JobConfigs) atc.JobConfig {
-	for _, currJob := range jobs {
-		if jobName == currJob.Name {
-			return currJob
-		}
-	}
-	return atc.JobConfig{}
-}
