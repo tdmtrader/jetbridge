@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -33,6 +34,7 @@ func ExpectResourceWithType(dbConn *sql.DB, resourceName, resourceType string) {
 }
 
 func ExpectTeamWithUsersAndGroups(dbConn *sql.DB, team string, users, groups []string) {
+	GinkgoHelper()
 
 	auth := fetchTeamAuth(dbConn, team)
 
