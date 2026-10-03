@@ -7,7 +7,7 @@ import (
 	"github.com/concourse/concourse/skymarshal/token"
 )
 
-func NewResponseWrapper(w http.ResponseWriter, m token.Middleware) *responseWrapper {
+func newResponseWrapper(w http.ResponseWriter, m token.Middleware) *responseWrapper {
 	return &responseWrapper{w, m}
 }
 
@@ -47,7 +47,7 @@ func (handler WebAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			r.Header.Set("Authorization", tokenString)
 		}
 
-		wrapper := NewResponseWrapper(w, handler.Middleware)
+		wrapper := newResponseWrapper(w, handler.Middleware)
 		handler.Handler.ServeHTTP(wrapper, r)
 	} else {
 		handler.Handler.ServeHTTP(w, r)
