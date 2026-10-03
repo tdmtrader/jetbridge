@@ -8,10 +8,10 @@ import (
 type credhubManagerFactory struct{}
 
 func init() {
-	creds.Register("credhub", NewCredHubManagerFactory())
+	creds.Register("credhub", newCredHubManagerFactory())
 }
 
-func NewCredHubManagerFactory() creds.ManagerFactory {
+func newCredHubManagerFactory() creds.ManagerFactory {
 	return &credhubManagerFactory{}
 }
 
