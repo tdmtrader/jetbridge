@@ -118,7 +118,7 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 
 	port := c.config.OutputDaemonPort
 	if port == 0 {
-		port = DefaultOutputDaemonPort
+		port = defaultOutputDaemonPort
 	}
 
 	allowEscalation := false
@@ -256,8 +256,8 @@ exit 1
 // two spellings against each other so they cannot drift.
 const CapabilityHeaderName = "Hangar-Control-Capability"
 
-// DefaultOutputDaemonPort is the output daemon's control port.
-const DefaultOutputDaemonPort = 7781
+// defaultOutputDaemonPort is the output daemon's control port.
+const defaultOutputDaemonPort = 7781
 
 func (c *Container) helperImage() string {
 	if c.config.ArtifactHelperImage != "" {

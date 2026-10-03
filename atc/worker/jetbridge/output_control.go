@@ -443,7 +443,7 @@ func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName 
 	}
 	port := controls.config.OutputDaemonPort
 	if port == 0 {
-		port = DefaultOutputDaemonPort
+		port = defaultOutputDaemonPort
 	}
 
 	// The OUTPUT plane's scheme and the OUTPUT plane's client. Not the
