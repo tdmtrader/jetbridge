@@ -26,6 +26,8 @@ var _ = Describe("renaming source_lease_id to source_hold_id", func() {
 	})
 
 	columns := func(table string) []string {
+		GinkgoHelper()
+
 		rows, err := db.Query(`
 			SELECT column_name FROM information_schema.columns
 			WHERE table_name = $1 AND column_name IN ('source_lease_id', 'source_hold_id')
