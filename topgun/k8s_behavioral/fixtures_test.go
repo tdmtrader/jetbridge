@@ -51,36 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureTaskWithInputsOutputs returns a pipeline with a task that has
-// explicit inputs and outputs.
-func fixtureTaskWithInputsOutputs(jobName string, inputs, outputs []string, script string) string {
-	inputsYAML := ""
-	for _, inp := range inputs {
-		inputsYAML += fmt.Sprintf("      - name: %s\n", inp)
-	}
-	outputsYAML := ""
-	for _, out := range outputs {
-		outputsYAML += fmt.Sprintf("      - name: %s\n", out)
-	}
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      inputs:
-%s      outputs:
-%s      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, inputsYAML, outputsYAML, script)
-}
-
 // fixtureTaskWithTimeout returns a pipeline with a task that has a timeout.
 func fixtureTaskWithTimeout(jobName, timeout, script string) string {
 	return fmt.Sprintf(`
