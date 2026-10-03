@@ -25,7 +25,7 @@ type PutInputs interface {
 
 type allInputs struct{}
 
-func NewAllInputs() PutInputs {
+func newAllInputs() PutInputs {
 	return &allInputs{}
 }
 

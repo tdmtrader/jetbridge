@@ -124,7 +124,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 		// Put step defaults to detect inputs if not specified
 		putInputs = NewDetectInputs(step.plan.Params)
 	} else if step.plan.Inputs.All {
-		putInputs = NewAllInputs()
+		putInputs = newAllInputs()
 	} else if step.plan.Inputs.Detect {
 		putInputs = NewDetectInputs(step.plan.Params)
 	} else {
