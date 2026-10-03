@@ -181,7 +181,7 @@ type RelKey string
 // anyway, so the representation and the check cannot disagree.
 func containedRelKey(root, candidate string) (RelKey, error) {
 	if candidate == "" {
-		return "", fmt.Errorf("path is empty")
+		return "", errors.New("path is empty")
 	}
 
 	rel, err := filepath.Rel(resolvePath(root), resolvePath(candidate))
