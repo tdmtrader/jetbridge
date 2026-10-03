@@ -24,7 +24,6 @@ module ColorValues exposing
     , pinned90
     , success20
     , success40
-    , success60
     , success70
     , success80
     , success90
@@ -108,11 +107,6 @@ success20 =
 success40 : String
 success40 =
     "#1CBD63"
-
-
-success60 : String
-success60 =
-    "#0B7539"
 
 
 success70 : String
