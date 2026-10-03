@@ -5,7 +5,7 @@ import Html exposing (Html)
 import Html.Attributes exposing (id, style)
 import Html.Events exposing (onClick, onMouseEnter, onMouseLeave)
 import Message.Effects exposing (toHtmlID)
-import Message.Message exposing (DomID(..), Message(..))
+import Message.Message exposing (DomID, Message(..))
 import Views.Icon as Icon
 
 
