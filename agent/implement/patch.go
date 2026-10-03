@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -367,9 +368,7 @@ func parseHunk(next func() (string, bool), peek func() string) (hunk, error) {
 // the resulting tree.
 func ApplyPatch(base Tree, sections []patchSection) (Tree, error) {
 	result := make(Tree, len(base))
-	for p, f := range base {
-		result[p] = f
-	}
+	maps.Copy(result, base)
 	for _, s := range sections {
 		old, exists := base[s.Path]
 		switch s.Status {
