@@ -294,7 +294,6 @@ func newEmptyBuild(conn DbConn, lockFactory lock.LockFactory) *build {
 
 var errBuildDisappeared = errors.New("build disappeared from db")
 var ErrBuildHasNoPipeline = errors.New("build has no pipeline")
-var ErrBuildArtifactNotFound = errors.New("build artifact not found")
 
 type ResourceNotFoundInPipeline struct {
 	Resource string
