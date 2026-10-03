@@ -232,6 +232,8 @@ func doMCP(server *mcpserver.Server, body io.Reader) *http.Response {
 }
 
 func decodeResult(resp *http.Response) map[string]any {
+	GinkgoHelper()
+
 	var rpcResp jsonRPCResponse
 	Expect(json.NewDecoder(resp.Body).Decode(&rpcResp)).To(Succeed())
 	Expect(rpcResp.Error).To(BeNil())
