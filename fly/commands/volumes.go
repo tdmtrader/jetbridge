@@ -37,11 +37,7 @@ func (command *VolumesCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(volumes)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(volumes)
 	}
 
 	table := ui.Table{
