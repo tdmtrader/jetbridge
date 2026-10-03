@@ -23,7 +23,7 @@ func (v StaticVariables) Get(ref Reference) (any, bool, error) {
 func (v StaticVariables) List() ([]Reference, error) {
 	var refs []Reference
 
-	for name, _ := range v {
+	for name := range v {
 		refs = append(refs, Reference{Path: name})
 	}
 
