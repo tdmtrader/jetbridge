@@ -532,9 +532,7 @@ func basicAuthHttpClient(
 }
 
 func transport(insecure bool, caCertPool *x509.CertPool, clientCertificate []tls.Certificate) http.RoundTripper {
-	var transport http.RoundTripper
-
-	transport = &http.Transport{
+	var transport http.RoundTripper = &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: insecure,
 			RootCAs:            caCertPool,
