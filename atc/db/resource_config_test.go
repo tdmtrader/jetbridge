@@ -13,8 +13,6 @@ var _ = Describe("ResourceConfig", func() {
 
 	Context("when non-unique", func() {
 		BeforeEach(func() {
-			var err error
-
 			// Adding a resourceTypeConfig to create a scope. The reason behind is that,
 			// when table "resource_config_scopes" is empty (just created), currentResourceConfigScopesIdSeq()
 			// will return 1; after insert the first tuple, currentResourceConfigScopesIdSeq()
