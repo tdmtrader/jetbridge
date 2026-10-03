@@ -8,7 +8,6 @@ module ColorValues exposing
     , failure10
     , failure50
     , failure70
-    , failure90
     , grey10
     , grey100
     , grey20
@@ -242,11 +241,6 @@ failure50 =
 failure70 : String
 failure70 =
     "#912617"
-
-
-failure90 : String
-failure90 =
-    "#3B1915"
 
 
 
