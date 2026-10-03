@@ -97,17 +97,6 @@ func (pool Pool) findResourceCacheVolumeOnWorker(ctx context.Context, dbWorker d
 	return worker.LookupVolume(ctx, volume.Handle())
 }
 
-func (pool Pool) FindWorkerForContainer(logger lager.Logger, owner db.ContainerOwner, workerSpec Spec) (runtime.Worker, bool, error) {
-	worker, _, found, err := pool.findWorkerForContainer(logger, owner, workerSpec)
-	if err != nil {
-		return nil, false, err
-	}
-	if !found {
-		return nil, false, nil
-	}
-	return pool.factory.NewWorker(logger, worker), true, nil
-}
-
 func (pool Pool) findWorkerForContainer(logger lager.Logger, owner db.ContainerOwner, workerSpec Spec) (db.Worker, []db.Worker, bool, error) {
 	workersWithContainer, err := pool.db.WorkerFactory.FindWorkersForContainerByOwner(owner)
 	if err != nil {
