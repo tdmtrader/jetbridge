@@ -764,17 +764,6 @@ func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-// behavioralDaemonSetConfig returns a DaemonSet-mode config for behavioral tests.
-func behavioralDaemonSetConfig() Config {
-	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
-	}
-}
-
 // Verify DaemonSetVolume Key returns the key used in construction.
 func TestVT10_DaemonSetVolume_Key_ReturnsConstructionKey(t *testing.T) {
 	vol := NewDaemonSetVolume("my-key", "my-handle", "w1", nil, "", Config{}, nil)
