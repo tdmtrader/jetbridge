@@ -98,7 +98,7 @@ random_page_cost = 1.1
 		StartCheck:    "database system is ready to accept connections",
 		Cleanup: func() {
 			os.RemoveAll(tmpdir)
-			ReleasePort(runner.Port)
+			releasePort(runner.Port)
 		},
 	}
 

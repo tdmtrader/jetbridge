@@ -72,7 +72,7 @@ const (
 // reservePort closes both holes: it claims a port with an exclusive lock file
 // before probing, so concurrent scanners cannot claim the same port, and it
 // judges a port by whether a process is actually listening -- a socket or lock
-// left by a dead run is reclaimed, not obeyed. ReleasePort drops the lock when
+// left by a dead run is reclaimed, not obeyed. releasePort drops the lock when
 // the runner stops.
 func PickPort() int {
 	GinkgoHelper()
@@ -90,10 +90,10 @@ func PickPort() int {
 	return 0
 }
 
-// ReleasePort drops the reservation PickPort took. Postgres removes its own
+// releasePort drops the reservation PickPort took. Postgres removes its own
 // socket on a clean stop; this removes the lock that fenced the port off from
 // concurrent scanners for the runner's lifetime.
-func ReleasePort(port int) {
+func releasePort(port int) {
 	os.Remove(lockPath(port))
 }
 
@@ -106,7 +106,7 @@ func socketPath(port int) string {
 }
 
 // reservePort atomically claims a port, or returns false if it is genuinely in
-// use. On success it holds an exclusive lock file (released by ReleasePort) and
+// use. On success it holds an exclusive lock file (released by releasePort) and
 // has cleared any stale socket so `postgres -k /tmp` can bind cleanly.
 func reservePort(port int) bool {
 	lock, ok := acquireLock(port)
