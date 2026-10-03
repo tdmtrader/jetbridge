@@ -14,10 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-type ErrCustomResourceTypeVersionNotFound struct {
-	Name string
-}
-
 type ResourceConfigFactory interface {
 	FindOrCreateResourceConfig(
 		resourceType string,
