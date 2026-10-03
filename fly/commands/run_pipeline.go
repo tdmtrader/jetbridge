@@ -129,10 +129,10 @@ func newInvocationKey() (string, error) {
 
 func (command *RunPipelineCommand) validate() error {
 	if len(command.Pipeline.InstanceVars) > 0 {
-		return fmt.Errorf("cannot run an instanced pipeline")
+		return errors.New("cannot run an instanced pipeline")
 	}
 	if command.Key != "" && !atc.ValidRunInvocationToken(command.Key) {
-		return fmt.Errorf("--invocation-key must be 1-128 characters of A-Z a-z 0-9 . _ ~ -")
+		return errors.New("--invocation-key must be 1-128 characters of A-Z a-z 0-9 . _ ~ -")
 	}
 	if _, err := command.Pipeline.Validate(); err != nil {
 		return err
