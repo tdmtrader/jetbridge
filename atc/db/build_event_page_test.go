@@ -24,6 +24,7 @@ var _ = Describe("Finite build event pages", func() {
 		table = fmt.Sprintf("team_build_events_%d", defaultTeam.ID())
 	})
 	insert := func(id int, payload string) {
+		GinkgoHelper()
 		_, err := dbConn.Exec("INSERT INTO "+table+" (event_id,build_id,type,version,payload) VALUES ($1,$2,'log','5.0',$3)", id, build.ID(), payload)
 		Expect(err).NotTo(HaveOccurred())
 	}
