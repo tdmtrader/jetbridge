@@ -1976,7 +1976,6 @@ var _ = Describe("Builds API", func() {
 			realBuildFactory = deps.buildFactory
 
 			var err error
-			var found bool
 			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
 			pipeline = database.SavePipeline(team, "preparation-pipeline", atc.Config{
@@ -2002,6 +2001,7 @@ var _ = Describe("Builds API", func() {
 			Expect(reloaded).To(BeTrue())
 			Expect(pipeline.Public()).To(BeFalse())
 
+			var found bool
 			preparationJob, found, err = pipeline.Job("preparation-job")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
