@@ -56,6 +56,7 @@ var _ = Describe("Check Lifecycle", func() {
 		createUnfinishedCheck := func(checkable interface {
 			CreateBuild(context.Context, bool, atc.Plan) (db.Build, bool, error)
 		}, scope db.ResourceConfigScope, plan atc.Plan) db.Build {
+			GinkgoHelper()
 			build, created, err := checkable.CreateBuild(context.Background(), true, plan)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(created).To(BeTrue())
