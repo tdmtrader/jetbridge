@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/hashicorp/go-multierror"
 	flags "github.com/jessevdk/go-flags"
 	"sigs.k8s.io/yaml"
 
@@ -245,6 +246,22 @@ func (con *Connector) newTeamConfig() (TeamConfig, error) {
 	}
 
 	return res, nil
+}
+
+// validateClientCredentials reports a connector config missing its OAuth
+// client id or client secret.
+func validateClientCredentials(clientID, clientSecret string) error {
+	var errs *multierror.Error
+
+	if clientID == "" {
+		errs = multierror.Append(errs, errors.New("Missing client-id"))
+	}
+
+	if clientSecret == "" {
+		errs = multierror.Append(errs, errors.New("Missing client-secret"))
+	}
+
+	return errs.ErrorOrNil()
 }
 
 type skyDisplayUserIdGenerator struct {

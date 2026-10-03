@@ -2,10 +2,8 @@ package skycmd
 
 import (
 	"encoding/json"
-	"errors"
 
 	"github.com/concourse/dex/connector/bitbucketcloud"
-	"github.com/hashicorp/go-multierror"
 )
 
 func init() {
@@ -26,17 +24,7 @@ func (flag *BitbucketCloudFlags) Name() string {
 }
 
 func (flag *BitbucketCloudFlags) Validate() error {
-	var errs *multierror.Error
-
-	if flag.ClientID == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-id"))
-	}
-
-	if flag.ClientSecret == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-secret"))
-	}
-
-	return errs.ErrorOrNil()
+	return validateClientCredentials(flag.ClientID, flag.ClientSecret)
 }
 
 func (flag *BitbucketCloudFlags) Serialize(redirectURI string) ([]byte, error) {

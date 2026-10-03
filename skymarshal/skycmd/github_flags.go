@@ -2,11 +2,9 @@ package skycmd
 
 import (
 	"encoding/json"
-	"errors"
 
 	"github.com/concourse/dex/connector/github"
 	"github.com/concourse/flag/v2"
-	multierror "github.com/hashicorp/go-multierror"
 )
 
 func init() {
@@ -29,17 +27,7 @@ func (flag *GithubFlags) Name() string {
 }
 
 func (flag *GithubFlags) Validate() error {
-	var errs *multierror.Error
-
-	if flag.ClientID == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-id"))
-	}
-
-	if flag.ClientSecret == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-secret"))
-	}
-
-	return errs.ErrorOrNil()
+	return validateClientCredentials(flag.ClientID, flag.ClientSecret)
 }
 
 func (flag *GithubFlags) Serialize(redirectURI string) ([]byte, error) {

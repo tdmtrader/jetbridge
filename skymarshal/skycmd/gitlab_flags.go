@@ -2,10 +2,8 @@ package skycmd
 
 import (
 	"encoding/json"
-	"errors"
 
 	"github.com/concourse/dex/connector/gitlab"
-	multierror "github.com/hashicorp/go-multierror"
 )
 
 func init() {
@@ -27,17 +25,7 @@ func (flag *GitlabFlags) Name() string {
 }
 
 func (flag *GitlabFlags) Validate() error {
-	var errs *multierror.Error
-
-	if flag.ClientID == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-id"))
-	}
-
-	if flag.ClientSecret == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-secret"))
-	}
-
-	return errs.ErrorOrNil()
+	return validateClientCredentials(flag.ClientID, flag.ClientSecret)
 }
 
 func (flag *GitlabFlags) Serialize(redirectURI string) ([]byte, error) {
