@@ -114,7 +114,7 @@ func (p *execProcess) recoverJournaledOutcome(ctx context.Context) (executioncon
 
 func readJournaledOutcome(ctx context.Context, client kubernetes.Interface, executor PodExecutor, namespace, podName, nodeName, state string, start executioncontrol.Acknowledgement) (executioncontrol.ExitOutcome, error) {
 	if executor == nil {
-		return executioncontrol.ExitOutcome{}, fmt.Errorf("no journal reader configured")
+		return executioncontrol.ExitOutcome{}, errors.New("no journal reader configured")
 	}
 	if err := checkSupervisorPod(ctx, client, namespace, podName, nodeName, start); err != nil {
 		return executioncontrol.ExitOutcome{}, err
@@ -133,7 +133,7 @@ func readJournaledOutcome(ctx context.Context, client kubernetes.Interface, exec
 	text := strings.TrimSpace(stdout.String())
 	code, err := strconv.Atoi(text)
 	if err != nil || len(text) > 3 || code < 0 || code > 255 {
-		return executioncontrol.ExitOutcome{}, fmt.Errorf("retained journal exit is invalid")
+		return executioncontrol.ExitOutcome{}, errors.New("retained journal exit is invalid")
 	}
 	return executioncontrol.ExitOutcome{ExitCode: code}, nil
 }
