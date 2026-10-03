@@ -41,6 +41,7 @@ var _ = BeforeEach(func() {
 })
 
 func createTeam(name string) db.Team {
+	GinkgoHelper()
 	team, err := teamFactory.CreateTeam(atc.Team{Name: name})
 	Expect(err).NotTo(HaveOccurred())
 	return team
