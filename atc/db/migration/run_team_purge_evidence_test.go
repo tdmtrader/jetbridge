@@ -97,6 +97,8 @@ var _ = Describe("Run evidence deletion allowances", func() {
 		return tx.Commit()
 	}
 	witnesses := func(execution string) int {
+		GinkgoHelper()
+
 		var count int
 		Expect(database.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_execution_starts WHERE execution_id=$1)
 			+ (SELECT count(*) FROM pipeline_run_execution_closures WHERE execution_id=$1)`, execution).Scan(&count)).To(Succeed())
