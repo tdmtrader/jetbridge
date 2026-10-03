@@ -51,6 +51,8 @@ var _ = Describe("Add job tags", func() {
 })
 
 func setup(db *sql.DB) {
+	GinkgoHelper()
+
 	_, err := db.Exec(`
 			INSERT INTO teams(id, name) VALUES
 			(1, 'some-team')
