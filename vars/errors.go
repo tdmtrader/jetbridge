@@ -13,11 +13,11 @@ func (err UndefinedVarsError) Error() string {
 	return fmt.Sprintf("undefined vars: %s", strings.Join(err.Vars, ", "))
 }
 
-type UnusedVarsError struct {
+type unusedVarsError struct {
 	Vars []string
 }
 
-func (err UnusedVarsError) Error() string {
+func (err unusedVarsError) Error() string {
 	return fmt.Sprintf("unused vars: %s", strings.Join(err.Vars, ", "))
 }
 

@@ -273,7 +273,7 @@ func (t varsTracker) ExtraError() error {
 		return nil
 	}
 
-	return UnusedVarsError{Vars: names(unusedNames)}
+	return unusedVarsError{Vars: names(unusedNames)}
 }
 
 func names(mapWithNames map[string]struct{}) []string {
