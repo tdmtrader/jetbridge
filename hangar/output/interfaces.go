@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
@@ -203,10 +204,8 @@ const (
 // vocabulary: a runtime denial recorded against an invented role name is a
 // violation row an operator cannot map to a service account.
 func (role PrincipalRole) Validate() error {
-	for _, member := range PrincipalRoles() {
-		if role == member {
-			return nil
-		}
+	if slices.Contains(PrincipalRoles(), role) {
+		return nil
 	}
 
 	return fmt.Errorf("%w: %q is not one of this plane's principals %v",
