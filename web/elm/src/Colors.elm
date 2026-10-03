@@ -37,7 +37,6 @@ module Colors exposing
     , groupBorderUnselected
     , groupsBarBackground
     , infoBarBackground
-    , inputOutline
     , instanceGroupBanner
     , metadataKeyBackground
     , metadataValueBackground
@@ -439,15 +438,6 @@ metadataKeyBackground =
 metadataValueBackground : String
 metadataValueBackground =
     ColorValues.grey90
-
-
-
-----
-
-
-inputOutline : String
-inputOutline =
-    ColorValues.grey60
 
 
 
