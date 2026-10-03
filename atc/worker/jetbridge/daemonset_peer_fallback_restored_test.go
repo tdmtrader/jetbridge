@@ -157,9 +157,7 @@ func (t *integrationRoutingTransport) RoundTrip(req *http.Request) (*http.Respon
 	if !ok || target == "" {
 		return nil, fmt.Errorf("connection refused: %s", req.URL.Host)
 	}
-	if strings.HasPrefix(target, "http://") {
-		target = strings.TrimPrefix(target, "http://")
-	}
+	target = strings.TrimPrefix(target, "http://")
 	req.URL.Scheme = "http"
 	req.URL.Host = target
 	return http.DefaultTransport.RoundTrip(req)
