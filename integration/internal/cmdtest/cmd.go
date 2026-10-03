@@ -181,19 +181,6 @@ func (cmd Cmd) Try(args ...string) error {
 	return nil
 }
 
-func (cmd Cmd) TryOutput(args ...string) (string, error) {
-	buf := new(bytes.Buffer)
-
-	cmd.Stdout = buf
-
-	err := cmd.Try(args...)
-	if err != nil {
-		return "", err
-	}
-
-	return buf.String(), nil
-}
-
 func (cmd Cmd) TryOutputJSON(dest any, args ...string) error {
 	buf := new(bytes.Buffer)
 
