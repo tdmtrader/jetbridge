@@ -290,10 +290,8 @@ func (answer LeaseAnswer) Validate() error {
 }
 
 func (refusal LeaseRefusal) Validate() error {
-	for _, member := range LeaseRefusals() {
-		if member == refusal {
-			return nil
-		}
+	if slices.Contains(LeaseRefusals(), refusal) {
+		return nil
 	}
 
 	return fmt.Errorf("%w: lease refusal %q; the vocabulary is %v",
