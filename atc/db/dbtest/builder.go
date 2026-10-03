@@ -150,18 +150,6 @@ func (builder Builder) createContainer(workerName string, owner db.ContainerOwne
 	return container, nil
 }
 
-func (builder Builder) WithCreatedContainer(workerName string, owner db.ContainerOwner, metadata db.ContainerMetadata) SetupFunc {
-	return func(scenario *Scenario) error {
-		container, err := builder.createContainer(workerName, owner, metadata)
-		if err != nil {
-			return err
-		}
-
-		_, err = container.Created()
-		return err
-	}
-}
-
 func (builder Builder) createVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) (db.CreatingVolume, error) {
 	if handle == "" {
 		return builder.VolumeRepo.CreateVolume(teamID, workerName, volumeType)
