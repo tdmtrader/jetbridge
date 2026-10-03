@@ -1,16 +1,16 @@
 package encryption
 
-type NoEncryption struct{}
+type noEncryption struct{}
 
-func NewNoEncryption() *NoEncryption {
-	return &NoEncryption{}
+func NewNoEncryption() *noEncryption {
+	return &noEncryption{}
 }
 
-func (n NoEncryption) Encrypt(plaintext []byte) (string, *string, error) {
+func (n noEncryption) Encrypt(plaintext []byte) (string, *string, error) {
 	return string(plaintext), nil, nil
 }
 
-func (n NoEncryption) Decrypt(text string, nonce *string) ([]byte, error) {
+func (n noEncryption) Decrypt(text string, nonce *string) ([]byte, error) {
 	if nonce != nil {
 		return nil, ErrDataIsEncrypted
 	}
