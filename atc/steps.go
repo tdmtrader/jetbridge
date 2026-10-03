@@ -668,12 +668,7 @@ func (c *MaxInFlightConfig) UnmarshalJSON(version []byte) error {
 		c.All = true
 		return nil
 	}
-	err := json.Unmarshal(version, &c.Limit)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return json.Unmarshal(version, &c.Limit)
 }
 
 func (c *MaxInFlightConfig) MarshalJSON() ([]byte, error) {
