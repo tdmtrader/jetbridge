@@ -44,11 +44,7 @@ func (command *ResourcesCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(resources)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(resources)
 	}
 
 	headers = []string{"name", "type", "pinned", "check status"}
