@@ -21,12 +21,7 @@ func (pair *YAMLVariablePairFlag) UnmarshalFlag(value string) error {
 	if err != nil {
 		return err
 	}
-	err = yaml.Unmarshal([]byte(v), &pair.Value, useNumber)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return yaml.Unmarshal([]byte(v), &pair.Value, useNumber)
 }
 
 func useNumber(d *json.Decoder) *json.Decoder {
