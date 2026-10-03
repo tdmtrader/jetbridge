@@ -1157,16 +1157,16 @@ func (d buildData) populate(buildSummary *atc.BuildSummary, lastCheckStart *time
 		// determine which one is newer.
 		if d.inMemoryBuildId.Int64 == d.lastCheckBuildId.Int64 {
 			return d.useLastCheckBuild(buildSummary, lastCheckStart, lastCheckEnd)
-		} else {
-			if d.inMemoryBuildStartTime.Time.Before(d.lastCheckStartTime.Time) {
-				return d.useLastCheckBuild(buildSummary, lastCheckStart, lastCheckEnd)
-			} else {
-				return d.useInMemoryBuild(buildSummary, lastCheckStart)
-			}
 		}
-	} else if d.lastCheckBuildId.Valid {
+		if d.inMemoryBuildStartTime.Time.Before(d.lastCheckStartTime.Time) {
+			return d.useLastCheckBuild(buildSummary, lastCheckStart, lastCheckEnd)
+		}
+		return d.useInMemoryBuild(buildSummary, lastCheckStart)
+	}
+	if d.lastCheckBuildId.Valid {
 		return d.useLastCheckBuild(buildSummary, lastCheckStart, lastCheckEnd)
-	} else if d.inMemoryBuildId.Valid {
+	}
+	if d.inMemoryBuildId.Valid {
 		return d.useInMemoryBuild(buildSummary, lastCheckStart)
 	}
 	return errors.New("no build info available")
