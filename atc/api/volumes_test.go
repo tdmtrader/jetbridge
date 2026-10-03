@@ -438,11 +438,7 @@ var _ = Describe("Volumes API", func() {
 									return errors.New("resource cache was not deleted")
 								}
 
-								if err := tx.Commit(); err != nil {
-									return err
-								}
-
-								return nil
+								return tx.Commit()
 							},
 						}
 					})
