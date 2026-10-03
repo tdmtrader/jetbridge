@@ -23,6 +23,9 @@ var _ = Describe("YAML Template With Params", func() {
 			var err error
 
 			tmpdir, err = os.MkdirTemp("", "yaml-template-test")
+			DeferCleanup(func() {
+				os.RemoveAll(tmpdir)
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			err = os.WriteFile(
@@ -36,10 +39,6 @@ var _ = Describe("YAML Template With Params", func() {
 				0644,
 			)
 			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			os.RemoveAll(tmpdir)
 		})
 
 		It("resolves all variables successfully", func() {
