@@ -184,7 +184,7 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 		BaseID      int               `json:"base_id"`
 		Number      int               `json:"number"`
 		Observation RunTerminalResult `json:"observation"`
-	}{run.TemplatePipelineID(), run.Number(), observation})
+	}{run.TemplateID(), run.Number(), observation})
 	if err != nil {
 		return false, err
 	}

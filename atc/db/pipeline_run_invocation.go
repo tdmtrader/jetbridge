@@ -171,7 +171,7 @@ func retainRunInvocation(ctx context.Context, tx Tx, teamID int, creation RunCre
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO pipeline_run_invocations
 		(run_id,team_id,template_pipeline_id,principal_digest,key_digest,caller_document,caller_digest,admitted_digest)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, creation.Run.ID(), teamID, creation.Run.TemplatePipelineID(), identity.PrincipalDigest, identity.KeyDigest, string(intent), runInvocationDocumentDigest("caller", intent), runInvocationDocumentDigest("admitted", admitted))
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, creation.Run.ID(), teamID, creation.Run.TemplateID(), identity.PrincipalDigest, identity.KeyDigest, string(intent), runInvocationDocumentDigest("caller", intent), runInvocationDocumentDigest("admitted", admitted))
 	return err
 }
 
@@ -191,5 +191,5 @@ func runAdmittedInvocation(ctx context.Context, tx Tx, teamID int, run PipelineR
 		Inputs         map[string]atc.RunInputBinding `json:"inputs"`
 		CausedByRun    *int                           `json:"caused_by_run,omitempty"`
 		Correlation    string                         `json:"correlation,omitempty"`
-	}{run.ID(), teamID, run.TemplatePipelineID(), run.ActivationEpoch(), templateDigest, run.ConfigHash(), run.Params(), inputs, run.CausedByRun(), run.Correlation()})
+	}{run.ID(), teamID, run.TemplateID(), run.ActivationEpoch(), templateDigest, run.ConfigHash(), run.Params(), inputs, run.CausedByRun(), run.Correlation()})
 }

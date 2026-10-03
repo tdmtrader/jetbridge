@@ -20,7 +20,7 @@ func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineR
 		ContractVersion: savedRun.ContractVersion(),
 		ActivationEpoch: savedRun.ActivationEpoch(),
 		ID:              savedRun.ID(),
-		TemplateID:      savedRun.TemplatePipelineID(),
+		TemplateID:      savedRun.TemplateID(),
 		Number:          savedRun.Number(),
 		Status:          savedRun.Status(),
 		CreatedBy:       savedRun.CreatedBy(),

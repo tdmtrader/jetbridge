@@ -16,7 +16,7 @@ type PipelineRun interface {
 	CancellationRequest() *atc.RunCancellationRequest
 	ActivationEpoch() int64
 	ID() int
-	TemplatePipelineID() int
+	TemplateID() int
 	Number() int
 	Params() atc.Params
 	Status() atc.RunStatus
@@ -59,7 +59,7 @@ func (r *pipelineRun) ContractVersion() atc.RunContractVersion { return r.contra
 func (r *pipelineRun) ActivationEpoch() int64                  { return r.activationEpoch }
 
 func (r *pipelineRun) ID() int                 { return r.id }
-func (r *pipelineRun) TemplatePipelineID() int { return r.templateID }
+func (r *pipelineRun) TemplateID() int         { return r.templateID }
 func (r *pipelineRun) Number() int             { return r.number }
 func (r *pipelineRun) Params() atc.Params      { return r.params }
 func (r *pipelineRun) Status() atc.RunStatus   { return r.status }

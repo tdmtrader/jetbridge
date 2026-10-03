@@ -45,7 +45,7 @@ func (admittedRun) ID() int                                 { return 41 }
 func (admittedRun) Number() int                             { return 3 }
 func (admittedRun) ContractVersion() atc.RunContractVersion { return atc.RunContractV2 }
 func (admittedRun) ActivationEpoch() int64                  { return 1 }
-func (admittedRun) TemplatePipelineID() int                 { return 7 }
+func (admittedRun) TemplateID() int                         { return 7 }
 func (admittedRun) Status() atc.RunStatus                   { return atc.RunStatusRunning }
 func (admittedRun) CreatedBy() string                       { return "some-user" }
 func (admittedRun) Params() atc.Params                      { return atc.Params{} }

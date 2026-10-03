@@ -311,7 +311,7 @@ func portRun(creation db.RunCreation) Run {
 	return Run{
 		ID:         creation.Run.ID(),
 		Number:     creation.Run.Number(),
-		TemplateID: creation.Run.TemplatePipelineID(),
+		TemplateID: creation.Run.TemplateID(),
 		PayloadID:  payloadID,
 		CreatedBy:  creation.Run.CreatedBy(),
 	}
