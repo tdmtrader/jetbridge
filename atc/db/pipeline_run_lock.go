@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"maps"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
@@ -81,9 +82,7 @@ func createAdmittedJobBuild(tx Tx, build *build, admission jobBuildAdmission, ar
 	}
 
 	values := make(map[string]any, len(args.Values)+7)
-	for key, value := range args.Values {
-		values[key] = value
-	}
+	maps.Copy(values, args.Values)
 	delete(values, "pipeline_run_id")
 	delete(values, "run_job_name")
 	delete(values, "run_job_key")
