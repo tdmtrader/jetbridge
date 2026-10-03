@@ -143,12 +143,13 @@ func boolPointer(value bool) *bool { return &value }
 func (cmd *HangarBootstrapCommand) databaseStep(inventory bootstrap.Inventory, store bootstrap.SecretStore) error {
 	var secret string
 	for _, entry := range inventory.Entries {
-		if entry.Kind == bootstrap.KindDatabaseCredential {
-			if secret != "" {
-				return fmt.Errorf("the inventory declares more than one database credential")
-			}
-			secret = entry.Name
+		if entry.Kind != bootstrap.KindDatabaseCredential {
+			continue
 		}
+		if secret != "" {
+			return fmt.Errorf("the inventory declares more than one database credential")
+		}
+		secret = entry.Name
 	}
 	if secret == "" {
 		return fmt.Errorf("the inventory declares no database credential; is hangarBootstrap.database.enabled set?")
