@@ -170,10 +170,6 @@ func (receipt Receipt) Validate() error {
 	return nil
 }
 
-// Ref is the tree ref this receipt is about. It exists so callers stop
-// reaching two levels into the claims for the one field they always want.
-func (receipt Receipt) Ref() hangar.TreeRef { return receipt.Claims.Ref }
-
 // TreeAttributes is the wire projection of hangar.TreeAttributes.
 //
 // It declares no new fact. Every field is the foundation's, in the foundation's
