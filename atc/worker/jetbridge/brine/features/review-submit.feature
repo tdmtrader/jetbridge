@@ -2,7 +2,9 @@
 Feature: A local receipt preserves a review invocation
 
   Completed submissions read the uploaded bundle through Hangar's real node
-  materializer, including its receipt at the input mount root.
+  materializer, including its receipt at the input mount root. A landing is
+  interrupted once its Run is admitted, resumes that Run, and pushes to a local
+  origin's core only when the report passes its floor and core has not moved.
 
   Background:
     Given a Run producer and a ready output node
@@ -30,3 +32,6 @@ Feature: A local receipt preserves a review invocation
       | "the installed review template" |
       | "ready CLI" |
       | "ready MCP" |
+      | "a landing below the floor" |
+      | "a landing at the floor" |
+      | "a landing after core moved" |

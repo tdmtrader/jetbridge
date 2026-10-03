@@ -337,7 +337,7 @@ func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *i
 		Mode:    []string{"implement"},
 		Model:   "handoff-edit",
 		Results: []string{implement.PatchFile, implement.SummaryFile},
-		Submit: func(ctx context.Context) (runclient.Submission, error) {
+		Resume: resumeSubmission(pending, func(ctx context.Context) (runclient.Submission, error) {
 			var result runclient.Submission
 			if surface == "MCP" {
 				session, err := jbMCP(ctx, auth, r.Binaries.CLI, "brine-workload", options, options.AuthFile)
@@ -355,7 +355,7 @@ func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *i
 				return result, err
 			}
 			return result, json.Unmarshal(out, &result)
-		},
+		}),
 		// The author's output is what the validate task's change input
 		// receives; keep it as published for that container.
 		Published: func(directory string) error {

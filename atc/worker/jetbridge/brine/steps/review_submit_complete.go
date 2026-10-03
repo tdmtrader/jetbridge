@@ -44,9 +44,11 @@ type submittedWorkload struct {
 	// Results are the files the worker publishes; the template moves them
 	// from its report directory into the result root.
 	Results []string
-	// Submit resumes the saved submission from a fresh local process.
-	Submit func(context.Context) (runclient.Submission, error)
-	// Read retrieves and checks the completed result from a fresh local process.
+	// Resume resumes the saved submission from a fresh local process. It
+	// returns once the admitted Run is ready, while the model is still held.
+	Resume func(context.Context) error
+	// Read retrieves and checks the completed result from a fresh local
+	// process, or from the resumed one when it reads the result itself.
 	Read func(context.Context) error
 	// Published, when set, sees the result directory once the worker's files
 	// are in it, before the capture seals it.
@@ -56,10 +58,48 @@ type submittedWorkload struct {
 	Then func(context.Context, submittedRun) error
 }
 
+// resumeSubmission resumes through a fresh submit or MCP client, which must
+// return the original Run, ready.
+func resumeSubmission(pending runclient.Submission, submit func(context.Context) (runclient.Submission, error)) func(context.Context) error {
+	return func(ctx context.Context) error {
+		ready, err := submit(ctx)
+		if err != nil {
+			return err
+		}
+		if !ready.Ready || ready.RunID != pending.RunID || ready.Handle != pending.Handle {
+			return fmt.Errorf("resumed client lost its original ready Run")
+		}
+		return nil
+	}
+}
+
+// reviewSurface is the client a submitted review resumes through: `jb review
+// submit`, the MCP review_submit tool or `jb review land`, which share one
+// resume path. Resume returns once the admitted Run is ready, while the model
+// is still held; Read runs after the Run has completed.
+type reviewSurface struct {
+	Resume func(context.Context) error
+	Read   func(context.Context) error
+}
+
+// submitSurface resumes through a fresh `jb review submit` or MCP session and
+// then reads the completed report through a fresh one.
+func submitSurface(auth *AuthFixture, change ReviewChange, options reviewclient.SubmitOptions, pending reviewclient.Submission, surface string) reviewSurface {
+	return reviewSurface{
+		// The helper also waits for the actual socket, covering startup ordering.
+		Resume: resumeSubmission(pending, func(ctx context.Context) (runclient.Submission, error) {
+			return submitReviewFromProcess(ctx, auth, change, options, surface)
+		}),
+		Read: func(ctx context.Context) error {
+			return readCompletedSubmission(ctx, auth, change, options, pending, surface)
+		},
+	}
+}
+
 // Join the actual upload, admitted Run, local client process, private worker
 // session and capture/read plane. Envtest supplies Pod identity; real kubelet
 // transport and mount enforcement are independently required by the live tier.
-func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change ReviewChange, options reviewclient.SubmitOptions, pending reviewclient.Submission, surface string, rec *brine.Recorder, res brine.Resources) error {
+func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change ReviewChange, pending reviewclient.Submission, surface reviewSurface, rec *brine.Recorder, res brine.Resources) error {
 	return finishSubmittedRun(in, auth, change, pending, submittedWorkload{
 		Input: "change",
 		Receive: func(materialized string) (string, string, error) {
@@ -76,12 +116,8 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 		},
 		Model:   "handoff-finding",
 		Results: []string{"review.json", "review.md"},
-		Submit: func(ctx context.Context) (runclient.Submission, error) {
-			return submitReviewFromProcess(ctx, auth, change, options, surface)
-		},
-		Read: func(ctx context.Context) error {
-			return readCompletedSubmission(ctx, auth, change, options, pending, surface)
-		},
+		Resume:  surface.Resume,
+		Read:    surface.Read,
 	}, rec, res)
 }
 
@@ -122,6 +158,11 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	if err != nil {
 		return err
 	}
+	// Results are served through this same read plane, before the Run can
+	// complete: a landing reads its result as soon as it sees completion.
+	if err = serveRunResults(auth, jdb.Conn, source, signer); err != nil {
+		return err
+	}
 	input, err := submittedRunInput(ctx, runtime.Start, source, signer, workload.Input)
 	if err != nil {
 		return err
@@ -154,23 +195,19 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 				_ = worker.Wait()
 			}
 		}()
-		// The helper also waits for the actual socket, covering startup ordering.
-		ready, err := workload.Submit(ctx)
-		if err != nil {
+		if err := workload.Resume(ctx); err != nil {
 			return err
 		}
-		if !ready.Ready || ready.RunID != pending.RunID || ready.Handle != pending.Handle {
-			return fmt.Errorf("resumed client lost its original ready Run")
-		}
-		if err = reviewAbsent(change.Output); err != nil {
+		if err := reviewAbsent(change.Output); err != nil {
 			return fmt.Errorf("model completed before the submission client disconnected")
 		}
 		files, err := filepath.Glob(filepath.Join(change.Workspace.Runtime, "*", "codex", "auth.json"))
 		if err != nil || len(files) != 1 {
 			return fmt.Errorf("ready Run has no single private credential session: %v", err)
 		}
-		// Only the deterministic model is released. Both submission transports
-		// have already exited/closed; no client connection keeps the worker alive.
+		// Only the deterministic model is released. A submit or MCP client has
+		// already exited or closed, and a landing is only polling Run status: no
+		// client connection keeps the worker alive.
 		if err = os.WriteFile(filepath.Join(filepath.Dir(files[0]), "continue-review"), nil, 0600); err != nil {
 			return err
 		}
@@ -213,9 +250,6 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	result := finalizeRunResult(RunResultPublication{Start: runtime.Start, Candidate: &candidate}, false)
 	if result.Err != nil || !result.Completed {
 		return fmt.Errorf("submitted Run did not complete: %v", result.Err)
-	}
-	if err = configureRunDownload(result, auth, rec, res); err != nil {
-		return err
 	}
 	if err = workload.Read(ctx); err != nil {
 		return err

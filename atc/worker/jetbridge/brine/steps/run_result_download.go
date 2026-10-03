@@ -130,13 +130,19 @@ func configureRunDownload(in RunResultPublication, auth *AuthFixture, rec *brine
 	if err != nil {
 		return err
 	}
+	return serveRunResults(auth, in.Start.DB.Conn, source, signer)
+}
 
-	reader := &runs.ResultReader{Conn: in.Start.DB.Conn, Minter: signer, Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
+// serveRunResults has the authenticated API read Run results through an
+// already configured read plane.
+func serveRunResults(auth *AuthFixture, conn db.DbConn, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner) error {
+	reader := &runs.ResultReader{Conn: conn, Minter: signer, Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
 		return source.ForResultRead(ctx, epoch)
 	}}
 	auth.mu.Lock()
 	defer auth.mu.Unlock()
 	auth.ResultReader = reader
+	var err error
 	auth.API, err = auth.apiHandler(auth.Verifier)
 	return err
 }

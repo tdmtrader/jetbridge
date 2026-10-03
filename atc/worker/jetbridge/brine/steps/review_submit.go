@@ -64,6 +64,9 @@ func exerciseReviewSubmit(in RunInputAdmission, mode string, rec *brine.Recorder
 	if err != nil {
 		return err
 	}
+	if strings.HasPrefix(mode, "a landing") {
+		return exerciseReviewLand(in, auth, change, mode, rec, res)
+	}
 	if _, stderr, err := reviewCommand(change.Binaries.CLI, change.captureArgs(change.Input), ""); err != nil {
 		return fmt.Errorf("capture: %v: %s", err, stderr)
 	}
@@ -164,7 +167,7 @@ func exerciseReviewSubmit(in RunInputAdmission, mode string, rec *brine.Recorder
 		return fmt.Errorf("local receipt is unsafe or incomplete")
 	}
 	if strings.HasPrefix(mode, "ready ") {
-		return finishSubmittedReview(in, auth, change, options, first.result, strings.TrimPrefix(mode, "ready "), rec, res)
+		return finishSubmittedReview(in, auth, change, first.result, submitSurface(auth, change, options, first.result, strings.TrimPrefix(mode, "ready ")), rec, res)
 	}
 	if mode == "a fresh CLI replay" {
 		if err := exerciseSubmitCLI(auth, change, "review", options, first.result); err != nil {
