@@ -1737,6 +1737,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			}
 
 			intentFor := func(handoff output.HandoffID) output.ReleaseIntentID {
+				GinkgoHelper()
 				var intent string
 				Expect(dbConn.QueryRow(`
 					SELECT release_intent_id::text FROM hangar_capture_reservations
