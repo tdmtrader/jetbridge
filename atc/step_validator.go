@@ -2,7 +2,9 @@ package atc
 
 import (
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"strings"
 	"time"
 )
@@ -51,10 +53,7 @@ func NewStepValidator(config Config, context []string) *StepValidator {
 
 func (validator *StepValidator) Validate(step Step) error {
 	if len(step.UnknownFields) > 0 {
-		var fieldNames []string
-		for field := range step.UnknownFields {
-			fieldNames = append(fieldNames, field)
-		}
+		fieldNames := slices.Collect(maps.Keys(step.UnknownFields))
 		validator.recordErrorf("unknown fields %+q", fieldNames)
 	}
 
