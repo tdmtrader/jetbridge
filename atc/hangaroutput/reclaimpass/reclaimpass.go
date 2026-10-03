@@ -49,15 +49,15 @@ type AdmissionPass struct {
 	// Term is the lease term a newly admitted job starts with.
 	Term time.Duration
 
-	// Batch bounds one pass. Zero means DefaultAdmissionBatch.
+	// Batch bounds one pass. Zero means defaultAdmissionBatch.
 	Batch int
 
 	// OwnerID is the controller identity admitted jobs are minted under.
 	OwnerID string
 }
 
-// DefaultAdmissionBatch is how many generations one admission pass may admit.
-const DefaultAdmissionBatch = 10
+// defaultAdmissionBatch is how many generations one admission pass may admit.
+const defaultAdmissionBatch = 10
 
 var _ controller.Pass = (*AdmissionPass)(nil)
 
@@ -94,7 +94,7 @@ func (pass *AdmissionPass) Run(ctx context.Context, lease output.OperationLease)
 func (pass *AdmissionPass) candidates(ctx context.Context, lease output.OperationLease) ([]db.HangarReclaimCandidate, error) {
 	batch := pass.Batch
 	if batch <= 0 {
-		batch = DefaultAdmissionBatch
+		batch = defaultAdmissionBatch
 	}
 
 	tx, err := pass.Transactor.Begin()
