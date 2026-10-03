@@ -56,12 +56,7 @@ func (f *signingKeyFactory) CreateKey(jwk jose.JSONWebKey) error {
 		return err
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tx.Commit()
 }
 
 func (f *signingKeyFactory) GetAllKeys() ([]SigningKey, error) {
