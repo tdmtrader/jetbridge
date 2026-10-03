@@ -1844,9 +1844,7 @@ var _ = Describe("Job", func() {
 
 		Context("when scheduled", func() {
 			BeforeEach(func() {
-				var err error
-				var found bool
-				found, err = job.ScheduleBuild(build1DB)
+				found, err := job.ScheduleBuild(build1DB)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 			})
