@@ -158,17 +158,6 @@ func (builder Builder) createVolume(teamID int, workerName string, volumeType db
 	return builder.VolumeRepo.CreateVolumeWithHandle(handle, teamID, workerName, volumeType)
 }
 
-func (builder Builder) WithCreatedVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) SetupFunc {
-	return func(scenario *Scenario) error {
-		volume, err := builder.createVolume(teamID, workerName, volumeType, handle)
-		if err != nil {
-			return err
-		}
-		_, err = volume.Created()
-		return err
-	}
-}
-
 func (builder Builder) WithPipeline(config atc.Config) SetupFunc {
 	return func(scenario *Scenario) error {
 		if scenario.Team == nil {
