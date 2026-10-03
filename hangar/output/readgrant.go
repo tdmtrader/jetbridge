@@ -56,9 +56,9 @@ import (
 // authority the database committed.
 
 const (
-	// ReadWarrantVersion is the version inside every warrant. It moves when the
+	// readWarrantVersion is the version inside every warrant. It moves when the
 	// bound field set moves, never for an encoding change.
-	ReadWarrantVersion = "1"
+	readWarrantVersion = "1"
 
 	// ReadWarrantKeyBytes is the exact raw key length. It is exact rather than a
 	// minimum: a "long enough" key check accepts a 33-byte key that somebody
@@ -152,9 +152,9 @@ func (claims ReadWarrantClaims) Validate() error {
 		return fmt.Errorf("%w: read warrant domain is %q, not %q", ErrUnauthorized,
 			claims.Domain, MaterializeDomain)
 	}
-	if claims.Version != ReadWarrantVersion {
+	if claims.Version != readWarrantVersion {
 		return fmt.Errorf("%w: read warrant version is %q, not %q", ErrUnauthorized,
-			claims.Version, ReadWarrantVersion)
+			claims.Version, readWarrantVersion)
 	}
 	if err := claims.ReadLeaseID.Validate(); err != nil {
 		return err
@@ -230,7 +230,7 @@ func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 	number := func(value int64) { field(fmt.Sprintf("%d", value)) }
 
 	field(MaterializeDomain)
-	field(ReadWarrantVersion)
+	field(readWarrantVersion)
 	field(string(claims.ReadLeaseID))
 	field(string(claims.ClaimID))
 	field(string(claims.Ref.Scope))
@@ -305,7 +305,7 @@ func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestinati
 	}
 	claims := ReadWarrantClaims{
 		Domain:          MaterializeDomain,
-		Version:         ReadWarrantVersion,
+		Version:         readWarrantVersion,
 		ReadLeaseID:     lease.ReadLeaseID,
 		ClaimID:         lease.ClaimID,
 		Ref:             lease.Ref,
