@@ -1,6 +1,7 @@
 package idtoken
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/concourse/concourse/atc/creds"
@@ -41,10 +42,10 @@ func (factory *ManagerFactory) NewInstance(config interface{}) (creds.Manager, e
 	}
 
 	if factory.issuer == "" {
-		return nil, fmt.Errorf("issuer not set for idtoken provider")
+		return nil, errors.New("issuer not set for idtoken provider")
 	}
 	if factory.signingKeyFactory == nil {
-		return nil, fmt.Errorf("signingKeyFactory not set for idtoken provider")
+		return nil, errors.New("signingKeyFactory not set for idtoken provider")
 	}
 
 	return NewManager(factory.issuer, factory.signingKeyFactory, configMap)
