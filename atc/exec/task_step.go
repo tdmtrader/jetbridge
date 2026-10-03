@@ -754,15 +754,16 @@ func (step *TaskStep) registerOutputs(logger lager.Logger, repository *build.Rep
 		outputPath := artifactPath(metadata.WorkingDirectory, output.Name, output.Path)
 
 		for _, mount := range volumeMounts {
-			if filepath.Clean(mount.MountPath) == filepath.Clean(outputPath) {
-				// Wrap the container-mount volume as a DaemonSet-backed
-				// Artifact reference before handing it to the repository.
-				// Without this wrap, downstream consumers would exec into
-				// the producing pod for StreamOut, which breaks once the
-				// reaper deletes the pod.
-				artifact := worker.ArtifactFromVolume(mount.Volume)
-				repository.RegisterArtifact(build.ArtifactName(outputName), artifact, false)
+			if filepath.Clean(mount.MountPath) != filepath.Clean(outputPath) {
+				continue
 			}
+			// Wrap the container-mount volume as a DaemonSet-backed
+			// Artifact reference before handing it to the repository.
+			// Without this wrap, downstream consumers would exec into
+			// the producing pod for StreamOut, which breaks once the
+			// reaper deletes the pod.
+			artifact := worker.ArtifactFromVolume(mount.Volume)
+			repository.RegisterArtifact(build.ArtifactName(outputName), artifact, false)
 		}
 	}
 }
