@@ -279,10 +279,8 @@ func (s setPipelineSource) Validate() error {
 // MarshalPipelineConfig marshals a pipeline config and var files from other resources
 // and constructs an atc.Config object
 func (s setPipelineSource) MarshalPipelineConfig(config []byte) (atc.Config, error) {
-	var err error
-
 	// check for duplicate keys and general syntax issues
-	err = yamlv3.Unmarshal(config, make(map[any]any))
+	err := yamlv3.Unmarshal(config, make(map[any]any))
 	if err != nil {
 		return atc.Config{}, err
 	}
