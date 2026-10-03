@@ -349,13 +349,14 @@ func TestMirror_AfterStreamIn_PeerServesAfterProducerDeath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading tar: %v", err)
 		}
-		if hdr.Name == "data.txt" {
-			data, _ := io.ReadAll(tr)
-			if string(data) != "mirror-content" {
-				t.Errorf("peer-served data.txt: expected 'mirror-content', got %q", string(data))
-			}
-			found = true
+		if hdr.Name != "data.txt" {
+			continue
 		}
+		data, _ := io.ReadAll(tr)
+		if string(data) != "mirror-content" {
+			t.Errorf("peer-served data.txt: expected 'mirror-content', got %q", string(data))
+		}
+		found = true
 	}
 	if !found {
 		t.Error("peer-served tar did not contain data.txt")
