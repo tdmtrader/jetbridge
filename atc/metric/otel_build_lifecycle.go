@@ -68,10 +68,7 @@ func RecordBuildsStarted(ctx context.Context, count float64) {
 
 // RecordBuildsRunning records the number of builds currently running.
 func RecordBuildsRunning(ctx context.Context, count float64) {
-	if buildsRunningUpDownCounter == nil {
-		return
-	}
-	buildsRunningUpDownCounter.Add(ctx, count)
+	addToUpDownCounter(ctx, buildsRunningUpDownCounter, count)
 }
 
 // RecordBuildFinished records a single build finished with a status attribute.
@@ -93,8 +90,5 @@ func RecordCheckBuildsStarted(ctx context.Context, count float64) {
 
 // RecordCheckBuildsRunning records the number of check builds currently running.
 func RecordCheckBuildsRunning(ctx context.Context, count float64) {
-	if checkBuildsRunningUpDownCounter == nil {
-		return
-	}
-	checkBuildsRunningUpDownCounter.Add(ctx, count)
+	addToUpDownCounter(ctx, checkBuildsRunningUpDownCounter, count)
 }

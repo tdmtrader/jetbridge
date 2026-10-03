@@ -185,3 +185,11 @@ func addToCounter(ctx context.Context, counter otelmetric.Float64Counter, count 
 	}
 	counter.Add(ctx, count)
 }
+
+// addToUpDownCounter adds count to counter, unless the counter was never created.
+func addToUpDownCounter(ctx context.Context, counter otelmetric.Float64UpDownCounter, count float64) {
+	if counter == nil {
+		return
+	}
+	counter.Add(ctx, count)
+}

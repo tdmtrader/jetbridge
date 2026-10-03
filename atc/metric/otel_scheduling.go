@@ -51,10 +51,7 @@ func RecordJobsScheduled(ctx context.Context, count float64) {
 
 // RecordJobsScheduling records the number of jobs currently being scheduled.
 func RecordJobsScheduling(ctx context.Context, count float64) {
-	if jobsSchedulingUpDownCounter == nil {
-		return
-	}
-	jobsSchedulingUpDownCounter.Add(ctx, count)
+	addToUpDownCounter(ctx, jobsSchedulingUpDownCounter, count)
 }
 
 // RecordSchedulingJobDuration records the duration of scheduling a job.
