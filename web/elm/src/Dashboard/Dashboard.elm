@@ -47,7 +47,7 @@ import EffectTransformer exposing (ET)
 import Favorites
 import FetchResult exposing (FetchResult(..), changedFrom)
 import HoverState
-import Html exposing (Html, a)
+import Html exposing (Html)
 import Html.Attributes
     exposing
         ( class
