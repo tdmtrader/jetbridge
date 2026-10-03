@@ -499,7 +499,8 @@ func (r *resource) SetPinComment(comment string) error {
 func (r *resource) CurrentPinnedVersion() atc.Version {
 	if r.configPinnedVersion != nil {
 		return r.configPinnedVersion
-	} else if r.apiPinnedVersion != nil {
+	}
+	if r.apiPinnedVersion != nil {
 		return r.apiPinnedVersion
 	}
 	return nil
