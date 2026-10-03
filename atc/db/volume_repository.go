@@ -719,9 +719,7 @@ func (repository *volumeRepository) createVolumeWithHandle(
 		"worker_name": workerName,
 		"handle":      handle,
 	}
-	for name, value := range columns {
-		values[name] = value
-	}
+	maps.Copy(values, columns)
 
 	if teamID != 0 {
 		values["team_id"] = teamID
