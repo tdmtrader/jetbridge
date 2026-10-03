@@ -49,11 +49,11 @@ func (err InvalidFieldError) Error() string {
 	return fmt.Sprintf("cannot access field '%s' of non-map value ('%T') from var: %s", err.Field, err.Value, err.Name)
 }
 
-type InvalidInterpolationError struct {
+type invalidInterpolationError struct {
 	Name  string
 	Value any
 }
 
-func (err InvalidInterpolationError) Error() string {
+func (err invalidInterpolationError) Error() string {
 	return fmt.Sprintf("cannot interpolate non-primitive value (%T) from var: %s", err.Value, err.Name)
 }

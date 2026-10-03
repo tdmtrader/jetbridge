@@ -163,7 +163,7 @@ func (i interpolator) Interpolate(node any, tracker varsTracker) (any, error) {
 				foundValStr := fmt.Sprintf("%v", foundVal)
 				typedNode = strings.ReplaceAll(typedNode, fmt.Sprintf("((%s))", name), foundValStr)
 			default:
-				return nil, InvalidInterpolationError{
+				return nil, invalidInterpolationError{
 					Name:  name,
 					Value: foundVal,
 				}
