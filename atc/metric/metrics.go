@@ -302,19 +302,6 @@ type WorkerUnknownContainers struct {
 	Containers int
 }
 
-func (event WorkerUnknownContainers) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("worker-unknown-containers"),
-		Event{
-			Name:  "worker unknown containers",
-			Value: float64(event.Containers),
-			Attributes: map[string]string{
-				"worker": event.WorkerName,
-			},
-		},
-	)
-}
-
 type WorkerVolumes struct {
 	WorkerName string
 	Platform   string
