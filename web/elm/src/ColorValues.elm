@@ -5,7 +5,6 @@ module ColorValues exposing
     , error50
     , error70
     , error80
-    , error90
     , failure10
     , failure100
     , failure20
@@ -367,8 +366,3 @@ error70 =
 error80 : String
 error80 =
     "#4A3107"
-
-
-error90 : String
-error90 =
-    "#30220A"
