@@ -133,13 +133,13 @@ type Workspace struct {
 	root   *os.Root
 	inputs map[string][]byte
 	// written is the content edits have written so far, against budget,
-	// which is MaxWorkspaceWrites.
+	// which is maxWorkspaceWrites.
 	written, budget int64
 }
 
-// MaxWorkspaceWrites bounds the content one session's edits may write, so a
+// maxWorkspaceWrites bounds the content one session's edits may write, so a
 // session cannot fill the memory-backed runtime it shares with its credential.
-const MaxWorkspaceWrites = 4 * MaxPatchBytes
+const maxWorkspaceWrites = 4 * MaxPatchBytes
 
 // NewWorkspace serves dir and, under their absolute names, inputs.
 func NewWorkspace(dir string, inputs map[string][]byte) (*Workspace, error) {
@@ -159,7 +159,7 @@ func NewWorkspace(dir string, inputs map[string][]byte) (*Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Workspace{root: root, inputs: inputs, budget: MaxWorkspaceWrites}, nil
+	return &Workspace{root: root, inputs: inputs, budget: maxWorkspaceWrites}, nil
 }
 
 func (w *Workspace) Close() error { return w.root.Close() }
