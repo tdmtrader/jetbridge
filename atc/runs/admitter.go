@@ -257,7 +257,7 @@ func refuseDirectRecursion(auth authorization, template db.Pipeline) error {
 	}
 
 	// Zero means the caller's pipeline is not a run's payload at all.
-	if auth.caller.templatePipelineID != 0 && auth.caller.templatePipelineID == template.ID() {
+	if auth.caller.templateID != 0 && auth.caller.templateID == template.ID() {
 		return ErrCallerIsRunOfTemplate
 	}
 

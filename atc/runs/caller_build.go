@@ -41,13 +41,13 @@ type callerBuild struct {
 	completed bool
 	aborted   bool
 
-	// templatePipelineID is the template whose run the caller's pipeline is
+	// templateID is the template whose run the caller's pipeline is
 	// the payload of, when it is one; zero when the caller's pipeline is an
 	// ordinary pipeline. It is read here, with the rest of the build's
 	// identity, because the recursion check needs it and a second read would
 	// want a second connection -- see AdmitVersionedRun on the port's connection
 	// budget.
-	templatePipelineID int
+	templateID int
 }
 
 // callerBuildQuery reads one build's identity, its liveness and its run
@@ -101,7 +101,7 @@ func readCallerBuild(tx db.Tx, buildID int) (callerBuild, bool, error) {
 		&caller.buildName,
 		&caller.completed,
 		&caller.aborted,
-		&caller.templatePipelineID,
+		&caller.templateID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
