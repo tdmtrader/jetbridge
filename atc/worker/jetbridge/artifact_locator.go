@@ -1,6 +1,8 @@
 package jetbridge
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 )
@@ -131,12 +133,8 @@ func (l *ArtifactLocator) Step(stepDir string) StepArtifacts {
 			nodes[node] = struct{}{}
 		}
 	}
-	for node := range nodes {
-		step.Nodes = append(step.Nodes, node)
-	}
-	for key := range l.aliasesInto[stepDir] {
-		step.AliasedBy = append(step.AliasedBy, key)
-	}
+	step.Nodes = slices.Collect(maps.Keys(nodes))
+	step.AliasedBy = slices.Collect(maps.Keys(l.aliasesInto[stepDir]))
 	sort.Strings(step.Keys)
 	sort.Strings(step.Nodes)
 	sort.Strings(step.AliasedBy)
