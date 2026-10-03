@@ -37,7 +37,6 @@ import Html.Attributes
         ( attribute
         , class
         , classList
-        , href
         , id
         , style
         , tabindex
