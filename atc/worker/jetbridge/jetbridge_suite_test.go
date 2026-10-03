@@ -152,16 +152,6 @@ func expectSupervisedExec(command []string, quotedCommand string) {
 // They lived in worker_test.go until that suite was retired under the brine
 // migration; container_test.go is the remaining consumer.
 
-type failCreatedTransition struct{ db.Worker }
-
-func (w failCreatedTransition) CreateContainer(owner db.ContainerOwner, meta db.ContainerMetadata) (db.CreatingContainer, error) {
-	creating, err := w.Worker.CreateContainer(owner, meta)
-	if err != nil {
-		return nil, err
-	}
-	return creatingContainerCreatedFails{creating}, nil
-}
-
 type failStaleCreatedTransition struct{ db.Worker }
 
 func (w failStaleCreatedTransition) FindContainer(owner db.ContainerOwner) (db.CreatingContainer, db.CreatedContainer, error) {
