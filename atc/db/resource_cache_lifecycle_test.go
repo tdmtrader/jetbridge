@@ -614,6 +614,7 @@ func createResourceCacheWithUser(resourceCacheUser db.ResourceCacheUser) db.Reso
 }
 
 func countInvalidWorkerResourceCaches() int {
+	GinkgoHelper()
 	var result int
 	err := psql.Select("count(*)").
 		From("worker_resource_caches").
