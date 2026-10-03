@@ -3,7 +3,6 @@ module Dashboard.InstanceGroup exposing (cardView, hdCardView)
 import Application.Models exposing (Session)
 import ColorValues
 import Concourse
-import Concourse.BuildStatus exposing (BuildStatus(..))
 import Dashboard.FilterBuilder exposing (instanceGroupFilter)
 import Dashboard.Group.Models exposing (Pipeline)
 import Dashboard.Pipeline exposing (pipelineStatus)
