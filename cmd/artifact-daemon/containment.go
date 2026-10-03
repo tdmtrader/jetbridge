@@ -486,7 +486,7 @@ func (s *Server) lexicalDestRel(dest string) (RelKey, error) {
 // outlived five rounds of fixes here.
 func lexicalRel(storagePath, dest string) (RelKey, error) {
 	if dest == "" {
-		return "", fmt.Errorf("destination is empty")
+		return "", errors.New("destination is empty")
 	}
 	if !filepath.IsAbs(dest) {
 		return "", fmt.Errorf("destination %q is not absolute", dest)
