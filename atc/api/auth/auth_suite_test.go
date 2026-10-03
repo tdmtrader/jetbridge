@@ -263,6 +263,8 @@ func createJobBuild(team db.Team, pipelineName, jobName string) db.Build {
 
 // doomedWorkerFactory is the worker-side counterpart of doomedTeamFactory.
 func doomedWorkerFactory() db.WorkerFactory {
+	GinkgoHelper()
+
 	doomed := postgresRunner.OpenConn()
 	factory := db.NewWorkerFactory(doomed, db.NewStaticWorkerCache(logger, doomed, 0))
 	Expect(doomed.Close()).To(Succeed())
