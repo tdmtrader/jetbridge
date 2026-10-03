@@ -48,11 +48,11 @@ func (cfgs InputConfigs) String() string {
 	return strings.Join(names, ",")
 }
 
-type InputVersionEmptyError struct {
+type inputVersionEmptyError struct {
 	InputName string
 }
 
-func (e InputVersionEmptyError) Error() string {
+func (e inputVersionEmptyError) Error() string {
 	return fmt.Sprintf("input '%s' has successfully resolved but contains missing version information", e.InputName)
 }
 
@@ -1286,7 +1286,7 @@ func (j *job) SaveNextInputMapping(inputMapping InputMapping, inputsDetermined b
 			resolveError = sql.NullString{String: string(inputResult.ResolveError), Valid: true}
 		} else {
 			if inputResult.Input == nil {
-				return InputVersionEmptyError{inputName}
+				return inputVersionEmptyError{inputName}
 			}
 
 			firstOccurrence = sql.NullBool{Bool: inputResult.Input.FirstOccurrence, Valid: true}
