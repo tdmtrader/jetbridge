@@ -242,6 +242,8 @@ func createJobBuildWithConfig(team db.Team, pipelineName string, job atc.JobConf
 // createJobBuild gives a build that belongs to a job in a pipeline, which is
 // what the build-access handlers scope against.
 func createJobBuild(team db.Team, pipelineName, jobName string) db.Build {
+	GinkgoHelper()
+
 	pipeline, _, err := team.SavePipeline(
 		atc.PipelineRef{Name: pipelineName},
 		atc.Config{Jobs: atc.JobConfigs{{Name: jobName}}},
