@@ -31,6 +31,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -53,10 +54,8 @@ func LeaseOperations() []LeaseOperation {
 }
 
 func (operation LeaseOperation) Validate() error {
-	for _, member := range LeaseOperations() {
-		if member == operation {
-			return nil
-		}
+	if slices.Contains(LeaseOperations(), operation) {
+		return nil
 	}
 
 	return fmt.Errorf("%w: lease operation %q; the vocabulary is %v",
