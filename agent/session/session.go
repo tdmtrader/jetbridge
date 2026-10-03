@@ -175,7 +175,7 @@ func (s *Session) Run(ctx context.Context, p Policy, prompt string, allow func(E
 			return err
 		}
 		switch e.Kind {
-		case EventStarted:
+		case eventStarted:
 			return nil
 		case EventCompleted:
 			completed = true

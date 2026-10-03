@@ -62,7 +62,7 @@ type ToolServer struct {
 type EventKind string
 
 const (
-	EventStarted   EventKind = "started"   // thread or turn started
+	eventStarted   EventKind = "started"   // thread or turn started
 	EventCompleted EventKind = "completed" // the turn completed
 	EventFailed    EventKind = "failed"    // the provider reported failure
 	EventItem      EventKind = "item"      // an item started, updated or completed

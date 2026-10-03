@@ -174,7 +174,7 @@ func (Codex) Decode(line []byte) (Event, error) {
 	}
 	switch event.Type {
 	case "thread.started", "turn.started":
-		return Event{Kind: EventStarted}, nil
+		return Event{Kind: eventStarted}, nil
 	case "turn.completed":
 		return Event{Kind: EventCompleted}, nil
 	case "error", "turn.failed":
