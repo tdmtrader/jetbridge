@@ -209,18 +209,6 @@ func finalizeTestSpan(report ginkgo.SpecReport, pipeline string) {
 	testCtx = nil
 }
 
-// TestContext returns the context carrying the active test span.
-// Helpers use this to create child spans. Returns context.Background()
-// when tracing is disabled or no test span is active.
-func TestContext() context.Context {
-	mu.Lock()
-	defer mu.Unlock()
-	if testCtx == nil {
-		return context.Background()
-	}
-	return testCtx
-}
-
 // ---------------------------------------------------------------------------
 // Child spans and events
 // ---------------------------------------------------------------------------
