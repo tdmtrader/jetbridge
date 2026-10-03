@@ -6,13 +6,7 @@ package pty
 import (
 	"io"
 	"os"
-
-	"golang.org/x/term"
 )
-
-func IsTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
-}
 
 func OpenRawTerm() (Term, error) {
 	return noopRestoreTerm{

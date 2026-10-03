@@ -6,14 +6,8 @@ package pty
 import (
 	"os"
 
-	"golang.org/x/term"
-
 	pkgterm "github.com/pkg/term"
 )
-
-func IsTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
-}
 
 func OpenRawTerm() (Term, error) {
 	t, err := pkgterm.Open(os.Stdin.Name(), pkgterm.RawMode)
