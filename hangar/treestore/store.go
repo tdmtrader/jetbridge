@@ -460,7 +460,7 @@ func maxCompressedRepresentation(logicalBytes int64) (int64, error) {
 }
 func validateLimit(limit int64) error {
 	if limit <= 0 || limit == math.MaxInt64 {
-		return fmt.Errorf("hangar: maximum logical bytes must be positive and bounded")
+		return errors.New("hangar: maximum logical bytes must be positive and bounded")
 	}
 	return nil
 }
