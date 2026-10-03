@@ -123,11 +123,6 @@ var (
 	ErrLimitExceeded  = hangar.ErrLimitExceeded
 	ErrInfrastructure = hangar.ErrInfrastructure
 
-	// ErrCancelled is a capture terminated before its irreversible publish
-	// point. After that point cancellation settles a receipt or an orphan; it
-	// never unmakes an object.
-	ErrCancelled = errors.New("hangar/output: cancelled")
-
 	// ErrTimeout is a deadline reached on the database clock, never on a
 	// daemon's wall clock.
 	ErrTimeout = errors.New("hangar/output: deadline exceeded")
