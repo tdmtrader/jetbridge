@@ -27,7 +27,7 @@ func (m NamedVariables) List() ([]Reference, error) {
 			return nil, err
 		}
 
-		for i, _ := range refs {
+		for i := range refs {
 			refs[i].Source = source
 		}
 
