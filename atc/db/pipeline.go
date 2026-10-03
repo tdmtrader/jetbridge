@@ -692,8 +692,7 @@ func (p *pipeline) Jobs() (Jobs, error) {
 		return nil, err
 	}
 
-	jobs, err := scanJobs(p.conn, p.lockFactory, rows)
-	return jobs, err
+	return scanJobs(p.conn, p.lockFactory, rows)
 }
 
 func (p *pipeline) Dashboard() ([]atc.JobSummary, error) {
