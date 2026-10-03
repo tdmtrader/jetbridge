@@ -190,7 +190,9 @@ func useJSONNumber(decoder *json.Decoder) *json.Decoder {
 func (step *LoadVarStep) fileFormat(file string) (string, error) {
 	if step.isValidFormat(step.plan.Format) {
 		return step.plan.Format, nil
-	} else if step.plan.Format != "" {
+	}
+
+	if step.plan.Format != "" {
 		return "", fmt.Errorf("invalid format %s", step.plan.Format)
 	}
 
