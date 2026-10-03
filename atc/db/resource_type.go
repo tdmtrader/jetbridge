@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -17,10 +16,6 @@ import (
 
 type ResourceTypeNotFoundError struct {
 	ID int
-}
-
-func (e ResourceTypeNotFoundError) Error() string {
-	return fmt.Sprintf("resource type not found: %d", e.ID)
 }
 
 type ResourceType interface {
