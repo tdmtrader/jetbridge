@@ -1,6 +1,5 @@
 module Concourse exposing
     ( AcrossSubstep
-    , AuthSession
     , AuthToken
     , Build
     , BuildCreatedBy
@@ -158,12 +157,6 @@ keysToLower =
 fstToLower : ( String, a ) -> ( String, a )
 fstToLower ( x, y ) =
     ( String.toLower x, y )
-
-
-type alias AuthSession =
-    { authToken : AuthToken
-    , csrfToken : CSRFToken
-    }
 
 
 
