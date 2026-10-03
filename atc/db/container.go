@@ -10,8 +10,6 @@ import (
 
 var ErrContainerDisappeared = errors.New("container disappeared from db")
 
-type ContainerState string
-
 type Container interface {
 	ID() int
 	State() string
