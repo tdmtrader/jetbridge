@@ -21,7 +21,6 @@ type RunCancellationDebt string
 
 const (
 	CancellationDone        RunCancellationDebt = ""
-	CancellationInterrupted RunCancellationDebt = "interrupted"
 	CancellationPending     RunCancellationDebt = "pending"
 	CancellationUnavailable RunCancellationDebt = "unavailable"
 	CancellationTimeout     RunCancellationDebt = "timeout"
