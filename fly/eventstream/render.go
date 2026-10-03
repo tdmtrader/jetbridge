@@ -142,9 +142,11 @@ func Render(dst io.Writer, src eventstream.EventStream, options RenderOptions) i
 func isEventParseError(err error) bool {
 	if _, ok := err.(event.UnknownEventTypeError); ok {
 		return true
-	} else if _, ok := err.(event.UnknownEventVersionError); ok {
+	}
+	if _, ok := err.(event.UnknownEventVersionError); ok {
 		return true
-	} else if _, ok := err.(event.MissingEventDataError); ok {
+	}
+	if _, ok := err.(event.MissingEventDataError); ok {
 		return true
 	}
 	return false
