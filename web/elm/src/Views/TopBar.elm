@@ -18,7 +18,7 @@ import Html.Attributes
         , href
         , id
         )
-import Message.Message exposing (DomID(..), Message(..))
+import Message.Message exposing (DomID(..), Message)
 import RemoteData
 import Routes
 import SideBar.SideBar exposing (byPipelineId, isPipelineVisible, lookupPipeline)
