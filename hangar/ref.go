@@ -32,11 +32,11 @@ type Digest string
 func (digest Digest) Validate() error {
 	raw := string(digest)
 	if len(raw) != len(digestPrefix)+64 || !strings.HasPrefix(raw, digestPrefix) {
-		return fmt.Errorf("hangar: digest must be sha256 followed by 64 lowercase hexadecimal characters")
+		return errors.New("hangar: digest must be sha256 followed by 64 lowercase hexadecimal characters")
 	}
 	for i := len(digestPrefix); i < len(raw); i++ {
 		if !isLowerHexadecimal(raw[i]) {
-			return fmt.Errorf("hangar: digest must be sha256 followed by 64 lowercase hexadecimal characters")
+			return errors.New("hangar: digest must be sha256 followed by 64 lowercase hexadecimal characters")
 		}
 	}
 	return nil
