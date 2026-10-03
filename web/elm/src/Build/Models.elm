@@ -8,7 +8,6 @@ import Build.Header.Models exposing (BuildPageType(..), CommentBarVisibility, Cu
 import Build.Output.Models exposing (OutputModel)
 import Concourse
 import Concourse.BuildStatus as BuildStatus
-import Dict exposing (Dict)
 import Keyboard
 import Login.Login as Login
 import Routes exposing (Highlight)
