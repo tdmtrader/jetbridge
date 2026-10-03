@@ -19,6 +19,7 @@ package hangaroutput
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -68,13 +69,7 @@ type Announcement struct {
 }
 
 func (announcement Announcement) Validate() error {
-	known := false
-	for _, kind := range AnnouncementKinds() {
-		if announcement.Kind == kind {
-			known = true
-		}
-	}
-	if !known {
+	if !slices.Contains(AnnouncementKinds(), announcement.Kind) {
 		return fmt.Errorf("%w: announcement kind %q; the vocabulary is %v",
 			output.ErrUnknownMember, announcement.Kind, AnnouncementKinds())
 	}
