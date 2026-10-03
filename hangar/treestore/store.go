@@ -94,7 +94,7 @@ func New(objects objectstore.Client, config Config) (*Store, error) {
 
 func (store *Store) EnsureTree(ctx context.Context, scope hangar.Scope, digest hangar.Digest, source io.Reader, maxLogicalBytes int64) (attributes hangar.TreeAttributes, created bool, err error) {
 	if source == nil {
-		return hangar.TreeAttributes{}, false, fmt.Errorf("hangar: ensure source is required")
+		return hangar.TreeAttributes{}, false, errors.New("hangar: ensure source is required")
 	}
 	key, err := hangar.TreeKey(store.config.Prefix, scope, digest)
 	if err != nil {
