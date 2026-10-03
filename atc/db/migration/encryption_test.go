@@ -194,6 +194,7 @@ func insertIntoEncryptedColumnLegacy(db *sql.DB, strategy encryption.Strategy, n
 }
 
 func insertIntoEncryptedColumn(db *sql.DB, strategy encryption.Strategy, name string) {
+	GinkgoHelper()
 	ciphertext, nonce, err := strategy.Encrypt([]byte("{}"))
 	Expect(err).ToNot(HaveOccurred())
 	_, err = db.Exec(`INSERT INTO teams(name, legacy_auth, nonce) VALUES($1, $2, $3)`, name, ciphertext, nonce)
