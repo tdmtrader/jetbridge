@@ -235,6 +235,23 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			}
 		}
 
+		// A pod that is still live was made by whatever runtime ran first, and
+		// may carry an identity this build no longer resolves to -- the default
+		// account with its token, or a grant since removed. Reattaching or
+		// hijacking would hand the step that identity, so it is refused before
+		// anything is exec'd into the pod.
+		if getErr == nil && existingPod.Status.Phase != corev1.PodSucceeded && existingPod.Status.Phase != corev1.PodFailed {
+			identity, resolveErr := c.identities.resolve(c.metadata)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			if !identityConforms(existingPod, identity) {
+				return nil, fmt.Errorf("refusing to reuse pod %q: it runs as ServiceAccount %q with the API token %s, "+
+					"and its build now resolves to %s", c.podName, podAccount(existingPod.Spec.ServiceAccountName),
+					tokenState(existingPod.Spec.AutomountServiceAccountToken), identity.describe())
+			}
+		}
+
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
 			// A replacement is a NEW POD UID getting a write-capable mount over
 			// this step's tree, and for a capture-selected step that tree is
@@ -657,10 +674,14 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			SecurityContext:    buildPodSecurityContext(privileged),
 			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
 			ServiceAccountName: identity.serviceAccount,
-			InitContainers:     initContainers,
-			Volumes:            volumes,
-			Containers:         containers,
-			Affinity:           affinity,
+			// Only a grant's own ServiceAccount carries an API token; the
+			// default step pod identity, and a privilege-only grant that keeps
+			// its account, carry none in any container.
+			AutomountServiceAccountToken: &identity.ownAccount,
+			InitContainers:               initContainers,
+			Volumes:                      volumes,
+			Containers:                   containers,
+			Affinity:                     affinity,
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},

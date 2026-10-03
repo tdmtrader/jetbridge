@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
 	"regexp"
 	"strings"
 
@@ -191,6 +192,45 @@ type stepPodIdentities struct {
 	grants         []StepPodGrant
 	builds         StepPodBuilds
 	defaultAccount string
+}
+
+// describe names the identity in a refusal.
+func (identity stepPodIdentity) describe() string {
+	if identity.grant == "" {
+		return fmt.Sprintf("the default step pod identity (ServiceAccount %q, no API token)", podAccount(identity.serviceAccount))
+	}
+	if !identity.ownAccount {
+		return fmt.Sprintf("grant %q (the default ServiceAccount %q, no API token)", identity.grant, podAccount(identity.serviceAccount))
+	}
+	return fmt.Sprintf("grant %q (ServiceAccount %q)", identity.grant, identity.serviceAccount)
+}
+
+// identityConforms says whether an existing pod already runs as identity: the
+// same ServiceAccount, and a token only where the identity has its own
+// account. An unset token setting means mounted, which is what a Release A
+// pod of a granted job carries, so it still conforms.
+func identityConforms(pod *corev1.Pod, identity stepPodIdentity) bool {
+	if podAccount(pod.Spec.ServiceAccountName) != podAccount(identity.serviceAccount) {
+		return false
+	}
+	mounted := pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken
+	return mounted == identity.ownAccount
+}
+
+// podAccount is the ServiceAccount a pod spec runs as; an empty name is the
+// namespace's default.
+func podAccount(name string) string {
+	if name == "" {
+		return "default"
+	}
+	return name
+}
+
+func tokenState(automount *bool) string {
+	if automount != nil && !*automount {
+		return "unmounted"
+	}
+	return "mounted"
 }
 
 func (identities stepPodIdentities) defaultIdentity() stepPodIdentity {

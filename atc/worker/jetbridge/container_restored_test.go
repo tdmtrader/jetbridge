@@ -288,7 +288,9 @@ var _ = Describe("Container", func() {
 				Executor: hijackExecutor,
 			})
 
-			// Simulate an existing pause pod (created by a previous task run).
+			// Simulate an existing pause pod (created by a previous task run of
+			// this runtime: the default identity, with no API token).
+			noToken := false
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "hijack-pod",
@@ -297,6 +299,7 @@ var _ = Describe("Container", func() {
 						"concourse.ci/worker": "k8s-worker-1",
 					},
 				},
+				Spec:   corev1.PodSpec{AutomountServiceAccountToken: &noToken},
 				Status: corev1.PodStatus{Phase: corev1.PodRunning},
 			}
 			_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})

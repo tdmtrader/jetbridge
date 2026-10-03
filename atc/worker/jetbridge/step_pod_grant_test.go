@@ -2,6 +2,8 @@ package jetbridge_test
 
 import (
 	"context"
+	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -10,6 +12,8 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -240,6 +244,152 @@ var _ = Describe("Step pod grants", func() {
 		Expect(runStep(worker, "privilege-only", metadataFor(jobBuild(pipeline, "unit"), db.ContainerTypeTask), runtime.ContainerSpec{})).To(Equal(defaultAccount))
 	})
 
+	// The pod a step created, by its handle.
+	podOf := func(handle string) corev1.Pod {
+		GinkgoHelper()
+		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "concourse.ci/handle=" + handle})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pods.Items).To(HaveLen(1))
+		return pods.Items[0]
+	}
+
+	automount := func(pod corev1.Pod) *bool { return pod.Spec.AutomountServiceAccountToken }
+
+	Describe("the API token", func() {
+		It("mounts none in a default-identity pod of any step kind, sidecars included", func() {
+			worker := newWorker(database.BuildFactory)
+			unit := jobBuild(pipeline, "unit")
+			for handle, kind := range map[string]db.ContainerType{
+				"token-task": db.ContainerTypeTask, "token-get": db.ContainerTypeGet,
+				"token-put": db.ContainerTypePut, "token-check": db.ContainerTypeCheck,
+			} {
+				_, err := runStep(worker, handle, metadataFor(unit, kind), runtime.ContainerSpec{})
+				Expect(err).NotTo(HaveOccurred())
+				pod := podOf(handle)
+				Expect(automount(pod)).To(PointTo(BeFalse()), "%s pod", kind)
+			}
+
+			_, err := runStep(worker, "token-sidecar", metadataFor(unit, db.ContainerTypeTask), runtime.ContainerSpec{
+				Sidecars: []atc.SidecarConfig{{Name: "db", Image: "postgres"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			pod := podOf("token-sidecar")
+			Expect(len(pod.Spec.Containers)).To(BeNumerically(">", 1), "the sidecar is in the pod")
+			Expect(automount(pod)).To(PointTo(BeFalse()))
+		})
+
+		It("mounts it in a pod that runs under a grant's own ServiceAccount", func() {
+			worker := newWorker(database.BuildFactory)
+			_, err := runStep(worker, "token-release", metadataFor(jobBuild(pipeline, "release"), db.ContainerTypeTask), runtime.ContainerSpec{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(automount(podOf("token-release"))).To(PointTo(BeTrue()))
+		})
+
+		It("mounts none for a privilege-only grant, which keeps the default account", func() {
+			config.StepPodGrants = append(config.StepPodGrants, grant("name=dind,owner=main/jetbridge/unit,privileged=true"))
+			worker := newWorker(database.BuildFactory)
+			_, err := runStep(worker, "token-dind", metadataFor(jobBuild(pipeline, "unit"), db.ContainerTypeTask), runtime.ContainerSpec{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(automount(podOf("token-dind"))).To(PointTo(BeFalse()))
+		})
+
+		It("mounts none when no grant is configured at all", func() {
+			config.StepPodGrants = nil
+			worker := newWorker(database.BuildFactory)
+			oneOff, err := mainTeam.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = runStep(worker, "token-no-grants", metadataFor(oneOff, db.ContainerTypeTask), runtime.ContainerSpec{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(automount(podOf("token-no-grants"))).To(PointTo(BeFalse()))
+		})
+	})
+
+	// A pod made before this runtime may carry an identity the build no longer
+	// resolves to: the default account with its token, or a grant since removed.
+	Describe("reusing an existing pod", func() {
+		var executor *countingExecutor
+
+		BeforeEach(func() { executor = &countingExecutor{} })
+
+		newExecWorker := func() *jetbridge.Worker {
+			return jetbridge.NewWorker(dbWorker, clientset, config, jetbridge.WorkerDeps{StepPodBuilds: database.BuildFactory, Executor: executor})
+		}
+
+		// plant creates the pod a step's container would find, as an older
+		// runtime left it.
+		plant := func(handle string, metadata db.ContainerMetadata, account string, token *bool, phase corev1.PodPhase) {
+			GinkgoHelper()
+			_, err := clientset.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: jetbridge.GeneratePodName(metadata, handle), Namespace: namespace,
+					Labels: map[string]string{"concourse.ci/handle": handle}},
+				Spec: corev1.PodSpec{ServiceAccountName: account, AutomountServiceAccountToken: token,
+					Containers: []corev1.Container{{Name: "main", Image: "busybox"}}},
+				Status: corev1.PodStatus{Phase: phase},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		run := func(worker *jetbridge.Worker, handle string, metadata db.ContainerMetadata) error {
+			GinkgoHelper()
+			container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), metadata,
+				runtime.ContainerSpec{TeamID: 1, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"}}, &noopDelegate{})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/bin/true"}, runtime.ProcessIO{})
+			return err
+		}
+
+		hijack := func(worker *jetbridge.Worker, handle string) error {
+			GinkgoHelper()
+			container, found, err := worker.LookupContainer(ctx, handle)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
+			return err
+		}
+
+		for _, phase := range []corev1.PodPhase{corev1.PodRunning, corev1.PodPending} {
+			phase := phase
+			It("refuses to reattach to or hijack an old-runtime "+string(phase)+" pod of a default-identity build", func() {
+				worker := newExecWorker()
+				metadata := metadataFor(jobBuild(pipeline, "unit"), db.ContainerTypeTask)
+				handle := "old-default-" + string(phase)
+				plant(handle, metadata, defaultAccount, nil, phase)
+
+				Expect(run(worker, handle, metadata)).To(MatchError(ContainSubstring("default step pod identity")))
+				Expect(hijack(worker, handle)).To(MatchError(ContainSubstring("default step pod identity")))
+				Expect(executor.calls.Load()).To(BeZero(), "nothing was exec'd into the pod")
+				Expect(automount(podOf(handle))).To(BeNil(), "the pod was left as it was")
+			})
+		}
+
+		It("reattaches to a pod that matches the identity its build resolves to", func() {
+			worker := newExecWorker()
+			metadata := metadataFor(jobBuild(pipeline, "unit"), db.ContainerTypeTask)
+			off := false
+			plant("matching-default", metadata, defaultAccount, &off, corev1.PodRunning)
+			Expect(run(worker, "matching-default", metadata)).To(Succeed())
+		})
+
+		It("reattaches to a Release A pod of a granted job, whose token setting was unset", func() {
+			worker := newExecWorker()
+			metadata := metadataFor(jobBuild(pipeline, "release"), db.ContainerTypeTask)
+			plant("release-a-granted", metadata, releaseAccount, nil, corev1.PodRunning)
+			Expect(run(worker, "release-a-granted", metadata)).To(Succeed())
+		})
+
+		It("refuses a pod under a grant that has since been removed, naming the grant it ran under", func() {
+			metadata := metadataFor(jobBuild(pipeline, "release"), db.ContainerTypeTask)
+			plant("grant-removed", metadata, releaseAccount, nil, corev1.PodRunning)
+			config.StepPodGrants = config.StepPodGrants[:1]
+			worker := newExecWorker()
+
+			err := run(worker, "grant-removed", metadata)
+			Expect(err).To(MatchError(ContainSubstring(releaseAccount)))
+			Expect(err).To(MatchError(ContainSubstring("default step pod identity")))
+			Expect(executor.calls.Load()).To(BeZero())
+		})
+	})
+
 	It("leaves every pod on the configured ServiceAccount when no grant is configured", func() {
 		config.StepPodGrants = nil
 		worker := newWorker(database.BuildFactory)
@@ -284,3 +434,11 @@ var _ = Describe("ParseStepPodGrant", func() {
 		Expect(jetbridge.ValidateStepPodGrants([]jetbridge.StepPodGrant{one, sameName})).To(MatchError(ContainSubstring(`"a" is configured twice`)))
 	})
 })
+
+// countingExecutor counts every exec; a refused reuse must make none.
+type countingExecutor struct{ calls atomic.Int64 }
+
+func (executor *countingExecutor) ExecInPod(context.Context, string, string, string, []string, io.Reader, io.Writer, io.Writer, bool, jetbridge.ExecAttrs) error {
+	executor.calls.Add(1)
+	return nil
+}
