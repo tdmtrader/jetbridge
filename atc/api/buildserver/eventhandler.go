@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ProtocolVersionHeader  = "X-ATC-Stream-Version"
+	protocolVersionHeader  = "X-ATC-Stream-Version"
 	CurrentProtocolVersion = "2.0"
 )
 
@@ -37,7 +37,7 @@ func NewEventHandler(logger lager.Logger, build db.BuildForAPI) http.Handler {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("X-Accel-Buffering", "no")
-		w.Header().Set(ProtocolVersionHeader, CurrentProtocolVersion)
+		w.Header().Set(protocolVersionHeader, CurrentProtocolVersion)
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
