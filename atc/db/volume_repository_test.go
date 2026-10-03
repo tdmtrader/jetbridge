@@ -432,7 +432,6 @@ var _ = Describe("VolumeRepository", func() {
 			var existingVolume db.CreatedVolume
 
 			BeforeEach(func() {
-				var err error
 				volume, err := volumeRepository.CreateBaseResourceTypeVolume(usedWorkerBaseResourceType)
 				Expect(err).NotTo(HaveOccurred())
 				existingVolume, err = volume.Created()
