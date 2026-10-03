@@ -15,7 +15,7 @@ type LegacyConfig struct {
 const (
 	loginRoute    = "LoginRoute"
 	logoutRoute   = "LogoutRoute"
-	CallbackRoute = "CallbackRoute"
+	callbackRoute = "CallbackRoute"
 )
 
 func NewLegacyServer(config *LegacyConfig) (http.Handler, error) {
@@ -23,7 +23,7 @@ func NewLegacyServer(config *LegacyConfig) (http.Handler, error) {
 	routes := rata.Routes([]rata.Route{
 		{Path: "/login", Method: "GET", Name: loginRoute},
 		{Path: "/logout", Method: "GET", Name: logoutRoute},
-		{Path: "/auth/:provider/callback", Method: "GET", Name: CallbackRoute},
+		{Path: "/auth/:provider/callback", Method: "GET", Name: callbackRoute},
 	})
 
 	handlers := map[string]http.Handler{
@@ -54,7 +54,7 @@ func NewLegacyServer(config *LegacyConfig) (http.Handler, error) {
 			http.Redirect(w, r, u.String(), http.StatusMovedPermanently)
 		}),
 
-		CallbackRoute: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackRoute: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 			q, _ := url.ParseQuery(r.URL.RawQuery)
 			q.Del(":provider")
