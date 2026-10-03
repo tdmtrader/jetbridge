@@ -123,6 +123,7 @@ func (factory *teamsAPITeamFactory) NotifyCacher() error {
 }
 
 func jsonEncode(object any) *bytes.Buffer {
+	GinkgoHelper()
 	reqPayload, err := json.Marshal(object)
 	Expect(err).NotTo(HaveOccurred())
 	return bytes.NewBuffer(reqPayload)
