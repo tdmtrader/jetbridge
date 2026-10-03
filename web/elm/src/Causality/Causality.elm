@@ -45,7 +45,7 @@ import Message.Message exposing (Message(..))
 import Message.Subscription
     exposing
         ( Delivery
-        , Subscription(..)
+        , Subscription
         )
 import Routes
 import SideBar.SideBar as SideBar
