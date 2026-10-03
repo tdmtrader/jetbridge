@@ -68,7 +68,6 @@ func (memberAccess) Create(*http.Request, string) (accessor.Access, error) {
 
 type silentAuditor struct{}
 
-func (silentAuditor) ValidateAction(string) bool          { return false }
 func (silentAuditor) Audit(string, string, *http.Request) {}
 
 // serveSensitive serves over a real connection: the handlers set a read
