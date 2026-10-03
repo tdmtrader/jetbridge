@@ -931,12 +931,7 @@ func (builder Builder) WithDisabledVersion(resourceName string, disabledVersion 
 			}
 		}
 
-		err = resource.DisableVersion(version.ID())
-		if err != nil {
-			return err
-		}
-
-		return nil
+		return resource.DisableVersion(version.ID())
 	}
 }
 
