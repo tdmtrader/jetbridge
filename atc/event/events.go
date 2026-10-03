@@ -97,7 +97,7 @@ type WaitingForWorker struct {
 	Origin Origin `json:"origin"`
 }
 
-func (WaitingForWorker) EventType() atc.EventType  { return EventTypeWaitingForWorker }
+func (WaitingForWorker) EventType() atc.EventType  { return eventTypeWaitingForWorker }
 func (WaitingForWorker) Version() atc.EventVersion { return "1.0" }
 
 type SelectedWorker struct {
