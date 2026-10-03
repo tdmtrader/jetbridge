@@ -12,7 +12,7 @@ import Html exposing (Html)
 import Html.Attributes exposing (class, href, id, rel, style, target)
 import Keyboard
 import Message.Effects as Effects
-import Message.Message exposing (Message(..))
+import Message.Message exposing (Message)
 import Message.Subscription exposing (Delivery(..), Interval(..))
 import Routes
 import ScreenSize
