@@ -143,11 +143,11 @@ func runInputPath(value, fallback string) (string, error) {
 		value = fallback
 	}
 	if strings.Contains(value, "((") || strings.Contains(value, "))") {
-		return "", fmt.Errorf("Run input mount paths must be literal")
+		return "", errors.New("Run input mount paths must be literal")
 	}
 	clean := path.Clean(value)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) || strings.ContainsAny(value, "\\\x00") {
-		return "", fmt.Errorf("Run input mount paths must be contained relative paths")
+		return "", errors.New("Run input mount paths must be contained relative paths")
 	}
 	return clean, nil
 }
