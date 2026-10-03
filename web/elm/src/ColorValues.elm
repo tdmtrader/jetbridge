@@ -8,7 +8,6 @@ module ColorValues exposing
     , failure10
     , failure50
     , failure70
-    , grey10
     , grey100
     , grey20
     , grey30
@@ -41,11 +40,6 @@ white =
 
 
 ------- GREY -------
-
-
-grey10 : String
-grey10 =
-    "#F2F2F2"
 
 
 grey20 : String
