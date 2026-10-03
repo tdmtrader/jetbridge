@@ -56,6 +56,7 @@ var _ = Describe("CheckFactory", func() {
 			pipelineNum = 0
 
 			savePipeline = func(resourceConfig atc.ResourceConfig, resourceTypeConfig atc.ResourceType) {
+				GinkgoHelper()
 				pipelineNum++
 
 				pipeline, _, err := defaultTeam.SavePipeline(
