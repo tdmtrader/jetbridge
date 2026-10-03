@@ -229,13 +229,14 @@ func TestBuildVolumeMounts_MixedOverlap(t *testing.T) {
 
 	// Verify no separate volumes were created for overlapping outputs.
 	for _, vol := range volumes {
-		if vol.HostPath != nil {
-			path := vol.HostPath.Path
-			// "modified-code" and "shared-out" should only appear as input subdirs,
-			// not as separate output-N volumes.
-			if strings.Contains(path, "output-") && (strings.Contains(path, "modified-code") || strings.Contains(path, "shared-out")) {
-				t.Errorf("unexpected separate output volume for overlapping output: %s", path)
-			}
+		if vol.HostPath == nil {
+			continue
+		}
+		path := vol.HostPath.Path
+		// "modified-code" and "shared-out" should only appear as input subdirs,
+		// not as separate output-N volumes.
+		if strings.Contains(path, "output-") && (strings.Contains(path, "modified-code") || strings.Contains(path, "shared-out")) {
+			t.Errorf("unexpected separate output volume for overlapping output: %s", path)
 		}
 	}
 }
