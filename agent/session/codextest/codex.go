@@ -39,10 +39,10 @@ import (
 // release's tarball there beforehand provisions Codex without network access.
 const CacheVariable = "JB_CODEX_CACHE"
 
-// ExecutableVariable names an installed pinned Codex to run instead of
+// executableVariable names an installed pinned Codex to run instead of
 // provisioning one: the worker image's own /usr/local/bin/codex, when these
 // tests run inside that image. It must report the pinned version.
-const ExecutableVariable = "JB_CODEX_EXECUTABLE"
+const executableVariable = "JB_CODEX_EXECUTABLE"
 
 // ReleaseURL is where the worker image and this harness fetch the pinned
 // release (deploy/Dockerfile.review-worker).
@@ -81,13 +81,13 @@ func Asset() (string, error) {
 }
 
 func provision() (string, error) {
-	if installed := os.Getenv(ExecutableVariable); installed != "" {
+	if installed := os.Getenv(executableVariable); installed != "" {
 		if !filepath.IsAbs(installed) {
-			return "", fmt.Errorf("$%s must be an absolute path", ExecutableVariable)
+			return "", fmt.Errorf("$%s must be an absolute path", executableVariable)
 		}
 		out, err := exec.Command(installed, "--version").Output()
 		if err != nil || strings.TrimSpace(string(out)) != "codex-cli "+session.CodexVersion() {
-			return "", fmt.Errorf("$%s is not codex-cli %s: %q %v", ExecutableVariable, session.CodexVersion(), out, err)
+			return "", fmt.Errorf("$%s is not codex-cli %s: %q %v", executableVariable, session.CodexVersion(), out, err)
 		}
 		return installed, nil
 	}
