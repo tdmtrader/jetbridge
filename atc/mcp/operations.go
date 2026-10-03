@@ -147,9 +147,7 @@ func pipelineArgs(extra map[string]*jsonschema.Schema, required ...string) *json
 }
 func buildArgs(extra map[string]*jsonschema.Schema) *jsonschema.Schema {
 	props := map[string]*jsonschema.Schema{"build_id": integerSchema(1, 0)}
-	for k, v := range extra {
-		props[k] = v
-	}
+	maps.Copy(props, extra)
 	return object(props, "build_id")
 }
 func acceptedResult() *jsonschema.Schema {
