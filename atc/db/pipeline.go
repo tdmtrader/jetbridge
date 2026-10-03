@@ -45,11 +45,6 @@ func (e ErrResourceNotFound) Error() string {
 	return fmt.Sprintf("resource '%s' not found", e.Name)
 }
 
-type Cause struct {
-	ResourceVersionID int `json:"resource_version_id"`
-	BuildID           int `json:"build_id"`
-}
-
 type Pipeline interface {
 	ID() int
 	Name() string
