@@ -51,7 +51,7 @@ func (client *pagedRunLister) PipelineRuns(_ string, page concourse.Page) ([]atc
 	return response.runs, response.pagination, nil
 }
 
-func numberedRuns(highest, count int) []atc.PipelineRun {
+func pipelineRuns(highest, count int) []atc.PipelineRun {
 	runs := make([]atc.PipelineRun, count)
 	for i := range runs {
 		runs[i] = atc.PipelineRun{Number: highest - i, Status: atc.RunStatusSucceeded}
@@ -208,8 +208,8 @@ var _ = Describe("RunsCommand", func() {
 		// one limit: the server clamps it without saying so, and the user gets
 		// 500 rows that look like the whole answer.
 		client := &pagedRunLister{responses: []pagedRunResponse{
-			{runs: numberedRuns(600, 500), pagination: concourse.Pagination{Next: &concourse.Page{To: 101, Limit: 500}}},
-			{runs: numberedRuns(100, 100), pagination: concourse.Pagination{Next: &concourse.Page{To: 1, Limit: 500}}},
+			{runs: pipelineRuns(600, 500), pagination: concourse.Pagination{Next: &concourse.Page{To: 101, Limit: 500}}},
+			{runs: pipelineRuns(100, 100), pagination: concourse.Pagination{Next: &concourse.Page{To: 1, Limit: 500}}},
 		}}
 		output := new(bytes.Buffer)
 		command := &RunsCommand{Count: 600, Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
@@ -224,7 +224,7 @@ var _ = Describe("RunsCommand", func() {
 
 	It("stops once the requested count is collected", func() {
 		client := &pagedRunLister{responses: []pagedRunResponse{
-			{runs: numberedRuns(10, 3), pagination: concourse.Pagination{Next: &concourse.Page{To: 7, Limit: 3}}},
+			{runs: pipelineRuns(10, 3), pagination: concourse.Pagination{Next: &concourse.Page{To: 7, Limit: 3}}},
 		}}
 		command := &RunsCommand{Count: 3, Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
 
@@ -234,7 +234,7 @@ var _ = Describe("RunsCommand", func() {
 
 	It("stops when the server has no further page", func() {
 		client := &pagedRunLister{responses: []pagedRunResponse{
-			{runs: numberedRuns(200, 200)},
+			{runs: pipelineRuns(200, 200)},
 		}}
 		output := new(bytes.Buffer)
 		command := &RunsCommand{Count: 600, Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
