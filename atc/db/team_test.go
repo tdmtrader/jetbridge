@@ -1111,8 +1111,7 @@ var _ = Describe("Team", func() {
 
 		Context("when the team has configured pipelines", func() {
 			BeforeEach(func() {
-				var err error
-				_, _, err = team.SavePipeline(atc.PipelineRef{Name: "fake-pipeline"}, atc.Config{
+				_, _, err := team.SavePipeline(atc.PipelineRef{Name: "fake-pipeline"}, atc.Config{
 					Jobs: atc.JobConfigs{
 						{Name: "job-name"},
 					},
