@@ -32,11 +32,7 @@ func (command *UserinfoCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(userinfo)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(userinfo)
 	}
 
 	headers := ui.TableRow{
