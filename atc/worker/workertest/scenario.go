@@ -5,7 +5,6 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -143,8 +142,4 @@ func (s *Scenario) ContainerVolume(workerName string, containerHandle string, mo
 	Expect(err).ToNot(HaveOccurred())
 
 	return creating, created
-}
-
-func (s *Scenario) Streamer() worker.Streamer {
-	return worker.NewStreamer(compression.NewGzipCompression())
 }
