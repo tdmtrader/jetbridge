@@ -75,7 +75,7 @@ func TestPatchRoundTripsThroughGitApply(t *testing.T) {
 			if len(changes) == 0 {
 				t.Fatal("no change detected")
 			}
-			verified, err := VerifyPatch(base, edited, patch)
+			verified, err := verifyPatch(base, edited, patch)
 			if err != nil {
 				t.Fatalf("%v\n%s", err, patch)
 			}
@@ -139,7 +139,7 @@ func TestParsePatchIsStrict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := VerifyPatch(base, edited, patch); err != nil {
+	if _, err := verifyPatch(base, edited, patch); err != nil {
 		t.Fatal(err)
 	}
 	text := string(patch)
@@ -156,7 +156,7 @@ func TestParsePatchIsStrict(t *testing.T) {
 		if bad == text {
 			t.Fatalf("%s: tampering did not change the patch:\n%s", name, text)
 		}
-		if _, err := VerifyPatch(base, edited, []byte(bad)); err == nil {
+		if _, err := verifyPatch(base, edited, []byte(bad)); err == nil {
 			t.Errorf("accepted %s patch", name)
 		}
 	}
@@ -165,7 +165,7 @@ func TestParsePatchIsStrict(t *testing.T) {
 	if stale == text {
 		t.Fatalf("no context line to tamper:\n%s", text)
 	}
-	if _, err := VerifyPatch(base, edited, []byte(stale)); err == nil {
+	if _, err := verifyPatch(base, edited, []byte(stale)); err == nil {
 		t.Error("applied a patch against the wrong base")
 	}
 }

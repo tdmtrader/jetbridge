@@ -108,7 +108,7 @@ func runInRuntime(ctx context.Context, opts WorkerOptions) (*Summary, error) {
 	if err != nil {
 		return nil, err
 	}
-	verified, err := VerifyPatch(base, edited, patch)
+	verified, err := verifyPatch(base, edited, patch)
 	if err != nil {
 		return nil, err
 	}

@@ -431,9 +431,9 @@ func ApplyPatch(base Tree, sections []patchSection) (Tree, error) {
 	return result, nil
 }
 
-// VerifyPatch re-derives the change set from patch and proves that applying
+// verifyPatch re-derives the change set from patch and proves that applying
 // it to base yields exactly edited.
-func VerifyPatch(base, edited Tree, patch []byte) ([]ChangedFile, error) {
+func verifyPatch(base, edited Tree, patch []byte) ([]ChangedFile, error) {
 	sections, err := ParsePatch(patch)
 	if err != nil {
 		return nil, err
