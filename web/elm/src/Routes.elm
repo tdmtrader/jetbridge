@@ -6,7 +6,6 @@ module Routes exposing
     , StepID
     , Transition
     , buildRoute
-    , extractPid
     , extractQuery
     , getGroups
     , jobRoute
@@ -670,31 +669,6 @@ toDict j =
 
 
 -- route utils
-
-
-extractPid : Route -> Maybe Concourse.PipelineIdentifier
-extractPid route =
-    case route of
-        Build { id } ->
-            Just <| Concourse.pipelineId id
-
-        Job { id } ->
-            Just <| Concourse.pipelineId id
-
-        PipelineRuns { id } ->
-            Just id
-
-        PipelineRun { template } ->
-            Just template
-
-        Resource { id } ->
-            Just <| Concourse.pipelineId id
-
-        Pipeline { id } ->
-            Just id
-
-        _ ->
-            Nothing
 
 
 extractQuery : SearchType -> String
