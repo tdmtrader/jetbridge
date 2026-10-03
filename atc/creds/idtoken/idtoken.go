@@ -1,6 +1,7 @@
 package idtoken
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,11 +19,11 @@ func (secrets *IDToken) NewSecretLookupPathsWithParams(params creds.SecretLookup
 
 func (secrets *IDToken) GetWithParams(secretPath string, params creds.SecretLookupParams) (interface{}, *time.Time, bool, error) {
 	if secretPath != "token" {
-		return nil, nil, false, fmt.Errorf("idtoken credential provider only supports the field 'token'")
+		return nil, nil, false, errors.New("idtoken credential provider only supports the field 'token'")
 	}
 
 	if params.IsEmpty() {
-		return nil, nil, false, fmt.Errorf("idtoken credential provider was called with empty params")
+		return nil, nil, false, errors.New("idtoken credential provider was called with empty params")
 	}
 
 	token, _, err := secrets.TokenGenerator.GenerateToken(params)
