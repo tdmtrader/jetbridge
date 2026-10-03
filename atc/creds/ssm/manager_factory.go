@@ -9,10 +9,10 @@ import (
 type ssmManagerFactory struct{}
 
 func init() {
-	creds.Register("ssm", NewSsmManagerFactory())
+	creds.Register("ssm", newSsmManagerFactory())
 }
 
-func NewSsmManagerFactory() creds.ManagerFactory {
+func newSsmManagerFactory() creds.ManagerFactory {
 	return &ssmManagerFactory{}
 }
 
