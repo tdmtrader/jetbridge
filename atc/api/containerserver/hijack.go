@@ -20,11 +20,11 @@ var upgrader = websocket.Upgrader{
 	HandshakeTimeout: 5 * time.Second,
 }
 
-type InterceptTimeoutError struct {
+type interceptTimeoutError struct {
 	duration time.Duration
 }
 
-func (err InterceptTimeoutError) Error() string {
+func (err interceptTimeoutError) Error() string {
 	return fmt.Sprintf("idle timeout (%s) reached", err.duration)
 }
 
@@ -74,7 +74,7 @@ func (t *interceptTimeout) Channel() <-chan time.Time {
 }
 
 func (t *interceptTimeout) Error() error {
-	return InterceptTimeoutError{duration: t.duration}
+	return interceptTimeoutError{duration: t.duration}
 }
 
 func (s *Server) HijackContainer(team db.Team) http.Handler {
