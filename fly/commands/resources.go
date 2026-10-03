@@ -4,7 +4,6 @@ import (
 	"github.com/concourse/concourse/go-concourse/concourse"
 	"os"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
@@ -29,7 +28,6 @@ func (command *ResourcesCommand) Execute([]string) error {
 		return err
 	}
 
-	var resources []atc.Resource
 	var team concourse.Team
 
 	team, err = command.Team.LoadTeam(target)
@@ -37,7 +35,7 @@ func (command *ResourcesCommand) Execute([]string) error {
 		return err
 	}
 
-	resources, err = team.ListResources(command.Pipeline.Ref())
+	resources, err := team.ListResources(command.Pipeline.Ref())
 	if err != nil {
 		return err
 	}
