@@ -161,7 +161,7 @@ func (a *admitter) LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
 	)
 
 	err := tx.QueryRowContext(ctx, lookupRunQuery, runID).
-		Scan(&run.ID, &run.Number, &run.TemplatePipelineID, &run.CreatedBy, &payloadID)
+		Scan(&run.ID, &run.Number, &run.TemplateID, &run.CreatedBy, &payloadID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Run{}, ErrRunNotFound
@@ -309,10 +309,10 @@ func portRun(creation db.RunCreation) Run {
 	payloadID, _ := creation.Run.InstancePipelineID()
 
 	return Run{
-		ID:                 creation.Run.ID(),
-		Number:             creation.Run.Number(),
-		TemplatePipelineID: creation.Run.TemplatePipelineID(),
-		PayloadPipelineID:  payloadID,
-		CreatedBy:          creation.Run.CreatedBy(),
+		ID:                creation.Run.ID(),
+		Number:            creation.Run.Number(),
+		TemplateID:        creation.Run.TemplatePipelineID(),
+		PayloadPipelineID: payloadID,
+		CreatedBy:         creation.Run.CreatedBy(),
 	}
 }

@@ -92,9 +92,9 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			// The identity the port reports back, with no atc/db model in sight.
 			Expect(run.ID).To(BeNumerically(">", 0))
 			Expect(run.Number).To(Equal(1))
-			Expect(run.TemplatePipelineID).To(BeNumerically(">", 0))
+			Expect(run.TemplateID).To(BeNumerically(">", 0))
 			Expect(run.PayloadPipelineID).To(BeNumerically(">", 0))
-			Expect(run.PayloadPipelineID).NotTo(Equal(run.TemplatePipelineID))
+			Expect(run.PayloadPipelineID).NotTo(Equal(run.TemplateID))
 			Expect(run.CreatedBy).To(Equal("member-id"))
 
 			// The hook saw the same run, before the caller committed.

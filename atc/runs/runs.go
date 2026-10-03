@@ -197,9 +197,9 @@ type Admission struct {
 // that reads a run back learns what a consumer that admitted one learns, and
 // nothing further, so there is only ever one shape of run on this boundary.
 type Run struct {
-	ID                 int
-	Number             int
-	TemplatePipelineID int
-	PayloadPipelineID  int
-	CreatedBy          string
+	ID                int
+	Number            int
+	TemplateID        int
+	PayloadPipelineID int
+	CreatedBy         string
 }
