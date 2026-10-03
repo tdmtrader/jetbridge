@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"maps"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/mcpserver"
 	"github.com/concourse/concourse/skymarshal/mcpauth"
@@ -140,9 +142,7 @@ func configSchema() *jsonschema.Schema {
 }
 func pipelineArgs(extra map[string]*jsonschema.Schema, required ...string) *jsonschema.Schema {
 	props := map[string]*jsonschema.Schema{"team": nameSchema(), "pipeline": nameSchema(), "instance_vars": {Type: "object", Description: "Exact instance variables; {} selects the non-instanced pipeline."}}
-	for k, v := range extra {
-		props[k] = v
-	}
+	maps.Copy(props, extra)
 	return object(props, append([]string{"team", "pipeline", "instance_vars"}, required...)...)
 }
 func buildArgs(extra map[string]*jsonschema.Schema) *jsonschema.Schema {
