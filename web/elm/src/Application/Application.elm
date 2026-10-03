@@ -25,7 +25,6 @@ import Message.Message as Message
 import Message.Subscription
     exposing
         ( Delivery(..)
-        , Interval(..)
         , Subscription(..)
         )
 import Message.TopLevelMessage as Msgs exposing (TopLevelMessage(..))
