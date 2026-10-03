@@ -1,4 +1,4 @@
-module Dashboard.Group.Tag exposing (Tag(..), ordering, splitFirst, tag, view)
+module Dashboard.Group.Tag exposing (Tag(..), ordering, tag, view)
 
 import Colors
 import Concourse
@@ -62,13 +62,6 @@ toString t =
 
         Viewer ->
             "VIEWER"
-
-
-splitFirst : Char -> String -> String
-splitFirst delim =
-    String.toList
-        >> List.Extra.takeWhile ((/=) delim)
-        >> String.fromList
 
 
 tag : Concourse.User -> String -> Maybe Tag
