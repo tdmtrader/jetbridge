@@ -72,8 +72,7 @@ func (command *SetPipelineCommand) Execute(args []string) error {
 		return err
 	}
 
-	var team concourse.Team
-	team, err = command.Team.LoadTeam(target)
+	team, err := command.Team.LoadTeam(target)
 	if err != nil {
 		return err
 	}
