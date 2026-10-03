@@ -12,8 +12,8 @@ func NewAccessorWrappa(
 	accessFactory accessor.AccessFactory,
 	auditor auditor.Auditor,
 	customRoles map[string]string,
-) *AccessorWrappa {
-	return &AccessorWrappa{
+) *accessorWrappa {
+	return &accessorWrappa{
 		logger:        logger,
 		accessFactory: accessFactory,
 		auditor:       auditor,
@@ -21,14 +21,14 @@ func NewAccessorWrappa(
 	}
 }
 
-type AccessorWrappa struct {
+type accessorWrappa struct {
 	logger        lager.Logger
 	accessFactory accessor.AccessFactory
 	auditor       auditor.Auditor
 	customRoles   map[string]string
 }
 
-func (w *AccessorWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
+func (w *accessorWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 	wrapped := rata.Handlers{}
 
 	for name, handler := range handlers {
