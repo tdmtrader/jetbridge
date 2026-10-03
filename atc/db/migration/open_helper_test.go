@@ -101,6 +101,7 @@ func SetupMigrationVersionTableToExistAtVersion(db *sql.DB, version int) {
 }
 
 func ExpectMigrationVersionTableNotToExist(dbConn *sql.DB) {
+	GinkgoHelper()
 	var exists string
 	err := dbConn.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.tables where table_name = 'migration_version')").Scan(&exists)
 	Expect(err).NotTo(HaveOccurred())
