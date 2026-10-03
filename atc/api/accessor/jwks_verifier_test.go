@@ -57,6 +57,7 @@ var _ = Describe("JWKSVerifier", func() {
 	})
 
 	signToken := func(claims jwt.Claims, extraClaims map[string]any) string {
+		GinkgoHelper()
 		signer, err := jose.NewSigner(
 			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
 			(&jose.SignerOptions{}).WithType("JWT").WithHeader(jose.HeaderKey("kid"), keyID),
