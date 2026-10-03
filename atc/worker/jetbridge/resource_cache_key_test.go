@@ -55,14 +55,14 @@ func TestIsResourceCacheKey_MatchesResourceCacheKeyOutput(t *testing.T) {
 
 	for _, tc := range []struct {
 		id         int
-		durableKey string
+		contentKey string
 	}{
 		{0, ""}, {1, ""}, {7, ""}, {42, ""}, {9999, ""},
 		{42, sha}, {1, sha},
 	} {
-		key := resourceCacheKey(tc.id, tc.durableKey)
+		key := resourceCacheKey(tc.id, tc.contentKey)
 		if !isResourceCacheKey(key) {
-			t.Errorf("resourceCacheKey(%d, %q) produced %q, which isResourceCacheKey rejects", tc.id, tc.durableKey, key)
+			t.Errorf("resourceCacheKey(%d, %q) produced %q, which isResourceCacheKey rejects", tc.id, tc.contentKey, key)
 		}
 	}
 }
