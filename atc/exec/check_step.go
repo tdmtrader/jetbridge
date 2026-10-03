@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -350,7 +351,7 @@ func (step *CheckStep) runCheck(
 func (step *CheckStep) resolveNatively(ctx context.Context, logger lager.Logger, source atc.Source) ([]atc.Version, error) {
 	repository, _ := source["repository"].(string)
 	if repository == "" {
-		return nil, fmt.Errorf("native check: missing repository in source")
+		return nil, errors.New("native check: missing repository in source")
 	}
 	tag, _ := source["tag"].(string)
 
