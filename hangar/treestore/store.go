@@ -454,7 +454,7 @@ func validateStoredMetadata(metadata map[string]string, digest hangar.Digest, ma
 func maxCompressedRepresentation(logicalBytes int64) (int64, error) {
 	const fixedOverhead int64 = 32
 	if logicalBytes < 0 || logicalBytes > (math.MaxInt64-fixedOverhead)/4 {
-		return 0, fmt.Errorf("logical size cannot be represented safely")
+		return 0, errors.New("logical size cannot be represented safely")
 	}
 	return logicalBytes*4 + fixedOverhead, nil
 }
