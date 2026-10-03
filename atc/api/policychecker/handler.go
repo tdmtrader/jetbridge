@@ -55,9 +55,8 @@ func (h policyCheckingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprint(w, policyCheckErr.Error())
 			return
-		} else {
-			w.Header().Add("X-Concourse-Policy-Check-Warning", policyCheckErr.Error())
 		}
+		w.Header().Add("X-Concourse-Policy-Check-Warning", policyCheckErr.Error())
 	}
 
 	h.handler.ServeHTTP(w, r)
