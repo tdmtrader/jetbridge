@@ -2537,6 +2537,8 @@ func convertToSHA256(version atc.Version) string {
 }
 
 func getJobBuildID(col string, jobID int) int {
+	GinkgoHelper()
+
 	var result int
 
 	err := psql.Select(col).
