@@ -2,6 +2,7 @@ package imageresolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -47,7 +48,7 @@ func NewResolver(keychain authn.Keychain, options ...remote.Option) Resolver {
 
 func (r *registryResolver) Resolve(ctx context.Context, repository string, tag string, auth *BasicAuth) (string, error) {
 	if repository == "" {
-		return "", fmt.Errorf("empty repository")
+		return "", errors.New("empty repository")
 	}
 
 	// If repository already contains a digest, return it directly.
