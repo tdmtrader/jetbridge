@@ -42,11 +42,7 @@ func (command *ContainersCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(containers)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(containers)
 	}
 
 	table := ui.Table{
