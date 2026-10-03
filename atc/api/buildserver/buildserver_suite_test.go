@@ -66,6 +66,8 @@ func createTeam(name string) db.Team {
 // createBuild returns a one-off build that has not been started, so it carries
 // no plan. HasPlan() is false for it.
 func createBuild(team db.Team) db.Build {
+	GinkgoHelper()
+
 	build, err := team.CreateOneOffBuild()
 	Expect(err).NotTo(HaveOccurred())
 	return build
