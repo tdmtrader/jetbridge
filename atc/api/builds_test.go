@@ -1574,7 +1574,6 @@ var _ = Describe("Builds API", func() {
 			realBuildFactory = deps.buildFactory
 
 			var err error
-			var found bool
 			team, err = deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 			Expect(err).NotTo(HaveOccurred())
 			pipeline = database.SavePipeline(team, "events-pipeline", atc.Config{
@@ -1589,6 +1588,7 @@ var _ = Describe("Builds API", func() {
 			Expect(reloaded).To(BeTrue())
 			Expect(pipeline.Public()).To(BeFalse())
 
+			var found bool
 			privateJob, found, err = pipeline.Job("private-job")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
