@@ -93,6 +93,7 @@ var _ = Describe("OpenHelper", func() {
 })
 
 func SetupMigrationVersionTableToExistAtVersion(db *sql.DB, version int) {
+	GinkgoHelper()
 	_, err := db.Exec(`CREATE TABLE migration_version(version int)`)
 	Expect(err).NotTo(HaveOccurred())
 
