@@ -490,7 +490,6 @@ var _ = Describe("VolumeRepository", func() {
 			var existingVolume db.CreatedVolume
 
 			BeforeEach(func() {
-				var err error
 				creatingContainer, err := defaultWorker.CreateContainer(db.NewBuildStepContainerOwner(build.ID(), "some-plan", defaultTeam.ID()), db.ContainerMetadata{
 					Type:     "get",
 					StepName: "some-resource",
