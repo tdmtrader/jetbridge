@@ -109,6 +109,7 @@ func ExpectBuildWithNullPlan(dbConn *sql.DB, name string) {
 }
 
 func ExpectBuildWithPlan(dbConn *sql.DB, name, expectedPlan string) {
+	GinkgoHelper()
 
 	plan := fetchBuildPlan(dbConn, name)
 
