@@ -155,6 +155,8 @@ func setup_for_down_test(db *sql.DB) {
 }
 
 func setup_for_up_test(db *sql.DB) {
+	GinkgoHelper()
+
 	_, err := db.Exec(`
 			INSERT INTO teams(id, name) VALUES
 			(1, 'some-team')
