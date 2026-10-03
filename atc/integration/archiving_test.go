@@ -97,6 +97,8 @@ func whenIArchiveIt(client concourse.Client, pipelineRef atc.PipelineRef) {
 }
 
 func getPipeline(client concourse.Client, pipelineRef atc.PipelineRef) atc.Pipeline {
+	GinkgoHelper()
+
 	pipeline, _, err := client.Team("main").Pipeline(pipelineRef)
 	Expect(err).ToNot(HaveOccurred())
 	return pipeline
