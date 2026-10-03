@@ -1,6 +1,5 @@
 module ColorValues exposing
     ( black
-    , error100
     , error20
     , error30
     , error40
@@ -385,8 +384,3 @@ error80 =
 error90 : String
 error90 =
     "#30220A"
-
-
-error100 : String
-error100 =
-    "#191205"
