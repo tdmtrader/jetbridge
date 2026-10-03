@@ -32,7 +32,6 @@ import Message.ScrollDirection exposing (ScrollDirection(..))
 import Message.Subscription
     exposing
         ( Delivery(..)
-        , Interval(..)
         , Subscription(..)
         )
 import Routes
