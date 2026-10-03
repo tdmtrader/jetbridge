@@ -7,7 +7,6 @@ import (
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
-	"github.com/concourse/concourse/go-concourse/concourse"
 )
 
 type UnpausePipelineCommand struct {
@@ -44,8 +43,7 @@ func (command *UnpausePipelineCommand) Execute(args []string) error {
 		return err
 	}
 
-	var team concourse.Team
-	team, err = command.Team.LoadTeam(target)
+	team, err := command.Team.LoadTeam(target)
 	if err != nil {
 		return err
 	}
