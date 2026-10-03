@@ -10,6 +10,7 @@ import (
 )
 
 func newEncryptionKey(k string) *encryption.Key {
+	GinkgoHelper()
 	block, err := aes.NewCipher([]byte(k))
 	Expect(err).ToNot(HaveOccurred())
 
