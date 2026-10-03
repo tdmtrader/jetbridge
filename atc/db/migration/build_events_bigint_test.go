@@ -19,6 +19,8 @@ var _ = Describe("build_events bigint indexes", func() {
 	var pipelineID int
 
 	explain := func(query string, params ...any) string {
+		GinkgoHelper()
+
 		_, err := db.Exec("SET enable_seqscan = OFF")
 		Expect(err).ToNot(HaveOccurred())
 		rows, err := db.Query("EXPLAIN "+query, params...)
