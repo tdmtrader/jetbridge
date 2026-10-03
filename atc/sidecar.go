@@ -2,6 +2,7 @@ package atc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -87,7 +88,7 @@ func (s *SidecarSource) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return fmt.Errorf("sidecar entry must be a string (file path) or object (inline config)")
+	return errors.New("sidecar entry must be a string (file path) or object (inline config)")
 }
 
 // reservedContainerNames are names used internally by the jetbridge runtime
