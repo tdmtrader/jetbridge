@@ -261,13 +261,14 @@ func TestTheBootstrapRendersNoPrivateValue(t *testing.T) {
 		if strings.Contains(doc.body, "password=") {
 			t.Errorf("bootstrap object %s %s renders a password into a connection string", doc.kind, doc.name)
 		}
-		if doc.kind == "Job" {
-			_, pod := podOf(t, doc)
-			for _, container := range pod.Containers {
-				for _, env := range container.Env {
-					if strings.Contains(strings.ToUpper(env.Name), "PASSWORD") && env.ValueFrom == nil {
-						t.Errorf("bootstrap Job %s renders %s as a literal value", doc.name, env.Name)
-					}
+		if doc.kind != "Job" {
+			continue
+		}
+		_, pod := podOf(t, doc)
+		for _, container := range pod.Containers {
+			for _, env := range container.Env {
+				if strings.Contains(strings.ToUpper(env.Name), "PASSWORD") && env.ValueFrom == nil {
+					t.Errorf("bootstrap Job %s renders %s as a literal value", doc.name, env.Name)
 				}
 			}
 		}
