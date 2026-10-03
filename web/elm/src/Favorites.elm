@@ -1,6 +1,6 @@
 module Favorites exposing (Model, handleDelivery, isInstanceGroupFavorited, isPipelineFavorited, update)
 
-import Concourse exposing (PipelineGrouping(..))
+import Concourse
 import EffectTransformer exposing (ET)
 import Message.Effects as Effects
 import Message.Message exposing (DomID(..), Message(..))
