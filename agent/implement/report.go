@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -168,13 +169,8 @@ func ParsePublishedChange(summaryJSON, patch []byte) (*Summary, error) {
 		return nil, fmt.Errorf("change.patch: %w", err)
 	}
 	got := changedFiles(sections)
-	if len(got) != len(s.ChangedFiles) {
+	if !slices.Equal(got, s.ChangedFiles) {
 		return nil, errors.New("changed_files does not match the patch")
-	}
-	for i := range got {
-		if got[i] != s.ChangedFiles[i] {
-			return nil, errors.New("changed_files does not match the patch")
-		}
 	}
 	if !strings.Contains(strings.Join(s.Limitations, "\n"), notExecuted) {
 		return nil, errors.New("summary lacks the non-execution disclosure")
