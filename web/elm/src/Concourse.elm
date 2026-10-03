@@ -56,7 +56,6 @@ module Concourse exposing
     , csrfTokenHeaderName
     , customDecoder
     , decodeAcrossSubstep
-    , decodeAuthToken
     , decodeBuild
     , decodeBuildPlan
     , decodeBuildPlanResponse
@@ -127,16 +126,6 @@ type alias AuthToken =
 
 type alias DatabaseID =
     Int
-
-
-decodeAuthToken : Json.Decode.Decoder AuthToken
-decodeAuthToken =
-    customDecoder
-        (Json.Decode.succeed (\a b -> ( a, b ))
-            |> andMap (Json.Decode.field "type" Json.Decode.string)
-            |> andMap (Json.Decode.field "value" Json.Decode.string)
-        )
-        authTokenFromTuple
 
 
 authTokenFromTuple : ( String, String ) -> Result Json.Decode.Error AuthToken
