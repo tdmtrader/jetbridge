@@ -36,7 +36,6 @@ import Message.Subscription
         , Interval(..)
         , Subscription(..)
         )
-import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import Routes
 import SideBar.SideBar as SideBar
 import Tooltip
