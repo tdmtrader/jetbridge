@@ -35,7 +35,7 @@ func EnsureUser(
 
 		// Copy the original response to the client regardless of what happens
 		defer func() {
-			copyHeaders(w, rec.Result())
+			copyResponseHeaders(w, rec.Result())
 			io.Copy(w, rec.Body)
 		}()
 
@@ -77,14 +77,4 @@ func EnsureUser(
 			logger.Error("create-or-update-user", err)
 		}
 	})
-}
-
-func copyHeaders(w http.ResponseWriter, res *http.Response) {
-	for k, v := range res.Header {
-		k = http.CanonicalHeaderKey(k)
-		if k != "Content-Length" {
-			w.Header()[k] = v
-		}
-	}
-	w.WriteHeader(res.StatusCode)
 }
