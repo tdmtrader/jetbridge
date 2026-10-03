@@ -7,7 +7,6 @@ import (
 	"os/exec"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
@@ -43,7 +42,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("discard role with missing auth", func() {
-						sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 						Expect(err).ToNot(HaveOccurred())
 
 						Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -72,7 +71,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("discard role with no user and group", func() {
-						sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 						Expect(err).ToNot(HaveOccurred())
 						Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 
@@ -98,7 +97,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users configured for local auth for a given role", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -132,7 +131,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for github for a given role", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -166,7 +165,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for cf auth for a given role", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -205,7 +204,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for ldap auth for a given role", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -239,7 +238,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the groups configured for generic oauth for a given role", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -273,7 +272,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for a given role", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -316,7 +315,7 @@ var _ = Describe("set-team", func() {
 					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
 
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -331,7 +330,7 @@ var _ = Describe("set-team", func() {
 					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
 
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -387,7 +386,7 @@ var _ = Describe("set-team", func() {
 				stdin, err := flyCmd.StdinPipe()
 				Expect(err).NotTo(HaveOccurred())
 
-				sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 				Expect(err).ToNot(HaveOccurred())
 
 				Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -400,7 +399,7 @@ var _ = Describe("set-team", func() {
 				stdin, err := flyCmd.StdinPipe()
 				Expect(err).NotTo(HaveOccurred())
 
-				sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 				Expect(err).ToNot(HaveOccurred())
 
 				Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -456,7 +455,7 @@ var _ = Describe("set-team", func() {
 					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
 
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -479,7 +478,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("returns an error", func() {
-						sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 						Expect(err).ToNot(HaveOccurred())
 						Eventually(sess.Err).Should(gbytes.Say("auth config for the team does not have users and groups configured"))
 						Eventually(sess).Should(gexec.Exit(1))
@@ -492,7 +491,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("returns an error", func() {
-						sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 						Expect(err).ToNot(HaveOccurred())
 						Eventually(sess.Err).Should(gbytes.Say("auth config for the team does not have users and groups configured"))
 						Eventually(sess).Should(gexec.Exit(1))
@@ -505,7 +504,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("returns an error", func() {
-						sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 						Expect(err).ToNot(HaveOccurred())
 						Eventually(sess.Err).Should(gbytes.Say("auth config for the team must not be empty"))
 						Eventually(sess).Should(gexec.Exit(1))
@@ -521,7 +520,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users configured for local auth", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -542,7 +541,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for cf auth", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -565,7 +564,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for ldap auth", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -588,7 +587,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the groups configured for generic oauth", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -609,7 +608,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("ignores empty arguments", func() {
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
@@ -639,7 +638,7 @@ var _ = Describe("set-team", func() {
 					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
 
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -654,7 +653,7 @@ var _ = Describe("set-team", func() {
 					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
 
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -706,7 +705,7 @@ var _ = Describe("set-team", func() {
 				stdin, err := flyCmd.StdinPipe()
 				Expect(err).NotTo(HaveOccurred())
 
-				sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 				Expect(err).ToNot(HaveOccurred())
 
 				Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -719,7 +718,7 @@ var _ = Describe("set-team", func() {
 				stdin, err := flyCmd.StdinPipe()
 				Expect(err).NotTo(HaveOccurred())
 
-				sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 				Expect(err).ToNot(HaveOccurred())
 
 				Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
@@ -760,7 +759,7 @@ var _ = Describe("set-team", func() {
 					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
 
-					sess, err := gexec.Start(flyCmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 
 					Eventually(sess).Should(gbytes.Say(`apply team configuration\? \[yN\]: `))
