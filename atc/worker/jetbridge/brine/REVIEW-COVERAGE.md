@@ -47,6 +47,6 @@ guards and vet passed. CI attempt `828655` could not pull the migration's absent
 `registry.home/concourse-test-runner:v10`, so this is not a passing CI claim.
 
 This coverage does not establish live subscription eligibility or behavior,
-detached Run admission, remote credential handoff, Kubernetes orphan cleanup,
+Run admission, remote credential handoff, Kubernetes orphan cleanup,
 durable result retention or public MCP acceptance. Those remain open in the
 approved review track.

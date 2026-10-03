@@ -1,5 +1,5 @@
 @review @review-linux
-Feature: A local receipt preserves a detached review invocation
+Feature: A local receipt preserves a review invocation
 
   Completed submissions read the uploaded bundle through Hangar's real node
   materializer, including its receipt at the input mount root.

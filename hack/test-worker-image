@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Tests the implement/review worker image built from a ref, under the
+# ordinary task Pod security context (non-privileged: the runtime's
+# RuntimeDefault seccomp, no privilege escalation), with the image's own
+# pinned Codex against the scripted model in agent/session/codextest.
+#
+# Usage: hack/test-worker-image [ref]     (default: HEAD)
+#
+# Three fly execute runs against $FLY_TARGET (default: home), from a
+# `git archive` of the ref, never the working tree:
+#   1. worker-image-build-task (privileged): build and push
+#      registry.home/jb-review-worker:test-<sha>, and the same image with Git
+#      added as test-<sha>-git.
+#   2. worker-image-session-task: the agent/session tests, cross-compiled and
+#      run inside that image with its /usr/local/bin/codex.
+#   3. worker-image-workers-task: the agent/implement and agent/review tests,
+#      whose fixtures need Git, inside the -git image with its codex and
+#      jb-review-worker.
+set -euo pipefail
+FLY_TARGET="${FLY_TARGET:-home}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+sha="$(git -C "$REPO_ROOT" rev-parse --verify "${1:-HEAD}^{commit}")"
+work="$(mktemp -d "${TMPDIR:-/tmp}/worker-image.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/src" "$work/tests"
+git -C "$REPO_ROOT" archive --format=tar "$sha" | tar -x -C "$work/src"
+image="registry.home/jb-review-worker:test-${sha:0:9}"
+echo "==> $sha as $image"
+for pkg in session implement review; do
+  (cd "$work/src" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$work/tests/$pkg.test" "./agent/$pkg/")
+done
+IMAGE="$image" PUSH=true fly -t "$FLY_TARGET" execute -p -c "$work/src/deploy/worker-image-build-task.yml" \
+  -i repo="$work/src"
+for task in session workers; do
+  fly -t "$FLY_TARGET" execute -c "$work/src/deploy/worker-image-$task-task.yml" \
+    -v image="$image" -i repo="$work/src" -i tests="$work/tests"
+done
+echo "==> $image passed"

@@ -332,6 +332,38 @@ jobs:
           # JetBridge statement coverage gate.
           sh scripts/coverage
 
+- name: worker-image
+  # The implement/review worker image is built from deploy/Dockerfile.review-
+  # worker by its operator, not released from here, so nothing else runs the
+  # image's own pinned Codex: the unit tests provision their own copy, and the
+  # review-kubelet tier swaps the image's codex for a fixture. This builds the
+  # image as an operator would and runs the agent/session, agent/implement and
+  # agent/review tests inside it, with its codex and jb-review-worker, in
+  # unprivileged containers under the task Pod's security context (Docker's
+  # default seccomp profile and capabilities, no privilege escalation). The
+  # step is privileged only because it owns the Docker daemon; nothing is
+  # pushed. hack/test-worker-image runs the same tests as real task Pods.
+  serial: true
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [unit-tests]
+  - task: worker-image
+    timeout: 60m
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      inputs:
+      - name: repo
+      params:
+        IMAGE: jb-review-worker:pipeline
+        TEST_COMPILER: registry.home/concourse-test-runner:v11
+      run:
+        path: sh
+        args: [repo/hack/build-worker-image]
+
 - name: tag-rc
   serial_groups: [pipeline]
   plan:

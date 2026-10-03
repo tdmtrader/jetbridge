@@ -3,7 +3,7 @@ Feature: Producing typed findings without retaining session credentials
 
   Run the real Linux worker, tmpfs, Git and report renderer. Only the model
   process is substituted with deterministic output; no network model calls are
-  made. These scenarios do not claim detached Run or Kubernetes-loss acceptance.
+  made. These scenarios do not claim platform Run or Kubernetes-loss acceptance.
 
   Background:
     Given a committed review change with a deleted file and an external plan

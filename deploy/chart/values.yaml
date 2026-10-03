@@ -136,7 +136,7 @@ web:
   pipelineRunActivationEpoch: 1
 
   # -- Existing web-only Secret containing input.key (exactly 32 raw random
-  # bytes) for detached Run input grants. Requires hangarOutput.webEnabled.
+  # bytes) for workload Run input grants. Requires hangarOutput.webEnabled.
   # Use a separate key and Secret from all node capability/materialization keys.
   # This is a service key, never a user's Codex auth.json.
   runInputSigningKeySecret: ""

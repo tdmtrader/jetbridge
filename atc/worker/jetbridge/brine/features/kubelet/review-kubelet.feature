@@ -1,5 +1,5 @@
 @review @review-kubelet
-Feature: The real kubelet enforces detached review lifecycle boundaries
+Feature: The real kubelet enforces review Run lifecycle boundaries
 
   Run only against the explicitly marked disposable K3s CI cluster. Real
   PostgreSQL, node control, BusyBox, SPDY, worker and container memory are used.

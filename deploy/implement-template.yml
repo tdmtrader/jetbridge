@@ -1,0 +1,219 @@
+# Install with fly set-pipeline, supplying review_worker_image (repo@sha256:...),
+# implement_model, validate_image and validate_command. The author task runs
+# the same worker image, and the same credential pin, as the review template.
+# The validate task runs the operator's own toolchain image and command, never
+# receives credentials, and records the command's outcome instead of failing
+# on it: a Run publishes its results all or nothing, so a failing test suite
+# must not lose the change it tested. The ATC fills run_id separately for each
+# admitted Run.
+#
+# validate_image must provide /bin/sh, git, sha256sum, cp, tail, tr and sed,
+# and run as root: Hangar reserves task outputs as root-owned directories.
+# validate_command runs with /bin/sh -c in a fresh copy of the snapshot's base
+# tree with the change applied. Pin validate_image by digest so what validates
+# a change cannot move after installation.
+template: true
+jobs:
+  - name: implement
+    plan:
+      - task: author
+        timeout: 32m
+        task_id: 9b6e4ef5-2f36-4314-b441-d69d2725c46e
+        run_inputs:
+          - name: snapshot
+            input: source
+        run_result:
+          name: change
+          output: change
+        config:
+          platform: linux
+          rootfs_uri: docker:///((review_worker_image))
+          inputs:
+            - name: source
+          outputs:
+            - name: change
+          run:
+            path: /bin/sh
+            args:
+              - -ec
+              - |
+                umask 077
+                mkdir -p /dev/shm/jb-review
+                /usr/local/bin/jb-review-worker implement \
+                  --input source/snapshot --output change/report \
+                  --runtime-dir /dev/shm/jb-review \
+                  --auth-socket /dev/shm/jb-review/auth.sock \
+                  --model "$1" "$2"
+                mv change/report/change.patch change/report/summary.json change/
+                rmdir change/report
+              - implement-worker
+              - ((implement_model))
+              - --run-id=((run_id))
+      - task: validate
+        timeout: 40m
+        task_id: 23480164-00bf-488a-82ce-f7a5889124ca
+        run_inputs:
+          - name: snapshot
+            input: source
+        run_result:
+          name: validation
+          output: validation
+        config:
+          platform: linux
+          rootfs_uri: docker:///((validate_image))
+          inputs:
+            - name: source
+            - name: change
+          outputs:
+            - name: validation
+          run:
+            path: /bin/sh
+            args:
+              - -ec
+              - |
+                umask 077
+                validate_command=$1
+                run_id=${2#--run-id=}
+                case $run_id in ''|*[!0-9]*) echo "validate: invalid Run ID" >&2; exit 1;; esac
+                [ -n "$validate_command" ] || { echo "validate: validate_command is empty" >&2; exit 1; }
+                for tool in git sha256sum; do
+                  command -v "$tool" >/dev/null || { echo "validate: validate_image has no $tool" >&2; exit 1; }
+                done
+                digest() { sha256sum "$1" | cut -d ' ' -f 1; }
+                # A JSON string body: control characters dropped, then
+                # backslash, quote, tab and newline escaped. Bytes, not text.
+                text() {
+                  soh=$(printf '\001')
+                  tab=$(printf '\t')
+                  LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C tr '\n' '\001' |
+                    LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" -e "s/$soh/\\\\n/g" |
+                    LC_ALL=C tr -d '\n'
+                }
+                top=$(pwd)
+                patch=$top/change/change.patch
+                # The uploaded manifest is the snapshot's canonical encoding,
+                # so its digest is the snapshot's input digest.
+                input_digest=$(digest source/snapshot/manifest.json)
+                patch_digest=$(digest "$patch")
+                work=$(mktemp -d)
+                log=$(mktemp)
+                modes=$(mktemp)
+                # An empty base has no base/ directory in the Run input.
+                if [ -d source/snapshot/base ]; then cp -R source/snapshot/base/. "$work/"; fi
+                # A Run input does not carry Git modes: restore executable bits from the
+                # manifest. Every JSON string is decoded in full -- the encoder escapes
+                # quotes, control characters, <, > and & -- and anything else it might
+                # hold refuses the manifest. The decoded count must equal the manifest's
+                # own count of executable entries, and every chmod must succeed, or the
+                # tree is not the base and the command is not run.
+                decode='
+                  function fail(msg) { print "validate: " msg > "/dev/stderr"; failed = 1; exit 1 }
+                  function hexval(h,   v, k, c) {
+                    if (length(h) != 4) fail("short escape in the snapshot manifest")
+                    v = 0
+                    for (k = 1; k <= 4; k++) {
+                      c = index("0123456789abcdef", tolower(substr(h, k, 1)))
+                      if (!c) fail("bad escape in the snapshot manifest")
+                      v = v * 16 + c - 1
+                    }
+                    return v
+                  }
+                  function utf8(c) {
+                    if (c == 0 || (c >= 55296 && c < 57344)) fail("unexpected escape in the snapshot manifest")
+                    if (c < 128) return sprintf("%c", c)
+                    if (c < 2048) return sprintf("%c%c", 192 + int(c / 64), 128 + c % 64)
+                    return sprintf("%c%c%c", 224 + int(c / 4096), 128 + int(c / 64) % 64, 128 + c % 64)
+                  }
+                  function unescape(raw,   out, k, ch, e) {
+                    out = ""
+                    for (k = 1; k <= length(raw); k++) {
+                      ch = substr(raw, k, 1)
+                      if (ch != "\\") { out = out ch; continue }
+                      e = substr(raw, ++k, 1)
+                      if (e == "u") { out = out utf8(hexval(substr(raw, k + 1, 4))); k += 4 }
+                      else if (e == "\"" || e == "\\" || e == "/") out = out e
+                      else if (e == "t") out = out "\t"
+                      else if (e == "n") out = out "\n"
+                      else if (e == "r") out = out "\r"
+                      else fail("unexpected escape in the snapshot manifest")
+                    }
+                    return out
+                  }
+                  function backslashes(r,   k) { k = 0; while (k < length(r) && substr(r, length(r) - k, 1) == "\\") k++; return k }
+                  BEGIN { RS = "\"" }
+                  # Records alternate between JSON text outside strings and string bodies;
+                  # a body ending in an odd run of backslashes ended at an escaped quote.
+                  instring {
+                    raw = raw $0
+                    if (backslashes($0) % 2 == 1) { raw = raw "\""; next }
+                    instring = 0; value = unescape(raw); pending = 1; next
+                  }
+                  {
+                    if (pending) {
+                      if (substr($0, 1, 1) == ":") key = value
+                      else { if (key == "path") path = value; else if (key == "mode") mode = value; key = "" }
+                      pending = 0
+                    }
+                    for (k = 1; k <= length($0); k++) {
+                      ch = substr($0, k, 1)
+                      if (ch == "{") { path = ""; mode = "" }
+                      else if (ch == "}") {
+                        if (mode == "100755") {
+                          if (path == "" || index(path, "\n")) fail("unexpected path in the snapshot manifest")
+                          print path
+                        }
+                        path = ""; mode = ""
+                      }
+                    }
+                    instring = 1; raw = ""
+                  }
+                  END { if (failed) exit 1 }
+                '
+                prepared=
+                if ! LC_ALL=C awk "$decode" source/snapshot/manifest.json >"$modes" 2>/dev/null; then
+                  prepared="validate: cannot decode the snapshot manifest's file modes; validate_command was not run"
+                else
+                  want=$(LC_ALL=C awk '{ n += gsub(/"mode":"100755"/, "") } END { print n + 0 }' source/snapshot/manifest.json)
+                  got=$(LC_ALL=C awk 'END { print NR }' "$modes")
+                  while IFS= read -r path; do
+                    if [ ! -f "$work/$path" ] || [ -L "$work/$path" ] || ! chmod 0755 "$work/$path"; then
+                      prepared="validate: cannot restore the executable mode of a base file; validate_command was not run"
+                    fi
+                  done <"$modes"
+                  [ "$got" -eq "$want" ] || prepared="validate: restored $got executable modes where the manifest records $want; validate_command was not run"
+                fi
+                # The command is always bounded, so a hang is recorded with time left to
+                # publish it inside the task's 40 minutes.
+                limit="timeout -k 30 1800"
+                timeout -k 1 5 true >/dev/null 2>&1 || prepared=${prepared:-"validate: validate_image has no working timeout; validate_command was not run"}
+                applied=true
+                exit_code=null
+                if [ -s "$patch" ] && ! (cd "$work" && GIT_CEILING_DIRECTORIES=$(dirname "$work") GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git apply --whitespace=nowarn "$patch") >"$log" 2>&1; then
+                  applied=false
+                  outcome=not_applied
+                elif [ -n "$prepared" ]; then
+                  echo "$prepared" >"$log"
+                  outcome=not_run
+                else
+                  set +e
+                  (cd "$work" && exec $limit /bin/sh -c "$validate_command") >"$log" 2>&1 </dev/null
+                  exit_code=$?
+                  set -e
+                  outcome=failed
+                  if [ "$exit_code" -eq 0 ]; then outcome=passed; fi
+                  if [ "$exit_code" -eq 124 ]; then echo "validate: validate_command exceeded 30 minutes" >>"$log"; fi
+                fi
+                {
+                  printf '{"schema_version":"implement-validation/v1","run_id":%s,' "$run_id"
+                  printf '"input_digest":"%s","patch_digest":"%s",' "$input_digest" "$patch_digest"
+                  printf '"applied":%s,"command":"' "$applied"
+                  printf '%s' "$validate_command" | text
+                  printf '","exit_code":%s,"outcome":"%s","log_tail":"' "$exit_code" "$outcome"
+                  tail -c 65536 "$log" | text
+                  printf '"}\n'
+                } >validation/.validation.json
+                mv validation/.validation.json validation/validation.json
+                rm -rf "$work" "$log" "$modes" || true
+              - validate
+              - ((validate_command))
+              - --run-id=((run_id))

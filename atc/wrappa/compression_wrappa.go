@@ -33,6 +33,11 @@ func (wrappa CompressionWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		// skip gzip as this endpoint does it already
 		case atc.DownloadCLI:
 			wrapped[name] = handler
+		// a Run result is a canonical archive whose exact Content-Length a
+		// client checks against the Run's binding; compressing it drops the
+		// length, and every verifying client refuses the read
+		case atc.GetPipelineRunResult:
+			wrapped[name] = handler
 		default:
 			wrapped[name] = gzhttp.GzipHandler(handler)
 		}

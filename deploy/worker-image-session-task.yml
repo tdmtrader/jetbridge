@@ -1,0 +1,18 @@
+# Run by hack/test-worker-image, NOT privileged: the agent/session tests
+# inside the worker image itself, under the ordinary task Pod security
+# context, with the image's own pinned Codex.
+platform: linux
+rootfs_uri: docker:///((image))
+inputs:
+- name: repo
+- name: tests
+params:
+  JB_CODEX_EXECUTABLE: /usr/local/bin/codex
+run:
+  path: sh
+  args:
+  - -ec
+  - |
+    tests=$(pwd)/tests
+    cd repo/agent/session
+    "$tests/session.test" -test.count=1 -test.v

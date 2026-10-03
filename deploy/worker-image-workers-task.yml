@@ -1,0 +1,21 @@
+# Run by hack/test-worker-image, NOT privileged: the implement and review
+# worker tests, cross-compiled, inside the worker image with Git added
+# (their fixtures are Git repositories), under the ordinary task Pod
+# security context, with the image's own codex and jb-review-worker.
+platform: linux
+rootfs_uri: docker:///((image))-git
+inputs:
+- name: repo
+- name: tests
+params:
+  JB_CODEX_EXECUTABLE: /usr/local/bin/codex
+  JB_WORKER_EXECUTABLE: /usr/local/bin/jb-review-worker
+run:
+  path: sh
+  args:
+  - -ec
+  - |
+    tests=$(pwd)/tests
+    for pkg in implement review; do
+      (cd "repo/agent/$pkg" && "$tests/$pkg.test" -test.count=1 -test.v)
+    done

@@ -1,4 +1,4 @@
-Feature: Any local client can inspect a detached review Run
+Feature: Any local client can inspect a review Run
 
   @core-review
   Scenario: A human CLI reads the retained observation after payload cleanup

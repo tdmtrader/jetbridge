@@ -379,7 +379,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 			return fmt.Errorf("ready replay reseeded or lost identity: %v", err)
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(change.Workspace.Runtime, "jb-review-*", "codex", "auth.json"))
+	files, err := filepath.Glob(filepath.Join(change.Workspace.Runtime, "jb-session-*", "codex", "auth.json"))
 	if err != nil {
 		return err
 	}

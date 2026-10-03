@@ -1,4 +1,4 @@
-Feature: Human and agent clients retrieve typed detached review findings
+Feature: Human and agent clients retrieve typed review findings
 
   @core-review @review-linux
   Scenario Outline: A fresh client retrieves the real worker report after cleanup

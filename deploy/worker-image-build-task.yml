@@ -1,0 +1,11 @@
+# Run by hack/test-worker-image with fly execute -p: it owns a Docker daemon.
+platform: linux
+rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+inputs:
+- name: repo
+params:
+  IMAGE:
+  PUSH:
+run:
+  path: sh
+  args: [repo/hack/build-worker-image]

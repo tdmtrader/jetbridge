@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/concourse/concourse/agent/capture"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -108,7 +109,7 @@ func decodeSchema(data []byte, schema *jsonschema.Schema, value any) error {
 	if err := schema.Validate(raw); err != nil {
 		return errors.New("review does not conform to the JSON schema")
 	}
-	return decodeStrict(data, value)
+	return capture.DecodeStrict(data, value)
 }
 
 func BuildReport(bundle *Bundle, data []byte, meta Metadata) (*Report, error) {
@@ -133,7 +134,7 @@ func BuildReport(bundle *Bundle, data []byte, meta Metadata) (*Report, error) {
 	}
 	r := &Report{SchemaVersion: "review/v1", RunID: meta.RunID, Assessment: assessment, Provenance: Provenance{
 		InputDigest: bundle.Digest, BaseCommit: bundle.Manifest.BaseCommit, HeadCommit: bundle.Manifest.HeadCommit,
-		ProfileDigest: digest(meta.Profile), ModelRequested: meta.ModelRequested, ModelReported: meta.ModelReported,
+		ProfileDigest: capture.Digest(meta.Profile), ModelRequested: meta.ModelRequested, ModelReported: meta.ModelReported,
 		CodexVersion: meta.CodexVersion, ExecutionPolicy: "inspect-only",
 	}}
 	r.Verdict = verdict(assessment)
@@ -225,7 +226,7 @@ func validateAssessment(b *Bundle, a *Assessment) ([]string, error) {
 	}
 	reviewed := map[string]bool{}
 	for _, name := range a.ReviewedFiles {
-		if !safePath(name) || !paths[name] || reviewed[name] {
+		if !capture.SafePath(name) || !paths[name] || reviewed[name] {
 			return nil, errors.New("reviewed_files contains an invalid or duplicate path")
 		}
 		reviewed[name] = true
@@ -242,14 +243,14 @@ func validateAssessment(b *Bundle, a *Assessment) ([]string, error) {
 			return nil, errors.New("empty finding text")
 		}
 		file, exists := files[loc.Side+"/"+loc.Path]
-		if !safePath(loc.Path) || !exists || !changed[loc.Path] || !reviewed[loc.Path] {
+		if !capture.SafePath(loc.Path) || !exists || !changed[loc.Path] || !reviewed[loc.Path] {
 			return nil, errors.New("finding must locate an inspected changed file")
 		}
-		data, err := readRootFile(root, loc.Side+"/"+loc.Path, maxFileBytes)
+		data, err := capture.ReadRootFile(root, loc.Side+"/"+loc.Path, maxFileBytes)
 		if err != nil {
 			return nil, err
 		}
-		if digest(data) != file.Digest {
+		if capture.Digest(data) != file.Digest {
 			return nil, errors.New("source changed during review")
 		}
 		if !utf8.Valid(data) || bytes.ContainsRune(data, 0) {

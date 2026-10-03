@@ -1,9 +1,10 @@
 # Review worker
 
-A human, Codex, Claude, or another MCP client can submit the same detached,
+A human, Codex, Claude, or another MCP client can submit the same
 inspection-only review. The CLI and stdio MCP use one shared client and the
 platform's durable Run, input and result contracts. No additional job store is
-involved.
+involved. The client is the workload-neutral `agent/runclient` Run client; `agent/review/client`
+binds it to review's bundle, `change` input, `findings` result and report.
 
 ## Capture and submit
 
@@ -23,7 +24,7 @@ or upload bearers. Retry with the **same receipt** after interruption. A changed
 input or destination requires a new receipt. Losing a response does not create a
 second Run. A claimed credential delivery is never retried or reseeded.
 
-Only `ready: true` confirms that the detached worker accepted the session's
+Only `ready: true` confirms that the Run's worker accepted the session's
 credentials and checked its installed Codex version. It does not confirm provider
 login or review success. An admitted but unready response still includes the Run
 handle. Once ready, the caller can close the CLI or MCP and check the Run later.
@@ -57,7 +58,10 @@ result producer must declare exactly `rootfs_uri: docker:///<pin>`, with no
 reports an unacknowledged delivery and the Run receives no credentials. The pin
 covers the image, not the task script: a member who can set the template can
 still change what that image runs, so restrict who holds that role on the
-review team. The ATC fills `run_id` per Run.
+review team. The pin is per image, not per template: the
+[implement template](../implement/README.md) runs the same image and is admitted
+by the same pin ([ADR-0007](../../docs/adr/0007-credential-pin-per-image.md)).
+The ATC fills `run_id` per Run.
 The worker stages a complete report below the output mount, then the task moves
 its two validated files into the named result before successful completion.
 
@@ -106,6 +110,13 @@ does not change the Run. The server selects its target, team and template at
 startup; tool arguments cannot replace its platform credentials. Only the local auth file path is part of startup configuration; its contents never enter tool arguments. Omit `--auth-file` to expose status/result access without allowing submission. Call `review_result` with `{"run": 1}` to retrieve the
 schema-validated report, including typed findings and provenance. Call `review_submit` with `{"input":"/path/to/change","receipt":"/path/to/request.json"}`. The same stdio configuration works for Codex, Claude and other MCP clients.
 
+`jb mcp --target YOUR_TARGET --team YOUR_TEAM --review-template review
+--implement-template implement --auth-file /owner/selected/auth.json` is one
+server that serves these tools unchanged beside the implement workload's
+`implement_*` tools (see the [implement README](../implement/README.md#local-mcp)).
+`review mcp` stays the same server with only the review tools, so existing
+configurations keep working.
+
 Retrieve the same report from a fresh human CLI process:
 
 ```sh
@@ -150,8 +161,10 @@ review inventory. Local capture and worker paths remain unchanged.
 
 ## Running one review
 
-`codex-version` and `codex-checksums.txt` pin the supported Codex release. The
-Dockerfile verifies the release archive and uses immutable base-image digests.
+[`codex-version`](../session/codex-version) and
+[`codex-checksums.txt`](../session/codex-checksums.txt) pin the supported Codex
+release for every worker mode; the provider session in `agent/session` checks the
+pin on each run. The Dockerfile verifies the release archive and uses immutable base-image digests.
 The worker requires an explicit model; it does not choose billing or another model.
 
 ```sh
@@ -178,7 +191,7 @@ documents cache copying. This implementation instead discards all session auth,
 including refreshes, when the run ends; it provides no durable auth renewal.
 The deterministic test suite uses synthetic credentials and makes no real model
 calls. A successful test with those fixtures does not establish live account
-eligibility or detached subscription behavior.
+eligibility or subscription behavior on the platform.
 
 Credentials travel on stdin separately from the input. Each invocation creates a
 private mode-0700 home on tmpfs, with a mode-0600 auth file. The worker forces
@@ -198,7 +211,7 @@ host credential directory or persist this runtime in a Secret, volume or artifac
 There is no credential recovery, cross-run reuse or write-back. If a later local
 copy is stale, reauthenticate and submit a new review.
 
-The foreground worker exits with its container; use `jb review submit` for detached platform execution. Its result survives in `/path/to/review-results/review`.
+The foreground worker exits with its container; use `jb review submit` to run it as a platform Run. Its result survives in `/path/to/review-results/review`.
 
 For integration with an already-started worker, `--auth-socket /runtime/auth.sock
 --run-id RUN_ID` replaces `--auth-stdin`. `/runtime` must be that container's
@@ -287,7 +300,7 @@ call and consumes subscription usage; never run it as an ordinary CI test.
 
 Prepare a directory with a host `jb`, Linux `jb-review-worker`, and the pinned
 Linux `codex` and companion `codex-code-mode-host` binaries verified against
-`codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
+`agent/session/codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
 input reader and prohibit evaluating repository code. Shell tools remain disabled,
 and the worker validates the same closed event stream.
 Build the Linux Brine

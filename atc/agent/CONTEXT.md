@@ -9,7 +9,11 @@ wired together. A test pins every package here to the core packages it may
 import.
 
 Member packages: `atc/mcp`, `atc/api/mcpserver`, `atc/agent/composition`,
-`internal/mcpclient`, `cmd/jb-mcp-client`, and `skymarshal/mcpauth`.
+`internal/mcpclient`, `cmd/jb-mcp-client`, and `skymarshal/mcpauth`; and the
+local workload side: `agent/capture`, `agent/session` (with its test support
+`agent/session/codextest`), `agent/runclient`,
+`agent/review`, `agent/implement` (each with its `client`), `cmd/jb` and
+`cmd/jb-review-worker`.
 
 The word *agent* is reserved for this context and banned from the other
 three.
@@ -70,3 +74,45 @@ rather than admitting a second one.
 **Input digest**:
 The sealed inputs of a composition call, recorded on first admission and
 verified on every later one. Never part of the call identity.
+
+### Workloads
+
+**Workload**:
+One kind of work an agent submits to the platform as a pipeline run from an
+installed template: *review* or *implement*. A workload fixes its sealed
+input, the result whose producer receives credentials, and the typed result
+it trusts on read-back.
+_Avoid_: detached workload, detached Run (core's *detached build* is a
+reclaimed run's orphan build)
+
+**Run client**:
+The workload-neutral client in `agent/runclient`: it uploads a workload's
+sealed input, admits its Run through the public API, hands off credentials
+and verifies a published result before parsing it. Human CLI and MCP tools
+share it.
+_Avoid_: detached client
+
+**Invocation receipt**:
+The local file that binds one submission to its Run, so an interrupted
+caller resumes that Run instead of admitting a second one.
+_Avoid_: receipt (alone; Hangar has two)
+
+**Provider session**:
+One run of the pinned model provider inside a worker, in a private
+memory-backed runtime that holds the owner's credential and is destroyed
+before anything is published.
+
+**Snapshot**:
+The sealed input of an implement Run: a base commit's tree, a brief and,
+when iterating, a prior change and review findings.
+_Avoid_: bundle (review's input)
+
+**Change**:
+What an implement Run publishes: a patch against the snapshot's base
+commit and a summary binding it to the Run.
+_Avoid_: diff (review's captured input), result (alone)
+
+**Validation**:
+A template's record of running its checks against exactly one change. A
+failed validation is a result, not a failed Run.
+

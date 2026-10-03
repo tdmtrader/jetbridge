@@ -133,7 +133,7 @@ func (in ReviewChange) runSocketHandoff(mode string) (ReviewChange, error) {
 			}
 			// The helper has exited. Observe actual staged bytes and permissions
 			// while the model subprocess waits for its fixture release.
-			files, err := filepath.Glob(filepath.Join(in.Workspace.Runtime, "jb-review-*", "codex", "auth.json"))
+			files, err := filepath.Glob(filepath.Join(in.Workspace.Runtime, "jb-session-*", "codex", "auth.json"))
 			if err != nil || len(files) != 1 {
 				return in, errors.New("readiness did not leave exactly one staged credential file")
 			}

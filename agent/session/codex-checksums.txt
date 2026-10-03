@@ -1,0 +1,6 @@
+7c26e9f6e424bf618c33ae8263f3b3a1c1cc32c82bfbfd5f27b6c81402618664  codex-aarch64-unknown-linux-musl.tar.gz
+08188cdec40c2909e84b39d84ed1ad00f03a9bfe0346fd422ef590fa7d23487f  codex-x86_64-unknown-linux-musl.tar.gz
+25e2160818706e48c5115501d5986fb8c3e85ac72267f619c4944b5e1465cc40  codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz
+4539e106596e203c9f6eeaf20fe328a9751447d7d6561be259689ea0795f83b0  codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz
+818f3c65c6973ae54586ba52f8e37c7673f3f5b8e09c74858c19e25c74479226  codex-aarch64-apple-darwin.tar.gz
+1821baa9af627461481a763ffc86e3f74f961661fe89a6965c3036e16dbc4b22  codex-x86_64-apple-darwin.tar.gz

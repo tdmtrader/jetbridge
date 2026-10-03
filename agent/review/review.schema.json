@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "JetBridge detached review v1",
+  "title": "JetBridge review v1",
   "type": "object",
   "additionalProperties": false,
   "required": [

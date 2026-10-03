@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/concourse/concourse/agent/capture"
 )
 
 func gitFixture(t *testing.T) (string, string, string) {
@@ -35,7 +37,7 @@ func gitFixture(t *testing.T) (string, string, string) {
 func gitTest(t *testing.T, repo string, args ...string) string {
 	t.Helper()
 	c := exec.Command("git", append([]string{"-C", repo, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"}, args...)...)
-	c.Env = gitEnvironment()
+	c.Env = capture.GitEnvironment()
 	var stderr bytes.Buffer
 	c.Stderr = &stderr
 	b, err := c.Output()

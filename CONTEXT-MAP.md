@@ -56,7 +56,10 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
 ## Collisions to watch
 
 - **Receipt** is always qualified: materialization receipt (Hangar strict
-  input) or publication receipt (Hangar output plane).
+  input), publication receipt (Hangar output plane) or invocation receipt
+  (agentic Run client).
+- **Detached** is core's alone: a detached build belongs to a reclaimed run.
+  A Run an agent submits is a workload's Run, never a detached Run.
 - **Daemon** is always qualified: artifact daemon (runtime) or output daemon
   (Hangar).
 - **Lease** and **hold** are always qualified: source hold, read lease,

@@ -1,0 +1,57 @@
+#!/bin/sh
+# Builds deploy/Dockerfile.review-worker as an operator would, as $IMAGE, and
+# the same image with only Git added as $IMAGE-git, for the worker tests whose
+# fixtures are Git repositories. Every executable the tests run (codex,
+# jb-review-worker) is the production image's. Privileged: it owns its Docker
+# daemon.
+#
+# With PUSH=true it pushes both, for hack/test-worker-image, which then runs
+# the tests as ordinary task Pods. With TEST_COMPILER (a Go toolchain image)
+# it compiles the agent/session, agent/implement and agent/review tests in a
+# container of that image and runs them here instead, each in an
+# unprivileged container of the worker image under Docker's default seccomp
+# profile and capabilities with no privilege escalation: the security
+# context the runtime gives an ordinary task Pod (RuntimeDefault seccomp,
+# allowPrivilegeEscalation false). That is the pipeline's worker-image job.
+set -eu
+: "${IMAGE:?IMAGE names the image to build}"
+work=$(mktemp -d /tmp/worker-image.XXXXXX)
+dockerd --host=unix:///var/run/docker.sock --data-root="$work/docker" --mtu=1450 \
+  --insecure-registry=registry.home --log-level=warn >"$work/docker.log" 2>&1 &
+dockerd_pid=$!
+trap 'kill "$dockerd_pid" 2>/dev/null || true; wait "$dockerd_pid" 2>/dev/null || true' EXIT
+for attempt in $(seq 1 60); do
+  if docker info >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+docker info >/dev/null
+docker build --build-arg TARGETARCH=amd64 -f repo/deploy/Dockerfile.review-worker -t "$IMAGE" repo
+mkdir -p "$work/git-image"
+cat >"$work/git-image/Dockerfile" <<DOCKERFILE
+FROM $IMAGE
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+DOCKERFILE
+docker build -t "$IMAGE-git" "$work/git-image"
+if [ "${PUSH:-}" = true ]; then
+  docker push "$IMAGE"
+  docker push "$IMAGE-git"
+fi
+if [ -n "${TEST_COMPILER:-}" ]; then
+  tests="$work/tests"
+  mkdir -p "$tests"
+  docker run --rm -v "$(pwd)/repo:/workspace" -v "$tests:/out" -w /workspace \
+    -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=amd64 "$TEST_COMPILER" \
+    sh -ec 'for package in session implement review; do go test -c -o "/out/$package.test" "./agent/$package/"; done'
+  run() {
+    image=$1 package=$2
+    shift 2
+    docker run --rm --security-opt no-new-privileges \
+      -e JB_CODEX_EXECUTABLE=/usr/local/bin/codex "$@" \
+      -v "$(pwd)/repo:/repo" -v "$tests:/tests:ro" -w "/repo/agent/$package" \
+      --entrypoint "/tests/$package.test" "$image" -test.count=1 -test.v
+  }
+  run "$IMAGE" session
+  for package in implement review; do
+    run "$IMAGE-git" "$package" -e JB_WORKER_EXECUTABLE=/usr/local/bin/jb-review-worker
+  done
+fi

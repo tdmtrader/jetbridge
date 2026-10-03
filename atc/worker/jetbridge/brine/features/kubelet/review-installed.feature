@@ -5,7 +5,7 @@ Feature: An installed review completes after its client disconnects
   HTTP, PostgreSQL, storage, execution, credentials and result reads are real.
   Only the model process is replaced with deterministic output.
 
-  Scenario Outline: A fresh client retrieves the detached review
+  Scenario Outline: A fresh client retrieves the review
     Given an installed review survives a disconnected "<surface>" client
 
     Examples:
