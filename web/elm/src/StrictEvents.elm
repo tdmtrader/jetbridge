@@ -5,7 +5,6 @@ module StrictEvents exposing
     , onLeftClick
     , onLeftClickOrShiftLeftClick
     , onLeftClickStopPropagation
-    , onLeftMouseDownCapturing
     , onMouseEnterStopPropagation
     , onScroll
     , onShiftLeftClick
@@ -120,28 +119,6 @@ onLeftClickOrShiftLeftClick msg shiftMsg =
                                                             )
                                                     )
                                         )
-                            )
-                )
-        )
-
-
-onLeftMouseDownCapturing : Json.Decode.Decoder x -> (x -> msg) -> Html.Attribute msg
-onLeftMouseDownCapturing captured msg =
-    Html.Events.custom "mousedown"
-        (assertNoModifier
-            |> Json.Decode.andThen
-                (\_ ->
-                    assertLeftButton
-                        |> Json.Decode.andThen
-                            (\_ ->
-                                Json.Decode.map
-                                    (\x ->
-                                        { message = msg x
-                                        , stopPropagation = False
-                                        , preventDefault = True
-                                        }
-                                    )
-                                    captured
                             )
                 )
         )
