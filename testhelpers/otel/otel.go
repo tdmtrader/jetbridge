@@ -256,17 +256,6 @@ func By(text string) {
 // Legacy flat-span API (kept for backward compatibility)
 // ---------------------------------------------------------------------------
 
-// ReportTestSpanWithPipeline returns a ReportAfterEach handler that includes
-// the pipeline name. This is the legacy flat-span API.
-func ReportTestSpanWithPipeline(pipelineNameFn func() string) func(ginkgo.SpecReport) {
-	return func(report ginkgo.SpecReport) {
-		if !configured {
-			return
-		}
-		emitTestSpan(report, pipelineNameFn())
-	}
-}
-
 func emitTestSpan(report ginkgo.SpecReport, pipeline string) {
 	attrs := []attribute.KeyValue{
 		attribute.String("test.name", report.FullText()),
