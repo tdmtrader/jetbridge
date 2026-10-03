@@ -16,7 +16,7 @@ func (tree *CapturedTree) Materialize(ctx context.Context, steps *os.Root, ref T
 		return err
 	}
 	if steps == nil || !validMaterializationSegment(handle) || !validMaterializationSegment(volume) {
-		return fmt.Errorf("hangar: an anchored steps directory and canonical destination segments are required")
+		return errors.New("hangar: an anchored steps directory and canonical destination segments are required")
 	}
 	if tree == nil || tree.Digest != ref.Digest {
 		return fmt.Errorf("hangar: captured tree differs from the tree reference: %w", ErrCorrupt)
