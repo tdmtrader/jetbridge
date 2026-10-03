@@ -22,12 +22,12 @@ import (
 	"github.com/concourse/concourse/hangar/output/inventory"
 )
 
-// DefaultAuditBatch is how many registered generations one pass re-stats.
+// defaultAuditBatch is how many registered generations one pass re-stats.
 //
 // It is small on purpose. The audit makes one external call per candidate,
 // outside every transaction, and a pass that audited the whole deployment would
 // hold the inventory lease for the length of the slowest stat in it.
-const DefaultAuditBatch = 10
+const defaultAuditBatch = 10
 
 // Pass is one bounded inventory pass.
 //
@@ -53,7 +53,7 @@ type Pass struct {
 	Transactor controller.Transactor
 	Grace      time.Duration
 
-	// AuditBatch bounds the reconciliation. Zero means DefaultAuditBatch.
+	// AuditBatch bounds the reconciliation. Zero means defaultAuditBatch.
 	AuditBatch int
 }
 
@@ -282,7 +282,7 @@ func (pass *Pass) Reconcile(ctx context.Context) (int, error) {
 func (pass *Pass) auditCandidates(ctx context.Context) ([]hangar.TreeRef, error) {
 	batch := pass.AuditBatch
 	if batch <= 0 {
-		batch = DefaultAuditBatch
+		batch = defaultAuditBatch
 	}
 
 	tx, err := pass.Transactor.Begin()
