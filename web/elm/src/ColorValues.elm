@@ -6,7 +6,6 @@ module ColorValues exposing
     , error70
     , error80
     , failure10
-    , failure20
     , failure30
     , failure40
     , failure50
@@ -237,11 +236,6 @@ paused100 =
 failure10 : String
 failure10 =
     "#FAEFED"
-
-
-failure20 : String
-failure20 =
-    "#FFD9D4"
 
 
 failure30 : String
