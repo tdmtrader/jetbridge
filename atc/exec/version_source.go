@@ -8,7 +8,7 @@ import (
 
 func NewVersionSourceFromPlan(getPlan *atc.GetPlan) VersionSource {
 	if getPlan.Version != nil {
-		return &StaticVersionSource{
+		return &staticVersionSource{
 			version: *getPlan.Version,
 		}
 	}
@@ -26,11 +26,11 @@ type VersionSource interface {
 	Version(RunState) (atc.Version, error)
 }
 
-type StaticVersionSource struct {
+type staticVersionSource struct {
 	version atc.Version
 }
 
-func (p *StaticVersionSource) Version(RunState) (atc.Version, error) {
+func (p *staticVersionSource) Version(RunState) (atc.Version, error) {
 	return p.version, nil
 }
 
