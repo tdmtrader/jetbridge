@@ -29,7 +29,7 @@ import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
-import Message.Subscription exposing (Delivery(..), Interval(..), Subscription)
+import Message.Subscription exposing (Delivery(..), Subscription)
 import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import NotFound.Model
 import NotFound.NotFound as NotFound
