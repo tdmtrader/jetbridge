@@ -61,7 +61,6 @@ module Colors exposing
     , secondaryTopBar
     , sectionHeader
     , showArchivedButtonBorder
-    , sideBar
     , sideBarActive
     , sideBarBackground
     , sideBarHovered
@@ -535,11 +534,6 @@ groupBackground =
 
 
 ----
-
-
-sideBar : String
-sideBar =
-    "#333333"
 
 
 sideBarBackground : String
