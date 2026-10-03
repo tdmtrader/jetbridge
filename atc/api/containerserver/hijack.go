@@ -200,7 +200,6 @@ func (s *Server) hijack(ctx context.Context, hLog lager.Logger, conn *websocket.
 	}
 
 	var tty *runtime.TTYSpec
-	var idle InterceptTimeout
 
 	if request.Process.TTY != nil {
 		tty = &runtime.TTYSpec{
@@ -290,7 +289,7 @@ func (s *Server) hijack(ctx context.Context, hLog lager.Logger, conn *websocket.
 		}
 	}()
 
-	idle = s.interceptTimeoutFactory.NewInterceptTimeout()
+	idle := s.interceptTimeoutFactory.NewInterceptTimeout()
 	idleChan := idle.Channel()
 
 	for {
