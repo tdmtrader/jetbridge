@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,7 +39,7 @@ func buildDurableTier(logger lager.Logger, m *metrics, opts durableOptions) (*Du
 
 	case "filesystem":
 		if opts.path == "" {
-			return nil, fmt.Errorf("--durable-path is required for --durable-store=filesystem")
+			return nil, errors.New("--durable-path is required for --durable-store=filesystem")
 		}
 		fs, err := durable.NewFS(opts.path, opts.maxBytes)
 		if err != nil {
@@ -48,7 +49,7 @@ func buildDurableTier(logger lager.Logger, m *metrics, opts durableOptions) (*Du
 
 	case "gcs":
 		if opts.bucket == "" {
-			return nil, fmt.Errorf("--durable-bucket is required for --durable-store=gcs")
+			return nil, errors.New("--durable-bucket is required for --durable-store=gcs")
 		}
 		// No credential flags: on GKE the right answer is Workload Identity
 		// via Application Default Credentials, and off GKE the SDK already
@@ -66,7 +67,7 @@ func buildDurableTier(logger lager.Logger, m *metrics, opts durableOptions) (*Du
 
 	case "s3":
 		if opts.bucket == "" {
-			return nil, fmt.Errorf("--durable-bucket is required for --durable-store=s3")
+			return nil, errors.New("--durable-bucket is required for --durable-store=s3")
 		}
 		// Credentials come from the SDK's default chain, which is what picks
 		// up IRSA and Workload Identity. Nothing here reads a key from a flag:
