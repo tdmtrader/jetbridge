@@ -68,11 +68,6 @@ func NewReaper(
 	}
 }
 
-// SetExecutor sets the PodExecutor used for cache directory cleanup.
-func (r *Reaper) SetExecutor(executor PodExecutor) {
-	r.executor = executor
-}
-
 // reaperDeleteTimeout bounds one daemon's answer to a delete.
 const reaperDeleteTimeout = 10 * time.Second
 
