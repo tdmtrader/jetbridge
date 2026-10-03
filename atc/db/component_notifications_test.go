@@ -36,6 +36,7 @@ var _ = Describe("Component Notifications", func() {
 	// createResourceScope creates a resource config scope for a resource,
 	// using the same pattern as the existing tests.
 	createResourceScope := func(resource db.Resource) db.ResourceConfigScope {
+		GinkgoHelper()
 		rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
 			resource.Type(),
 			resource.Source(),
