@@ -64,7 +64,7 @@ func (ref TreeRef) Validate() error {
 		return fmt.Errorf("hangar: tree digest: %w", err)
 	}
 	if ref.Generation <= 0 {
-		return fmt.Errorf("hangar: tree generation must be positive")
+		return errors.New("hangar: tree generation must be positive")
 	}
 	return nil
 }
