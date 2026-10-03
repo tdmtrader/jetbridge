@@ -11,10 +11,6 @@ type Artifact struct {
 	Content VolumeContent
 }
 
-func (a Artifact) Handle() string {
-	return ""
-}
-
 func (a Artifact) Source() string {
 	return ""
 }
