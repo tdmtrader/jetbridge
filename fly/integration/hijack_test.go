@@ -101,6 +101,7 @@ var _ = Describe("hijack", func() {
 	}
 
 	fly := func(command string, args ...string) {
+		GinkgoHelper()
 		commandWithArgs := append([]string{command}, args...)
 
 		flyCmd := exec.Command(flyPath, append([]string{"-t", targetName}, commandWithArgs...)...)
