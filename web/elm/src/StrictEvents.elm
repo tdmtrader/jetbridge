@@ -3,7 +3,6 @@ module StrictEvents exposing
     , ScrollState
     , WheelEvent
     , onLeftClick
-    , onLeftClickNoPreventDefault
     , onLeftClickOrShiftLeftClick
     , onLeftClickStopPropagation
     , onLeftMouseDown
@@ -52,11 +51,6 @@ onLeftClick msg =
 onLeftClickStopPropagation : msg -> Html.Attribute msg
 onLeftClickStopPropagation msg =
     onLeftClickCapturing True True (Json.Decode.succeed ()) (always msg)
-
-
-onLeftClickNoPreventDefault : msg -> Html.Attribute msg
-onLeftClickNoPreventDefault msg =
-    onLeftClickCapturing False False (Json.Decode.succeed ()) (always msg)
 
 
 onLeftClickCapturing : Bool -> Bool -> Json.Decode.Decoder x -> (x -> msg) -> Html.Attribute msg
