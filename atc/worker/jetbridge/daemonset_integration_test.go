@@ -791,17 +791,18 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 
 	foundCache := false
 	for _, vol := range volumes {
-		if strings.HasPrefix(vol.Name, "cache-") {
-			foundCache = true
-			if vol.HostPath == nil {
-				t.Fatal("cache volume should be hostPath in DaemonSet mode")
-			}
-			if !strings.HasPrefix(vol.HostPath.Path, filepath.Join(cfg.ArtifactDaemonHostPath, "caches")) {
-				t.Errorf("cache hostPath should be under <hostPath>/caches/, got %s", vol.HostPath.Path)
-			}
-			if vol.HostPath.Path != "/var/concourse/artifacts/caches/run-17-23-build-f07d9dac9385" {
-				t.Errorf("expected exact run cache key, got %s", vol.HostPath.Path)
-			}
+		if !strings.HasPrefix(vol.Name, "cache-") {
+			continue
+		}
+		foundCache = true
+		if vol.HostPath == nil {
+			t.Fatal("cache volume should be hostPath in DaemonSet mode")
+		}
+		if !strings.HasPrefix(vol.HostPath.Path, filepath.Join(cfg.ArtifactDaemonHostPath, "caches")) {
+			t.Errorf("cache hostPath should be under <hostPath>/caches/, got %s", vol.HostPath.Path)
+		}
+		if vol.HostPath.Path != "/var/concourse/artifacts/caches/run-17-23-build-f07d9dac9385" {
+			t.Errorf("expected exact run cache key, got %s", vol.HostPath.Path)
 		}
 	}
 	if !foundCache {
