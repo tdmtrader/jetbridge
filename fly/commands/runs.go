@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -120,10 +121,10 @@ func (command *RunsCommand) list(client pipelineRunLister) ([]atc.PipelineRun, e
 
 func (command *RunsCommand) validate() error {
 	if command.Count <= 0 {
-		return fmt.Errorf("count must be positive")
+		return errors.New("count must be positive")
 	}
 	if len(command.Pipeline.InstanceVars) > 0 {
-		return fmt.Errorf("cannot list runs for an instanced pipeline")
+		return errors.New("cannot list runs for an instanced pipeline")
 	}
 	_, err := command.Pipeline.Validate()
 	return err
