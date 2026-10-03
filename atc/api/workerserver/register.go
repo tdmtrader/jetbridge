@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -15,10 +14,6 @@ import (
 )
 
 type IntMetric int
-
-func (i IntMetric) String() string {
-	return strconv.Itoa(int(i))
-}
 
 func (s *Server) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("register-worker")
