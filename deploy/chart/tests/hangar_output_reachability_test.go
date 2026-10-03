@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -141,11 +140,6 @@ func formatPort(port int32) string {
 	}
 
 	return digits
-}
-
-// containersOf is every container in a pod spec, init and regular alike.
-func containersOf(spec corev1.PodSpec) []corev1.Container {
-	return append(append([]corev1.Container{}, spec.Containers...), spec.InitContainers...)
 }
 
 // ---------------------------------------------------------------------------
