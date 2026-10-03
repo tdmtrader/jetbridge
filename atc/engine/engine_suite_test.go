@@ -48,7 +48,6 @@ func TestEngine(t *testing.T) {
 
 type engineDBFixture = engine.EngineDBFixture
 
-var enginePostgresRunner = &engine.EnginePostgresRunner
 var useEngineDB = engine.UseEngineDB
 var closedEngineCloneConn = engine.ClosedEngineCloneConn
 var createEngineJobBuild = engine.CreateEngineJobBuild
