@@ -37,7 +37,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -172,7 +172,7 @@ func (record sourceRecord) openTickets() []output.WriterTicketID {
 			open = append(open, ticket.TicketID)
 		}
 	}
-	sort.Slice(open, func(i, j int) bool { return open[i] < open[j] })
+	slices.Sort(open)
 
 	return open
 }
