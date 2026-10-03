@@ -30,7 +30,7 @@ type CancellationWorker struct {
 
 func (w *CancellationWorker) Run(parent context.Context) error {
 	if w.Conn == nil || w.Factory == nil || w.Actions == nil || w.OwnerID == "" {
-		return fmt.Errorf("incomplete cancellation worker")
+		return errors.New("incomplete cancellation worker")
 	}
 	ctx, cancel := context.WithTimeout(parent, db.RunCancellationPassLimit)
 	defer cancel()
