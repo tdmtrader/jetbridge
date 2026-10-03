@@ -123,6 +123,8 @@ func login(atcURL, username, password string) concourse.Client {
 }
 
 func setupTeam(atcURL string, team atc.Team) {
+	GinkgoHelper()
+
 	ccClient := login(atcURL, "test", "test")
 	createdTeam, _, _, _, err := ccClient.Team(team.Name).CreateOrUpdate(team)
 
