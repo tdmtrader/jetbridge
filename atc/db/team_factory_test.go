@@ -54,8 +54,7 @@ var _ = Describe("Team Factory", func() {
 
 		Context("when the team exists", func() {
 			BeforeEach(func() {
-				var err error
-				_, err = teamFactory.CreateTeam(atcTeam)
+				_, err := teamFactory.CreateTeam(atcTeam)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
