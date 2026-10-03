@@ -80,10 +80,6 @@ func NewTaskLockID(taskName string) LockID {
 	return LockID{LockTypeBatch, lockIDFromString(taskName)}
 }
 
-func NewVolumeCreatingLockID(volumeID int) LockID {
-	return LockID{LockTypeVolumeCreating, volumeID % math.MaxInt32}
-}
-
 func NewDatabaseMigrationLockID() LockID {
 	return LockID{LockTypeDatabaseMigration}
 }
