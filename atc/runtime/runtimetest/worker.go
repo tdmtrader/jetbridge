@@ -61,10 +61,6 @@ func (w Worker) WithContainer(owner db.ContainerOwner, container *Container, mou
 	return &w2
 }
 
-func (w *Worker) AddContainer(owner db.ContainerOwner, container *Container, mounts []runtime.VolumeMount) {
-	*w = *w.WithContainer(owner, container, mounts)
-}
-
 func (w Worker) Name() string {
 	return w.WorkerName
 }
