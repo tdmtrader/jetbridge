@@ -74,7 +74,7 @@ func ValidateDeploymentPrefix(prefix string) error {
 		return nil
 	}
 	if strings.HasPrefix(prefix, "/") || strings.HasSuffix(prefix, "/") || strings.Contains(prefix, "\\") {
-		return fmt.Errorf("hangar: deployment prefix must be a relative slash-separated path")
+		return errors.New("hangar: deployment prefix must be a relative slash-separated path")
 	}
 	for _, segment := range strings.Split(prefix, "/") {
 		if err := Scope(segment).Validate(); err != nil {
