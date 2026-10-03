@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -43,7 +44,7 @@ func (command *AbortBuildCommand) Execute([]string) error {
 	}
 
 	if !exists {
-		return fmt.Errorf("build does not exist")
+		return errors.New("build does not exist")
 	}
 
 	if err := target.Client().AbortBuild(strconv.Itoa(build.ID)); err != nil {
