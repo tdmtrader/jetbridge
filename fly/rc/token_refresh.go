@@ -170,18 +170,6 @@ func RenewalError(err error) error {
 	return errors.New("login renewal is temporarily unavailable; retry when the server is reachable")
 }
 
-func SaveTargetToken(name TargetName, token *TargetToken) error {
-	return updateTargets(func(targets Targets) error {
-		props, ok := targets[name]
-		if !ok {
-			return UnknownTargetError{name}
-		}
-		props.Token = token
-		targets[name] = props
-		return nil
-	})
-}
-
 func parseJWTExpiry(raw string) (time.Time, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
