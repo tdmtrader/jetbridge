@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -405,9 +406,7 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 		return nil
 	}
 	copied := make(map[string]string, len(metadata))
-	for key, value := range metadata {
-		copied[key] = value
-	}
+	maps.Copy(copied, metadata)
 
 	return copied
 }
