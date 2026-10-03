@@ -44,11 +44,7 @@ func (command *PipelinesCommand) Execute([]string) error {
 	pipelines := command.filterPipelines(unfilteredPipelines)
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(pipelines)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(pipelines)
 	}
 
 	table := ui.Table{Headers: ui.TableRow{}}
