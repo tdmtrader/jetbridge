@@ -57,9 +57,9 @@ func Classifications() []Classification {
 	}
 }
 
-// ParseClassification refuses anything outside the closed vocabulary, including
+// parseClassification refuses anything outside the closed vocabulary, including
 // the empty string.
-func ParseClassification(value string) (Classification, error) {
+func parseClassification(value string) (Classification, error) {
 	for _, member := range Classifications() {
 		if string(member) == value {
 			return member, nil
@@ -78,7 +78,7 @@ func (classification *Classification) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &text); err != nil {
 		return err
 	}
-	parsed, err := ParseClassification(text)
+	parsed, err := parseClassification(text)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (classification *Classification) UnmarshalJSON(raw []byte) error {
 }
 
 func (classification Classification) Validate() error {
-	_, err := ParseClassification(string(classification))
+	_, err := parseClassification(string(classification))
 
 	return err
 }
