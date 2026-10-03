@@ -261,7 +261,7 @@ func (s *Store) CreateAbsent(ctx context.Context, bucket, key string, metadata m
 			return err
 		}
 		if n > math.MaxInt64 {
-			return fmt.Errorf("generation exhausted")
+			return errors.New("generation exhausted")
 		}
 		attrs.Generation = int64(n)
 		r := record{Attrs: attrs, Blob: filepath.Base(f.Name()), SHA256: hex.EncodeToString(h.Sum(nil))}
