@@ -109,8 +109,8 @@ type PolicyFinding struct {
 	Detail    string
 }
 
-// MaxFindingDetailBytes bounds the stored explanation of one runtime failure.
-const MaxFindingDetailBytes = 1024
+// maxFindingDetailBytes bounds the stored explanation of one runtime failure.
+const maxFindingDetailBytes = 1024
 
 func (finding PolicyFinding) Validate() error {
 	if err := finding.Violation.Validate(); err != nil {
@@ -120,9 +120,9 @@ func (finding PolicyFinding) Validate() error {
 		return fmt.Errorf("%w: a policy finding names no subject; an operator asked to fix a "+
 			"binding needs the binding", ErrIncomplete)
 	}
-	if len(finding.Detail) > MaxFindingDetailBytes {
+	if len(finding.Detail) > maxFindingDetailBytes {
 		return fmt.Errorf("%w: finding detail is %d bytes, the bound is %d",
-			ErrLimitExceeded, len(finding.Detail), MaxFindingDetailBytes)
+			ErrLimitExceeded, len(finding.Detail), maxFindingDetailBytes)
 	}
 
 	return nil
