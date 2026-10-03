@@ -40,9 +40,7 @@ func (client *client) SetWall(wall atc.Wall) error {
 }
 
 func (client *client) ClearWall() error {
-	err := client.connection.Send(internal.Request{
+	return client.connection.Send(internal.Request{
 		RequestName: atc.ClearWall,
 	}, &internal.Response{})
-
-	return err
 }
