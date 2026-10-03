@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/concourse/concourse/hangar/output"
@@ -135,10 +136,7 @@ func (reader *StatusReader) Read(ctx context.Context) (Status, error) {
 	}
 
 	status.AtRisk = len(reasons) != 0
-	for reason := range reasons {
-		status.Why = append(status.Why, reason)
-	}
-	sort.Strings(status.Why)
+	status.Why = slices.Sorted(maps.Keys(reasons))
 
 	cursor, err := reader.Repository.ReadInventoryCursorProgress(ctx, tx, reader.Bucket, reader.Epoch)
 	if err != nil {
