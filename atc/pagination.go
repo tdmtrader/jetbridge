@@ -8,7 +8,6 @@ const (
 	PaginationQueryFrom       = "from"
 	PaginationQueryTo         = "to"
 	PaginationQueryLimit      = "limit"
-	PaginationWebLimit        = 100
 	PaginationAPIDefaultLimit = 100
 
 	// PaginationAPIMaxLimit caps a caller-supplied page size. The upstream
