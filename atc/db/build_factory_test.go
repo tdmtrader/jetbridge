@@ -146,8 +146,7 @@ var _ = Describe("BuildFactory", func() {
 				err = buildFactory.MarkNonInterceptibleBuilds()
 				Expect(err).NotTo(HaveOccurred())
 
-				var i bool
-				i, err = build1.Interceptible()
+				i, err := build1.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(i).To(BeFalse())
 
