@@ -46,6 +46,7 @@ var _ = Describe("WorkerFactory", func() {
 
 	Describe("SaveWorker", func() {
 		resourceTypeIDs := func(workerName string) map[string]int {
+			GinkgoHelper()
 			ids := map[string]int{}
 			rows, err := psql.Select("w.id", "b.name").
 				From("worker_base_resource_types w").
