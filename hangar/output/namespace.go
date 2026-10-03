@@ -24,10 +24,10 @@ import (
 // rather than silently ignored.
 
 const (
-	// ScopeDomain separates the opaque scope derivation from every other hash
+	// scopeDomain separates the opaque scope derivation from every other hash
 	// in this system. Without it, two derivations over the same tenant string
 	// would agree by accident.
-	ScopeDomain = "hangar-output-scope-v1"
+	scopeDomain = "hangar-output-scope-v1"
 
 	StoreGCS  = "gcs"
 	StoreDisk = "disk"
@@ -163,7 +163,7 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 // object key that inventory lists and a receipt carries.
 func deriveScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.Scope {
 	digest := sha256.New()
-	digest.Write([]byte(ScopeDomain))
+	digest.Write([]byte(scopeDomain))
 	digest.Write([]byte{0})
 	digest.Write([]byte(tenant))
 	digest.Write([]byte{0})
