@@ -55,7 +55,6 @@ const (
 	VolumeTypeResourceCerts VolumeType = "resource-certs"
 	VolumeTypeTaskCache     VolumeType = "task-cache"
 	VolumeTypeArtifact      VolumeType = "artifact"
-	VolumeTypeUknown        VolumeType = "unknown" // for migration to life
 )
 
 type CreatingVolume interface {
