@@ -125,14 +125,14 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits TreeLim
 // allowing both long-string records and content padding for every entry.
 func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error) {
 	if maxContentBytes <= 0 {
-		return 0, fmt.Errorf("hangar: maximum content bytes must be positive")
+		return 0, errors.New("hangar: maximum content bytes must be positive")
 	}
 	if maxEntries <= 0 {
-		return 0, fmt.Errorf("hangar: maximum entries must be positive")
+		return 0, errors.New("hangar: maximum entries must be positive")
 	}
 	roundBlock := func(value int64) (int64, error) {
 		if value < 0 || value > math.MaxInt64-(tarBlockBytes-1) {
-			return 0, fmt.Errorf("hangar: canonical archive bound overflows")
+			return 0, errors.New("hangar: canonical archive bound overflows")
 		}
 		return ((value + tarBlockBytes - 1) / tarBlockBytes) * tarBlockBytes, nil
 	}
@@ -146,11 +146,11 @@ func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error)
 	}
 	perEntry := tarBlockBytes + tarBlockBytes + longNamePayload + tarBlockBytes + longLinkPayload + (tarBlockBytes - 1)
 	if maxEntries > (math.MaxInt64-2*tarBlockBytes)/perEntry {
-		return 0, fmt.Errorf("hangar: canonical archive bound overflows")
+		return 0, errors.New("hangar: canonical archive bound overflows")
 	}
 	overhead := maxEntries*perEntry + 2*tarBlockBytes
 	if maxContentBytes > math.MaxInt64-overhead {
-		return 0, fmt.Errorf("hangar: canonical archive bound overflows")
+		return 0, errors.New("hangar: canonical archive bound overflows")
 	}
 	return maxContentBytes + overhead, nil
 }
