@@ -17,6 +17,8 @@ import (
 )
 
 func tgzOf(hdrs ...tar.Header) io.Reader {
+	GinkgoHelper()
+
 	buf := new(bytes.Buffer)
 	gw := gzip.NewWriter(buf)
 	tw := tar.NewWriter(gw)
