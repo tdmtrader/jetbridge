@@ -45,7 +45,6 @@ import Message.Message exposing (Message(..))
 import Message.Subscription
     exposing
         ( Delivery(..)
-        , Interval(..)
         , Subscription(..)
         )
 import Routes
