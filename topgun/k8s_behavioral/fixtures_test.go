@@ -12,37 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureTaskWithHook returns a pipeline with a task and a single hook.
-// hookType must be one of: on_success, on_failure, on_abort, ensure.
-func fixtureTaskWithHook(jobName, hookType, mainScript, hookScript string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-    %s:
-      task: hook
-      config:
-        platform: linux
-        image_resource: {type: registry-image, source: {repository: busybox}}
-        run:
-          path: sh
-          args:
-          - -c
-          - |
-            %s
-`, jobName, mainScript, hookType, hookScript)
-}
-
 // fixtureLoadVar returns a pipeline that produces a value, loads it,
 // and uses it in a subsequent task.
 func fixtureLoadVar(jobName, varName, produceScript, consumeScript string) string {
