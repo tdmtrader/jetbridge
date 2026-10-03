@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -125,7 +126,7 @@ func (s *AliasStore) Load() (map[string]RelKey, error) {
 // written by earlier versions.
 func (s *AliasStore) relativize(value string) (RelKey, error) {
 	if value == "" {
-		return "", fmt.Errorf("value is empty")
+		return "", errors.New("value is empty")
 	}
 	if filepath.IsAbs(value) {
 		return containedRelKey(s.storagePath, value)
