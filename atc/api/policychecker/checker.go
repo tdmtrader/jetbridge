@@ -62,7 +62,8 @@ func (c *checker) Check(action string, acc accessor.Access, req *http.Request) (
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err
-		} else if len(body) > 0 {
+		}
+		if len(body) > 0 {
 			if ct == "application/json" {
 				err = json.Unmarshal(body, &input.Data)
 			} else {
