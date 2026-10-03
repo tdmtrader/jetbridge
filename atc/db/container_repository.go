@@ -133,12 +133,7 @@ func (repository *containerRepository) UpdateContainersMissingSince(workerName s
 		return err
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tx.Commit()
 }
 
 func (repository *containerRepository) FindDestroyingContainers(workerName string) ([]string, error) {
