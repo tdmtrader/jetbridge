@@ -1,7 +1,7 @@
 package db
 
 import (
-	"fmt"
+	"errors"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db/lock"
 )
@@ -103,7 +103,7 @@ func (f *pipelineFactory) PipelinesToSchedule() ([]Pipeline, error) {
 // literal name filtering and a stable, live ID page. It excludes run payloads.
 func (f *pipelineFactory) PipelinePage(teamNames []string, admin bool, team, query string, after, limit int) ([]Pipeline, error) {
 	if limit < 1 || limit > 101 || after < 0 {
-		return nil, fmt.Errorf("invalid pipeline page")
+		return nil, errors.New("invalid pipeline page")
 	}
 	q := pipelinesQuery.Where(sq.Eq{"p.pipeline_run_id": nil}).Where(sq.Gt{"p.id": after})
 	if !admin {
