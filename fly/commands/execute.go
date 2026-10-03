@@ -114,7 +114,6 @@ func (command *ExecuteCommand) Execute(args []string) error {
 	}
 
 	var build atc.Build
-	var buildURL *url.URL
 
 	if command.InputsFrom.PipelineRef.Name != "" {
 		build, err = target.Team().CreatePipelineBuild(command.InputsFrom.PipelineRef, plan)
@@ -128,7 +127,7 @@ func (command *ExecuteCommand) Execute(args []string) error {
 		}
 	}
 
-	buildURL, err = url.Parse(fmt.Sprintf("/builds/%d", build.ID))
+	buildURL, err := url.Parse(fmt.Sprintf("/builds/%d", build.ID))
 	if err != nil {
 		return err
 	}
