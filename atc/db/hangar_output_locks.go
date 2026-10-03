@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -470,7 +471,7 @@ func sortedOpaque[T ~string](ids []T) []T {
 			unique = append(unique, id)
 		}
 	}
-	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
+	slices.Sort(unique)
 
 	return unique
 }
