@@ -22,6 +22,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -91,6 +92,20 @@ func (fn ReporterFunc) ReportPass(ctx context.Context, kind output.OperationKind
 func LogPass(ctx context.Context, kind output.OperationKind, processed int, class string) {
 	lagerctx.FromContext(ctx).Info("hangar-output-pass", lager.Data{
 		"kind": string(kind), "processed": processed, "class": class,
+	})
+}
+
+// DeriveNamespace derives the output namespace an output-plane controller's
+// configuration names. The inventory and reclaimer controllers both derive
+// theirs here, from the same six flags.
+func DeriveNamespace(store, storeID, bucket, prefix, tenant string, activationEpoch int64) (output.OutputNamespace, error) {
+	return output.DeriveNamespace(output.NamespaceConfig{
+		Store:            store,
+		StoreID:          storeID,
+		Bucket:           bucket,
+		DeploymentPrefix: prefix,
+		TenantID:         tenant,
+		ActivationEpoch:  executioncontrol.ActivationEpoch(activationEpoch),
 	})
 }
 

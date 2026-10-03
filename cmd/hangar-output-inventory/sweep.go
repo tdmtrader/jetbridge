@@ -4,7 +4,7 @@ import (
 	"flag"
 	"time"
 
-	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -53,12 +53,6 @@ func (config *controllerConfig) bind(flags *flag.FlagSet) {
 }
 
 func (config controllerConfig) namespace() (output.OutputNamespace, error) {
-	return output.DeriveNamespace(output.NamespaceConfig{
-		Store:            config.Store,
-		StoreID:          config.StoreID,
-		Bucket:           config.Bucket,
-		DeploymentPrefix: config.Prefix,
-		TenantID:         config.Tenant,
-		ActivationEpoch:  executioncontrol.ActivationEpoch(config.ActivationEpoch),
-	})
+	return controller.DeriveNamespace(config.Store, config.StoreID, config.Bucket,
+		config.Prefix, config.Tenant, config.ActivationEpoch)
 }
