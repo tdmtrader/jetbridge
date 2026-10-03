@@ -2289,17 +2289,12 @@ func createBuild(tx Tx, build *build, vals map[string]any) error {
 		return err
 	}
 
-	err = scanBuild(build, buildsQuery.
+	return scanBuild(build, buildsQuery.
 		Where(sq.Eq{"b.id": buildID}).
 		RunWith(tx).
 		QueryRow(),
 		build.conn.EncryptionStrategy(),
 	)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 type startedBuildArgs struct {
