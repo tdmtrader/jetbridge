@@ -58,10 +58,6 @@ type RunState interface {
 // Typically if the ExitStatus result is 0, the Success result is true.
 type ExitStatus int
 
-// Privileged is used to indicate whether the given step should run with
-// special privileges (i.e. as an administrator user).
-type Privileged bool
-
 type InputHandler func(io.ReadCloser) error
 type OutputHandler func(io.Writer) error
 
