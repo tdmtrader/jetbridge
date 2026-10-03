@@ -220,6 +220,8 @@ func createPipeline(team db.Team, name string) db.Pipeline {
 // config, so a spec can make the job public -- atc.JobConfig.Public is real and
 // lands in jobs.public, unlike pipeline visibility which is Expose()/Hide().
 func createJobBuildWithConfig(team db.Team, pipelineName string, job atc.JobConfig) (db.Pipeline, db.Build) {
+	GinkgoHelper()
+
 	pipeline, _, err := team.SavePipeline(
 		atc.PipelineRef{Name: pipelineName},
 		atc.Config{Jobs: atc.JobConfigs{job}},
