@@ -116,6 +116,8 @@ var _ = Describe("Pipeline presenter matrix", func() {
 })
 
 func assertJSONFields(pipeline atc.Pipeline, expected map[string]any, absent []string) {
+	GinkgoHelper()
+
 	encoded, err := json.Marshal(pipeline)
 	Expect(err).NotTo(HaveOccurred())
 
