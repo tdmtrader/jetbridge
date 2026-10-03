@@ -37,11 +37,7 @@ func (command *WorkersCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(workers)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(workers)
 	}
 
 	sort.Sort(byWorkerName(workers))
