@@ -25,6 +25,7 @@ var _ = Describe("Pipeline Run cancellation API", func() {
 	// The requester is read from the verified claims, which only the real
 	// accessor carries, so these specs replace the suite's fake access.
 	callAs := func(claims map[string]any) {
+		GinkgoHelper()
 		team, found, err := database.Deps.teamFactory.FindTeam(atc.DefaultTeamName)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
