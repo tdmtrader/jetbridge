@@ -153,11 +153,7 @@ func (d *checkDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigSc
 					return nil, false, err
 				}
 				if !run {
-					err2 := lock.Release()
-					if err2 != nil {
-						return nil, false, err2
-					}
-					return nil, false, nil
+					return nil, false, lock.Release()
 				}
 				break
 			}
