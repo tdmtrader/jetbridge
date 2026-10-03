@@ -193,13 +193,8 @@ func (command *BuildsCommand) validatePipelineBuilds(builds []atc.Build, current
 }
 
 func (command *BuildsCommand) displayBuilds(builds []atc.Build) error {
-	var err error
 	if command.Json {
-		err = displayhelpers.JsonPrint(builds)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(builds)
 	}
 
 	table := ui.Table{
