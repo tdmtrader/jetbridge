@@ -36,12 +36,12 @@ type materializerHooks struct {
 // tree. It never resolves CapturedTree.Root after Capture returns.
 func (tree *CapturedTree) OpenRoot() (*os.Root, error) {
 	if tree == nil {
-		return nil, fmt.Errorf("hangar: captured tree is required")
+		return nil, errors.New("hangar: captured tree is required")
 	}
 	tree.closeMu.Lock()
 	defer tree.closeMu.Unlock()
 	if tree.closed || tree.materializationRoot == nil {
-		return nil, fmt.Errorf("hangar: captured tree is closed")
+		return nil, errors.New("hangar: captured tree is closed")
 	}
 	root, err := tree.materializationRoot.OpenRoot(".")
 	if err != nil {
