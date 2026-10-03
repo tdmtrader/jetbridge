@@ -81,6 +81,8 @@ var _ = Describe("Run evidence deletion allowances", func() {
 	})
 
 	deleteUnder := func(database *sql.DB, marker, statement string, args ...any) error {
+		GinkgoHelper()
+
 		tx, err := database.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
