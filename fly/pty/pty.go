@@ -22,9 +22,5 @@ func (p PTY) Close() error {
 		return err
 	}
 
-	if err := p.PTYW.Close(); err != nil {
-		return err
-	}
-
-	return nil
+	return p.PTYW.Close()
 }
