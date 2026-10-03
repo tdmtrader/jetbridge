@@ -131,8 +131,6 @@ func LoadTargetFromURL(url, team string, tracing bool) (Target, TargetName, erro
 }
 
 func LoadTarget(selectedTarget TargetName, tracing bool) (Target, error) {
-	var clientCertificate []tls.Certificate
-
 	targetProps, err := selectTarget(selectedTarget)
 	if err != nil {
 		return nil, err
@@ -143,7 +141,7 @@ func LoadTarget(selectedTarget TargetName, tracing bool) (Target, error) {
 		return nil, err
 	}
 
-	clientCertificate, err = loadClientCertificate(targetProps.ClientCertPath, targetProps.ClientKeyPath)
+	clientCertificate, err := loadClientCertificate(targetProps.ClientCertPath, targetProps.ClientKeyPath)
 	if err != nil {
 		return nil, err
 	}
