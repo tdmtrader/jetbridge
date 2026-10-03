@@ -14,15 +14,15 @@ var _ = Describe("PipelineRun JSON", func() {
 		completedAt := time.Unix(1700000011, 0).UTC()
 		reclaimRetryAfter := time.Unix(1700000022, 0).UTC()
 		run := atc.PipelineRun{
-			ContractVersion:    atc.RunContractV2,
-			ID:                 42,
-			TemplatePipelineID: 7,
-			Number:             3,
-			Status:             atc.RunStatusSucceeded,
-			CreatedBy:          "api-user",
-			CreatedAt:          time.Unix(1700000000, 0).UTC(),
-			CompletedAt:        &completedAt,
-			ReclaimRetryAfter:  &reclaimRetryAfter,
+			ContractVersion:   atc.RunContractV2,
+			ID:                42,
+			TemplateID:        7,
+			Number:            3,
+			Status:            atc.RunStatusSucceeded,
+			CreatedBy:         "api-user",
+			CreatedAt:         time.Unix(1700000000, 0).UTC(),
+			CompletedAt:       &completedAt,
+			ReclaimRetryAfter: &reclaimRetryAfter,
 		}
 
 		encoded, err := json.Marshal(run)
@@ -46,15 +46,15 @@ var _ = Describe("PipelineRun JSON", func() {
 		completedAt := time.Unix(1700000011, 0).UTC()
 		reclaimRetryAfter := time.Unix(1700000022, 0).UTC()
 		run := atc.PipelineRun{
-			ContractVersion:    atc.RunContractV2,
-			ID:                 42,
-			TemplatePipelineID: 7,
-			Number:             3,
-			Status:             atc.RunStatusSucceeded,
-			CreatedBy:          "api-user",
-			CreatedAt:          time.Unix(1700000000, 0).UTC(),
-			CompletedAt:        &completedAt,
-			ReclaimRetryAfter:  &reclaimRetryAfter,
+			ContractVersion:   atc.RunContractV2,
+			ID:                42,
+			TemplateID:        7,
+			Number:            3,
+			Status:            atc.RunStatusSucceeded,
+			CreatedBy:         "api-user",
+			CreatedAt:         time.Unix(1700000000, 0).UTC(),
+			CompletedAt:       &completedAt,
+			ReclaimRetryAfter: &reclaimRetryAfter,
 		}
 
 		encoded, err := json.Marshal(run)

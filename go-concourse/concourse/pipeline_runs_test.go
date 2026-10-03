@@ -224,13 +224,13 @@ var _ = Describe("Pipeline runs client", func() {
 func pipelineRun(number int) atc.PipelineRun {
 	params := atc.Params{"enabled": true, "retries": 2.0, "branch": "main"}
 	return atc.PipelineRun{
-		ID:                 number,
-		TemplatePipelineID: 1,
-		Number:             number,
-		Params:             &params,
-		Status:             atc.RunStatusRunning,
-		CreatedBy:          "some-user",
-		CreatedAt:          time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC),
+		ID:         number,
+		TemplateID: 1,
+		Number:     number,
+		Params:     &params,
+		Status:     atc.RunStatusRunning,
+		CreatedBy:  "some-user",
+		CreatedAt:  time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC),
 	}
 }
 

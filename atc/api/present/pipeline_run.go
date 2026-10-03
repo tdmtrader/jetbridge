@@ -17,16 +17,16 @@ type PipelineRunOptions struct {
 // a child reference itself.
 func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineRunOptions) atc.PipelineRun {
 	atcRun := atc.PipelineRun{
-		ContractVersion:    savedRun.ContractVersion(),
-		ActivationEpoch:    savedRun.ActivationEpoch(),
-		ID:                 savedRun.ID(),
-		TemplatePipelineID: savedRun.TemplatePipelineID(),
-		Number:             savedRun.Number(),
-		Status:             savedRun.Status(),
-		CreatedBy:          savedRun.CreatedBy(),
-		CreatedAt:          savedRun.CreatedAt(),
-		CompletedAt:        savedRun.CompletedAt(),
-		Reclaimed:          payload == nil,
+		ContractVersion: savedRun.ContractVersion(),
+		ActivationEpoch: savedRun.ActivationEpoch(),
+		ID:              savedRun.ID(),
+		TemplateID:      savedRun.TemplatePipelineID(),
+		Number:          savedRun.Number(),
+		Status:          savedRun.Status(),
+		CreatedBy:       savedRun.CreatedBy(),
+		CreatedAt:       savedRun.CreatedAt(),
+		CompletedAt:     savedRun.CompletedAt(),
+		Reclaimed:       payload == nil,
 	}
 
 	if options.AuthorizedForCancellation {

@@ -58,20 +58,20 @@ type PipelineRun struct {
 	// CausedByRun and Correlation are birth-time caller intent, presented only
 	// to callers authorized for the template's team history. A caused_by_run
 	// whose predecessor was purged is an unresolved-predecessor marker.
-	CausedByRun        *int                `json:"caused_by_run,omitempty"`
-	Correlation        string              `json:"correlation,omitempty"`
-	ID                 int                 `json:"id"`
-	TemplatePipelineID int                 `json:"template_pipeline_id"`
-	Number             int                 `json:"number"`
-	Params             *Params             `json:"params,omitempty"`
-	Status             RunStatus           `json:"status"`
-	CreatedBy          string              `json:"created_by"`
-	CreatedAt          time.Time           `json:"created_at"`
-	CompletedAt        *time.Time          `json:"completed_at,omitempty"`
-	ReclaimRetryAfter  *time.Time          `json:"reclaim_retry_after,omitempty"`
-	ConfigHash         *string             `json:"config_hash,omitempty"`
-	Reclaimed          bool                `json:"reclaimed"`
-	InstanceRef        *PipelineIdentifier `json:"instance_ref,omitempty"`
+	CausedByRun       *int                `json:"caused_by_run,omitempty"`
+	Correlation       string              `json:"correlation,omitempty"`
+	ID                int                 `json:"id"`
+	TemplateID        int                 `json:"template_pipeline_id"`
+	Number            int                 `json:"number"`
+	Params            *Params             `json:"params,omitempty"`
+	Status            RunStatus           `json:"status"`
+	CreatedBy         string              `json:"created_by"`
+	CreatedAt         time.Time           `json:"created_at"`
+	CompletedAt       *time.Time          `json:"completed_at,omitempty"`
+	ReclaimRetryAfter *time.Time          `json:"reclaim_retry_after,omitempty"`
+	ConfigHash        *string             `json:"config_hash,omitempty"`
+	Reclaimed         bool                `json:"reclaimed"`
+	InstanceRef       *PipelineIdentifier `json:"instance_ref,omitempty"`
 }
 
 type pipelineRunAlias PipelineRun
