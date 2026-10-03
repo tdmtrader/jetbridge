@@ -46,7 +46,6 @@ module Colors exposing
     , paginationHover
     , paused
     , pausedFaded
-    , pausedTextFaded
     , pending
     , pendingFaded
     , pendingTextFaded
@@ -288,11 +287,6 @@ paused =
 pausedFaded : String
 pausedFaded =
     ColorValues.paused70
-
-
-pausedTextFaded : String
-pausedTextFaded =
-    ColorValues.paused20
 
 
 pending : String
