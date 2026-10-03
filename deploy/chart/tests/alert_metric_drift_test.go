@@ -292,13 +292,3 @@ func TestEveryAtRiskTransitionIsCoveredByARenderedAlert(t *testing.T) {
 	}
 
 }
-
-func hasExpressionOver(exprs map[string]string, metric string) bool {
-	for _, expr := range exprs {
-		if strings.Contains(expr, metric) {
-			return true
-		}
-	}
-
-	return false
-}
