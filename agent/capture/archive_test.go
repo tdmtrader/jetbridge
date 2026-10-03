@@ -38,7 +38,7 @@ func TestWriteArchiveStreamsTheInventoryAndRefusesChanges(t *testing.T) {
 			case "missing":
 				os.Remove(parser)
 			case "manifest":
-				inv.Files[ManifestFile] = Entry{Digest: Digest(nil), Size: 0}
+				inv.Files[manifestFile] = Entry{Digest: Digest(nil), Size: 0}
 			}
 			root, err := os.OpenRoot(dest)
 			if err != nil {
@@ -84,8 +84,8 @@ func TestWriteArchiveStreamsTheInventoryAndRefusesChanges(t *testing.T) {
 				}
 				got[h.Name], order = data, append(order, h.Name)
 			}
-			if !bytes.Equal(got["sealed/"+ManifestFile], manifest) {
-				t.Fatalf("manifest %q", got["sealed/"+ManifestFile])
+			if !bytes.Equal(got["sealed/"+manifestFile], manifest) {
+				t.Fatalf("manifest %q", got["sealed/"+manifestFile])
 			}
 			if !bytes.Equal(got["sealed/base/parser.go"], original) {
 				t.Fatalf("parser.go %q", got["sealed/base/parser.go"])

@@ -9,8 +9,8 @@ import (
 	"sort"
 )
 
-// ManifestFile is the name every sealed input gives its manifest.
-const ManifestFile = "manifest.json"
+// manifestFile is the name every sealed input gives its manifest.
+const manifestFile = "manifest.json"
 
 // ErrChangedDuringUpload reports a sealed input whose files no longer match
 // the digests its loader recorded.
@@ -25,9 +25,9 @@ var ErrChangedDuringUpload = errors.New("input changed during upload")
 // archive root, outside dir.
 func WriteArchive(ctx context.Context, destination io.Writer, root *os.Root, dir string, manifest []byte, inv Inventory) error {
 	names := make([]string, 0, len(inv.Files)+1)
-	names = append(names, ManifestFile)
+	names = append(names, manifestFile)
 	for name := range inv.Files {
-		if name == ManifestFile {
+		if name == manifestFile {
 			return errors.New("an inventory file cannot replace the manifest")
 		}
 		names = append(names, name)
@@ -39,7 +39,7 @@ func WriteArchive(ctx context.Context, destination io.Writer, root *os.Root, dir
 			return err
 		}
 		data := manifest
-		if name != ManifestFile {
+		if name != manifestFile {
 			want := inv.Files[name]
 			limit := want.Limit
 			if limit == 0 {
