@@ -201,6 +201,7 @@ func insertIntoEncryptedColumn(db *sql.DB, strategy encryption.Strategy, name st
 }
 
 func isEncryptedWith(db *sql.DB, strategy encryption.Strategy, name string) bool {
+	GinkgoHelper()
 	var (
 		ciphertext string
 		nonce      *string
