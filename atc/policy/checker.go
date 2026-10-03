@@ -90,15 +90,15 @@ type Agent interface {
 	Check(PolicyCheckInput) (PolicyCheckResult, error)
 }
 
-type AgentFactory interface {
+type agentFactory interface {
 	Description() string
 	IsConfigured() bool
 	NewAgent(lager.Logger) (Agent, error)
 }
 
-var agentFactories []AgentFactory
+var agentFactories []agentFactory
 
-func RegisterAgent(factory AgentFactory) {
+func RegisterAgent(factory agentFactory) {
 	agentFactories = append(agentFactories, factory)
 }
 
