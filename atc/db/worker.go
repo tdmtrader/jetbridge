@@ -14,11 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-type ContainerOwnerDisappearedError struct {
+type containerOwnerDisappearedError struct {
 	owner ContainerOwner
 }
 
-func (e ContainerOwnerDisappearedError) Error() string {
+func (e containerOwnerDisappearedError) Error() string {
 	return fmt.Sprintf("container owner %T disappeared", e.owner)
 }
 
@@ -176,7 +176,7 @@ func (worker *worker) CreateContainer(owner ContainerOwner, meta ContainerMetada
 		Scan(cols...)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.ForeignKeyViolation {
-			return nil, ContainerOwnerDisappearedError{owner}
+			return nil, containerOwnerDisappearedError{owner}
 		}
 
 		return nil, fmt.Errorf("insert container: %w", err)
