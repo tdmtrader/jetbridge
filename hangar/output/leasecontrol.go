@@ -39,13 +39,6 @@ import (
 // LeaseControlDomain separates a lease question from every other signature.
 const LeaseControlDomain = "hangar-output-lease-control-v1"
 
-// LeaseControlFacet is the authorization surface of the reverse direction.
-//
-// It is not CaptureFacet: a capture capability authorizes operations on a
-// source incarnation, and nothing about a consumer's read should be reachable
-// with one.
-const LeaseControlFacet executioncontrol.Facet = "durable-output-read-lease"
-
 // LeaseOperation is the closed set.
 type LeaseOperation string
 
