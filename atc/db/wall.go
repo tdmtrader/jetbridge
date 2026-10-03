@@ -54,12 +54,7 @@ func (w wall) SetWall(wall atc.Wall) error {
 		return err
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tx.Commit()
 }
 
 func (w wall) GetWall() (atc.Wall, error) {
