@@ -397,8 +397,7 @@ var _ = Describe("BuildLogCollector", func() {
 			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
 			expectRunEventPresence(builds, []bool{false, false, true, true, true, true})
 
-			var err error
-			template, _, err = defaultTeam.SavePipeline(template.PipelineRef(), atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "other", BuildLogRetention: &atc.BuildLogRetention{Builds: 1}}}}, template.ConfigVersion(), false)
+			template, _, err := defaultTeam.SavePipeline(template.PipelineRef(), atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "other", BuildLogRetention: &atc.BuildLogRetention{Builds: 1}}}}, template.ConfigVersion(), false)
 			Expect(err).NotTo(HaveOccurred())
 			runBuildLogCollector(2, NewBuildLogRetentionCalculator(0, 0, 0, 0), false)
 			expectRunEventPresence(builds, []bool{false, false, true, true, true, true})
