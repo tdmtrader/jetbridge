@@ -145,9 +145,3 @@ const (
 	OpList   Operation = "objects.list"
 	OpDelete Operation = "objects.delete"
 )
-
-// Operations is the closed set, so an assertion over "every RPC" can say it
-// read them all.
-func Operations() []Operation {
-	return []Operation{OpCreate, OpStat, OpRead, OpList, OpDelete}
-}
