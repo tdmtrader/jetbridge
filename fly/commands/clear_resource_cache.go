@@ -60,8 +60,8 @@ func (command *ClearResourceCacheCommand) Execute(args []string) error {
 
 	if err != nil {
 		return err
-	} else {
-		fmt.Printf("%d caches removed\n", numRemoved)
-		return nil
 	}
+
+	fmt.Printf("%d caches removed\n", numRemoved)
+	return nil
 }
