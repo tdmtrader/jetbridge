@@ -206,10 +206,5 @@ func (connection *connection) populateResponse(response *http.Response, returnRe
 		return nil
 	}
 
-	err := json.NewDecoder(response.Body).Decode(passedResponse.Result)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return json.NewDecoder(response.Body).Decode(passedResponse.Result)
 }
