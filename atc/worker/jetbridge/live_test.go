@@ -6,6 +6,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/onsi/gomega"
@@ -124,10 +126,28 @@ func useLiveJetbridgeDB(t *testing.T) jetbridgeDB {
 			})
 		})
 	}
-	return jetbridgeDB{WorkerFactory: db.NewWorkerFactory(
+	return jetbridgeDB{Conn: conn, WorkerFactory: db.NewWorkerFactory(
 		conn,
 		db.NewStaticWorkerCache(lager.NewLogger("live-jetbridge-test"), conn, 0),
 	)}
+}
+
+// withLiveBuilds adds the team and build factories a test needs to own its
+// step pods with real builds, over the same database. Their lock connections
+// close with the test.
+func withLiveBuilds(t *testing.T, database jetbridgeDB) jetbridgeDB {
+	t.Helper()
+	var lockConns [lock.FactoryCount]*sql.DB
+	for i := range lockConns {
+		lockConns[i] = livePostgresRunner.OpenSingleton()
+		lockConn := lockConns[i]
+		t.Cleanup(func() { _ = lockConn.Close() })
+	}
+	lockFactory := lock.NewLockFactory(lockConns, func(lager.Logger, lock.LockID) {}, func(lager.Logger, lock.LockID) {})
+	database.LockFactory = lockFactory
+	database.TeamFactory = db.NewTeamFactory(database.Conn, lockFactory)
+	database.BuildFactory = db.NewBuildFactory(database.Conn, lockFactory, 0, time.Hour)
+	return database
 }
 
 // openLiveDB creates the test database from the template. A leftover from a

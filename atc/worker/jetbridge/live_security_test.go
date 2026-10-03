@@ -4,7 +4,9 @@
 package jetbridge_test
 
 import (
+	"bytes"
 	"context"
+	"github.com/concourse/concourse/atc"
 	"testing"
 	"time"
 
@@ -31,14 +33,14 @@ func setupLiveWorkerWithConfig(t *testing.T, cfgMutator func(*jetbridge.Config))
 		t.Fatalf("creating rest config: %v", err)
 	}
 
-	database := useLiveJetbridgeDB(t)
+	database := withLiveBuilds(t, useLiveJetbridgeDB(t))
 	dbWorker, err := persistNamedWorker(database, "live-k8s-worker")
 	if err != nil {
 		t.Fatalf("persisting worker: %v", err)
 	}
 
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
-	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, jetbridge.WorkerDeps{Executor: executor})
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, jetbridge.WorkerDeps{Executor: executor, StepPodBuilds: database.BuildFactory})
 
 	return worker, nil, database
 }
@@ -196,71 +198,117 @@ func TestLiveSecureDefaults(t *testing.T) {
 	t.Logf("secure defaults verified on pod spec")
 }
 
-// TestLiveServiceAccount verifies that the serviceAccountName configured in
-// Config is applied to created pods.
+// TestLiveServiceAccount checks the default step pod identity on a real
+// kubelet. A task with a sidecar, in a job no grant maps, runs on a worker
+// whose configuration grants a different job. Its pod names the default
+// ServiceAccount with no API token: neither the main container nor the
+// sidecar finds a token file, and an API request from the task is refused as
+// unauthenticated.
 func TestLiveServiceAccount(t *testing.T) {
 	handle := "live-sa-" + time.Now().Format("150405")
 	clientset, cfg := kubeClient(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
-	cleanupPod(t, clientset, cfg.Namespace, handle)
-
-	// Use the "default" service account since it always exists.
 	worker, delegate, database := setupLiveWorkerWithConfig(t, func(c *jetbridge.Config) {
 		c.ServiceAccount = "default"
+		grant, err := jetbridge.ParseStepPodGrant("name=other,owner=main/live-sa/granted,service-account=live-sa-granted")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.StepPodGrants = []jetbridge.StepPodGrant{grant}
 	})
 
-	container, _, err := worker.FindOrCreateContainer(
-		ctx,
+	team, found, err := database.TeamFactory.FindTeam("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		if team, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := atc.JobConfig{Name: "unmapped", PlanSequence: []atc.Step{{Config: &atc.TaskStep{Name: "t",
+		Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}}}}}}
+	granted := task
+	granted.Name = "granted"
+	pipeline, _, err := team.SavePipeline(atc.PipelineRef{Name: "live-sa"}, atc.Config{Jobs: atc.JobConfigs{task, granted}}, db.ConfigVersion(0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, found, err := pipeline.Job("unmapped")
+	if err != nil || !found {
+		t.Fatalf("job unmapped: found=%v err=%v", found, err)
+	}
+	build, err := job.CreateBuild("live-sa")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The sidecar runs the token check as its own command and stays up only
+	// if it passes; RestartPolicy Never leaves a failure Terminated.
+	const tokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	container, _, err := worker.FindOrCreateContainer(ctx,
 		db.NewFixedHandleContainerOwner(handle),
-		db.ContainerMetadata{Type: db.ContainerTypeTask},
+		db.ContainerMetadata{Type: db.ContainerTypeTask, BuildID: build.ID(), BuildName: build.Name(),
+			PipelineID: pipeline.ID(), PipelineName: pipeline.Name(), JobID: job.ID(), JobName: job.Name()},
 		runtime.ContainerSpec{
-			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+			TeamID:    team.ID(),
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///alpine"},
+			Sidecars: []atc.SidecarConfig{{Name: "probe", Image: "alpine",
+				Command: []string{"sh", "-c", "test ! -e " + tokenPath + " && exec sleep 600"}}},
 		},
 		delegate,
 	)
 	if err != nil {
 		t.Fatalf("FindOrCreateContainer: %v", err)
 	}
-	persisted, found, err := database.WorkerFactory.GetWorker("live-k8s-worker")
-	if err != nil {
-		t.Fatalf("getting persisted worker: %v", err)
-	}
-	if !found {
-		t.Fatal("persisted worker not found")
-	}
-	creating, created, err := persisted.FindContainer(db.NewFixedHandleContainerOwner(handle))
-	if err != nil {
-		t.Fatalf("finding persisted container: %v", err)
-	}
-	if creating != nil {
-		t.Fatalf("expected no creating container, got %T", creating)
-	}
-	if created == nil {
-		t.Fatal("persisted created container not found")
-	}
-	if created.Handle() != handle {
-		t.Fatalf("persisted container handle = %q, want %q", created.Handle(), handle)
-	}
+	cleanupPod(t, clientset, cfg.Namespace, jetbridge.GeneratePodName(db.ContainerMetadata{Type: db.ContainerTypeTask,
+		BuildID: build.ID(), BuildName: build.Name(), PipelineID: pipeline.ID(), PipelineName: pipeline.Name(),
+		JobID: job.ID(), JobName: job.Name()}, handle))
 
-	_, err = container.Run(ctx, runtime.ProcessSpec{
-		Path: "/bin/sh",
-		Args: []string{"-c", "echo sa-test"},
-	}, runtime.ProcessIO{})
+	// Alpine's wget speaks TLS through ssl_client. A request with no
+	// credentials is answered 401 or 403; reaching the API at all with a
+	// 2xx would mean some identity was presented.
+	script := `set -u
+test ! -e ` + tokenPath + ` || { echo "a token is mounted"; exit 91; }
+out=$(wget -q -O- --no-check-certificate https://kubernetes.default.svc/api 2>&1) && { echo "the API answered: $out"; exit 92; }
+echo "$out" | grep -qE '40[13]' || { echo "unexpected API failure: $out"; exit 93; }
+`
+	var stdout bytes.Buffer
+	process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", script}},
+		runtime.ProcessIO{Stdout: &stdout, Stderr: &stdout})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-
-	time.Sleep(time.Second)
-
-	pod, err := clientset.CoreV1().Pods(cfg.Namespace).Get(ctx, handle, metav1.GetOptions{})
+	result, err := process.Wait(ctx)
 	if err != nil {
-		t.Fatalf("getting pod: %v", err)
+		t.Fatalf("Wait: %v", err)
+	}
+	if result.ExitStatus != 0 {
+		t.Fatalf("the main container's check exited %d: %s", result.ExitStatus, stdout.String())
 	}
 
-	if pod.Spec.ServiceAccountName != "default" {
-		t.Fatalf("expected serviceAccountName 'default', got %q", pod.Spec.ServiceAccountName)
+	pods, err := clientset.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "concourse.ci/handle=" + handle})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("the step's pod: %d found, err %v", len(pods.Items), err)
 	}
-	t.Logf("serviceAccountName=%s confirmed on pod spec", pod.Spec.ServiceAccountName)
+	pod := pods.Items[0]
+	if pod.Spec.ServiceAccountName != "default" {
+		t.Fatalf("serviceAccountName = %q, want the default identity's %q", pod.Spec.ServiceAccountName, "default")
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatalf("automountServiceAccountToken = %v, want false", pod.Spec.AutomountServiceAccountToken)
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name != "probe" {
+			continue
+		}
+		if status.State.Running == nil {
+			t.Fatalf("the sidecar is not running (its token check failed?): %+v", status.State)
+		}
+		t.Logf("default identity confirmed: no token in main or sidecar, the API refused the task")
+		return
+	}
+	t.Fatalf("the pod has no probe sidecar status: %+v", pod.Status.ContainerStatuses)
 }
