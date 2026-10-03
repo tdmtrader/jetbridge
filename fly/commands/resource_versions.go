@@ -47,11 +47,7 @@ func (command *ResourceVersionsCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(versions)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(versions)
 	}
 
 	table := ui.Table{
