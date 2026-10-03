@@ -558,9 +558,9 @@ var _ = Describe("Resource", func() {
 			var prevBuild db.Build
 
 			BeforeEach(func() {
+				By("creating a completed build")
 				var err error
 				var prevCreated bool
-				By("creating a completed build")
 				prevBuild, prevCreated, err = defaultResource.CreateBuild(ctx, false, plan)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(prevCreated).To(BeTrue())
