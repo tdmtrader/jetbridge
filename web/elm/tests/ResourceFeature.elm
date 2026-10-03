@@ -3,7 +3,6 @@ module ResourceFeature exposing (all)
 import Application.Application as Application
 import Common exposing (and, given, then_, when)
 import Data
-import Dict
 import Expect
 import Html.Attributes as Attr
 import Message.Callback as Callback
