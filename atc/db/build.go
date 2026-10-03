@@ -31,7 +31,6 @@ import (
 
 const schema = "exec.v2"
 
-var ErrAdoptRerunBuildHasNoInputs = errors.New("inputs not ready for build to rerun")
 var ErrSetByNewerBuild = errors.New("pipeline set by a newer build")
 
 type BuildInput struct {
