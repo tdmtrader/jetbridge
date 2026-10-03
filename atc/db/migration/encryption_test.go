@@ -215,6 +215,7 @@ func isEncryptedWith(db *sql.DB, strategy encryption.Strategy, name string) bool
 
 // createKey generates an encryption.Key from a 32 characters key
 func createKey(key string) *encryption.Key {
+	GinkgoHelper()
 	k := []byte(key)
 
 	block, err := aes.NewCipher(k)
