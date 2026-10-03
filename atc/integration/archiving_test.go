@@ -83,6 +83,8 @@ func givenAPipeline(client concourse.Client, pipelineRef atc.PipelineRef) {
 }
 
 func whenIUnpauseIt(client concourse.Client, pipelineRef atc.PipelineRef) {
+	GinkgoHelper()
+
 	_, err := client.Team("main").UnpausePipeline(pipelineRef)
 	Expect(err).ToNot(HaveOccurred())
 }
