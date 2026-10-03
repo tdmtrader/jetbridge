@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"github.com/concourse/concourse/go-concourse/concourse"
 	"os"
 	"strconv"
 
@@ -32,8 +31,7 @@ func (command *CheckResourceCommand) Execute(args []string) error {
 		return err
 	}
 
-	var team concourse.Team
-	team, err = command.Team.LoadTeam(target)
+	team, err := command.Team.LoadTeam(target)
 	if err != nil {
 		return err
 	}
