@@ -107,7 +107,7 @@ func (command *RunPipelineCommand) run(client pipelineRunCreator, targetURL, tea
 	if run.InstanceRef == nil {
 		return nil
 	}
-	payloadURL, err := payloadPipelineURL(targetURL, teamName, *run.InstanceRef)
+	payloadURL, err := payloadPageURL(targetURL, teamName, *run.InstanceRef)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func pipelineRunURL(targetURL, teamName, templateName string, number int) (strin
 	return runURL.String(), nil
 }
 
-func payloadPipelineURL(targetURL, teamName string, identifier atc.PipelineIdentifier) (string, error) {
+func payloadPageURL(targetURL, teamName string, identifier atc.PipelineIdentifier) (string, error) {
 	payloadURL, err := url.Parse(targetURL)
 	if err != nil {
 		return "", err
