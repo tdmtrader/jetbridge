@@ -507,6 +507,7 @@ var _ = Describe("Migration", func() {
 // making these tests tightly coupled to Concourse instead of being a generic
 // migration package
 func hackyRealMigrationsFS(migrations ...string) fs.FS {
+	GinkgoHelper()
 	fs := fstest.MapFS{}
 
 	for _, m := range migrations {
