@@ -35,10 +35,7 @@ type resourceAPITeamFactory struct {
 }
 
 func (factory resourceAPITeamFactory) FindTeam(name string) (db.Team, bool, error) {
-	if name == factory.teamName {
-		return factory.team, true, nil
-	}
-	return factory.TeamFactory.FindTeam(name)
+	return findSuppliedTeam(factory.TeamFactory, factory.teamName, factory.team, name)
 }
 
 type resourceAPITeam struct {

@@ -334,3 +334,10 @@ func cloneAPIPage(page db.Page) db.Page {
 	}
 	return cloned
 }
+
+func findSuppliedTeam(factory db.TeamFactory, teamName string, team db.Team, name string) (db.Team, bool, error) {
+	if name == teamName {
+		return team, true, nil
+	}
+	return factory.FindTeam(name)
+}

@@ -32,10 +32,7 @@ type ccAPITeamFactoryResult struct {
 }
 
 func (factory ccAPITeamFactoryResult) FindTeam(name string) (db.Team, bool, error) {
-	if name == factory.teamName {
-		return factory.team, true, nil
-	}
-	return factory.TeamFactory.FindTeam(name)
+	return findSuppliedTeam(factory.TeamFactory, factory.teamName, factory.team, name)
 }
 
 // ccAPITeamPipelinesResult preserves a healthy real team while routing one
