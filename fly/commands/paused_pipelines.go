@@ -42,11 +42,7 @@ func (command *PausedPipelinesCommand) Execute([]string) error {
 	pipelines = command.filter(pipelines)
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(pipelines)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(pipelines)
 	}
 	return command.render(pipelines)
 }
