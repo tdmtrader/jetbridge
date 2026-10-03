@@ -537,7 +537,7 @@ func savePipelineWithOptions(
 		return 0, false, err
 	}
 	if len(declarations) > 0 && !config.Template && !options.pipelineRunID.Valid {
-		return 0, false, fmt.Errorf("task_id and run_result are only valid on templates")
+		return 0, false, errors.New("task_id and run_result are only valid on templates")
 	}
 
 	var instanceVars sql.NullString
