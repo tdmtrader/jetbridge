@@ -535,7 +535,7 @@ func exactlyOne(ctx context.Context, tx *sql.Tx, statement string, arguments ...
 		return err
 	}
 	if affected != 1 {
-		return fmt.Errorf("the row was not in the state this transition needs")
+		return errors.New("the row was not in the state this transition needs")
 	}
 
 	return nil
