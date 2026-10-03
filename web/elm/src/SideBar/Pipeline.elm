@@ -5,7 +5,7 @@ import Concourse
 import Dict
 import Favorites
 import HoverState
-import Message.Message exposing (DomID(..), Message(..), PipelinesSection(..))
+import Message.Message exposing (DomID(..), PipelinesSection(..))
 import Routes
 import Set exposing (Set)
 import SideBar.Styles as Styles
