@@ -43,13 +43,8 @@ func (c *component) Reload() (bool, error) {
 }
 
 func scanComponent(c *component, row scannable) error {
-	err := row.Scan(
+	return row.Scan(
 		&c.id,
 		&c.name,
 	)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
