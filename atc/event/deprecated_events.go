@@ -75,10 +75,9 @@ type OriginV10 struct {
 type OriginV10Type string
 
 const (
-	OriginV10TypeInvalid OriginV10Type = ""
-	OriginV10TypeInput   OriginV10Type = "input"
-	OriginV10TypeOutput  OriginV10Type = "output"
-	OriginV10TypeRun     OriginV10Type = "run"
+	OriginV10TypeInput  OriginV10Type = "input"
+	OriginV10TypeOutput OriginV10Type = "output"
+	OriginV10TypeRun    OriginV10Type = "run"
 )
 
 type OriginV20 struct {
