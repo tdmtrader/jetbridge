@@ -1086,10 +1086,7 @@ func (t *team) OrderPipelinesWithinGroup(groupName string, instanceVars []atc.In
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
+	return tx.Commit()
 }
 
 // CreateOneOffBuild creates a build not associated with any job (one-off builds).
