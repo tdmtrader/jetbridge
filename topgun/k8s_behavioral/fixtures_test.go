@@ -51,30 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureDoStep returns a pipeline with a do block containing sequential tasks.
-func fixtureDoStep(jobName string, taskScripts map[string]string) string {
-	tasks := ""
-	for name, script := range taskScripts {
-		tasks += fmt.Sprintf(`    - task: %s
-      config:
-        platform: linux
-        image_resource: {type: registry-image, source: {repository: busybox}}
-        run:
-          path: sh
-          args:
-          - -c
-          - |
-            %s
-`, name, script)
-	}
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - do:
-%s`, jobName, tasks)
-}
-
 // fixtureAcrossStep returns a pipeline with a task using across with
 // static values.
 func fixtureAcrossStep(jobName, varName string, values []string, script string) string {
