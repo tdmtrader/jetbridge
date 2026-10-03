@@ -173,9 +173,9 @@ func (builder Builder) WithCreatedContainer(workerName string, owner db.Containe
 func (builder Builder) createVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) (db.CreatingVolume, error) {
 	if handle == "" {
 		return builder.VolumeRepo.CreateVolume(teamID, workerName, volumeType)
-	} else {
-		return builder.VolumeRepo.CreateVolumeWithHandle(handle, teamID, workerName, volumeType)
 	}
+
+	return builder.VolumeRepo.CreateVolumeWithHandle(handle, teamID, workerName, volumeType)
 }
 
 func (builder Builder) WithCreatingVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) SetupFunc {
