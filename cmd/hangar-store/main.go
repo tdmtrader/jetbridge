@@ -46,13 +46,13 @@ func run(args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected positional argument")
+		return errors.New("unexpected positional argument")
 	}
 	if *initialize {
 		return disk.Initialize(*root, *id)
 	}
 	if *cert == "" || *key == "" || *credentials == "" || *timeout <= 0 {
-		return fmt.Errorf("TLS certificate/key, credentials file and positive timeout required")
+		return errors.New("TLS certificate/key, credentials file and positive timeout required")
 	}
 	f, err := os.Open(*credentials)
 	if err != nil {
