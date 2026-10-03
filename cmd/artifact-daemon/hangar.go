@@ -121,31 +121,31 @@ func validateHangarOptions(opts hangarOptions, storagePath string) error {
 		return nil
 	}
 	if opts.TLSCert == "" || opts.TLSKey == "" || opts.TLSCACert == "" {
-		return fmt.Errorf("Hangar requires --tls-cert, --tls-key, and --tls-ca-cert")
+		return errors.New("Hangar requires --tls-cert, --tls-key, and --tls-ca-cert")
 	}
 	if opts.Store == "" {
 		opts.Store = opts.DurableKind
 	}
 	if opts.Store != "gcs" && opts.Store != "disk" {
-		return fmt.Errorf("Hangar requires --hangar-store=gcs or disk (legacy --durable-store=gcs)")
+		return errors.New("Hangar requires --hangar-store=gcs or disk (legacy --durable-store=gcs)")
 	}
 	if opts.Store == "disk" && (opts.StoreID == "" || opts.Endpoint == "" || opts.TokenFile == "") {
-		return fmt.Errorf("disk Hangar requires --hangar-store-id, --hangar-endpoint and --hangar-token-file")
+		return errors.New("disk Hangar requires --hangar-store-id, --hangar-endpoint and --hangar-token-file")
 	}
 	if opts.Bucket == "" {
-		return fmt.Errorf("Hangar requires --hangar-bucket (or legacy --durable-bucket)")
+		return errors.New("Hangar requires --hangar-bucket (or legacy --durable-bucket)")
 	}
 	if !filepath.IsAbs(opts.ScratchDir) {
-		return fmt.Errorf("--hangar-scratch-dir must be absolute")
+		return errors.New("--hangar-scratch-dir must be absolute")
 	}
 	if opts.MaxContentBytes <= 0 || opts.MaxEntries <= 0 {
-		return fmt.Errorf("Hangar content and entry limits must be positive")
+		return errors.New("Hangar content and entry limits must be positive")
 	}
 	if opts.WarrantTTL <= 0 || opts.WarrantTTL > hangar.MaxWarrantTTL {
 		return fmt.Errorf("--hangar-warrant-ttl must be positive and no greater than %s", hangar.MaxWarrantTTL)
 	}
 	if opts.Timeout <= 0 {
-		return fmt.Errorf("Hangar store timeout must be positive")
+		return errors.New("Hangar store timeout must be positive")
 	}
 	if err := validatePrivateHangarScratch(opts.ScratchDir, storagePath); err != nil {
 		return err
@@ -155,7 +155,7 @@ func validateHangarOptions(opts hangarOptions, storagePath string) error {
 		return fmt.Errorf("read --hangar-warrant-key: %w", err)
 	}
 	if len(key) != 32 {
-		return fmt.Errorf("--hangar-warrant-key must contain exactly 32 raw bytes")
+		return errors.New("--hangar-warrant-key must contain exactly 32 raw bytes")
 	}
 	return nil
 }
