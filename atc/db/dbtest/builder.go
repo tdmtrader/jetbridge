@@ -21,7 +21,6 @@ const BaseResourceType = "global-base-type"
 const BaseResourceTypeVersion = "some-global-type-version"
 
 const UniqueBaseResourceType = "unique-base-type"
-const UniqueBaseResourceTypeVersion = "some-unique-type-version"
 
 func BaseWorker(name string) atc.Worker {
 	return atc.Worker{
