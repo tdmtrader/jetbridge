@@ -5,7 +5,6 @@ module Build.StepTree.Models exposing
     , MetadataField
     , Origin
     , Step
-    , StepFocus
     , StepName
     , StepState(..)
     , StepTree(..)
@@ -74,10 +73,6 @@ type alias HookedStep =
     { step : StepTree
     , hook : StepTree
     }
-
-
-type alias StepFocus =
-    (StepTree -> StepTree) -> StepTree -> StepTree
 
 
 type alias Step =
