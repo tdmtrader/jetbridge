@@ -12,42 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureLoadVar returns a pipeline that produces a value, loads it,
-// and uses it in a subsequent task.
-func fixtureLoadVar(jobName, varName, produceScript, consumeScript string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: produce
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      outputs:
-      - name: values
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-  - load_var: %s
-    file: values/val.txt
-  - task: consume
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      params:
-        LOADED: ((.:%s))
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, produceScript, varName, varName, consumeScript)
-}
-
 // fixtureLoadVarJSON returns a pipeline that produces JSON, loads it
 // with format: json, and uses a nested key in a task.
 func fixtureLoadVarJSON(jobName, varName, jsonContent, consumeScript string) string {
