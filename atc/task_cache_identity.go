@@ -1,6 +1,6 @@
 package atc
 
-import "fmt"
+import "errors"
 
 // TaskCacheIdentity identifies either an ordinary job cache or a cache shared
 // by materialized jobs from numbered runs of one template.
@@ -18,5 +18,5 @@ func (identity TaskCacheIdentity) Validate() error {
 		return nil
 	}
 
-	return fmt.Errorf("task cache identity must contain exactly one complete ordinary or run scope")
+	return errors.New("task cache identity must contain exactly one complete ordinary or run scope")
 }
