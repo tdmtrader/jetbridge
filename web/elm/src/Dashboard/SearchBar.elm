@@ -6,11 +6,6 @@ module Dashboard.SearchBar exposing
     )
 
 import Application.Models exposing (Session)
-import Concourse.PipelineStatus
-    exposing
-        ( PipelineStatus(..)
-        , StatusDetails(..)
-        )
 import Dashboard.Filter as Filter
 import Dashboard.Models exposing (Dropdown(..), Model)
 import Dashboard.Styles as Styles
