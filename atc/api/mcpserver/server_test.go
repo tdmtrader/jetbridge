@@ -211,6 +211,8 @@ func jsonRPCBody(method string, id int, params any) io.Reader {
 }
 
 func jsonRPCBodyNoID(method string, params any) io.Reader {
+	GinkgoHelper()
+
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
