@@ -32,7 +32,7 @@ func (e Key) Encrypt(plaintext []byte) (string, *string, error) {
 
 func (e Key) Decrypt(text string, n *string) ([]byte, error) {
 	if n == nil {
-		return nil, ErrDataIsNotEncrypted
+		return nil, errDataIsNotEncrypted
 	}
 
 	ciphertext, err := hex.DecodeString(text)
