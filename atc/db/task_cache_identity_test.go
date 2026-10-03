@@ -65,7 +65,7 @@ var _ = Describe("Task cache identity", func() {
 		identity := atc.TaskCacheIdentity{TeamID: defaultTeam.ID(), TemplatePipelineID: template.ID(), RunJobName: "deploy"}
 		_, err = taskCacheFactory.FindOrCreate(identity, "task", "cache")
 		Expect(err).NotTo(HaveOccurred())
-		reclaimRunPayloadForTest(template, creation.Run)
+		reclaimPayloadForTest(template, creation.Run)
 		_, found, err := taskCacheFactory.Find(identity, "task", "cache")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())

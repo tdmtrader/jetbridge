@@ -50,7 +50,7 @@ var _ = Describe("PipelineRunFactory payload batching", func() {
 			runs = append(runs, creation.Run)
 		}
 		reclaimed := runs[2]
-		reclaimRunPayloadForTest(template, reclaimed)
+		reclaimPayloadForTest(template, reclaimed)
 
 		counting := &payloadBatchCountingConn{DbConn: dbConn}
 		payloads, err := db.NewPipelineRunFactory(counting, lockFactory).Payloads(runs)

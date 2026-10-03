@@ -67,7 +67,7 @@ func expectPipelineExists(id int, expected bool) {
 	Expect(exists).To(Equal(expected))
 }
 
-func reclaimRunPayloadForTest(template db.Pipeline, run db.PipelineRun) {
+func reclaimPayloadForTest(template db.Pipeline, run db.PipelineRun) {
 	GinkgoHelper()
 	_, err := dbConn.Exec(`UPDATE pipelines SET run_retention_ttl_days = 1 WHERE id = $1`, template.ID())
 	Expect(err).NotTo(HaveOccurred())
@@ -576,7 +576,7 @@ var _ = Describe("run payload mutation guards", func() {
 		job, found, err := fixture.payload.Job("entry")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		reclaimRunPayloadForTest(template, fixture.run)
+		reclaimPayloadForTest(template, fixture.run)
 
 		Expect(fixture.payload.Pause("alice")).To(MatchError(db.ErrPipelineRunPayloadGone))
 		Expect(fixture.payload.Unpause()).To(MatchError(db.ErrPipelineRunPayloadGone))

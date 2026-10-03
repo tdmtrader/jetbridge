@@ -50,7 +50,7 @@ var _ = Describe("Run build log query", func() {
 		_, second := createRun("production")
 		_, third := createRun("canary")
 
-		reclaimRunPayloadForTest(template, firstRun)
+		reclaimPayloadForTest(template, firstRun)
 
 		from := first["deploy-((environment))"].ID()
 		builds, pagination, err := template.ChronoRunBuilds("deploy-((environment))", db.Page{From: &from, Limit: 2})
@@ -180,7 +180,7 @@ var _ = Describe("Run job key of an uninterpolated job", func() {
 		Expect(found).To(BeTrue())
 		Expect(job.RunJobKey()).To(Equal("entry"))
 
-		reclaimRunPayloadForTest(template, creation.Run)
+		reclaimPayloadForTest(template, creation.Run)
 		expectPipelineExists(payload.ID(), false)
 
 		var key string

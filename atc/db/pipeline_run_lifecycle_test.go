@@ -554,7 +554,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		original := pendingRunBuild(entry)
 		consumeObservedSchedule(entry)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
-		reclaimRunPayloadForTest(fixture.template, fixture.run)
+		reclaimPayloadForTest(fixture.template, fixture.run)
 
 		_, err := entry.CreateBuild("manual-user")
 		Expect(err).To(HaveOccurred())

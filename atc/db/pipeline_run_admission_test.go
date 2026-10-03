@@ -176,7 +176,7 @@ var _ = Describe("run build admission", func() {
 	})
 
 	It("refuses a stale job after its terminal payload has been reclaimed", func() {
-		reclaimRunPayloadForTest(template, run)
+		reclaimPayloadForTest(template, run)
 
 		legacy, err := payload.(legacyJobBuildPipeline).CreateJobBuild("work")
 		Expect(legacy).To(BeNil())
@@ -248,7 +248,7 @@ var _ = Describe("run build admission", func() {
 		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), build.ID()).Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(1))
 
-		reclaimRunPayloadForTest(template, run)
+		reclaimPayloadForTest(template, run)
 
 		Expect(build.SaveEvent(event.Log{Payload: "after detach"})).To(Succeed())
 		Expect(dbConn.QueryRow(fmt.Sprintf("SELECT count(*) FROM team_build_events_%d WHERE build_id = $1", defaultTeam.ID()), build.ID()).Scan(&count)).To(Succeed())
