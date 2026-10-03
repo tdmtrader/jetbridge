@@ -79,7 +79,7 @@ func (a *httpAgent) send(req *http.Request) (http.Response, error) {
 }
 
 func (a *httpAgent) createHTTPRequest(request Request) (*http.Request, error) {
-	body := a.getBody(request)
+	body := requestBody(request)
 
 	req, err := a.requestGenerator.CreateRequest(
 		request.RequestName,
@@ -101,7 +101,7 @@ func (a *httpAgent) createHTTPRequest(request Request) (*http.Request, error) {
 	return req, nil
 }
 
-func (a *httpAgent) getBody(request Request) io.Reader {
+func requestBody(request Request) io.Reader {
 	if request.Header != nil && request.Body != nil {
 		if _, ok := request.Header["Content-Type"]; !ok {
 			panic("You must pass a 'Content-Type' Header with a body")

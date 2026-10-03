@@ -152,7 +152,7 @@ func (connection *connection) ConnectToEventStream(passedRequest Request) (*sse.
 
 // Deprecated
 func (connection *connection) createHTTPRequest(passedRequest Request) (*http.Request, error) {
-	body := connection.getBody(passedRequest)
+	body := requestBody(passedRequest)
 
 	req, err := connection.requestGenerator.CreateRequest(
 		passedRequest.RequestName,
@@ -172,18 +172,6 @@ func (connection *connection) createHTTPRequest(passedRequest Request) (*http.Re
 	}
 
 	return req, nil
-}
-
-// Deprecated
-func (connection *connection) getBody(passedRequest Request) io.Reader {
-	if passedRequest.Header != nil && passedRequest.Body != nil {
-		if _, ok := passedRequest.Header["Content-Type"]; !ok {
-			panic("You must pass a 'Content-Type' Header with a body")
-		}
-		return passedRequest.Body
-	}
-
-	return nil
 }
 
 // Deprecated
