@@ -21,7 +21,7 @@ import Html.Attributes
         , style
         )
 import List.Extra
-import Message.Message exposing (DomID(..), Message(..), PipelinesSection(..))
+import Message.Message exposing (DomID(..), Message, PipelinesSection(..))
 import Routes
 import Tooltip
 import Views.FavoritedIcon
