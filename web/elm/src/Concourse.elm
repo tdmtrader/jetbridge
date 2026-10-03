@@ -92,7 +92,6 @@ module Concourse exposing
     , isInstanceGroup
     , isRunPayload
     , mapBuildPlan
-    , pipelineId
     , resourceId
     , resourceIdFromVersionedResourceId
     , runNumberFromInstanceVars
@@ -1117,14 +1116,6 @@ decodePipelineIdentifier =
 encodePipelineIdentifier : PipelineIdentifier -> Json.Encode.Value
 encodePipelineIdentifier pipelineIdentifier =
     Json.Encode.object [ ( "team_name", Json.Encode.string pipelineIdentifier.teamName ), ( "pipeline_name", Json.Encode.string pipelineIdentifier.pipelineName ), ( "instance_vars", encodeInstanceVars pipelineIdentifier.pipelineInstanceVars ) ]
-
-
-pipelineId : { r | teamName : TeamName, pipelineName : PipelineName, pipelineInstanceVars : InstanceVars } -> PipelineIdentifier
-pipelineId { teamName, pipelineName, pipelineInstanceVars } =
-    { teamName = teamName
-    , pipelineName = pipelineName
-    , pipelineInstanceVars = pipelineInstanceVars
-    }
 
 
 toPipelineId : { r | teamName : TeamName, name : PipelineName, instanceVars : InstanceVars } -> PipelineIdentifier
