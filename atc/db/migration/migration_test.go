@@ -573,7 +573,6 @@ func SetupSchemaFromFile(db *sql.DB, path string) {
 }
 
 func ExpectDatabaseMigrationVersionToEqual(migrator migration.Migrator, expectedVersion int) {
-	var dbVersion int
 	dbVersion, err := migrator.CurrentVersion()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(dbVersion).To(Equal(expectedVersion))
