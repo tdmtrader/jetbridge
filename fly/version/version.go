@@ -1,7 +1,7 @@
 package version
 
 import (
-	"fmt"
+	"errors"
 
 	semver "github.com/cppforlife/go-semi-semantic/version"
 )
@@ -17,7 +17,7 @@ func GetSemver(versionStr string) (major int, minor int, patch int, err error) {
 		minor = version.Release.Components[1].(semver.VerSegCompInt).I
 		patch = version.Release.Components[2].(semver.VerSegCompInt).I
 	} else {
-		err = fmt.Errorf("Wrong number of components")
+		err = errors.New("Wrong number of components")
 		return
 	}
 
