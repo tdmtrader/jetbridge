@@ -2093,25 +2093,26 @@ func insertJobInput(tx Tx, step *atc.GetStep, jobName string, resourceNameToID m
 			for job, jobID := range jobNameToID {
 				matched, _ := path.Match(passedJobGlob, job)
 
-				if matched {
-					var version sql.NullString
-					if step.Version != nil {
-						versionJSON, err := step.Version.MarshalJSON()
-						if err != nil {
-							return err
-						}
-
-						version = sql.NullString{Valid: true, String: string(versionJSON)}
-					}
-
-					_, err := psql.Insert("job_inputs").
-						Columns("name", "job_id", "resource_id", "passed_job_id", "trigger", "version").
-						Values(step.Name, jobNameToID[jobName], resourceNameToID[step.ResourceName()], jobID, step.Trigger, version).
-						RunWith(tx).
-						Exec()
+				if !matched {
+					continue
+				}
+				var version sql.NullString
+				if step.Version != nil {
+					versionJSON, err := step.Version.MarshalJSON()
 					if err != nil {
 						return err
 					}
+
+					version = sql.NullString{Valid: true, String: string(versionJSON)}
+				}
+
+				_, err := psql.Insert("job_inputs").
+					Columns("name", "job_id", "resource_id", "passed_job_id", "trigger", "version").
+					Values(step.Name, jobNameToID[jobName], resourceNameToID[step.ResourceName()], jobID, step.Trigger, version).
+					RunWith(tx).
+					Exec()
+				if err != nil {
+					return err
 				}
 			}
 		}
