@@ -28,7 +28,7 @@ import Html exposing (Html)
 import Html.Attributes exposing (class, href, id, style)
 import Html.Events exposing (onFocus, onInput)
 import Login.Login as Login
-import Message.Effects exposing (Effect(..))
+import Message.Effects exposing (Effect)
 import Message.Message as Message exposing (Message(..))
 import Message.Subscription
     exposing
