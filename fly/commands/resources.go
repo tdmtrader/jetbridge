@@ -29,7 +29,6 @@ func (command *ResourcesCommand) Execute([]string) error {
 		return err
 	}
 
-	var headers []string
 	var resources []atc.Resource
 	var team concourse.Team
 
@@ -47,7 +46,7 @@ func (command *ResourcesCommand) Execute([]string) error {
 		return displayhelpers.JsonPrint(resources)
 	}
 
-	headers = []string{"name", "type", "pinned", "check status"}
+	headers := []string{"name", "type", "pinned", "check status"}
 	table := ui.Table{Headers: ui.TableRow{}}
 	for _, h := range headers {
 		table.Headers = append(table.Headers, ui.TableCell{Contents: h, Color: color.New(color.Bold)})
