@@ -14,10 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/util"
 )
 
-type ResourceTypeNotFoundError struct {
-	ID int
-}
-
 type ResourceType interface {
 	PipelineRef
 
