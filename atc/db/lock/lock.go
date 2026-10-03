@@ -58,7 +58,7 @@ func mapLockTypeToFactory(lockType int) int {
 	}
 }
 
-var ErrLostLock = errors.New("lock was lost while held, possibly due to connection breakage")
+var errLostLock = errors.New("lock was lost while held, possibly due to connection breakage")
 
 /*
 	When adding a new lock type or update existing ones, consider if
@@ -248,8 +248,8 @@ func (l *lock) Release() error {
 	l.locks.Unregister(l.id)
 
 	if !released {
-		logger.Error("failed-to-release", ErrLostLock)
-		return ErrLostLock
+		logger.Error("failed-to-release", errLostLock)
+		return errLostLock
 	}
 
 	l.released(logger, l.id)
