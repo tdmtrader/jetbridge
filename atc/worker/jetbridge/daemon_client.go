@@ -375,7 +375,7 @@ func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath, durabl
 		return fmt.Errorf("discover daemon IPs: %w", err)
 	}
 	if len(ips) == 0 {
-		return fmt.Errorf("no daemon pods found")
+		return errors.New("no daemon pods found")
 	}
 
 	request := artifactwire.RegisterRequest{Key: key, LocalPath: localPath, DurableKey: durableKey}
