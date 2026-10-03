@@ -4,8 +4,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-type NameToIDMap map[string]int
-
 type relatedInputConfigs struct {
 	passedJobs   map[int]bool
 	inputConfigs db.InputConfigs
