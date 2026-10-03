@@ -236,7 +236,7 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if opts.CausedByRun != nil && *opts.CausedByRun >= runID {
 		return RunCreation{}, ErrRunCauseUnavailable
 	}
-	run := &pipelineRun{contractVersion: atc.RunContractV2, activationEpoch: opts.ActivationEpoch, id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText, causedByRun: opts.CausedByRun, correlation: opts.Correlation}
+	run := &pipelineRun{contractVersion: atc.RunContractV2, activationEpoch: opts.ActivationEpoch, id: runID, templateID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText, causedByRun: opts.CausedByRun, correlation: opts.Correlation}
 	var correlation sql.NullString
 	if opts.Correlation != "" {
 		correlation = sql.NullString{String: opts.Correlation, Valid: true}

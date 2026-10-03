@@ -37,7 +37,7 @@ type pipelineRun struct {
 	contractVersion    atc.RunContractVersion
 	activationEpoch    int64
 	id                 int
-	templatePipelineID int
+	templateID         int
 	number             int
 	params             atc.Params
 	status             atc.RunStatus
@@ -59,7 +59,7 @@ func (r *pipelineRun) ContractVersion() atc.RunContractVersion { return r.contra
 func (r *pipelineRun) ActivationEpoch() int64                  { return r.activationEpoch }
 
 func (r *pipelineRun) ID() int                 { return r.id }
-func (r *pipelineRun) TemplatePipelineID() int { return r.templatePipelineID }
+func (r *pipelineRun) TemplatePipelineID() int { return r.templateID }
 func (r *pipelineRun) Number() int             { return r.number }
 func (r *pipelineRun) Params() atc.Params      { return r.params }
 func (r *pipelineRun) Status() atc.RunStatus   { return r.status }
@@ -88,7 +88,7 @@ func scanPipelineRun(run *pipelineRun, row scannable) error {
 	var reclaimRetryAfter sql.NullTime
 	var payloadID sql.NullInt64
 	var causedByRun sql.NullInt64
-	if err := row.Scan(&cancelAt, &cancelBy, &cancelReason, &run.contractVersion, &run.activationEpoch, &run.id, &run.templatePipelineID, &run.number, &params, &run.status, &run.createdBy,
+	if err := row.Scan(&cancelAt, &cancelBy, &cancelReason, &run.contractVersion, &run.activationEpoch, &run.id, &run.templateID, &run.number, &params, &run.status, &run.createdBy,
 		&run.createdAt, &completedAt, &reclaimRetryAfter, &run.configHash, &payloadID, &causedByRun, &run.correlation); err != nil {
 		return err
 	}
