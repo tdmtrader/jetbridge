@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -273,10 +274,8 @@ func (c *Client) do(ctx context.Context, via *http.Client, method, host, path st
 // ones, else the Refusal.
 func expect(resp *http.Response, wanted ...int) error {
 	defer resp.Body.Close()
-	for _, status := range wanted {
-		if resp.StatusCode == status {
-			return nil
-		}
+	if slices.Contains(wanted, resp.StatusCode) {
+		return nil
 	}
 	return refusalOf(resp)
 }
