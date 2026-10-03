@@ -9,7 +9,7 @@ import Concourse.PipelineStatus
         , equal
         , isRunning
         )
-import Dashboard.Group.Models exposing (Card(..), Pipeline)
+import Dashboard.Group.Models exposing (Pipeline)
 import Dashboard.Models exposing (Model)
 import Dashboard.Pipeline as Pipeline
 import Dict exposing (Dict)
