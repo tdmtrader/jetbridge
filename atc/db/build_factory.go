@@ -399,7 +399,8 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err
-	} else if err == nil {
+	}
+	if err == nil {
 		pagination.Older = &Page{
 			To:    &build.id,
 			Limit: page.Limit,
@@ -417,7 +418,8 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err
-	} else if err == nil {
+	}
+	if err == nil {
 		pagination.Newer = &Page{
 			From:  &build.id,
 			Limit: page.Limit,
