@@ -314,6 +314,8 @@ var _ = Describe("Add global resource versions", func() {
 })
 
 func setupResource(db *sql.DB) {
+	GinkgoHelper()
+
 	_, err := db.Exec("INSERT INTO base_resource_types(name) VALUES('some-type')")
 	Expect(err).NotTo(HaveOccurred())
 
