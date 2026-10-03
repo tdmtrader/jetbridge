@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"github.com/concourse/concourse/go-concourse/concourse"
 	"os"
 
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
@@ -28,9 +27,7 @@ func (command *ResourcesCommand) Execute([]string) error {
 		return err
 	}
 
-	var team concourse.Team
-
-	team, err = command.Team.LoadTeam(target)
+	team, err := command.Team.LoadTeam(target)
 	if err != nil {
 		return err
 	}
