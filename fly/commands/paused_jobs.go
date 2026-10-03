@@ -50,9 +50,8 @@ func (command *PausedJobsCommand) Execute([]string) error {
 			return err
 		}
 		return nil
-	} else {
-		return command.render(jobs)
 	}
+	return command.render(jobs)
 }
 
 func (command *PausedJobsCommand) render(jobs []atc.Job) error {
