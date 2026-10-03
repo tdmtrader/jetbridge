@@ -51,37 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureTryStep returns a pipeline with a try step wrapping a task,
-// followed by a continuation task.
-func fixtureTryStep(jobName, tryScript, afterScript string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - try:
-      task: may-fail
-      config:
-        platform: linux
-        image_resource: {type: registry-image, source: {repository: busybox}}
-        run:
-          path: sh
-          args:
-          - -c
-          - |
-            %s
-  - task: after-try
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, tryScript, afterScript)
-}
-
 // fixtureDoStep returns a pipeline with a do block containing sequential tasks.
 func fixtureDoStep(jobName string, taskScripts map[string]string) string {
 	tasks := ""
