@@ -89,7 +89,6 @@ module Concourse exposing
     , flattenJson
     , groupPipelinesWithinTeam
     , hyphenNotation
-    , isInInstanceGroup
     , isInstanceGroup
     , isRunPayload
     , mapBuildPlan
@@ -621,21 +620,6 @@ isInstanceGroup pipelines =
 
         _ ->
             False
-
-
-isInInstanceGroup :
-    List { a | id : DatabaseID, name : String, teamName : String, instanceVars : InstanceVars }
-    -> { b | id : DatabaseID, name : String, teamName : String, instanceVars : InstanceVars }
-    -> Bool
-isInInstanceGroup allPipelines p =
-    not (Dict.isEmpty p.instanceVars)
-        || List.any
-            (\p2 ->
-                (p.name == p2.name)
-                    && (p.teamName == p2.teamName)
-                    && (p.id /= p2.id)
-            )
-            allPipelines
 
 
 type alias AcrossPlan =
