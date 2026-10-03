@@ -74,6 +74,7 @@ var _ = Describe("Migration CLI", func() {
 
 func ExpectGeneratedFilesToMatchSpecification(migrationDir, fileNamePattern, migrationName string,
 	checkContents func(migrationID string, actualFileContents string)) {
+	GinkgoHelper()
 
 	files, err := os.ReadDir(migrationDir)
 	Expect(err).ToNot(HaveOccurred())
