@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 
 	"github.com/concourse/concourse/agent/capture"
 	"github.com/concourse/concourse/agent/session"
@@ -39,10 +40,7 @@ func NewInputReader(b *Bundle) (*InputReader, error) {
 		return nil, err
 	}
 	r.files["manifest.json"] = capture.Digest(m)
-	for p := range r.files {
-		r.paths = append(r.paths, p)
-	}
-	sort.Strings(r.paths)
+	r.paths = slices.Sorted(maps.Keys(r.files))
 	return r, nil
 }
 func (r *InputReader) Close() error { return r.root.Close() }
