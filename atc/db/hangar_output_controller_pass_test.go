@@ -225,6 +225,7 @@ var _ = Describe("the output-plane controller passes", func() {
 	}
 
 	newDeletes := func() *reclaimpass.DeletePass {
+		GinkgoHelper()
 		role, err := reclaimer.New(namespace, reclaimer.Restrict(store))
 		Expect(err).NotTo(HaveOccurred())
 
