@@ -1,4 +1,4 @@
-module Views.BuildDuration exposing (show, view)
+module Views.BuildDuration exposing (view)
 
 import Concourse
 import DateFormat
@@ -53,13 +53,6 @@ view timeZone duration now =
                     finishedAt
                 , labeledDuration "duration" durationElmIssue
                 ]
-
-
-show : Time.Posix -> Concourse.BuildDuration -> String
-show now =
-    .startedAt
-        >> Maybe.map ((\a -> Duration.between a now) >> Duration.format)
-        >> Maybe.withDefault ""
 
 
 labeledDate :
