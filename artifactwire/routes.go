@@ -2,10 +2,10 @@ package artifactwire
 
 import "net/http"
 
-// DefaultPort is the port an artifact daemon listens on when nothing says
+// defaultPort is the port an artifact daemon listens on when nothing says
 // otherwise. It is the one number both a chart value and an init container's
 // shell prelude agree on.
-const DefaultPort = 7780
+const defaultPort = 7780
 
 // Path prefixes that a key or a handle is appended to. They are the parts of
 // a route that do not fit a mux pattern, kept beside the routes that use them

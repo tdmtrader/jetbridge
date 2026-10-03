@@ -59,7 +59,7 @@ func TestTLSConfiguredNeedsTheWholeTriple(t *testing.T) {
 
 func TestPlainClientDialsHTTP(t *testing.T) {
 	c := plainClient(t, 0)
-	if c.Scheme() != "http" || c.Port() != DefaultPort {
+	if c.Scheme() != "http" || c.Port() != defaultPort {
 		t.Errorf("plain client: scheme %q port %d", c.Scheme(), c.Port())
 	}
 	if c.plain.Timeout != 0 || c.streaming.Timeout != 0 || c.restore.Timeout != 0 {
@@ -138,7 +138,7 @@ func TestShellPrelude(t *testing.T) {
 // deployment asked for and refuses every request naming the reason.
 func TestMisconfiguredClientRefusesEveryRequest(t *testing.T) {
 	c := Misconfigured(0, errors.New("load daemon client certificate: open /nonexistent/client.crt: no such file"))
-	if c.Scheme() != "https" || c.Port() != DefaultPort {
+	if c.Scheme() != "https" || c.Port() != defaultPort {
 		t.Errorf("misconfigured client: scheme %q port %d", c.Scheme(), c.Port())
 	}
 	if !strings.Contains(c.ShellPrelude(), "https://") || !strings.Contains(c.ShellPrelude(), "--no-check-certificate") {

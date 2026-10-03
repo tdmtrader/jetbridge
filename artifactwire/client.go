@@ -53,12 +53,12 @@ type Client struct {
 }
 
 // NewClient builds a Client for daemons on port with the given TLS triple. A
-// zero port means DefaultPort. When the triple is configured its files are
+// zero port means defaultPort. When the triple is configured its files are
 // loaded here, once, and a triple that cannot be loaded is an error rather
 // than a silent plaintext client: the caller decides what to do about it.
 func NewClient(port int, tlsTriple TLS) (*Client, error) {
 	if port == 0 {
-		port = DefaultPort
+		port = defaultPort
 	}
 	scheme := "http"
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -94,7 +94,7 @@ func NewClient(port int, tlsTriple TLS) (*Client, error) {
 // turns away.
 func Misconfigured(port int, reason error) *Client {
 	if port == 0 {
-		port = DefaultPort
+		port = defaultPort
 	}
 	return &Client{scheme: "https", port: port, misconfigured: reason}
 }
