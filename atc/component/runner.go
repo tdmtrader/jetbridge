@@ -15,11 +15,6 @@ type NotificationsBus interface {
 	UnlistenSignal(string, *db.NotifySignal) error
 }
 
-// Schedulable represents a workload that can be run on demand.
-type Schedulable interface {
-	RunImmediately(context.Context)
-}
-
 // Runner runs a workload immediately upon receiving a notification signal.
 // It also fires once on startup so components that need an initial run (e.g.
 // worker registration) don't have to wait for an external notification.
@@ -33,7 +28,7 @@ type Runner struct {
 	Component Component
 	Bus       NotificationsBus
 
-	Schedulable Schedulable
+	Schedulable *Coordinator
 }
 
 func (r *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
