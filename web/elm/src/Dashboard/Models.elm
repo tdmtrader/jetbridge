@@ -12,7 +12,7 @@ import Dashboard.Group.Models as GroupModels
 import Dict exposing (Dict)
 import FetchResult exposing (FetchResult)
 import Login.Login as Login
-import Message.Effects exposing (Effect(..))
+import Message.Effects exposing (Effect)
 import Message.Message exposing (DropTarget)
 import Routes
 import Set exposing (Set)
