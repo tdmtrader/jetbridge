@@ -181,7 +181,7 @@ func (b *inMemoryCheckBuildForApi) AllAssociatedTeamNames() []string {
 
 func (b *inMemoryCheckBuildForApi) Events(from uint) (EventSource, error) {
 	if b.id == 0 {
-		return nil, fmt.Errorf("no build event")
+		return nil, errors.New("no build event")
 	}
 
 	return newBuildEventSource(
