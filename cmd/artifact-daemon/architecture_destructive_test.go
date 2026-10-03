@@ -211,11 +211,6 @@ var destructiveInventory = map[string]struct {
 	}},
 }
 
-type destructiveSite struct {
-	key      string
-	function string
-}
-
 func scanDestructiveCalls(t *testing.T, dirs ...string) (map[string]int, map[string]string) {
 	t.Helper()
 
