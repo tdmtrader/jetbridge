@@ -172,7 +172,7 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 		return nil, nil, fmt.Errorf("read --hangar-warrant-key: %w", err)
 	}
 	if len(key) != 32 {
-		return nil, nil, fmt.Errorf("--hangar-warrant-key must contain exactly 32 raw bytes")
+		return nil, nil, errors.New("--hangar-warrant-key must contain exactly 32 raw bytes")
 	}
 	verifier, err := hangar.NewWarrantVerifier(key, opts.WarrantTTL, nil)
 	if err != nil {
