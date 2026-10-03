@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-var ErrResourceCacheAlreadyExists = errors.New("resource-cache-already-exists")
 var ErrResourceCacheDisappeared = errors.New("resource-cache-disappeared")
 
 // ResourceCache represents an instance of a ResourceConfig's version.
