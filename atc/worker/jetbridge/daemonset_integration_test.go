@@ -1154,9 +1154,9 @@ func TestDaemonSetMode_NoCleanupForCheckContainers(t *testing.T) {
 	}
 }
 
-// TestDaemonSetMode_CleanupPrecedesArtifactInits verifies that the cleanup
+// TestDaemonSetMode_CleanupPrecedesFetchInits verifies that the cleanup
 // init container runs BEFORE any artifact fetch init containers.
-func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
+func TestDaemonSetMode_CleanupPrecedesFetchInits(t *testing.T) {
 	cfg := daemonSetConfig()
 	locator := NewArtifactLocator()
 	locator.Record(ArtifactKey("src-vol"), "node-a", "source/dir")
