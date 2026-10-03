@@ -161,11 +161,12 @@ func TestStrictInputPrefixIsIndependentOfResourceCacheStorage(t *testing.T) {
 				found := false
 				for _, container := range daemon.Spec.Template.Spec.Containers {
 					for _, arg := range container.Command {
-						if strings.HasPrefix(arg, "--hangar-prefix=") {
-							found = true
-							if arg != "--hangar-prefix="+prefix {
-								t.Fatalf("%s storage follows cache prefix: %s", profile, arg)
-							}
+						if !strings.HasPrefix(arg, "--hangar-prefix=") {
+							continue
+						}
+						found = true
+						if arg != "--hangar-prefix="+prefix {
+							t.Fatalf("%s storage follows cache prefix: %s", profile, arg)
 						}
 					}
 				}
