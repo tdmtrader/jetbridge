@@ -712,9 +712,8 @@ func (test StepTest) Run(s *StepsSuite) {
 	if test.Err != "" {
 		s.Contains(actualErr.Error(), test.Err)
 		return
-	} else {
-		s.NoError(actualErr)
 	}
+	s.NoError(actualErr)
 
 	s.Equal(test.StepConfig, step.Config)
 	s.Equal(test.UnknownFields, step.UnknownFields)
