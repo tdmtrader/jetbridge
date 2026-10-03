@@ -2634,7 +2634,7 @@ func (cmd *RunCommand) constructHTTPHandler(
 		}
 	}
 
-	httpHandler := wrappa.LoggerHandler{
+	return wrappa.LoggerHandler{
 		Logger: logger,
 
 		Handler: wrappa.SecurityHandler{
@@ -2645,8 +2645,6 @@ func (cmd *RunCommand) constructHTTPHandler(
 			Handler: routes,
 		},
 	}
-
-	return httpHandler
 }
 
 func (cmd *RunCommand) constructLegacyHandler(
