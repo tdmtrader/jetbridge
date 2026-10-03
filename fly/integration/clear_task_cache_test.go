@@ -91,6 +91,7 @@ var _ = Describe("clear-task-cache", func() {
 		})
 
 		yes := func() {
+			GinkgoHelper()
 			Eventually(sess).Should(gbytes.Say(`are you sure\? \[yN\]: `))
 			fmt.Fprintf(stdin, "y\r")
 		}
