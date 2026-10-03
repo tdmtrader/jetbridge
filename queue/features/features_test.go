@@ -1,5 +1,5 @@
 // Package features binds each Scenario title to a Ginkgo It of the same text
-// in ../core, since this module carries no Gherkin runner.
+// in queue/*/ (core, config), since this module carries no Gherkin runner.
 package features
 
 import (
@@ -23,7 +23,7 @@ func read(t *testing.T, pattern string) string {
 }
 
 func TestEveryScenarioHasAMatchingIt(t *testing.T) {
-	specs, scenarios := read(t, "../core/*_test.go"), 0
+	specs, scenarios := read(t, "../*/*_test.go"), 0
 	for _, line := range strings.Split(read(t, "*.feature"), "\n") {
 		title, ok := strings.CutPrefix(strings.TrimSpace(line), "Scenario:")
 		if !ok {
@@ -31,7 +31,7 @@ func TestEveryScenarioHasAMatchingIt(t *testing.T) {
 		}
 		scenarios++
 		if want := `It("` + strings.TrimSpace(title) + `"`; !strings.Contains(specs, want) {
-			t.Errorf("scenario %q has no %s) in queue/core", strings.TrimSpace(title), want)
+			t.Errorf("scenario %q has no %s) in queue/", strings.TrimSpace(title), want)
 		}
 	}
 	if scenarios == 0 {
