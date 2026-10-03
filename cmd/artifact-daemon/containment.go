@@ -92,7 +92,7 @@ func validateSymlinkTarget(entryName, linkname string) error {
 // ("steps/build-42/result"), so reusing it would refuse production traffic.
 func validateRequestKey(key string) error {
 	if key == "" {
-		return fmt.Errorf("request key is empty")
+		return errors.New("request key is empty")
 	}
 
 	if filepath.IsAbs(key) || strings.HasPrefix(key, "/") {
