@@ -131,7 +131,7 @@ func (manager *Manager) NewSecretsFactory(log lager.Logger) (creds.SecretsFactor
 		return nil, err
 	}
 
-	return NewSecretsManagerFactory(log, cfg, []*creds.SecretTemplate{pipelineSecretTemplate, teamSecretTemplate, sharedSecretTemplate}), nil
+	return newSecretsManagerFactory(log, cfg, []*creds.SecretTemplate{pipelineSecretTemplate, teamSecretTemplate, sharedSecretTemplate}), nil
 }
 
 func (manager Manager) Close(logger lager.Logger) {

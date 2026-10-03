@@ -13,7 +13,7 @@ type secretsManagerFactory struct {
 	secretTemplates []*creds.SecretTemplate
 }
 
-func NewSecretsManagerFactory(log lager.Logger, config aws.Config, secretTemplates []*creds.SecretTemplate) *secretsManagerFactory {
+func newSecretsManagerFactory(log lager.Logger, config aws.Config, secretTemplates []*creds.SecretTemplate) *secretsManagerFactory {
 	return &secretsManagerFactory{
 		log:             log,
 		api:             secretsmanager.NewFromConfig(config),
