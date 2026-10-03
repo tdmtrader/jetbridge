@@ -166,9 +166,8 @@ func TestIntegration(t *testing.T) {
 func osFlag(short string, long string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf("/%s, /%s", short, long)
-	} else {
-		return fmt.Sprintf("-%s, --%s", short, long)
 	}
+	return fmt.Sprintf("-%s, --%s", short, long)
 }
 
 func userHomeDir() string {
