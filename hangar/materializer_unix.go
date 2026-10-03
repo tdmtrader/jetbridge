@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1265,15 +1266,7 @@ func readOpenedPayloadEntries(directory *os.File) ([]string, error) {
 }
 
 func sameOpenedNames(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(left, right)
 }
 
 func sameRelevantStat(before, after *unix.Stat_t) bool {
