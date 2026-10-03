@@ -383,7 +383,8 @@ func (r *groupResolver) paginatedBuilds(ctx context.Context, currentInputConfig 
 			}
 
 			return paginatedBuilds, false, err
-		} else if currentCandidate == nil && len(relatedPassedBuilds) > 0 {
+		}
+		if currentCandidate == nil && len(relatedPassedBuilds) > 0 {
 			// we've run with version: every and passed: before, just not with this
 			// job, and there's no candidate yet, so skip it for now and let the
 			// algorithm continue from where the other jobs left off rather than
