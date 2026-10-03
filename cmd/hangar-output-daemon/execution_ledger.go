@@ -638,10 +638,8 @@ func (ledger *ExecutionLedger) EnsureGateOpen(id executioncontrol.ExecutionID, g
 	if !found {
 		return fmt.Errorf("%w: execution %s was never admitted on this node", output.ErrUnauthorized, id)
 	}
-	for _, open := range record.OpenGates {
-		if open == gate {
-			return nil
-		}
+	if slices.Contains(record.OpenGates, gate) {
+		return nil
 	}
 	record.OpenGates = append(record.OpenGates, gate)
 	sort.Strings(record.OpenGates)
