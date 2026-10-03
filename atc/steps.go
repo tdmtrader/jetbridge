@@ -16,9 +16,9 @@ type Step struct {
 	UnknownFields map[string]*json.RawMessage
 }
 
-// ErrNoStepConfigured is returned when a step does not have any keys that
+// errNoStepConfigured is returned when a step does not have any keys that
 // indicate its step type.
-var ErrNoStepConfigured = errors.New("no step configured")
+var errNoStepConfigured = errors.New("no step configured")
 var ErrNoCoreStepDeclared = errors.New("no core step type declared (e.g. get, put, task, etc.)")
 
 // UnmarshalJSON unmarshals step configuration in multiple passes, determining
@@ -42,7 +42,7 @@ var ErrNoCoreStepDeclared = errors.New("no core step type declared (e.g. get, pu
 // modifiers. This is also why step modifiers are listed first in
 // StepPrecedence.
 //
-// If no StepDetectors match, no step is parsed, ErrNoStepConfigured is
+// If no StepDetectors match, no step is parsed, errNoStepConfigured is
 // returned.
 func (step *Step) UnmarshalJSON(data []byte) error {
 	var rawStepConfig map[string]*json.RawMessage
@@ -93,7 +93,7 @@ func (step *Step) UnmarshalJSON(data []byte) error {
 	}
 
 	if step.Config == nil {
-		return ErrNoStepConfigured
+		return errNoStepConfigured
 	}
 
 	if !coreStepDeclared {
