@@ -1,4 +1,4 @@
-module Favorites exposing (Model, handleDelivery, isFavorited, isInstanceGroupFavorited, isPipelineFavorited, update)
+module Favorites exposing (Model, handleDelivery, isInstanceGroupFavorited, isPipelineFavorited, update)
 
 import Concourse exposing (PipelineGrouping(..))
 import EffectTransformer exposing (ET)
@@ -75,25 +75,6 @@ handleDelivery delivery ( model, effects ) =
 
         _ ->
             ( model, effects )
-
-
-isFavorited :
-    Model m
-    ->
-        PipelineGrouping
-            { r
-                | name : Concourse.PipelineName
-                , teamName : Concourse.TeamName
-                , id : Concourse.DatabaseID
-            }
-    -> Bool
-isFavorited model group =
-    case group of
-        RegularPipeline p ->
-            isPipelineFavorited model p
-
-        InstanceGroup p _ ->
-            isInstanceGroupFavorited model (Concourse.toInstanceGroupId p)
 
 
 isPipelineFavorited :
