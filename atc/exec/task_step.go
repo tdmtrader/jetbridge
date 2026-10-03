@@ -310,14 +310,15 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	// Resolve sidecar image artifact references from the build repository
 	for i, sc := range containerSpec.Sidecars {
-		if sc.ImageArtifact != "" {
-			imageRef, found := state.ArtifactRepository().ImageRefFor(build.ArtifactName(sc.ImageArtifact))
-			if !found {
-				return false, fmt.Errorf("sidecar %q: image_artifact %q not found in artifact repository", sc.Name, sc.ImageArtifact)
-			}
-			containerSpec.Sidecars[i].Image = imageRef
-			containerSpec.Sidecars[i].ImageArtifact = "" // resolved
+		if sc.ImageArtifact == "" {
+			continue
 		}
+		imageRef, found := state.ArtifactRepository().ImageRefFor(build.ArtifactName(sc.ImageArtifact))
+		if !found {
+			return false, fmt.Errorf("sidecar %q: image_artifact %q not found in artifact repository", sc.Name, sc.ImageArtifact)
+		}
+		containerSpec.Sidecars[i].Image = imageRef
+		containerSpec.Sidecars[i].ImageArtifact = "" // resolved
 	}
 
 	// Pin sidecar images to digests via OCI registry resolution (best-effort).
