@@ -55,7 +55,6 @@ import Message.ScrollDirection as ScrollDirection
 import Message.Subscription as Subscription exposing (Delivery(..), Interval(..), Subscription(..))
 import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import Routes
-import Set exposing (Set)
 import SideBar.SideBar as SideBar
 import StrictEvents exposing (onScroll)
 import String
