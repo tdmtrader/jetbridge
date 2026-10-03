@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -41,9 +42,7 @@ func pageAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 			path = a.path() + "/builds"
 			query.Set("job", a.Job)
 			query.Set("status", a.Status)
-			for key, values := range a.query() {
-				query[key] = values
-			}
+			maps.Copy(query, a.query())
 		}
 		r, err := apiRequest(ctx, api, "GET", path, query, nil, nil)
 		if err != nil {
