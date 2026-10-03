@@ -1457,6 +1457,10 @@ func cleanupOwnedMaterializationEntry(parent *os.File, owned ownedMaterializatio
 	return err
 }
 
+func renameNoReplaceAt(parent *os.File, oldName, newName string) error {
+	return renameNoReplaceBetween(parent, oldName, parent, newName)
+}
+
 func renameIntoSealedDirectory(source *os.File, sourceName string, destination *os.File, destinationName string) (bool, error) {
 	err := renameNoReplaceBetween(source, sourceName, destination, destinationName)
 	return err == nil, err
