@@ -183,6 +183,7 @@ var _ = Describe("Encryption", func() {
 
 // used to test database versions before the column got renamed
 func insertIntoEncryptedColumnLegacy(db *sql.DB, strategy encryption.Strategy, name string) {
+	GinkgoHelper()
 	ciphertext, nonce, err := strategy.Encrypt([]byte("{}"))
 	Expect(err).ToNot(HaveOccurred())
 	var teamID int
