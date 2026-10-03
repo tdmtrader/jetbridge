@@ -72,11 +72,12 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 
 		jobs := 0
 		for _, doc := range documentsIn(t, out) {
-			if doc.kind == "Job" && strings.Contains(doc.body, "hangar-output-activate") {
-				jobs++
-				if !strings.Contains(doc.body, "ttlSecondsAfterFinished: 86400") {
-					t.Errorf("%s: the activation Job renders without its TTL", step.name)
-				}
+			if doc.kind != "Job" || !strings.Contains(doc.body, "hangar-output-activate") {
+				continue
+			}
+			jobs++
+			if !strings.Contains(doc.body, "ttlSecondsAfterFinished: 86400") {
+				t.Errorf("%s: the activation Job renders without its TTL", step.name)
 			}
 		}
 		if mode == "" && jobs != 0 || mode != "" && jobs != 1 {
