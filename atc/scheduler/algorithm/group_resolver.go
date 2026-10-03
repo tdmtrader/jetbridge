@@ -252,7 +252,8 @@ outputs:
 				// build contained a different version than the one we already have for
 				// that candidate, so let's try a different build
 				break outputs
-			} else if !related {
+			}
+			if !related {
 				// output is not even relevant to this candidate; move on
 				continue
 			}
