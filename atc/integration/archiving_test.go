@@ -76,6 +76,8 @@ var _ = Describe("ATC Integration Test", func() {
 })
 
 func givenAPipeline(client concourse.Client, pipelineRef atc.PipelineRef) {
+	GinkgoHelper()
+
 	_, _, _, err := client.Team("main").CreateOrUpdatePipelineConfig(pipelineRef, "0", basicPipelineConfig, false)
 	Expect(err).NotTo(HaveOccurred())
 }
