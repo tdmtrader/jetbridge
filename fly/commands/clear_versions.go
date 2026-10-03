@@ -34,7 +34,8 @@ func (command *ClearVersionsCommand) Execute(args []string) error {
 			Type:    flags.ErrRequired,
 			Message: "please specify one of the required flags --resource or --resource-type",
 		}
-	} else if command.Resource.ResourceName != "" && command.ResourceType.ResourceName != "" {
+	}
+	if command.Resource.ResourceName != "" && command.ResourceType.ResourceName != "" {
 		return &flags.Error{
 			Type:    flags.ErrRequired,
 			Message: "can specify only one of --resource or --resource-type",
@@ -71,12 +72,12 @@ func (command *ClearVersionsCommand) Execute(args []string) error {
 		numDeleted, err := team.ClearResourceVersions(command.Resource.PipelineRef, command.Resource.ResourceName)
 		if err != nil {
 			return err
-		} else {
-			fmt.Printf("%d versions removed\n", numDeleted)
-			return nil
 		}
+		fmt.Printf("%d versions removed\n", numDeleted)
+		return nil
+	}
 
-	} else if command.ResourceType.ResourceName != "" {
+	if command.ResourceType.ResourceName != "" {
 		shared, found, err := team.ListSharedForResourceType(command.ResourceType.PipelineRef, command.ResourceType.ResourceName)
 		if err != nil {
 			return err
@@ -100,10 +101,9 @@ func (command *ClearVersionsCommand) Execute(args []string) error {
 		numDeleted, err := team.ClearResourceTypeVersions(command.ResourceType.PipelineRef, command.ResourceType.ResourceName)
 		if err != nil {
 			return err
-		} else {
-			fmt.Printf("%d versions removed\n", numDeleted)
-			return nil
 		}
+		fmt.Printf("%d versions removed\n", numDeleted)
+		return nil
 	}
 
 	return nil
