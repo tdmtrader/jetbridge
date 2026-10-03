@@ -17,7 +17,7 @@ type vaultFactory struct {
 }
 
 func NewVaultFactory(sr SecretReader, loginTimeout time.Duration, loggedIn <-chan struct{}, prefix string, lookupTemplates []*creds.SecretTemplate, sharedPath string) *vaultFactory {
-	factory := &vaultFactory{
+	return &vaultFactory{
 		sr:              sr,
 		prefix:          prefix,
 		lookupTemplates: lookupTemplates,
@@ -25,8 +25,6 @@ func NewVaultFactory(sr SecretReader, loginTimeout time.Duration, loggedIn <-cha
 		loggedIn:        loggedIn,
 		loginTimeout:    loginTimeout,
 	}
-
-	return factory
 }
 
 func (factory *vaultFactory) NewSecrets() creds.Secrets {
