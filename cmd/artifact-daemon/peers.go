@@ -497,10 +497,7 @@ func extractTarToRoot(r io.Reader, root *os.Root) error {
 	// order, case folding, hard links through symlinked dirs), resolve each
 	// symlink FROM ITS REAL ON-DISK LOCATION with the same trusted resolver the
 	// daemon uses everywhere else, and refuse any that leaves the destination.
-	if err := refuseEscapingSymlinks(root); err != nil {
-		return err
-	}
-	return nil
+	return refuseEscapingSymlinks(root)
 }
 
 // refuseEscapingSymlinks fails the extraction if any symlink now on disk
