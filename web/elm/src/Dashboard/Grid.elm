@@ -31,7 +31,6 @@ import List.Extra
 import Message.Message
     exposing
         ( DropTarget(..)
-        , Message(..)
         , PipelinesSection(..)
         )
 
