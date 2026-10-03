@@ -81,12 +81,11 @@ func ExpectGeneratedFilesToMatchSpecification(migrationDir, fileNamePattern, mig
 	var migrationFilesCount = 0
 	regex := regexp.MustCompile(fileNamePattern)
 	for _, migrationFile := range files {
-		var matches []string
 		migrationFileName := migrationFile.Name()
 		if !regex.MatchString(migrationFileName) {
 			continue
 		}
-		matches = regex.FindStringSubmatch(migrationFileName)
+		matches := regex.FindStringSubmatch(migrationFileName)
 
 		Expect(matches).To(HaveLen(4))
 		Expect(matches[2]).To(Equal(migrationName))
