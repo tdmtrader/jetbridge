@@ -149,7 +149,7 @@ func (manager *SsmManager) NewSecretsFactory(log lager.Logger) (creds.SecretsFac
 		return nil, err
 	}
 
-	return NewSsmFactory(log, cfg, []*creds.SecretTemplate{pipelineSecretTemplate, teamSecretTemplate}, manager.SharedPath), nil
+	return newSsmFactory(log, cfg, []*creds.SecretTemplate{pipelineSecretTemplate, teamSecretTemplate}, manager.SharedPath), nil
 }
 
 func (manager *SsmManager) Close(logger lager.Logger) {

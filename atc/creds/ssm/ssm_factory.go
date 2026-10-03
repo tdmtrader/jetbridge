@@ -14,7 +14,7 @@ type ssmFactory struct {
 	sharedPath      string
 }
 
-func NewSsmFactory(log lager.Logger, config aws.Config, secretTemplates []*creds.SecretTemplate, sharedPath string) *ssmFactory {
+func newSsmFactory(log lager.Logger, config aws.Config, secretTemplates []*creds.SecretTemplate, sharedPath string) *ssmFactory {
 	return &ssmFactory{
 		log:             log,
 		api:             ssm.NewFromConfig(config),
