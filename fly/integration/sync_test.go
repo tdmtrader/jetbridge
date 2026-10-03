@@ -74,6 +74,8 @@ var _ = Describe("sync", func() {
 	})
 
 	downloadAndReplaceExecutable := func(arg ...string) {
+		GinkgoHelper()
+
 		flyCmd := exec.Command(copiedFlyPath, arg...)
 		flyCmd.Env = append(os.Environ(), "FAKE_FLY_VERSION="+flyVersion)
 
