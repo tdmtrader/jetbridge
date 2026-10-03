@@ -2534,12 +2534,7 @@ func (cmd *RunCommand) configureAuthForDefaultTeam(teamFactory db.TeamFactory) e
 		return fmt.Errorf("default team auth not configured: %v", err)
 	}
 
-	err = team.UpdateProviderAuth(auth)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return team.UpdateProviderAuth(auth)
 }
 
 func (cmd *RunCommand) constructEngine(
