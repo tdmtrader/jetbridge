@@ -1192,7 +1192,7 @@ func (cmd *RunCommand) backendComponents(
 ) ([]RunnableComponent, error) {
 
 	if cmd.Syslog.Address != "" && cmd.Syslog.Transport == "" {
-		return nil, fmt.Errorf("syslog Drainer is misconfigured, cannot configure a drainer without a transport")
+		return nil, errors.New("syslog Drainer is misconfigured, cannot configure a drainer without a transport")
 	}
 
 	syslogDrainConfigured := true
