@@ -144,14 +144,14 @@ func checkSupervisorPod(ctx context.Context, client kubernetes.Interface, namesp
 		return err
 	}
 	if string(pod.UID) != string(start.PodUID) || pod.Spec.NodeName != nodeName {
-		return fmt.Errorf("supervisor Pod was replaced")
+		return errors.New("supervisor Pod was replaced")
 	}
 	node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 	if string(node.UID) != string(start.NodeUID) {
-		return fmt.Errorf("supervisor node was replaced")
+		return errors.New("supervisor node was replaced")
 	}
 	return nil
 }
