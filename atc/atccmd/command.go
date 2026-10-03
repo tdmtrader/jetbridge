@@ -551,10 +551,6 @@ func (cmd *Migration) migrateToLatestVersion() error {
 	return helper.MigrateToVersion(version)
 }
 
-func (cmd *ATCCommand) WireDynamicFlags(commandFlags *flags.Command) {
-	cmd.RunCommand.WireDynamicFlags(commandFlags)
-}
-
 func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 	var (
 		metricsGroup      *flags.Group
