@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"slices"
 	"strings"
 	"time"
 
@@ -540,9 +541,7 @@ func (f *pipelineRunFactory) Runs(template Pipeline, page Page) ([]PipelineRun, 
 		return nil, Pagination{}, err
 	}
 	if reverse {
-		for i, j := 0, len(runs)-1; i < j; i, j = i+1, j-1 {
-			runs[i], runs[j] = runs[j], runs[i]
-		}
+		slices.Reverse(runs)
 	}
 	if len(runs) == 0 {
 		return runs, Pagination{}, tx.Commit()
