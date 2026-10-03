@@ -25,7 +25,7 @@ type Emitter interface {
 	Emit(lager.Logger, Event)
 }
 
-type EmitterFactory interface {
+type emitterFactory interface {
 	Description() string
 	IsConfigured() bool
 	NewEmitter(map[string]string) (Emitter, error)
@@ -36,7 +36,7 @@ type Monitor struct {
 	eventHost        string
 	eventAttributes  map[string]string
 	emissions        chan eventEmission
-	emitterFactories []EmitterFactory
+	emitterFactories []emitterFactory
 
 	Databases       []db.DbConn
 	DatabaseQueries Counter
@@ -114,7 +114,7 @@ func NewMonitor() *Monitor {
 	}
 }
 
-func (m *Monitor) RegisterEmitter(factory EmitterFactory) {
+func (m *Monitor) RegisterEmitter(factory emitterFactory) {
 	m.emitterFactories = append(m.emitterFactories, factory)
 }
 
