@@ -1340,10 +1340,7 @@ func validateSpoolContents(ctx context.Context, spool *os.File, index *captureIn
 	if !os.SameFile(initialInfo, finalInfo) {
 		return fmt.Errorf("hangar: content spool descriptor identity changed during verification")
 	}
-	if err := validateSpoolLayout(index, finalInfo.Size()); err != nil {
-		return err
-	}
-	return nil
+	return validateSpoolLayout(index, finalInfo.Size())
 }
 
 func sortedSpoolEntries(index *captureIndex) []capturedEntry {
