@@ -14,6 +14,8 @@ func SetupTeamWithBasicAuth(dbConn *sql.DB, team, basicAuth, auth string) {
 }
 
 func SetupTeam(dbConn *sql.DB, team, auth string) {
+	GinkgoHelper()
+
 	_, err := dbConn.Exec("INSERT INTO teams(name, auth) VALUES($1, $2)", team, auth)
 	Expect(err).NotTo(HaveOccurred())
 }
