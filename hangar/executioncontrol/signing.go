@@ -25,11 +25,11 @@ import (
 	"strconv"
 )
 
-// AcknowledgementDomain separates these bytes from every other signature in the
+// acknowledgementDomain separates these bytes from every other signature in the
 // system. A receipt and an acknowledgement are signed by different keys for
 // different purposes; a domain string means neither can ever be presented as
 // the other even if a key were reused by mistake.
-const AcknowledgementDomain = "hangar-execution-acknowledgement-v1"
+const acknowledgementDomain = "hangar-execution-acknowledgement-v1"
 
 // ErrUnsigned is an acknowledgement whose signature is absent, malformed, or
 // does not verify under the pinned key.
@@ -49,7 +49,7 @@ func CanonicalAcknowledgementBytes(ack Acknowledgement) []byte {
 		out = append(out, value...)
 	}
 
-	field(AcknowledgementDomain)
+	field(acknowledgementDomain)
 	field(ack.ProtocolVersion)
 	field(string(ack.Kind))
 	field(string(ack.ExecutionID))
