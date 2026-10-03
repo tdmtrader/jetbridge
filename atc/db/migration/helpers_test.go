@@ -146,6 +146,8 @@ func readTeamAuth(dbConn *sql.DB, team string) []byte {
 }
 
 func fetchTeamAuth(dbConn *sql.DB, team string) map[string]any {
+	GinkgoHelper()
+
 	auth := readTeamAuth(dbConn, team)
 	var data map[string]any
 	err := json.Unmarshal(auth, &data)
