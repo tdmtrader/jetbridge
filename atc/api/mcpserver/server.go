@@ -58,10 +58,3 @@ func (s *Server) AddTool(name, description string, schema json.RawMessage, handl
 		})
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
-func MustJSON(v any) json.RawMessage {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return data
-}
