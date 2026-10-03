@@ -150,21 +150,22 @@ func (i interpolator) Interpolate(node any, tracker varsTracker) (any, error) {
 				return nil, err
 			}
 
-			if found {
-				// ensure that value type is preserved when replacing the entire field
-				if interpolationAnchoredRegex.MatchString(typedNode) {
-					return foundVal, nil
-				}
+			if !found {
+				continue
+			}
+			// ensure that value type is preserved when replacing the entire field
+			if interpolationAnchoredRegex.MatchString(typedNode) {
+				return foundVal, nil
+			}
 
-				switch foundVal.(type) {
-				case string, bool, int, int16, int32, int64, uint, uint16, uint32, uint64, json.Number:
-					foundValStr := fmt.Sprintf("%v", foundVal)
-					typedNode = strings.ReplaceAll(typedNode, fmt.Sprintf("((%s))", name), foundValStr)
-				default:
-					return nil, InvalidInterpolationError{
-						Name:  name,
-						Value: foundVal,
-					}
+			switch foundVal.(type) {
+			case string, bool, int, int16, int32, int64, uint, uint16, uint32, uint64, json.Number:
+				foundValStr := fmt.Sprintf("%v", foundVal)
+				typedNode = strings.ReplaceAll(typedNode, fmt.Sprintf("((%s))", name), foundValStr)
+			default:
+				return nil, InvalidInterpolationError{
+					Name:  name,
+					Value: foundVal,
 				}
 			}
 		}
