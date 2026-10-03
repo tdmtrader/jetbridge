@@ -35,11 +35,7 @@ func (command *GetTeamCommand) Execute(args []string) error {
 	}
 
 	if command.JSON {
-		err := displayhelpers.JsonPrint(team.ATCTeam())
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(team.ATCTeam())
 	}
 
 	headers := ui.TableRow{
