@@ -36,27 +36,23 @@ func isValidAction(action string) bool {
 	return false
 }
 
-type ConcurrentRequestPolicy interface {
-	HandlerPool(action string) (Pool, bool)
-}
-
-type concurrentRequestPolicy struct {
+type ConcurrentRequestPolicy struct {
 	handlerPools map[LimitedRoute]Pool
 }
 
 func NewConcurrentRequestPolicy(
 	limits map[LimitedRoute]int,
-) ConcurrentRequestPolicy {
+) *ConcurrentRequestPolicy {
 	pools := map[LimitedRoute]Pool{}
 	for action, limit := range limits {
 		pools[action] = NewPool(limit)
 	}
-	return &concurrentRequestPolicy{
+	return &ConcurrentRequestPolicy{
 		handlerPools: pools,
 	}
 }
 
-func (crp *concurrentRequestPolicy) HandlerPool(action string) (Pool, bool) {
+func (crp *ConcurrentRequestPolicy) HandlerPool(action string) (Pool, bool) {
 	pool, found := crp.handlerPools[LimitedRoute(action)]
 	return pool, found
 }

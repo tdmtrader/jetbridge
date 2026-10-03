@@ -10,12 +10,12 @@ import (
 
 type ConcurrentRequestLimitsWrappa struct {
 	logger                  lager.Logger
-	concurrentRequestPolicy ConcurrentRequestPolicy
+	concurrentRequestPolicy *ConcurrentRequestPolicy
 }
 
 func NewConcurrentRequestLimitsWrappa(
 	logger lager.Logger,
-	concurrentRequestPolicy ConcurrentRequestPolicy,
+	concurrentRequestPolicy *ConcurrentRequestPolicy,
 ) Wrappa {
 	return ConcurrentRequestLimitsWrappa{
 		logger:                  logger,
