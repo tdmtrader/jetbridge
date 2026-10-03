@@ -246,7 +246,7 @@ func (p *execProcess) awaitScheduledPod(ctx context.Context) (*corev1.Pod, error
 // exec, because it is the record that closes start admission.
 func (p *execProcess) beginExactCommand(ctx context.Context) error {
 	if p.exact == nil {
-		return fmt.Errorf("the exact execution was never admitted")
+		return errors.New("the exact execution was never admitted")
 	}
 	logger := lagerctx.FromContext(ctx).Session("exact-execution", lager.Data{
 		"execution": string(p.control.Identity.ExecutionID),
