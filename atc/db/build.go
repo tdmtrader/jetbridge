@@ -292,7 +292,7 @@ func newEmptyBuild(conn DbConn, lockFactory lock.LockFactory) *build {
 	return &build{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
 }
 
-var ErrBuildDisappeared = errors.New("build disappeared from db")
+var errBuildDisappeared = errors.New("build disappeared from db")
 var ErrBuildHasNoPipeline = errors.New("build has no pipeline")
 var ErrBuildArtifactNotFound = errors.New("build artifact not found")
 
@@ -548,7 +548,7 @@ func (b *build) SetInterceptible(i bool) error {
 	}
 
 	if affected == 0 {
-		return ErrBuildDisappeared
+		return errBuildDisappeared
 	}
 
 	return nil
@@ -1067,7 +1067,7 @@ func (b *build) Delete() (bool, error) {
 	}
 
 	if affected == 0 {
-		return false, ErrBuildDisappeared
+		return false, errBuildDisappeared
 	}
 
 	return true, nil
