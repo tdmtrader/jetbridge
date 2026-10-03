@@ -12,30 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureParallelTasks returns a pipeline with N tasks running in_parallel.
-func fixtureParallelTasks(jobName string, taskScripts map[string]string) string {
-	tasks := ""
-	for name, script := range taskScripts {
-		tasks += fmt.Sprintf(`    - task: %s
-      config:
-        platform: linux
-        image_resource: {type: registry-image, source: {repository: busybox}}
-        run:
-          path: sh
-          args:
-          - -c
-          - |
-            %s
-`, name, script)
-	}
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - in_parallel:
-%s`, jobName, tasks)
-}
-
 // fixtureTaskWithHook returns a pipeline with a task and a single hook.
 // hookType must be one of: on_success, on_failure, on_abort, ensure.
 func fixtureTaskWithHook(jobName, hookType, mainScript, hookScript string) string {
