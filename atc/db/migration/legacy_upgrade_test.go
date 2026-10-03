@@ -742,6 +742,8 @@ func verifyMD5ToSHA256Migration(db *sql.DB) {
 }
 
 func expectRowCount(db *sql.DB, table string, expected int) {
+	GinkgoHelper()
+
 	var count int
 	err := db.QueryRow("SELECT count(*) FROM " + table).Scan(&count)
 	Expect(err).NotTo(HaveOccurred())
