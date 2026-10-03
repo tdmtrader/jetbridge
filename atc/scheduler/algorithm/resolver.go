@@ -30,7 +30,7 @@ func constructResolvers(
 	groupedInputConfigs := groupInputsConfigsByPassedJobs(inputConfigsWithPassed)
 
 	for _, group := range groupedInputConfigs {
-		resolvers = append(resolvers, NewGroupResolver(versions, group.inputConfigs))
+		resolvers = append(resolvers, newGroupResolver(versions, group.inputConfigs))
 	}
 
 	return resolvers, nil

@@ -40,7 +40,7 @@ type groupResolver struct {
 	lastUsedPassedBuilds map[int]db.BuildCursor
 }
 
-func NewGroupResolver(vdb db.VersionsDB, inputConfigs db.InputConfigs) Resolver {
+func newGroupResolver(vdb db.VersionsDB, inputConfigs db.InputConfigs) Resolver {
 	return &groupResolver{
 		vdb:              vdb,
 		inputConfigs:     inputConfigs,
