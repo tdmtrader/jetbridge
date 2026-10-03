@@ -15,7 +15,6 @@ module DownloadFly.DownloadFly exposing
 
 import Api.Endpoints as Endpoints
 import Application.Models exposing (Session)
-import Assets exposing (Asset(..))
 import DownloadFly.Model
     exposing
         ( Model
