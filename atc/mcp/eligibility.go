@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -27,7 +28,7 @@ func AccountEligibilityForAction(ctx context.Context, factory accessor.AccessFac
 		return "", fmt.Errorf("unclassified API action %q", action)
 	}
 	if factory == nil {
-		return "", fmt.Errorf("capability access factory is unavailable")
+		return "", errors.New("capability access factory is unavailable")
 	}
 	r, err := http.NewRequestWithContext(accessor.WithTrustedClaims(ctx, principal.Claims), http.MethodGet, "/", nil)
 	if err != nil {
@@ -38,7 +39,7 @@ func AccountEligibilityForAction(ctx context.Context, factory accessor.AccessFac
 		return "", fmt.Errorf("capability access temporarily unavailable: %w", err)
 	}
 	if !access.IsAuthenticated() {
-		return "", fmt.Errorf("authenticated capability context required")
+		return "", errors.New("authenticated capability context required")
 	}
 	switch kind {
 	case auth.AuthorizationAdmin:
