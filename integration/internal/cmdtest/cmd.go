@@ -204,10 +204,5 @@ func (cmd Cmd) TryOutputJSON(dest any, args ...string) error {
 		return err
 	}
 
-	err = json.Unmarshal(buf.Bytes(), dest)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return json.Unmarshal(buf.Bytes(), dest)
 }
