@@ -11,7 +11,6 @@ import Concourse.BuildStatus as BuildStatus
 import Keyboard
 import Login.Login as Login
 import Routes exposing (Highlight)
-import Set exposing (Set)
 import Time
 
 
