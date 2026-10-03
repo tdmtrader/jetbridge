@@ -1586,8 +1586,6 @@ var _ = Describe("Pipelines API", func() {
 		})
 
 		JustBeforeEach(func() {
-			var err error
-
 			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/"+requestTeam+"/pipelines/a-pipeline/pause", nil)
 			Expect(err).NotTo(HaveOccurred())
 
