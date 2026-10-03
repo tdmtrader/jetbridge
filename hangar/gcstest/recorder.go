@@ -3,7 +3,7 @@ package gcstest
 import (
 	"context"
 	"io"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/concourse/concourse/hangar/objectstore"
@@ -57,7 +57,7 @@ func (recorder *Recorder) Kinds() []objectstore.Operation {
 	for kind := range seen {
 		kinds = append(kinds, kind)
 	}
-	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
+	slices.Sort(kinds)
 
 	return kinds
 }
