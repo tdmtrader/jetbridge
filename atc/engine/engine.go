@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -252,7 +251,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 		// them to clear in-flight check tracking. Job builds are left in
 		// "started" so the next web's build tracker re-attaches to them.
 		if b.build.Name() == db.CheckBuildName {
-			b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false, false)
+			b.finish(logger.Session("finish"), errors.New("build released during drain"), false, false)
 		}
 
 	case <-done:
