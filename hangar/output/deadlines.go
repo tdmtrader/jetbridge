@@ -46,7 +46,7 @@ const (
 	// capture ownership, read leases and reclaim work.
 	MinLeaseTerm = 15 * time.Minute
 
-	// MaxLeaseTerm is the ceiling, and it is the same number the read-lease
+	// maxLeaseTerm is the ceiling, and it is the same number the read-lease
 	// table's CHECK stops at (86400 seconds). A protection longer than a day is
 	// a generation pinned against reclaim for a day by one request, and the
 	// caller who asked for it is the party being protected.
@@ -54,7 +54,7 @@ const (
 	// It lives here, beside the derivation, so that the bound is read where the
 	// policy is. A request refused only by the column comes back carrying a
 	// constraint's text, which names a column no consumer has heard of.
-	MaxLeaseTerm = 24 * time.Hour
+	maxLeaseTerm = 24 * time.Hour
 
 	// LeaseRenewInterval is the slowest acceptable renewal. A lease renewed
 	// less often than this cannot be distinguished from an owner that died.
@@ -175,10 +175,10 @@ func ValidateMaterializationTimeout(timeout time.Duration) error {
 		return fmt.Errorf("%w: no materialization timeout; the lease term is derived from it",
 			ErrIncomplete)
 	}
-	if term := LeaseTermFor(timeout); term > MaxLeaseTerm {
+	if term := LeaseTermFor(timeout); term > maxLeaseTerm {
 		return fmt.Errorf("%w: a materialization timeout of %s derives a lease term of %s and "+
 			"the bound is %s; a read protects a generation against reclaim for as long as its "+
-			"lease lasts", ErrIncomplete, timeout, term, MaxLeaseTerm)
+			"lease lasts", ErrIncomplete, timeout, term, maxLeaseTerm)
 	}
 
 	return nil
