@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -108,13 +109,7 @@ func TestEveryOperationKindIsEitherOwnedOrRecordedAsUnowned(t *testing.T) {
 }
 
 func slicesContainsKind(all []output.OperationKind, want output.OperationKind) bool {
-	for _, kind := range all {
-		if kind == want {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(all, want)
 }
 
 // kindsAssignedToARunner finds every `Kind: output.OperationX` in a non-test
