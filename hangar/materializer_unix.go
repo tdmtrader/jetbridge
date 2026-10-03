@@ -604,7 +604,7 @@ func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix st
 			entryPath = path.Join(prefix, name)
 		}
 		if entryPath == materializationReceiptName {
-			return fmt.Errorf("hangar: source tree collides with internal receipt name")
+			return errors.New("hangar: source tree collides with internal receipt name")
 		}
 		var before unix.Stat_t
 		if err := unix.Fstatat(int(source.Fd()), name, &before, unix.AT_SYMLINK_NOFOLLOW); err != nil {
@@ -641,7 +641,7 @@ func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix st
 			var opened unix.Stat_t
 			if err := unix.Fstat(fd, &opened); infoErr != nil || err != nil || opened.Mode&unix.S_IFMT != unix.S_IFREG || opened.Dev != before.Dev || opened.Ino != before.Ino {
 				sourceFile.Close()
-				return errors.Join(infoErr, err, fmt.Errorf("source file changed while opening"))
+				return errors.Join(infoErr, err, errors.New("source file changed while opening"))
 			}
 			destinationFD, err := unix.Openat(int(destination.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(opened.Mode&0777))
 			if err != nil {
@@ -672,14 +672,14 @@ func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix st
 			}
 			again, err := readlinkAt(int(source.Fd()), name)
 			if err != nil || again != target {
-				return fmt.Errorf("source symlink changed during copy")
+				return errors.New("source symlink changed during copy")
 			}
 			var after unix.Stat_t
 			if err := unix.Fstatat(int(source.Fd()), name, &after, unix.AT_SYMLINK_NOFOLLOW); err != nil || after.Dev != before.Dev || after.Ino != before.Ino || after.Mode&unix.S_IFMT != unix.S_IFLNK {
-				return fmt.Errorf("source symlink changed during copy")
+				return errors.New("source symlink changed during copy")
 			}
 		default:
-			return fmt.Errorf("hangar: source contains unsupported file type")
+			return errors.New("hangar: source contains unsupported file type")
 		}
 	}
 	return nil
