@@ -69,7 +69,7 @@ func (s *Server) pipelineRun(pipeline db.Pipeline, run db.PipelineRun, r *http.R
 			return atc.PipelineRun{}, err
 		}
 		if !found {
-			return atc.PipelineRun{}, fmt.Errorf("terminal Run has no retained observation")
+			return atc.PipelineRun{}, errors.New("terminal Run has no retained observation")
 		}
 		presented.Terminal = &terminal
 	}
