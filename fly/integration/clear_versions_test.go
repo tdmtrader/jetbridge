@@ -40,6 +40,7 @@ var _ = Describe("clear-versions", func() {
 	})
 
 	yes := func() {
+		GinkgoHelper()
 		Eventually(sess).Should(gbytes.Say(`are you sure\? \[yN\]: `))
 		fmt.Fprintf(stdin, "y\r")
 	}
