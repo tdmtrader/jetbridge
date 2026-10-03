@@ -18,7 +18,7 @@ import Browser.Events
         , onResize
         )
 import Build.StepTree.Models exposing (BuildEventEnvelope)
-import Concourse exposing (DatabaseID, decodeInstanceGroupId, decodeJob, decodePipeline, decodeTeam)
+import Concourse exposing (decodeInstanceGroupId, decodeJob, decodePipeline, decodeTeam)
 import Concourse.BuildEvents exposing (decodeBuildEventEnvelope)
 import Json.Decode
 import Json.Encode
