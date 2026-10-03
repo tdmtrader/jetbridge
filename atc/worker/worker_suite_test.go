@@ -55,5 +55,4 @@ func TestWorker(t *testing.T) {
 }
 
 var Test = It
-var FTest = FIt
 var XTest = XIt
