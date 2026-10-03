@@ -269,14 +269,14 @@ func (command *HijackCommand) getContainerFingerprintFromUrl(target rc.Target, u
 
 	host := parsedTargetUrl.String()
 	if host != target.URL() {
-		err = fmt.Errorf("URL doesn't match that of target")
+		err = errors.New("URL doesn't match that of target")
 		return nil, err
 	}
 
 	teamFromUrl := urlMap["teams"]
 
 	if teamFromUrl != team.Name() {
-		err = fmt.Errorf("Team in URL doesn't match the current team of the target")
+		err = errors.New("Team in URL doesn't match the current team of the target")
 		return nil, err
 	}
 
