@@ -36,13 +36,13 @@ func Render(dst io.Writer, src eventstream.EventStream, options RenderOptions) i
 		if err != nil {
 			if err == io.EOF {
 				return exitStatus
-			} else if options.IgnoreEventParsingErrors && isEventParseError(err) {
-				continue
-			} else {
-				dstImpl.SetTimestamp(0)
-				fmt.Fprintf(dstImpl, "failed to parse next event: %s\n", ui.ErroredColor.Sprint(err))
-				return 255
 			}
+			if options.IgnoreEventParsingErrors && isEventParseError(err) {
+				continue
+			}
+			dstImpl.SetTimestamp(0)
+			fmt.Fprintf(dstImpl, "failed to parse next event: %s\n", ui.ErroredColor.Sprint(err))
+			return 255
 		}
 
 		switch e := ev.(type) {
