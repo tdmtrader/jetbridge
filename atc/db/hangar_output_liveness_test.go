@@ -361,6 +361,7 @@ var _ = Describe("the bounded output-plane workers", func() {
 		// And with the reader gone, the generation is reclaimable again.
 		hangarAgeCapture(capture, 48*time.Hour)
 		in := func(work func(tx db.HangarOutputTx)) {
+			GinkgoHelper()
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
