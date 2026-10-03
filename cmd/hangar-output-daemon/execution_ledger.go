@@ -33,6 +33,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -598,10 +599,8 @@ func (ledger *ExecutionLedger) OpenGate(identity executioncontrol.Identity, gate
 	if err != nil {
 		return err
 	}
-	for _, open := range record.OpenGates {
-		if open == gate {
-			return nil
-		}
+	if slices.Contains(record.OpenGates, gate) {
+		return nil
 	}
 	record.OpenGates = append(record.OpenGates, gate)
 	sort.Strings(record.OpenGates)
