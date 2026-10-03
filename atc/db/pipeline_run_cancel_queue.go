@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -212,7 +211,7 @@ func (f *pipelineRunFactory) RecordRunCancellationProgress(ctx context.Context, 
 	switch debt {
 	case CancellationDone, CancellationPending, CancellationUnavailable, CancellationTimeout, CancellationConflict:
 	default:
-		return fmt.Errorf("invalid cancellation retry debt")
+		return errors.New("invalid cancellation retry debt")
 	}
 	if op.WorkerEpoch != lease.Epoch {
 		return ErrRunCancellationProgressStale
