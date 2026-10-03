@@ -1,6 +1,7 @@
 package atc
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,7 +29,7 @@ func (path *PathFlag) UnmarshalFlag(value string) error {
 
 		tempf, err := os.CreateTemp("", tempFilePattern)
 		if err != nil {
-			return fmt.Errorf("failed to create a temp file")
+			return errors.New("failed to create a temp file")
 		}
 		defer tempf.Close()
 
