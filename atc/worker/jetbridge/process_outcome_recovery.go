@@ -260,7 +260,7 @@ func exactStoppedDelivery(state string, resource bool) []string {
 // closeUndeliveredStart runs the close against the exact original Pod.
 func closeUndeliveredStart(ctx context.Context, client kubernetes.Interface, executor PodExecutor, namespace, podName, nodeName, state string, resource bool, start executioncontrol.Acknowledgement) error {
 	if executor == nil {
-		return fmt.Errorf("no journal writer configured")
+		return errors.New("no journal writer configured")
 	}
 	if err := checkSupervisorPod(ctx, client, namespace, podName, nodeName, start); err != nil {
 		return err
