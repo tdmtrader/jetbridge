@@ -34,8 +34,7 @@ func (command *PausedJobsCommand) Execute([]string) error {
 		return err
 	}
 
-	var jobs []atc.Job
-	jobs, err = team.ListJobs(command.Pipeline.Ref())
+	jobs, err := team.ListJobs(command.Pipeline.Ref())
 	if err != nil {
 		return err
 	}
