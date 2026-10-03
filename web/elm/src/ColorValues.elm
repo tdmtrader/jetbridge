@@ -25,7 +25,6 @@ module ColorValues exposing
     , success20
     , success40
     , success70
-    , success80
     , success90
     , white
     )
@@ -112,11 +111,6 @@ success40 =
 success70 : String
 success70 =
     "#0D9448"
-
-
-success80 : String
-success80 =
-    "#0D3D22"
 
 
 success90 : String
