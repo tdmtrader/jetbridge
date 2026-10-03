@@ -12,7 +12,6 @@ const MissingBuildInput string = "input is not included in resolved candidates"
 type MissingInputReasons map[string]string
 
 const (
-	NoVersionsAvailable      string = "no versions available"
 	NoResourceCheckFinished  string = "checking for latest available versions"
 	PinnedVersionUnavailable string = "pinned version %s is not available"
 )
