@@ -266,7 +266,7 @@ func TestTheGeneratedCaptureScriptsAreSyntacticallyPOSIX(t *testing.T) {
 
 	for name, script := range map[string]string{
 		"cleanup-stale":          cleanup.Command[2],
-		captureControlInitName:   control.Command[2],
+		controlInitName:          control.Command[2],
 		"supervisor (unchanged)": supervisorCommand("proc", runtime.ProcessSpec{Path: "true"})[2],
 	} {
 		path := filepath.Join(t.TempDir(), "script.sh")
@@ -437,7 +437,7 @@ func TestTheCaptureSelectedOutputMountsTheReservedIncarnation(t *testing.T) {
 	// incarnation the Pod did not mount protects nothing.
 	var initEnv map[string]string
 	for _, container := range pod.Spec.InitContainers {
-		if container.Name != captureControlInitName {
+		if container.Name != controlInitName {
 			continue
 		}
 		initEnv = map[string]string{}

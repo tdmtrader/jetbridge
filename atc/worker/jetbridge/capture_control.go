@@ -52,9 +52,9 @@ import (
 // anything composed here.
 const captureReservationAnnotation = "concourse.dev/hangar-reserved-directory"
 
-// captureControlInitName is the container the hold is established from. It is
+// controlInitName is the container the hold is established from. It is
 // a constant because the ordering assertion names it.
-const captureControlInitName = "hangar-capture-control"
+const controlInitName = "hangar-capture-control"
 
 // The env names the control init reads. They are declared once here so the
 // script and the pod builder cannot drift, and so a test can name them.
@@ -124,7 +124,7 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 	allowEscalation := false
 
 	return &corev1.Container{
-		Name:  captureControlInitName,
+		Name:  controlInitName,
 		Image: c.helperImage(),
 		Command: []string{"sh", "-c", captureHoldScript(outputDaemonURLScheme(),
 			outputWgetTLSOptions())},

@@ -414,7 +414,7 @@ func (p *execProcess) acquireWriterTickets(ctx context.Context, hold output.Capt
 func podWriterNames(pod *corev1.Pod) []string {
 	var writers []string
 	for _, container := range pod.Spec.InitContainers {
-		if container.Name == captureControlInitName {
+		if container.Name == controlInitName {
 			continue
 		}
 		writers = append(writers, container.Name)

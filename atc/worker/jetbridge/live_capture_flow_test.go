@@ -278,7 +278,7 @@ cat /hold/.hold-request
 	for _, init := range pod.Spec.InitContainers {
 		names = append(names, init.Name)
 	}
-	if pod.Spec.InitContainers[0].Name != captureControlInitName {
+	if pod.Spec.InitContainers[0].Name != controlInitName {
 		t.Fatalf("the capture control init is not first: %v", names)
 	}
 	// And it is the ONLY one, which this test says out loud rather than letting
@@ -448,13 +448,13 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 				carries = true
 			}
 		}
-		if carries && container.Name != captureControlInitName {
+		if carries && container.Name != controlInitName {
 			t.Errorf("container %q carries the source-control warrant; only %q may",
-				container.Name, captureControlInitName)
+				container.Name, controlInitName)
 		}
-		if !carries && container.Name == captureControlInitName {
+		if !carries && container.Name == controlInitName {
 			t.Errorf("%q does not carry the source-control warrant, so the check above proves "+
-				"nothing", captureControlInitName)
+				"nothing", controlInitName)
 		}
 	}
 }
