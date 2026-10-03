@@ -185,7 +185,7 @@ func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
 	return nil
 }
 
-var ErrEncryptedWithUnknownKey = errors.New("row encrypted with neither old nor new key")
+var errEncryptedWithUnknownKey = errors.New("row encrypted with neither old nor new key")
 
 func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.Key) error {
 	logger := m.logger.Session("rotate")
@@ -234,7 +234,7 @@ func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.K
 				}
 
 				logger.Error("failed-to-decrypt-with-either-key", err)
-				return ErrEncryptedWithUnknownKey
+				return errEncryptedWithUnknownKey
 			}
 
 			encrypted, newNonce, err := newKey.Encrypt(decrypted)
