@@ -2363,15 +2363,10 @@ func createStartedBuild(tx Tx, build *build, args startedBuildArgs) error {
 		return err
 	}
 
-	err = build.saveEvent(tx, event.Status{
+	return build.saveEvent(tx, event.Status{
 		Status: atc.StatusStarted,
 		Time:   build.StartTime().Unix(),
 	})
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func buildStartedChannel() string {
