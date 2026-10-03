@@ -123,7 +123,7 @@ func Open(root, expectedID string, maxBytes int64) (*Store, error) {
 		return nil, err
 	}
 	if !filepath.IsAbs(root) || maxBytes <= 0 || maxBytes == math.MaxInt64 {
-		return nil, fmt.Errorf("disk requires an absolute root and positive bounded object limit")
+		return nil, errors.New("disk requires an absolute root and positive bounded object limit")
 	}
 	for _, p := range []string{root, filepath.Join(root, "blobs"), filepath.Join(root, "index.db")} {
 		info, err := os.Lstat(p)
@@ -131,10 +131,10 @@ func Open(root, expectedID string, maxBytes int64) (*Store, error) {
 			return nil, fmt.Errorf("disk is not initialized: %w", err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("disk paths must not be symlinks")
+			return nil, errors.New("disk paths must not be symlinks")
 		}
 		if p == filepath.Join(root, "index.db") && !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("disk index must be regular")
+			return nil, errors.New("disk index must be regular")
 		}
 	}
 	db, err := bolt.Open(filepath.Join(root, "index.db"), 0600, &bolt.Options{Timeout: time.Second})
@@ -145,7 +145,7 @@ func Open(root, expectedID string, maxBytes int64) (*Store, error) {
 	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(settings)
 		if b == nil || tx.Bucket(objects) == nil || tx.Bucket(blobOwners) == nil || string(b.Get([]byte("format"))) != format {
-			return fmt.Errorf("unsupported disk format")
+			return errors.New("unsupported disk format")
 		}
 		if string(b.Get([]byte("id"))) != expectedID {
 			return fmt.Errorf("%w: disk identity mismatch", hangar.ErrConflict)
