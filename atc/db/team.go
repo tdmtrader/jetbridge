@@ -1041,10 +1041,7 @@ func (t *team) OrderPipelines(names []string) error {
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (t *team) OrderPipelinesWithinGroup(groupName string, instanceVars []atc.InstanceVars) error {
