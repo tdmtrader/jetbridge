@@ -69,6 +69,8 @@ type emptyConfigHashRun struct{ db.PipelineRun }
 func (emptyConfigHashRun) ConfigHash() string { return "" }
 
 func assertRunJSONFields(run atc.PipelineRun, expected map[string]any, absent []string) {
+	GinkgoHelper()
+
 	encoded, err := json.Marshal(run)
 	Expect(err).NotTo(HaveOccurred())
 
