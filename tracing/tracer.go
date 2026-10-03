@@ -183,7 +183,7 @@ func startSpan(
 	opts ...trace.SpanStartOption,
 ) (context.Context, trace.Span) {
 	if !Configured {
-		return ctx, NoopSpan
+		return ctx, noopSpan
 	}
 
 	ctx, span := otel.GetTracerProvider().Tracer("concourse").Start(
