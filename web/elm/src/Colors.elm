@@ -5,7 +5,6 @@ module Colors exposing
     , asciiArt
     , background
     , backgroundDark
-    , black
     , border
     , bottomBarText
     , buildStatusColor
@@ -224,11 +223,6 @@ pinMenuHover =
 white : String
 white =
     ColorValues.white
-
-
-black : String
-black =
-    ColorValues.black
 
 
 
