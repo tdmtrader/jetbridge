@@ -74,10 +74,6 @@ type OriginV10 struct {
 
 type OriginV10Type string
 
-const (
-	OriginV10TypeRun OriginV10Type = "run"
-)
-
 type OriginV20 struct {
 	Name     string            `json:"name"`
 	Type     OriginV20Type     `json:"type"`
