@@ -19,7 +19,7 @@ type Manager struct {
 const (
 	DefaultSubjectScope = SubjectScopePipeline
 	DefaultExpiresIn    = 1 * time.Hour
-	MaxExpiresIn        = 24 * time.Hour
+	maxExpiresIn        = 24 * time.Hour
 )
 
 func NewManager(issuer string, signingKeyFactory db.SigningKeyFactory, config map[string]any) (*Manager, error) {
@@ -101,8 +101,8 @@ func (manager Manager) Validate() error {
 	if !manager.tokenGenerator.SubjectScope.Valid() {
 		return fmt.Errorf("invalid subject_scope value: %s", manager.tokenGenerator.SubjectScope)
 	}
-	if manager.tokenGenerator.ExpiresIn > MaxExpiresIn {
-		return fmt.Errorf("expires_in must be <= %s", MaxExpiresIn.String())
+	if manager.tokenGenerator.ExpiresIn > maxExpiresIn {
+		return fmt.Errorf("expires_in must be <= %s", maxExpiresIn.String())
 	}
 	switch manager.tokenGenerator.Algorithm {
 	case jose.RS256, jose.ES256:
