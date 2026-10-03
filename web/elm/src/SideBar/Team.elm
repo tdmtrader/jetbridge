@@ -1,7 +1,7 @@
 module SideBar.Team exposing (PipelineType(..), team)
 
 import Assets
-import Concourse exposing (PipelineGrouping(..))
+import Concourse
 import HoverState
 import Message.Message exposing (DomID(..), PipelinesSection(..))
 import Set exposing (Set)
