@@ -92,11 +92,7 @@ func (request ReadRequest) Validate() error {
 	}
 	// The term's bounds, read here rather than left to the column's CHECK: a
 	// request refused by the schema comes back carrying a constraint's text.
-	if err := output.ValidateMaterializationTimeout(request.MaterializationTimeout); err != nil {
-		return err
-	}
-
-	return nil
+	return output.ValidateMaterializationTimeout(request.MaterializationTimeout)
 }
 
 // ReadWarrant is what a consumer receives: the token and the facts it carries.
