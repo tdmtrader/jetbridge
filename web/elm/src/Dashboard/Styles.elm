@@ -14,7 +14,6 @@ module Dashboard.Styles exposing
     , infoBar
     , inlineInstanceVar
     , instanceGroupCard
-    , instanceGroupCardBadge
     , instanceGroupCardBanner
     , instanceGroupCardBannerHd
     , instanceGroupCardBody
@@ -275,22 +274,6 @@ pipelineCardBody =
     , style "margin" "2px 0"
     , style "flex-grow" "1"
     , style "display" "flex"
-    ]
-
-
-instanceGroupCardBadge : List (Html.Attribute msg)
-instanceGroupCardBadge =
-    [ style "background" "#f2f2f2"
-    , style "border-radius" "4px"
-    , style "color" "#222"
-    , style "display" "flex"
-    , style "letter-spacing" "0"
-    , style "margin-right" "8px"
-    , style "width" "20px"
-    , style "height" "20px"
-    , style "flex-shrink" "0"
-    , style "align-items" "center"
-    , style "justify-content" "center"
     ]
 
 
