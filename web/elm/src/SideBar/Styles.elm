@@ -6,7 +6,6 @@ module SideBar.Styles exposing
     , collapseIcon
     , column
     , favoriteIcon
-    , iconGroup
     , instanceGroup
     , instanceGroupBadge
     , opacityAttr
@@ -110,18 +109,6 @@ teamHeader { background } =
     , style "cursor" "pointer"
     , style "align-items" "center"
     , backgroundAttr background
-    ]
-
-
-iconGroup : List (Html.Attribute msg)
-iconGroup =
-    [ style "width" "54px"
-    , style "display" "flex"
-    , style "align-items" "center"
-    , style "justify-content" "space-between"
-    , style "padding" "5px"
-    , style "box-sizing" "border-box"
-    , style "flex-shrink" "0"
     ]
 
 
