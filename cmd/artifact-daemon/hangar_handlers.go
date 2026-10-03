@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -158,7 +157,7 @@ func exactBearerWarrant(value string) (string, bool) {
 
 func decodeHangarControl(w http.ResponseWriter, r *http.Request, limit int64, destination any) error {
 	if limit <= 0 {
-		return fmt.Errorf("invalid control limit")
+		return errors.New("invalid control limit")
 	}
 	if r.ContentLength > limit {
 		return &http.MaxBytesError{Limit: limit}
@@ -177,7 +176,7 @@ func decodeHangarControl(w http.ResponseWriter, r *http.Request, limit int64, de
 		return err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("request body must contain exactly one JSON value")
+		return errors.New("request body must contain exactly one JSON value")
 	}
 	return nil
 }
