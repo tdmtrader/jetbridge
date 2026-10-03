@@ -143,7 +143,7 @@ func (manager VaultManager) Validate() error {
 	}
 
 	if manager.PathPrefix == "" {
-		return fmt.Errorf("path prefix must be a non-empty string")
+		return errors.New("path prefix must be a non-empty string")
 	}
 
 	for i, tmpl := range manager.LookupTemplates {
