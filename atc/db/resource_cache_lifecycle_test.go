@@ -598,6 +598,7 @@ func countResourceCaches() int {
 }
 
 func createResourceCacheWithUser(resourceCacheUser db.ResourceCacheUser) db.ResourceCache {
+	GinkgoHelper()
 	usedResourceCache, err := resourceCacheFactory.FindOrCreateResourceCache(
 		resourceCacheUser,
 		"some-base-resource-type",
