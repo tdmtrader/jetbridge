@@ -411,10 +411,10 @@ func isPodFailedFast(pod *corev1.Pod) (reason, message string, failed bool) {
 	return "", "", false
 }
 
-// PreemptionAnnotation marks a pod the node-preemption watcher has already
+// preemptionAnnotation marks a pod the node-preemption watcher has already
 // identified as being reclaimed, so a subsequent deletion is classified as a
 // preemption rather than an ordinary pod-deleted event.
-const PreemptionAnnotation = "concourse-ci.org/preemption-notice"
+const preemptionAnnotation = "concourse-ci.org/preemption-notice"
 
 // isPodEvicted checks whether the pod has been evicted by the kubelet.
 func isPodEvicted(pod *corev1.Pod) bool {
@@ -1851,7 +1851,7 @@ func interruptionReasonForPod(pod *corev1.Pod, deleted bool) (runtime.Interrupti
 	}
 
 	if pod.Status.Phase == corev1.PodFailed || deleted {
-		if deleted && pod.Annotations[PreemptionAnnotation] == "true" {
+		if deleted && pod.Annotations[preemptionAnnotation] == "true" {
 			return runtime.InterruptionPreempted, true
 		}
 		for _, condition := range pod.Status.Conditions {

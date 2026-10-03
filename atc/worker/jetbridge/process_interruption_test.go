@@ -46,7 +46,7 @@ func TestInterruptionReasonForPodUsesOnlyTerminalStructuredKubernetesState(t *te
 		{
 			name: "explicit preemption annotation on deletion",
 			pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				PreemptionAnnotation: "true",
+				preemptionAnnotation: "true",
 			}}},
 			deleted: true,
 			want:    runtime.InterruptionPreempted,
@@ -68,7 +68,7 @@ func TestInterruptionReasonForPodUsesOnlyTerminalStructuredKubernetesState(t *te
 		{
 			name: "impending annotation is not interruption",
 			pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				PreemptionAnnotation: "true",
+				preemptionAnnotation: "true",
 			}}},
 		},
 	}
