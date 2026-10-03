@@ -53,7 +53,6 @@ import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..), toHtmlID)
 import Message.Message exposing (DomID(..), Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
-import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import RemoteData exposing (WebData)
 import Routes
 import SideBar.SideBar as SideBar exposing (byPipelineId, lookupPipeline)
