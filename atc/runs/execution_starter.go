@@ -2,6 +2,7 @@ package runs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/concourse/concourse/atc"
@@ -76,7 +77,7 @@ func (s *ExecutionStarter) PrepareContainer(ctx context.Context, owner db.Contai
 		return spec, err
 	}
 	if spec.ExecutionControl != nil && spec.ExecutionControl.Identity != admission.Identity {
-		return spec, fmt.Errorf("Run execution control does not match its admission")
+		return spec, errors.New("Run execution control does not match its admission")
 	}
 	control, err := s.Source.BaseRuntimeControl(ctx, req.NodeName, req.NodeUID, s.Epoch, admission.Identity)
 	if err != nil {
