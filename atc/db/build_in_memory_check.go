@@ -649,11 +649,10 @@ func (b *inMemoryCheckBuild) SyslogTag(origin event.OriginID) string {
 // As in-memory builds should only be check builds, the following functions
 // should never been called, so return false value and errors for them.
 
-func (b *inMemoryCheckBuild) PrototypeName() string { return "" }
-func (b *inMemoryCheckBuild) IsScheduled() bool     { return false }
-func (b *inMemoryCheckBuild) IsAborted() bool       { return false }
-func (b *inMemoryCheckBuild) IsCompleted() bool     { return false }
-func (b *inMemoryCheckBuild) InputsReady() bool     { return false }
+func (b *inMemoryCheckBuild) IsScheduled() bool { return false }
+func (b *inMemoryCheckBuild) IsAborted() bool   { return false }
+func (b *inMemoryCheckBuild) IsCompleted() bool { return false }
+func (b *inMemoryCheckBuild) InputsReady() bool { return false }
 
 func (b *inMemoryCheckBuild) SetDrained(bool) error {
 	return errors.New("not implemented for in memory build")
