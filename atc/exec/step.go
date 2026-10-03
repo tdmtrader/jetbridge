@@ -58,7 +58,6 @@ type RunState interface {
 // Typically if the ExitStatus result is 0, the Success result is true.
 type ExitStatus int
 
-type InputHandler func(io.ReadCloser) error
 type OutputHandler func(io.Writer) error
 
 type Pool interface {
