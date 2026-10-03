@@ -43,7 +43,6 @@ var _ = Describe("Build", func() {
 		versionsDB = db.NewVersionsDB(dbConn, 100, gocache.New(10*time.Second, 10*time.Second))
 
 		var err error
-		var found bool
 		team, err = teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 		Expect(err).ToNot(HaveOccurred())
 
@@ -56,6 +55,7 @@ var _ = Describe("Build", func() {
 		pipeline, _, err := team.SavePipeline(atc.PipelineRef{Name: "some-build-pipeline"}, pipelineConfig, db.ConfigVersion(1), false)
 		Expect(err).ToNot(HaveOccurred())
 
+		var found bool
 		job, found, err = pipeline.Job("some-job")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
