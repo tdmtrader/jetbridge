@@ -1,6 +1,6 @@
 module Dashboard.Drag exposing (drag, dragCardIndices, insertAt, reverseIndices)
 
-import Dashboard.Group.Models exposing (Card(..), cardIdentifier)
+import Dashboard.Group.Models exposing (Card, cardIdentifier)
 import List.Extra
 import Message.Message exposing (DropTarget(..))
 
