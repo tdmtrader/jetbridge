@@ -34,7 +34,7 @@ var ErrInvalidCapability = errors.New("invalid artifact resolve capability")
 // closed and the web and daemon cannot silently derive different keys.
 func LoadKeyFile(name string) ([]byte, error) {
 	if name == "" {
-		return nil, fmt.Errorf("artifact capability key file is required")
+		return nil, errors.New("artifact capability key file is required")
 	}
 	key, err := os.ReadFile(name)
 	if err != nil {
