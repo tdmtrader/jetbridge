@@ -51,10 +51,6 @@ type TaskImageSourceParametersError struct {
 	Err error
 }
 
-func (err TaskImageSourceParametersError) Error() string {
-	return fmt.Sprintf("failed to evaluate image resource parameters: %s", err.Err)
-}
-
 type TaskDelegateFactory interface {
 	TaskDelegate(state RunState) TaskDelegate
 }
