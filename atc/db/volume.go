@@ -606,12 +606,7 @@ func (volume *createdVolume) InitializeTaskCache(identity atc.TaskCacheIdentity,
 		return ErrVolumeMissing
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tx.Commit()
 }
 
 func (volume *createdVolume) CreateChildForContainer(container CreatingContainer, mountPath string) (CreatingVolume, error) {
