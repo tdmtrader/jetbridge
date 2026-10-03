@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -147,15 +148,15 @@ func (cmd *HangarBootstrapCommand) databaseStep(inventory bootstrap.Inventory, s
 			continue
 		}
 		if secret != "" {
-			return fmt.Errorf("the inventory declares more than one database credential")
+			return errors.New("the inventory declares more than one database credential")
 		}
 		secret = entry.Name
 	}
 	if secret == "" {
-		return fmt.Errorf("the inventory declares no database credential; is hangarBootstrap.database.enabled set?")
+		return errors.New("the inventory declares no database credential; is hangarBootstrap.database.enabled set?")
 	}
 	if cmd.PostgresUser == "" {
-		return fmt.Errorf("--postgres-user is required for the database step")
+		return errors.New("--postgres-user is required for the database step")
 	}
 	base := fmt.Sprintf("host=%s port=%d dbname=%s sslmode=%s", cmd.PostgresHost, cmd.PostgresPort, cmd.PostgresDatabase, cmd.PostgresSSLMode)
 	admin, err := sql.Open("pgx", base+" user="+cmd.PostgresUser)
