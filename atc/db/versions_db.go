@@ -680,9 +680,8 @@ func (cursor BuildCursor) NewerBuilds(idCol string) sq.Sqlizer {
 				sq.Gt{idCol: cursor.ID},
 			},
 		}
-	} else {
-		return sq.Expr("COALESCE(rerun_of, rerun_of_old, "+idCol+") > ?", cursor.ID)
 	}
+	return sq.Expr("COALESCE(rerun_of, rerun_of_old, "+idCol+") > ?", cursor.ID)
 }
 
 type PaginatedBuilds struct {
