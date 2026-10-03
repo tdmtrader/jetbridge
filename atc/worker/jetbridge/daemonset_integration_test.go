@@ -1760,15 +1760,16 @@ func TestDaemonSetMode_OutputDirCreatedInPod(t *testing.T) {
 	// Find the output volume
 	foundOutput := false
 	for _, vol := range volumes {
-		if vol.HostPath != nil && strings.Contains(vol.HostPath.Path, "/result") {
-			foundOutput = true
-			if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
-				t.Errorf("output volume should use HostPathDirectoryOrCreate, got %v", vol.HostPath.Type)
-			}
-			expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-42", "result")
-			if vol.HostPath.Path != expectedPath {
-				t.Errorf("expected hostPath %s, got %s", expectedPath, vol.HostPath.Path)
-			}
+		if vol.HostPath == nil || !strings.Contains(vol.HostPath.Path, "/result") {
+			continue
+		}
+		foundOutput = true
+		if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+			t.Errorf("output volume should use HostPathDirectoryOrCreate, got %v", vol.HostPath.Type)
+		}
+		expectedPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "build-42", "result")
+		if vol.HostPath.Path != expectedPath {
+			t.Errorf("expected hostPath %s, got %s", expectedPath, vol.HostPath.Path)
 		}
 	}
 	if !foundOutput {
