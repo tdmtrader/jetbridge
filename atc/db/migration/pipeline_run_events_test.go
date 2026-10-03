@@ -21,6 +21,8 @@ var _ = Describe("run payload event partition", func() {
 	})
 
 	newPayload := func() (int, int, int) {
+		GinkgoHelper()
+
 		var templateID, runID, payloadID int
 		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) SELECT id, 'base', true, 1 FROM teams WHERE name = 'run-events' RETURNING id`).Scan(&templateID)).To(Succeed())
 		tx, err := database.Begin()
