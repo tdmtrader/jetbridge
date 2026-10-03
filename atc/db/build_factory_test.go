@@ -52,14 +52,13 @@ var _ = Describe("BuildFactory", func() {
 					b, err := defaultTeam.CreateOneOffBuild()
 					Expect(err).NotTo(HaveOccurred())
 
-					var i bool
 					err = b.Finish(status)
 					Expect(err).NotTo(HaveOccurred())
 
 					err = buildFactory.MarkNonInterceptibleBuilds()
 					Expect(err).NotTo(HaveOccurred())
 
-					i, err = b.Interceptible()
+					i, err := b.Interceptible()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(i).To(matcher)
 				},
