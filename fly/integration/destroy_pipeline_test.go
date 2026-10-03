@@ -70,6 +70,7 @@ var _ = Describe("destroy-pipeline", func() {
 		})
 
 		yes := func() {
+			GinkgoHelper()
 			Eventually(sess).Should(gbytes.Say(`are you sure\? \[yN\]: `))
 			fmt.Fprintf(stdin, "y\r")
 		}
