@@ -51,32 +51,6 @@ func yamlToPrintfArgs(yaml string) string {
 	return strings.Join(args, " ")
 }
 
-// fixtureSetPipeline returns a pipeline that generates a child pipeline
-// YAML from a task output and sets it via set_pipeline step.
-func fixtureSetPipeline(jobName, childPipelineName, childPipelineYAML string) string {
-	printfArgs := yamlToPrintfArgs(childPipelineYAML)
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: generate-pipeline
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      outputs:
-      - name: pipeline-config
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          printf '%%s\n' %s > pipeline-config/pipeline.yml
-          echo "pipeline-generated"
-  - set_pipeline: %s
-    file: pipeline-config/pipeline.yml
-`, jobName, printfArgs, childPipelineName)
-}
-
 // fixtureTaskWithInputsOutputs returns a pipeline with a task that has
 // explicit inputs and outputs.
 func fixtureTaskWithInputsOutputs(jobName string, inputs, outputs []string, script string) string {
