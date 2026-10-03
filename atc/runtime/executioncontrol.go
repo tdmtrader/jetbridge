@@ -46,15 +46,15 @@ const (
 	// ControlPhaseAdmitted is an envelope assembled at admission, before the
 	// Pod exists. It is the ONLY phase in which a capture may be selected.
 	ControlPhaseAdmitted ControlPhase = "admitted"
-	// ControlPhaseStarted is an envelope whose exact start has been recorded.
+	// controlPhaseStarted is an envelope whose exact start has been recorded.
 	// A capture selected here would be Req 1's late request: a capture of an
 	// already-running task.
-	ControlPhaseStarted ControlPhase = "started"
+	controlPhaseStarted ControlPhase = "started"
 )
 
 func (phase ControlPhase) Validate() error {
 	switch phase {
-	case ControlPhaseAdmitted, ControlPhaseStarted:
+	case ControlPhaseAdmitted, controlPhaseStarted:
 		return nil
 	default:
 		return fmt.Errorf("%w: %q is not an execution-control phase", ErrInvalidExecutionControl, phase)
@@ -199,7 +199,7 @@ func (control *ExecutionControl) SelectCapture(capture DurableOutputCapture) err
 }
 
 // MarkStarted advances the phase past the point a capture may be selected.
-func (control *ExecutionControl) MarkStarted() { control.Phase = ControlPhaseStarted }
+func (control *ExecutionControl) MarkStarted() { control.Phase = controlPhaseStarted }
 
 // HasDurableOutputCapture reports whether this execution opted in.
 func (control *ExecutionControl) HasDurableOutputCapture() bool {
