@@ -32,10 +32,6 @@ type ErrResourceNotFound struct {
 	ResourceName string
 }
 
-func (e ErrResourceNotFound) Error() string {
-	return fmt.Sprintf("resource '%s' not found", e.ResourceName)
-}
-
 type GetResult struct {
 	Name          string
 	ResourceCache db.ResourceCache
