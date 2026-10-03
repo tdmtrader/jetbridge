@@ -204,6 +204,8 @@ func createTeam(name string) db.Team {
 // a parameter: it is not a field on atc.Config but a column, flipped by
 // Expose()/Hide() afterwards.
 func createPipeline(team db.Team, name string) db.Pipeline {
+	GinkgoHelper()
+
 	pipeline, _, err := team.SavePipeline(
 		atc.PipelineRef{Name: name},
 		atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
