@@ -23,7 +23,7 @@ type CachedSecrets struct {
 	cache       *cache.Cache
 }
 
-type CacheEntry struct {
+type cacheEntry struct {
 	value      any
 	expiration *time.Time
 	found      bool
@@ -57,7 +57,7 @@ func (cs *CachedSecrets) GetWithParams(secretPath string, lookupCtx SecretLookup
 	// if there is a corresponding entry in the cache, return it
 	entry, found := cs.cache.Get(secretPath)
 	if found {
-		result := entry.(CacheEntry)
+		result := entry.(cacheEntry)
 		span.SetAttributes(attribute.String("cache.hit", "true"))
 		tracing.End(span, nil)
 		return result.value, result.expiration, result.found, nil
@@ -78,7 +78,7 @@ func (cs *CachedSecrets) GetWithParams(secretPath string, lookupCtx SecretLookup
 
 	// here we want to cache secret value, expiration, and found flag too
 	// meaning that "secret not found" responses will be cached too!
-	entry = CacheEntry{value: value, expiration: expiration, found: found}
+	entry = cacheEntry{value: value, expiration: expiration, found: found}
 
 	if found {
 		// take default cache ttl
