@@ -296,7 +296,7 @@ exec cat "$S/stdout"`
 // exact original Pod. It is read only for an outcome the node already holds.
 func readJournaledStdout(ctx context.Context, client kubernetes.Interface, executor PodExecutor, namespace, podName, nodeName, state string, start executioncontrol.Acknowledgement) ([]byte, error) {
 	if executor == nil {
-		return nil, fmt.Errorf("no journal reader configured")
+		return nil, errors.New("no journal reader configured")
 	}
 	if err := checkSupervisorPod(ctx, client, namespace, podName, nodeName, start); err != nil {
 		return nil, err
