@@ -230,9 +230,11 @@ func (t varsTracker) Error() error {
 	extraErr := t.ExtraError()
 	if missingErr != nil && extraErr != nil {
 		return multierror.Append(missingErr, extraErr)
-	} else if missingErr != nil {
+	}
+	if missingErr != nil {
 		return missingErr
-	} else if extraErr != nil {
+	}
+	if extraErr != nil {
 		return extraErr
 	}
 
