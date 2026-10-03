@@ -41,7 +41,7 @@ import Http
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
-import Message.Message exposing (DomID(..), Message(..))
+import Message.Message exposing (Message(..))
 import Message.Subscription
     exposing
         ( Delivery(..)
