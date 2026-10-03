@@ -13,18 +13,18 @@ type SecretLookupPath interface {
 	VariableToSecretPath(string) (string, error)
 }
 
-// SecretLookupWithPrefix is an implementation which returns [prefix][separator][varName]
-type SecretLookupWithPrefix struct {
+// secretLookupWithPrefix is an implementation which returns [prefix][separator][varName]
+type secretLookupWithPrefix struct {
 	Prefix string
 }
 
 func NewSecretLookupWithPrefix(prefix string) SecretLookupPath {
-	return &SecretLookupWithPrefix{
+	return &secretLookupWithPrefix{
 		Prefix: prefix,
 	}
 }
 
-func (sl SecretLookupWithPrefix) VariableToSecretPath(path string) (string, error) {
+func (sl secretLookupWithPrefix) VariableToSecretPath(path string) (string, error) {
 	return sl.Prefix + path, nil
 }
 
