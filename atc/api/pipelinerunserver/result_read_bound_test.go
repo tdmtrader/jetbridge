@@ -69,7 +69,7 @@ func TestResultReadsAreBoundedAndRefusedWhenSaturated(t *testing.T) {
 	results := &gatedResults{archive: archive, release: make(chan struct{})}
 	server := NewServer(lagertest.NewTestLogger("test"), completedRuns{}, "")
 	server.SetServices(Services{Results: results, ResultReadConcurrency: 2})
-	handler := server.GetPipelineRunResult(templatePipeline{})
+	handler := server.GetPipelineRunResult(template{})
 
 	api := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), atc.GetPipelineRunResult, handler, memberAccess{}, silentAuditor{}, nil))
 	defer api.Close()

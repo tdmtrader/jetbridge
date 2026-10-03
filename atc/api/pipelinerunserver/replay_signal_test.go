@@ -93,7 +93,7 @@ func TestVersionedCreateSignalsReplay(t *testing.T) {
 				strings.NewReader(`{"invocation_key":"replay-signal"}`))
 			request.Header.Set("Content-Type", "application/json")
 
-			response := serveSensitive(t, atc.CreatePipelineRunV2, server.CreatePipelineRunV2(templatePipeline{}), request)
+			response := serveSensitive(t, atc.CreatePipelineRunV2, server.CreatePipelineRunV2(template{}), request)
 
 			if response.StatusCode != tc.status {
 				t.Fatalf("status = %d, want %d", response.StatusCode, tc.status)
@@ -146,7 +146,7 @@ func TestVersionedRefusalsCarryTheirReasonOnlyAfterAuthorization(t *testing.T) {
 				strings.NewReader(`{"invocation_key":"refused"}`))
 			request.Header.Set("Content-Type", "application/json")
 
-			response := serveSensitive(t, atc.CreatePipelineRunV2, server.CreatePipelineRunV2(templatePipeline{}), request)
+			response := serveSensitive(t, atc.CreatePipelineRunV2, server.CreatePipelineRunV2(template{}), request)
 
 			if response.StatusCode != tc.status {
 				t.Fatalf("status = %d, want %d", response.StatusCode, tc.status)

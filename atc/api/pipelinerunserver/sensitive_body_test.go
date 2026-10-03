@@ -41,11 +41,11 @@ func (a *bodyAdmitter) HandoffCredentials(_ context.Context, _ runs.TemplateRef,
 	return atc.RunCredentialSession{RunID: 1, Result: result, Status: "ready"}, nil
 }
 
-type templatePipeline struct{ db.Pipeline }
+type template struct{ db.Pipeline }
 
-func (templatePipeline) TeamName() string             { return "t" }
-func (templatePipeline) PipelineRef() atc.PipelineRef { return atc.PipelineRef{Name: "review"} }
-func (templatePipeline) InstanceVars() atc.InstanceVars {
+func (template) TeamName() string             { return "t" }
+func (template) PipelineRef() atc.PipelineRef { return atc.PipelineRef{Name: "review"} }
+func (template) InstanceVars() atc.InstanceVars {
 	return nil
 }
 
@@ -110,7 +110,7 @@ func TestUploadReadsItsInputNameFromTheRoute(t *testing.T) {
 				strings.NewReader(tc.body))
 			request.Header.Set("Content-Type", tc.contentType)
 
-			response := serveSensitive(t, atc.UploadPipelineRunInput, server.UploadPipelineRunInput(templatePipeline{}), request)
+			response := serveSensitive(t, atc.UploadPipelineRunInput, server.UploadPipelineRunInput(template{}), request)
 
 			if response.StatusCode != http.StatusCreated {
 				t.Fatalf("status = %d, want 201", response.StatusCode)
@@ -148,7 +148,7 @@ func TestCredentialHandoffRequiresJSON(t *testing.T) {
 				request.Header.Set("Content-Type", tc.contentType)
 			}
 
-			response := serveSensitive(t, atc.HandoffPipelineRunCredentials, server.HandoffPipelineRunCredentials(templatePipeline{}), request)
+			response := serveSensitive(t, atc.HandoffPipelineRunCredentials, server.HandoffPipelineRunCredentials(template{}), request)
 
 			if response.StatusCode != tc.want {
 				t.Fatalf("status = %d, want %d", response.StatusCode, tc.want)
