@@ -33,9 +33,9 @@ const (
 	// DefaultLeaseTerm is requirement 10's 15-minute capture ownership lease.
 	DefaultLeaseTerm = 15 * time.Minute
 
-	// DefaultChallengeTerm bounds a stat challenge. A receipt signed over old
+	// defaultChallengeTerm bounds a stat challenge. A receipt signed over old
 	// facts proves only that the facts were once true.
-	DefaultChallengeTerm = 5 * time.Minute
+	defaultChallengeTerm = 5 * time.Minute
 )
 
 // Coordinator advances one handoff by one bounded transition.
@@ -98,7 +98,7 @@ func (coordinator *Coordinator) sealDeadline() (time.Duration, error) {
 
 func (coordinator *Coordinator) challengeTerm() time.Duration {
 	if coordinator.ChallengeTerm == 0 {
-		return DefaultChallengeTerm
+		return defaultChallengeTerm
 	}
 
 	return coordinator.ChallengeTerm
