@@ -62,14 +62,14 @@ func executionJournalFromIdentity(identity executioncontrol.ProcessIdentity) (st
 	} else if located, ok := strings.CutPrefix(string(identity), resourceIdentityPrefix); ok {
 		state, resource, prefix = located, true, resourceStateDirPrefix
 	} else {
-		return "", false, fmt.Errorf("no retained journal locator")
+		return "", false, errors.New("no retained journal locator")
 	}
 	if path.Dir(state) != "/tmp" || path.Clean(state) != state || !strings.HasPrefix(state, prefix) {
-		return "", false, fmt.Errorf("no retained journal locator")
+		return "", false, errors.New("no retained journal locator")
 	}
 	base := path.Base(state)
 	if sanitizeForPath(base) != base || len(base) > 255 {
-		return "", false, fmt.Errorf("invalid journal locator")
+		return "", false, errors.New("invalid journal locator")
 	}
 	return state, resource, nil
 }
