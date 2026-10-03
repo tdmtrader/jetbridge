@@ -31,7 +31,7 @@ var _ = Describe("the operator's hold on versioned run creation", func() {
 	It("writes no run, invocation, payload or run number even if the caller commits", func() {
 		ctx := context.Background()
 		var beforeNumber, beforeBuilds int
-		Expect(dbConn.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", templatePipeline.ID()).Scan(&beforeNumber)).To(Succeed())
+		Expect(dbConn.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", template.ID()).Scan(&beforeNumber)).To(Succeed())
 		Expect(dbConn.QueryRow("SELECT count(*) FROM builds").Scan(&beforeBuilds)).To(Succeed())
 		tx, err := admitter.Begin(ctx)
 		Expect(err).NotTo(HaveOccurred())
@@ -54,7 +54,7 @@ var _ = Describe("the operator's hold on versioned run creation", func() {
 			Expect(count).To(BeZero(), query)
 		}
 		var number, builds int
-		Expect(dbConn.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", templatePipeline.ID()).Scan(&number)).To(Succeed())
+		Expect(dbConn.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", template.ID()).Scan(&number)).To(Succeed())
 		Expect(number).To(Equal(beforeNumber))
 		Expect(dbConn.QueryRow("SELECT count(*) FROM builds").Scan(&builds)).To(Succeed())
 		Expect(builds).To(Equal(beforeBuilds))

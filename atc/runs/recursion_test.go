@@ -98,7 +98,7 @@ var _ = Describe("bounding direct recursion", func() {
 	// -- and "a pipeline may become a template" is a reasonable thing to want
 	// -- this is the refusal that is already there.
 	It("refuses a build whose own pipeline is the template it names", func() {
-		entry, found, err := templatePipeline.Job("entry")
+		entry, found, err := template.Job("entry")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 
@@ -107,7 +107,7 @@ var _ = Describe("bounding direct recursion", func() {
 			INSERT INTO builds (name, job_id, pipeline_id, team_id, status)
 			VALUES ('1', $1, $2, $3, 'started')
 			RETURNING id
-		`, entry.ID(), templatePipeline.ID(), defaultTeam.ID()).Scan(&buildID)).To(Succeed())
+		`, entry.ID(), template.ID(), defaultTeam.ID()).Scan(&buildID)).To(Succeed())
 
 		build, found, err := buildFactory.Build(buildID)
 		Expect(err).NotTo(HaveOccurred())

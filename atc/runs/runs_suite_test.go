@@ -73,10 +73,10 @@ var (
 	// the caller's own pipeline.
 	callerPipeline db.Pipeline
 
-	// templatePipeline is the pipeline behind templateRef, kept so that the
+	// template is the pipeline behind templateRef, kept so that the
 	// recursion specs can create a build of the template itself and so that
 	// a payload pipeline's id can be compared with its template's.
-	templatePipeline db.Pipeline
+	template db.Pipeline
 
 	// buildFactory reads a build back by id, which is how the recursion specs
 	// reach the entry builds CreateRunInTx writes into a run's payload.
@@ -232,7 +232,7 @@ var _ = BeforeEach(func() {
 
 	adminTeamBuild = runningBuildOn(adminTeam, "admin-caller")
 
-	templatePipeline = savePipeline(defaultTeam, "runnable", templateConfig(nil))
+	template = savePipeline(defaultTeam, "runnable", templateConfig(nil))
 	templateRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: atc.PipelineRef{Name: "runnable"}}
 
 	savePipeline(defaultTeam, "parameterized", templateConfig([]atc.ParamSchema{
