@@ -85,11 +85,10 @@ func (s *Ssm) getParameterByName(name string) (any, *time.Time, bool, error) {
 	})
 	if err == nil {
 		return *param.Parameter.Value, nil, true, nil
-	} else {
-		var notFound *types.ParameterNotFound
-		if errors.As(err, &notFound) {
-			return nil, nil, false, nil
-		}
+	}
+	var notFound *types.ParameterNotFound
+	if errors.As(err, &notFound) {
+		return nil, nil, false, nil
 	}
 	return nil, nil, false, err
 }
