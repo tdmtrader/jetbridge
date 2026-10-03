@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -209,7 +210,7 @@ func (w *Worker) buildVolumeMountsForSpec(handle string, spec runtime.ContainerS
 
 func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runtime.Volume, db.WorkerArtifact, error) {
 	if w.volumeRepo == nil {
-		return nil, nil, fmt.Errorf("create artifact volume: volume repository not configured")
+		return nil, nil, errors.New("create artifact volume: volume repository not configured")
 	}
 
 	logger := lagerctx.FromContext(ctx).Session("create-volume-for-artifact", lager.Data{
