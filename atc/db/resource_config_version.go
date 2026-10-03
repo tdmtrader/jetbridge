@@ -19,8 +19,6 @@ type ResourceConfigVersion interface {
 	Reload() (bool, error)
 }
 
-type ResourceConfigVersions []ResourceConfigVersion
-
 type ResourceConfigMetadataField struct {
 	Name  string
 	Value string
