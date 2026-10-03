@@ -161,6 +161,8 @@ var _ = Describe("sync", func() {
 })
 
 func readBinary(path string) []byte {
+	GinkgoHelper()
+
 	expectedBinary, err := os.ReadFile(path)
 	Expect(err).NotTo(HaveOccurred())
 	return expectedBinary[:8]
