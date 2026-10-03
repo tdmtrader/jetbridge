@@ -281,7 +281,7 @@ func TestWorkspaceServesReadOnlyInputs(t *testing.T) {
 // against the base, carries the prior change forward, and records both Runs.
 func TestIterationProvenanceRoundTrip(t *testing.T) {
 	repo, _, next, _ := iterationFixture(t)
-	findings := codextest.ToolCall(WorkspaceServer, "read", map[string]any{"path": FindingsInputPath, "limit": 500})
+	findings := codextest.ToolCall(workspaceServer, "read", map[string]any{"path": FindingsInputPath, "limit": 500})
 	edits := fixtureEdits()
 	// The model's summary names the finding it read, so the published
 	// summary proves the read reached the model.

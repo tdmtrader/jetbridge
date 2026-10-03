@@ -24,10 +24,10 @@ const model = "gpt-5.5"
 // tools: update parser.go, add parser_test.go, delete deleted.txt.
 func fixtureEdits() []codextest.Item {
 	return []codextest.Item{
-		codextest.ToolCall(WorkspaceServer, "replace", map[string]any{"path": "parser.go", "old": "return s[1]", "new": "return s[0]"}),
-		codextest.ToolCall(WorkspaceServer, "write", map[string]any{"path": "parser_test.go",
+		codextest.ToolCall(workspaceServer, "replace", map[string]any{"path": "parser.go", "old": "return s[1]", "new": "return s[0]"}),
+		codextest.ToolCall(workspaceServer, "write", map[string]any{"path": "parser_test.go",
 			"content": "package parser\n\nimport \"testing\"\n\nfunc TestFirst(t *testing.T) {\n\tif First(\"ab\") != 'a' {\n\t\tt.Fatal(\"wrong byte\")\n\t}\n}\n"}),
-		codextest.ToolCall(WorkspaceServer, "delete", map[string]any{"path": "deleted.txt"}),
+		codextest.ToolCall(workspaceServer, "delete", map[string]any{"path": "deleted.txt"}),
 	}
 }
 
@@ -82,7 +82,7 @@ func (r *implementation) landed(t *testing.T, edits []codextest.Item, err error)
 // repository as exactly that edit, once.
 func TestImplementSessionPublishesTheModelsEdit(t *testing.T) {
 	repo, s := snapshotFixture(t)
-	read := codextest.ToolCall(WorkspaceServer, "read", map[string]any{"path": "parser.go"})
+	read := codextest.ToolCall(workspaceServer, "read", map[string]any{"path": "parser.go"})
 	edits := fixtureEdits()
 	r := newImplementation(t, codextest.Steps(append(append([]codextest.Item{read}, edits...), codextest.Say(done))...)...)
 	summary, err := r.run(t, s)
@@ -134,7 +134,7 @@ func TestImplementSessionCannotEscapeTheWorkspace(t *testing.T) {
 	escapes := map[string]codextest.Item{}
 	escape := func(name, tool string, args func() map[string]any) codextest.Turn {
 		return func(codextest.Request) []codextest.Item {
-			escapes[name] = codextest.ToolCall(WorkspaceServer, tool, args())
+			escapes[name] = codextest.ToolCall(workspaceServer, tool, args())
 			return []codextest.Item{escapes[name]}
 		}
 	}

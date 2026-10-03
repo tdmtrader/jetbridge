@@ -15,9 +15,9 @@ import (
 	"github.com/concourse/concourse/agent/session"
 )
 
-// WorkspaceServer is the name of the workspace tool server in the provider's
+// workspaceServer is the name of the workspace tool server in the provider's
 // configuration and trace.
-const WorkspaceServer = "workspace"
+const workspaceServer = "workspace"
 
 type WorkerOptions struct {
 	Input, Output string
@@ -162,7 +162,7 @@ func implementPolicy(opts WorkerOptions, workspace, snapshotDir, schema, output 
 	}
 	return session.Policy{
 		Model: opts.Model, WorkDir: workspace,
-		Tools:        session.ToolServer{Name: WorkspaceServer, Command: opts.ToolsCommand, Args: args, Tools: WorkspaceTools, Writes: workspaceWrites},
+		Tools:        session.ToolServer{Name: workspaceServer, Command: opts.ToolsCommand, Args: args, Tools: WorkspaceTools, Writes: workspaceWrites},
 		OutputSchema: schema, LastMessage: output,
 	}
 }
@@ -221,7 +221,7 @@ func editItem(e session.Event) error {
 	case session.ItemReasoning, session.ItemMessage, session.ItemTodo:
 		return nil
 	case session.ItemToolCall:
-		if e.Server == WorkspaceServer && slices.Contains(WorkspaceTools, e.Tool) {
+		if e.Server == workspaceServer && slices.Contains(WorkspaceTools, e.Tool) {
 			return nil
 		}
 	}
