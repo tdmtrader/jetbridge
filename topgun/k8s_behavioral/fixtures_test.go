@@ -12,30 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureTaskWithParams returns a pipeline with a task that has params.
-func fixtureTaskWithParams(jobName string, params map[string]string, script string) string {
-	paramsYAML := ""
-	for k, v := range params {
-		paramsYAML += fmt.Sprintf("        %s: %s\n", k, v)
-	}
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      params:
-%s      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, paramsYAML, script)
-}
-
 // fixtureTaskWithImage returns a pipeline with a task using a custom image.
 func fixtureTaskWithImage(jobName, image, script string) string {
 	return fmt.Sprintf(`
