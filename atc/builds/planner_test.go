@@ -2031,9 +2031,8 @@ func (test PlannerTest) Run(s *PlannerSuite) {
 	if test.Err != nil {
 		s.Equal(test.Err, actualErr)
 		return
-	} else {
-		s.NoError(actualErr)
 	}
+	s.NoError(actualErr)
 
 	seenIDs := map[atc.PlanID]bool{}
 	actualPlan.Each(func(p *atc.Plan) {
