@@ -56,8 +56,8 @@ func (command *ClearTaskCacheCommand) Execute([]string) error {
 	if err != nil {
 		fmt.Println(err.Error())
 		return err
-	} else {
-		fmt.Printf("%d caches removed\n", numRemoved)
-		return nil
 	}
+
+	fmt.Printf("%d caches removed\n", numRemoved)
+	return nil
 }
