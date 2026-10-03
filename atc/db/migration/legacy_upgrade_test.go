@@ -701,6 +701,8 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 }
 
 func verifyMD5ToSHA256Migration(db *sql.DB) {
+	GinkgoHelper()
+
 	// Verify version_sha256 column exists and is populated
 	var sha256Exists bool
 	err := db.QueryRow(
