@@ -1,8 +1,6 @@
 package dummy
 
 import (
-	"encoding/json"
-
 	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/atc/creds"
@@ -17,14 +15,7 @@ func (manager *Manager) Init(log lager.Logger) error {
 }
 
 func (manager *Manager) MarshalJSON() ([]byte, error) {
-	health, err := manager.Health()
-	if err != nil {
-		return nil, err
-	}
-
-	return json.Marshal(&map[string]any{
-		"health": health,
-	})
+	return creds.MarshalHealth(manager)
 }
 
 func (manager Manager) IsConfigured() bool {

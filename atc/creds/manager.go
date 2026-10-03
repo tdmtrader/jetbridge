@@ -1,6 +1,8 @@
 package creds
 
 import (
+	"encoding/json"
+
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/jessevdk/go-flags"
 )
@@ -41,6 +43,19 @@ type HealthResponse struct {
 	Response any    `json:"response,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Method   string `json:"method,omitempty"`
+}
+
+// MarshalHealth is the JSON form of a manager whose only state worth showing
+// is its health: {"health": ...}, or Health's error unchanged.
+func MarshalHealth(manager Manager) ([]byte, error) {
+	health, err := manager.Health()
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(&map[string]any{
+		"health": health,
+	})
 }
 
 var managerFactories = map[string]ManagerFactory{}

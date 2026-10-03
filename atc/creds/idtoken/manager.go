@@ -1,7 +1,6 @@
 package idtoken
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -89,14 +88,7 @@ func (manager *Manager) Init(log lager.Logger) error {
 }
 
 func (manager *Manager) MarshalJSON() ([]byte, error) {
-	health, err := manager.Health()
-	if err != nil {
-		return nil, err
-	}
-
-	return json.Marshal(&map[string]any{
-		"health": health,
-	})
+	return creds.MarshalHealth(manager)
 }
 
 func (manager Manager) IsConfigured() bool {
