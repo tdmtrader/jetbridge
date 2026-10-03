@@ -105,6 +105,8 @@ func getPipeline(client concourse.Client, pipelineRef atc.PipelineRef) atc.Pipel
 }
 
 func getPipelineConfig(client concourse.Client, pipelineRef atc.PipelineRef) (atc.Config, bool) {
+	GinkgoHelper()
+
 	config, _, ok, err := client.Team("main").PipelineConfig(pipelineRef)
 	Expect(err).ToNot(HaveOccurred())
 	return config, ok
