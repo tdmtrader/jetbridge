@@ -1279,33 +1279,6 @@ func (emitter *PrometheusEmitter) buildFinishedMetrics(logger lager.Logger, even
 	}
 }
 
-func (emitter *PrometheusEmitter) checkBuildFinishedMetrics(logger lager.Logger, event metric.Event) {
-	// concourse_builds_finished_total
-	emitter.checkBuildsFinished.Inc()
-
-	buildStatus, exists := event.Attributes["build_status"]
-	if !exists {
-		logger.Error("failed-to-find-check-build_status-in-event", fmt.Errorf("expected build_status to exist in event.Attributes"))
-		return
-	}
-
-	// concourse_builds_(aborted|succeeded|failed|errored)_total
-	switch buildStatus {
-	case string(db.BuildStatusAborted):
-		// concourse_builds_check_aborted_total
-		emitter.checkBuildsAborted.Inc()
-	case string(db.BuildStatusSucceeded):
-		// concourse_builds_check_succeeded_total
-		emitter.checkBuildsSucceeded.Inc()
-	case string(db.BuildStatusFailed):
-		// concourse_builds_check_failed_total
-		emitter.checkBuildsFailed.Inc()
-	case string(db.BuildStatusErrored):
-		// concourse_builds_check_errored_total
-		emitter.checkBuildsErrored.Inc()
-	}
-}
-
 func (emitter *PrometheusEmitter) workerContainersMetric(logger lager.Logger, event metric.Event) {
 	worker, exists := event.Attributes["worker"]
 	if !exists {
