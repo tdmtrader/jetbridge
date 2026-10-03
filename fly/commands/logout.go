@@ -14,7 +14,8 @@ type LogoutCommand struct {
 func (command *LogoutCommand) Execute(args []string) error {
 	if Fly.Target != "" && !command.All {
 		return command.logoutSingleTarget(Fly.Target)
-	} else if Fly.Target == "" && command.All {
+	}
+	if Fly.Target == "" && command.All {
 
 		targets, err := rc.LoadTargets()
 		if err != nil {
