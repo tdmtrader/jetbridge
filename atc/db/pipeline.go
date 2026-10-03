@@ -1144,8 +1144,7 @@ func (p *pipeline) DeleteBuildEventsByBuildIDs(buildIDs []int) error {
 		return err
 	}
 
-	err = tx.Commit()
-	return err
+	return tx.Commit()
 }
 
 func (p *pipeline) eventsTable() string {
