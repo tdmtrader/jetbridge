@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,7 +41,7 @@ type server struct {
 
 func New(store *disk.Store, config Config) (http.Handler, error) {
 	if store == nil || config.MaxConcurrent <= 0 {
-		return nil, fmt.Errorf("disk server requires a store and positive concurrency")
+		return nil, errors.New("disk server requires a store and positive concurrency")
 	}
 	if store.ID() != config.StoreID {
 		return nil, fmt.Errorf("%w: disk server identity differs from its index", hangar.ErrConflict)
@@ -51,20 +52,20 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 		}
 	}
 	if config.InputNamespace == config.OutputNamespace {
-		return nil, fmt.Errorf("input and output namespaces must differ")
+		return nil, errors.New("input and output namespaces must differ")
 	}
 	s := &server{store: store, config: config, slots: make(chan struct{}, config.MaxConcurrent)}
 	seen := map[string]bool{}
 	for _, role := range []string{"input", "publisher", "inventory", "reclaimer"} {
 		token := strings.TrimSpace(config.Credentials[role])
 		if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(token, "\r\n\x00") || seen[token] {
-			return nil, fmt.Errorf("each disk role requires a distinct 32..4096 byte credential")
+			return nil, errors.New("each disk role requires a distinct 32..4096 byte credential")
 		}
 		seen[token] = true
 		s.credentials = append(s.credentials, credential{role: role, hash: sha256.Sum256([]byte(token))})
 	}
 	if len(config.Credentials) != 4 {
-		return nil, fmt.Errorf("unrecognized disk role")
+		return nil, errors.New("unrecognized disk role")
 	}
 	// Keep only digests after initialization.
 	s.config.Credentials = nil
