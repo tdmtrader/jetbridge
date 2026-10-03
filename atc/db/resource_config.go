@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -18,8 +17,6 @@ type BaseResourceTypeNotFoundError struct {
 func (e BaseResourceTypeNotFoundError) Error() string {
 	return fmt.Sprintf("base resource type not found: %s", e.Name)
 }
-
-var ErrResourceConfigHasNoType = errors.New("resource config has no type")
 
 type ResourceConfig interface {
 	ID() int
