@@ -45,7 +45,7 @@ func (server *Server) configureReads(config Config) error {
 		return err
 	}
 	if !roots.AppendCertsFromPEM(ca) {
-		return fmt.Errorf("read control CA contains no certificate")
+		return errors.New("read control CA contains no certificate")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
