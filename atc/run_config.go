@@ -2,6 +2,7 @@ package atc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -141,7 +142,7 @@ func clearUnpassedTriggers(jobs JobConfigs) {
 // the run's payload has been reclaimed and the jobs row is gone.
 func runJobKeysByMaterializedJobName(sourceJobs, materializedJobs JobConfigs) (map[string]string, error) {
 	if len(sourceJobs) != len(materializedJobs) {
-		return nil, fmt.Errorf("materialized job count does not match template")
+		return nil, errors.New("materialized job count does not match template")
 	}
 
 	keys := make(map[string]string, len(materializedJobs))
