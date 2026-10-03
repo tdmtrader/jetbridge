@@ -109,6 +109,7 @@ func ExpectMigrationVersionTableNotToExist(dbConn *sql.DB) {
 }
 
 func ExpectDatabaseVersionToEqual(db *sql.DB, version int, table string) {
+	GinkgoHelper()
 	var dbVersion int
 	query := "SELECT version from " + table + " LIMIT 1"
 	err := db.QueryRow(query).Scan(&dbVersion)
