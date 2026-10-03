@@ -104,10 +104,7 @@ func (secrets Secrets) GetSecretRef(path string, fields []string) (*creds.K8sSec
 }
 
 func (secrets Secrets) findSecret(namespace, name string) (*v1.Secret, bool, error) {
-	var secret *v1.Secret
-	var err error
-
-	secret, err = secrets.client.CoreV1().Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	secret, err := secrets.client.CoreV1().Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 
 	if err != nil && k8serr.IsNotFound(err) {
 		return nil, false, nil
