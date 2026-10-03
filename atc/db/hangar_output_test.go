@@ -1674,6 +1674,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			activate()
 
 			setUp := func() (output.HandoffID, output.ReservationID, output.ReleaseAcknowledgement) {
+				GinkgoHelper()
 				handoff := output.HandoffID(uuid.NewString())
 				lease := output.SourceHoldID(uuid.NewString())
 				execution := identity()
