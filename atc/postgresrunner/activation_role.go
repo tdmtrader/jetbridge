@@ -143,25 +143,6 @@ func ExecAsActivationRole(conn SessionSource, query string, args ...any) error {
 	return tx.Commit()
 }
 
-// AsActivationRole runs fn inside tx as the activation database role, for a
-// fixture that writes the activation epochs the way the activation commands
-// do. The role must exist (EnsureActivationRole); the caller's session must be
-// able to SET ROLE to it, as the runner's superuser can.
-func AsActivationRole(tx *sql.Tx, fn func() error) error {
-	var role string
-	if err := tx.QueryRow("SELECT hangar_activation_role_name()").Scan(&role); err != nil {
-		return err
-	}
-	if _, err := tx.Exec("SET LOCAL ROLE " + quoteIdentifier(role)); err != nil {
-		return err
-	}
-	if err := fn(); err != nil {
-		return err
-	}
-	_, err := tx.Exec("RESET ROLE")
-	return err
-}
-
 // adminDB is a plain superuser connection to the test database; unlike OpenDB
 // it runs no migration.
 func (runner *Runner) adminDB() *sql.DB {
