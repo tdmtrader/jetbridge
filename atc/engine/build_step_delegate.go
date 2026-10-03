@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -283,7 +284,7 @@ func (delegate *buildStepDelegate) FetchImage(
 		}
 
 		if !ok {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("image check failed")
+			return runtime.ImageSpec{}, nil, errors.New("image check failed")
 		}
 	}
 
@@ -293,12 +294,12 @@ func (delegate *buildStepDelegate) FetchImage(
 	}
 
 	if !ok {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("image fetching failed")
+		return runtime.ImageSpec{}, nil, errors.New("image fetching failed")
 	}
 
 	var result exec.GetResult
 	if !fetchState.Result(getPlan.ID, &result) {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("get did not return a result")
+		return runtime.ImageSpec{}, nil, errors.New("get did not return a result")
 	}
 
 	if result.ResourceCache != nil {
@@ -310,7 +311,7 @@ func (delegate *buildStepDelegate) FetchImage(
 
 	artifact, _, found := fetchState.ArtifactRepository().ArtifactFor(build.ArtifactName(result.Name))
 	if !found {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("fetched artifact not found")
+		return runtime.ImageSpec{}, nil, errors.New("fetched artifact not found")
 	}
 
 	var version atc.Version
