@@ -5,10 +5,6 @@ import (
 	"os"
 )
 
-func Asset(string) ([]byte, error) {
-	return nil, errors.New("no assets")
-}
-
 func MustAsset(string) []byte {
 	panic("no assets")
 }
