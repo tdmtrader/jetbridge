@@ -109,9 +109,7 @@ func (command *PipelinesCommand) buildHeader() []string {
 	if command.IncludeArchived {
 		headers = append(headers, "archived")
 	}
-	headers = append(headers, "last updated")
-
-	return headers
+	return append(headers, "last updated")
 }
 
 func (command *PipelinesCommand) filterPipelines(unfilteredPipelines []atc.Pipeline) []atc.Pipeline {
