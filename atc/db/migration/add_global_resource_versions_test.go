@@ -372,6 +372,8 @@ func setupBuilds(db *sql.DB) {
 }
 
 func setupBuildOutputs(db *sql.DB) {
+	GinkgoHelper()
+
 	_, err := db.Exec(`
 				INSERT INTO builds(id, name, status, job_id, team_id, pipeline_id) VALUES
 					(1, 'build1', 'succeeded', 1, 1, 1),
