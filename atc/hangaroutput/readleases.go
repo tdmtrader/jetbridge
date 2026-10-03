@@ -28,12 +28,12 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// DefaultReadLeaseBatch bounds one pass.
+// defaultReadLeaseBatch bounds one pass.
 //
 // It is a batch and not a limit on leases: whatever is left is found on the
 // next periodic wake, and a pass that closed a deployment's whole backlog on
 // the first wake after an outage would hold the component runner behind it.
-const DefaultReadLeaseBatch = 100
+const defaultReadLeaseBatch = 100
 
 // AbandonedReadLeases is the durable half, declared where it is consumed.
 type AbandonedReadLeases interface {
@@ -49,7 +49,7 @@ type ReadLeaseCleaner struct {
 
 func (cleaner *ReadLeaseCleaner) batchSize() int {
 	if cleaner.BatchSize <= 0 {
-		return DefaultReadLeaseBatch
+		return defaultReadLeaseBatch
 	}
 
 	return cleaner.BatchSize
