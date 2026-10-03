@@ -5,7 +5,6 @@ import Concourse
 import Dict
 import Html exposing (Html)
 import Html.Attributes exposing (style)
-import List.Extra
 import Ordering exposing (Ordering)
 
 
