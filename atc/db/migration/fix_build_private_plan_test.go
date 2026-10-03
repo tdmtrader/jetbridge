@@ -91,6 +91,8 @@ var _ = Describe("Fix Build Private Plan", func() {
 })
 
 func SetupBuild(dbConn *sql.DB, name string) {
+	GinkgoHelper()
+
 	_, err := dbConn.Exec("INSERT INTO builds(name, status, team_id) VALUES($1, 'started', 1)", name)
 	Expect(err).NotTo(HaveOccurred())
 }
