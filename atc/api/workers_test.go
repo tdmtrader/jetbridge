@@ -20,6 +20,8 @@ func apiWorker() atc.Worker {
 }
 
 func expectPersistedAPIWorker(actual db.Worker, expected atc.Worker, requestedAt, respondedAt time.Time) {
+	GinkgoHelper()
+
 	Expect(actual.Name()).To(Equal(expected.Name))
 	Expect(actual.ActiveContainers()).To(Equal(expected.ActiveContainers))
 	Expect(actual.ActiveVolumes()).To(Equal(expected.ActiveVolumes))
