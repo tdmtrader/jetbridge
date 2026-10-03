@@ -88,11 +88,10 @@ func (s *buildStarter) TryStartPendingBuildsForJob(
 				// stop scheduling other builds because of a rerun build cannot
 				// determine inputs
 				continue
-			} else {
-				// If it is a regular scheduler build, stop scheduling because it is
-				// failing to determine inputs
-				break
 			}
+			// If it is a regular scheduler build, stop scheduling because it is
+			// failing to determine inputs
+			break
 		}
 	}
 
