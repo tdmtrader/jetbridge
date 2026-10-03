@@ -122,7 +122,7 @@ func (t *Transport) Request(ctx context.Context, method, operation string, query
 		if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&message); err != nil {
 			return nil, objectstore.ErrInfrastructure
 		}
-		return nil, DecodeError(message.Error)
+		return nil, decodeError(message.Error)
 	}
 	return response, nil
 }
@@ -162,7 +162,7 @@ func ErrorCode(err error) (int, string) {
 		return http.StatusServiceUnavailable, "unavailable"
 	}
 }
-func DecodeError(code string) error {
+func decodeError(code string) error {
 	switch code {
 	case "not_found":
 		return objectstore.ErrNotFound
@@ -191,7 +191,7 @@ func (b *Body) Read(p []byte) (int, error) {
 	n, err := b.Response.Body.Read(p)
 	if err == io.EOF {
 		if code := b.Response.Trailer.Get(ErrorTrailer); code != "ok" {
-			return n, DecodeError(code)
+			return n, decodeError(code)
 		}
 	} else if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return n, fmt.Errorf("%w: %w", objectstore.ErrInfrastructure, err)
