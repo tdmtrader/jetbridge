@@ -492,12 +492,7 @@ func (b *inMemoryCheckBuild) Finish(status BuildStatus) error {
 		return err
 	}
 
-	err = b.conn.Bus().Notify(buildEventsChannel(b.id))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return b.conn.Bus().Notify(buildEventsChannel(b.id))
 }
 
 func (b *inMemoryCheckBuild) saveEvent(tx Tx, event atc.Event) error {
