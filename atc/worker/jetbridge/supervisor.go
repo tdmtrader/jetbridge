@@ -113,7 +113,7 @@ const supervisorNoSetsidNotice = "[supervisor] setsid is not in this image; " +
 // undelivered start (process_outcome_recovery.go) -- exactly one proceeds. Only
 // its existence is ever read. The stop check follows the claim and precedes the
 // launch, so a stop written before a delivery claims the start always stops it.
-const exactSupervisorScriptTemplate = `S=__STATE_DIR__
+const exactSupervisorTemplate = `S=__STATE_DIR__
 alive() {
   pid="$(cat "$S/pid" 2>/dev/null)"
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
@@ -191,7 +191,7 @@ func supervisorCommand(processID string, spec runtime.ProcessSpec) []string {
 // two scripts are two contracts: one may re-run a command that stopped, and one
 // may not, and a call site that read `true` would not say which it chose.
 func exactSupervisorCommand(processID string, spec runtime.ProcessSpec) []string {
-	return buildSupervisorCommand(processID, spec, exactSupervisorScriptTemplate)
+	return buildSupervisorCommand(processID, spec, exactSupervisorTemplate)
 }
 
 func buildSupervisorCommand(processID string, spec runtime.ProcessSpec, template string) []string {
