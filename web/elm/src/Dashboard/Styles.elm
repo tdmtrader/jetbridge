@@ -15,7 +15,6 @@ module Dashboard.Styles exposing
     , inlineInstanceVar
     , instanceGroupCard
     , instanceGroupCardBanner
-    , instanceGroupCardBannerHd
     , instanceGroupCardBody
     , instanceGroupCardBodyHd
     , instanceGroupCardFooter
@@ -393,13 +392,6 @@ instanceGroupCardHd =
     , style "background-color" Colors.card
     , style "font-size" "19px"
     , style "letter-spacing" "1px"
-    ]
-
-
-instanceGroupCardBannerHd : List (Html.Attribute msg)
-instanceGroupCardBannerHd =
-    [ style "width" "8px"
-    , style "background-color" Colors.card
     ]
 
 
