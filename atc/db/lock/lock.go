@@ -92,10 +92,6 @@ func NewInMemoryCheckBuildTrackingLockID(checkableType string, checkableId int) 
 	return LockID{LockTypeInMemoryCheckBuildTracking, lockIDFromString(fmt.Sprintf("%s-%d", checkableType, checkableId))}
 }
 
-func NewVolumeStreamingLockID(resourceCacheID int, worker string) LockID {
-	return LockID{LockTypeVolumeStreaming, lockIDFromString(fmt.Sprintf("%d-%s", resourceCacheID, worker))}
-}
-
 func NewResourceGetLockID(name string) LockID {
 	return LockID{LockTypeResourceGet, lockIDFromString(name)}
 }
