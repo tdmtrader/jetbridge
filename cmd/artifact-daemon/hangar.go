@@ -263,12 +263,12 @@ func validatePrivateHangarScratch(scratch, storage string) error {
 
 func validateHangarScratchPaths(scratch, storage string) error {
 	if !filepath.IsAbs(scratch) || !filepath.IsAbs(storage) {
-		return fmt.Errorf("Hangar scratch and artifact storage paths must be absolute")
+		return errors.New("Hangar scratch and artifact storage paths must be absolute")
 	}
 	scratch = filepath.Clean(scratch)
 	storage = filepath.Clean(storage)
 	if scratch == string(filepath.Separator) || storage == string(filepath.Separator) || filepath.VolumeName(scratch) == scratch || filepath.VolumeName(storage) == storage {
-		return fmt.Errorf("Hangar scratch and artifact storage paths must not be filesystem roots")
+		return errors.New("Hangar scratch and artifact storage paths must not be filesystem roots")
 	}
 	contains := func(parent, child string) (bool, error) {
 		rel, err := filepath.Rel(parent, child)
@@ -286,7 +286,7 @@ func validateHangarScratchPaths(scratch, storage string) error {
 		return fmt.Errorf("compare artifact storage and Hangar scratch: %w", err)
 	}
 	if scratchContainsStorage || storageContainsScratch {
-		return fmt.Errorf("--hangar-scratch-dir must be outside artifact storage")
+		return errors.New("--hangar-scratch-dir must be outside artifact storage")
 	}
 	return nil
 }
