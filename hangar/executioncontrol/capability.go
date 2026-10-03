@@ -33,9 +33,9 @@ import (
 	"time"
 )
 
-// CapabilityDomain separates a control capability from every other HMAC in the
+// capabilityDomain separates a control capability from every other HMAC in the
 // system, including the materialization warrant that uses the same primitive.
-const CapabilityDomain = "hangar-execution-capability-v1"
+const capabilityDomain = "hangar-execution-capability-v1"
 
 // CapabilityKeyBytes is the exact key length. A short key is a configuration
 // mistake that must be refused rather than stretched.
@@ -106,7 +106,7 @@ func canonicalCapabilityBytes(claims CapabilityClaims, nonce string, expiresAtNa
 		out = append(out, value...)
 	}
 
-	field(CapabilityDomain)
+	field(capabilityDomain)
 	field(string(claims.Facet))
 	field(claims.Operation)
 	field(string(claims.Identity.ExecutionID))
