@@ -22,7 +22,7 @@ module Routes exposing
 
 import Api.Pagination
 import Concourse exposing (InstanceVars, JsonValue(..))
-import Concourse.Pagination as Pagination exposing (Direction(..))
+import Concourse.Pagination as Pagination
 import Dict exposing (Dict)
 import DotNotation
 import Maybe.Extra
