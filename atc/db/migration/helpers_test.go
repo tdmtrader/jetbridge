@@ -92,6 +92,7 @@ func ExpectTeamWithoutNoAuthProvider(dbConn *sql.DB, team string) {
 }
 
 func ExpectTeamWithoutBasicAuthProvider(dbConn *sql.DB, team string) {
+	GinkgoHelper()
 
 	auth := fetchTeamAuth(dbConn, team)
 
