@@ -44,7 +44,7 @@ import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
 import Message.Subscription
     exposing
-        ( Delivery(..)
+        ( Delivery
         , Subscription(..)
         )
 import Routes
