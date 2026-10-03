@@ -1,4 +1,4 @@
-module PipelineRuns.Styles exposing (body, button, error, form, hold, table)
+module PipelineRuns.Styles exposing (body, button, form, hold, table)
 import Colors
 import Html exposing (Attribute)
 import Html.Attributes exposing (style)
@@ -27,11 +27,6 @@ button =
     , style "border" "1px solid #8b66d9"
     , style "padding" "8px 12px"
     , style "cursor" "pointer"
-    ]
-error : List (Attribute msg)
-error =
-    [ style "color" "#ff8080"
-    , style "min-height" "1.2em"
     ]
 hold : List (Attribute msg)
 hold =
