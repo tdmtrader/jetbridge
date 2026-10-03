@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,9 +297,7 @@ func (r *Registry) persistAliases() {
 
 	r.mu.RLock()
 	snapshot := make(map[string]RelKey, len(r.aliases))
-	for k, v := range r.aliases {
-		snapshot[k] = v
-	}
+	maps.Copy(snapshot, r.aliases)
 	r.mu.RUnlock()
 
 	if err := r.aliasStore.Save(snapshot); err != nil {
