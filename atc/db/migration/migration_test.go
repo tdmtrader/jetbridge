@@ -590,6 +590,7 @@ func ExpectToBeAbleToInsertData(dbConn *sql.DB) {
 }
 
 func ExpectMigrationToHaveFailed(dbConn *sql.DB, failedVersion int, expectDirty bool) {
+	GinkgoHelper()
 	var status string
 	var dirty bool
 	err := dbConn.QueryRow("SELECT status, dirty FROM migrations_history WHERE version=$1 ORDER BY tstamp desc LIMIT 1", failedVersion).Scan(&status, &dirty)
