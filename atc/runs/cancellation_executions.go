@@ -3,7 +3,6 @@ package runs
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -40,7 +39,7 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 		return db.CancellationUnavailable, db.ErrRunCancellationExternalWork
 	}
 	if s.Conn == nil || s.Factory == nil || s.Source == nil || s.Verifier == nil {
-		return db.CancellationUnavailable, fmt.Errorf("incomplete cancellation execution handler")
+		return db.CancellationUnavailable, errors.New("incomplete cancellation execution handler")
 	}
 	var in db.RunCancellationExecution
 	err := s.transaction(ctx, func(tx db.Tx) error {
