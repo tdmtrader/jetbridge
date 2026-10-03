@@ -22,7 +22,6 @@ import Message.Message exposing (DomID(..), Message(..))
 import Message.Subscription as Subscription
     exposing
         ( Delivery(..)
-        , RawHttpResponse(..)
         , Subscription(..)
         )
 import Routes
