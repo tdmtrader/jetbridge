@@ -7,7 +7,7 @@ import HoverState
 import Html exposing (Html)
 import Html.Attributes exposing (class, href)
 import List.Extra
-import Message.Message exposing (DomID(..), Message(..), PipelinesSection(..))
+import Message.Message exposing (DomID(..), Message(..), PipelinesSection)
 import Routes
 import Tooltip
 
