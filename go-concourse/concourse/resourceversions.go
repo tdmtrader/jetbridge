@@ -255,7 +255,7 @@ func (team *team) ClearResourceTypeVersions(pipelineRef atc.PipelineRef, resourc
 	err := team.connection.Send(request, &response)
 	if err != nil {
 		return 0, err
-	} else {
-		return crvResponse.VersionsRemoved, nil
 	}
+
+	return crvResponse.VersionsRemoved, nil
 }
