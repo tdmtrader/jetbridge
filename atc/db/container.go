@@ -8,7 +8,7 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-var ErrContainerDisappeared = errors.New("container disappeared from db")
+var errContainerDisappeared = errors.New("container disappeared from db")
 
 type Container interface {
 	ID() int
@@ -77,7 +77,7 @@ func (container *creatingContainer) Created() (CreatedContainer, error) {
 	}
 
 	if affected == 0 {
-		return nil, ErrContainerDisappeared
+		return nil, errContainerDisappeared
 	}
 
 	return newCreatedContainer(
@@ -112,7 +112,7 @@ func (container *creatingContainer) Failed() (FailedContainer, error) {
 	}
 
 	if affected == 0 {
-		return nil, ErrContainerDisappeared
+		return nil, errContainerDisappeared
 	}
 
 	return newFailedContainer(
@@ -192,7 +192,7 @@ func (container *createdContainer) Destroying() (DestroyingContainer, error) {
 	}
 
 	if affected == 0 {
-		return nil, ErrContainerDisappeared
+		return nil, errContainerDisappeared
 	}
 
 	return newDestroyingContainer(
@@ -224,7 +224,7 @@ func (container *createdContainer) UpdateLastHijack() error {
 	}
 
 	if affected == 0 {
-		return ErrContainerDisappeared
+		return errContainerDisappeared
 	}
 
 	return nil
@@ -285,7 +285,7 @@ func (container *destroyingContainer) Destroy() (bool, error) {
 	}
 
 	if affected == 0 {
-		return false, ErrContainerDisappeared
+		return false, errContainerDisappeared
 	}
 
 	return true, nil
@@ -345,7 +345,7 @@ func (container *failedContainer) Destroy() (bool, error) {
 	}
 
 	if affected == 0 {
-		return false, ErrContainerDisappeared
+		return false, errContainerDisappeared
 	}
 
 	return true, nil
