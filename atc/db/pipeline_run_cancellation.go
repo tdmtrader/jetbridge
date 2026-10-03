@@ -27,8 +27,7 @@ func acceptRunCancellation(ctx context.Context, tx Tx, runID int, requester stri
 	if requester == "" {
 		return "", errors.New("cancellation requires an authenticated requester")
 	}
-	var err error
-	reason, err = NormalizeRunCancellationReason(reason)
+	reason, err := NormalizeRunCancellationReason(reason)
 	if err != nil {
 		return "", err
 	}
