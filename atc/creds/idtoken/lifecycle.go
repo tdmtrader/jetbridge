@@ -84,12 +84,13 @@ func (l *SigningKeyLifecycler) removeSupercededKeys(kty db.SigningKeyType) error
 	}
 
 	for _, key := range allKeys {
-		if key.KeyType() == kty && key.ID() != newestKey.ID() {
-			l.Logger.Info(fmt.Sprintf("Deleting superceded signing key %s for idtoken provider.", key.ID()))
-			err := key.Delete()
-			if err != nil {
-				return err
-			}
+		if key.KeyType() != kty || key.ID() == newestKey.ID() {
+			continue
+		}
+		l.Logger.Info(fmt.Sprintf("Deleting superceded signing key %s for idtoken provider.", key.ID()))
+		err := key.Delete()
+		if err != nil {
+			return err
 		}
 	}
 
