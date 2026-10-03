@@ -46,11 +46,7 @@ func (command *JobsCommand) Execute([]string) error {
 	}
 
 	if command.Json {
-		err = displayhelpers.JsonPrint(jobs)
-		if err != nil {
-			return err
-		}
-		return nil
+		return displayhelpers.JsonPrint(jobs)
 	}
 
 	headers = []string{"name", "paused", "status", "next"}
