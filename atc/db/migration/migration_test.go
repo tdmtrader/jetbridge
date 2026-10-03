@@ -553,6 +553,7 @@ func SetupMigrationsHistoryTableToExistAtVersion(db *sql.DB, version int) {
 }
 
 func SetupSchemaMigrationsTable(db *sql.DB, version int, dirty bool) {
+	GinkgoHelper()
 	_, err := db.Exec("CREATE TABLE IF NOT EXISTS schema_migrations (version bigint, dirty boolean)")
 	Expect(err).NotTo(HaveOccurred())
 	_, err = db.Exec("INSERT INTO schema_migrations (version, dirty) VALUES ($1, $2)", version, dirty)
