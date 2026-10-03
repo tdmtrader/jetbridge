@@ -636,6 +636,8 @@ func verifyFixtureDataPresent(db *sql.DB, preMigration bool) {
 }
 
 func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
+	GinkgoHelper()
+
 	rows, err := db.Query("SELECT status, count(*) FROM builds GROUP BY status")
 	Expect(err).NotTo(HaveOccurred())
 	defer rows.Close()
