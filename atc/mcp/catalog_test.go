@@ -90,16 +90,17 @@ func TestCatalogClassifiesEveryDeclaredActionWithoutEnablingIt(t *testing.T) {
 		if op.Implemented() {
 			t.Errorf("%s advertises an adapter not yet implemented", op.ID)
 		}
-		if op.Arguments != nil {
-			if op.Result == nil {
-				t.Errorf("missing result schema for %s", op.ID)
-			}
-			if _, err := product.GroupInputSchema([]product.Operation{op}).Resolve(nil); err != nil {
-				t.Errorf("%s input: %v", op.ID, err)
-			}
-			if _, err := product.GroupOutputSchema([]product.Operation{op}).Resolve(nil); err != nil {
-				t.Errorf("%s output: %v", op.ID, err)
-			}
+		if op.Arguments == nil {
+			continue
+		}
+		if op.Result == nil {
+			t.Errorf("missing result schema for %s", op.ID)
+		}
+		if _, err := product.GroupInputSchema([]product.Operation{op}).Resolve(nil); err != nil {
+			t.Errorf("%s input: %v", op.ID, err)
+		}
+		if _, err := product.GroupOutputSchema([]product.Operation{op}).Resolve(nil); err != nil {
+			t.Errorf("%s output: %v", op.ID, err)
 		}
 	}
 	if _, known := product.ScopeForAction("arbitrary-new-action"); known {
