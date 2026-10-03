@@ -82,12 +82,6 @@ func WithBasicJob() SetupFunc {
 	}
 }
 
-func WithTeam(team string) SetupFunc {
-	return func(s *Scenario) {
-		s.DB.Run(s.DBBuilder.WithTeam(team))
-	}
-}
-
 func WithWorkers(workers ...Worker) SetupFunc {
 	return func(s *Scenario) {
 		for _, worker := range workers {
