@@ -35,7 +35,6 @@ import Message.Message
         , Message(..)
         , PipelinesSection(..)
         )
-import UserState exposing (UserState(..))
 
 
 type alias Bounds =
