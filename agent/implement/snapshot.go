@@ -21,8 +21,8 @@ import (
 const (
 	// InputVersion names the sealed snapshot format.
 	InputVersion = "implement-input/v1"
-	// MaxBriefBytes bounds the brief. It is given to the model whole.
-	MaxBriefBytes = 256 << 10
+	// maxBriefBytes bounds the brief. It is given to the model whole.
+	maxBriefBytes = 256 << 10
 	// MaxFindingsBytes bounds findings.json. It holds findings from one
 	// review/v1 report, which is itself at most 16 MiB.
 	MaxFindingsBytes = capture.MaxFileBytes
@@ -112,7 +112,7 @@ func CaptureSnapshot(ctx context.Context, opts CaptureOptions) (*Snapshot, error
 	if opts.Base == "" {
 		opts.Base = "HEAD"
 	}
-	brief, err := capture.ReadFileBounded(opts.Brief, MaxBriefBytes)
+	brief, err := capture.ReadFileBounded(opts.Brief, maxBriefBytes)
 	if err != nil {
 		return nil, fmt.Errorf("brief: %w (at most 256 KiB)", err)
 	}
@@ -290,7 +290,7 @@ func LoadSnapshot(dir string) (*Snapshot, error) {
 		(m.FindingsDigest != nil && (len(*m.FindingsDigest) != 64 || *m.FindingsRun < 1)) {
 		return nil, errors.New("invalid snapshot manifest inputs")
 	}
-	inv := capture.Inventory{Files: map[string]capture.Entry{"brief.md": {Digest: m.BriefDigest, Size: -1, Limit: MaxBriefBytes}}, Dirs: []string{"base"}}
+	inv := capture.Inventory{Files: map[string]capture.Entry{"brief.md": {Digest: m.BriefDigest, Size: -1, Limit: maxBriefBytes}}, Dirs: []string{"base"}}
 	if m.PriorPatchDigest != nil {
 		inv.Files[PriorFile] = capture.Entry{Digest: *m.PriorPatchDigest, Size: -1, Limit: MaxPatchBytes}
 	}
@@ -308,7 +308,7 @@ func LoadSnapshot(dir string) (*Snapshot, error) {
 	if err := capture.Verify(root, inv); err != nil {
 		return nil, err
 	}
-	brief, err := capture.ReadRootFile(root, "brief.md", MaxBriefBytes)
+	brief, err := capture.ReadRootFile(root, "brief.md", maxBriefBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +350,7 @@ func (s *Snapshot) Brief() ([]byte, error) {
 		return nil, err
 	}
 	defer root.Close()
-	b, err := capture.ReadRootFile(root, "brief.md", MaxBriefBytes)
+	b, err := capture.ReadRootFile(root, "brief.md", maxBriefBytes)
 	if err != nil {
 		return nil, err
 	}
