@@ -52,19 +52,19 @@ func (tree *CapturedTree) OpenRoot() (*os.Root, error) {
 
 func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error) {
 	if materializer == nil || materializer.Store == nil {
-		return fmt.Errorf("hangar: materializer store is required")
+		return errors.New("hangar: materializer store is required")
 	}
 	if err := ref.Validate(); err != nil {
 		return err
 	}
 	if !validMaterializationSegment(handle) || !validMaterializationSegment(volume) {
-		return fmt.Errorf("hangar: materialization handle and volume must be canonical path segments")
+		return errors.New("hangar: materialization handle and volume must be canonical path segments")
 	}
 	if materializer.StoragePath == "" {
-		return fmt.Errorf("hangar: materialization storage path is required")
+		return errors.New("hangar: materialization storage path is required")
 	}
 	if materializer.MaxTreeBytes <= 0 {
-		return fmt.Errorf("hangar: maximum materialized tree bytes must be positive")
+		return errors.New("hangar: maximum materialized tree bytes must be positive")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
