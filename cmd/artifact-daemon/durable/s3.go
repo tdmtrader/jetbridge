@@ -152,11 +152,7 @@ func isMiss(err error) bool {
 		return true
 	}
 	var notFound *types.NotFound
-	if errors.As(err, &notFound) {
-		return true
-	}
-
-	return false
+	return errors.As(err, &notFound)
 }
 
 // Stat issues a HEAD so a cache probe does not pay for the body.
