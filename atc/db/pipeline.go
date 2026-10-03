@@ -41,10 +41,6 @@ type ErrResourceNotFound struct {
 	Name string
 }
 
-func (e ErrResourceNotFound) Error() string {
-	return fmt.Sprintf("resource '%s' not found", e.Name)
-}
-
 type Pipeline interface {
 	ID() int
 	Name() string
