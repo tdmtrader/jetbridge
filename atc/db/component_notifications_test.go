@@ -50,6 +50,7 @@ var _ = Describe("Component Notifications", func() {
 	}
 
 	createResourceTypeScope := func(rt db.ResourceType) db.ResourceConfigScope {
+		GinkgoHelper()
 		rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
 			rt.Type(),
 			rt.Source(),
