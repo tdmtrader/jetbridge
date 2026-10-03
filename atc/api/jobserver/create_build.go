@@ -88,20 +88,21 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 
 		for _, input := range inputs {
 			resource, found := resources.Lookup(input.Resource)
-			if found {
-				version := resource.CurrentPinnedVersion()
-				_, _, err := s.checkFactory.TryCreateCheck(
-					lagerctx.NewContext(ctx, logger),
-					resource,
-					resourceTypes,
-					version,
-					true,
-					true,
-					true,
-				)
-				if err != nil {
-					logger.Error("failed-to-create-check", err)
-				}
+			if !found {
+				continue
+			}
+			version := resource.CurrentPinnedVersion()
+			_, _, err := s.checkFactory.TryCreateCheck(
+				lagerctx.NewContext(ctx, logger),
+				resource,
+				resourceTypes,
+				version,
+				true,
+				true,
+				true,
+			)
+			if err != nil {
+				logger.Error("failed-to-create-check", err)
 			}
 		}
 
