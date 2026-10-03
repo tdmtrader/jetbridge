@@ -48,8 +48,7 @@ func (s *SSEEventStream) NextEvent() (atc.Event, error) {
 }
 
 func (s *SSEEventStream) NextEventRaw() (sse.Event, error) {
-	se, err := s.sseReader.Next()
-	return se, err
+	return s.sseReader.Next()
 }
 
 func (s *SSEEventStream) Close() error {
