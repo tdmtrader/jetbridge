@@ -147,7 +147,7 @@ func (reader *StatusReader) Read(ctx context.Context) (Status, error) {
 
 	limit := reader.DebtLimit
 	if limit <= 0 {
-		limit = DefaultStatusDebtLimit
+		limit = defaultStatusDebtLimit
 	}
 	debt, err := reader.Repository.ReadInventoryDebt(ctx, tx, reader.Bucket, reader.Epoch, limit)
 	if err != nil {
@@ -188,8 +188,8 @@ func (reader *StatusReader) Read(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
-// DefaultStatusDebtLimit bounds one status read's debt scan.
-const DefaultStatusDebtLimit = 500
+// defaultStatusDebtLimit bounds one status read's debt scan.
+const defaultStatusDebtLimit = 500
 
 func (reader *StatusReader) wired() error {
 	if reader.Transactor == nil || reader.Repository == nil {
