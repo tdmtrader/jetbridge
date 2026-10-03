@@ -12,42 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureLoadVarJSON returns a pipeline that produces JSON, loads it
-// with format: json, and uses a nested key in a task.
-func fixtureLoadVarJSON(jobName, varName, jsonContent, consumeScript string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: produce-json
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      outputs:
-      - name: values
-      run:
-        path: sh
-        args:
-        - -c
-        - echo '%s' > values/data.json
-  - load_var: %s
-    file: values/data.json
-    format: json
-  - task: consume
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      params:
-        DATA: ((.:%s))
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, jsonContent, varName, varName, consumeScript)
-}
-
 // yamlToPrintfArgs converts a multi-line YAML string (as typically passed
 // from Go) into a series of single-quoted shell arguments for printf.
 // It strips the common leading whitespace (dedent) and drops blank lines,
