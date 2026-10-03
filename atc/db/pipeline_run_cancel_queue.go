@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	ErrRunCancellationLimit         = errors.New("invalid cancellation work limit")
+	errRunCancellationLimit         = errors.New("invalid cancellation work limit")
 	ErrRunCancellationProgressStale = errors.New("cancellation operation is no longer current")
 )
 
@@ -43,7 +43,7 @@ const runNeedsCancellationWork = `r.status='running' AND (r.cancel_requested_at 
 // This transaction acquires only the worker row, never a Run/domain lock.
 func (f *pipelineRunFactory) PendingRunCancellations(ctx context.Context, tx Tx, lease RunCancellationLease, limit int) ([]int, error) {
 	if limit < 1 || limit > RunCancellationRunLimit {
-		return nil, ErrRunCancellationLimit
+		return nil, errRunCancellationLimit
 	}
 	if _, _, err := lockCurrentCancellationLease(ctx, tx, lease); err != nil {
 		return nil, err
@@ -93,7 +93,7 @@ func (f *pipelineRunFactory) PendingRunCancellations(ctx context.Context, tx Tx,
 // set of typed identities. It never contacts an executor or a storage service.
 func (f *pipelineRunFactory) DiscoverRunCancellation(ctx context.Context, tx Tx, lease RunCancellationLease, runID, limit int) (int, error) {
 	if limit < 1 || limit > RunCancellationOperationLimit {
-		return 0, ErrRunCancellationLimit
+		return 0, errRunCancellationLimit
 	}
 	if _, _, err := lockCancellationProgress(ctx, tx, lease, runID); err != nil {
 		return 0, err
