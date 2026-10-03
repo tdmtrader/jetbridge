@@ -875,14 +875,15 @@ func (s setupDB) insertRowVersion(resources map[string]atc.ResourceConfig, row D
 		Exec()
 	Expect(err).ToNot(HaveOccurred())
 
-	if row.Disabled {
-		_, err = s.psql.Insert("resource_disabled_versions").
-			Columns("resource_id", "version_digest").
-			Values(resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON)).
-			Suffix("ON CONFLICT DO NOTHING").
-			Exec()
-		Expect(err).ToNot(HaveOccurred())
+	if !row.Disabled {
+		return
 	}
+	_, err = s.psql.Insert("resource_disabled_versions").
+		Columns("resource_id", "version_digest").
+		Values(resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON)).
+		Suffix("ON CONFLICT DO NOTHING").
+		Exec()
+	Expect(err).ToNot(HaveOccurred())
 }
 
 func (s setupDB) insertRowBuild(row DBRow, needsV6Migration bool) {
