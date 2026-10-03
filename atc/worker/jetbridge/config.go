@@ -1,6 +1,7 @@
 package jetbridge
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -357,19 +358,19 @@ func RestConfig(cfg Config) (*rest.Config, error) {
 // perfectly legitimate and gets a 403.
 func MinimumArtifactResolveCapabilityTTL(schedulingTimeout, startupTimeout time.Duration) (time.Duration, error) {
 	if schedulingTimeout < 0 || startupTimeout < 0 {
-		return 0, fmt.Errorf("pod scheduling and startup timeouts must not be negative")
+		return 0, errors.New("pod scheduling and startup timeouts must not be negative")
 	}
 	minimum := schedulingTimeout + startupTimeout
 	if minimum < schedulingTimeout {
-		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+		return 0, errors.New("artifact resolve capability lifetime bound overflows")
 	}
 	minimum += ArtifactResolveInitRetryBudget
 	if minimum < ArtifactResolveInitRetryBudget {
-		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+		return 0, errors.New("artifact resolve capability lifetime bound overflows")
 	}
 	minimum += artifactResolveExpirySafetyMargin
 	if minimum < artifactResolveExpirySafetyMargin {
-		return 0, fmt.Errorf("artifact resolve capability lifetime bound overflows")
+		return 0, errors.New("artifact resolve capability lifetime bound overflows")
 	}
 	return minimum, nil
 }
