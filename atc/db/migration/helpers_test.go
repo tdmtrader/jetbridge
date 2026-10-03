@@ -43,6 +43,7 @@ func ExpectTeamWithUsersAndGroups(dbConn *sql.DB, team string, users, groups []s
 }
 
 func ExpectTeamWithUsersAndGroupsForRole(dbConn *sql.DB, team string, role string, users, groups []string) {
+	GinkgoHelper()
 
 	auth := fetchTeamAuth(dbConn, team)
 
