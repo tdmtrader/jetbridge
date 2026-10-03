@@ -48,7 +48,6 @@ func (t *Tags) UnmarshalJSON(data []byte) error {
 }
 
 var ErrInvalidWorkerVersion = errors.New("invalid worker version, only numeric characters are allowed")
-var ErrNoWorkers = errors.New("no workers available for checking")
 
 func (w Worker) Validate() error {
 	if w.Version != "" && !regexp.MustCompile(`^[0-9\.]+$`).MatchString(w.Version) {
