@@ -60,7 +60,6 @@ func (b Build) OneOff() bool {
 type BuildPreparationStatus string
 
 const (
-	BuildPreparationStatusUnknown     BuildPreparationStatus = "unknown"
 	BuildPreparationStatusBlocking    BuildPreparationStatus = "blocking"
 	BuildPreparationStatusNotBlocking BuildPreparationStatus = "not_blocking"
 )
