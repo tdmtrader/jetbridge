@@ -28,9 +28,9 @@ func ResourceCacheKey(cache db.ResourceCache) string {
 
 // resourceCacheKey is the choice itself, split out so it can be tested against
 // both key shapes without standing up a database or a stub cache.
-func resourceCacheKey(id int, durableKey string) string {
-	if durableKey != "" {
-		return durableKey
+func resourceCacheKey(id int, contentKey string) string {
+	if contentKey != "" {
+		return contentKey
 	}
 
 	return fmt.Sprintf("rc-%d", id)
