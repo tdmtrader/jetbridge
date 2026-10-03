@@ -21,7 +21,6 @@ import (
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
-	"go.opentelemetry.io/otel/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -61,7 +60,7 @@ type TaskDelegateFactory interface {
 }
 
 type TaskDelegate interface {
-	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
+	StartSpan(context.Context, string, tracing.Attrs) (context.Context, oteltrace.Span)
 
 	FetchImage(context.Context, atc.ImageResource, atc.ResourceTypes, bool, atc.Tags, bool) (runtime.ImageSpec, error)
 
