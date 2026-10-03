@@ -3,7 +3,6 @@ package db_test
 import (
 	"time"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
@@ -66,8 +65,7 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 			},
 		)
 
-		var query sq.Eq
-		query, found, err = owner.Find(dbConn)
+		query, found, err := owner.Find(dbConn)
 		Expect(err).ToNot(HaveOccurred())
 
 		if !found {
