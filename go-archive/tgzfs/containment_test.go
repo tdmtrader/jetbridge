@@ -43,15 +43,14 @@ var _ = Describe("Extract containment", func() {
 	BeforeEach(func() {
 		var err error
 		base, err = os.MkdirTemp("", "tgzfs-containment")
+		DeferCleanup(func() {
+			os.RemoveAll(base)
+		})
 		Expect(err).NotTo(HaveOccurred())
 		base, err = filepath.EvalSymlinks(base)
 		Expect(err).NotTo(HaveOccurred())
 		dest = filepath.Join(base, "dest")
 		Expect(os.Mkdir(filepath.Join(base, "outside"), 0755)).To(Succeed())
-	})
-
-	AfterEach(func() {
-		os.RemoveAll(base)
 	})
 
 	expectOutsideUntouched := func() {
