@@ -287,7 +287,7 @@ func classOf(err error) string {
 // than a constant so that a caller cannot pass zero by forgetting a field:
 // there is one spelling and it is nonzero by construction.
 func Interval(kind output.OperationKind, configured time.Duration) time.Duration {
-	ceiling := CeilingFor(kind)
+	ceiling := ceilingFor(kind)
 	if configured <= 0 || configured > ceiling {
 		return ceiling
 	}
@@ -295,7 +295,7 @@ func Interval(kind output.OperationKind, configured time.Duration) time.Duration
 	return configured
 }
 
-// CeilingFor is the slowest periodic wake a kind may be configured with.
-func CeilingFor(kind output.OperationKind) time.Duration {
+// ceilingFor is the slowest periodic wake a kind may be configured with.
+func ceilingFor(kind output.OperationKind) time.Duration {
 	return output.WorkerFallbackInterval
 }
