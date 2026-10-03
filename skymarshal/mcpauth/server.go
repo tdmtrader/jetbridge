@@ -180,7 +180,7 @@ func (s *Server) AuthorizeHTTP(next func(http.ResponseWriter, *http.Request, Pri
 		p, err := s.Authenticate(ctx, parts[1])
 		cancel()
 		if err != nil {
-			if errors.Is(err, ErrInvalidToken) {
+			if errors.Is(err, errInvalidToken) {
 				s.challenge(w, 401, "invalid_token", ScopeRead)
 			} else {
 				oauthError(w, 503, "temporarily_unavailable", "Authorization storage unavailable")
@@ -194,34 +194,34 @@ func (s *Server) AuthorizeHTTP(next func(http.ResponseWriter, *http.Request, Pri
 func (s *Server) Authenticate(ctx context.Context, token string) (Principal, error) {
 	var p Principal
 	if !strings.HasPrefix(token, "jbm_a_") {
-		return p, ErrInvalidToken
+		return p, errInvalidToken
 	}
 	err := s.config.Store.WithTx(ctx, func(tx Tx) error {
 		var c credential
 		if err := tx.Get("access", digest(token), &c); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return ErrInvalidToken
+				return errInvalidToken
 			}
 			return err
 		}
 		var g grant
 		if err := tx.Get("grant", c.GrantID, &g); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return ErrInvalidToken
+				return errInvalidToken
 			}
 			return err
 		}
 		now := s.config.Now()
 		if !now.Before(c.Expires) || !g.valid(now) || g.Resource != s.config.Resource {
-			return ErrInvalidToken
+			return errInvalidToken
 		}
 		if _, ok := s.clients[g.ClientID]; !ok {
-			return ErrInvalidToken
+			return errInvalidToken
 		}
 		var identity identitySession
 		if err := tx.Get("identity", g.IdentityKey, &identity); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return ErrInvalidToken
+				return errInvalidToken
 			}
 			return err
 		}

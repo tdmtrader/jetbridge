@@ -30,7 +30,7 @@ var Scopes = []Scope{
 
 var (
 	ErrNotFound     = errors.New("MCP authorization record not found")
-	ErrInvalidToken = errors.New("invalid or expired MCP access token")
+	errInvalidToken = errors.New("invalid or expired MCP access token")
 	ErrInvalidGrant = errors.New("invalid or expired MCP authorization grant")
 )
 

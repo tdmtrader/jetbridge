@@ -236,7 +236,7 @@ func TestRefreshRenewsIdentityWithoutIncreasingScope(t *testing.T) {
 	h := newHarness(t)
 	tokens := h.tokens(ScopeRead)
 	h.now = h.now.Add(16 * time.Minute)
-	if _, err := h.server.Authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, ErrInvalidToken) {
+	if _, err := h.server.Authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, errInvalidToken) {
 		t.Fatal("expired access accepted")
 	}
 	requireStatus(t, h.refresh(tokens.RefreshToken, ScopeHijack), 400)
@@ -256,7 +256,7 @@ func TestRefreshRenewsIdentityWithoutIncreasingScope(t *testing.T) {
 		t.Fatal("refresh did not rotate")
 	}
 	requireStatus(t, h.refresh(tokens.RefreshToken, ""), 400)
-	if _, err := h.server.Authenticate(context.Background(), rotated.AccessToken); !errors.Is(err, ErrInvalidToken) {
+	if _, err := h.server.Authenticate(context.Background(), rotated.AccessToken); !errors.Is(err, errInvalidToken) {
 		t.Fatal("refresh replay did not revoke grant")
 	}
 }
@@ -271,7 +271,7 @@ func TestIndependentConsentsShareCurrentIdentityButNotRevocation(t *testing.T) {
 		t.Fatal("first consent retained superseded upstream credential")
 	}
 	requireStatus(t, h.request("POST", "/mcp/oauth/revoke", url.Values{"client_id": {"desktop"}, "token": {second.RefreshToken}}), 200)
-	if _, err := h.server.Authenticate(context.Background(), second.AccessToken); !errors.Is(err, ErrInvalidToken) {
+	if _, err := h.server.Authenticate(context.Background(), second.AccessToken); !errors.Is(err, errInvalidToken) {
 		t.Fatal("revoked token accepted")
 	}
 	if _, err := h.server.Authenticate(context.Background(), first.AccessToken); err != nil {
@@ -299,7 +299,7 @@ func TestGrantResourceAndClientAreBound(t *testing.T) {
 		t.Fatal("admin category became a wildcard")
 	}
 	h.server.config.Resource = "https://jetbridge.example/another-mcp"
-	if _, err := h.server.Authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, ErrInvalidToken) {
+	if _, err := h.server.Authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, errInvalidToken) {
 		t.Fatal("token accepted at different resource")
 	}
 }
@@ -312,7 +312,7 @@ func TestGrantManagementAndIdleExpiry(t *testing.T) {
 	csrf, id := hidden(t, w.Body.String(), "csrf"), hidden(t, w.Body.String(), "grant_id")
 	requireStatus(t, h.request("POST", "/mcp/oauth/grants", url.Values{"csrf": {"wrong"}, "grant_id": {id}}), 403)
 	requireStatus(t, h.request("POST", "/mcp/oauth/grants", url.Values{"csrf": {csrf}, "grant_id": {id}}), 303)
-	if _, err := h.server.Authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, ErrInvalidToken) {
+	if _, err := h.server.Authenticate(context.Background(), tokens.AccessToken); !errors.Is(err, errInvalidToken) {
 		t.Fatal("management revoke did not invalidate access")
 	}
 	tokens = h.tokens(ScopeRead)
