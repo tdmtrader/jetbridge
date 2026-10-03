@@ -21,12 +21,12 @@ func (err unusedVarsError) Error() string {
 	return fmt.Sprintf("unused vars: %s", strings.Join(err.Vars, ", "))
 }
 
-type MissingSourceError struct {
+type missingSourceError struct {
 	Name   string
 	Source string
 }
 
-func (err MissingSourceError) Error() string {
+func (err missingSourceError) Error() string {
 	return fmt.Sprintf("missing source '%s' in var: %s", err.Source, err.Name)
 }
 
