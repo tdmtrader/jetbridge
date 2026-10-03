@@ -13,7 +13,7 @@ type conjurFactory struct {
 	secretTemplates []*creds.SecretTemplate
 }
 
-func NewConjurFactory(log lager.Logger, client *conjurapi.Client, secretTemplates []*creds.SecretTemplate) *conjurFactory {
+func newConjurFactory(log lager.Logger, client *conjurapi.Client, secretTemplates []*creds.SecretTemplate) *conjurFactory {
 	return &conjurFactory{
 		log:             log,
 		client:          client,
