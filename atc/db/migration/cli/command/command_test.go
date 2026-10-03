@@ -23,12 +23,11 @@ var _ = Describe("Migration CLI", func() {
 
 		BeforeEach(func() {
 			migrationDir, err = os.MkdirTemp("", "")
+			DeferCleanup(func() {
+				os.RemoveAll(migrationDir)
+			})
 			Expect(err).ToNot(HaveOccurred())
 
-		})
-
-		AfterEach(func() {
-			os.RemoveAll(migrationDir)
 		})
 
 		Context("sql migrations", func() {
