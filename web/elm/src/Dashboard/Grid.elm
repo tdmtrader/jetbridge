@@ -30,8 +30,7 @@ import Dict exposing (Dict)
 import List.Extra
 import Message.Message
     exposing
-        ( DomID(..)
-        , DropTarget(..)
+        ( DropTarget(..)
         , Message(..)
         , PipelinesSection(..)
         )
