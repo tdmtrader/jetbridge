@@ -47,10 +47,6 @@ func (err MissingTaskImageSourceError) Error() string {
 make sure there's a corresponding 'get' step, or a task that produces it as an output`, err.SourceName)
 }
 
-type TaskImageSourceParametersError struct {
-	Err error
-}
-
 type TaskDelegateFactory interface {
 	TaskDelegate(state RunState) TaskDelegate
 }
