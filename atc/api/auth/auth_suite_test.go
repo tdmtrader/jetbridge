@@ -271,6 +271,8 @@ func doomedWorkerFactory() db.WorkerFactory {
 
 // doomedBuildFactory is the build-side counterpart of doomedTeamFactory.
 func doomedBuildFactory() db.BuildFactory {
+	GinkgoHelper()
+
 	doomed := postgresRunner.OpenConn()
 	factory := db.NewBuildFactory(doomed, lockFactory, 0, time.Hour)
 	Expect(doomed.Close()).To(Succeed())
