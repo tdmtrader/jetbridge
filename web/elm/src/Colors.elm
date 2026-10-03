@@ -18,7 +18,6 @@ module Colors exposing
     , dashboardPipelineHeaderText
     , dashboardText
     , dropdownFaded
-    , dropdownItemInputText
     , dropdownItemSelectedBackground
     , dropdownItemSelectedText
     , dropdownUnselectedText
@@ -143,11 +142,6 @@ dashboardText =
 dashboardPipelineHeaderText : String
 dashboardPipelineHeaderText =
     ColorValues.grey20
-
-
-dropdownItemInputText : String
-dropdownItemInputText =
-    ColorValues.grey30
 
 
 dropdownItemSelectedText : String
