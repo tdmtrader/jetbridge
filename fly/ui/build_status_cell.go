@@ -8,7 +8,7 @@ func BuildStatusCell(status atc.BuildStatus) TableCell {
 
 	switch status {
 	case atc.StatusPending:
-		statusCell.Color = PendingColor
+		statusCell.Color = pendingColor
 	case atc.StatusStarted:
 		statusCell.Color = StartedColor
 	case atc.StatusSucceeded:
