@@ -169,19 +169,6 @@ func RecordK8sPodFailure(ctx context.Context, reason string) {
 	)
 }
 
-// RecordResourceCheckDuration records the duration of a resource check.
-func RecordResourceCheckDuration(ctx context.Context, duration time.Duration, resourceType, pipeline string) {
-	if resourceCheckDurationHist == nil {
-		return
-	}
-	resourceCheckDurationHist.Record(ctx, duration.Seconds(),
-		otelmetric.WithAttributes(
-			attribute.String("resource_type", resourceType),
-			attribute.String("pipeline", pipeline),
-		),
-	)
-}
-
 // RecordWorkerHeartbeatAge records how long since the last successful worker heartbeat.
 func RecordWorkerHeartbeatAge(ctx context.Context, age time.Duration, workerName string) {
 	if workerHeartbeatAgeGauge == nil {
