@@ -110,6 +110,8 @@ var _ = Describe("Separate worker_task_caches table", func() {
 })
 
 func setup_for_down_test(db *sql.DB) {
+	GinkgoHelper()
+
 	_, err := db.Exec(`
 			INSERT INTO teams(id, name) VALUES
 			(1, 'some-team')
