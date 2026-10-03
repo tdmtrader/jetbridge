@@ -15,6 +15,11 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(MatchError(`unknown key "batch.maxx"; did you mean "batch.max"?`))
 	})
 
+	It("An alias cannot bypass the strict key check", func() {
+		_, err := config.Parse([]byte(minimal + "runner: &b {maxx: 9}\nbatch: *b\n"))
+		Expect(err).To(MatchError(`aliases are not supported (at "batch")`))
+	})
+
 	It("A missing repository is refused", func() {
 		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {main: core}\n"))
 		Expect(err).To(MatchError("repository.uri is required; it is never guessed"))

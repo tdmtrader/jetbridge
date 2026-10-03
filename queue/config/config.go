@@ -130,6 +130,9 @@ func checkKeys(n *yaml.Node, path string) error {
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k := n.Content[i].Value
+		if v := n.Content[i+1]; v.Kind == yaml.AliasNode || k == "<<" {
+			return fmt.Errorf("aliases are not supported (at %q)", join(path, k))
+		}
 		if !slices.Contains(keys, k) {
 			return fmt.Errorf("unknown key %q; did you mean %q?", join(path, k), join(path, nearest(k, keys)))
 		}
