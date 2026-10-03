@@ -20,7 +20,6 @@ module ColorValues exposing
     , grey90
     , paused40
     , paused70
-    , paused90
     , pinned10
     , pinned100
     , pinned20
@@ -175,11 +174,6 @@ paused40 =
 paused70 : String
 paused70 =
     "#075082"
-
-
-paused90 : String
-paused90 =
-    "#0B2638"
 
 
 
