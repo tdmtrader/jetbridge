@@ -90,6 +90,8 @@ func whenIUnpauseIt(client concourse.Client, pipelineRef atc.PipelineRef) {
 }
 
 func whenIArchiveIt(client concourse.Client, pipelineRef atc.PipelineRef) {
+	GinkgoHelper()
+
 	_, err := client.Team("main").ArchivePipeline(pipelineRef)
 	Expect(err).ToNot(HaveOccurred())
 }
