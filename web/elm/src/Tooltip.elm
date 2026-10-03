@@ -14,7 +14,7 @@ module Tooltip exposing
 import Browser.Dom
 import Colors
 import EffectTransformer exposing (ET)
-import HoverState exposing (TooltipPosition(..))
+import HoverState
 import Html exposing (Html)
 import Html.Attributes exposing (id, style)
 import Html.Events exposing (onMouseLeave)
