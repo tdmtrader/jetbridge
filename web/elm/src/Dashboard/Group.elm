@@ -26,7 +26,7 @@ import Html.Keyed
 import Json.Decode
 import Maybe.Extra
 import Message.Effects as Effects
-import Message.Message exposing (DomID(..), DropTarget(..), Message(..), PipelinesSection(..))
+import Message.Message exposing (DomID(..), DropTarget, Message(..), PipelinesSection(..))
 import Ordering exposing (Ordering)
 import Routes
 import Set exposing (Set)
