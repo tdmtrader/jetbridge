@@ -570,6 +570,7 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 })
 
 func resourceCacheForOneOffBuild() (db.ResourceCache, db.Build) {
+	GinkgoHelper()
 	build, err := defaultTeam.CreateOneOffBuild()
 	Expect(err).ToNot(HaveOccurred())
 	return createResourceCacheWithUser(db.ForBuild(build.ID())), build
