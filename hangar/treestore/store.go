@@ -54,29 +54,29 @@ type Store struct {
 // New constructs verified strict tree storage.
 func New(objects objectstore.Client, config Config) (*Store, error) {
 	if objects == nil {
-		return nil, fmt.Errorf("hangar: tree object client is required")
+		return nil, errors.New("hangar: tree object client is required")
 	}
 	if strings.TrimSpace(config.Bucket) == "" {
-		return nil, fmt.Errorf("hangar: tree bucket is required")
+		return nil, errors.New("hangar: tree bucket is required")
 	}
 	if err := hangar.ValidateDeploymentPrefix(config.Prefix); err != nil {
 		return nil, fmt.Errorf("hangar: tree prefix: %w", err)
 	}
 	if !filepath.IsAbs(config.ScratchDir) {
-		return nil, fmt.Errorf("hangar: tree scratch directory must be absolute")
+		return nil, errors.New("hangar: tree scratch directory must be absolute")
 	}
 	info, err := os.Stat(config.ScratchDir)
 	if err != nil {
 		return nil, fmt.Errorf("hangar: stat tree scratch directory: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("hangar: tree scratch path is not a directory")
+		return nil, errors.New("hangar: tree scratch path is not a directory")
 	}
 	if config.ReadTimeout <= 0 {
-		return nil, fmt.Errorf("hangar: tree read timeout must be positive")
+		return nil, errors.New("hangar: tree read timeout must be positive")
 	}
 	if config.WriteTimeout <= 0 {
-		return nil, fmt.Errorf("hangar: tree write timeout must be positive")
+		return nil, errors.New("hangar: tree write timeout must be positive")
 	}
 	if config.ZstdLevel == 0 {
 		config.ZstdLevel = zstd.SpeedDefault
