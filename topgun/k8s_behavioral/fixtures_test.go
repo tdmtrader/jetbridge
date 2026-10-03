@@ -12,44 +12,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureGetTaskPut returns a pipeline with a get -> task -> put flow.
-func fixtureGetTaskPut(jobName, resourceName, script string) string {
-	return fmt.Sprintf(`
-resources:
-- name: %s
-  type: mock
-  source:
-    create_files:
-      data.txt: "mock-data"
-- name: output
-  type: mock
-  source: {}
-
-jobs:
-- name: %s
-  plan:
-  - get: %s
-    trigger: false
-  - task: process
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      inputs:
-      - name: %s
-      outputs:
-      - name: result
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-  - put: output
-    params:
-      version: v1
-`, resourceName, jobName, resourceName, resourceName, script)
-}
-
 // fixtureGetResource returns a pipeline with a get step and a task that reads it.
 func fixtureGetResource(jobName, resourceName, fileName, fileContent, script string) string {
 	return fmt.Sprintf(`
