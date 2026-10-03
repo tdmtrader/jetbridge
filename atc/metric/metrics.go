@@ -350,17 +350,6 @@ type VolumesToBeGarbageCollected struct {
 	Volumes int
 }
 
-func (event VolumesToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-orphaned-volumes-for-deletion"),
-		Event{
-			Name:       "orphaned volumes to be garbage collected",
-			Value:      float64(event.Volumes),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
 type CreatingContainersToBeGarbageCollected struct {
 	Containers int
 }
