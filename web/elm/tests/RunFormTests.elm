@@ -1,7 +1,6 @@
 module RunFormTests exposing (all)
 
 import Concourse
-import Dict
 import Expect
 import Json.Encode
 import PipelineRuns.RunForm as RunForm
