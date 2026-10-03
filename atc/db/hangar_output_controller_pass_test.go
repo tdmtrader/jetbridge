@@ -241,6 +241,7 @@ var _ = Describe("the output-plane controller passes", func() {
 	}
 
 	newSweep := func() *inventorypass.Pass {
+		GinkgoHelper()
 		sweep, err := inventory.New(namespace, inventory.Restrict(store),
 			output.ClockFunc(func() time.Time { return time.Now().UTC() }))
 		Expect(err).NotTo(HaveOccurred())
