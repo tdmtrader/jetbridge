@@ -15,7 +15,7 @@ import (
 type SubjectScope string
 
 const (
-	SubjectScopeEmpty    SubjectScope = ""
+	subjectScopeEmpty    SubjectScope = ""
 	SubjectScopeTeam     SubjectScope = "team"
 	SubjectScopePipeline SubjectScope = "pipeline"
 	SubjectScopeInstance SubjectScope = "instance"
@@ -26,7 +26,7 @@ const (
 
 func (s SubjectScope) Valid() bool {
 	switch s {
-	case SubjectScopeEmpty, SubjectScopeTeam, SubjectScopePipeline, SubjectScopeInstance, SubjectScopeJob:
+	case subjectScopeEmpty, SubjectScopeTeam, SubjectScopePipeline, SubjectScopeInstance, SubjectScopeJob:
 		return true
 	}
 	return false
