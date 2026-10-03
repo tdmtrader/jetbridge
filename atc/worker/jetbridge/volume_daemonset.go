@@ -205,7 +205,7 @@ func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression
 			return fmt.Errorf("DaemonSetVolume.StreamIn: discover daemons: %w", err)
 		}
 		if len(ips) == 0 {
-			return fmt.Errorf("DaemonSetVolume.StreamIn: no daemon pods discovered")
+			return errors.New("DaemonSetVolume.StreamIn: no daemon pods discovered")
 		}
 		host = ips[0]
 	} else {
