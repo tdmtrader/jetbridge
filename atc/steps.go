@@ -512,10 +512,6 @@ type AcrossStep struct {
 	FailFast bool              `json:"fail_fast,omitempty"`
 }
 
-func (step *AcrossStep) ParseJSON(data []byte) error {
-	return json.Unmarshal(data, step)
-}
-
 func (step *AcrossStep) Visit(v StepVisitor) error {
 	return v.VisitAcross(step)
 }
