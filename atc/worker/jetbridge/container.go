@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -402,9 +403,7 @@ func (c *Container) Properties() (map[string]string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	copy := make(map[string]string, len(c.properties))
-	for k, v := range c.properties {
-		copy[k] = v
-	}
+	maps.Copy(copy, c.properties)
 	return copy, nil
 }
 
