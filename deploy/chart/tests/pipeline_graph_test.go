@@ -466,9 +466,9 @@ func TestPipelineTaskScriptsAreValidShell(t *testing.T) {
 }
 
 // A Concourse task runs until it exits or a human aborts it. There is no
-// implicit ceiling, and concourse-pipeline.yml puts every job in one
-// `serial_groups: [pipeline]`, so a task that hangs does not fail a build -- it
-// holds the group and nothing else ever starts.
+// implicit ceiling, and concourse-pipeline.yml's jobs share serial groups --
+// self-upgrade shares one with every test job -- so a task that hangs does not
+// fail a build: it holds its groups and nothing sharing one ever starts.
 //
 // Most of the work in that pipeline is `kubectl exec` into a DinD pod, and none
 // of those calls is individually bounded. A wedged dockerd, a pod that never
@@ -491,8 +491,8 @@ func TestEveryPipelineTaskHasATimeout(t *testing.T) {
 				if step.Timeout == "" {
 					t.Errorf(
 						"%s: job %q, task %q has no `timeout:`. Concourse will "+
-							"run it forever, and with one serial group that "+
-							"blocks every other job until someone aborts by hand.",
+							"run it forever, holding its serial groups and "+
+							"blocking every job that shares one until someone aborts by hand.",
 						name, job.Name, step.Task,
 					)
 					continue

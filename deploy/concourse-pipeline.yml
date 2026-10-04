@@ -1,9 +1,9 @@
 # Every task in this file carries a `timeout:`, and the reason is the
-# `serial_groups: [pipeline]` that every job below also carries.
+# `serial_groups:` the jobs below carry.
 #
-# One serial group means one job runs at a time across the whole pipeline. So a
-# task that hangs does not fail a build -- it holds the group, and nothing else
-# ever starts. Without a timeout there is no upper bound on that: a Concourse
+# A task that hangs does not fail a build -- it holds its job's serial groups,
+# and nothing that shares one ever starts. self-upgrade shares a group with every
+# test job, so a hang anywhere in them blocks the deploy chain. Without a timeout there is no upper bound on that: a Concourse
 # task runs until it exits or a human aborts it.
 #
 # The hang is not hypothetical. Most of the work here is `kubectl exec` into a
@@ -16,14 +16,24 @@
 #
 # TestEveryPipelineTaskHasATimeout keeps new tasks from arriving without one.
 #
-# The Go-compiling tasks carry `container_requests: {cpu: 3000}` (millicores).
-# They average 3.5-5 busy cores and burst to 9 on a 12-core node, and one-off
-# `hack/ci-check.sh` runs of the same configs share that node. With no request
-# the scheduler admitted all of them at once and the node ran at load 60;
-# with one, the third concurrent heavy pod waits Pending for a slot (web's
-# --kubernetes-pod-scheduling-timeout) instead. Queued time counts against
-# `timeout:`. The request is a floor, not a cap: an idle node still lets a
-# task burst. Other tasks get web's --default-task-cpu-request.
+# Serial groups. Jobs overlap except where they must not:
+#   - `deploy` orders the release chain (tag-rc .. release) across commits.
+#   - `live-tier`: brine's live tier and k8s-live-tests both drive the live
+#     deployment; two at once poison each other's namespaces and quotas.
+#   - `upgrade-<job>`: self-upgrade restarts web, which errors every in-flight
+#     build, so it holds one group per test job and waits for all of them.
+# Until 2026-10-04 every job shared one `pipeline` group; with a second node
+# that left most of the cluster idle.
+#
+# The Go-compiling tasks carry `container_requests: {cpu: 6000}` (millicores).
+# They average 3.5-5 busy cores and burst to the whole node. 6000m is about
+# their average, and fits theborg (12 cores, ~8.8 unrequested) one at a time,
+# so the pipeline still runs when the second node is off; on k3s-agent-y (28)
+# four fit. Web's --kubernetes-preferred-step-node steers them to the big node
+# first. A pod that fits nowhere waits Pending (web's
+# --kubernetes-pod-scheduling-timeout), and queued time counts against
+# `timeout:`. The request is a floor, not a cap. Other tasks get web's
+# --default-task-cpu-request.
 resources:
 - name: repo
   type: git
@@ -32,7 +42,7 @@ resources:
     branch: core
 jobs:
 - name: build-and-vet
-  serial_groups: [pipeline]
+  serial_groups: [upgrade-build-and-vet]
   plan:
   - get: repo
     trigger: true
@@ -44,7 +54,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      container_requests: {cpu: 3000}  # millicores; see header
+      container_requests: {cpu: 6000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -82,7 +92,7 @@ jobs:
 
 
 - name: unit-tests
-  serial_groups: [pipeline]
+  serial_groups: [upgrade-unit-tests]
   plan:
   - get: repo
     trigger: true
@@ -93,7 +103,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      container_requests: {cpu: 3000}  # millicores; see header
+      container_requests: {cpu: 6000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -179,7 +189,7 @@ jobs:
 
 - name: k8s-runtime-tests
   serial: true
-  serial_groups: [pipeline]
+  serial_groups: [upgrade-k8s-runtime-tests]
   plan:
   - get: repo
     trigger: true
@@ -190,7 +200,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      container_requests: {cpu: 3000}  # millicores; see header
+      container_requests: {cpu: 6000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -237,7 +247,7 @@ jobs:
 # suite now holds the release chain, which is the point of running it.
 - name: brine
   serial: true
-  serial_groups: [pipeline]
+  serial_groups: [upgrade-brine, live-tier]
   plan:
   - get: repo
     trigger: true
@@ -377,7 +387,7 @@ jobs:
         args: [repo/hack/build-worker-image]
 
 - name: tag-rc
-  serial_groups: [pipeline]
+  serial_groups: [deploy]
   plan:
   - get: repo
     trigger: true
@@ -425,7 +435,7 @@ jobs:
           echo "=== Release candidate: ${RC_TAG} (${SHORT_SHA}) -- tagged locally, not pushed ==="
 
 - name: build-image
-  serial_groups: [pipeline]
+  serial_groups: [deploy]
   plan:
   - get: repo
     trigger: true
@@ -529,7 +539,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      container_requests: {cpu: 3000}  # millicores; see header
+      container_requests: {cpu: 6000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -823,7 +833,7 @@ jobs:
           echo "=== Image built and pushed: ${RC_TAG} ==="
 
 - name: self-upgrade
-  serial_groups: [pipeline]
+  serial_groups: [deploy, upgrade-build-and-vet, upgrade-unit-tests, upgrade-k8s-runtime-tests, upgrade-brine]
   plan:
   - get: repo
     trigger: true
@@ -888,7 +898,7 @@ jobs:
           echo "=== Rollout triggered for ${IMAGE}. ==="
 
 - name: verify-upgrade
-  serial_groups: [pipeline]
+  serial_groups: [deploy]
   plan:
   # Triggered once per upgraded commit. No settle timer: in-flight builds
   # survive the self-upgrade web rollout (engine drain releases job builds
@@ -1029,7 +1039,7 @@ jobs:
 
 - name: k8s-live-tests
   serial: true
-  serial_groups: [pipeline]
+  serial_groups: [deploy, live-tier]
   plan:
   - get: repo
     trigger: true
@@ -1040,7 +1050,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      container_requests: {cpu: 3000}  # millicores; see header
+      container_requests: {cpu: 6000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -1111,7 +1121,7 @@ jobs:
           echo "=== Live integration tests passed ==="
 
 - name: release
-  serial_groups: [pipeline]
+  serial_groups: [deploy]
   plan:
   # The ONLY manually triggered job in the pipeline. Everything upstream of here
   # runs on every green push, which is what keeps the branch deployable; cutting

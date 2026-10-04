@@ -821,6 +821,15 @@ jobs:
     timeout: 4h
     config:
       platform: linux
+      # Three ginkgo procs against the one K3s cluster (was 1). The suite is
+      # latency-bound -- ~0.5 busy cores at one proc -- and peaked at 9 GB, so
+      # memory is what more procs cost. The request is sized to fit theborg
+      # alone (32 GB, ~6.6 requested by its services) so the job still runs
+      # when the second node is off; web's preferred step node sends it to
+      # k3s-agent-y (47 GB) first.
+      container_requests: {cpu: 4000, memory: 14GB}
+      params:
+        K8S_PROCS: "3"
       inputs:
       - name: repo
       rootfs_uri: *kind_runner_image
