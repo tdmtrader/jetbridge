@@ -43,7 +43,7 @@ func severLiveArtifact(in LiveTaskPlan, rec *brine.Recorder, output string) (Sev
 	if err != nil {
 		return SeveredExecOutcome{}, err
 	}
-	config := jetbridge.NewConfig(s.cluster.Namespace, "")
+	config := s.runtimeConfig()
 	config.ArtifactDaemonService = liveArtifactDaemonService
 	config.ArtifactDaemonHostPath, config.ArtifactDaemonPort = s.root, int(daemon.port)
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 30*time.Second, 30*time.Second

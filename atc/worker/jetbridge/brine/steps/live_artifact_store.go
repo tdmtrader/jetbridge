@@ -64,15 +64,16 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	if nodeName == "" {
 		return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_NODE must name the approved node")
 	}
-	nodes, err := cluster.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	node, err := cluster.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the approved artifact node %q: %w", nodeName, err)
 	}
-	// Production task pods are scheduled normally. This single-node premise
-	// prevents DirectoryOrCreate from making our owned root on another node.
-	if len(nodes.Items) != 1 || nodes.Items[0].Name != nodeName ||
-		nodes.Items[0].Spec.Unschedulable || nodes.Items[0].Labels["concourse.dev/artifact-cache"] != "ready" {
-		return nil, fmt.Errorf("handoff requires the approved, schedulable single node with existing artifact-cache=ready")
+	// The owned root exists on this node alone, and a production pod's
+	// DirectoryOrCreate on any other node would make an unowned one there.
+	// The cluster may have other nodes: every production pod over this store
+	// takes runtimeConfig, which REQUIRES this node.
+	if node.Spec.Unschedulable || node.Labels["concourse.dev/artifact-cache"] != "ready" {
+		return nil, fmt.Errorf("handoff requires the approved node %q schedulable with existing artifact-cache=ready", nodeName)
 	}
 	anchor := s.pod("artifact-store-owner", nodeName, nil, nil)
 	size := resource.MustParse("16Mi")
@@ -126,6 +127,21 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	}
 	fmt.Printf("verified owned live artifact storage %s on node %s; anchor UID %s observer UID %s\n", s.root, s.anchor.Spec.NodeName, s.anchor.UID, s.observer.UID)
 	return s, nil
+}
+
+// runtimeConfig is the jetbridge config every production pod over this store
+// is built from. The store's root is a directory on the anchor's node alone,
+// so the pods are required there; on any other node their hostPath would
+// resolve to a root this fixture does not own.
+func (s *liveArtifactStore) runtimeConfig() jetbridge.Config {
+	cfg := jetbridge.NewConfig(s.cluster.Namespace, "")
+	s.pin(&cfg)
+	return cfg
+}
+
+// pin requires a config's pods on the store's node; see runtimeConfig.
+func (s *liveArtifactStore) pin(cfg *jetbridge.Config) {
+	cfg.RequiredStepNode = &jetbridge.StepNodeLabel{Key: corev1.LabelHostname, Value: s.anchor.Spec.NodeName}
 }
 
 func (s *liveArtifactStore) pod(name, node string, volumes []corev1.Volume, mounts []corev1.VolumeMount) *corev1.Pod {

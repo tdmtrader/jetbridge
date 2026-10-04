@@ -7,16 +7,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestParsePreferredStepNode(t *testing.T) {
-	got, err := ParsePreferredStepNode("kubernetes.io/hostname=k3s-agent-y")
+func TestParseStepNodeLabel(t *testing.T) {
+	got, err := ParseStepNodeLabel("kubernetes.io/hostname=k3s-agent-y")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (PreferredStepNode{Key: "kubernetes.io/hostname", Value: "k3s-agent-y"}) {
+	if got != (StepNodeLabel{Key: "kubernetes.io/hostname", Value: "k3s-agent-y"}) {
 		t.Fatalf("got %+v", got)
 	}
 	for _, bad := range []string{"", "no-equals", "=value", "bad key=v", "k=bad value"} {
-		if _, err := ParsePreferredStepNode(bad); err == nil {
+		if _, err := ParseStepNodeLabel(bad); err == nil {
 			t.Errorf("%q: want an error", bad)
 		}
 	}
@@ -25,7 +25,7 @@ func TestParsePreferredStepNode(t *testing.T) {
 // The preference is soft and is added beside, never instead of, what the
 // storage backend requires and prefers.
 func TestBuildAffinity_PreferredStepNode(t *testing.T) {
-	preferred := &PreferredStepNode{Key: "kubernetes.io/hostname", Value: "big-node"}
+	preferred := &StepNodeLabel{Key: "kubernetes.io/hostname", Value: "big-node"}
 	want := corev1.PreferredSchedulingTerm{
 		Weight: PreferredStepNodeWeight,
 		Preference: corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{{
@@ -74,6 +74,51 @@ func TestBuildAffinity_PreferredStepNode(t *testing.T) {
 		}
 		if terms[1].Weight != terms[0].Weight {
 			t.Errorf("preference weight %d != input locality weight %d", terms[1].Weight, terms[0].Weight)
+		}
+	})
+}
+
+// The requirement is ANDed into every required term the backend built, so it
+// narrows placement without dropping the artifact-cache or reserving-node
+// requirements, and adds no preference of its own.
+func TestBuildAffinity_RequiredStepNode(t *testing.T) {
+	required := &StepNodeLabel{Key: "kubernetes.io/hostname", Value: "theborg"}
+	want := corev1.NodeSelectorRequirement{Key: "kubernetes.io/hostname", Operator: corev1.NodeSelectorOpIn, Values: []string{"theborg"}}
+
+	t.Run("without a storage backend", func(t *testing.T) {
+		c := &Container{config: Config{Namespace: "ns", RequiredStepNode: required}, properties: map[string]string{}}
+		node := c.buildAffinity().NodeAffinity
+		terms := node.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 || terms[0].MatchExpressions[0].Values[0] != "theborg" {
+			t.Fatalf("required terms = %+v", terms)
+		}
+		if len(node.PreferredDuringSchedulingIgnoredDuringExecution) != 0 {
+			t.Errorf("a requirement must not add a preference")
+		}
+	})
+
+	t.Run("beside the daemonset backend's own requirement", func(t *testing.T) {
+		cfg := Config{Namespace: "ns", ArtifactDaemonHostPath: "/artifacts", RequiredStepNode: required}
+		c := &Container{
+			config:         cfg,
+			properties:     map[string]string{},
+			storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
+		}
+		terms := c.buildAffinity().NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		if len(terms) != 1 {
+			t.Fatalf("want one term, got %+v", terms)
+		}
+		var sawCache, sawNode bool
+		for _, expr := range terms[0].MatchExpressions {
+			switch {
+			case expr.Key == "concourse.dev/artifact-cache":
+				sawCache = true
+			case expr.Key == want.Key && expr.Values[0] == "theborg":
+				sawNode = true
+			}
+		}
+		if !sawCache || !sawNode {
+			t.Errorf("want the artifact-cache requirement AND the node, got %+v", terms[0].MatchExpressions)
 		}
 	})
 }

@@ -66,7 +66,7 @@ func runLiveArtifactIntegration(in LiveTaskPlan, rec *brine.Recorder, publish bo
 	if err != nil {
 		return StepRan{}, err
 	}
-	config := jetbridge.NewConfig(s.cluster.Namespace, "")
+	config := s.runtimeConfig()
 	config.ArtifactDaemonHostPath, config.ArtifactDaemonPort = s.root, int(daemon.port)
 	config.ArtifactDaemonService = liveArtifactDaemonService
 	config.ResourceTypeImages = jetbridge.MergeResourceTypeImages([]string{"git=" + gitResourceImage})

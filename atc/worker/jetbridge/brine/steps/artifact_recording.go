@@ -370,6 +370,7 @@ func wireArtifactCluster(in ArtifactCluster, executor jetbridge.PodExecutor) (Ar
 	if in.live != nil {
 		cfg.ArtifactHelperImage = "busybox:1.37.0"
 		cfg.PodStartupTimeout, cfg.PodSchedulingTimeout = 30*time.Second, 30*time.Second
+		in.live.store.pin(&cfg)
 	}
 	in.Locator = jetbridge.NewArtifactLocator()
 	addresses := map[string]bool{}

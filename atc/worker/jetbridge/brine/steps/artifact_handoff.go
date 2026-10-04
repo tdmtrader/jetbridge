@@ -95,7 +95,7 @@ func handoff(in LiveTaskPlan, rec *brine.Recorder, name, content, encoding, faul
 	if err != nil {
 		return out, err
 	}
-	config := jetbridge.NewConfig(store.cluster.Namespace, "")
+	config := store.runtimeConfig()
 	config.ArtifactDaemonService = liveArtifactDaemonService
 	config.ArtifactDaemonHostPath, config.ArtifactDaemonPort = store.root, int(daemon.port)
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 30*time.Second, 30*time.Second

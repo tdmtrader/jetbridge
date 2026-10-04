@@ -239,7 +239,7 @@ func readLivePeerArtifact(state, copy string, rec *brine.Recorder) (PeerReadOutc
 			return out, err
 		}
 	}
-	cfg := jetbridge.NewConfig(d.store.cluster.Namespace, "")
+	cfg := d.store.runtimeConfig()
 	cfg.ArtifactDaemonPort = int(d.port)
 	var volume *jetbridge.DaemonSetVolume
 	out.trace, err = observeDaemonConstruction(map[string]bool{out.producer: true, out.peer: true}, func() {

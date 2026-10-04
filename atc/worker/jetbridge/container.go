@@ -911,7 +911,26 @@ func (c *Container) buildAffinity() *corev1.Affinity {
 			affinity.NodeAffinity = &corev1.NodeAffinity{}
 		}
 		affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
-			affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution, preferred.term())
+			affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution, preferred.preferredTerm())
+	}
+	if required := c.config.RequiredStepNode; required != nil {
+		if affinity == nil {
+			affinity = &corev1.Affinity{}
+		}
+		if affinity.NodeAffinity == nil {
+			affinity.NodeAffinity = &corev1.NodeAffinity{}
+		}
+		if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+			affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{}
+		}
+		selector := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+		if len(selector.NodeSelectorTerms) == 0 {
+			selector.NodeSelectorTerms = []corev1.NodeSelectorTerm{{}}
+		}
+		// Terms are ORed, so the requirement goes into every one of them.
+		for i := range selector.NodeSelectorTerms {
+			selector.NodeSelectorTerms[i].MatchExpressions = append(selector.NodeSelectorTerms[i].MatchExpressions, required.requirement())
+		}
 	}
 	control := c.containerSpec.ExecutionControl
 	if control == nil || control.Node == nil {

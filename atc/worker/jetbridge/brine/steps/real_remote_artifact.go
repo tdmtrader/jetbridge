@@ -176,7 +176,7 @@ func (r *RemoteArtifact) daemon(rec *brine.Recorder) (*jetbridge.DaemonSetVolume
 	if err != nil {
 		return nil, err
 	}
-	cfg := jetbridge.NewConfig(d.store.cluster.Namespace, "")
+	cfg := d.store.runtimeConfig()
 	cfg.ArtifactDaemonPort = int(d.port)
 	var volume *jetbridge.DaemonSetVolume
 	err = constructThroughTCPRoute(producer, routeAddress, func() error {

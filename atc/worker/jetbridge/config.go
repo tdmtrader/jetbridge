@@ -137,7 +137,13 @@ type Config struct {
 	// PreferredStepNode, when non-nil, is a node label every step pod
 	// prefers (see PreferredStepNodeWeight). It steers work toward a bigger
 	// or idler node without making that node a dependency.
-	PreferredStepNode *PreferredStepNode
+	PreferredStepNode *StepNodeLabel
+
+	// RequiredStepNode, when non-nil, is a node label every step pod must
+	// land on: it is ANDed into each required node-selector term, beside the
+	// storage backend's own. A pod with no such node schedulable waits
+	// Pending, up to PodSchedulingTimeout.
+	RequiredStepNode *StepNodeLabel
 
 	// ResourceTypeImages maps base resource type names (e.g. "time", "git")
 	// to Docker image references. When the ATC requests a container for a

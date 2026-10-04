@@ -229,6 +229,7 @@ type RunCommand struct {
 		PodStartupTimeout                  time.Duration `long:"kubernetes-pod-startup-timeout"      default:"5m"  description:"Maximum time to wait for a pod to reach Running state before failing the task."`
 		PodSchedulingTimeout               time.Duration `long:"kubernetes-pod-scheduling-timeout"   default:"15m" description:"Maximum time to wait for an Unschedulable pod to be scheduled before failing the task. Set to 0 to fail immediately (old behavior)."`
 		PreferredStepNode                  string        `long:"kubernetes-preferred-step-node"    description:"Node label key=value every step pod prefers but does not require, e.g. kubernetes.io/hostname=big-node. Pods that do not fit there schedule elsewhere." value-name:"KEY=VALUE"`
+		RequiredStepNode                   string        `long:"kubernetes-required-step-node"     description:"Node label key=value every step pod must land on, e.g. a dedicated CI pool. Pods with no such node free wait Pending (--kubernetes-pod-scheduling-timeout)." value-name:"KEY=VALUE"`
 		ImagePullSecrets                   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount                     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
 		StepPodGrants                      []string      `long:"kubernetes-step-pod-grant"         description:"Map a build's owner to the ServiceAccount its step pods run under: name=<grant>,owner=<team>/<pipeline>/<job>|main/one-off,service-account=<sa>. Can be specified multiple times. Every other build's pods run as --kubernetes-service-account." value-name:"GRANT"`
@@ -1518,11 +1519,18 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
 	k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
 	if cmd.Kubernetes.PreferredStepNode != "" {
-		preferred, err := jetbridge.ParsePreferredStepNode(cmd.Kubernetes.PreferredStepNode)
+		preferred, err := jetbridge.ParseStepNodeLabel(cmd.Kubernetes.PreferredStepNode)
 		if err != nil {
 			return jetbridge.Config{}, fmt.Errorf("--kubernetes-preferred-step-node: %w", err)
 		}
 		k8sCfg.PreferredStepNode = &preferred
+	}
+	if cmd.Kubernetes.RequiredStepNode != "" {
+		required, err := jetbridge.ParseStepNodeLabel(cmd.Kubernetes.RequiredStepNode)
+		if err != nil {
+			return jetbridge.Config{}, fmt.Errorf("--kubernetes-required-step-node: %w", err)
+		}
+		k8sCfg.RequiredStepNode = &required
 	}
 	k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 	k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
