@@ -97,11 +97,13 @@ type Landing struct {
 // Flight is a started run and the candidate it tests. BaseSHA is the sha the
 // candidate was composed on: main's head, or the base run's candidate; "" when
 // main's head could not be read and the run composed on the branch name.
+// Ahead holds the IDs composed ahead of the run's entries, from its base run.
 type Flight struct {
 	Run       Run
 	Candidate string
 	BaseSHA   string
 	Started   time.Time // when the run started; zero in state saved before it was kept
+	Ahead     []string  `json:",omitempty"`
 }
 
 // Store loads and saves the Snapshot. Save is a compare-and-swap: it refuses if

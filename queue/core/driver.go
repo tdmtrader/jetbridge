@@ -281,7 +281,7 @@ func (d *Driver) Step(ctx context.Context) error {
 		return err
 	}
 	for _, r := range runs {
-		if err := d.start(ctx, r); err != nil {
+		if err := d.start(ctx, r); err != nil || d.s == nil { // nil: a recompose dropped what the driver holds
 			return err
 		}
 	}
@@ -292,7 +292,7 @@ func (d *Driver) start(ctx context.Context, r Run) error {
 	f, base, err := Flight{Run: r, BaseSHA: d.main, Started: d.now().UTC()}, cmp.Or(d.main, d.Main), error(nil)
 	if r.Base != "" {
 		b, ok := d.flight(r.Base)
-		if base, f.BaseSHA = b.Candidate, b.Candidate; !ok {
+		if base, f.BaseSHA, f.Ahead = b.Candidate, b.Candidate, aheadOf(b); !ok {
 			err = fmt.Errorf("base run %q is not in flight", r.Base)
 		}
 	}
@@ -363,6 +363,9 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 			d.fails, ev.Kind, d.s.Landing, d.main = 0, LandedEvent, nil, f.Candidate
 			mark(d.s.Landed, st.Entries)
 		case Eject:
+			if why := d.ejectRefused(ctx, f, st); why != "" {
+				return d.recompose(ctx, f, f.Run.Entries, why)
+			}
 			if err := Apply(d.q, Eject, st.Entries); err != nil {
 				d.logf("eject: %v", err)
 				continue
@@ -571,7 +574,7 @@ func (d *Driver) settled(ev Event) {
 		batch = append(batch, e.ID)
 	}
 	es := ev.Entries
-	if len(es) == 0 || ev.Kind == FlakeEvent { // a flaky batch is one record naming all its entries
+	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent { // one record naming all its entries
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {
