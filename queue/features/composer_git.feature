@@ -62,6 +62,16 @@ Feature: Composing a batch with git
     Then composing fails naming how many paths are outside hook_owned, never their names, and no conflict
     And the candidate branch is not created
 
+  Scenario: A compose hook that renames, deletes or links out of hook_owned, or writes an ignored file there, gives no verdict
+    Given a compose hook that moves, removes, links out or ignores a file outside the paths it owns
+    When the batch "a" is composed onto main
+    Then composing fails naming one path outside hook_owned, and no conflict
+
+  Scenario: A compose hook that runs too long leaves no process behind
+    Given a compose hook that starts a background process and outlives the hook timeout
+    When the batch "a" is composed onto main
+    Then composing fails with "compose hook failed: timeout" and the background process is gone
+
   Scenario: A compose hook that runs too long gives no verdict
     Given a compose hook still running after the hook timeout
     When the batch "a" is composed onto main

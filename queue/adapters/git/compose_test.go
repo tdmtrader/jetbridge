@@ -240,7 +240,7 @@ var _ = Describe("Composer", func() {
 	})
 
 	It("A compose hook that changes paths outside hook_owned gives no verdict", func() {
-		batch := []core.Entry{change("a", "main", "a.txt", "a\\n")}
+		batch := []core.Entry{change("a", "main", "a.txt", "a\n")}
 		h := `[sh, -c, "mkdir -p gen; echo x > gen/ok; echo y > stray1; echo z > stray2"]`
 		_, err := withHook(`{hook: `+h+`, hook_owned: [gen/]}`).Compose(ctx, "main", batch)
 		Expect(err).To(MatchError("compose hook changed 2 path(s) outside hook_owned"))
@@ -248,6 +248,28 @@ var _ = Describe("Composer", func() {
 		Expect(composeRun(remote, "for-each-ref", "refs/heads/queue-next")).To(BeEmpty())
 		_, err = withHook(`{hook: `+h+`, hook_owned: [gen/, stray]}`).Compose(ctx, "main", batch)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("A compose hook that renames, deletes or links out of hook_owned, or writes an ignored file there, gives no verdict", func() {
+		batch := []core.Entry{change("a", "main", "a.txt", "a\n")}
+		for _, h := range []string{"mkdir gen; mv a.txt gen/a.txt", "rm a.txt", "mkdir gen; ln -s /etc gen/link", "echo '*.log' >> .git/info/exclude; echo y > x.log"} {
+			_, err := withHook(`{hook: [sh, -c, "`+h+`"], hook_owned: [gen/]}`).Compose(ctx, "main", batch)
+			Expect(err).To(MatchError("compose hook changed 1 path(s) outside hook_owned"), h)
+		}
+		Expect(composeRun(remote, "for-each-ref", "refs/heads/queue-next")).To(BeEmpty())
+	})
+
+	It("A compose hook that runs too long leaves no process behind", func() {
+		batch := []core.Entry{change("a", "main", "a.txt", "a\n")}
+		pidFile := filepath.Join(GinkgoT().TempDir(), "pid")
+		_, err := withHook(`{hook: [sh, -c, "sleep 30 & echo $! > `+pidFile+`; wait"], hook_timeout: 500ms}`).Compose(ctx, "main", batch)
+		Expect(err).To(MatchError("compose hook failed: timeout"))
+		pid, err := os.ReadFile(pidFile)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() string {
+			out, _ := exec.Command("ps", "-o", "stat=", "-p", strings.TrimSpace(string(pid))).Output()
+			return "S" + strings.TrimSpace(string(out)) // a zombie is gone too
+		}, "5s").Should(Or(Equal("S"), HavePrefix("SZ")))
 	})
 
 	It("A compose hook that runs too long gives no verdict", func() {

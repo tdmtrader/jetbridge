@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/concourse/concourse/queue/config"
@@ -161,8 +164,14 @@ func (c Composer) runHook(ctx context.Context, dir string, git func(...string) (
 	defer cancel()
 	cmd := exec.CommandContext(hctx, c.Hook[0], c.Hook[1:]...)
 	cmd.Dir, cmd.WaitDelay = dir, time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // the hook and its children are one group
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	var exit *exec.ExitError
-	if err := cmd.Run(); hctx.Err() != nil && ctx.Err() == nil {
+	err := cmd.Run()
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // nothing the hook started outlives it
+	}
+	if hctx.Err() != nil && ctx.Err() == nil {
 		return errors.New("compose hook failed: timeout")
 	} else if errors.As(err, &exit) {
 		return fmt.Errorf("compose hook failed: exit %d", exit.ExitCode())
@@ -172,19 +181,53 @@ func (c Composer) runHook(ctx context.Context, dir string, git func(...string) (
 	if _, err := git("add", "-A"); err != nil {
 		return err
 	}
-	names, err := git("diff", "--cached", "--name-only", "-z")
-	if err != nil || names == "" {
+	// --no-renames names both sides of a move; ignored files are listed apart, as add skips them.
+	changed, err := git("diff", "--cached", "--name-only", "--no-renames", "-z")
+	if err != nil {
 		return err
 	}
-	outside := 0
-	for _, n := range strings.Split(strings.Trim(names, "\x00"), "\x00") {
-		if c.HookOwned != nil && !slices.ContainsFunc(c.HookOwned, func(p string) bool { return strings.HasPrefix(n, p) }) {
+	ignored, err := git("ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	if err != nil {
+		return err
+	}
+	split := func(z string) []string {
+		return slices.DeleteFunc(strings.Split(z, "\x00"), func(n string) bool { return n == "" })
+	}
+	outside, force := 0, split(ignored)
+	if c.HookOwned == nil {
+		force = nil
+	}
+	for _, n := range append(split(changed), force...) {
+		if c.HookOwned != nil && !c.owns(dir, n) {
 			outside++
 		}
 	}
 	if outside > 0 {
 		return fmt.Errorf("compose hook changed %d path(s) outside hook_owned", outside)
 	}
+	if len(force) > 0 {
+		if _, err := git(append([]string{"add", "-f", "--"}, force...)...); err != nil {
+			return err
+		}
+	} else if changed == "" {
+		return nil
+	}
 	_, err = git("commit", "-q", "-m", "compose hook: regenerate files")
 	return err
+}
+
+// owns says whether the hook may change n: a clean path inside the tree under
+// a HookOwned prefix, and, if it is a symlink, one whose target stays inside the tree.
+func (c Composer) owns(dir, n string) bool {
+	n = path.Clean(n)
+	if path.IsAbs(n) || n == ".." || strings.HasPrefix(n, "../") || !slices.ContainsFunc(c.HookOwned, func(p string) bool { return strings.HasPrefix(n, p) }) {
+		return false
+	}
+	full := filepath.Join(dir, n)
+	if fi, err := os.Lstat(full); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return true
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	target, err2 := filepath.EvalSymlinks(full)
+	return err == nil && err2 == nil && strings.HasPrefix(target, root+string(filepath.Separator))
 }
