@@ -125,7 +125,7 @@ func composeOne(git func(...string) (string, error), e core.Entry, own string) e
 func (c Composer) composeGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := gitCmd(ctx, append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_COMMITTER_NAME="+c.Name, "GIT_COMMITTER_EMAIL="+c.Email, "GIT_AUTHOR_NAME="+c.Name, "GIT_AUTHOR_EMAIL="+c.Email)
+	cmd.Env = append(gitEnv(ctx, "-C", dir), "GIT_COMMITTER_NAME="+c.Name, "GIT_COMMITTER_EMAIL="+c.Email, "GIT_AUTHOR_NAME="+c.Name, "GIT_AUTHOR_EMAIL="+c.Email)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

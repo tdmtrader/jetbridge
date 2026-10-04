@@ -233,39 +233,85 @@ var _ = Describe("Git errors", func() {
 })
 
 var _ = Describe("ssh isolation", func() {
-	It("Two git calls at once do not share a connection", func() {
-		dir := GinkgoT().TempDir()
-		log := filepath.Join(dir, "log")
+	const uri = "ssh://example.invalid/repo.git"
+	var dir, log string
+	// probe is a GIT_SSH_COMMAND whose program logs the config ssh reads from its
+	// arguments, then fails the connection; opts come first, as a user's would.
+	probe := func(opts string) string {
 		fake := filepath.Join(dir, "ssh.sh")
-		Expect(os.WriteFile(fake, []byte("#!/bin/sh\necho \"$@\" >> "+log+"\nexit 255\n"), 0o755)).To(Succeed())
-		GinkgoT().Setenv("GIT_SSH_COMMAND", fake)
+		Expect(os.WriteFile(fake, []byte("#!/bin/sh\nssh -G \"$@\" >> "+log+" 2>&1\nexit 255\n"), 0o755)).To(Succeed())
+		return fake + opts
+	}
+	const userMux = " -o ControlMaster=auto -o ControlPath=/nonexistent/user-%C"
+	// noMux: ssh ran n times, read its options, and ended with no control path.
+	noMux := func(n int) {
+		b, err := os.ReadFile(log)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Count(string(b), "hostname example.invalid")).To(Equal(n), string(b))
+		Expect(string(b)).NotTo(ContainSubstring("controlpath"))
+	}
+	BeforeEach(func() {
+		dir = GinkgoT().TempDir()
+		log = filepath.Join(dir, "log")
 		GinkgoT().Setenv("GIT_SSH", "")
+		GinkgoT().Setenv("GIT_SSH_VARIANT", "ssh")
+	})
+	lander := func() *git.Lander {
 		c := newRemote().config()
-		c.Repository.URI = "ssh://example.invalid/repo.git"
+		c.Repository.URI = uri
 		l, err := git.New(c)
 		Expect(err).NotTo(HaveOccurred())
-		defer l.Close()
+		DeferCleanup(l.Close)
+		return l
+	}
+
+	It("Two git calls at once do not share a connection", func() {
+		GinkgoT().Setenv("GIT_SSH_COMMAND", probe(""))
+		l := lander()
 		done := make(chan struct{}, 2)
 		for range 2 {
 			go func() {
 				defer GinkgoRecover()
-				_, _ = git.Git(l, context.Background(), "ls-remote", c.Repository.URI)
+				_, _ = git.Git(l, context.Background(), "ls-remote", uri)
 				done <- struct{}{}
 			}()
 		}
 		<-done
 		<-done
-		b, err := os.ReadFile(log)
-		Expect(err).NotTo(HaveOccurred())
-		dirs := map[string]bool{}
-		for _, f := range strings.Fields(string(b)) {
-			if p, ok := strings.CutPrefix(f, "ControlPath="); ok {
-				dirs[filepath.Dir(p)] = true
-			}
-		}
-		Expect(dirs).To(HaveLen(2))
-		for d := range dirs {
-			Expect(d).NotTo(BeADirectory())
-		}
+		noMux(2)
+	})
+
+	It("turns off multiplexing a user's ssh command turns on", func() {
+		GinkgoT().Setenv("GIT_SSH_COMMAND", probe(userMux))
+		_, _ = git.Git(lander(), context.Background(), "ls-remote", uri)
+		noMux(1)
+	})
+
+	It("works with a temp dir whose path has a space", func() {
+		GinkgoT().Setenv("GIT_SSH_COMMAND", probe(""))
+		l := lander()
+		spaced := filepath.Join(dir, "a b")
+		Expect(os.Mkdir(spaced, 0o700)).To(Succeed())
+		GinkgoT().Setenv("TMPDIR", spaced)
+		_, _ = git.Git(l, context.Background(), "ls-remote", uri)
+		noMux(1)
+	})
+
+	It("keeps a clone-local core.sshCommand as the ssh command", func() {
+		r := newRemote()
+		run(r.work, "config", "core.sshCommand", probe(userMux))
+		GinkgoT().Setenv("GIT_SSH_COMMAND", "")
+		Expect(os.Unsetenv("GIT_SSH_COMMAND")).To(Succeed())
+		c := r.config()
+		c.Repository.URI = uri
+		Expect(git.Admit(context.Background(), c, r.work, "a", r.base)).NotTo(Succeed())
+		noMux(1)
+	})
+
+	It("isolates the composer's fetch over ssh too", func() {
+		GinkgoT().Setenv("GIT_SSH_COMMAND", probe(userMux))
+		_, err := git.Composer{Remote: uri, Main: "main", Candidate: "next"}.Compose(context.Background(), "main", nil)
+		Expect(err).To(HaveOccurred())
+		noMux(1)
 	})
 })

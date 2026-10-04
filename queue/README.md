@@ -248,9 +248,10 @@ and merge keys are refused. Defaults are applied before your file is read.
   quote (not stopping at `/`), holds an `@`. The refusal names the key path,
   never the value. Git authenticates the way it does outside the queue:
   an ssh key, a credential helper or `GIT_ASKPASS` in the runner's environment.
-  Every git call gets its own ssh control directory (added to `GIT_SSH_COMMAND`,
-  `core.sshCommand` or plain `ssh`; a `GIT_SSH` program is left alone), removed
-  when the call ends, so calls running at once never share a connection.
+  Every git call, the composer's too, runs ssh with connection sharing off
+  (`-o ControlMaster=no -S none` appended to `GIT_SSH_COMMAND`, the repo's
+  `core.sshCommand` or plain `ssh`, overriding the user's own control options;
+  a `GIT_SSH` program is left alone), so calls running at once never share a connection.
   The runner's bearer token comes only from `runner.credential` and is sent in a
   header. A URL error from the runner names the setting or the request path and
   the cause, never the URL; a `runner.url` that does not parse is reported as such, with no detail.

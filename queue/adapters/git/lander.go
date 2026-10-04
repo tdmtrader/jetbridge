@@ -154,20 +154,10 @@ func (l *Lander) git(ctx context.Context, args ...string) (string, error) {
 	return runGit(ctx, "", []string{"-C", l.dir, "-c", "user.name=queue", "-c", "user.email=queue@localhost"}, args...)
 }
 
-// runGit runs one git child with its own ssh control directory, removed when
-// it ends, so concurrent calls never share a connection.
+// runGit runs one git child in gitEnv.
 func runGit(ctx context.Context, stdin string, global []string, args ...string) (string, error) {
-	dir, err := os.MkdirTemp("", "queue-ssh-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(dir)
 	cmd := gitCmd(ctx, append(global, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if os.Getenv("GIT_SSH") == "" || os.Getenv("GIT_SSH_COMMAND") != "" { // a GIT_SSH program is left alone
-		base := cmp.Or(os.Getenv("GIT_SSH_COMMAND"), sshConfigured(ctx), "ssh")
-		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+base+" -o ControlMaster=no -o ControlPath="+strings.ReplaceAll(dir, " ", "\\ ")+"/s")
-	}
+	cmd.Env = gitEnv(ctx, global...)
 	var stderr bytes.Buffer
 	cmd.Stdin, cmd.Stderr = strings.NewReader(stdin), &stderr
 	out, err := cmd.Output()
@@ -177,9 +167,21 @@ func runGit(ctx context.Context, stdin string, global []string, args ...string) 
 	return strings.TrimSpace(string(out)), nil
 }
 
-// sshConfigured is git's own core.sshCommand, kept as the base of the ssh command.
-func sshConfigured(ctx context.Context) string {
-	out, _ := gitCmd(ctx, "config", "--get", "core.sshCommand").Output()
+// gitEnv is a git child's environment: no prompt, and ssh with no connection
+// sharing, so concurrent calls never share one. -S none comes after the user's
+// own options and overrides them, where a repeated -o would lose to the first.
+func gitEnv(ctx context.Context, global ...string) []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if os.Getenv("GIT_SSH") == "" || os.Getenv("GIT_SSH_COMMAND") != "" { // a GIT_SSH program is left alone
+		base := cmp.Or(os.Getenv("GIT_SSH_COMMAND"), sshConfigured(ctx, global), "ssh")
+		env = append(env, "GIT_SSH_COMMAND="+base+" -o ControlMaster=no -S none")
+	}
+	return env
+}
+
+// sshConfigured is git's own core.sshCommand in the repo global names (its -C), kept as the base of the ssh command.
+func sshConfigured(ctx context.Context, global []string) string {
+	out, _ := gitCmd(ctx, append(slices.Clone(global), "config", "--get", "core.sshCommand")...).Output()
 	return strings.TrimSpace(string(out))
 }
 

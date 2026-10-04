@@ -57,5 +57,4 @@ Feature: Landing with git
   Scenario: Two git calls at once do not share a connection
     Given a remote reached over ssh
     When two git calls run at once
-    Then each uses its own ssh control directory
-    And those directories are removed afterwards
+    Then neither uses an ssh control connection, whatever ssh options the user set
