@@ -112,7 +112,7 @@ func (s *Store) storeRead(ctx context.Context, dir string) (st storeState, err e
 // absent) and returns the new version. A JSON error precedes any write or push.
 func (s *Store) storeWrite(ctx context.Context, dir string, st storeState) (string, error) {
 	st.snap.Version = ""
-	snap, err0 := core.MarshalSnapshot(st.snap) // every string value redacted, whenever it was saved
+	snap, err0 := json.Marshal(core.RedactSnapshot(st.snap)) // its free text redacted, whenever it was saved
 	lease, err00 := json.Marshal(st.lease)
 	if err := errors.Join(err0, err00); err != nil {
 		return "", fmt.Errorf("encode %s: %w", s.Ref, err)

@@ -163,8 +163,9 @@ var _ = Describe("JetBridge runner", func() {
 	It("A credential in a runner url that does not parse is hidden in the error", func() {
 		clk = &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 		err := newRunner("https://user:SECRET@host/%zz").Start(ctx, core.Run{ID: "r1"}, candidate)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
+		Expect(err).To(MatchError(`runner.url: invalid URL escape "%zz"`), "the field and the cause, never the URL")
+		err = newRunner("https://host/%zz").Start(ctx, core.Run{ID: "r1"}, candidate)
+		Expect(err).To(MatchError(`runner.url: invalid URL escape "%zz"`))
 	})
 
 	// test starts a run and polls it until done, at most 10 times.
@@ -371,6 +372,14 @@ var _ = Describe("JetBridge runner", func() {
 			Expect(err).To(MatchError(ContainSubstring(`runner.kind: unsupported value; use one of: jetbridge`)))
 			_, err = parse(strings.Replace(ok, "env:FAKE_JB_TOKEN", "hunter2", 1) + "}")
 			Expect(err).To(MatchError(ContainSubstring("runner.credential must name an env var (env:NAME) or a file (file:PATH)")))
+		})
+
+		It("refuses a url holding a credential, naming the setting and never the value", func() {
+			for _, u := range []string{"https://user:F4ke/Pa55@host/%zz", "https://user:F4kePa55@host", "https://F4keTok3n@host"} {
+				_, err := parse(strings.Replace(ok, "https://ci.example.test", "'"+u+"'", 1) + "}")
+				Expect(err).To(MatchError(ContainSubstring("runner.url: a URL must not hold credentials")), "url %q", u)
+				Expect(err.Error()).NotTo(ContainSubstring("F4ke"), "url %q", u)
+			}
 		})
 	})
 })

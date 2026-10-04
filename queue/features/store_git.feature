@@ -37,3 +37,10 @@ Feature: Keeping the queue's state and lease in git
     When it renews the lease before it expires
     Then the token is unchanged and the lease runs later
     And the saved version still matches, so its next save succeeds
+
+  Scenario: A change id equal to a configured secret survives a reload
+    Given a configured secret that is also the id of a queued change
+    And that change builds on a parent that was ejected
+    When the queue state is saved and loaded again
+    Then the change keeps its id
+    And it is still ejected because its parent was

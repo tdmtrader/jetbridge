@@ -18,3 +18,9 @@ Feature: One config file describes one queue
     Given a queue config file that sets batch.order
     When the config file is loaded
     Then loading is refused naming the unknown key
+
+  Scenario: A URL holding a credential is refused naming the setting
+    Given a queue config file whose repository address holds a user and password
+    When the config file is loaded
+    Then loading is refused naming the repository address setting
+    And the refusal does not show the password

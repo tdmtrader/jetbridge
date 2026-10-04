@@ -1,13 +1,11 @@
 package core
 
 import (
-	"bytes"
 	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -20,9 +18,9 @@ import (
 const MaxViewBytes = 64 << 10
 
 // userinfo is a URL's user and password: after :// (or :\/\/, escaped once or more), up to the last @
-// before the first whitespace, / ? or #. Quotes, commas and backslashes count as password: it fails
-// closed, hiding too much rather than too little. It is the fallback for secrets not in Secrets.
-var userinfo = regexp.MustCompile(`(://|:(?:\\+/){2})[^\s/?#]*@`)
+// before the first whitespace, / \ " ' , ? or #. It is a best-effort net for text no config
+// named: config refuses a URL holding credentials, and every registered secret is hidden by value.
+var userinfo = regexp.MustCompile(`(://|:(?:\\+/){2})(?:[^\s/?#@"\\',]*@)+`)
 
 // Redact hides every configured secret in any encoding, then the user and password of every
 // other URL: scheme://user:pass@ becomes scheme://***@. It is the one filter every reason
@@ -75,71 +73,19 @@ func (r *SecretSet) Redact(text string) string {
 	return userinfo.ReplaceAllString(text, "${1}***@")
 }
 
-// RedactSnapshot is s with the reasons it holds redacted; s itself is not changed.
+// RedactSnapshot is s with its free-text fields redacted: the pause reason and each settle
+// record's and refusal's Why and Cause. Nothing else is touched: ids, map keys, commits, refs,
+// BuildsOn and Ejected are identifiers the queue matches on, and a changed one loses state.
+// s itself is not changed.
 func RedactSnapshot(s Snapshot) Snapshot {
 	s.Why, s.Settled, s.Refused = Redact(s.Why), slices.Clone(s.Settled), slices.Clone(s.Refused)
 	for i := range s.Settled {
-		s.Settled[i].Why = Redact(s.Settled[i].Why)
+		s.Settled[i].Why, s.Settled[i].Cause = Redact(s.Settled[i].Why), Redact(s.Settled[i].Cause)
 	}
 	for i := range s.Refused {
 		s.Refused[i].Why = Redact(s.Refused[i].Why)
 	}
 	return s
-}
-
-// MarshalSnapshot encodes s with every string value redacted, never a key, a timestamp or the
-// JSON syntax, and refuses unless the bytes decode back to the same shape and values.
-func MarshalSnapshot(s Snapshot) ([]byte, error) {
-	raw, err := json.Marshal(s)
-	if err != nil {
-		return nil, err
-	}
-	v, err := decodeJSON(raw)
-	if err != nil {
-		return nil, err
-	}
-	v = redactValues(v)
-	var back Snapshot
-	out, err := json.Marshal(v)
-	if err == nil {
-		err = json.Unmarshal(out, &back)
-	}
-	if err == nil {
-		out, err = json.Marshal(back)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("redacted snapshot: %w", err)
-	}
-	if again, err := decodeJSON(out); err != nil || !reflect.DeepEqual(again, v) {
-		return nil, errors.New("redacted snapshot does not decode to the same state; not writing it")
-	}
-	return out, nil
-}
-
-func decodeJSON(b []byte) (any, error) {
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.UseNumber()
-	var v any
-	return v, d.Decode(&v)
-}
-
-// redactValues redacts each string in v, keeping map keys and timestamps as they are.
-func redactValues(v any) any {
-	switch t := v.(type) {
-	case string:
-		if _, err := time.Parse(time.RFC3339Nano, t); err != nil {
-			return Redact(t)
-		}
-	case []any:
-		for i := range t {
-			t[i] = redactValues(t[i])
-		}
-	case map[string]any:
-		for k := range t {
-			t[k] = redactValues(t[k])
-		}
-	}
-	return v
 }
 
 type viewRow struct {

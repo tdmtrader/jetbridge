@@ -147,12 +147,13 @@ var _ = Describe("Store", func() {
 		Expect(err).To(MatchError(ContainSubstring("overflow")))
 	})
 
-	It("Every string in a snapshot is redacted as it is written, even one saved before its secret was known", func() {
+	It("Free text in a snapshot is redacted as it is written, even text saved before its secret was known", func() {
 		const token = "Tk5mQw2zRb9x"
 		l := acquire("one")
 		snap := load()
-		snap.Paused, snap.Why, snap.Commits = true, "denied Bearer "+token, map[string]string{"a": "at " + token}
-		snap.Queued = []core.Entry{{ID: "a", Commit: "c", Ref: "change/" + token, AdmittedAt: at}}
+		snap.Paused, snap.Why, snap.Commits = true, "denied Bearer "+token, map[string]string{"a": "c"}
+		snap.Settled = []core.SettleRecord{{ID: "a", Kind: core.EjectedEvent, Why: "red: " + token, Cause: token}}
+		snap.Refused = []core.Refusal{{ID: "b", Commit: "d", Why: "refused " + token}}
 		save(l.Token, snap)
 		core.Secrets.Add(token)
 		acquire("one") // a renewal rewrites the loaded snapshot
@@ -180,5 +181,32 @@ var _ = Describe("Store", func() {
 			Expect(got.Fence).To(Equal(snap.Fence), secret)
 			Expect(got.Why).To(Equal("said ***"), secret)
 		}
+	})
+
+	It("A change id equal to a configured secret survives a reload", func() {
+		old := core.Secrets
+		core.Secrets = &core.SecretSet{}
+		DeferCleanup(func() { core.Secrets = old })
+		core.Secrets.Add("fake-id")
+		l := acquire("one")
+		snap := load()
+		snap.Queued = []core.Entry{entry("fake-id")}
+		snap.BuildsOn = map[string][]string{"fake-id": {"parent"}}
+		snap.Ejected = map[string]bool{"parent": true}
+		snap.Settled = []core.SettleRecord{{ID: "fake-id", Kind: core.EjectedEvent, Why: "fake-id failed", Cause: "fake-id"}}
+		snap.Refused = []core.Refusal{{ID: "fake-id", Commit: "fake-id", Why: "refused fake-id"}}
+		save(l.Token, snap)
+		_, err := store.Acquire(ctx, "one", time.Minute) // a renewal rewrites the loaded snapshot
+		Expect(err).NotTo(HaveOccurred())
+		got := load()
+		Expect(got.Queued).To(Equal(snap.Queued))
+		Expect(got.BuildsOn).To(Equal(snap.BuildsOn))
+		Expect(got.Refused).To(Equal([]core.Refusal{{ID: "fake-id", Commit: "fake-id", Why: "refused ***"}}))
+		Expect(got.Settled[0].ID).To(Equal("fake-id"))
+		Expect([]string{got.Settled[0].Why, got.Settled[0].Cause}).To(Equal([]string{"*** failed", "***"}))
+		_, settle := (&core.Serial{Max: 3}).Plan(core.View{Queued: got.Queued, BuildsOn: got.BuildsOn, Ejected: got.Ejected, Landed: got.Landed, Slots: 1})
+		Expect(settle).To(HaveLen(1), "the child is ejected, not run")
+		Expect(settle[0].Cause).To(Equal(core.ParentEjected))
+		Expect(settle[0].Entries).To(Equal(snap.Queued))
 	})
 })

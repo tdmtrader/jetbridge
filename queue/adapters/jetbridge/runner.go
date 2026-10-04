@@ -147,13 +147,13 @@ func (j *Runner) call(ctx context.Context, method, path string, out any) error {
 	core.Secrets.Add(token) // a replaced token is hidden too
 	req, err := http.NewRequestWithContext(ctx, method, j.Config.URL+path, strings.NewReader("{}"))
 	if err != nil {
-		return errors.New(core.Redact(err.Error())) // url.Parse quotes the url, password and all
+		return cause("runner.url", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := j.Client.Do(req)
 	if err != nil {
-		return err
+		return cause(method+" "+path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -163,6 +163,14 @@ func (j *Runner) call(ctx context.Context, method, path string, out any) error {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// cause is err under name with the URL a *url.Error quotes left out: only its innermost Err.
+func cause(name string, err error) error {
+	for ue := (*url.Error)(nil); errors.As(err, &ue); {
+		err = ue.Err
+	}
+	return fmt.Errorf("%s: %w", name, err)
 }
 
 // try is a best-effort call: a failure is logged, never a verdict.

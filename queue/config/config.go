@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -125,6 +126,9 @@ func (c Config) validate() error {
 	if c.Repository.URI == "" {
 		return errors.New("repository.uri is required; it is never guessed")
 	}
+	if err := URL("repository.uri", c.Repository.URI); err != nil {
+		return err
+	}
 	if c.Batch.Max < 1 || c.Batch.RetryNone < 0 {
 		return errors.New("batch.max must be at least 1 and batch.retry_none at least 0")
 	}
@@ -162,6 +166,31 @@ func (c Config) validate() error {
 		oneOf("admission.source", c.Admission.Source, "refs"),
 		oneOf("batch.strategy", c.Batch.Strategy, "serial"),
 	)
+}
+
+// URL refuses a scheme:// value that holds credentials, or that does not parse, naming key
+// and never the value. Only an ssh:// login name with no password is allowed before an @;
+// any other @ after :// is refused, so a URL too broken to parse is refused too. Values with
+// no :// (paths, git@host:repo) are left to git.
+func URL(key, value string) error {
+	_, rest, ok := strings.Cut(value, "://")
+	if !ok {
+		return nil
+	}
+	u, err := url.Parse(value)
+	if strings.Contains(rest, "@") && (err != nil || !sshLogin(u)) {
+		return fmt.Errorf("%s: a URL must not hold credentials; give them to git or the runner out of band (see Credentials in the README)", key)
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", key, ue.Err)
+	}
+	return nil
+}
+
+func sshLogin(u *url.URL) bool {
+	_, pw := u.User.Password()
+	return u.Scheme == "ssh" && u.User != nil && !pw
 }
 
 func head(branch string) string { return "refs/heads/" + strings.TrimPrefix(branch, "refs/heads/") }

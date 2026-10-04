@@ -154,4 +154,19 @@ var _ = Describe("Parse", func() {
 		_, err := config.Parse([]byte(minimal + "batch: {adaptive: {strat: 2}}\n"))
 		Expect(err).To(MatchError(`unknown key "batch.adaptive.strat"; did you mean "batch.adaptive.start"?`))
 	})
+
+	It("A URL holding a credential is refused naming the setting", func() {
+		for _, uri := range []string{"https://user:F4ke/Pa55@host/%zz", "https://user:F4kePa55@host/repo.git",
+			"https://F4keTok3n@host/repo.git", "ssh://git:F4kePa55@host/repo.git", "https://host/F4ke@x"} {
+			_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: '" + uri + "'}\n"))
+			Expect(err).To(MatchError(ContainSubstring("repository.uri: a URL must not hold credentials")), "uri %q", uri)
+			Expect(err.Error()).NotTo(ContainSubstring("F4ke"), "uri %q", uri)
+		}
+		for _, uri := range []string{"ssh://git@host/repo.git", "git@host:org/repo.git", "/srv/repo.git", "file:///srv/repo.git"} {
+			_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: '" + uri + "'}\n"))
+			Expect(err).NotTo(HaveOccurred(), "uri %q", uri) // an ssh login name is no secret
+		}
+		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: 'https://host/%zz'}\n"))
+		Expect(err).To(MatchError(`repository.uri: invalid URL escape "%zz"`))
+	})
 })

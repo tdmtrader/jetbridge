@@ -12,10 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -56,6 +54,11 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "resume", "status", "stats", "view"}, args[0]) {
 		return fail(errors.New(usage))
 	}
+	for _, a := range args { // before any error can quote one
+		if err := config.URL("argument", a); err != nil {
+			return fail(err)
+		}
+	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errw)
 	file := fs.String("config", "", "the queue's config file")
@@ -68,17 +71,17 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if args[0] == "run" && *every <= 0 {
 		return fail(errors.New("--every must be positive"))
 	}
-	scan([]byte(*file)) // the path is in every error that names the file
 	data, err := os.ReadFile(*file)
 	if err != nil {
 		return fail(err)
 	}
-	scan(data)
 	c, err := config.Parse(data)
 	if err != nil {
 		return fail(err)
 	}
-	register(data, c)
+	if err := register(c); err != nil {
+		return fail(err)
+	}
 	if args[0] == "admit" {
 		if fs.NArg() != 2 {
 			return fail(errors.New(usage))
@@ -137,60 +140,19 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	return 0
 }
 
-// register gives core.Secrets every credential the config holds or names, before any
-// adapter runs: the userinfo of each URL in it, under any key, and the runner's token.
-func register(data []byte, c config.Config) {
-	var walk func(n *yaml.Node)
-	walk = func(n *yaml.Node) {
-		if u, err := url.Parse(n.Value); err == nil && u.User != nil {
-			pw, _ := u.User.Password()
-			auth, _, _ := strings.Cut(n.Value[strings.Index(n.Value, "://")+3:], "/")
-			for _, s := range []string{auth[:max(0, strings.LastIndex(auth, "@"))], u.User.String(), pw, u.User.Username() + ":" + pw} {
-				core.Secrets.Add(strings.TrimSuffix(s, ":")) // as written, canonical, password, user:password
-			}
-		}
-		for _, k := range n.Content {
-			walk(k)
-		}
+// register gives core.Secrets the runner's token before any adapter runs; a runner section
+// that does not parse, a URL holding credentials among them, is refused at load.
+func register(c config.Config) error {
+	if c.Runner.IsZero() {
+		return nil
 	}
-	var doc yaml.Node
-	if yaml.Unmarshal(data, &doc) == nil {
-		walk(&doc)
+	rc, err := jetbridge.Parse(&c.Runner)
+	if err != nil {
+		return err
 	}
-	if rc, err := jetbridge.Parse(&c.Runner); err == nil {
-		token, _ := rc.Secret()
-		core.Secrets.Add(token)
-	}
-}
-
-// rawURL is scheme:// then userinfo, which runs to the last @ before whitespace, / ? or #;
-// quotes, commas and backslashes are kept as part of the password.
-var rawURL = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://([^\s/?#]*)@`)
-
-// scan registers the userinfo of every URL in the raw config text and in each YAML scalar it
-// holds, its user and password parts too, without URL parsing: it works before Parse, and on
-// a URL that does not parse.
-func scan(data []byte) {
-	texts := []string{string(data)}
-	var walk func(n *yaml.Node)
-	walk = func(n *yaml.Node) {
-		texts = append(texts, n.Value)
-		for _, k := range n.Content {
-			walk(k)
-		}
-	}
-	var doc yaml.Node
-	if yaml.Unmarshal(data, &doc) == nil {
-		walk(&doc)
-	}
-	for _, t := range texts {
-		for _, m := range rawURL.FindAllStringSubmatch(t, -1) {
-			user, pw, _ := strings.Cut(m[1], ":")
-			for _, s := range []string{m[1], user, pw} {
-				core.Secrets.Add(s)
-			}
-		}
-	}
+	token, _ := rc.Secret()
+	core.Secrets.Add(token)
+	return nil
 }
 
 func fail2(err error, fail func(error) int) int {

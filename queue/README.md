@@ -157,7 +157,7 @@ and merge keys are refused. Defaults are applied before your file is read.
 | Key | Default | Notes |
 |---|---|---|
 | `apiVersion` | none | Required: `jetbridge.dev/queue/v2`. |
-| `repository.uri` | none | Required. Remote that holds main, the candidate, and all queue refs. |
+| `repository.uri` | none | Required. Remote that holds main, the candidate, and all queue refs. Must not hold credentials (see Credentials). |
 | `repository.main` | `core` | Branch that runs compose on and land to. |
 | `repository.candidate` | `queue-next` | Scratch branch, force-pushed by the queue. Must differ from main. |
 | `admission.source` | `refs` | The only value. |
@@ -170,7 +170,7 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `compose.committer.name` | `merge-queue` | Author and committer of composed commits; one squashed commit per change, titled `land(<id>)`. |
 | `compose.committer.email` | `merge-queue@localhost` | |
 | `runner.kind` | none | Required: `jetbridge`. |
-| `runner.url` | none | Required. Base URL of the JetBridge web node. |
+| `runner.url` | none | Required. Base URL of the JetBridge web node. Must not hold credentials. |
 | `runner.team` | `main` | |
 | `runner.pipeline` | none | Required. |
 | `runner.job` | none | Required. The job that tests the candidate. |
@@ -218,12 +218,23 @@ and merge keys are refused. Defaults are applied before your file is read.
   `verdict`, `landed`, `ejected`, `flaky`, `paused`, `resumed`, `refused`, with
   `time`, `entries`, `run`, `why`, `cause`, `parent`. A notifier error is logged
   and never changes a decision. With no notifier, nothing is announced.
+- **Credentials.** No URL carries one. `repository.uri`, `runner.url` and every
+  command-line argument are refused at load if they hold `user:password@` or a
+  bare `user@` (only an `ssh://` login name such as `ssh://git@host/repo` is
+  allowed), and if a `scheme://` value does not parse; the refusal names the
+  setting, never the value. Git authenticates the way it does outside the queue:
+  an ssh key, a credential helper or `GIT_ASKPASS` in the runner's environment.
+  The runner's bearer token comes only from `runner.credential` and is sent in a
+  header. A URL error from the runner names the setting or the request path and
+  the cause, never the URL.
 - **Redaction.** Every output line, saved reason, event and log passes through
-  one filter. At startup the command registers each secret the config holds or
-  names: the userinfo of every URL in it and the runner's token. These are hidden
-  by value in every encoding: raw, URL-escaped, JSON-escaped (once or twice, with
-  or without escaped slashes) and quoted. Any other URL's userinfo is hidden by a
-  pattern as a fallback; it stops at `'` and `,` so nearby text is not mangled.
+  one filter. It hides the runner's token by value in every encoding: raw,
+  URL-escaped, JSON-escaped (once or twice, with or without escaped slashes) and
+  quoted. Any other URL's userinfo is hidden by a best-effort pattern that stops
+  at whitespace and `/ ? # " \ ' ,`, so nearby text is not mangled. Saved state
+  is redacted by field: only free text (the pause reason, and each settle
+  record's and refusal's reason and cause). Ids, commits, refs and the
+  dependency and ejection maps are never changed, so a reload decides the same.
 - **Runner.** The pin is per resource, so one run is in flight at a time; a new
   run aborts and unpins the previous one. The candidate must be reachable by the
   resource's configured branch.

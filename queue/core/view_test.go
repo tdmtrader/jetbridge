@@ -171,13 +171,14 @@ var _ = Describe("Redact", func() {
 			"ssh://git@host/x":                                             "ssh://***@host/x",
 			"git@host:path":                                                "git@host:path",
 			`parse "https://user:pw@host/%zz"`:                             `parse "https://***@host/%zz"`,
-			`{"url":"https://host","contact":"dev@example.com"}`:           `{"url":"https://***@example.com"}`, // fails closed: over-redacts
+			`{"url":"https://host","contact":"dev@example.com"}`:           `{"url":"https://host","contact":"dev@example.com"}`,
 			`{"url":"https://user:pw@host/x","contact":"dev@example.com"}`: `{"url":"https://***@host/x","contact":"dev@example.com"}`,
 			"https://user:p@ss@host/x":                                     "https://***@host/x",
-			"https://user:SEC,RET@host":                                    "https://***@host",
-			"https://us'er:pw@host":                                        "https://***@host",
-			`https://user:Rv3n'Hq8w"a\b,c@host/%zz`:                        "https://***@host/%zz",
-			"url='https://host',owner='alice@example.com'":                 "url='https://***@example.com'",
+			"https://user:SEC,RET@host":                                    "https://user:SEC,RET@host", // config refuses it; a registered secret hides it
+			"https://us'er:pw@host":                                        "https://us'er:pw@host",
+			`https://user:Rv3n'Hq8w"a\b,c@host/%zz`:                        `https://user:Rv3n'Hq8w"a\b,c@host/%zz`,
+			"url='https://host',owner='alice@example.com'":                 "url='https://host',owner='alice@example.com'",
+			`{"Why":"'https://git.invalid'","Refused":[{"ID":"dev@x"}]}`:   `{"Why":"'https://git.invalid'","Refused":[{"ID":"dev@x"}]}`,
 			`{"message":"{\"url\":\"https:\\/\\/user:SECRET@host\"}"}`:     `{"message":"{\"url\":\"https:\\/\\/***@host\"}"}`,
 			`{"url":"https:\/\/user:SECRET@host"}`:                         `{"url":"https:\/\/***@host"}`,
 			"email me at a@b.com":                                          "email me at a@b.com",
@@ -200,7 +201,7 @@ var _ = Describe("SecretSet", func() {
 			"https://user:SEC,RET@host":                                       "https://***@host",
 			"https://us'er:pw@host":                                           "https://***@host",
 			"token SEC%26RET and SEC&RET and \"SEC\\u0026RET\"":               "token *** and *** and \"***\"",
-			"url='https://host',owner='alice@example.com' abc":                "url='https://***@example.com' abc",
+			"url='https://host',owner='alice@example.com' abc":                "url='https://host',owner='alice@example.com' abc",
 		} {
 			Expect(s.Redact(in)).To(Equal(want), in)
 		}

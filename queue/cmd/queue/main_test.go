@@ -241,7 +241,7 @@ var _ = Describe("queue command", func() {
 		} {
 			code, _, errw := queue(args...)
 			Expect(code).NotTo(Equal(0))
-			Expect(errw).To(ContainSubstring("https://***@host/"))
+			Expect(errw).To(ContainSubstring("argument: a URL must not hold credentials"))
 			Expect(errw).NotTo(ContainSubstring("SECRET"))
 		}
 	})
@@ -255,34 +255,25 @@ var _ = Describe("queue command", func() {
 		Expect(out + errw).NotTo(MatchRegexp("SEC|RET"))
 	})
 
-	It("hides a credential in a configured URL that does not parse", func() {
-		cfg := strings.Replace(string(must(os.ReadFile(file))), "https://ci.example.invalid", "https://user:SEC,RET@ci.example.invalid/%zz", 1)
-		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+	It("refuses a runner url holding a credential at load, naming the setting and never the value", func() {
 		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
-		Expect(os.WriteFile(file, []byte(strings.Replace(cfg, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN", 1)), 0o600)).To(Succeed())
+		orig := string(must(os.ReadFile(file)))
 		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
 		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "b")
-		var o, e bytes.Buffer
-		Expect(entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)).To(Equal(0), e.String())
-		entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)
-		Expect(e.String()).To(ContainSubstring("start "), "the runner's request error reaches stderr")
-		Expect(o.String() + e.String()).NotTo(MatchRegexp("SEC|RET"))
-	})
-
-	It("hides a password with an apostrophe in a configured URL that does not parse", func() {
-		old := core.Secrets
-		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
-		DeferCleanup(func() { core.Secrets = old })
-		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
-		cfg := strings.Replace(string(must(os.ReadFile(file))), "https://ci.example.invalid", "https://user:Rv3n'Hq8w@ci.example.invalid/%zz", 1)
-		Expect(os.WriteFile(file, []byte(strings.Replace(cfg, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN", 1)), 0o600)).To(Succeed())
-		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
-		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "b")
-		var o, e bytes.Buffer
-		Expect(entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)).To(Equal(0), e.String())
-		entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)
-		Expect(e.String()).To(ContainSubstring("start "), "the runner's request error reaches stderr")
-		Expect(o.String() + e.String()).NotTo(MatchRegexp("Rv3n|Hq8w"))
+		for _, u := range []string{"https://user:F4ke/Pa55@ci.example.invalid/%zz", "https://user:F4ke,Pa55@ci.example.invalid/%zz",
+			"https://user:F4ke'Pa55@ci.example.invalid/%zz", "https://F4kePa55@ci.example.invalid"} {
+			old := core.Secrets
+			core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
+			cfg := strings.NewReplacer("https://ci.example.invalid", `"`+u+`"`, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN").Replace(orig)
+			Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+			var o, e bytes.Buffer
+			entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)
+			code := entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)
+			core.Secrets = old
+			Expect(o.String()+e.String()).NotTo(MatchRegexp("F4ke|Pa55"), "url %q", u)
+			Expect(e.String()).To(ContainSubstring("runner.url: a URL must not hold credentials"), "url %q", u)
+			Expect(code).To(Equal(1), "url %q", u)
+		}
 	})
 
 	It("hides a password with a comma in a --config path it cannot open", func() {
@@ -291,7 +282,7 @@ var _ = Describe("queue command", func() {
 		DeferCleanup(func() { core.Secrets = old })
 		var o, e bytes.Buffer
 		Expect(entry(context.Background(), []string{"status", "--config", "https://user:SEC,RET@host/queue.yaml"}, &o, &e)).To(Equal(1))
-		Expect(e.String()).To(ContainSubstring("***@host/queue.yaml"))
+		Expect(e.String()).To(ContainSubstring("argument: a URL must not hold credentials"))
 		Expect(o.String() + e.String()).NotTo(MatchRegexp("SEC|RET"))
 	})
 
@@ -320,7 +311,7 @@ var _ = Describe("queue command", func() {
 		var o, e bytes.Buffer
 		code := entry(context.Background(), []string{"status", "--window", "https://user:SECRET@host"}, &o, &e)
 		Expect(code).To(Equal(1))
-		Expect(e.String()).To(ContainSubstring("https://***@host"))
+		Expect(e.String()).To(ContainSubstring("argument: a URL must not hold credentials"))
 		Expect(o.String() + e.String()).NotTo(ContainSubstring("SECRET"))
 	})
 
@@ -346,16 +337,13 @@ var _ = Describe("queue command", func() {
 
 	It("hides every configured secret in every encoding from every output", func() {
 		ctx := context.Background()
-		const pass, token = "Xq7v&Zk9r,Lm4t'Pw8s%2FYh2n", "Tk5mQw2zRb9x" // the password holds & , ' and an encoded /
-		uri := "https://user:" + pass + "@repo.example.invalid/repo"
-		GinkgoT().Setenv("GIT_CONFIG_COUNT", "1") // git reaches the local remote through the secret URL
-		GinkgoT().Setenv("GIT_CONFIG_KEY_0", "url."+remote+".insteadOf")
-		GinkgoT().Setenv("GIT_CONFIG_VALUE_0", uri)
+		// the token holds & , ' and /; uri is an error quoting a URL built from it
+		const token = "Xq7v&Zk9r,Lm4t'Pw8s/Yh2n"
+		uri := "https://user:" + token + "@repo.example.invalid/repo"
 		GinkgoT().Setenv("FAKE_JB_TOKEN", token)
 		dir := GinkgoT().TempDir()
 		events := filepath.Join(dir, "events.jsonl")
-		cfg := strings.NewReplacer("https://ci.example.invalid", "https://bot:Rv3n'Hq8w@ci.example.invalid",
-			"file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN").Replace(fmt.Sprintf(sample, uri, dir)) + "notify: {kind: log, path: " + events + "}\n"
+		cfg := strings.Replace(fmt.Sprintf(sample, remote, dir), "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN", 1) + "notify: {kind: log, path: " + events + "}\n"
 		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
 		c, err := config.Parse([]byte(cfg))
 		Expect(err).NotTo(HaveOccurred())
@@ -370,8 +358,8 @@ var _ = Describe("queue command", func() {
 
 		var o, e bytes.Buffer
 		Expect(entry(ctx, []string{"status", "--config", file}, &o, &e)).To(Equal(0), e.String()) // registers the secrets
-		decoded, _ := url.PathUnescape(pass)
-		j, _ := json.Marshal(map[string]string{"url": uri, "pw": decoded, "auth": "Bearer " + token, "bot": "Rv3n'Hq8w"})
+		decoded := token
+		j, _ := json.Marshal(map[string]string{"url": uri, "pw": decoded, "auth": "Bearer " + token, "path": url.PathEscape(token)})
 		jj, _ := json.Marshal(string(j))
 		leak := fmt.Errorf("denied %s %s %s %s %q %q %s", uri, j, jj, strings.ReplaceAll(string(jj), "/", `\\/`), uri, decoded, url.QueryEscape(decoded))
 		errw := core.NewRedactWriter(&e)
@@ -393,7 +381,7 @@ var _ = Describe("queue command", func() {
 			"snapshot": gitIn(remote, "log", "-p", "refs/queue/state")}
 		for what, text := range outputs {
 			Expect(text).To(ContainSubstring("denied"), what)
-			for _, part := range []string{"Xq7v", "Zk9r", "Lm4t", "Pw8s", "Yh2n", "Tk5mQw2zRb9x", "Rv3n", "Hq8w"} {
+			for _, part := range []string{"Xq7v", "Zk9r", "Lm4t", "Pw8s", "Yh2n"} {
 				Expect(text).NotTo(ContainSubstring(part), what)
 			}
 		}
@@ -437,6 +425,21 @@ var _ = Describe("status", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(b)).NotTo(ContainSubstring("SECRET"))
 		Expect(string(b)).To(ContainSubstring("denied for https://***@host/repo"))
+	})
+
+	It("keeps status valid JSON when a reason ends in a URL and an id holds an @", func() {
+		s := core.Snapshot{Paused: true, Why: "cannot reach 'https://git.example.invalid'",
+			Refused: []core.Refusal{{ID: "dev@example.invalid", Why: "unsafe id"}}}
+		var b bytes.Buffer
+		w := core.NewRedactWriter(&b) // as every stdout line passes
+		Expect(json.NewEncoder(w).Encode(summary(s))).To(Succeed())
+		var got struct {
+			Why     string
+			Refused []core.Refusal
+		}
+		Expect(json.Unmarshal(b.Bytes(), &got)).To(Succeed(), b.String())
+		Expect(got.Why).To(Equal(s.Why))
+		Expect(got.Refused).To(Equal(s.Refused))
 	})
 
 	It("lists the latest flakes with their batch and reason", func() {
