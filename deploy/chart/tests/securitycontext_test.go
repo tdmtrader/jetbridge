@@ -164,8 +164,8 @@ func TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext(t *testing.T) {
 	daemon := findDaemonSet(t, renderChart(t,
 		"artifactDaemon.hangar.enabled=true",
 		"artifactDaemon.tls.existingSecret=operator-daemon-tls",
-		"artifactDaemon.durable.store=gcs",
-		"artifactDaemon.durable.bucket=b",
+		"artifactDaemon.hangar.store=gcs",
+		"artifactDaemon.hangar.bucket=b",
 	), "-artifact-daemon")
 	if boolVal(daemon.Spec.Template.Spec.SecurityContext.RunAsNonRoot) {
 		t.Fatal("artifact-daemon must remain root for arbitrary-UID hostPath content")
