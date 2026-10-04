@@ -1021,7 +1021,23 @@ jobs:
 
           echo "=== Waiting for rollout to complete ==="
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-          kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
+          if ! kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s; then
+            # A daemon pod on a node that went away -- the battle station is a
+            # desktop that sleeps -- stays Terminating until the node returns,
+            # and the DaemonSet will not finish until it is gone. On
+            # 2026-10-04 that kept theborg's daemon on the previous version for
+            # an hour, and this job failed with nothing but a timeout.
+            STRANDED=$(kubectl get pods -n cicd -l app.kubernetes.io/component=artifact-daemon \
+              -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name} on node {.spec.nodeName}{"\n"}{end}')
+            if [ -n "$STRANDED" ]; then
+              echo "=== FAILED: artifact-daemon pods stranded Terminating ==="
+              echo "$STRANDED"
+              echo "Their node is unreachable. The rollout finishes when it returns,"
+              echo "or once each is force-deleted (the DaemonSet recreates it there later):"
+              echo "  kubectl -n cicd delete pod <name> --force --grace-period=0"
+            fi
+            exit 1
+          fi
 
           echo "=== Waiting for pods to be ready ==="
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=web -n cicd --timeout=120s
@@ -1460,7 +1476,23 @@ jobs:
           # The release job's last act used to be a fire-and-forget restart with
           # nothing downstream to notice it failing.
           kubectl rollout status deployment/concourse-web -n cicd --timeout=180s
-          kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s
+          if ! kubectl rollout status daemonset/concourse-artifact-daemon -n cicd --timeout=180s; then
+            # A daemon pod on a node that went away -- the battle station is a
+            # desktop that sleeps -- stays Terminating until the node returns,
+            # and the DaemonSet will not finish until it is gone. On
+            # 2026-10-04 that kept theborg's daemon on the previous version for
+            # an hour, and this job failed with nothing but a timeout.
+            STRANDED=$(kubectl get pods -n cicd -l app.kubernetes.io/component=artifact-daemon \
+              -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name} on node {.spec.nodeName}{"\n"}{end}')
+            if [ -n "$STRANDED" ]; then
+              echo "=== FAILED: artifact-daemon pods stranded Terminating ==="
+              echo "$STRANDED"
+              echo "Their node is unreachable. The rollout finishes when it returns,"
+              echo "or once each is force-deleted (the DaemonSet recreates it there later):"
+              echo "  kubectl -n cicd delete pod <name> --force --grace-period=0"
+            fi
+            exit 1
+          fi
 
           echo "=== Release complete: ${VERSION} (${SHORT_SHA}) ==="
           echo "  Tagged: jb-${VERSION}"
