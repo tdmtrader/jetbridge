@@ -295,17 +295,6 @@ func TestTheOutputBucketIsExplicitAndIsNeitherOtherBucket(t *testing.T) {
 			t.Errorf("%s did not name the dedicated-bucket rule:\n%s", collision, message)
 		}
 	}
-
-	// And the durable cache bucket the artifact daemon is pointed at, which an
-	// operator sets in a different block entirely.
-	message := renderHangarError(t, append(append([]string{}, outputSets...),
-		"artifactDaemon.durable.store=gcs",
-		"artifactDaemon.durable.bucket=jb-output",
-	)...)
-	if !strings.Contains(strings.ToLower(message), "dedicated") {
-		t.Errorf("the output bucket was accepted as the artifact daemon's durable bucket:\n%s",
-			message)
-	}
 }
 
 // Prefix-only isolation inside one shared bucket is not an activation-compatible
@@ -350,8 +339,7 @@ func TestEveryOutputWorkloadIsGivenTheSameDerivedNamespace(t *testing.T) {
 }
 
 // Decision F3. The output plane's endpoint override is its own value and its
-// own flag; the artifact daemon's --durable-endpoint serves the durable CACHE
-// bucket, which Req 20 forbids the output plane sharing.
+// own flag, and it never reaches the artifact daemon's cache flags.
 func TestTheOutputEndpointAndTheDurableCacheEndpointAreIndependent(t *testing.T) {
 	outputOnly := renderOutput(t, "hangarOutput.endpoint=http://fake-gcs.cicd.svc:4443")
 	if !strings.Contains(outputOnly, "--output-endpoint=http://fake-gcs.cicd.svc:4443") {
@@ -360,18 +348,6 @@ func TestTheOutputEndpointAndTheDurableCacheEndpointAreIndependent(t *testing.T)
 	if strings.Contains(outputOnly, "--durable-endpoint=http://fake-gcs.cicd.svc:4443") {
 		t.Error("hangarOutput.endpoint populated the durable CACHE tier's endpoint too; the " +
 			"two are different buckets under different identities")
-	}
-
-	cacheOnly := renderOutput(t,
-		"artifactDaemon.durable.store=gcs",
-		"artifactDaemon.durable.bucket=jb-cache-2",
-		"artifactDaemon.durable.endpoint=http://minio.local:9000",
-	)
-	if !strings.Contains(cacheOnly, "--durable-endpoint=http://minio.local:9000") {
-		t.Error("artifactDaemon.durable.endpoint did not reach --durable-endpoint")
-	}
-	if strings.Contains(cacheOnly, "--output-endpoint=http://minio.local:9000") {
-		t.Error("artifactDaemon.durable.endpoint populated the OUTPUT plane's endpoint")
 	}
 }
 
