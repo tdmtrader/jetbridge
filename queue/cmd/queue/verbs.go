@@ -19,6 +19,21 @@ type listed struct {
 	BuildsOn   []string
 }
 
+// flying is one run in flight: a whole batch, or the half a bisect is trying.
+type flying struct {
+	Run, Base, Candidate string
+	Entries              []string
+}
+
+// queueList is what list shows: main, the generation, the queued rows, the runs
+// in flight (any bisect in progress) and the open ejects.
+type queueList struct {
+	Main, Generation string
+	Queued           []listed
+	InFlight         []flying
+	Ejected          []string
+}
+
 // history is everything the snapshot holds about one id.
 type history struct {
 	ID, State, Commit, Ref string
@@ -31,19 +46,37 @@ type history struct {
 
 // readVerb prints list, ejected or explain from s. The caller's writer redacts every
 // line; the snapshot is redacted here too so the JSON is safe on its own.
-func readVerb(verb string, s core.Snapshot, id string, asJSON bool, out io.Writer) error {
+func readVerb(verb, main string, s core.Snapshot, id string, asJSON bool, out io.Writer) error {
 	s = core.RedactSnapshot(s)
 	switch verb {
 	case "list":
-		rows := []listed{}
+		l := queueList{Main: main, Generation: s.Version, Queued: []listed{}, InFlight: []flying{}, Ejected: []string{}}
 		for _, e := range s.Queued {
-			rows = append(rows, listed{e.ID, e.Commit, e.AdmittedAt, s.BuildsOn[e.ID]})
+			l.Queued = append(l.Queued, listed{e.ID, e.Commit, e.AdmittedAt, s.BuildsOn[e.ID]})
 		}
+		for _, f := range s.InFlight {
+			ids := []string{}
+			for _, e := range f.Run.Entries {
+				ids = append(ids, e.ID)
+			}
+			l.InFlight = append(l.InFlight, flying{f.Run.ID, f.Run.Base, f.Candidate, ids})
+		}
+		for id := range s.Ejected {
+			l.Ejected = append(l.Ejected, id)
+		}
+		slices.Sort(l.Ejected)
 		if asJSON {
-			return json.NewEncoder(out).Encode(rows)
+			return json.NewEncoder(out).Encode(l)
 		}
-		for _, r := range rows {
+		fmt.Fprintf(out, "main %s generation %s\n", l.Main, l.Generation)
+		for _, r := range l.Queued {
 			fmt.Fprintf(out, "%s %s admitted %s builds-on %v\n", r.ID, short(r.Commit), r.AdmittedAt.Format(time.RFC3339), r.BuildsOn)
+		}
+		for _, f := range l.InFlight {
+			fmt.Fprintf(out, "in flight %s base %q candidate %s: %v\n", f.Run, f.Base, short(f.Candidate), f.Entries)
+		}
+		for _, id := range l.Ejected {
+			fmt.Fprintf(out, "ejected %s\n", id)
 		}
 	case "ejected":
 		rows := []ejection{}

@@ -94,7 +94,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
-		return fail2(readVerb(args[0], s, fs.Arg(0), *asJSON, out), fail)
+		return fail2(readVerb(args[0], c.Repository.Main, s, fs.Arg(0), *asJSON, out), fail)
 	}
 	if args[0] == "admit" {
 		if fs.NArg() != 2 {
