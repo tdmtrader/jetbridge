@@ -13,6 +13,9 @@ type Run struct {
 	Entries []Entry // whole stacks, ancestors first
 }
 
+// noVerdictWhy starts the reason of a pause for no verdict, the one pause that ends by itself.
+const noVerdictWhy = "no verdict after "
+
 // Settle is one decision about entries; Why is a one-line reason. An Eject
 // with Cause ParentEjected names the ejected ancestor as Parent.
 type Settle struct {
@@ -141,7 +144,7 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 		out.Settle = append(out.Settle, Settle{Entries: cur, Decision: Eject, Why: "failed on its own", Cause: Culprit})
 	case Pause:
 		s.Paused = true
-		why := fmt.Sprintf("no verdict after %d retries", s.Policy.RetryNone)
+		why := fmt.Sprintf("%s%d retries", noVerdictWhy, s.Policy.RetryNone)
 		out.Settle = append(out.Settle, Settle{Entries: cur, Decision: Pause, Why: why})
 		return out, nil
 	case Retry:

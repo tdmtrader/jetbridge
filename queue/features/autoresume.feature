@@ -21,3 +21,15 @@ Feature: A queue paused for no verdict resumes itself after a cool-down
     When the operator asks for a resume of the first pause
     And the runner takes its next step
     Then the queue is still paused and the request is deleted
+
+  Scenario: A no-verdict pause saved before auto-resume existed still resumes after the cool-down
+    Given a queue paused for no verdict by an earlier version
+    When the runner takes a step before the cool-down is over
+    Then the queue is still paused
+    When the runner takes a step after the cool-down is over
+    Then the queue resumes
+
+  Scenario: A queue paused for no verdict resumes after a restart
+    Given a queue paused for no verdict and a new process that takes it over
+    When the new process takes a step after the cool-down is over
+    Then the queue resumes

@@ -159,7 +159,17 @@ func (d *Driver) resume(ctx context.Context, seq uint64, why string) error {
 
 // autoResume ends a no-verdict pause once the cool-down has passed; any other pause waits for an operator.
 func (d *Driver) autoResume(ctx context.Context) error {
-	if s := d.s; !s.Paused || !s.PauseNone || d.Cooldown <= 0 || d.now().Sub(s.PausedAt) < d.Cooldown {
+	s := d.s
+	if !s.Paused || !strings.HasPrefix(s.Why, noVerdictWhy) || d.Cooldown <= 0 {
+		return nil
+	}
+	at := s.PausedAt
+	for i := len(s.Settled) - 1; at.IsZero() && i >= 0; i-- { // saved before auto-resume: the pause's settle record has the time
+		if s.Settled[i].Kind == PausedEvent {
+			at = s.Settled[i].At
+		}
+	}
+	if d.now().Sub(at) < d.Cooldown {
 		return nil
 	}
 	return d.resume(ctx, d.s.PauseSeq, "auto-resume after cool-down")
@@ -327,7 +337,7 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 			mark(d.s.Ejected, st.Entries)
 		case Pause:
 			ev.Kind = PausedEvent
-			d.pause(st.Why, true)
+			d.pause(st.Why)
 		default:
 			return fmt.Errorf("driver: cannot settle %q", st.Decision)
 		}
@@ -360,7 +370,7 @@ func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error
 	if d.fails++; d.fails >= cmp.Or(d.MaxFailures, 3) {
 		why := fmt.Sprintf("landing failed %d times: %v", d.fails, err)
 		ev := Event{Kind: PausedEvent, Entries: es, Run: f.Run, Why: why, At: d.now()}
-		d.pause(why, false)
+		d.pause(why)
 		d.settled(ev)
 		if d.save(ctx) == nil {
 			d.fails = 0
@@ -447,7 +457,7 @@ func (d *Driver) load(ctx context.Context) error {
 		ev = Event{Kind: PausedEvent, Entries: in.Entries, Why: fmt.Sprintf("cannot tell whether main holds %s: %v", in.Candidate, err)}
 		ev.At = d.now()
 		again = d.s.Paused && d.s.Why == Redact(ev.Why) // as saved
-		d.pause(ev.Why, false)
+		d.pause(ev.Why)
 	} else if d.s.Landing = nil; landed {
 		d.fails = 0
 		mark(d.s.Landed, in.Entries)
@@ -483,11 +493,10 @@ func (d *Driver) fence() uint64 {
 }
 
 // pause marks the queue paused; only a pause that was not already one is a new pause.
-// noVerdict marks a pause that the cool-down may end.
-func (d *Driver) pause(why string, noVerdict bool) {
+func (d *Driver) pause(why string) {
 	if !d.s.Paused {
 		d.s.PauseSeq++
-		d.s.PausedAt, d.s.PauseNone = d.now(), noVerdict
+		d.s.PausedAt = d.now()
 	}
 	d.s.Paused, d.s.Why = true, why
 }

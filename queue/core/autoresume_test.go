@@ -86,4 +86,46 @@ var _ = Describe("Driver auto-resume", func() {
 		Expect(note.of(core.ResumedEvent)).To(HaveLen(1), "only the auto-resume")
 		Expect(res.reqs).To(BeEmpty())
 	})
+
+	// saved5f4493403 is a no-verdict pause exactly as the commit before auto-resume wrote it:
+	// no PausedAt and no PauseNone, only the reason and the pause's settle record.
+	const saved5f4493403 = `{"Version":"0","Queued":[{"ID":"a","Commit":"ca","Ref":"","AdmittedAt":"2026-10-04T08:50:00Z"}],
+		"BuildsOn":{},"Landed":{},"Ejected":{},"InFlight":null,"Paused":true,"PauseSeq":1,"Why":"no verdict after 1 retries",
+		"Landing":null,"Fence":4294967297,"Refused":null,"Commits":{"a":"ca"},
+		"Settled":[{"ID":"a","Commit":"ca","Kind":"paused","At":"2026-10-04T09:00:00Z","AdmittedAt":"2026-10-04T08:50:00Z",
+		"Why":"no verdict after 1 retries","Cause":"","Run":"r","Batch":["a"]}]}`
+
+	It("A no-verdict pause saved before auto-resume existed still resumes after the cool-down", func() {
+		store.data = []byte(saved5f4493403)
+		d := driver()
+		step(d, cooldown-time.Second) // the clock is the pause's own time plus this
+		Expect(note.of(core.ResumedEvent)).To(BeEmpty())
+		step(d, time.Second)
+		Expect(note.of(core.ResumedEvent)).To(HaveLen(1))
+	})
+
+	It("A queue paused for no verdict resumes after a restart", func() {
+		d := driver()
+		Expect(d.Admit(ctx, core.Entry{ID: "a", Commit: "ca"})).To(Succeed())
+		step(d, 0)
+		step(driver(), cooldown) // a new process takes over the saved pause
+		Expect(note.of(core.ResumedEvent)).To(HaveLen(1))
+	})
+
+	It("A cool-down of zero never resumes the queue", func() {
+		d := driver()
+		d.Cooldown = 0
+		Expect(d.Admit(ctx, core.Entry{ID: "a", Commit: "ca"})).To(Succeed())
+		step(d, 0)
+		step(d, 1000*time.Hour)
+		Expect(store.snap().Paused).To(BeTrue())
+	})
+
+	It("A manual resume is saved as a settle record with its reason", func() {
+		d := pausedTwice()
+		Expect(d.Resume(ctx, 2)).To(Succeed())
+		last := store.snap().Settled
+		Expect(last[len(last)-1].Kind).To(Equal(core.ResumedEvent))
+		Expect(last[len(last)-1].Why).To(Equal("resume requested"))
+	})
 })

@@ -13,22 +13,21 @@ type Decision string
 
 // Snapshot is all the driver keeps between steps, as plain data. Version is what the Store loaded.
 type Snapshot struct {
-	Version   string
-	Queued    []Entry // admission order
-	BuildsOn  map[string][]string
-	Landed    map[string]bool
-	Ejected   map[string]bool
-	InFlight  []Flight
-	Paused    bool
-	PauseSeq  uint64            // counts the transitions into paused; a resume names the pause it ends
-	Why       string            // why the queue is paused
-	PausedAt  time.Time         // when it paused
-	PauseNone bool              // paused for no verdict: only that pause ends by itself, after the cool-down
-	Landing   *Landing          // a land asked of the Lander and not yet recorded
-	Fence     uint64            // the highest fence handed out: lease token<<32 | sequence
-	Refused   []Refusal         // the latest MaxRefused admissions refused, oldest first
-	Commits   map[string]string // the commit each id was admitted at, kept once it settles
-	Settled   []SettleRecord    // the latest MaxSettled lands, ejects, pauses and flakes, oldest first
+	Version  string
+	Queued   []Entry // admission order
+	BuildsOn map[string][]string
+	Landed   map[string]bool
+	Ejected  map[string]bool
+	InFlight []Flight
+	Paused   bool
+	PauseSeq uint64            // counts the transitions into paused; a resume names the pause it ends
+	Why      string            // why the queue is paused
+	PausedAt time.Time         // when it paused; zero in a snapshot saved before auto-resume
+	Landing  *Landing          // a land asked of the Lander and not yet recorded
+	Fence    uint64            // the highest fence handed out: lease token<<32 | sequence
+	Refused  []Refusal         // the latest MaxRefused admissions refused, oldest first
+	Commits  map[string]string // the commit each id was admitted at, kept once it settles
+	Settled  []SettleRecord    // the latest MaxSettled lands, ejects, pauses and flakes, oldest first
 }
 
 const MaxRefused = 20

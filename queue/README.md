@@ -207,6 +207,8 @@ and merge keys are refused. Defaults are applied before your file is read.
   manual resume. If the next run again has no verdict the queue pauses anew, as
   a new `PauseSeq` with its own cool-down. A resume request for the earlier pause
   is then stale and clears nothing. Every other pause waits for `queue resume`.
+  A no-verdict pause is known by its reason, so one saved by an earlier version
+  resumes too, timed from its settle record.
 - **Lease.** One lease, held in `store.ref`, for a minute, renewed on each step.
   A second `queue run` fails with "lease held by ..." until it expires. Every
   save carries the token, and every land carries a higher fence written to
