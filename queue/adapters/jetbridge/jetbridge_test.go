@@ -368,7 +368,7 @@ var _ = Describe("JetBridge runner", func() {
 			_, err := parse("{kind: jetbridge, credential: env:X}")
 			Expect(err).To(MatchError(ContainSubstring("runner.url, runner.pipeline, runner.job and runner.resource are required")))
 			_, err = parse(strings.Replace(ok, "kind: jetbridge", "kind: other", 1) + "}")
-			Expect(err).To(MatchError(ContainSubstring(`runner.kind "other" is not allowed; use one of: jetbridge`)))
+			Expect(err).To(MatchError(ContainSubstring(`runner.kind: unsupported value; use one of: jetbridge`)))
 			_, err = parse(strings.Replace(ok, "env:FAKE_JB_TOKEN", "hunter2", 1) + "}")
 			Expect(err).To(MatchError(ContainSubstring("runner.credential must name an env var (env:NAME) or a file (file:PATH)")))
 		})

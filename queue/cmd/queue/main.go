@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -71,6 +72,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	scan(data)
 	c, err := config.Parse(data)
 	if err != nil {
 		return fail(err)
@@ -157,6 +159,20 @@ func register(data []byte, c config.Config) {
 	if rc, err := jetbridge.Parse(&c.Runner); err == nil {
 		token, _ := rc.Secret()
 		core.Secrets.Add(token)
+	}
+}
+
+// rawURL is scheme:// then userinfo, which runs to the last @ before a space, quote or line end.
+var rawURL = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://([^\s"']*)@`)
+
+// scan registers the userinfo of every URL in the raw config text, its user and password
+// parts too, without parsing: it works before Parse, and on a URL that does not parse.
+func scan(data []byte) {
+	for _, m := range rawURL.FindAllSubmatch(data, -1) {
+		user, pw, _ := strings.Cut(string(m[1]), ":")
+		for _, s := range []string{string(m[1]), user, pw} {
+			core.Secrets.Add(s)
+		}
 	}
 }
 

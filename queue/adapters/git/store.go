@@ -113,6 +113,7 @@ func (s *Store) storeRead(ctx context.Context, dir string) (st storeState, err e
 func (s *Store) storeWrite(ctx context.Context, dir string, st storeState) (string, error) {
 	st.snap.Version = ""
 	snap, err0 := json.Marshal(st.snap)
+	snap = []byte(core.Redact(string(snap))) // every string field, whenever it was saved
 	lease, err00 := json.Marshal(st.lease)
 	if err := errors.Join(err0, err00); err != nil {
 		return "", fmt.Errorf("encode %s: %w", s.Ref, err)

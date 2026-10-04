@@ -106,7 +106,7 @@ var known = map[string][]string{
 func Parse(data []byte) (Config, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return Config{}, err
+		return Config{}, errors.New("config is not valid YAML") // a yaml error may quote a value
 	}
 	if len(doc.Content) == 0 {
 		return Config{}, errors.New("config file is empty")
@@ -116,7 +116,7 @@ func Parse(data []byte) (Config, error) {
 	}
 	c := Defaults()
 	if err := doc.Content[0].Decode(&c); err != nil {
-		return Config{}, err
+		return Config{}, errors.New("config: a value has the wrong type") // a yaml error may quote a value
 	}
 	return c, c.validate()
 }
@@ -132,7 +132,7 @@ func (c Config) validate() error {
 		return errors.New("batch.adaptive needs 1 <= min <= start <= batch.max and grow_after >= 1")
 	}
 	if r := c.Repository; r.Candidate == "" || r.Candidate == r.Main {
-		return fmt.Errorf("repository.candidate %q must be set and differ from repository.main; the queue force-pushes it", r.Candidate)
+		return errors.New("repository.candidate: must be set and differ from repository.main; the queue force-pushes it")
 	}
 	if !strings.HasPrefix(c.Store.Ref, "refs/") {
 		return errors.New("store.ref must be a full ref name under refs/")
@@ -153,7 +153,7 @@ func (c Config) validate() error {
 	for i, p := range owned[4:] {
 		for j, r := range owned {
 			if j != i+4 && (strings.HasPrefix(r, p) || strings.HasPrefix(p, r+"/")) {
-				return fmt.Errorf("prefix %q overlaps %q, which the queue owns", p, r)
+				return fmt.Errorf("%s overlaps a ref the queue owns", []string{"admission.prefix", "admission.control_prefix"}[i])
 			}
 		}
 	}
@@ -170,7 +170,7 @@ func oneOf(key, value string, allowed ...string) error {
 	if slices.Contains(allowed, value) {
 		return nil
 	}
-	return fmt.Errorf("%s %q is not allowed; use one of: %s", key, value, strings.Join(allowed, ", "))
+	return fmt.Errorf("%s: unsupported value; use one of: %s", key, strings.Join(allowed, ", "))
 }
 
 // Strict refuses any key under n that known does not list for its path,

@@ -246,6 +246,50 @@ var _ = Describe("queue command", func() {
 		}
 	})
 
+	It("hides a credential in a config it cannot parse, even one with a comma", func() {
+		cfg := strings.Replace(string(must(os.ReadFile(file))), "apiVersion: jetbridge.dev/queue/v2", "apiVersion: https://user:SEC,RET@host", 1)
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		code, out, errw := queue("status", "--config", file)
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("apiVersion"))
+		Expect(out + errw).NotTo(MatchRegexp("SEC|RET"))
+	})
+
+	It("hides a credential in a configured URL that does not parse", func() {
+		cfg := strings.Replace(string(must(os.ReadFile(file))), "https://ci.example.invalid", "https://user:SEC,RET@ci.example.invalid/%zz", 1)
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
+		Expect(os.WriteFile(file, []byte(strings.Replace(cfg, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN", 1)), 0o600)).To(Succeed())
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "b")
+		var o, e bytes.Buffer
+		Expect(entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)).To(Equal(0), e.String())
+		entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)
+		Expect(e.String()).To(ContainSubstring("start "), "the runner's request error reaches stderr")
+		Expect(o.String() + e.String()).NotTo(MatchRegexp("SEC|RET"))
+	})
+
+	It("never writes a reason it loaded unredacted back to the state ref", func() {
+		const token = "Tk5mQw2zRb9x"
+		ctx := context.Background()
+		c, err := config.Parse(must(os.ReadFile(file)))
+		Expect(err).NotTo(HaveOccurred())
+		store := git.NewStore(c)
+		l, err := store.Acquire(ctx, "seed", time.Nanosecond)
+		Expect(err).NotTo(HaveOccurred())
+		snap := must(store.Load(ctx))
+		snap.Paused, snap.Why = true, "denied Bearer "+token // saved before the token was configured
+		_, err = store.Save(ctx, l.Token, snap)
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoT().Setenv("FAKE_JB_TOKEN", token)
+		cfg := strings.Replace(string(must(os.ReadFile(file))), "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN", 1)
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		var o, e bytes.Buffer
+		Expect(entry(ctx, []string{"run", "--config", file, "--once"}, &o, &e)).To(Equal(0), e.String())
+		Expect(gitIn(remote, "show", "refs/queue/state:snapshot.json")).To(ContainSubstring("denied"))
+		Expect(gitIn(remote, "show", "refs/queue/state:snapshot.json")).NotTo(ContainSubstring(token))
+	})
+
 	It("hides a credential in a flag the command refuses", func() {
 		var o, e bytes.Buffer
 		code := entry(context.Background(), []string{"status", "--window", "https://user:SECRET@host"}, &o, &e)

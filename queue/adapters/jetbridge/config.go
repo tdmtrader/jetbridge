@@ -4,7 +4,6 @@ package jetbridge
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -33,11 +32,11 @@ func Parse(n *yaml.Node) (Config, error) {
 	}
 	c := Config{Team: "main", WaitCap: time.Hour}
 	if err := n.Decode(&c); err != nil {
-		return Config{}, err
+		return Config{}, errors.New("runner: a value has the wrong type") // a yaml error may quote a value
 	}
 	switch {
 	case c.Kind != "jetbridge":
-		return Config{}, fmt.Errorf("runner.kind %q is not allowed; use one of: jetbridge", c.Kind)
+		return Config{}, errors.New("runner.kind: unsupported value; use one of: jetbridge")
 	case c.URL == "" || c.Pipeline == "" || c.Job == "" || c.Resource == "":
 		return Config{}, errors.New("runner.url, runner.pipeline, runner.job and runner.resource are required")
 	case !strings.HasPrefix(c.Credential, "env:") && !strings.HasPrefix(c.Credential, "file:"):
@@ -58,5 +57,5 @@ func (c Config) Secret() (string, error) {
 	if s := strings.TrimSpace(string(b)); s != "" || err != nil {
 		return s, err
 	}
-	return "", fmt.Errorf("runner.credential %s is empty", c.Credential)
+	return "", errors.New("runner.credential is empty")
 }

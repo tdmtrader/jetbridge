@@ -145,4 +145,19 @@ var _ = Describe("Store", func() {
 		_, err := store.Acquire(ctx, "two", time.Minute)
 		Expect(err).To(MatchError(ContainSubstring("overflow")))
 	})
+
+	It("Every string in a snapshot is redacted as it is written, even one saved before its secret was known", func() {
+		const token = "Tk5mQw2zRb9x"
+		l := acquire("one")
+		snap := load()
+		snap.Paused, snap.Why, snap.Commits = true, "denied Bearer "+token, map[string]string{"a": "at " + token}
+		snap.Queued = []core.Entry{{ID: "a", Commit: "c", Ref: "change/" + token, AdmittedAt: at}}
+		save(l.Token, snap)
+		core.Secrets.Add(token)
+		acquire("one") // a renewal rewrites the loaded snapshot
+		out, err := exec.Command("git", "-C", store.Remote, "show", "refs/queue/state:snapshot.json").CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+		Expect(string(out)).To(ContainSubstring("denied"))
+		Expect(string(out)).NotTo(ContainSubstring(token))
+	})
 })

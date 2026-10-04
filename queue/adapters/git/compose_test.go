@@ -179,9 +179,9 @@ var _ = Describe("Composer", func() {
 
 	It("The candidate cannot be main, in config or at push time", func() {
 		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: x, main: main, candidate: main}\n"))
-		Expect(err).To(MatchError(`repository.candidate "main" must be set and differ from repository.main; the queue force-pushes it`))
+		Expect(err).To(MatchError(`repository.candidate: must be set and differ from repository.main; the queue force-pushes it`))
 		_, err = config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: x, candidate: \"\"}\n"))
-		Expect(err).To(MatchError(`repository.candidate "" must be set and differ from repository.main; the queue force-pushes it`))
+		Expect(err).To(MatchError(`repository.candidate: must be set and differ from repository.main; the queue force-pushes it`))
 		a := change("a", "main", "a.txt", "a\n")
 		before := ref("main")
 		_, err = git.Composer{Remote: remote, Main: "main", Candidate: "main"}.Compose(ctx, "main", []core.Entry{a})

@@ -373,6 +373,7 @@ func (d *Driver) load(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s = RedactSnapshot(s) // a reason saved before its secret was known
 	q, settled := &Queue{}, map[string]State{}
 	for id := range s.Landed {
 		settled[id] = Landed

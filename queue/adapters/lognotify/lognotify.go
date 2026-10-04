@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -30,11 +29,11 @@ func Parse(n *yaml.Node) (Config, error) {
 	}
 	var c Config
 	if err := n.Decode(&c); err != nil {
-		return Config{}, err
+		return Config{}, errors.New("notify: a value has the wrong type") // a yaml error may quote a value
 	}
 	switch {
 	case c.Kind != "log":
-		return Config{}, fmt.Errorf("notify.kind %q is not allowed; use one of: log", c.Kind)
+		return Config{}, errors.New("notify.kind: unsupported value; use one of: log")
 	case c.Path == "":
 		return Config{}, errors.New(`notify.path is required: a file, or "-" for stdout`)
 	}

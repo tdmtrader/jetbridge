@@ -160,7 +160,7 @@ var _ = Describe("Parse and Open", func() {
 
 	It("refuses an unknown kind", func() {
 		_, err := lognotify.Parse(section("{kind: slack, path: x}"))
-		Expect(err).To(MatchError(ContainSubstring(`notify.kind "slack" is not allowed`)))
+		Expect(err).To(MatchError(ContainSubstring(`notify.kind: unsupported value`)))
 	})
 
 	It("refuses a missing path and an unknown key", func() {

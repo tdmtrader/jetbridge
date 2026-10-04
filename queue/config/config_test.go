@@ -51,7 +51,14 @@ var _ = Describe("Parse", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c.Batch.Strategy).To(Equal("serial"))
 		_, err = config.Parse([]byte(minimal + "batch: {strategy: speculative}\n"))
-		Expect(err).To(MatchError(`batch.strategy "speculative" is not allowed; use one of: serial`))
+		Expect(err).To(MatchError(`batch.strategy: unsupported value; use one of: serial`))
+		_, err = config.Parse([]byte(minimal + "batch: {max: https://user:SECRET@host}\n"))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
+		_, err = config.Parse([]byte("apiVersion: https://user:SECRET@host\nrepository: {uri: u}\n"))
+		Expect(err).To(MatchError(`apiVersion: unsupported value; use one of: jetbridge.dev/queue/v2`))
+		_, err = config.Parse([]byte(minimal + "repository: {main: \"https://user:SECRET@host\", candidate: \"https://user:SECRET@host\"}\n"))
+		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
 		_, err = config.Parse([]byte(minimal + "batch: {strategey: serial}\n"))
 		Expect(err).To(MatchError(`unknown key "batch.strategey"; did you mean "batch.strategy"?`))
 	})
@@ -89,9 +96,9 @@ var _ = Describe("Parse", func() {
 
 	It("refuses an unknown value, listing the allowed ones", func() {
 		_, err := config.Parse([]byte(minimal + "admission: {source: email}\n"))
-		Expect(err).To(MatchError(`admission.source "email" is not allowed; use one of: refs`))
+		Expect(err).To(MatchError(`admission.source: unsupported value; use one of: refs`))
 		_, err = config.Parse([]byte("apiVersion: jetbridge.dev/queue/v1\nrepository: {uri: u}\n"))
-		Expect(err).To(MatchError(`apiVersion "jetbridge.dev/queue/v1" is not allowed; use one of: jetbridge.dev/queue/v2`))
+		Expect(err).To(MatchError(`apiVersion: unsupported value; use one of: jetbridge.dev/queue/v2`))
 	})
 
 	It("refuses an admission prefix that overlaps a ref the queue owns, and accepts the default", func() {
@@ -126,7 +133,7 @@ var _ = Describe("Parse", func() {
 			Expect(err).To(MatchError(ContainSubstring("unknown key")), bad)
 		}
 		_, err := config.Parse([]byte(minimal + "admission: {source: github-pr}\n"))
-		Expect(err).To(MatchError(`admission.source "github-pr" is not allowed; use one of: refs`))
+		Expect(err).To(MatchError(`admission.source: unsupported value; use one of: refs`))
 	})
 
 	It("adaptive batch size is off by default and read when set", func() {
