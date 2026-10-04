@@ -128,3 +128,37 @@ var _ = Describe("Admissions", func() {
 		Expect(run(r.bare, "for-each-ref", prefix)).To(BeEmpty())
 	})
 })
+
+var _ = Describe("Resumes", func() {
+	ctx := context.Background()
+	It("Resume pushes the current main sha to the control ref of the current pause, read and deleted only at that sha", func() {
+		r := newRemote()
+		c := config.Defaults()
+		c.Repository.URI, c.Repository.Main = r.bare, "main"
+		store := git.NewStore(c)
+		l, err := store.Acquire(ctx, "runner", time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		snap, err := store.Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		snap.Paused, snap.PauseSeq = true, 3
+		_, err = store.Save(ctx, l.Token, snap)
+		Expect(err).NotTo(HaveOccurred())
+		prefix := c.Admission.ControlPrefix + "resume-"
+		res := &git.Resumes{Lander: r.lander(), Prefix: prefix}
+		reqs, err := res.Pending(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reqs).To(BeEmpty())
+		Expect(git.Resume(ctx, c, r.work)).To(Succeed())
+		main := r.main()
+		Expect(run(r.bare, "rev-parse", prefix+"3")).To(Equal(main))
+		Expect(git.Resume(ctx, c, r.work)).To(Succeed(), "asking twice is fine")
+		run(r.bare, "update-ref", prefix+"x1", main)
+		reqs, err = res.Pending(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reqs).To(Equal([]core.ResumeRequest{{Seq: 3, SHA: main}}), "a ref not named by a number is no request")
+		Expect(res.Done(ctx, core.ResumeRequest{Seq: 3, SHA: r.commit("other", r.base)})).NotTo(Succeed())
+		Expect(run(r.bare, "rev-parse", prefix+"3")).To(Equal(main))
+		Expect(res.Done(ctx, reqs[0])).To(Succeed())
+		Expect(run(r.bare, "for-each-ref", c.Admission.ControlPrefix)).NotTo(ContainSubstring(prefix + "3"))
+	})
+})

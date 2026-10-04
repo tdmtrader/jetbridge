@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/concourse/concourse/queue/config"
@@ -91,3 +92,49 @@ func (a *Admissions) Done(ctx context.Context, id, sha string) error {
 	_, err := a.Lander.git(ctx, "push", "-q", "--force-with-lease="+a.Prefix+id+":"+sha, a.Lander.remote, ":"+a.Prefix+id)
 	return err
 }
+
+// Resumes reads the resume requests: the refs <Prefix><seq> on the Lander's remote.
+type Resumes struct {
+	Lander *Lander
+	Prefix string
+}
+
+// Resume reads the pause number from the saved state (Load only, no lease),
+// then pushes the current main sha, fetched into dir, to the resume ref of that
+// pause, replacing an earlier request for it.
+func Resume(ctx context.Context, c config.Config, dir string) error {
+	snap, err := NewStore(c).Load(ctx)
+	if err != nil {
+		return err
+	}
+	l := &Lander{dir: dir}
+	if _, err := l.git(ctx, "fetch", "-q", "--no-tags", "--end-of-options", c.Repository.URI, branch(c.Repository.Main)); err != nil {
+		return err
+	}
+	_, err = l.git(ctx, "push", "-q", "--force", "--end-of-options", c.Repository.URI, "FETCH_HEAD:"+c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10))
+	return err
+}
+
+// Pending lists the requests; a ref whose name after the prefix is not a plain number is no request.
+func (r *Resumes) Pending(ctx context.Context) ([]core.ResumeRequest, error) {
+	out, err := r.Lander.git(ctx, "ls-remote", r.Lander.remote, r.Prefix+"*")
+	var reqs []core.ResumeRequest
+	for line := range strings.SplitSeq(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || !strings.HasPrefix(f[1], r.Prefix) {
+			continue
+		}
+		if n, e := strconv.ParseUint(f[1][len(r.Prefix):], 10, 64); e == nil && f[1] == r.ref(n) {
+			reqs = append(reqs, core.ResumeRequest{Seq: n, SHA: f[0]})
+		}
+	}
+	return reqs, err
+}
+
+// Done deletes the request, only if it still points at its sha.
+func (r *Resumes) Done(ctx context.Context, q core.ResumeRequest) error {
+	_, err := r.Lander.git(ctx, "push", "-q", "--force-with-lease="+r.ref(q.Seq)+":"+q.SHA, r.Lander.remote, ":"+r.ref(q.Seq))
+	return err
+}
+
+func (r *Resumes) ref(seq uint64) string { return r.Prefix + strconv.FormatUint(seq, 10) }
