@@ -80,6 +80,7 @@ type Compose struct {
 	Hook        []string      `yaml:"hook"`         // argv, no shell; run in the composed tree, its changes join the candidate
 	HookOwned   []string      `yaml:"hook_owned"`   // if set, path prefixes the hook may change; any other change is a failure
 	HookTimeout time.Duration `yaml:"hook_timeout"` // a hook still running after this is a failure
+	HookScript  string        `yaml:"hook_script"`  // instead of hook: a script on main that the test job runs; see hooked.go
 }
 
 type Committer struct {
@@ -125,7 +126,7 @@ var known = map[string][]string{
 	"admission":         {"prefix", "control_prefix", "operators_file"},
 	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
 	"batch.adaptive":    {"start", "min", "grow_after"},
-	"compose":           {"committer", "hook", "hook_owned", "hook_timeout"},
+	"compose":           {"committer", "hook", "hook_owned", "hook_timeout", "hook_script"},
 	"compose.committer": {"name", "email"},
 	"lander":            {"max_failures", "lease_ref", "scratch"},
 	"store":             {"ref"},
@@ -134,7 +135,11 @@ var known = map[string][]string{
 }
 
 // Parse reads one queue's config file, refusing unknown keys and values.
-func Parse(data []byte) (Config, error) {
+func Parse(data []byte) (Config, error) { return ParseWith(data, nil) }
+
+// ParseWith is Parse with set, if not nil, applied before validation, so a
+// caller may supply values the file leaves out.
+func ParseWith(data []byte, set func(*Config)) (Config, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return Config{}, errors.New("config is not valid YAML") // a yaml error may quote a value
@@ -151,6 +156,9 @@ func Parse(data []byte) (Config, error) {
 	c := Defaults()
 	if err := doc.Content[0].Decode(&c); err != nil {
 		return Config{}, errors.New("config: a value has the wrong type") // a yaml error may quote a value
+	}
+	if set != nil {
+		set(&c)
 	}
 	return c, c.validate()
 }
@@ -185,6 +193,9 @@ func (c Config) validate() error {
 	}
 	if slices.Contains(c.Compose.HookOwned, "") || (c.Compose.HookOwned != nil && c.Compose.Hook == nil) {
 		return errors.New("compose.hook_owned needs compose.hook and prefixes that are not empty")
+	}
+	if s := c.Compose.HookScript; s != "" && (!RepoPath(s) || c.Compose.Hook != nil || c.Compose.HookOwned != nil) {
+		return errors.New("compose.hook_script must be a path in the repository, without compose.hook or compose.hook_owned")
 	}
 	if c.Compose.HookTimeout <= 0 {
 		return errors.New("compose.hook_timeout must be positive")
@@ -240,6 +251,12 @@ func urls(n *yaml.Node, path string) error {
 }
 
 var wholeURL = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+
+// repoPath is a relative path inside the repository, as a hook script or the paths it owns.
+var repoPath = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
+
+// RepoPath says whether p is a relative path that stays inside the repository.
+func RepoPath(p string) bool { return repoPath.MatchString(p) && !strings.Contains(p, "..") }
 
 // URL refuses a value that is a scheme:// URL if it does not parse or holds userinfo in its
 // authority (between :// and the first / ? #); only an ssh:// login name with no password is

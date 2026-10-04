@@ -24,7 +24,7 @@ var _ = Describe("process output", func() {
 		scanned := 0
 		Expect(filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") ||
-				path == filepath.Join(root, "cmd", "queue", "main.go") {
+				path == filepath.Join(root, "cmd", "queue", "main.go") || path == filepath.Join(root, "cmd", "queue-resource", "main.go") {
 				return err
 			}
 			scanned++
