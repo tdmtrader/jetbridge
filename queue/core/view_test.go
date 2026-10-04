@@ -173,6 +173,10 @@ var _ = Describe("Redact", func() {
 			`{"url":"https://host","contact":"dev@example.com"}`:           `{"url":"https://host","contact":"dev@example.com"}`,
 			`{"url":"https://user:pw@host/x","contact":"dev@example.com"}`: `{"url":"https://***@host/x","contact":"dev@example.com"}`,
 			"https://user:p@ss@host/x":                                     "https://***@host/x",
+			"https://user:SEC,RET@host":                                    "https://***@host",
+			"https://us'er:pw@host":                                        "https://***@host",
+			`{"url":"https:\/\/user:SECRET@host"}`:                         `{"url":"https:\/\/***@host"}`,
+			"email me at a@b.com":                                          "email me at a@b.com",
 		} {
 			Expect(core.Redact(in)).To(Equal(want), in)
 		}

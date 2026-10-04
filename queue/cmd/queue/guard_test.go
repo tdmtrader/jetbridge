@@ -21,11 +21,13 @@ var _ = Describe("process output", func() {
 		_, self, _, _ := runtime.Caller(0)
 		root := filepath.Join(filepath.Dir(self), "..", "..")
 		var found []string
+		scanned := 0
 		Expect(filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") ||
 				path == filepath.Join(root, "cmd", "queue", "main.go") {
 				return err
 			}
+			scanned++
 			b, err := os.ReadFile(path)
 			for i, l := range strings.Split(string(b), "\n") {
 				if direct.MatchString(l) {
@@ -35,5 +37,6 @@ var _ = Describe("process output", func() {
 			return err
 		})).To(Succeed())
 		Expect(found).To(BeEmpty())
+		Expect(scanned).To(BeNumerically(">=", 19), "the scan must see the production files")
 	})
 })

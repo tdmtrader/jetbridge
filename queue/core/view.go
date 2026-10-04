@@ -14,13 +14,13 @@ import (
 // MaxViewBytes is the largest view the panel accepts.
 const MaxViewBytes = 64 << 10
 
-// userinfo is a URL's user and password: after scheme://, up to its last @, with no
-// space, / ? # " ' < > { } , [ ] or backslash, so a match never leaves its URL or quoted field.
-var userinfo = regexp.MustCompile(`://(?:[^\s/?#@"'<>{},\[\]\\]*@)+`)
+// userinfo is a URL's user and password: after :// (or the JSON-escaped :\/\/), up to the last @
+// before the first whitespace, / \ " ? or #. Commas, quotes and the like are userinfo, so they are hidden.
+var userinfo = regexp.MustCompile(`(://|:\\/\\/)(?:[^\s/?#@"\\]*@)+`)
 
 // Redact hides the user and password of every URL in text: scheme://user:pass@ becomes scheme://***@.
 // It is the one filter every reason passes through before the driver saves, announces or logs it.
-func Redact(text string) string { return userinfo.ReplaceAllString(text, "://***@") }
+func Redact(text string) string { return userinfo.ReplaceAllString(text, "${1}***@") }
 
 // RedactSnapshot is s with the reasons it holds redacted; s itself is not changed.
 func RedactSnapshot(s Snapshot) Snapshot {
