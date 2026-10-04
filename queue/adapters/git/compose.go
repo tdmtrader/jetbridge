@@ -84,6 +84,10 @@ func (c Composer) Compose(ctx context.Context, base string, entries []core.Entry
 	return git("rev-parse", "HEAD")
 }
 
+// rowsHead heads the block naming a land commit's change, one "<id> <sha>" line,
+// in the layout the old queue wrote and its readers still parse.
+const rowsHead = "Rows (row id, original sha):"
+
 var originalLine = regexp.MustCompile(`(?m)^original: ([0-9a-f]{40})$`)
 
 // ownBase returns the nearest ancestor of commit among the earlier entries and
@@ -148,7 +152,7 @@ func composeOne(git func(...string) (string, error), dir string, e core.Entry, o
 		return err
 	}
 	author, subject, _ := strings.Cut(info, "\n")
-	_, err = git("commit", "-q", "--author="+author, "-m", "land("+e.ID+"): "+subject, "-m", "original: "+e.Commit)
+	_, err = git("commit", "-q", "--author="+author, "-m", "land("+e.ID+"): "+subject, "-m", "original: "+e.Commit, "-m", rowsHead+"\n"+e.ID+" "+e.Commit)
 	return err
 }
 

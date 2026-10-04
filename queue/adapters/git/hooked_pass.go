@@ -34,6 +34,18 @@ func (r *Runner) RecordPassHooked(ctx context.Context, id, candidate, bundle str
 			return fmt.Errorf("the hook bundle must name one ref, not %d", len(refs))
 		}
 		hooked := refs[0]
+		if same, err := r.recorded(ctx, dir, id, candidate, core.Pass); err != nil {
+			return err
+		} else if same { // a retried put: accepted only with the same hook commit
+			out, err := storeGit(ctx, dir, "", "ls-remote", r.Remote, HookedRef(candidate))
+			if err != nil {
+				return err
+			}
+			if f := strings.Fields(out); len(f) != 2 || f[0] != hooked {
+				return fmt.Errorf("another hook commit for candidate %s is already recorded", candidate)
+			}
+			return nil
+		}
 		parents, err := storeGit(ctx, dir, "", "rev-list", "--parents", "-n", "1", hooked)
 		if err != nil || parents != hooked+" "+candidate {
 			return fmt.Errorf("the hook commit must be one commit whose only parent is the candidate %s", candidate)
