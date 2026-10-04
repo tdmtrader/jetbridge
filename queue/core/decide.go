@@ -19,9 +19,18 @@ const (
 	Pause Decision = "pause"
 )
 
+// Order says which green suspect may land ahead of arrival order.
+type Order string
+
+const (
+	ProvenFirst Order = "proven-first" // a green suspect lands wherever it sits (the zero value)
+	Strict      Order = "strict"       // a suspect runs alone only if it is first in the batch
+)
+
 // Policy is the part of the batch config that Decide and Bisect read.
 type Policy struct {
-	RetryNone int // retries allowed on no verdict before pausing
+	RetryNone int   // retries allowed on no verdict before pausing
+	Order     Order // empty means ProvenFirst
 }
 
 // Decide says what to do with a batch after its verdict. retries counts the

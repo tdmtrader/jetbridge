@@ -198,7 +198,7 @@ func newDriver(c config.Config, out, errw io.Writer) (d *core.Driver, closeFn fu
 	return &core.Driver{
 			Store: git.NewStore(c), Composer: git.NewComposer(c), Runner: jetbridge.New(rc, logf), Lander: lander, Notifier: notifier,
 			NewStrategy: func() core.Strategy {
-				s := &core.Serial{Max: b.Max, Policy: core.Policy{RetryNone: b.RetryNone}}
+				s := &core.Serial{Max: b.Max, Policy: core.Policy{RetryNone: b.RetryNone, Order: core.Order(b.Order)}}
 				if a := b.Adaptive; a != nil {
 					s.Adaptive = &core.Adaptive{Start: a.Start, Min: a.Min, GrowAfter: a.GrowAfter}
 				}

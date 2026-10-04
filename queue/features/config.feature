@@ -14,10 +14,10 @@ Feature: One config file describes one queue
     Then loading is refused
     And the refusal says the repository address is required
 
-  Scenario: batch.order is refused as an unknown key
-    Given a queue config file that sets batch.order
+  Scenario: batch.order defaults to proven-first, takes strict, and refuses an unknown value
+    Given a queue config file with no batch.order, one that sets it to strict and one that sets it to fifo
     When the config file is loaded
-    Then loading is refused naming the unknown key
+    Then the order is proven-first, then strict, and fifo is refused naming the allowed values
 
   Scenario: A URL holding a credential is refused naming the setting
     Given a queue config file whose repository address holds a user and password

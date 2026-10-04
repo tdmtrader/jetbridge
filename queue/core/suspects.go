@@ -32,7 +32,11 @@ func (s *Serial) suspect() string {
 	if s.failed, s.changed = nil, nil; len(failed) == 0 {
 		return "no failed-test names; bisecting by halves"
 	}
-	if top := Rank(failed, s.batch.entries, changed); len(top) > 0 && s.bisect.alone(top[0]) {
+	top := Rank(failed, s.batch.entries, changed)
+	if len(top) > 0 && s.Policy.Order == Strict && top[0] != s.batch.entries[0].ID {
+		return fmt.Sprintf("suspect %q is not first; strict order bisects by halves", top[0])
+	}
+	if len(top) > 0 && s.bisect.alone(top[0]) {
 		return fmt.Sprintf("failed tests point at %q; running it alone first", top[0])
 	}
 	return "failed tests point at no change; bisecting by halves"

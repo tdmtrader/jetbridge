@@ -102,7 +102,7 @@ var _ = Describe("queue command", func() {
 		Expect(d.MaxFailures).To(Equal(5))
 		Expect(d.Slots).To(Equal(1))
 		Expect(d.Owner).NotTo(Equal(d2.Owner))
-		Expect(d.NewStrategy()).To(Equal(&core.Serial{Max: 3, Policy: core.Policy{RetryNone: 1}}))
+		Expect(d.NewStrategy()).To(Equal(&core.Serial{Max: 3, Policy: core.Policy{RetryNone: 1, Order: core.ProvenFirst}}))
 		Expect(d.Notifier.Notify(context.Background(), core.Event{})).To(Succeed())
 	})
 
@@ -114,8 +114,18 @@ var _ = Describe("queue command", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
 		s := d.NewStrategy()
-		Expect(s).To(Equal(&core.Serial{Max: 3, Policy: core.Policy{RetryNone: 1}, Adaptive: &core.Adaptive{Start: 2, Min: 1, GrowAfter: 2}}))
+		Expect(s).To(Equal(&core.Serial{Max: 3, Policy: core.Policy{RetryNone: 1, Order: core.ProvenFirst}, Adaptive: &core.Adaptive{Start: 2, Min: 1, GrowAfter: 2}}))
 		Expect(d.NewStrategy()).NotTo(BeIdenticalTo(s))
+	})
+
+	It("reads batch.order into the strategy", func() {
+		c, err := config.Parse(fmt.Appendf(nil, sample, "/r.git", GinkgoT().TempDir()))
+		Expect(err).NotTo(HaveOccurred())
+		c.Batch.Order = "strict"
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
+		Expect(err).NotTo(HaveOccurred())
+		defer closeFn()
+		Expect(d.NewStrategy().(*core.Serial).Policy.Order).To(Equal(core.Strict))
 	})
 
 	It("A queue config with the log notifier builds its driver", func() {

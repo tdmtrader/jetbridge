@@ -101,6 +101,29 @@ var _ = Describe("Suspects", func() {
 		Expect(settled["b"].Cause).To(Equal(core.Culprit))
 	})
 
+	It("Under proven-first a green suspect lands out of arrival order", func() {
+		for _, order := range []core.Order{core.ProvenFirst, ""} {
+			h := serial("pkg/b TestB")
+			h.Policy.Order = order
+			runs, settled := drive(h, ents("a", "b", "c", "d"), nil, failsWith("c"))
+			Expect(runs).To(Equal([][]string{{"a", "b", "c", "d"}, {"b"}, {"a"}, {"c", "d"}, {"c"}, {"d"}}))
+			Expect(decisions(settled)).To(Equal(ejecting("c")))
+		}
+	})
+
+	It("Under strict order a suspect runs alone only if it is first", func() {
+		h := serial("pkg/b TestB")
+		h.Policy.Order = core.Strict
+		runs, settled := drive(h, ents("a", "b", "c", "d"), nil, failsWith("c"))
+		Expect(runs).To(Equal([][]string{{"a", "b", "c", "d"}, {"a", "b"}, {"c", "d"}, {"c"}, {"d"}}))
+		Expect(decisions(settled)).To(Equal(ejecting("c")))
+		Expect(h.notes).To(Equal([]string{`suspect "b" is not first; strict order bisects by halves`}))
+		h = serial("pkg/a TestA")
+		h.Policy.Order = core.Strict
+		runs, _ = drive(h, ents("a", "b", "c", "d"), nil, failsWith("c"))
+		Expect(runs).To(Equal([][]string{{"a", "b", "c", "d"}, {"a"}, {"b"}, {"c", "d"}, {"c"}, {"d"}}))
+	})
+
 	It("With no failed test names the batch is split in halves and the log says so", func() {
 		h := serial()
 		runs, _ := drive(h, ents("a", "b", "c", "d"), nil, failsWith("c"))

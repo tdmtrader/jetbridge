@@ -41,7 +41,7 @@ var _ = Describe("Parse", func() {
 		Expect(c.Admission.Prefix).To(Equal("refs/queue/admit/"))
 		_, err = config.Parse([]byte(minimal + "admission: {prefix: refs/queue/admit}\n"))
 		Expect(err).To(MatchError("admission.prefix must be a ref prefix under refs/ ending in /"))
-		Expect(c.Batch).To(Equal(config.Batch{Max: 4, RetryNone: 1, Strategy: "serial"}))
+		Expect(c.Batch).To(Equal(config.Batch{Max: 4, RetryNone: 1, Strategy: "serial", Order: "proven-first"}))
 		Expect(c.Runner.Content).To(HaveLen(4))
 	})
 
@@ -105,9 +105,15 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(MatchError(`unknown key "lander.lease_rf"; did you mean "lander.lease_ref"?`))
 	})
 
-	It("batch.order is refused as an unknown key", func() {
-		_, err := config.Parse([]byte(minimal + "batch: {order: strict}\n"))
-		Expect(err).To(MatchError(ContainSubstring(`unknown key "batch.order"`)))
+	It("batch.order defaults to proven-first, takes strict, and refuses an unknown value", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Order).To(Equal("proven-first"))
+		c, err = config.Parse([]byte(minimal + "batch: {order: strict}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Order).To(Equal("strict"))
+		_, err = config.Parse([]byte(minimal + "batch: {order: fifo}\n"))
+		Expect(err).To(MatchError("batch.order: unsupported value; use one of: proven-first, strict"))
 	})
 
 	It("refuses an unknown value, listing the allowed ones", func() {

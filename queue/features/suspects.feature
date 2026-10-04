@@ -39,3 +39,18 @@ Feature: Trying the likeliest change first
     When their batch fails
     Then the batch is split in halves as usual
     And the log says "no failed-test names; bisecting by halves"
+
+  Scenario: Under proven-first a green suspect lands out of arrival order
+    Given changes "a", "b", "c" and "d" are admitted and only "c" is broken
+    And batch.order is proven-first, the default
+    And the failed tests point at "b"
+    When their batch fails
+    Then "b" is tested alone on main first, passes and lands ahead of "a"
+
+  Scenario: Under strict order a suspect runs alone only if it is first
+    Given changes "a", "b", "c" and "d" are admitted and only "c" is broken
+    And batch.order is strict
+    And the failed tests point at "b"
+    When their batch fails
+    Then the batch is split in halves in arrival order and the log says why
+    And "c" is ejected and "a", "b" and "d" are landed

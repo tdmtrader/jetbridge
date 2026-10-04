@@ -50,6 +50,7 @@ type Batch struct {
 	Max       int    `yaml:"max"`
 	RetryNone int    `yaml:"retry_none"`
 	Strategy  string `yaml:"strategy"` // which core Strategy runs the queue
+	Order     string `yaml:"order"`    // proven-first or strict: who may land ahead of arrival order
 	// Adaptive, if set, sizes batches from Start by their results; nil keeps max fixed.
 	Adaptive *Adaptive `yaml:"adaptive"`
 }
@@ -97,7 +98,8 @@ func Defaults() Config {
 		// 0 merged PRs ever: work arrives as pushed branches.
 		Admission: Admission{Source: "refs", Prefix: "refs/queue/admit/", ControlPrefix: "refs/queue/control/"},
 		// Small batches bisect cheaply; one retry rides out an infra blip.
-		Batch:   Batch{Max: 4, RetryNone: 1, Strategy: "serial"},
+		// Order is fairness, not correctness: every landing is tested on the main it lands on.
+		Batch:   Batch{Max: 4, RetryNone: 1, Strategy: "serial", Order: "proven-first"},
 		Compose: Compose{Committer: Committer{Name: "merge-queue", Email: "merge-queue@localhost"}, HookTimeout: 15 * time.Minute},
 		// Merge commits are disabled in the repo settings. Three land errors in a
 		// row is past a race on main; a person should look.
@@ -113,7 +115,7 @@ var known = map[string][]string{
 	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
 	"admission":         {"source", "prefix", "control_prefix", "operators_file"},
-	"batch":             {"max", "retry_none", "strategy", "adaptive"},
+	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
 	"batch.adaptive":    {"start", "min", "grow_after"},
 	"compose":           {"committer", "hook", "hook_owned", "hook_timeout"},
 	"compose.committer": {"name", "email"},
@@ -196,6 +198,7 @@ func (c Config) validate() error {
 		oneOf("apiVersion", c.APIVersion, APIVersion),
 		oneOf("admission.source", c.Admission.Source, "refs"),
 		oneOf("batch.strategy", c.Batch.Strategy, "serial"),
+		oneOf("batch.order", c.Batch.Order, "proven-first", "strict"),
 	)
 }
 
