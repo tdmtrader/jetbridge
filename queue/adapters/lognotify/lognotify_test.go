@@ -158,6 +158,12 @@ var _ = Describe("Parse and Open", func() {
 		Expect(st.Mode().Perm()).To(Equal(os.FileMode(0o644)))
 	})
 
+	It("names the setting, never the path, when the file cannot be opened", func() {
+		_, err := lognotify.Open(lognotify.Config{Kind: "log", Path: filepath.Join(GinkgoT().TempDir(), "no-dir-F4ke", "q.log")}, io.Discard)
+		Expect(err).To(MatchError(ContainSubstring("notify.path: ")))
+		Expect(err.Error()).NotTo(ContainSubstring("F4ke"))
+	})
+
 	It("refuses an unknown kind", func() {
 		_, err := lognotify.Parse(section("{kind: slack, path: x}"))
 		Expect(err).To(MatchError(ContainSubstring(`notify.kind: unsupported value`)))

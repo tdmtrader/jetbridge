@@ -276,6 +276,30 @@ var _ = Describe("queue command", func() {
 		}
 	})
 
+	It("refuses a notify path holding a credential at load, never echoing it", func() {
+		old := core.Secrets
+		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
+		DeferCleanup(func() { core.Secrets = old })
+		cfg := string(must(os.ReadFile(file))) + "notify: {kind: log, path: \"https://user:F4ke,Pa55@host/events.jsonl\"}\n"
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		var o, e bytes.Buffer
+		Expect(entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)).To(Equal(1))
+		Expect(o.String() + e.String()).NotTo(MatchRegexp("F4ke|Pa55"))
+		Expect(e.String()).To(ContainSubstring("notify.path: a URL must not hold credentials"))
+	})
+
+	It("reads, admits and resumes with a runner section only run refuses", func() {
+		Expect(os.WriteFile(file, append(must(os.ReadFile(file)), "  wait_cap: 0s\n"...), 0o600)).To(Succeed())
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		for _, args := range [][]string{{"status"}, {"admit", "a", sha}, {"resume"}} {
+			code, _, errw := queue(append([]string{args[0], "--config", file}, args[1:]...)...)
+			Expect(code).To(Equal(0), "%v: %s", args, errw)
+		}
+		code, _, errw := queue("run", "--config", file, "--once")
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("runner.wait_cap must be more than zero"))
+	})
+
 	It("hides a password with a comma in a --config path it cannot open", func() {
 		old := core.Secrets
 		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec

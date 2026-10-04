@@ -56,7 +56,7 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
 		_, err = config.Parse([]byte("apiVersion: https://user:SECRET@host\nrepository: {uri: u}\n"))
-		Expect(err).To(MatchError(`apiVersion: unsupported value; use one of: jetbridge.dev/queue/v2`))
+		Expect(err).To(MatchError(ContainSubstring("apiVersion: a URL must not hold credentials")))
 		_, err = config.Parse([]byte(minimal + "repository: {main: \"https://user:SECRET@host\", candidate: \"https://user:SECRET@host\"}\n"))
 		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
 		_, err = config.Parse([]byte(minimal + "batch: {strategey: serial}\n"))
@@ -157,16 +157,41 @@ var _ = Describe("Parse", func() {
 
 	It("A URL holding a credential is refused naming the setting", func() {
 		for _, uri := range []string{"https://user:F4ke/Pa55@host/%zz", "https://user:F4kePa55@host/repo.git",
-			"https://F4keTok3n@host/repo.git", "ssh://git:F4kePa55@host/repo.git", "https://host/F4ke@x"} {
+			"https://F4keTok3n@host/repo.git", "ssh://git:F4kePa55@host/repo.git"} {
 			_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: '" + uri + "'}\n"))
 			Expect(err).To(MatchError(ContainSubstring("repository.uri: a URL must not hold credentials")), "uri %q", uri)
 			Expect(err.Error()).NotTo(ContainSubstring("F4ke"), "uri %q", uri)
 		}
-		for _, uri := range []string{"ssh://git@host/repo.git", "git@host:org/repo.git", "/srv/repo.git", "file:///srv/repo.git"} {
+		for _, uri := range []string{"ssh://git@host/repo.git", "git@host:org/repo.git", "/srv/repo.git", "file:///srv/repo.git", "https://host/F4ke@x"} {
 			_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: '" + uri + "'}\n"))
 			Expect(err).NotTo(HaveOccurred(), "uri %q", uri) // an ssh login name is no secret
 		}
 		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: 'https://host/%zz'}\n"))
-		Expect(err).To(MatchError(`repository.uri: invalid URL escape "%zz"`))
+		Expect(err).To(MatchError(ContainSubstring("repository.uri: a URL must not hold credentials and must parse")))
+		Expect(err.Error()).NotTo(ContainSubstring("%zz"))
+	})
+
+	It("checks every string in the file for a URL credential, naming only its path", func() {
+		for extra, key := range map[string]string{
+			"notify: {kind: log, path: 'https://user:F4ke,Pa55@host/events.jsonl'}\n": "notify.path",
+			"runner: {kind: jetbridge, anything: ['https://F4keTok3n@host/x']}\n":     "runner.anything",
+			"lander: {scratch: 'https://user:F4ke@host/x'}\n":                         "lander.scratch",
+			"'https://user:F4ke@host/x': 1\n":                                         "config",
+		} {
+			_, err := config.Parse([]byte(minimal + extra))
+			Expect(err).To(MatchError(ContainSubstring(key+": a URL must not hold credentials")), extra)
+			Expect(err.Error()).NotTo(MatchRegexp("F4ke|Pa55"), extra)
+		}
+	})
+
+	It("looks for credentials only in a URL's authority", func() {
+		for _, uri := range []string{"file:///tmp/queue@home.git", "https://host?contact=dev@example.com", "https://host/x#dev@example.com"} {
+			_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: '" + uri + "'}\n"))
+			Expect(err).NotTo(HaveOccurred(), "uri %q", uri)
+		}
+		// the authority "user:F4ke" has no @, but it does not parse (an invalid port), so it is refused
+		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: 'https://user:F4ke/Pa55@host/%zz'}\n"))
+		Expect(err).To(MatchError(ContainSubstring("repository.uri: a URL must not hold credentials")))
+		Expect(err.Error()).NotTo(MatchRegexp("F4ke|Pa55"))
 	})
 })

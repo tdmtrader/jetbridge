@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -55,7 +57,9 @@ func Open(c Config, stdout io.Writer) (*Notifier, error) {
 		return New(stdout), nil
 	}
 	f, err := os.OpenFile(c.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	if pe := (*fs.PathError)(nil); errors.As(err, &pe) {
+		return nil, fmt.Errorf("notify.path: %s: %w", pe.Op, pe.Err) // the setting, never the path
+	} else if err != nil {
 		return nil, err
 	}
 	return &Notifier{w: f, f: f}, nil

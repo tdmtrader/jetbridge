@@ -140,15 +140,15 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	return 0
 }
 
-// register gives core.Secrets the runner's token before any adapter runs; a runner section
-// that does not parse, a URL holding credentials among them, is refused at load.
+// register gives core.Secrets the runner's token before any adapter runs. config.Parse has
+// refused any URL holding credentials; only run validates the whole runner section.
 func register(c config.Config) error {
 	if c.Runner.IsZero() {
 		return nil
 	}
-	rc, err := jetbridge.Parse(&c.Runner)
-	if err != nil {
-		return err
+	var rc jetbridge.Config
+	if err := c.Runner.Decode(&rc); err != nil {
+		return errors.New("runner: a value has the wrong type") // a yaml error may quote a value
 	}
 	token, _ := rc.Secret()
 	core.Secrets.Add(token)

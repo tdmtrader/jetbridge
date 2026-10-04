@@ -17,6 +17,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/concourse/concourse/queue/adapters/jetbridge"
+	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/core"
 )
 
@@ -376,7 +377,7 @@ var _ = Describe("JetBridge runner", func() {
 
 		It("refuses a url holding a credential, naming the setting and never the value", func() {
 			for _, u := range []string{"https://user:F4ke/Pa55@host/%zz", "https://user:F4kePa55@host", "https://F4keTok3n@host"} {
-				_, err := parse(strings.Replace(ok, "https://ci.example.test", "'"+u+"'", 1) + "}")
+				_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: /r.git}\nrunner: " + strings.Replace(ok, "https://ci.example.test", "'"+u+"'", 1) + "}\n"))
 				Expect(err).To(MatchError(ContainSubstring("runner.url: a URL must not hold credentials")), "url %q", u)
 				Expect(err.Error()).NotTo(ContainSubstring("F4ke"), "url %q", u)
 			}

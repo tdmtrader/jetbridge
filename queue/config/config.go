@@ -3,6 +3,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/url"
@@ -112,6 +113,9 @@ func Parse(data []byte) (Config, error) {
 	if len(doc.Content) == 0 {
 		return Config{}, errors.New("config file is empty")
 	}
+	if err := urls(doc.Content[0], ""); err != nil {
+		return Config{}, err
+	}
 	if err := Strict(doc.Content[0], "", known); err != nil {
 		return Config{}, err
 	}
@@ -125,9 +129,6 @@ func Parse(data []byte) (Config, error) {
 func (c Config) validate() error {
 	if c.Repository.URI == "" {
 		return errors.New("repository.uri is required; it is never guessed")
-	}
-	if err := URL("repository.uri", c.Repository.URI); err != nil {
-		return err
 	}
 	if c.Batch.Max < 1 || c.Batch.RetryNone < 0 {
 		return errors.New("batch.max must be at least 1 and batch.retry_none at least 0")
@@ -168,22 +169,36 @@ func (c Config) validate() error {
 	)
 }
 
-// URL refuses a scheme:// value that holds credentials, or that does not parse, naming key
-// and never the value. Only an ssh:// login name with no password is allowed before an @;
-// any other @ after :// is refused, so a URL too broken to parse is refused too. Values with
-// no :// (paths, git@host:repo) are left to git.
+// urls refuses a URL holding credentials in any scalar of the file, keys included, before
+// any other check can quote one; the refusal names the key path, never the value.
+func urls(n *yaml.Node, path string) error {
+	if n.Kind == yaml.ScalarNode {
+		return URL(cmp.Or(path, "config"), n.Value)
+	}
+	for i, child := range n.Content {
+		p := path
+		if n.Kind == yaml.MappingNode && i%2 == 1 { // the key before it was checked first
+			p = join(path, n.Content[i-1].Value)
+		}
+		if err := urls(child, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// URL refuses a scheme:// value that does not parse, or that holds userinfo in its authority
+// (between :// and the first / ? #), naming key and never the value. Only an ssh:// login name
+// with no password is allowed. Values with no :// (paths, git@host:repo) are left to git.
 func URL(key, value string) error {
 	_, rest, ok := strings.Cut(value, "://")
 	if !ok {
 		return nil
 	}
+	authority := rest[:strings.IndexAny(rest+"/", "/?#")]
 	u, err := url.Parse(value)
-	if strings.Contains(rest, "@") && (err != nil || !sshLogin(u)) {
-		return fmt.Errorf("%s: a URL must not hold credentials; give them to git or the runner out of band (see Credentials in the README)", key)
-	}
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return fmt.Errorf("%s: %w", key, ue.Err)
+	if err != nil || (strings.Contains(authority, "@") || u.User != nil) && !sshLogin(u) {
+		return fmt.Errorf("%s: a URL must not hold credentials and must parse; give credentials to git or the runner out of band (see Credentials in the README)", key)
 	}
 	return nil
 }
