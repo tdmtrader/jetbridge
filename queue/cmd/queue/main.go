@@ -266,6 +266,7 @@ type ejection struct {
 	Cause string    `json:",omitempty"`
 	Owner string    `json:",omitempty"`
 	At    time.Time `json:",omitzero"`
+	core.Failure
 }
 
 // summary is what status prints: ids and commits only, never the config.
@@ -287,7 +288,7 @@ func summary(s core.Snapshot) any {
 	ejected := []ejection{}
 	for id := range s.Ejected {
 		r := why[id]
-		ejected = append(ejected, ejection{id, r.Why, r.Cause, r.Owner, r.At})
+		ejected = append(ejected, ejection{id, r.Why, r.Cause, r.Owner, r.At, r.Failure})
 	}
 	slices.SortFunc(ejected, func(a, b ejection) int { return strings.Compare(a.ID, b.ID) })
 	landed := []string{}

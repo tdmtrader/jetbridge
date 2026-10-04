@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/queue/core"
@@ -82,7 +83,7 @@ func readVerb(verb, main string, s core.Snapshot, id string, asJSON bool, out io
 		rows := []ejection{}
 		for _, r := range slices.Backward(s.Settled) { // newest first
 			if r.Kind == core.EjectedEvent {
-				rows = append(rows, ejection{r.ID, r.Why, r.Cause, r.Owner, r.At})
+				rows = append(rows, ejection{r.ID, r.Why, r.Cause, r.Owner, r.At, r.Failure})
 			}
 		}
 		if asJSON {
@@ -90,6 +91,7 @@ func readVerb(verb, main string, s core.Snapshot, id string, asJSON bool, out io
 		}
 		for _, r := range rows {
 			fmt.Fprintf(out, "%s why %q cause %q at %s\n", r.ID, r.Why, r.Cause, r.At.Format(time.RFC3339))
+			fmt.Fprint(out, failedLine(r.Failure))
 		}
 	default:
 		h, ok := explain(s, id)
@@ -105,6 +107,7 @@ func readVerb(verb, main string, s core.Snapshot, id string, asJSON bool, out io
 		}
 		for _, r := range h.Settled {
 			fmt.Fprintf(out, "settle %s at %s why %q cause %q run %q\n", r.Kind, r.At.Format(time.RFC3339), r.Why, r.Cause, r.Run)
+			fmt.Fprint(out, failedLine(r.Failure))
 		}
 		for _, r := range h.Refused {
 			fmt.Fprintf(out, "refused %s: %s\n", short(r.Commit), r.Why)
@@ -145,6 +148,18 @@ func explain(s core.Snapshot, id string) (h history, ok bool) {
 		}
 	}
 	return h, h.State != "unknown" || len(h.Settled) > 0 || len(h.Refused) > 0 || h.Commit != ""
+}
+
+// failedLine is the one line naming a record's failing tests; nothing for a record without.
+func failedLine(f core.Failure) string {
+	if len(f.Failed) == 0 {
+		return ""
+	}
+	line := "  failed: " + strings.Join(f.Failed[:min(len(f.Failed), 5)], ", ")
+	if len(f.Failed) > 5 {
+		line += fmt.Sprintf(" (+%d more)", len(f.Failed)-5)
+	}
+	return line + " on " + f.FailedOn + "\n"
 }
 
 func short(sha string) string { return sha[:min(len(sha), 8)] }

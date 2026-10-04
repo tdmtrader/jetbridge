@@ -47,6 +47,7 @@ type Driver struct {
 	s      *Snapshot
 	q      *Queue
 	st     Strategy
+	red    Failure // the latest red verdict's failing tests, for the eject or flake it leads to
 }
 
 // Admit queues an entry that builds on the given entry IDs.
@@ -314,6 +315,16 @@ func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", cmp.Or(f.BaseSHA, "unknown"), cmp.Or(d.main, "unknown")))
 	}
 	d.hint(ctx, f, v) // only a verdict that is used gives a hint
+	if v == Fail {
+		d.red = Failure{}
+		if r, ok := d.Runner.(FailureReporter); ok {
+			names := r.FailedTests(f.Run.ID)
+			d.red.Failed = slices.Clone(names[:min(len(names), MaxFailed)])
+		}
+		if b, ok := d.Runner.(interface{ BuiltOn(string) string }); ok && len(d.red.Failed) > 0 {
+			d.red.FailedOn = b.BuiltOn(f.Run.ID)
+		}
+	}
 	out, err := d.st.Record(d.view(), f.Run.ID, v)
 	for _, n := range out.Notes {
 		d.logf("%s: %s", f.Run.ID, n)
@@ -331,7 +342,7 @@ func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 	var flakes []Event // recorded first, so the save of the outcome carries them
 	for _, es := range out.Flakes {
-		ev := Event{Kind: FlakeEvent, Entries: es, Run: f.Run, Why: "red as a batch, green when split", At: d.now()}
+		ev := Event{Kind: FlakeEvent, Entries: es, Run: f.Run, Why: "red as a batch, green when split", At: d.now(), Failure: d.red}
 		d.settled(ev)
 		flakes = append(flakes, ev)
 	}
@@ -362,7 +373,7 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 				d.logf("eject: %v", err)
 				continue
 			}
-			ev.Kind = EjectedEvent
+			ev.Kind, ev.Failure = EjectedEvent, d.red
 			mark(d.s.Ejected, st.Entries)
 		case Pause:
 			ev.Kind = PausedEvent
@@ -587,7 +598,7 @@ func (d *Driver) settled(ev Event) {
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {
-		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base})
+		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base, ev.Failure})
 	}
 	d.s.Settled = d.s.Settled[max(0, len(d.s.Settled)-MaxSettled):]
 }

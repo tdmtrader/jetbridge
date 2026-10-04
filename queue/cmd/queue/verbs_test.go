@@ -103,6 +103,16 @@ var _ = Describe("read verbs", func() {
 		Expect(rows[0].ID).To(Equal("y"))
 	})
 
+	It("An eject keeps the failing test names and the build they came from", func() {
+		s := snap
+		s.Settled = []core.SettleRecord{{ID: "x", Kind: core.EjectedEvent, Failure: core.Failure{Failed: []string{"a", "b", "c", "d", "e", "f"}, FailedOn: "job t build 7"}}}
+		for _, verb := range []string{"ejected", "explain"} {
+			var b bytes.Buffer
+			Expect(readVerb(verb, "", s, "x", false, &b)).To(Succeed())
+			Expect(b.String()).To(ContainSubstring("  failed: a, b, c, d, e (+1 more) on job t build 7\n"))
+		}
+	})
+
 	It("Explain shows one change's admit, runs, settle records and refusals", func() {
 		out, err := read("explain", "x", false)
 		Expect(err).NotTo(HaveOccurred())

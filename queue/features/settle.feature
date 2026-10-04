@@ -28,3 +28,9 @@ Feature: Every settled change leaves a record
     Given changes "a" and "b" are admitted and their batch is flaky
     When the store fails on the save after the landing
     Then the saved state holds the landing and its flake, or neither
+
+  Scenario: An eject keeps the failing test names and the build they came from
+    Given a change "b" that fails with the tests "TestOne" and "TestTwo" on a named build
+    When the queue runs and ejects it
+    Then its eject record keeps the failing test names and the build
+    And the operator sees them when listing the ejected changes

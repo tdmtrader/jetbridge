@@ -31,6 +31,7 @@ type Runner struct {
 	Log    func(format string, args ...any)
 	runs   map[string]*run
 	failed map[string][]string // the names a failed run's log gave, by run ID
+	builds map[string]string   // "job <job> build <n>" of a failed run, by run ID
 }
 
 type run struct {
@@ -48,7 +49,7 @@ type item struct {
 // New returns a Runner with a 30s HTTP timeout, the wall clock and the given logger.
 func New(c Config, logf func(format string, args ...any)) *Runner {
 	return &Runner{Config: c, Client: &http.Client{Timeout: 30 * time.Second}, Now: time.Now, Log: logf,
-		runs: map[string]*run{}, failed: map[string][]string{}}
+		runs: map[string]*run{}, failed: map[string][]string{}, builds: map[string]string{}}
 }
 
 // Start begins a run, first releasing any run in flight (best effort).
@@ -100,6 +101,7 @@ func (j *Runner) Poll(ctx context.Context, id string) (core.Verdict, bool, error
 			v = verdict
 			if v == core.Fail {
 				j.failed[id] = j.failedTests(ctx, r.build)
+				j.builds[id] = fmt.Sprintf("job %s build %d", j.Config.Job, r.build)
 			}
 		}
 	}
@@ -237,5 +239,8 @@ func (j *Runner) failedTests(ctx context.Context, build int) []string {
 	}
 	return names
 }
+
+// BuiltOn is the job and build a failed run was tested on.
+func (j *Runner) BuiltOn(id string) string { return j.builds[id] }
 
 var _ core.FailureReporter = (*Runner)(nil)

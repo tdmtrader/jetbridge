@@ -50,7 +50,17 @@ type SettleRecord struct {
 	Batch      []string
 	Owner      string // the owner of the entry, kept so an eject says whom it concerns
 	Base       string // the sha the run was tested on; kept on a recompose
+	Failure
 }
+
+// Failure is what a red run's log named: the failing test names (at most
+// MaxFailed) and the job and build the runner tested on. Kept in an eject or flake record.
+type Failure struct {
+	Failed   []string `json:",omitempty"`
+	FailedOn string   `json:",omitempty"`
+}
+
+const MaxFailed = 20
 
 // Refusal is a change refused at admission: never queued, its reason kept.
 type Refusal struct{ ID, Commit, Why string }
@@ -188,6 +198,7 @@ type Event struct {
 	Parent  string
 	At      time.Time // when the driver announced it, from its clock
 	Base    string    // the sha the run was tested on; set on a recompose
+	Failure
 }
 
 // Notifier announces events; its error is logged and dropped, never changing a decision.
