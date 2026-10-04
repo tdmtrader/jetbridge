@@ -23,9 +23,10 @@ type Source struct {
 	ConfigFile string `json:"config_file"` // or a path to it
 	Owner      string `json:"owner"`       // the fixed lease owner, so each check renews the lease
 	WaitCap    string `json:"wait_cap"`    // how long a run waits for a verdict; default 1h
+	BatchMax   int    `json:"batch_max"`   // if set, replaces batch.max, so the pipeline raises the cap without a new image
 }
 
-// LoadConfig reads the queue config, inline or from a file; source.uri and source.main, if set, replace the config's.
+// LoadConfig reads the queue config, inline or from a file; source.uri, source.main and source.batch_max, if set, replace the config's.
 func LoadConfig(s Source) (config.Config, error) {
 	data := []byte(s.Config)
 	if (s.Config == "") == (s.ConfigFile == "") {
@@ -43,6 +44,7 @@ func LoadConfig(s Source) (config.Config, error) {
 	}
 	return config.ParseWith(data, func(c *config.Config) {
 		c.Repository.URI, c.Repository.Main = cmp.Or(s.URI, c.Repository.URI), cmp.Or(s.Main, c.Repository.Main)
+		c.Batch.Max = cmp.Or(s.BatchMax, c.Batch.Max)
 	})
 }
 
