@@ -7,16 +7,11 @@
   {{- fail "artifactDaemon.durable.existingSecret supplies s3 credentials and must be empty for gcs; use Workload Identity/Application Default Credentials" }}
 {{- end }}
 {{- if $hangarEnabled }}
-  {{- $store := default .Values.artifactDaemon.durable.store .Values.artifactDaemon.hangar.store }}
-  {{- if not (has $store (list "gcs" "disk")) }}
-    {{- fail "artifactDaemon.hangar.store must be gcs or disk (or inherit durable.store=gcs)" }}
+  {{- if not (has .Values.artifactDaemon.hangar.store (list "gcs" "disk")) }}
+    {{- fail "artifactDaemon.hangar.store is required when Hangar is enabled and must be gcs or disk" }}
   {{- end }}
-  {{- $bucket := .Values.artifactDaemon.hangar.bucket }}
-  {{- if not .Values.artifactDaemon.hangar.store }}
-    {{- $bucket = .Values.artifactDaemon.durable.bucket }}
-  {{- end }}
-  {{- if empty $bucket }}
-    {{- fail "artifactDaemon.hangar.bucket (or inherited durable.bucket) is required when Hangar is enabled" }}
+  {{- if empty .Values.artifactDaemon.hangar.bucket }}
+    {{- fail "artifactDaemon.hangar.bucket is required when Hangar is enabled" }}
   {{- end }}
   {{- if and (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
     {{- fail "artifactDaemon.hangar.allowGeneratedKey=true is required to generate hangar.key; offline/GitOps rendering must use artifactDaemon.tls.existingSecret" }}
@@ -119,7 +114,6 @@ spec:
             # The daemon adds concourse.dev/hangar-v1=ready to its node only
             # after strict GCS, key, TLS, and scratch validation succeeds.
             - --hangar-enabled
-            {{- if .Values.artifactDaemon.hangar.store }}
             - --hangar-store={{ .Values.artifactDaemon.hangar.store }}
             - --hangar-bucket={{ .Values.artifactDaemon.hangar.bucket }}
             - --hangar-prefix={{ .Values.artifactDaemon.hangar.prefix }}
@@ -130,7 +124,6 @@ spec:
             - --hangar-ca-cert=/etc/concourse/hangar-disk/ca.crt
             {{- else if .Values.artifactDaemon.hangar.endpoint }}
             - --hangar-endpoint={{ .Values.artifactDaemon.hangar.endpoint }}
-            {{- end }}
             {{- end }}
             - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
             {{- if .Values.artifactDaemon.hangar.keySecret }}
