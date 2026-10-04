@@ -192,7 +192,16 @@ func (d *Driver) resumeRequested(ctx context.Context) error {
 	}
 	for _, r := range reqs {
 		var stale *StaleResumeError
-		if err := d.Resume(ctx, r.Seq); errors.As(err, &stale) {
+		if r.Why != "" {
+			ref := Refusal{fmt.Sprintf("resume-%d", r.Seq), r.SHA, r.Why}
+			d.s.Refused = append(d.s.Refused, ref)[max(0, len(d.s.Refused)+1-MaxRefused):]
+			ev := Event{Kind: RefusedEvent, Entries: []Entry{{ID: ref.ID, Commit: r.SHA}}, Why: r.Why, At: d.now()}
+			d.settled(ev)
+			if err := d.save(ctx); err != nil {
+				return err
+			}
+			d.notify(ctx, ev)
+		} else if err := d.Resume(ctx, r.Seq); errors.As(err, &stale) {
 			d.logf("resume request ignored: %v", err)
 		} else if err != nil {
 			return err

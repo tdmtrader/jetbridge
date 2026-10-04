@@ -41,7 +41,7 @@ type Admission struct {
 	Source        string `yaml:"source"`
 	Prefix        string `yaml:"prefix"`         // refs: a change is admitted by pushing it to <prefix><id>
 	ControlPrefix string `yaml:"control_prefix"` // the operator's requests to the runner go under it
-	// OperatorsFile, if set, is a git allowed-signers file (ssh keys): only a change signed by one of its keys is admitted.
+	// OperatorsFile, if set, is a git allowed-signers file (ssh keys): only a change, resume or promote request signed by one of its keys is honoured.
 	OperatorsFile string `yaml:"operators_file"`
 }
 

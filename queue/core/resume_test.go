@@ -102,6 +102,19 @@ var _ = Describe("Driver resume requests", func() {
 		Expect(res.stillPaused).To(BeFalse(), "deleted only after the save")
 	})
 
+	It("A refused resume request is recorded and deleted and does not resume the queue", func() {
+		_, err := store.Save(ctx, 0, core.Snapshot{Version: "0", Paused: true, PauseSeq: 1, Why: "no verdict after 1 retries"})
+		Expect(err).NotTo(HaveOccurred())
+		res.reqs = append(res.reqs, core.ResumeRequest{Seq: 1, SHA: "sha-main", Why: "resume request sha-mai is not signed by an operator"})
+		Expect(driver().Step(ctx)).To(Succeed())
+		Expect(store.snap().Paused).To(BeTrue())
+		Expect(note.of(core.ResumedEvent)).To(BeEmpty())
+		Expect(note.of(core.RefusedEvent)).To(HaveLen(1))
+		Expect(store.snap().Refused).To(HaveLen(1))
+		Expect(store.snap().Refused[0].Why).To(ContainSubstring("not signed by an operator"))
+		Expect(res.reqs).To(BeEmpty(), "the request is deleted")
+	})
+
 	It("A resume request on a queue that is not paused is deleted and changes nothing", func() {
 		d := driver()
 		Expect(d.Step(ctx)).To(Succeed())

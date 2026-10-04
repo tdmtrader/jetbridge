@@ -2,9 +2,11 @@ package git_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -216,13 +218,7 @@ var _ = Describe("Resumes", func() {
 var _ = Describe("Signed admits", func() {
 	ctx := context.Background()
 
-	// key makes an ed25519 key in dir and returns its path; the key is never read or printed here.
-	key := func(dir, name string) string {
-		f := filepath.Join(dir, name)
-		out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", f).CombinedOutput()
-		Expect(err).NotTo(HaveOccurred(), string(out))
-		return f
-	}
+	key := sshKey
 
 	It("With operators configured, a change signed by an operator is admitted and any other is refused", func() {
 		r, dir := newRemote(), GinkgoT().TempDir()
@@ -313,4 +309,82 @@ var _ = Describe("Admission owner", func() {
 		Entry("a colon then text", "user:secret", "unknown"),
 		Entry("a colon then space is kept", "Team: Alice", "Team: Alice"),
 	)
+})
+
+// sshKey makes an ed25519 key in dir and returns its path; the key is never read or printed here.
+func sshKey(dir, name string) string {
+	f := filepath.Join(dir, name)
+	out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", f).CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(out))
+	return f
+}
+
+var _ = Describe("Signed resumes", func() {
+	ctx := context.Background()
+	setup := func(operators string) (*remote, config.Config, string) {
+		r := newRemote()
+		c := config.Defaults()
+		c.Repository.URI, c.Repository.Main, c.Admission.OperatorsFile = r.bare, "main", operators
+		store := git.NewStore(c)
+		l, err := store.Acquire(ctx, "runner", time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		snap, err := store.Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		snap.Paused, snap.PauseSeq = true, 3
+		_, err = store.Save(ctx, l.Token, snap)
+		Expect(err).NotTo(HaveOccurred())
+		return r, c, c.Admission.ControlPrefix + "resume-"
+	}
+	signWith := func(k string) {
+		for i, kv := range [][2]string{{"gpg.format", "ssh"}, {"user.signingkey", k}} {
+			n := strconv.Itoa(i)
+			GinkgoT().Setenv("GIT_CONFIG_KEY_"+n, kv[0])
+			GinkgoT().Setenv("GIT_CONFIG_VALUE_"+n, kv[1])
+		}
+		GinkgoT().Setenv("GIT_CONFIG_COUNT", "2")
+	}
+
+	It("With operators configured, a resume signed by an operator is honoured and any other is refused", func() {
+		dir := GinkgoT().TempDir()
+		op, other := sshKey(dir, "op"), sshKey(dir, "other")
+		pub, err := os.ReadFile(op + ".pub")
+		Expect(err).NotTo(HaveOccurred())
+		operators := filepath.Join(dir, "operators")
+		Expect(os.WriteFile(operators, append([]byte("t@example.com "), pub...), 0o600)).To(Succeed())
+		r, c, prefix := setup(operators)
+		res := &git.Resumes{Lander: r.lander(), Prefix: prefix, Operators: operators}
+		why := func() map[uint64]string {
+			reqs, err := res.Pending(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			out := map[uint64]string{}
+			for _, q := range reqs {
+				out[q.Seq] = q.Why
+			}
+			return out
+		}
+
+		signWith(op)
+		Expect(git.Resume(ctx, c, r.work)).To(Succeed())
+		Expect(why()).To(Equal(map[uint64]string{3: ""}), "signed by an operator")
+
+		run(r.bare, "update-ref", prefix+"4", r.main())
+		strange := run(r.work, "-c", "gpg.format=ssh", "-c", "user.signingkey="+other, "commit-tree", "-S", run(r.work, "mktree"), "-p", r.base, "-m", "x")
+		run(r.work, "push", "-q", r.bare, strange+":"+prefix+"5")
+		got := why()
+		Expect(got[3]).To(BeEmpty())
+		Expect(got[4]).To(Equal(fmt.Sprintf("resume request %.7s is not signed by an operator", r.main())), "unsigned")
+		Expect(got[5]).To(Equal(fmt.Sprintf("resume request %.7s is not signed by an operator", strange)), "unknown signer")
+		for _, w := range got {
+			Expect(w).NotTo(ContainSubstring("ssh-ed25519"))
+		}
+	})
+
+	It("With no operators configured, a resume request is honoured unsigned", func() {
+		r, c, prefix := setup("")
+		Expect(git.Resume(ctx, c, r.work)).To(Succeed())
+		Expect(run(r.bare, "rev-parse", prefix+"3")).To(Equal(r.main()), "pushed as is, not re-signed")
+		reqs, err := (&git.Resumes{Lander: r.lander(), Prefix: prefix}).Pending(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reqs).To(Equal([]core.ResumeRequest{{Seq: 3, SHA: r.main()}}))
+	})
 })

@@ -118,9 +118,9 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		if err := SafeID(p.ID); err != nil {
 			ps[i].Why = err.Error()
 		}
-		if a.Operators != "" && ps[i].Why == "" {
-			if _, err := a.Lander.git(ctx, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+a.Operators, "verify-commit", p.Commit); err != nil {
-				ps[i].Why = fmt.Sprintf("%.7s is not signed by an operator", p.Commit) // git's own message may quote key material
+		if ps[i].Why == "" {
+			if err := (operators{a.Lander, a.Operators}).verify(ctx, p.Commit); err != nil {
+				ps[i].Why = err.Error()
 			}
 		}
 		ps[i].Owner = a.owner(ctx, p.Commit)
@@ -173,6 +173,8 @@ func (a *Admissions) Done(ctx context.Context, id, sha string) error {
 type Resumes struct {
 	Lander *Lander
 	Prefix string
+	// Operators, if set, is a git allowed-signers file: a request not signed by one of its keys is refused.
+	Operators string
 }
 
 // Resume reads the pause number from the saved state (Load only, no lease),
@@ -187,7 +189,13 @@ func Resume(ctx context.Context, c config.Config, dir string) error {
 	if _, err := l.git(ctx, "fetch", "-q", "--no-tags", "--end-of-options", c.Repository.URI, branch(c.Repository.Main)); err != nil {
 		return err
 	}
-	_, err = l.git(ctx, "push", "-q", "--force", "--end-of-options", c.Repository.URI, "FETCH_HEAD:"+c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10))
+	src := "FETCH_HEAD"
+	if c.Admission.OperatorsFile != "" { // sign with the operator's own git signing config
+		if src, err = l.git(ctx, "commit-tree", "-S", "FETCH_HEAD^{tree}", "-p", "FETCH_HEAD", "-m", "resume"); err != nil {
+			return err
+		}
+	}
+	_, err = l.git(ctx, "push", "-q", "--force", "--end-of-options", c.Repository.URI, src+":"+c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10))
 	return err
 }
 
@@ -204,7 +212,22 @@ func (r *Resumes) Pending(ctx context.Context) ([]core.ResumeRequest, error) {
 			reqs = append(reqs, core.ResumeRequest{Seq: n, SHA: f[0]})
 		}
 	}
-	return reqs, err
+	if err != nil || r.Operators == "" || len(reqs) == 0 {
+		return reqs, err
+	}
+	fetch := []string{"fetch", "-q", "--no-tags", r.Lander.remote}
+	for _, q := range reqs {
+		fetch = append(fetch, q.SHA)
+	}
+	if _, err := r.Lander.git(ctx, fetch...); err != nil {
+		return nil, err
+	}
+	for i, q := range reqs {
+		if err := (operators{r.Lander, r.Operators}).verify(ctx, q.SHA); err != nil {
+			reqs[i].Why = "resume request " + err.Error()
+		}
+	}
+	return reqs, nil
 }
 
 // Done deletes the request, only if it still points at its sha.

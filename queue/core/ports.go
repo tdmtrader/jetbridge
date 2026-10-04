@@ -74,6 +74,7 @@ type Admissions interface {
 type ResumeRequest struct {
 	Seq uint64
 	SHA string
+	Why string // if set, the request is refused: recorded and deleted, and it ends no pause
 }
 
 // Resumes is where an operator's requests to resume wait: Pending lists them;
