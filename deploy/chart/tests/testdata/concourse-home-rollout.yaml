@@ -1,25 +1,169 @@
-# The non-credential shape of concourse.home's values at the start of the
-# hangar_stores_enabled_in_cluster runbook. Never a copy of home-infra's
-# apps/concourse.yaml: that repository is private and holds plaintext
-# passwords, and this one is public. Local users are placeholders.
+# concourse.home's values with every credential, host and Secret name replaced
+# by a placeholder: every key home-infra's apps/concourse.yaml sets, so a render
+# of this file proves the chart still accepts concourse.home's shape. It is the
+# base the hangar_stores_enabled_in_cluster runbook steps layer onto. Never a
+# copy of home-infra's file: that repository is private and holds plaintext
+# passwords, and this one is public. Keep it in step with each home-infra commit.
 fullnameOverride: concourse
+image:
+  repository: registry.example/jetbridge
+  tag: 0.0.0-placeholder
+  pullPolicy: Always
 web:
-  localUsers: "admin:placeholder-admin-password,live-tests:placeholder-bcrypt-hash"
-  mainTeamLocalUser: "admin,live-tests"
-kubernetes:
-  namespace: cicd
-artifactDaemon:
-  tls:
-    source: existingSecret
-    existingSecret: concourse-artifact-daemon-tls-pinned
-  resolveCapability:
-    existingSecret: concourse-artifact-daemon-resolve-capability
+  replicas: 1
+  clusterName: home-infra
+  externalUrl: https://concourse.example
+  strategy:
+    type: Recreate
+  extraArgs:
+  - "--cookie-secure"
+  - "--default-task-cpu-request=placeholder"
+  - "--kubernetes-pod-scheduling-timeout=placeholder"
+  extraVolumes:
+  - name: home-ca
+    configMap:
+      name: placeholder-ca
+  extraVolumeMounts:
+  - name: home-ca
+    mountPath: "/etc/concourse/home-ca"
+    readOnly: true
+  logLevel: info
+  localUsers: admin:placeholder-admin-password,live-tests:placeholder-bcrypt-hash
+  mainTeamLocalUser: admin,live-tests
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  env:
+  - name: CONCOURSE_ENCRYPTION_KEY
+    valueFrom:
+      secretKeyRef:
+        name: placeholder-secret
+        key: placeholder-key
+  - name: SSL_CERT_FILE
+    value: placeholder
+  - name: CONCOURSE_ENABLE_GLOBAL_RESOURCES
+    value: placeholder
+  - name: CONCOURSE_AUTH_DURATION
+    value: placeholder
+  - name: CONCOURSE_SECRET_RETRY_ATTEMPTS
+    value: placeholder
+  - name: CONCOURSE_SECRET_RETRY_INTERVAL
+    value: placeholder
+  - name: CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT
+    value: placeholder
+  - name: CONCOURSE_RESOURCE_CHECKING_INTERVAL
+    value: placeholder
+  - name: CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL
+    value: placeholder
+  - name: CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL
+    value: placeholder
+  - name: CONCOURSE_GC_INTERVAL
+    value: placeholder
+  - name: CONCOURSE_GC_ONE_OFF_GRACE_PERIOD
+    value: placeholder
+  - name: CONCOURSE_GC_MISSING_GRACE_PERIOD
+    value: placeholder
+  - name: CONCOURSE_BUILD_TRACKER_INTERVAL
+    value: placeholder
+  - name: CONCOURSE_DB_NOTIFICATION_BUS_QUEUE_SIZE
+    value: placeholder
+  - name: CONCOURSE_AGENT_STEP_IMAGE
+    value: placeholder
+  - name: CONCOURSE_AGENT_PLATFORM_TOKEN_SECRET
+    value: placeholder
 mcp:
   clients:
-    - client_id: test-client
-      client_name: Test client
-      redirect_uris:
-        - http://127.0.0.1:8964/callback
+  - client_id: test-client
+    client_name: Test client
+    redirect_uris:
+    - http://127.0.0.1:8964/callback
+kubernetes:
+  artifactHelperImage: index.docker.io/library/alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  credentialManager:
+    enabled: true
+    namespacePrefix: concourse-
+  stepPodGrants:
+  - name: live-tests
+    owner: main/jetbridge/k8s-live-tests
+    serviceAccount: jetbridge-live-tests
+  - name: image-builder
+    owner: main/jetbridge/build-image
+    serviceAccount: jetbridge-image-builder
+  - name: kind-runner-builder
+    owner: main/k8s-e2e/build-kind-runner
+    serviceAccount: jetbridge-image-builder
+  - name: releaser
+    owner: main/jetbridge/release
+    serviceAccount: jetbridge-releaser
+  - name: self-upgrade
+    owner: main/jetbridge/self-upgrade
+    serviceAccount: jetbridge-upgrader
+  - name: verify-upgrade
+    owner: main/jetbridge/verify-upgrade
+    serviceAccount: jetbridge-upgrader
+  - name: brine-live
+    owner: main/jetbridge/brine
+    serviceAccount: concourse-brine-live
+  - name: brine-live-one-off
+    owner: main/one-off
+    serviceAccount: concourse-brine-live
+  - name: loupe-deployer
+    owner: main/loupe/deploy
+    serviceAccount: loupe-deployer
+rbac:
+  brineLive: true
+  brineLiveServiceAccount: concourse-brine-live
+tracing:
+  serviceName: concourse-home
+  otlpAddress: tempo.example:4317
+secrets:
+  create: false
+  signingKeySecret: placeholder-signing-key
+cacheStore: hostpath
+cacheHostPath: "/var/cache/concourse"
+artifactDaemon:
+  port: 7780
+  hostPath: "/var/concourse/artifacts"
+  ttl: 2h
+  metrics:
+    port: '9392'
+  tls:
+    source: existingSecret
+    existingSecret: placeholder-daemon-tls
+  resolveCapability:
+    existingSecret: placeholder-resolve-key
 postgresql:
-  existingSecret: concourse-postgresql-connection
-  passwordSecretKey: POSTGRES_PASSWORD
+  enabled: false
+  host: postgresql.example
+  port: 5432
+  user: concourse
+  database: concourse
+  existingSecret: placeholder
+  passwordSecretKey: placeholder
+service:
+  type: ClusterIP
+ingress:
+  enabled: true
+  className: traefik
+  host: concourse.example
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: 'true'
+  tls:
+  - hosts:
+    - concourse.example
+    secretName: placeholder-tls
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus
+alertingRules:
+  enabled: true
+  labels:
+    release: prometheus
+networkPolicy:
+  enabled: false
