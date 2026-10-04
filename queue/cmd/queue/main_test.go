@@ -102,7 +102,6 @@ var _ = Describe("queue command", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn2()
 		Expect(d.Main).To(Equal("trunk"))
-		Expect(d.MaxFailures).To(Equal(5))
 		Expect(d.Slots).To(Equal(1))
 		Expect(d.Owner).NotTo(Equal(d2.Owner))
 		Expect(d.NewStrategy()).To(Equal(&core.Serial{Max: 3, Policy: core.Policy{RetryNone: 1, Order: core.ProvenFirst}}))

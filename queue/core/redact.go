@@ -72,7 +72,7 @@ func (r *SecretSet) Redact(text string) string {
 // BuildsOn and Ejected are identifiers the queue matches on, and a changed one loses state.
 // s itself is not changed.
 func RedactSnapshot(s Snapshot) Snapshot {
-	s.Why, s.Settled, s.Refused = Redact(s.Why), slices.Clone(s.Settled), slices.Clone(s.Refused)
+	s.Why, s.LandErr, s.Settled, s.Refused = Redact(s.Why), Redact(s.LandErr), slices.Clone(s.Settled), slices.Clone(s.Refused)
 	for i := range s.Settled {
 		s.Settled[i].Why, s.Settled[i].Cause = Redact(s.Settled[i].Why), Redact(s.Settled[i].Cause)
 	}

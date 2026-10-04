@@ -41,7 +41,7 @@ func Driver(c config.Config, out io.Writer, logf func(string, ...any), runner co
 				}
 				return s
 			},
-			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures, Cooldown: c.Pause.Cooldown,
+			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, Cooldown: c.Pause.Cooldown,
 			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix},
 			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-"},
 			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/"},

@@ -32,7 +32,6 @@ type Driver struct {
 	Log         func(format string, args ...any)
 	Owner       string           // names this driver in the lease; unique per process
 	TTL         time.Duration    // how long a lease lasts unrenewed; 0 means a minute
-	MaxFailures int              // land errors in a row before pausing; 0 means 3
 	Admissions  Admissions       // drained at the start of each Step; nil means none
 	Resumes     Resumes          // checked at the start of each Step; nil means none
 	Promotes    Promotes         // checked at the start of each Step; nil means none
@@ -41,7 +40,6 @@ type Driver struct {
 	Now         func() time.Time // the clock for every timestamp; nil means time.Now
 
 	lease  Lease
-	fails  int    // land errors in a row
 	main   string // main's sha: read this Step if the Lander is Heads, or the candidate last landed; "" unknown
 	prefix string // of every run ID the current Strategy names
 	s      *Snapshot
@@ -392,7 +390,7 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 			if err := LandBatch(ctx, d.Lander, d.q, d.Main, f.Candidate, d.s.Landing.Fence, st.Entries); err != nil {
 				return d.landFailed(ctx, f, st.Entries, err)
 			}
-			d.fails, ev.Kind, d.s.Landing, d.main = 0, LandedEvent, nil, f.Candidate
+			d.s.LandFails, d.s.LandErr, ev.Kind, d.s.Landing, d.main = 0, "", LandedEvent, nil, f.Candidate
 			mark(d.s.Landed, st.Entries)
 		case Eject:
 			if why := d.ejectRefused(ctx, f, st); why != "" {
@@ -428,23 +426,17 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 	return nil
 }
 
-// landFailed resets the driver so the next Step settles the saved Landing. On
-// the MaxFailures-th error in a row it first saves a pause, keeping the
-// Landing; the count restarts only once the pause is saved.
+// landFailed counts the land error in the Snapshot and resets the driver so the
+// next Step settles the saved Landing. It never pauses or ejects: the batch is
+// tried again, and `queue health` raises the alarm at lander.max_failures.
 func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error) error {
 	var moved *MainMovedError
 	if errors.As(err, &moved) {
 		return d.recompose(ctx, f, es, moved.Error())
 	}
-	if d.fails++; d.fails >= cmp.Or(d.MaxFailures, 3) {
-		why := fmt.Sprintf("landing failed %d times: %v", d.fails, err)
-		ev := Event{Kind: PausedEvent, Entries: es, Run: f.Run, Why: why, At: d.now()}
-		d.pause(why)
-		d.settled(ev)
-		if d.save(ctx) == nil {
-			d.fails = 0
-			d.notify(ctx, ev)
-		}
+	d.s.LandFails, d.s.LandErr = d.s.LandFails+1, err.Error()
+	if serr := d.save(ctx); serr != nil {
+		err = errors.Join(err, serr)
 	}
 	d.reset()
 	return fmt.Errorf("land %s: %w", f.Run.ID, err)
@@ -452,7 +444,7 @@ func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error
 
 // recompose records that main moved under a run: nothing was pushed and
 // nothing is settled, so the batch is composed again on the new main and
-// retested. It is no land error, so it neither counts toward the pause nor
+// retested. It is no land error, so it neither counts toward the alarm nor
 // clears that count, and spends no retry. A saved Landing is reconciled on the next Step.
 func (d *Driver) recompose(ctx context.Context, f Flight, es []Entry, why string) error {
 	ev := Event{Kind: RecomposeEvent, Entries: es, Run: f.Run, Why: why, At: d.now(), Base: f.BaseSHA}
@@ -529,7 +521,7 @@ func (d *Driver) load(ctx context.Context) error {
 		again = d.s.Paused && d.s.Why == Redact(ev.Why) // as saved
 		d.pause(ev.Why)
 	} else if d.s.Landing = nil; landed {
-		d.fails = 0
+		d.s.LandFails, d.s.LandErr = 0, ""
 		mark(d.s.Landed, in.Entries)
 	}
 	if (err != nil || landed) && !again {

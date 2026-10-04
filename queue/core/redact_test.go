@@ -59,7 +59,7 @@ var _ = Describe("Driver redaction", func() {
 			d := &core.Driver{
 				Store: store, Composer: comp, Runner: &memRunner{}, Lander: &memLander{c: comp}, Notifier: note,
 				NewStrategy: func() core.Strategy { return &core.Serial{Max: 4} },
-				Main:        "core", Owner: "runner", MaxFailures: 1,
+				Main:        "core", Owner: "runner",
 				Log: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
 			}
 			Expect(d.Admit(context.Background(), entry("a"))).To(Succeed())

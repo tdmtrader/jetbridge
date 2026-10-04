@@ -84,6 +84,23 @@ var _ = Describe("queue resource", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return s
 	}
+	// health runs `queue health` on the source, as the pipeline's health job does: its exit code and output.
+	health := func() (int, string) {
+		bin := filepath.Join(dir, "queue")
+		out, err := exec.Command("go", "build", "-o", bin, "../queue").CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+		body, err := json.Marshal(map[string]any{"source": source})
+		Expect(err).NotTo(HaveOccurred())
+		cmd := exec.Command(bin, "health")
+		cmd.Stdin, cmd.Env = bytes.NewReader(body), append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull)
+		out, err = cmd.Output()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			Expect(err).NotTo(HaveOccurred())
+			return 0, string(out)
+		}
+		return exit.ExitCode(), string(out)
+	}
 	admit := func() { gitIn(remote, "update-ref", "refs/queue/admit/0000000000000000001.a", change) }
 
 	BeforeEach(func() {
@@ -223,6 +240,68 @@ var _ = Describe("queue resource", func() {
 		Expect(snapshot().Landed).To(HaveKey("a"))
 	})
 
+	It("A land that keeps failing raises an alarm after max_failures, across checks, never pauses or ejects, keeps retrying, and clears on a land", func() {
+		hook := filepath.Join(remote, "hooks", "pre-receive")
+		Expect(os.WriteFile(hook, []byte("#!/bin/sh\ngrep -q ' refs/heads/trunk$' && { echo trunk is closed >&2; exit 1; }\nexit 0\n"), 0o755)).To(Succeed())
+		admit()
+		pass := func() {
+			vs := check()
+			Expect(vs).To(HaveLen(1))
+			Expect(os.RemoveAll(filepath.Join(sources(), "run"))).To(Succeed())
+			get(vs[0])
+			code, errw := put("pass")
+			Expect(code).To(Equal(0), errw)
+		}
+		landFails := func() {
+			main := gitIn(remote, "rev-parse", "refs/heads/trunk")
+			_, _, errw := call("check", map[string]any{"source": source})
+			Expect(errw).To(ContainSubstring("trunk is closed"))
+			Expect(gitIn(remote, "rev-parse", "refs/heads/trunk")).To(Equal(main), "nothing landed")
+		}
+		kinds := func() (ks []core.EventKind) {
+			for _, r := range snapshot().Settled {
+				ks = append(ks, r.Kind)
+			}
+			return ks
+		}
+		pass()
+		landFails()
+		pass()
+		landFails()
+		Expect(snapshot().LandFails).To(Equal(2))
+		code, out := health()
+		Expect(code).To(Equal(0), "two failed landings, under max_failures 3: "+out)
+		pass()
+		work := filepath.Join(dir, "work")
+		gitIn(work, "checkout", "-q", "--detach", base)
+		gitIn(work, "commit", "-q", "--allow-empty", "-m", "main moves")
+		gitIn(work, "push", "-q", remote, "HEAD:refs/heads/moved") // trunk is closed to pushes; moved in place
+		gitIn(remote, "update-ref", "refs/heads/trunk", gitIn(work, "rev-parse", "HEAD"))
+		_, _, _ = call("check", map[string]any{"source": source}) // the pass was on the old main: recomposed, not landed
+		Expect(kinds()).To(ContainElement(core.RecomposeEvent))
+		Expect(snapshot().LandFails).To(Equal(2), "the recompose for main moving neither counts nor clears")
+		pass()
+		landFails()
+		s := snapshot()
+		Expect(s.LandFails).To(Equal(3))
+		Expect(s.Paused).To(BeFalse(), "an alarm, not a pause")
+		Expect(s.Ejected).To(BeEmpty())
+		code, out = health()
+		Expect(code).To(Equal(3))
+		Expect(out).To(HavePrefix("ALARM: 3 consecutive failed landings (last: "))
+		Expect(out).To(ContainSubstring("trunk is closed"))
+		// the queue keeps retrying: open main to pushes, and the next check lands it
+		Expect(os.Remove(hook)).To(Succeed())
+		pass()
+		_, _, errw := call("check", map[string]any{"source": source})
+		Expect(errw).To(BeEmpty())
+		s = snapshot()
+		Expect(s.Landed).To(HaveKey("a"))
+		Expect(s.LandFails).To(Equal(0))
+		code, out = health()
+		Expect(code).To(Equal(0), out)
+	})
+
 	It("A test job that keeps erroring pauses the queue after its retries, across checks, and health goes red", func() {
 		source["config"] = source["config"].(string) + "batch: {retry_none: 2}\npause: {cooldown: 0s}\nhealth: {pause_after: 1ms}\n"
 		admit()
@@ -242,19 +321,9 @@ var _ = Describe("queue resource", func() {
 		Expect(s.Paused).To(BeTrue(), "the third no verdict, past retry_none 2, pauses")
 		Expect(s.Why).To(ContainSubstring("2 retries"))
 		Expect(s.Ejected).To(BeEmpty())
-		bin := filepath.Join(dir, "queue")
-		build := exec.Command("go", "build", "-o", bin, "../queue")
-		out, err := build.CombinedOutput()
-		Expect(err).NotTo(HaveOccurred(), string(out))
-		body, err := json.Marshal(map[string]any{"source": source})
-		Expect(err).NotTo(HaveOccurred())
-		health := exec.Command(bin, "health")
-		health.Stdin, health.Env = bytes.NewReader(body), append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull)
-		out, err = health.Output()
-		var exit *exec.ExitError
-		Expect(errors.As(err, &exit)).To(BeTrue(), string(out))
-		Expect(exit.ExitCode()).To(Equal(3))
-		Expect(string(out)).To(HavePrefix("unhealthy: paused"))
+		code, out := health()
+		Expect(code).To(Equal(3))
+		Expect(out).To(HavePrefix("unhealthy: paused"))
 	})
 
 	It("A put with a verdict other than pass, fail or errored is refused", func() {

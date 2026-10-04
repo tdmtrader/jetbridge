@@ -62,6 +62,12 @@ entry that fails on its own is ejected; blame is never guessed.
 record (kind `flaky`, one per flaky batch, naming all its entries) is saved with
 the outcome that lands them; nobody is ejected.
 
+**Failed landing**: a land error after a green test, except main having moved,
+which composes the batch again. It settles nothing and is tried again. The count
+in a row is kept in the queue state; at `lander.max_failures`, `queue health`
+raises the alarm (an ALARM line, exit 3) until a land clears it. The queue never
+pauses or ejects for it.
+
 **Settle record**: one saved line of history in the queue state for each land,
 eject, pause, refusal or flake: id, commit, kind, time, admission time, reason,
 cause, attempt and batch. The latest 1000 are kept, across restarts. Status is

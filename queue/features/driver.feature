@@ -84,18 +84,27 @@ Feature: The queue makes progress on its own
     And the queue is not paused and nothing is ejected
     And the batch lands once main stops moving
 
-  Scenario: A recompose does not reset the count of other landing failures
+  Scenario: A recompose neither counts nor clears the count of other landing failures
     Given two landings failed for another reason and one was refused because main moved
     When a third other landing fails
-    Then the queue pauses
+    Then the count of failed landings is three and the queue is not paused
 
-  Scenario: Repeated landing failures pause the queue with the reason
+  Scenario: Landing failures under max_failures are counted across drivers, with the last error
+    Given every landing fails and change "a" is admitted
+    When the queue is rebuilt and run until main has been tried twice
+    Then the saved state counts two failed landings and the last error, and the queue is not paused
+
+  Scenario: Repeated landing failures never pause or eject, and the queue keeps retrying the land
     Given every landing fails
     And change "a" is admitted
-    When the queue runs
-    Then main is tried three times
-    And the queue is announced as paused because landing failed three times, with the last error
-    And "a" is still queued and nothing is ejected
+    When the queue runs until main has been tried six times
+    Then the queue is not paused, no pause is announced and nothing is ejected
+    And "a" is still queued and the count of failed landings keeps rising
+
+  Scenario: A successful land clears the count of landing failures
+    Given three landings fail and then main accepts the land
+    When the queue runs on
+    Then "a" lands and the saved count of failed landings and the last error are cleared
 
   Scenario: A landing that is still in flight can never land after the queue has moved on
     Given change "a" is admitted and passes
