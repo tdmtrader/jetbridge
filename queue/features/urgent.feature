@@ -20,3 +20,16 @@ Feature: The urgent lane
     When change "a" is ejected and then marked urgent
     Then it is refused because it was ejected
     And marking "z" urgent is refused
+
+  Scenario: Promoting a queued change puts it first in the next batch
+    Given changes "a", "b" and "c" are queued and the runner is live
+    When an operator promotes "c"
+    Then the next batch holds "c" then "a" then "b"
+    And the history says "promoted c to the urgent lane"
+    And the promote request is gone
+
+  Scenario: Promoting a change that is not queued is refused and recorded
+    Given change "a" is queued and the runner is live
+    When an operator promotes "z"
+    Then the history says the promote of "z" was refused
+    And the promote request is gone

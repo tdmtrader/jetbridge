@@ -262,3 +262,21 @@ var _ = Describe("Signed admits", func() {
 		}
 	})
 })
+
+var _ = Describe("Promotes", func() {
+	It("Promote pushes main's sha to the promote ref of the id, read and deleted only at that sha", func() {
+		r := newRemote()
+		c := config.Defaults()
+		c.Repository.URI, c.Repository.Main = r.bare, "main"
+		prefix := c.Admission.ControlPrefix + "promote/"
+		pro := &git.Promotes{Lander: r.lander(), Prefix: prefix}
+		Expect(git.Promote(context.Background(), c, r.work, "../x")).NotTo(Succeed())
+		Expect(git.Promote(context.Background(), c, r.work, "fix-1")).To(Succeed())
+		reqs, err := pro.Pending(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reqs).To(Equal([]core.PromoteRequest{{ID: "fix-1", SHA: r.main()}}))
+		Expect(pro.Done(context.Background(), core.PromoteRequest{ID: "fix-1", SHA: r.commit("other", r.base)})).NotTo(Succeed())
+		Expect(pro.Done(context.Background(), reqs[0])).To(Succeed())
+		Expect(run(r.bare, "for-each-ref", prefix)).To(BeEmpty())
+	})
+})

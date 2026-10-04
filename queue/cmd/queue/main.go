@@ -28,7 +28,7 @@ import (
 	"github.com/concourse/concourse/queue/core"
 )
 
-const usage = "usage: queue run|admit|resume|status|stats|view|list|ejected|explain --config <file> [--every 5s] [--window 1h] [--once] [--json] [id sha]"
+const usage = "usage: queue run|admit|resume|promote|status|stats|view|list|ejected|explain --config <file> [--every 5s] [--window 1h] [--once] [--json] [id sha]"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -51,7 +51,7 @@ func entry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // run returns the exit code: 0 done, 2 admission refused (an unsafe id), 1 anything else.
 func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fail := func(err error) int { fmt.Fprintln(errw, "queue:", core.Redact(err.Error())); return 1 }
-	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "resume", "status", "stats", "view", "list", "ejected", "explain"}, args[0]) {
+	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "resume", "promote", "status", "stats", "view", "list", "ejected", "explain"}, args[0]) {
 		return fail(errors.New(usage))
 	}
 	for _, a := range args { // before any error can quote one; a --flag=value is checked whole and as its value
@@ -112,6 +112,12 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	}
 	if args[0] == "resume" {
 		return fail2(git.Resume(ctx, c, "."), fail)
+	}
+	if args[0] == "promote" {
+		if fs.NArg() != 1 {
+			return fail(errors.New(usage))
+		}
+		return fail2(git.Promote(ctx, c, ".", fs.Arg(0)), fail)
 	}
 	if args[0] == "status" {
 		s, err := git.NewStore(c).Load(ctx)
@@ -207,6 +213,7 @@ func newDriver(c config.Config, out, errw io.Writer) (d *core.Driver, closeFn fu
 			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures, Cooldown: c.Pause.Cooldown,
 			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix, Operators: c.Admission.OperatorsFile},
 			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-"},
+			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/"},
 			Owner:      fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(suffix)),
 		}, func() {
 			lander.Close()
