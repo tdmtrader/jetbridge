@@ -122,6 +122,7 @@ var _ = Describe("Runner", func() {
 			jobFactory,
 			fakeScheduler,
 			maxInFlight,
+			nil,
 		)
 	}
 

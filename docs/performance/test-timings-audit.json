@@ -1,0 +1,189 @@
+{
+  "objective": "Provide an HTML document with a comprehensive breakdown of exactly where test time goes, including every test regardless of style",
+  "complete": true,
+  "requirements": [
+    {
+      "item": "Self-contained HTML with searchable every-test explorer",
+      "state": "proven",
+      "evidence": "Current HTML matches embedded data, parser, real Chrome desktop/mobile and CSV source-reference checks. All20tiers and13resultstyles retained.",
+      "evidence_files": [
+        "render-validation.json",
+        "browser-validation.json"
+      ],
+      "evidence_sha256": {
+        "render-validation.json": "4bf0ef35fa4a4a9147ace73f32b5df81c31791bb57ee0437aa0bd9abcc4ab2fa",
+        "browser-validation.json": "5dc69caa4b9f2aaab5809c5307e03d393e7b0190f218ff43bb4e54e39ab79e45"
+      }
+    },
+    {
+      "item": "Every original test regardless of style",
+      "state": "proven for the frozen estate",
+      "evidence": "Native declarations, Ginkgo leaves/tables, Elm discovered cases, all expanded Brine scenarios, Compose helper paths, browser cases, Python/OAuth stages, every model scenario in its original configured cohorts, and auxiliary benchmarks are reconciled. Original pending/skip declarations remain visible.",
+      "evidence_files": [
+        "source-inventory.json",
+        "go-declaration-audit.json",
+        "ginkgo-source-reconciliation.json",
+        "elm-source-reconciliation.json",
+        "brine-source-reconciliation.json",
+        "entrypoint-audit.json"
+      ],
+      "evidence_sha256": {
+        "source-inventory.json": "981540100146b37a2aec8fcd55e180bc42e722cc4efdbaf3558d1359c5b6e164",
+        "go-declaration-audit.json": "13900f5e9dc222c9da2d1582c32e51b1143701465db758d30745a2c131341ab5",
+        "ginkgo-source-reconciliation.json": "c3e80a7326a0e1c57dbd15483389c5640858a69d5466499372d36b772da53879",
+        "elm-source-reconciliation.json": "c7ad735b1dd518b0d83d5ca75998059bd3d56f9164f5397fcb081b0fa52659fc",
+        "brine-source-reconciliation.json": "2a1be500680df8818665db19eb2afd54e36df29d7258a7fd13437cd9d64e4d04",
+        "entrypoint-audit.json": "aa3a42a393410c5e2e001e52e09484f782336f17050a49a3c86ae1ddf1e34eea"
+      }
+    },
+    {
+      "item": "Per-test timing and outcome",
+      "state": "proven within labelled measurement scopes",
+      "evidence": "Every runnable source identity has a completed timing in the comparison or a documented separate profile. Historical272unknownobservations remain unknown. TestFlight failures and originalpendingintegrationdeclarations remain explicit. Timings use native reporter precision and include per-case fixtures where stated.",
+      "evidence_files": [
+        "data.json",
+        "testflight-profile.json",
+        "integration-profile.json",
+        "tagged-profile.json",
+        "credential-profile.json",
+        "operations-profile.json"
+      ],
+      "evidence_sha256": {
+        "data.json": "be0dae4247e6a000cf21566dd2803f16804594a80c23a13dbbc772170ea5e826",
+        "testflight-profile.json": "f2d59a483cd90b5d29a8438d436703775d5c2aab43adc078b3c43ff09258b7a3",
+        "integration-profile.json": "4c9fd7915f33c1263beec308b38f687c4c9aba07ed0ea9421f66f59f13777092",
+        "tagged-profile.json": "9068e1f090ee5ac6f7e2c3c9211aec710b11b63f7af62fa021959616b1ff8875",
+        "credential-profile.json": "21d64e6b54d573f07160523e45cee68a673b746c3bdf6b884d11d4a78441d36f",
+        "operations-profile.json": "2dd6bba3ce5c9ecc24ed309f6ccee664db5b6e5429b3de765067d767f12227ba"
+      }
+    },
+    {
+      "item": "Breakdown of elapsed command time",
+      "state": "proven with explicit unclassified residuals",
+      "evidence": "Each phase partition reconciles to its measured command. Setup/cleanup, compilation outside execution, nested and parallel timings, model concurrency and image-import overlap are labelled. Residual elapsed time is not claimed as CPU work or a diagnosed cause.",
+      "evidence_files": [
+        "data.json"
+      ],
+      "evidence_sha256": {
+        "data.json": "be0dae4247e6a000cf21566dd2803f16804594a80c23a13dbbc772170ea5e826"
+      }
+    },
+    {
+      "item": "Provenance and honest comparison scope",
+      "state": "proven",
+      "evidence": "Frozen source hashes rechecked; cohorts retain source/fixture differences, failures and historical gaps. No estate-wide total or optimization credit is inferred from separate profiles. Evicted ephemeral raw logs are explicitly unavailable; previously imported results and independent hashes remain embedded.",
+      "evidence_files": [
+        "source-revision.json",
+        "runner-eviction.json",
+        "data.json"
+      ],
+      "evidence_sha256": {
+        "source-revision.json": "65f90331f71cb3bb1d38cec03702b367fb4c14647d4a4a140958a52eb6108383",
+        "runner-eviction.json": "5c0798ce0bb26b772020bfe91dc075736e7f92be7bf19d2a67a8115790eddcec",
+        "data.json": "be0dae4247e6a000cf21566dd2803f16804594a80c23a13dbbc772170ea5e826"
+      }
+    }
+  ],
+  "next_actions": [],
+  "updated_at": "2026-10-03T07:27:42.569075+00:00",
+  "all_known_tiers_have_rows": true,
+  "rows": 45132,
+  "missing_duration_rows": {
+    "TestFlight": 214,
+    "Compose credentials": 38,
+    "Compose operations": 20
+  },
+  "source_inventory_files": 1266,
+  "source_inventory_complete": true,
+  "go_declaration_status": {
+    "native result imported": 1503,
+    "Ginkgo suite entrypoint; leaf cases reported separately": 82,
+    "benchmark not invoked by normal test command": 1,
+    "package bootstrap; not an individual test": 7,
+    "native result imported (separate corrected-fixture profile)": 3
+  },
+  "html_sha256": "1b246d63c771ea7560d9c0435aad99c14c19ad8f3d7795352967b25e0e4f4111",
+  "visual_browser_check": true,
+  "styles": 13,
+  "dynamic_paths_reconciled": 43,
+  "auxiliary_benchmark_definitions": 5,
+  "brine_source_identity_coverage_complete": true,
+  "browser_case_and_executed_hook_timings_complete": true,
+  "source_definition_reconciliation": {
+    "native_go_declarations": 1506,
+    "ginkgo_leaf_or_table_declarations": 6957,
+    "ginkgo_runtime_leaf_cases": 7213,
+    "ginkgo_historical_identity_matches": 3,
+    "elm_source_modules": 59,
+    "elm_checked_exports": 198,
+    "elm_cases_each_side": 3111,
+    "brine_features": 125,
+    "brine_expanded_scenarios": 1333,
+    "compose_helper_expanded_paths": 43,
+    "browser_cases_each_side": 13
+  },
+  "blocked": false,
+  "blocking_audit": {
+    "condition": "No access or execution blocker remains for this timing report.",
+    "consecutive_goal_turns_with_same_condition_at_least": 0,
+    "prior_goal_turn_evidence": [],
+    "original_rejection_record": "subscription-prerequisites.json",
+    "authorization_request_state": "Resolved by explicit user full-access clarification",
+    "other_execution_gaps": "No remaining runnable-case timing gap in the frozen estate. Historical failed observations remain unknown.",
+    "authorized_report_work": "400 original model sessions and four Elm auxiliary implementations imported; report source reconciliation and desktop/mobile checks passed. All three local subscription binaries compiled successfully with frozen source unchanged.",
+    "model_workload_approval": "Resolved; 400/400 complete",
+    "tests_running": false,
+    "artifacts_uploaded": true,
+    "credentials_transferred": true,
+    "resumed_audit_started_at": "2026-10-03T02:53:59.477574+00:00",
+    "runtime_state": "disposable-integration-runner-r1 UIDe8aca732-8181-42b7-9f68-59a5800c7a1f; Docker32Gi/workspace16Gi;4hdeadline from06:50Z.",
+    "latest_progress": "Current original integration completed; all source identities and timing scopes reconciled and report browser/data checks passed."
+  },
+  "approved_model_run": "/tmp/jetbridge-estate-performance/approved-model-tools-r1",
+  "model_sessions_completed": 400,
+  "model_sessions_expected": 400,
+  "duration_gaps_by_tier": {
+    "TestFlight": 214,
+    "Compose credentials": 38,
+    "Compose operations": 20
+  },
+  "validation_pending": false,
+  "known_missing_duration_rows": 272,
+  "local_subscription_build_complete": true,
+  "active_test_controllers": 0,
+  "elm_auxiliary_profile": "All four original implementations measured in isolated fixture compatibility profile; original compile failure retained.",
+  "subscription_scenario_completed": true,
+  "subscription_profile": "subscription-live-profile-r6",
+  "missing_observation_coverage": {
+    "missing_rows": 272,
+    "source_paths_without_any_completed_timing": [],
+    "warning": "This reconciles only paths named by missing observation rows. Historical/profile timing is not current-revision coverage."
+  },
+  "credential_original_paths_timed": 19,
+  "credential_profile": "credential-artifact-profile-r1",
+  "operations_original_paths_timed": 22,
+  "operations_profile": "operations-artifact-profile-r3",
+  "tagged_original_paths_timed": 35,
+  "tagged_profile": "tagged-live-current-profile-r2",
+  "report_source_changes_pending_validation": false,
+  "pending_evidence_correction": {
+    "tier": "TestFlight",
+    "historical_unattempted_rows": 214,
+    "unique_identities": 107,
+    "evidence": "testflight-unexecuted-audit.json",
+    "state": "Corrected historical zeros and duplicate source identities; browser and data validation passed against current HTML",
+    "reason": "Failed original suites show State=skipped, NumAttempts=0, RunTime=0, absent EndTime; serializedzero is not an executed-case timing"
+  },
+  "current_tagged_profile_complete": true,
+  "testflight_original_cases_timed": 124,
+  "current_testflight_profile_complete": true,
+  "testflight_profile": "testflight-artifact-profile-r1",
+  "report_scope": "All known original source identities are represented, with completed runnable-case timings in the labelled comparison or separate profile. Original pending/skip declarations and historical failed observations remain explicit. This is elapsed-time accounting; unclassified residuals are not CPU or causal attribution.",
+  "current_integration_profile_complete": true,
+  "delivery": {
+    "html": "/home/dev/work/concourse/docs/performance/test-timings.html",
+    "html_sha256": "1b246d63c771ea7560d9c0435aad99c14c19ad8f3d7795352967b25e0e4f4111",
+    "standalone_browser_verified": true,
+    "export_validation_sha256": "8db678261b59aeb58fedc6a3f4ee431553b94cacf46b6f54afbce709c19ae714"
+  }
+}

@@ -121,9 +121,17 @@ func (in SidecarPlan) run(rec *brine.Recorder) (SidecarLogs, error) {
 	// No hostPath, privileged flag, test executor, or status update. Namespace
 	// admission supplies sidecar limits before the pod can be scheduled.
 	cpu, memory := uint64(250), uint64(64*1024*1024)
+	sidecars := []atc.SidecarConfig{{Name: "helper", Image: "busybox:1.37.0", Command: []string{"sh", "-c", "printf '%s\n\n%s' '" + marker + "' '" + marker + "-tail'"}}}
+	// Keep the original empty-line and unterminated-tail payload unchanged.
+	// A separate real sidecar guarantees a newline-terminated reader input,
+	// independent of where the transport splits the original payload.
+	newlineProbe := in.Mode == "direct" && in.Routing == "fallback"
+	if newlineProbe {
+		sidecars = append(sidecars, atc.SidecarConfig{Name: "newline-probe", Image: "busybox:1.37.0", Command: []string{"sh", "-c", "printf '%s\n' '" + marker + "-newline'"}})
+	}
 	container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), db.ContainerMetadata{Type: db.ContainerTypeTask}, runtime.ContainerSpec{
 		ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox:1.37.0"}, Limits: runtime.ContainerLimits{CPU: &cpu, Memory: &memory},
-		Sidecars: []atc.SidecarConfig{{Name: "helper", Image: "busybox:1.37.0", Command: []string{"sh", "-c", "printf '%s\n\n%s' '" + marker + "' '" + marker + "-tail'"}}},
+		Sidecars: sidecars,
 	}, nil)
 	if err != nil {
 		return SidecarLogs{}, err
@@ -149,12 +157,31 @@ func (in SidecarPlan) run(rec *brine.Recorder) (SidecarLogs, error) {
 	if err != nil {
 		return SidecarLogs{}, err
 	}
+	if newlineProbe {
+		raw, err := cluster.Clientset.CoreV1().Pods(cluster.Namespace).GetLogs(handle, &corev1.PodLogOptions{Container: "newline-probe"}).DoRaw(ctx)
+		if err != nil || string(raw) != marker+"-newline\n" {
+			return SidecarLogs{}, fmt.Errorf("real newline probe source: %q, error %v", raw, err)
+		}
+	}
 	fmt.Printf("sidecar source mode=%s routing=%s pod=%s uid=%s node=%s\n", in.Mode, in.Routing, pod.Name, pod.UID, pod.Spec.NodeName)
 	result, err := process.Wait(ctx)
 	if err != nil || result.ExitStatus != 0 || stderr.String() != "" {
 		return SidecarLogs{}, fmt.Errorf("real main task failed: exit=%d error=%v stderr=%q", result.ExitStatus, err, stderr.String())
 	}
-	return SidecarLogs{Routing: in.Routing, Mode: in.Mode, Stdout: stdout.String(), Dedicated: sidecar.String(), Expected: expected, namespace: cluster.Namespace, trace: trace}, nil
+	resultLogs := SidecarLogs{Routing: in.Routing, Mode: in.Mode, Stdout: stdout.String(), Dedicated: sidecar.String(), Expected: expected, namespace: cluster.Namespace, trace: trace}
+	if newlineProbe {
+		if err := resultLogs.requireRuntimeLogRequestFor("newline-probe"); err != nil {
+			return SidecarLogs{}, err
+		}
+		line := "[newline-probe] " + marker + "-newline\n"
+		if strings.Count(resultLogs.Stdout, line) != 1 {
+			return SidecarLogs{}, fmt.Errorf("newline probe missing, duplicated or malformed in real build output: %q", resultLogs.Stdout)
+		}
+		// The additional line has its own exact assertion. Every original
+		// byte still reaches the unchanged original payload assertions.
+		resultLogs.Stdout = strings.Replace(resultLogs.Stdout, line, "", 1)
+	}
+	return resultLogs, nil
 }
 
 func observeSidecarSource(ctx context.Context, cluster liveKubernetes, handle, expected string, direct bool) (*corev1.Pod, error) {
@@ -202,6 +229,10 @@ func observeSidecarSource(ctx context.Context, cluster liveKubernetes, handle, e
 }
 
 func (in SidecarLogs) requireRuntimeLogRequest() error {
+	return in.requireRuntimeLogRequestFor("helper")
+}
+
+func (in SidecarLogs) requireRuntimeLogRequestFor(container string) error {
 	if in.trace == nil {
 		return fmt.Errorf("missing runtime sidecar log observation")
 	}
@@ -209,10 +240,10 @@ func (in SidecarLogs) requireRuntimeLogRequest() error {
 	defer in.trace.mu.Unlock()
 	path := "/api/v1/namespaces/" + in.namespace + "/pods/sidecar-task/log"
 	for _, req := range in.trace.requests {
-		if req.method == "GET" && req.path == path && req.query.Get("container") == "helper" &&
+		if req.method == "GET" && req.path == path && req.query.Get("container") == container &&
 			req.query.Get("follow") == "true" && req.status == 200 && req.err == nil {
 			return nil
 		}
 	}
-	return fmt.Errorf("missing successful runtime helper log stream in %s mode", in.Mode)
+	return fmt.Errorf("missing successful runtime %s log stream in %s mode", container, in.Mode)
 }

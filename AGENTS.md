@@ -11,10 +11,27 @@ true, delete it — a stale entry here is worse than no entry.
 
 ## Tests
 
+**Running `brine run` from the Brine module root also discovers nested manifests.**
+The root manifest's `features: "features/*.feature"` does not exclude `live/.brine`:
+a local suite can finish green and then start live Kubernetes cases. Use an explicit
+feature file or an isolated local-only manifest for focused checks; use the coverage
+script deliberately for both tiers, with its required live-fixture opt-ins. The v5
+direct runner handles SIGTERM by draining the active adapter's disposers; verify
+owned-resource cleanup independently after cancellation.
+
 **`go test -run TestSuite/Some.Describe` does not focus a Ginkgo `Describe` — it silently
 runs the whole suite.** Ginkgo v2's `GinkgoTestingT` is `interface{ Fail() }`, so no Go
 subtests exist and the pattern after the slash is discarded. Use
 `-ginkgo.focus='Pod Cleanup'`, which is registered onto `flag.CommandLine`.
+
+**Run database-backed suites with `ginkgo`, never `go test ./...`.**
+
+**`postgresrunner.OpenConn()` limits the pool to one connection.** Concurrent callers
+therefore serialize their transactions in ordinary DB specs. A test holding a
+transaction and issuing another command through that pool blocks before its SQL
+runs. For a transaction-ordering regression, explicitly permit multiple real
+connections in that spec; the default pool masked a live event-stream ordering
+failure that a real PostgreSQL trigger reproduced immediately.
 
 **Nothing in `make test-unit` runs the two shell scripts injected into task images under
 the shell they actually meet.** `supervisorScriptTemplate`
@@ -24,6 +41,14 @@ with the host `/bin/sh` — bash on macOS — and the only real busybox executio
 `//go:build live`, which the Makefile never compiles. After editing either, exec it in a
 real busybox pod. The failure mode is a task that silently never runs while the suite
 stays green.
+
+**Omitting a dedicated `SidecarWriter` does not disable sidecar log streaming.**
+`execProcess` falls back to `ProcessIO.Stdout`, so a non-nil stdout still engages
+the five-second sidecar wait. A no-sidecar control isolates that wait; comparing
+raw durations from separate pods confounds it with startup variance. The task
+supervisor merges stderr into stdout, so observe the real main-command marker
+on stdout. Both dedicated and fallback streams measured a five-second delta in
+the live contract.
 
 **A pod `volumeMount` with no matching pod `Volume` passes the entire unit suite and
 breaks every build in a real cluster.** `Container.buildPod` gets mounts and volumes from
@@ -48,7 +73,7 @@ production emits `/artifacts/steps/{key}`.
 
 **Production steps always run through `execProcess`; `Process`/`newProcess` is a
 test-only fallback.** `atc/atccmd/command.go` wires `K8sExecutor` unconditionally and
-`atc/worker/factory.go` is the only non-test `SetExecutor` caller, so the fallback never
+`atc/worker/factory.go` passes that executor through `WorkerDeps`, so the fallback never
 fires — which makes `Process.Wait`'s delete-pod-on-cancel branch dead code. Read
 `execProcess` when reasoning about pod lifecycle; `process.go` declares `Process` first
 and reads as if it were the main path.
@@ -74,11 +99,6 @@ declared in four delegate interfaces, registered in `atc/event/types.go`, and re
 both fly and Elm — but `atc/worker/pool.go` takes no delegate, so nothing can emit it. Do
 not build UI or assertions on it.
 
-**`component.Runner` with `Interval=0` never polls and wakes only on NOTIFY.** The
-Coordinator wraps `Runnable.Run()` identically for `RunPeriodically` and
-`RunImmediately`, so a component needs NOTIFY calls at the right DB mutation points
-rather than runner-level tests.
-
 **Task caches on hostPath are never reclaimed.** Any step with `caches:` auto-selects
 hostPath whenever the artifact-daemon host path is set (it is, by chart default), and
 nothing deletes those directories: the sweeper skips `/caches/`, there is no DELETE
@@ -93,20 +113,12 @@ runner image requires bumping its tag at *every* site in the pipeline plus a
 `set-pipeline`. A `resource_config_scope` FK flake was once chased for six weeks against
 guards CI had never actually executed.
 
-**The chart documents `cacheStore` values the binary rejects.** `deploy/chart/values.yaml`
-offers `artifact` and `pvc`; `atc/worker/jetbridge/config.go` accepts only `hostpath` and
-`emptydir` and fails at web startup. This is real drift, not a doc nit.
-
 ## Local environment
 
 **The K8s tiers are testcontainers-K3s, not KinD** — there are zero `sigs.k8s.io/kind`
 imports in the tree. They are also **not viable on macOS**: containerd-in-Docker is
 unstable under Colima at any memory size, measured identically at 8 GB and 16 GB. Run
 that tier in CI.
-
-**The ATC component intervals are hard-coded and live in the DB `components` table, not
-in CLI flags.** Dropping the three scheduler-path intervals to 2s via SQL took a
-five-test suite from 57.6s to 21.5s.
 
 **`fly clear-resource-cache` hangs forever on piped stdin** — it is the only confirming
 fly command with no `--non-interactive`. Call the API endpoint instead. Before automating

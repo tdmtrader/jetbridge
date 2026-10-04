@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -50,6 +51,9 @@ func liveOOMPod(handle string, restart corev1.RestartPolicy) *corev1.Pod {
 	if restart == corev1.RestartPolicyAlways {
 		pod.Spec.Volumes = []corev1.Volume{{Name: "oom-gate", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "oom-gate", MountPath: "/tmp"}}
+		// Let the real kubelet collect a message from every actual OOM death.
+		// This preserves the kernel OOM and restart premises; no status is set.
+		pod.Spec.Containers[0].Command[2] = "printf 'brine-oom-diagnostic\n' > /dev/termination-log; " + pod.Spec.Containers[0].Command[2]
 		// Verify inside each restarted container as well as before arming.
 		pod.Spec.Containers[0].Command[2] = "if [ -f /sys/fs/cgroup/memory.max ]; then limit=$(cat /sys/fs/cgroup/memory.max); else limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes); fi; [ \"$limit\" = 67108864 ] || exit 10; " + pod.Spec.Containers[0].Command[2]
 	}
@@ -120,6 +124,9 @@ func diagnoseLiveOOMPriority(in LiveTaskPlan, rec *brine.Recorder) (StepOutcome,
 				last == nil || last.Reason != "OOMKilled" || last.ExitCode != 137 || last.ContainerID == "" {
 				return StepOutcome{}, fmt.Errorf("actual crash loop lost the Running/last-OOM premise: %+v", pod.Status)
 			}
+			if !strings.Contains(last.Message, "brine-oom-diagnostic") {
+				return StepOutcome{}, fmt.Errorf("real last-OOM termination message missing: %q", last.Message)
+			}
 			fmt.Printf("real OOM priority: pod %s/%s UID %s node %s phase %s waiting %s last %s exit %d container %s restarts %d; sidecar Running; cgroup 67108864 verified\n",
 				pod.Namespace, pod.Name, pod.UID, pod.Spec.NodeName, pod.Status.Phase, status.State.Waiting.Reason, last.Reason, last.ExitCode, last.ContainerID, status.RestartCount)
 			ctx, cancel := context.WithTimeout(w.Ctx, 5*time.Second)
@@ -133,6 +140,9 @@ func diagnoseLiveOOMPriority(in LiveTaskPlan, rec *brine.Recorder) (StepOutcome,
 				return StepOutcome{}, fmt.Errorf("expected direct compatibility Process, got %T", process)
 			}
 			result, waitErr := process.Wait(ctx)
+			if !strings.Contains(stderr.String(), "Last termination message: brine-oom-diagnostic") {
+				return StepOutcome{}, fmt.Errorf("runtime omitted real last-OOM termination message: %q", stderr.String())
+			}
 			return StepOutcome{Err: waitErr, Message: errorMessage(waitErr), Stderr: stderr.String(), ExitStatus: result.ExitStatus}, nil
 		}
 		select {

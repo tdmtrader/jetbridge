@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/k3s"
 	corev1 "k8s.io/api/core/v1"
@@ -87,7 +88,19 @@ func createK3sCluster() string {
 
 	log.Printf("Creating K3s cluster via testcontainers (%s)...", k3sImage)
 	var err error
-	k3sContainer, err = k3s.Run(ctx, k3sImage)
+	k3sContainer, err = k3s.Run(ctx, k3sImage, testcontainers.WithConfigModifier(func(config *dockercontainer.Config) {
+		// Nested Kubernetes must be able to avoid the host cluster's Pod,
+		// Service and DNS addresses. Unset overrides retain K3s defaults.
+		for _, option := range []struct{ env, flag string }{
+			{"K3S_TEST_CLUSTER_CIDR", "--cluster-cidr"},
+			{"K3S_TEST_SERVICE_CIDR", "--service-cidr"},
+			{"K3S_TEST_CLUSTER_DNS", "--cluster-dns"},
+		} {
+			if value := os.Getenv(option.env); value != "" {
+				config.Cmd = append(config.Cmd, option.flag+"="+value)
+			}
+		}
+	}))
 	if err != nil {
 		log.Fatalf("failed to create K3s cluster: %v", err)
 	}
@@ -140,7 +153,7 @@ func loadImagesIntoCluster(concourseImage string) {
 
 	// Load the locally-built Concourse image.
 	log.Printf("Loading %s into K3s cluster...", concourseImage)
-	if err := k3sContainer.LoadImages(ctx, concourseImage); err != nil {
+	if err := loadImageStreaming(ctx, k3sContainer.GetContainerID(), concourseImage); err != nil {
 		log.Fatalf("failed to load image %s into K3s: %v", concourseImage, err)
 	}
 	log.Println("Concourse image loaded.")
@@ -157,7 +170,7 @@ func loadImagesIntoCluster(concourseImage string) {
 		}
 
 		log.Printf("Loading %s into K3s cluster...", img)
-		if err := k3sContainer.LoadImages(ctx, img); err != nil {
+		if err := loadImageStreaming(ctx, k3sContainer.GetContainerID(), img); err != nil {
 			log.Printf("warning: failed to load %s into K3s: %v", img, err)
 		}
 	}

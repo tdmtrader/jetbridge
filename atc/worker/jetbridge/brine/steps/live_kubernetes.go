@@ -24,10 +24,11 @@ import (
 // owns a namespace with admission-enforced security and resource bounds. It
 // never adopts an existing namespace or changes nodes/cluster-wide RBAC.
 type liveKubernetes struct {
-	Clientset kubernetes.Interface
-	Config    *rest.Config
-	Namespace string
-	Marker    string
+	Clientset         kubernetes.Interface
+	Config            *rest.Config
+	Namespace         string
+	Marker            string
+	ContainerDefaults corev1.ResourceRequirements
 }
 
 func newLiveKubernetes(ctx context.Context, rec *brine.Recorder, podLimits ...int64) (liveKubernetes, error) {
@@ -73,14 +74,26 @@ func newLiveKubernetes(ctx context.Context, rec *brine.Recorder, podLimits ...in
 	if err != nil {
 		return liveKubernetes{}, err
 	}
-	_, err = client.CoreV1().LimitRanges(ns.Name).Create(ctx, &corev1.LimitRange{ObjectMeta: metav1.ObjectMeta{Name: "bounded-containers"}, Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{Type: corev1.LimitTypeContainer,
+	limits, err := client.CoreV1().LimitRanges(ns.Name).Create(ctx, &corev1.LimitRange{ObjectMeta: metav1.ObjectMeta{Name: "bounded-containers"}, Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{Type: corev1.LimitTypeContainer,
 		Default:        corev1.ResourceList{corev1.ResourceCPU: q("250m"), corev1.ResourceMemory: q("64Mi"), corev1.ResourceEphemeralStorage: q("64Mi")},
 		DefaultRequest: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("32Mi"), corev1.ResourceEphemeralStorage: q("32Mi")},
 	}}}}, metav1.CreateOptions{})
 	if err != nil {
 		return liveKubernetes{}, err
 	}
-	return liveKubernetes{Clientset: client, Config: cfg, Namespace: ns.Name, Marker: string(ns.UID)}, nil
+	// Keep the admitted container defaults from the real fixture resource.
+	// Immediate pod creation can race the admission plugin's LimitRange cache.
+	var defaults corev1.ResourceRequirements
+	for _, limit := range limits.Spec.Limits {
+		if limit.Type == corev1.LimitTypeContainer {
+			defaults.Limits = limit.Default.DeepCopy()
+			defaults.Requests = limit.DefaultRequest.DeepCopy()
+			break
+		}
+	}
+	return liveKubernetes{Clientset: client, Config: cfg, Namespace: ns.Name, Marker: string(ns.UID),
+		ContainerDefaults: defaults,
+	}, nil
 }
 
 // Shared live runtime setup and observation for tasks and interception.

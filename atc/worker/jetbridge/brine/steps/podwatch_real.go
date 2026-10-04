@@ -526,7 +526,7 @@ func newLiveScopedWatch(rec *brine.Recorder, mine, theirs string) (RealWatch, er
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
 				SchedulingGates: []corev1.PodSchedulingGate{{Name: startupSchedulingGate}},
-				Containers:      []corev1.Container{{Name: "main", Image: "busybox:1.37.0", Command: []string{"sh", "-ec", command}}},
+				Containers:      []corev1.Container{{Name: "main", Image: "busybox:1.37.0", Resources: *cluster.ContainerDefaults.DeepCopy(), Command: []string{"sh", "-ec", command}}},
 			},
 		}, metav1.CreateOptions{})
 		if err != nil {

@@ -31,7 +31,8 @@ func newLiveGatedWatchWithTimeout(rec *brine.Recorder, name string, timeout time
 			RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
 			SchedulingGates: []corev1.PodSchedulingGate{{Name: startupSchedulingGate}},
 			Containers: []corev1.Container{{Name: "main", Image: "busybox:1.37.0",
-				Command: []string{"sh", "-ec", "while [ ! -f /tmp/release ]; do sleep 0.1; done; printf 'watch-burst-finished\\n'"},
+				Resources: *cluster.ContainerDefaults.DeepCopy(),
+				Command:   []string{"sh", "-ec", "while [ ! -f /tmp/release ]; do sleep 0.1; done; printf 'watch-burst-finished\\n'"},
 			}},
 		},
 	}, metav1.CreateOptions{})

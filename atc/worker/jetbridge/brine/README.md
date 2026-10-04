@@ -62,6 +62,33 @@ a current, stripped, static Linux `artifact-daemon` build — see
 selects `BRINE_KUBE_CONTEXT=in-cluster` and supplies these as pipeline
 variables; the live tier itself has never run in CI (see V5-MIGRATION.md).
 
+### Disposable K3s volume sampling
+
+For a newly created, explicitly owned disposable K3s cluster, mount
+`fixtures/k3s.yaml` read-only at `/etc/rancher/k3s/config.yaml` before starting
+`k3s server`. This is a K3s server configuration file; its `kubelet-arg` list
+sets `volume-stats-agg-period=5s`. The configuration-file mechanism is described
+in the [K3s documentation](https://docs.k3s.io/installation/configuration#configuration-file).
+A CLI `--kubelet-arg` list overrides the file's list, so include this setting
+in that list if the launcher supplies other kubelet arguments.
+
+The real emptyDir-eviction scenarios write 24 MiB into a 16 MiB volume and
+require an actual kubelet eviction and matching Warning event. With the
+60-second default, an initially empty sample remained stale beyond the
+unchanged 90-second fixture deadline. Five-second collection refreshed that
+sample within the deadline in both baseline and candidate trials. The payload,
+volume limit, eviction checks and test deadlines are unchanged.
+
+Verify `kubeletconfig.volumeStatsAggPeriod` is `5s` through the owned node's
+`/api/v1/nodes/<node>/proxy/configz` endpoint. The live adapter does not apply
+this file or change node configuration. The existing CI task uses
+`BRINE_KUBE_CONTEXT=in-cluster`; adopting this setting there requires an
+explicit cluster provisioning change. This file is for disposable fixtures.
+
+Apply the same fixture configuration to both sides of a performance comparison
+and record its checksum and the observed setting. The focused diagnostic
+establishes fixture behavior; it does not establish full-suite timing savings.
+
 ## Guard tests and vet
 
 ```sh

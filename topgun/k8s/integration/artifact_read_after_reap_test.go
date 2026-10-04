@@ -94,8 +94,8 @@ var _ = Describe("Artifact Read After Producer Pod Reap", func() {
 
 	It("loads a file-based task config even after the producing get pod has been reaped", func() {
 		// The pipeline: a get step produces an artifact containing a
-		// task YAML file, an intermediate task waits long enough for us
-		// to delete the get pod, then a file-config task loads its
+		// task YAML file, an intermediate task waits until we verify
+		// deletion of the get pod, then a file-config task loads its
 		// config from the reaped get step's artifact.
 		//
 		// With the DaemonSet artifact cache in place, the third task's
@@ -127,7 +127,7 @@ jobs:
       rootfs_uri: docker:///busybox
       run:
         path: sh
-        args: ["-c", "echo hold-started && sleep 45 && echo hold-done"]
+        args: ["-c", "echo hold-started && { sleep 45 & hold_pid=$!; while kill -0 \"$hold_pid\" 2>/dev/null && [ ! -f /tmp/concourse-test-release ]; do sleep 0.1; done; if [ -f /tmp/concourse-test-release ]; then kill \"$hold_pid\" 2>/dev/null; wait \"$hold_pid\" 2>/dev/null; else wait \"$hold_pid\" || exit $?; fi; echo hold-done; }"]
   - task: from-reaped-artifact
     file: task-source/tasks/after-reap.yml
 `)
@@ -141,6 +141,9 @@ jobs:
 		// the config via the DaemonSet rather than the deleted get pod.
 		waitForStepRunning(pipelineName, "file-config-after-reap", "1", "hold")
 		deleteProducerPod(pipelineName, "file-config-after-reap", "1", "task-source")
+
+		By("releasing the intermediate task after producer deletion is verified")
+		releaseTaskHold(stepSelector(pipelineName, "file-config-after-reap", "1", "hold"))
 
 		session := waitForBuildAndWatch("file-config-after-reap")
 		Expect(session).To(gexec.Exit(0),
@@ -185,7 +188,7 @@ jobs:
       rootfs_uri: docker:///busybox
       run:
         path: sh
-        args: ["-c", "echo bystander-started && sleep 45 && echo bystander-done"]
+        args: ["-c", "echo bystander-started && { sleep 45 & hold_pid=$!; while kill -0 \"$hold_pid\" 2>/dev/null && [ ! -f /tmp/concourse-test-release ]; do sleep 0.1; done; if [ -f /tmp/concourse-test-release ]; then kill \"$hold_pid\" 2>/dev/null; wait \"$hold_pid\" 2>/dev/null; else wait \"$hold_pid\" || exit $?; fi; echo bystander-done; }"]
   - task: consumer
     config:
       platform: linux
@@ -209,6 +212,9 @@ jobs:
 		// `payload` via the DaemonSet rather than the deleted producer pod.
 		waitForStepRunning(pipelineName, "cross-step-after-reap", "1", "bystander")
 		deleteProducerPod(pipelineName, "cross-step-after-reap", "1", "producer")
+
+		By("releasing the intermediate task after producer deletion is verified")
+		releaseTaskHold(stepSelector(pipelineName, "cross-step-after-reap", "1", "bystander"))
 
 		session := waitForBuildAndWatch("cross-step-after-reap")
 		Expect(session).To(gexec.Exit(0),

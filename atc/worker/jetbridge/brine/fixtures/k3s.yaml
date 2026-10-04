@@ -1,0 +1,6 @@
+# K3s server configuration for an explicitly owned disposable Brine cluster.
+# Real emptyDir eviction uses sampled volume sizes. A 60s sample can remain
+# stale beyond the fixture's unchanged 90s deadline; refresh it every 5s.
+# This changes collection frequency, not eviction thresholds or test timeouts.
+kubelet-arg:
+  - volume-stats-agg-period=5s

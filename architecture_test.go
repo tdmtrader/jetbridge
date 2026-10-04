@@ -1,6 +1,7 @@
 package concourse
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -156,8 +158,7 @@ func loadImportGraph(t *testing.T) importGraph {
 
 	// -e so a package that fails to load is reported rather than aborting the
 	// whole listing.
-	cmd := exec.Command("go", "list", "-e", "-json", "./...")
-	out, err := cmd.Output()
+	out, err := architectureGoList("-e", "-json", "./...")
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			t.Fatalf("go list failed: %v\n%s", err, ee.Stderr)
@@ -1395,7 +1396,7 @@ func commandRoots(t *testing.T) []string {
 func linksPackage(t *testing.T, root, pkg string) bool {
 	t.Helper()
 
-	out, err := exec.Command("go", "list", "-deps", root).Output()
+	out, err := architectureGoList("-deps", root)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			t.Fatalf("go list -deps %s failed: %v\n%s", root, err, ee.Stderr)
@@ -2276,4 +2277,52 @@ func TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
 				"names", root, durableCacheTier)
 		}
 	}
+}
+
+// These architecture tests inspect one immutable repository snapshot. Reuse
+// identical real toolchain queries within this test process; each caller still
+// parses its own output and applies every original assertion. Different working
+// directories, tool paths, environments or arguments are separate snapshots.
+var architectureGoListQueries sync.Map
+
+type architectureGoListResult struct {
+	once sync.Once
+	out  []byte
+	err  error
+}
+
+func architectureGoList(args ...string) ([]byte, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	tool, err := exec.LookPath("go")
+	if err != nil {
+		return nil, err
+	}
+	env := os.Environ()
+	commandArgs := append([]string{"list"}, args...)
+	key, err := json.Marshal(struct {
+		Dir  string
+		Tool string
+		Env  []string
+		Args []string
+	}{dir, tool, env, commandArgs})
+	if err != nil {
+		return nil, err
+	}
+	entry, _ := architectureGoListQueries.LoadOrStore(string(key), &architectureGoListResult{})
+	result := entry.(*architectureGoListResult)
+	result.once.Do(func() {
+		cmd := exec.Command(tool, commandArgs...)
+		cmd.Dir = dir
+		cmd.Env = env
+		result.out, result.err = cmd.Output()
+	})
+	if result.err != nil {
+		// Failed toolchain queries must not become a permanent cache entry.
+		architectureGoListQueries.CompareAndDelete(string(key), result)
+	}
+	// A caller must not be able to modify another guard's toolchain evidence.
+	return bytes.Clone(result.out), result.err
 }

@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/vito/go-sse/sse"
 	"golang.org/x/oauth2"
 )
 
@@ -99,8 +100,9 @@ func apiGetJSON(path string, target interface{}) {
 }
 
 // getBuildEvents streams the events for a given build ID and returns
-// the event types as a list of strings. Uses a timeout because the SSE
-// endpoint keeps the connection open as a streaming protocol.
+// the event types as a list of strings. The server sends an explicit end
+// event, then holds the connection until the client closes it. Keep the
+// timeout for incomplete streams, but finish when the complete replay ends.
 func getBuildEvents(buildID string) []string {
 	GinkgoHelper()
 
@@ -125,34 +127,21 @@ func getBuildEvents(buildID string) []string {
 		fmt.Sprintf("GET %s returned status %d", url, resp.StatusCode),
 	)
 
-	// Read with a size limit since SSE streams may not close cleanly.
-	buf := make([]byte, 0, 256*1024)
-	tmp := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if readErr != nil {
-			break
-		}
-		if len(buf) > 1024*1024 {
-			break
-		}
-	}
-
-	// Parse SSE events. Concourse uses "event: event" for all SSE events,
-	// with the actual event type in the JSON data payload.
+	// Preserve the previous bounded read (1 MiB plus at most one 32 KiB
+	// chunk). Use the same SSE framing as the client, including frames split
+	// across HTTP reads; every event preceding the terminal frame is retained.
+	stream := sse.NewReadCloser(io.NopCloser(io.LimitReader(resp.Body, 1024*1024+32*1024)))
 	var eventTypes []string
-	for _, line := range splitLines(string(buf)) {
-		if strings.HasPrefix(line, "data: ") {
-			dataStr := line[6:]
-			var envelope struct {
-				Event string `json:"event"`
-			}
-			if json.Unmarshal([]byte(dataStr), &envelope) == nil && envelope.Event != "" {
-				eventTypes = append(eventTypes, envelope.Event)
-			}
+	for {
+		frame, err := stream.Next()
+		if err != nil || frame.Name == "end" {
+			break
+		}
+		var envelope struct {
+			Event string `json:"event"`
+		}
+		if json.Unmarshal(frame.Data, &envelope) == nil && envelope.Event != "" {
+			eventTypes = append(eventTypes, envelope.Event)
 		}
 	}
 

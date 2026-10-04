@@ -54,6 +54,31 @@ spec:
           mountPath: /etc/otel
         - name: data
           mountPath: /var/otel
+      # The collector image has no shell utilities. Read its actual export
+      # through a separate container sharing the same data volume.
+      - name: metrics-reader
+        image: busybox:1.37
+        command:
+        - sh
+        - -ec
+        - |
+          child=
+          stop() {
+            trap '' TERM INT
+            if [ -n "$child" ]; then
+              kill "$child" 2>/dev/null || true
+              wait "$child" 2>/dev/null || true
+            fi
+            exit 0
+          }
+          trap stop TERM INT
+          sleep 2147483647 &
+          child=$!
+          wait "$child"
+        volumeMounts:
+        - name: data
+          mountPath: /var/otel
+          readOnly: true
       volumes:
       - name: config
         configMap:

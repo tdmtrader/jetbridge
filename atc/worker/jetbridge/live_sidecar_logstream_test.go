@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,26 +24,18 @@ import (
 //	 the wait to 5 seconds. If exceeded, proceed without waiting (sidecar
 //	 streams do not block process completion)."
 //
-// The exec-mode bounded wait (execProcess.Wait, process.go) only engages when
-// ProcessIO.SidecarWriters has a dedicated writer for the sidecar. The sidecar
-// here runs effectively forever (sleep 86400), so its log stream never EOFs and
-// the per-sidecar streaming goroutine blocks in io.Copy. Without the 5s bound,
-// process.Wait() would block for the sidecar's entire lifetime; with it, Wait()
-// must return within ~5s of the (fast) main command completing.
+// The exec-mode bounded wait engages for either a dedicated SidecarWriter
+// or the fallback stdout stream. Both are exercised with a real sidecar that
+// outlives the main command. A third run, without a sidecar, is the control.
 //
-// Strategy:
-//   - "control" run: same long-running sidecar, but NO dedicated SidecarWriter.
-//     No streaming goroutine is started, so no bounded wait engages. This run's
-//     duration is approximately pod-startup + exec, and is used to factor out
-//     startup time so the ~5s bounded wait can be isolated.
-//   - "test" run: identical, but WITH a dedicated SidecarWriter. Its duration is
-//     approximately pod-startup + exec + 5s.
+// Each run records the actual main-done output before measuring the remaining
+// wait, so independent pod startup durations do not distort the difference.
+// The supervisor merges command output into stdout; it must remain observed.
 //
-// Assertions:
-//   - test.Wait() returns well under the sidecar's lifetime (hard contract:
-//     it does NOT wait for the sidecar) — bounded, not 86400s.
-//   - (test - control) ≈ the 5s bound, proving the bounded wait actually
-//     engaged rather than returning immediately.
+// Both streaming configurations must return within the original 25-second
+// total bound and add 3–9 seconds over the control's post-command duration.
+// These bounds prove the five-second wait engages without waiting for the
+// sidecar's full 86400-second lifetime.
 //
 // Requires a live cluster (build tag `live`); KUBECONFIG / in-cluster config and
 // K8S_TEST_NAMESPACE select the target. See live_test.go:kubeClient.
@@ -56,11 +49,13 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 	}
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 
-	// runOnce builds a fresh container whose sole sidecar outlives the main
-	// command, runs a near-instant main command, and returns how long
-	// process.Wait() took. When withSidecarWriter is true, a dedicated
-	// per-sidecar writer is supplied so the 5s bounded wait engages.
-	runOnce := func(t *testing.T, handle string, withSidecarWriter bool) time.Duration {
+	// runOnce builds a fresh real container, optionally with a long-running
+	// sidecar, and observes both total and post-command wait durations.
+	type measurement struct {
+		wait          time.Duration
+		afterMainDone time.Duration
+	}
+	runOnce := func(t *testing.T, handle string, withSidecar, withSidecarWriter bool) measurement {
 		t.Helper()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -78,6 +73,16 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 		})
 		cleanupPod(t, clientset, ns, handle)
 
+		var sidecars []atc.SidecarConfig
+		if withSidecar {
+			sidecars = []atc.SidecarConfig{{
+				Name:  "slow-sidecar",
+				Image: "busybox",
+				// Its real follow stream cannot reach EOF before main completes.
+				Command: []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
+			}}
+		}
+
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
 			db.NewFixedHandleContainerOwner(handle),
@@ -85,15 +90,7 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 			runtime.ContainerSpec{
 				TeamID:    1,
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
-				Sidecars: []atc.SidecarConfig{
-					{
-						Name:  "slow-sidecar",
-						Image: "busybox",
-						// Outlives the main command: its log stream never EOFs,
-						// so the sidecar streaming goroutine stays blocked.
-						Command: []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"},
-					},
-				},
+				Sidecars:  sidecars,
 			},
 			nil,
 		)
@@ -102,8 +99,9 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 		}
 		requirePersistedContainer(t, database, "live-sc11-worker", handle)
 
+		mainOutput := new(sidecarMainCompletionWriter)
 		pio := runtime.ProcessIO{
-			Stdout: &bytes.Buffer{},
+			Stdout: mainOutput,
 			Stderr: &bytes.Buffer{},
 		}
 		if withSidecarWriter {
@@ -120,49 +118,82 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 
 		start := time.Now()
 		result, err := process.Wait(ctx)
-		elapsed := time.Since(start)
+		finished := time.Now()
+		elapsed := finished.Sub(start)
 		if err != nil {
 			t.Fatalf("Wait: %v", err)
 		}
 		if result.ExitStatus != 0 {
 			t.Fatalf("expected main command exit 0, got %d", result.ExitStatus)
 		}
-		return elapsed
+		mainDone := mainOutput.completionTime()
+		if mainDone.IsZero() {
+			t.Fatal("main command completed without its main-done output")
+		}
+		return measurement{wait: elapsed, afterMainDone: finished.Sub(mainDone)}
 	}
 
 	stamp := time.Now().Format("20060102-150405.000000000")
 
-	var controlDuration time.Duration
+	var control measurement
 	t.Run("control", func(t *testing.T) {
-		controlDuration = runOnce(t, "live-sc11-control-"+stamp, false)
+		control = runOnce(t, "live-sc11-control-"+stamp, false, false)
 	})
-	t.Logf("control  (no SidecarWriter)        Wait() = %s  (≈ startup + exec)", controlDuration)
+	t.Logf("control (no sidecar) Wait() = %s; after main-done = %s", control.wait, control.afterMainDone)
 
-	var writerDuration time.Duration
-	t.Run("with-sidecar-writer", func(t *testing.T) {
-		writerDuration = runOnce(t, "live-sc11-writer-"+stamp, true)
-	})
-	t.Logf("writer   (SidecarWriter, slow sc)   Wait() = %s  (≈ startup + exec + 5s bound)", writerDuration)
+	for _, tc := range []struct {
+		name      string
+		dedicated bool
+	}{
+		{"with-sidecar-writer", true},
+		{"with-fallback-sidecar-writer", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writer := runOnce(t, "live-sc11-"+tc.name+"-"+stamp, true, tc.dedicated)
+			t.Logf("writer Wait() = %s; after main-done = %s", writer.wait, writer.afterMainDone)
 
-	// Primary SC-11 contract: a sidecar that outlives main MUST NOT make
-	// Wait() block for the sidecar's lifetime. With the 5s bound this is
-	// ~startup+5s; without it, Wait() would block ~86400s.
-	const hangBudget = 25 * time.Second
-	if writerDuration >= hangBudget {
-		t.Fatalf("SC-11 violated: Wait() took %s (>= %s) — it appears to wait for the sidecar instead of bounding to 5s",
-			writerDuration, hangBudget)
-	}
+			// Keep the original total bound, including pod startup and exec.
+			const hangBudget = 25 * time.Second
+			if writer.wait >= hangBudget {
+				t.Fatalf("SC-11 violated: Wait() took %s (>= %s) — it appears to wait for the sidecar instead of bounding to 5s",
+					writer.wait, hangBudget)
+			}
 
-	// Secondary: the bounded wait actually engaged. Subtracting the control
-	// run factors out pod-startup time, isolating the ~5s bound.
-	delta := writerDuration - controlDuration
-	t.Logf("delta (writer - control) = %s  (expected ≈ 5s bounded wait)", delta)
-	if delta < 3*time.Second {
-		t.Fatalf("expected the ~5s sidecar-log bounded wait to add >= 3s over the control run, but delta was %s "+
-			"(control=%s writer=%s) — the bounded wait may not have engaged", delta, controlDuration, writerDuration)
+			// Exclude each pod's own startup, retaining the original delta bounds.
+			delta := writer.afterMainDone - control.afterMainDone
+			t.Logf("delta (writer - control) = %s (expected ≈ 5s bounded wait)", delta)
+			if delta < 3*time.Second {
+				t.Fatalf("expected the ~5s sidecar-log bounded wait to add >= 3s over the control run, but delta was %s "+
+					"(control=%s writer=%s) — the bounded wait may not have engaged", delta, control.afterMainDone, writer.afterMainDone)
+			}
+			if delta > 9*time.Second {
+				t.Fatalf("bounded-wait delta %s exceeds what the 5s bound allows (control=%s writer=%s)",
+					delta, control.afterMainDone, writer.afterMainDone)
+			}
+		})
 	}
-	if delta > 9*time.Second {
-		t.Fatalf("bounded-wait delta %s exceeds what the 5s bound allows (control=%s writer=%s) — "+
-			"either the bound was not honored or pod-startup variance was unexpectedly high", delta, controlDuration, writerDuration)
+}
+
+// Observe the real command's output without changing its execution or stream.
+// Wait and stdout forwarding can run on different goroutines.
+type sidecarMainCompletionWriter struct {
+	mu        sync.Mutex
+	output    bytes.Buffer
+	completed time.Time
+}
+
+func (w *sidecarMainCompletionWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.output.Write(p)
+	if w.completed.IsZero() && bytes.Contains(w.output.Bytes(), []byte("main-done")) {
+		w.completed = time.Now()
 	}
+	return n, err
+}
+
+func (w *sidecarMainCompletionWriter) completionTime() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.completed
 }

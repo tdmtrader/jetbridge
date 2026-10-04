@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -283,6 +284,7 @@ func stopPausePod(w WorkerReady, executor jetbridge.PodExecutor, handle, cause s
 		return err
 	}
 	wantPhase, wantExit := corev1.PodSucceeded, int32(0)
+	interruptedSignalContainer := ""
 	if cause == "OOMKilled" {
 		direct, ok := executor.(*jetbridge.SPDYExecutor)
 		if !ok {
@@ -295,7 +297,17 @@ func stopPausePod(w WorkerReady, executor jetbridge.PodExecutor, handle, cause s
 	} else {
 		var stderr bytes.Buffer
 		if err := executor.ExecInPod(w.Ctx, w.Namespace, handle, "main", []string{"sh", "-c", "kill -TERM 1"}, nil, nil, &stderr, false, jetbridge.ExecAttrs{Purpose: "pause-signal"}); err != nil {
-			return fmt.Errorf("signal owned pause process: %w: %s", err, stderr.String())
+			// PID 1 can exit and tear down this signal exec before its shell
+			// reports success. Its exit 137 is not proof that TERM worked:
+			// the original container must still be observed below at exit 0.
+			var exited *jetbridge.ExecExitError
+			if !errors.As(err, &exited) || exited.ExitCode != 137 || stderr.Len() != 0 {
+				return fmt.Errorf("signal owned pause process: %w: %s", err, stderr.String())
+			}
+			if len(before.Status.ContainerStatuses) != 1 || before.Status.ContainerStatuses[0].Name != "main" || before.Status.ContainerStatuses[0].ContainerID == "" {
+				return fmt.Errorf("interrupted signal exec lacks original main-container identity: %w", err)
+			}
+			interruptedSignalContainer = before.Status.ContainerStatuses[0].ContainerID
 		}
 	}
 	for {
@@ -309,6 +321,13 @@ func stopPausePod(w WorkerReady, executor jetbridge.PodExecutor, handle, cause s
 		if pod.Status.Phase == wantPhase {
 			if len(pod.Status.ContainerStatuses) != 1 || pod.Status.ContainerStatuses[0].Name != "main" || pod.Status.ContainerStatuses[0].ContainerID == "" || pod.Status.ContainerStatuses[0].State.Terminated == nil || pod.Status.ContainerStatuses[0].State.Terminated.ExitCode != wantExit || (cause == "OOMKilled" && pod.Status.ContainerStatuses[0].State.Terminated.Reason != "OOMKilled") {
 				return fmt.Errorf("pause pod lacks actual %s exit %d: %+v", wantPhase, wantExit, pod.Status)
+			}
+			if interruptedSignalContainer != "" {
+				current := pod.Status.ContainerStatuses[0]
+				if current.ContainerID != interruptedSignalContainer || current.RestartCount != before.Status.ContainerStatuses[0].RestartCount {
+					return fmt.Errorf("interrupted signal exec did not terminate its original main container")
+				}
+				fmt.Printf("verified interrupted signal exec against original container %s at exit 0\n", interruptedSignalContainer)
 			}
 			fmt.Printf("actual pause %s: pod %s/%s UID %s container %s phase %s exit %d\n", cause, w.Namespace, handle, pod.UID, pod.Status.ContainerStatuses[0].ContainerID, wantPhase, wantExit)
 			return nil

@@ -143,6 +143,18 @@ func TestChartRendersOnlyFlagsTheBinaryAccepts(t *testing.T) {
 			"well-formed argument.", len(flagSurfaces), expectedFlagSurfaces)
 	}
 
+	// Build every real binary together so Go loads their shared dependency
+	// graph once. Each template still checks its own binary's actual help.
+	buildArgs := []string{"build", "-o", binDir + string(os.PathSeparator)}
+	for _, surface := range flagSurfaces {
+		buildArgs = append(buildArgs, surface.pkg)
+	}
+	build := exec.Command("go", buildArgs...)
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build chart binaries: %v\n%s", err, out)
+	}
+
 	for _, surface := range flagSurfaces {
 		t.Run(surface.template, func(t *testing.T) {
 			body, err := os.ReadFile(filepath.Join(repoRoot, "deploy/chart/templates", surface.template))
@@ -151,11 +163,6 @@ func TestChartRendersOnlyFlagsTheBinaryAccepts(t *testing.T) {
 			}
 
 			binary := filepath.Join(binDir, strings.TrimPrefix(filepath.Base(surface.pkg), "./"))
-			build := exec.Command("go", "build", "-o", binary, surface.pkg)
-			build.Dir = repoRoot
-			if out, err := build.CombinedOutput(); err != nil {
-				t.Fatalf("build %s: %v\n%s", surface.pkg, err, out)
-			}
 
 			bySubcommand := flagsBySubcommand(string(body))
 			if len(bySubcommand) == 0 {

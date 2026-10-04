@@ -607,7 +607,7 @@ jobs:
         memory: 268435456
       run:
         path: sh
-        args: ["-c", "echo limits-applied && sleep 30"]
+        args: ["-c", "echo limits-applied && { sleep 30 & hold_pid=$!; while kill -0 \"$hold_pid\" 2>/dev/null && [ ! -f /tmp/concourse-test-release ]; do sleep 0.1; done; if [ -f /tmp/concourse-test-release ]; then kill \"$hold_pid\" 2>/dev/null; wait \"$hold_pid\" 2>/dev/null || :; else wait \"$hold_pid\" || exit $?; fi; }"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("limits-job")
@@ -638,6 +638,7 @@ jobs:
 			Expect(cpuLimit).ToNot(BeNil(), "expected CPU limit to be set")
 			Expect(memLimit).ToNot(BeNil(), "expected memory limit to be set")
 
+			releaseObservedTaskHold(podName)
 			By("waiting for build to complete")
 			session := waitForBuildAndWatch("limits-job")
 			Expect(session).To(gexec.Exit(0))

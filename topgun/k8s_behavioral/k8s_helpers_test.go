@@ -101,7 +101,7 @@ func waitForConcoursePodsAtLeast(n int) []corev1.Pod {
 	Eventually(func() int {
 		pods = getPods(selector)
 		return len(pods)
-	}, 2*time.Minute, time.Second).Should(BeNumerically(">=", n),
+	}, 2*time.Minute, 100*time.Millisecond).Should(BeNumerically(">=", n),
 		fmt.Sprintf("expected at least %d concourse pods for pipeline %q", n, pipelineName),
 	)
 	return pods
@@ -113,7 +113,7 @@ func waitForNoConcourseWorkloadPods() {
 	GinkgoHelper()
 	Eventually(func() int {
 		return len(findConcoursePodsForWorker())
-	}, 3*time.Minute, time.Second).Should(Equal(0),
+	}, 3*time.Minute, 100*time.Millisecond).Should(Equal(0),
 		fmt.Sprintf("expected all concourse workload pods for pipeline %q to be cleaned up", pipelineName),
 	)
 }
@@ -166,7 +166,7 @@ func waitForPodCleanupByPipeline() {
 			}
 		}
 		return count
-	}, 3*time.Minute, time.Second).Should(Equal(0),
+	}, 3*time.Minute, 100*time.Millisecond).Should(Equal(0),
 		fmt.Sprintf("expected all workload pods for pipeline %q to be cleaned up (excludes check pods)", pipelineName),
 	)
 }
@@ -181,7 +181,7 @@ func assertPodCount(labelSelector string, expected int) {
 	GinkgoHelper()
 	Eventually(func() int {
 		return len(getPods(labelSelector))
-	}, 2*time.Minute, time.Second).Should(Equal(expected),
+	}, 2*time.Minute, 100*time.Millisecond).Should(Equal(expected),
 		fmt.Sprintf("expected %d pods with label %q", expected, labelSelector),
 	)
 }
@@ -296,7 +296,7 @@ func waitForPodsWithLabelCount(labelSelector string, count int) []corev1.Pod {
 	Eventually(func() int {
 		pods = getPods(labelSelector)
 		return len(pods)
-	}, 2*time.Minute, time.Second).Should(Equal(count),
+	}, 2*time.Minute, 100*time.Millisecond).Should(Equal(count),
 		fmt.Sprintf("expected exactly %d pods with label %q", count, labelSelector),
 	)
 	return pods

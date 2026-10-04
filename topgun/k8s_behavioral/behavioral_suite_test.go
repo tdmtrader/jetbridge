@@ -590,7 +590,7 @@ func waitForPodWithLabel(labelSelector string, phase corev1.PodPhase) *corev1.Po
 			}
 		}
 		return false
-	}, 2*time.Minute, time.Second).Should(BeTrue(),
+	}, 2*time.Minute, 100*time.Millisecond).Should(BeTrue(),
 		fmt.Sprintf("expected pod with label %q to reach phase %s", labelSelector, phase),
 	)
 	return matched

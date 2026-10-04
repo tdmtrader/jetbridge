@@ -46,7 +46,9 @@ func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error 
 	postgresPath, err := exec.LookPath("postgres")
 	Expect(err).NotTo(HaveOccurred())
 
-	initCmd := exec.Command(initdbPath, "-U", "postgres", "-D", tmpdir, "-E", "UTF8", "--no-locale")
+	// This runner owns disposable data and disables durability below. Initial
+	// writes need not reach persistent storage before starting the test server.
+	initCmd := exec.Command(initdbPath, "-U", "postgres", "-D", tmpdir, "-E", "UTF8", "--no-locale", "--no-sync")
 	startCmd := exec.Command(postgresPath, "-k", "/tmp", "-D", tmpdir, "-h", "127.0.0.1", "-p", strconv.Itoa(runner.Port))
 
 	if currentUser.Uid == "0" {

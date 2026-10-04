@@ -339,7 +339,7 @@ jobs:
       outputs: [{name: pod-count-resource}]
       run:
         path: sh
-        args: ["-c", "echo data > pod-count-resource/data.txt && sleep 15"]
+        args: ["-c", "echo data > pod-count-resource/data.txt && { sleep 15 & hold_pid=$!; while kill -0 \"$hold_pid\" 2>/dev/null && [ ! -f /tmp/concourse-test-release ]; do sleep 0.1; done; if [ -f /tmp/concourse-test-release ]; then kill \"$hold_pid\" 2>/dev/null; wait \"$hold_pid\" 2>/dev/null || :; else wait \"$hold_pid\" || exit $?; fi; }"]
   - put: pod-count-resource
     params: {file: pod-count-resource/data.txt}
 `)
@@ -352,6 +352,7 @@ jobs:
 			fmt.Sprintf("expected at least 1 pod during put-job, got %d", len(pods)),
 		)
 
+		releaseObservedTaskHold("")
 		By("waiting for the build to complete")
 		session := waitForBuildAndWatch("put-pod-count-job")
 		Expect(session).To(gexec.Exit(0))

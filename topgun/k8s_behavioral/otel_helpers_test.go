@@ -44,6 +44,35 @@ func deployOTelCollector() {
 	waitCmd.Stdout = GinkgoWriter
 	waitCmd.Stderr = GinkgoWriter
 	Expect(waitCmd.Run()).To(Succeed(), "OTel collector pod not ready")
+
+	// The application's default metric interval is 60s, longer than this
+	// fixture's original 30s collection window. Start a real 5s exporter only
+	// after its collector is available. Rolling out the environment change
+	// also discards DNS backoff accumulated while no collector existed.
+	webNames, err := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig, "-n", config.Namespace,
+		"get", "deployments", "-l", "app.kubernetes.io/component=web",
+		"-o", "jsonpath={.items[*].metadata.name}",
+	).Output()
+	Expect(err).NotTo(HaveOccurred(), "find the owned web deployment")
+	names := strings.Fields(string(webNames))
+	Expect(names).NotTo(BeEmpty(), "no web deployment matched the metrics fixture")
+	for _, name := range names {
+		configure := exec.Command("kubectl",
+			"--kubeconfig", config.Kubeconfig, "-n", config.Namespace,
+			"set", "env", "deployment/"+name, "--containers=concourse-web",
+			"OTEL_METRIC_EXPORT_INTERVAL=5000",
+		)
+		configure.Stdout, configure.Stderr = GinkgoWriter, GinkgoWriter
+		Expect(configure.Run()).To(Succeed(), "configure the real fixture metric exporter")
+		ready := exec.Command("kubectl",
+			"--kubeconfig", config.Kubeconfig, "-n", config.Namespace,
+			"rollout", "status", "deployment/"+name, "--timeout=120s",
+		)
+		ready.Stdout, ready.Stderr = GinkgoWriter, GinkgoWriter
+		Expect(ready.Run()).To(Succeed(), "wait for the web exporter with its ready collector")
+	}
+	waitForAPIReachable(config.ATCURL, 30*time.Second)
 }
 
 // otelCollectorAddress returns the in-cluster address of the OTel collector.
@@ -59,7 +88,7 @@ func collectOTelMetricsFromCollector() []map[string]interface{} {
 	cmd := exec.Command("kubectl",
 		"--kubeconfig", config.Kubeconfig,
 		"-n", config.Namespace,
-		"exec", "deploy/otel-collector", "--",
+		"exec", "deploy/otel-collector", "-c", "metrics-reader", "--",
 		"cat", "/var/otel/metrics.json",
 	)
 	cmd.Stdout = &out

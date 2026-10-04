@@ -28,7 +28,12 @@ import (
 // the value itself rather than be re-derived by every consumer. An entry that
 // will not relativize is REFUSED at Register, not stored and re-checked later.
 type Registry struct {
-	mu sync.RWMutex
+	// persistMu serializes snapshots and their writes. Callers still wait for
+	// a write attempt covering their mutation; overlapping callers can share success.
+	persistMu           sync.Mutex
+	persistedGeneration uint64 // protected by persistMu
+	aliasGeneration     uint64 // protected by mu
+	mu                  sync.RWMutex
 	// storagePath is the root every value is relative to. It is the only
 	// absolute path the registry holds.
 	storagePath string
@@ -173,6 +178,7 @@ func (r *Registry) registerAlias(key, localPath string, readOnly bool) (RelKey, 
 	r.mu.Lock()
 	r.entries[key] = rk
 	r.aliases[key] = rk
+	r.aliasGeneration++
 	r.mu.Unlock()
 
 	r.logger.Debug("registered-alias", lager.Data{"key": key, "rel": string(rk)})
@@ -226,6 +232,7 @@ func (r *Registry) LoadAliases() error {
 	for key, rel := range loaded {
 		r.entries[key] = rel
 		r.aliases[key] = rel
+		r.aliasGeneration++
 	}
 	r.mu.Unlock()
 
@@ -241,6 +248,9 @@ func (r *Registry) Remove(key string) {
 	delete(r.entries, key)
 	_, wasAlias := r.aliases[key]
 	delete(r.aliases, key)
+	if wasAlias {
+		r.aliasGeneration++
+	}
 	r.mu.Unlock()
 
 	if wasAlias {
@@ -277,6 +287,7 @@ func (r *Registry) RemoveByPath(dirPath string) {
 		delete(r.entries, key)
 		if _, ok := r.aliases[key]; ok {
 			delete(r.aliases, key)
+			r.aliasGeneration++
 			hadAliases = true
 		}
 	}
@@ -294,7 +305,14 @@ func (r *Registry) persistAliases() {
 		return
 	}
 
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.mu.RLock()
+	generation := r.aliasGeneration
+	if generation == r.persistedGeneration {
+		r.mu.RUnlock()
+		return
+	}
 	snapshot := make(map[string]RelKey, len(r.aliases))
 	for k, v := range r.aliases {
 		snapshot[k] = v
@@ -303,7 +321,9 @@ func (r *Registry) persistAliases() {
 
 	if err := r.aliasStore.Save(snapshot); err != nil {
 		r.logger.Error("failed-to-persist-aliases", err)
+		return
 	}
+	r.persistedGeneration = generation
 }
 
 // Len returns the number of registered artifacts.

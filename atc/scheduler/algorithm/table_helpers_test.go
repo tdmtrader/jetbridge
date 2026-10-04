@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -440,9 +441,14 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 			Expect(err).ToNot(HaveOccurred())
 
 			cols := []string{"build_id", "resource_id", "version_digest", "name", "first_occurrence"}
+			order := importedBuildRowOrder(len(debugDB.BuildInputs), func(i int) (int, int) {
+				r := debugDB.BuildInputs[i]
+				return r.BuildID, r.ResourceID
+			})
 			copyCount, err := txn.CopyFrom(ctx,
 				pgx.Identifier{"build_resource_config_version_inputs"},
-				cols, pgx.CopyFromSlice(len(debugDB.BuildInputs), func(i int) (row []any, err error) {
+				cols, pgx.CopyFromSlice(len(debugDB.BuildInputs), func(position int) (row []any, err error) {
+					i := order[position]
 					r := debugDB.BuildInputs[i]
 					row = []any{
 						r.BuildID,
@@ -482,9 +488,14 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 			Expect(err).ToNot(HaveOccurred())
 
 			cols := []string{"build_id", "resource_id", "version_digest", "name"}
+			order := importedBuildRowOrder(len(debugDB.BuildOutputs), func(i int) (int, int) {
+				r := debugDB.BuildOutputs[i]
+				return r.BuildID, r.ResourceID
+			})
 			copyCount, err := txn.CopyFrom(ctx,
 				pgx.Identifier{"build_resource_config_version_outputs"},
-				cols, pgx.CopyFromSlice(len(debugDB.BuildOutputs), func(i int) (row []any, err error) {
+				cols, pgx.CopyFromSlice(len(debugDB.BuildOutputs), func(position int) (row []any, err error) {
+					i := order[position]
 					r := debugDB.BuildOutputs[i]
 					row = []any{
 						r.BuildID,
@@ -511,6 +522,27 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 	Expect(err).ToNot(HaveOccurred())
 
 	return versionsDB
+}
+
+// importedBuildRowOrder groups index writes while retaining each fixture row's
+// original index, which is also its imported name. The source slices stay intact.
+func importedBuildRowOrder(count int, key func(int) (int, int)) []int {
+	order := make([]int, count)
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		leftBuild, leftResource := key(order[i])
+		rightBuild, rightResource := key(order[j])
+		if leftBuild != rightBuild {
+			return leftBuild < rightBuild
+		}
+		if leftResource != rightResource {
+			return leftResource < rightResource
+		}
+		return order[i] < order[j]
+	})
+	return order
 }
 
 func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache *gocache.Cache, resources map[string]atc.ResourceConfig) db.VersionsDB {

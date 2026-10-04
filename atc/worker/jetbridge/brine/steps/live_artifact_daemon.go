@@ -1,9 +1,7 @@
 package steps
 
 import (
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"debug/elf"
 	"errors"
 	"fmt"
@@ -85,35 +83,20 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 	if !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > maxLiveDaemonBinaryBytes {
 		return nil, fmt.Errorf("daemon must be a regular executable between 1 byte and %d MiB; rebuild with -ldflags='-s -w' to fit the %d MiB pod storage budget", maxLiveDaemonBinaryBytes>>20, liveDaemonEphemeralBudget>>20)
 	}
-	// Compress only the executable's transport, not any artifact result.
-	// The pod verifies the original ELF checksum after real decompression.
-	packed, err := AttributedTempFile("brine-live-daemon-*.gz")
+	// Reuse only verified executable transport bytes. Every scenario still
+	// creates its own storage/pods and checks the decompressed executable.
+	packed, binarySHA, err := liveDaemonPayloads.reader(file)
 	if err != nil {
 		return nil, err
 	}
-	defer os.Remove(packed.Name())
-	defer packed.Close()
-	hash := sha256.New()
-	zipper := gzip.NewWriter(packed)
-	_, copyErr := io.Copy(io.MultiWriter(hash, zipper), file)
-	closeErr := zipper.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
-		return nil, err
-	}
-	packedInfo, err := packed.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := packed.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), packedInfo.Size(), time.Since(started))
+	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), packed.Len(), time.Since(started))
+
 	s, err := newLiveArtifactStore(ctx, rec)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Printf("live daemon storage ready after %s\n", time.Since(started))
-	d := &liveArtifactDaemon{store: s, port: uint16(port), binarySHA: fmt.Sprintf("%x", hash.Sum(nil))}
+	d := &liveArtifactDaemon{store: s, port: uint16(port), binarySHA: binarySHA}
 	TrackDisposer(rec, "the live artifact daemon", func() error {
 		clean, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
