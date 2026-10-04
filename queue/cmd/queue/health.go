@@ -10,18 +10,18 @@ import (
 	"github.com/concourse/concourse/queue/core"
 )
 
-// health prints one line and returns 0 if the queue is healthy, else 3 with the first reason it is not.
+// health prints one line and returns 0 if the queue is healthy, else 3 with the first reason it is not;
+// when the state cannot be read it returns 1, unknown, and prints nothing on out.
 // It only loads the snapshot, so a pipeline job can run it on a timer and go red.
 // head reads main's sha now; when it cannot, the per-main auto-resume is judged by the pause's reason only.
-func health(c config.Config, load func(context.Context) (core.Snapshot, error), head func(context.Context) (string, error), now time.Time, out io.Writer) int {
+func health(c config.Config, load func(context.Context) (core.Snapshot, error), head func(context.Context) (string, error), now time.Time, out, errw io.Writer) int {
 	s, err := load(context.Background())
-	why := ""
-	if err != nil {
-		why = "queue state damaged: " + err.Error()
-	} else {
-		main, _ := head(context.Background())
-		why = unhealthy(s, c.Health, c.Pause.Cooldown, now, main)
+	if err != nil { // unknown, not unhealthy: no verdict on stdout
+		fmt.Fprintln(errw, "queue: health: the state could not be read:", core.Redact(err.Error()))
+		return 1
 	}
+	main, _ := head(context.Background())
+	why := unhealthy(s, c.Health, c.Pause.Cooldown, now, main)
 	if why == "" {
 		fmt.Fprintln(out, "healthy")
 		return 0

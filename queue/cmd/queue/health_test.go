@@ -18,7 +18,8 @@ var _ = Describe("health", func() {
 	c := config.Defaults()
 	check := func(s core.Snapshot, err error) (int, string) {
 		var b bytes.Buffer
-		code := health(c, func(context.Context) (core.Snapshot, error) { return s, err }, func(context.Context) (string, error) { return "main1", nil }, now, &b)
+		var errw bytes.Buffer
+		code := health(c, func(context.Context) (core.Snapshot, error) { return s, err }, func(context.Context) (string, error) { return "main1", nil }, now, &b, &errw)
 		return code, b.String()
 	}
 
@@ -30,10 +31,19 @@ var _ = Describe("health", func() {
 		Expect(code).To(Equal(0))
 	})
 
-	It("A damaged queue state is unhealthy", func() {
+	It("An unreadable queue state is unknown, not unhealthy, and prints nothing", func() {
 		code, out := check(core.Snapshot{}, errors.New("bad json"))
-		Expect(code).To(Equal(3))
-		Expect(out).To(Equal("unhealthy: queue state damaged: bad json\n"))
+		Expect(code).To(Equal(1), "neither 0 healthy nor 3 unhealthy")
+		Expect(out).To(BeEmpty())
+	})
+
+	It("The help names the exit codes", func() {
+		var o, errw bytes.Buffer
+		Expect(run(context.Background(), []string{"health", "--help"}, &o, &errw)).To(Equal(0))
+		Expect(o.String()).To(BeEmpty())
+		for _, want := range []string{"exit codes:", "0 healthy", "3 unhealthy", "any other non-zero: the state could not be read", "nothing on stdout"} {
+			Expect(errw.String()).To(ContainSubstring(want))
+		}
 	})
 
 	It("A pause that nothing resumes is unhealthy after five minutes", func() {

@@ -10,7 +10,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/queue-resource ./cmd/queue-resource
+RUN CGO_ENABLED=0 go build -trimpath -o /out/queue-resource ./cmd/queue-resource \
+ && CGO_ENABLED=0 go build -trimpath -o /out/queue ./cmd/queue
 
 # HOOK: a later stage adds the compose-hook tools here, built FROM build or
 # another pinned image, and copies them into the final image below.
@@ -23,6 +24,8 @@ RUN apk add --no-cache bash git openssh-client ca-certificates
 ARG QUEUE_CONFIG=queue.yaml
 COPY ${QUEUE_CONFIG} /etc/mq/queue.yaml
 COPY --from=build /out/queue-resource /usr/local/bin/queue-resource
+# The queue CLI, for the pipeline's health and drain steps on this image.
+COPY --from=build /out/queue /usr/local/bin/queue
 RUN mkdir -p /opt/resource \
  && ln -s /usr/local/bin/queue-resource /opt/resource/check \
  && ln -s /usr/local/bin/queue-resource /opt/resource/in \
