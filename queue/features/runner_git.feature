@@ -28,6 +28,11 @@ Feature: Testing candidates through results kept in git
     When it is checked after the wait cap
     Then it is done with no verdict
 
+  Scenario: A test job that errored gives no verdict at once, never pass or fail
+    Given a run on the newer candidate
+    When its test job records that it errored, twice
+    Then the run is done with no verdict at once, and a pass cannot replace it
+
   Scenario: A restarted runner sees the same runs and results
     Given a run with a passing result
     When a newly started runner checks the run

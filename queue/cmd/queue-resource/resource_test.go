@@ -206,10 +206,40 @@ var _ = Describe("queue resource", func() {
 		Expect(errw).To(ContainSubstring(".mq"))
 	})
 
-	It("A put with a verdict other than pass or fail is refused", func() {
+	It("A test job that errored gives no verdict at once, never ejects, and a new run on the same candidate lands on a pass", func() {
+		admit()
+		v1 := check()[0]
+		tree, parent := gitIn(get(v1), "rev-parse", "HEAD^{tree}"), gitIn(filepath.Join(sources(), "run"), "rev-parse", "HEAD~1")
+		code, errw := put("errored")
+		Expect(code).To(Equal(0), errw)
+		code, errw = put("errored")
+		Expect(code).To(Equal(0), "a repeat is accepted: "+errw)
+		vs := check()
+		Expect(vs).To(HaveLen(1), "retried at once, not after the wait cap")
+		Expect(vs[0]["run"]).NotTo(Equal(v1["run"]))
+		s := snapshot()
+		Expect(s.Ejected).To(BeEmpty())
+		Expect(s.Paused).To(BeFalse())
+		kinds := []core.EventKind{}
+		for _, r := range s.Settled {
+			kinds = append(kinds, r.Kind)
+		}
+		Expect(kinds).To(ContainElement(core.ErroredEvent))
+		Expect(kinds).NotTo(ContainElement(core.WaitCapEvent))
+		Expect(os.RemoveAll(filepath.Join(sources(), "run"))).To(Succeed())
+		dest := get(vs[0])
+		Expect(gitIn(dest, "rev-parse", "HEAD^{tree}", "HEAD~1")).To(Equal(tree+"\n"+parent), "the same change composed again on the same main")
+		code, errw = put("pass")
+		Expect(code).To(Equal(0), errw)
+		Expect(check()).To(BeEmpty())
+		Expect(gitIn(remote, "rev-parse", "refs/heads/trunk")).To(Equal(vs[0]["candidate"]))
+		Expect(snapshot().Landed).To(HaveKey("a"))
+	})
+
+	It("A put with a verdict other than pass, fail or errored is refused", func() {
 		admit()
 		get(check()[0])
-		code, errw := put("errored")
+		code, errw := put("flaky")
 		Expect(code).To(Equal(1))
 		Expect(errw).To(ContainSubstring("verdict"))
 		Expect(strings.TrimSpace(gitIn(remote, "for-each-ref", "refs/mq/verdicts/"))).To(BeEmpty())
@@ -251,6 +281,33 @@ var _ = Describe("queue resource", func() {
 		code, _ = put("fail")
 		Expect(code).To(Equal(1), "another verdict for a recorded run is refused")
 		Expect(gitIn(remote, "rev-parse", git.HookedRef(v["candidate"]))).To(Equal(commit))
+	})
+
+	It("The test job's hook step runs on what the get fetched and commits only the hook's files", func() {
+		work := filepath.Join(dir, "work")
+		gitIn(work, "checkout", "-q", "--detach", base)
+		Expect(os.MkdirAll(filepath.Join(work, "ci"), 0o700)).To(Succeed())
+		hook := "#!/bin/bash\ncase \"$1\" in owned) echo gen ;; run) echo x > gen ;; esac\n"
+		Expect(os.WriteFile(filepath.Join(work, "ci", "hook.sh"), []byte(hook), 0o755)).To(Succeed())
+		gitIn(work, "add", "ci/hook.sh")
+		gitIn(work, "commit", "-q", "-m", "hook")
+		gitIn(work, "commit", "-q", "--allow-empty", "-m", "a second, so main is more than one commit deep")
+		gitIn(work, "push", "-q", "-f", remote, "HEAD:refs/heads/trunk")
+		admit()
+		v := check()[0]
+		cand := filepath.Join(sources(), "candidate")
+		code, _, errw := call("in", map[string]any{"source": source, "version": v}, cand)
+		Expect(code).To(Equal(0), errw)
+		Expect(gitIn(cand, "status", "--porcelain")).To(BeEmpty(), "the get's .mq is no change of the checkout's")
+		gitIn(sources(), "clone", "-q", "-b", "trunk", remote, "main")
+		step, err := filepath.Abs("../../example/hook-step.sh")
+		Expect(err).NotTo(HaveOccurred())
+		cmd := exec.Command("bash", step)
+		cmd.Dir, cmd.Env = sources(), append(os.Environ(), "HOOK_SCRIPT=ci/hook.sh", "HOOK_TIMEOUT=5", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		out, err := cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+		Expect(gitIn(cand, "rev-parse", "HEAD~1")).To(Equal(v["candidate"]))
+		Expect(gitIn(cand, "diff", "--name-only", v["candidate"], "HEAD")).To(Equal("gen"))
 	})
 
 	It("A pass with a hook dir holding no bundle records the verdict only", func() {

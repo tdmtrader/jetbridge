@@ -27,7 +27,7 @@ announced as `refused` and the latest 20 refusals are kept for status.
 as one candidate. An ejected entry is never in a batch, and an entry that
 builds on an ejected one is itself ejected, unrun, naming it as the cause.
 
-**Verdict**: the runner's one result for a candidate: pass, fail, or none.
+**Verdict**: the runner's one result for a candidate: pass, fail, or none (a test job that errored records errored, which is none at once).
 
 **Decision**: what the core does with a batch after a verdict: land, eject,
 split, retry, pause or recompose. No verdict retries, then pauses; it never

@@ -42,9 +42,14 @@ Feature: Running the queue as a resource type
     Then the change is not ejected
     And the stats count one wait cap expiry
 
-  Scenario: A put with a verdict other than pass or fail is refused
+  Scenario: A test job that errored gives no verdict at once, never ejects, and a new run on the same candidate lands on a pass
+    Given a change is admitted and its test job was cancelled or timed out
+    When the job puts errored, twice, the next check retries it, and the new run passes
+    Then nothing is ejected or paused, the retry tests the same change on the same main in a new run, and it lands
+
+  Scenario: A put with a verdict other than pass, fail or errored is refused
     Given a change is admitted and the resource was checked
-    When the test job puts a verdict that is neither pass nor fail
+    When the test job puts a verdict that is neither pass, fail nor errored
     Then the put fails and records nothing
 
   Scenario: A source with no known mode is refused and never runs the queue
@@ -71,6 +76,11 @@ Feature: Running the queue as a resource type
     Given an admitted change adds a .mq dir of its own and the resource was checked
     When the test job gets the run
     Then the get fails naming .mq
+
+  Scenario: The test job's hook step runs on what the get fetched and commits only the hook's files
+    Given main has a hook script and is more than one commit deep, and a change is admitted
+    When the test job gets the candidate and runs the hook step on it
+    Then the step passes with one commit on the candidate that changes only the hook's files
 
   Scenario: A pass with a hook dir holding no bundle records the verdict only
     Given a change is admitted and the resource was checked

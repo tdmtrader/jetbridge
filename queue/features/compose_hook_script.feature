@@ -63,6 +63,11 @@ Feature: A hook script on main regenerates files before a land
     When the test job's hook step runs on the candidate and its commit is published
     Then the hook was asked which files it owns before it ran, and main becomes that commit
 
+  Scenario: The test job's hook step leaves the get's .mq dir out of the hook's commit
+    Given main has a hook script, and the candidate checkout holds the get's .mq dir
+    When the test job's hook step runs on the candidate
+    Then it passes, and the hook's commit changes only the hook's files
+
   Scenario: A hook that refuses, or changes a file it does not own, fails the test job's hook step
     Given main has a hook script that exits with status 3, or one that writes a file it does not own
     When the test job's hook step runs on the candidate

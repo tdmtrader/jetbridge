@@ -30,6 +30,10 @@ func NewRunner(remote string, waitCap time.Duration) *Runner {
 	return &Runner{remote, waitCap, time.Now}
 }
 
+// Errored is the verdict a test job records when it was cancelled or timed
+// out: no verdict, at once.
+const Errored core.Verdict = "errored"
+
 func runRef(id string) string     { return "refs/mq/runs/" + id }
 func verdictRef(id string) string { return "refs/mq/verdicts/" + id }
 
@@ -72,7 +76,14 @@ func (r *Runner) Start(ctx context.Context, run core.Run, candidate string) erro
 
 // Poll reports the run's verdict once one is recorded for its candidate;
 // until then it is pending, and past WaitCap it is done with None.
-func (r *Runner) Poll(ctx context.Context, id string) (v core.Verdict, done bool, err error) {
+// A recorded Errored is done with None at once: it never ejects or lands.
+func (r *Runner) Poll(ctx context.Context, id string) (core.Verdict, bool, error) {
+	v, done, _, err := r.PollErrored(ctx, id)
+	return v, done, err
+}
+
+// PollErrored is Poll, and whether the run's recorded result is Errored.
+func (r *Runner) PollErrored(ctx context.Context, id string) (v core.Verdict, done, errored bool, err error) {
 	v, done = core.None, true
 	err = runnerDo(ctx, func(dir string) error {
 		tag, verdict, err := r.refs(ctx, dir, id)
@@ -92,7 +103,9 @@ func (r *Runner) Poll(ctx context.Context, id string) (v core.Verdict, done bool
 				return err
 			}
 			if got, ok := parseVerdict(msg); ok && strings.HasPrefix(msg, "candidate "+candidate+"\n") {
-				v = got
+				if v, errored = got, got == Errored; errored {
+					v = core.None
+				}
 				return nil
 			}
 		}
@@ -100,16 +113,16 @@ func (r *Runner) Poll(ctx context.Context, id string) (v core.Verdict, done bool
 		return nil
 	})
 	if err != nil {
-		return core.None, true, err
+		return core.None, true, false, err
 	}
-	return v, done, nil
+	return v, done, errored, nil
 }
 
 // RecordVerdict writes the run's verdict for candidate, refusing if another is
 // already recorded; the same one again is accepted, as a retried put.
 func (r *Runner) RecordVerdict(ctx context.Context, id, candidate string, v core.Verdict) error {
-	if !fullSHA.MatchString(candidate) || (v != core.Pass && v != core.Fail) {
-		return fmt.Errorf("verdict %q for %q: want pass or fail for a full commit sha", v, candidate)
+	if !fullSHA.MatchString(candidate) || (v != core.Pass && v != core.Fail && v != Errored) {
+		return fmt.Errorf("verdict %q for %q: want pass, fail or errored for a full commit sha", v, candidate)
 	}
 	return runnerDo(ctx, func(dir string) error {
 		if same, err := r.recorded(ctx, dir, id, candidate, v); err != nil || same {
@@ -192,7 +205,7 @@ func (r *Runner) readRun(ctx context.Context, dir, tag string) (candidate string
 func parseVerdict(msg string) (core.Verdict, bool) {
 	_, last, _ := strings.Cut(msg, "\nverdict ")
 	switch v := core.Verdict(strings.TrimSpace(last)); v {
-	case core.Pass, core.Fail:
+	case core.Pass, core.Fail, Errored:
 		return v, true
 	}
 	return core.None, false

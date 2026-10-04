@@ -345,6 +345,9 @@ func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 			d.s.Settled[len(d.s.Settled)-1].Waited = d.now().Sub(f.Started)
 		}
 	}
+	if e, ok := d.Runner.(Errorer); ok && v == None && e.Errored(f.Run.ID) { // saved with the outcome below
+		d.settled(Event{Kind: ErroredEvent, Entries: f.Run.Entries, Run: f.Run, Why: "the test job errored", At: d.now()})
+	}
 	if _, heads := d.Lander.(Heads); (heads && f.BaseSHA == "") || (f.BaseSHA != "" && f.BaseSHA != d.main) { // "": composed while main could not be read
 		d.drop(f.Run.ID)
 		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", cmp.Or(f.BaseSHA, "unknown"), cmp.Or(d.main, "unknown")))
@@ -629,7 +632,7 @@ func (d *Driver) settled(ev Event) {
 		batch = append(batch, e.ID)
 	}
 	es := ev.Entries
-	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent || ev.Kind == WaitCapEvent { // one record naming all its entries
+	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent || ev.Kind == WaitCapEvent || ev.Kind == ErroredEvent { // one record naming all its entries
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {

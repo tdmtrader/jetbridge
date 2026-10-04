@@ -2,7 +2,7 @@
 # hook-step.sh: the test job's hook step, run before the tests on the candidate.
 #
 # Inputs, under the working directory:
-#   candidate/  a full checkout of the queue's candidate (HEAD = the candidate)
+#   candidate/  the queue resource's get of the candidate, with its history (HEAD = the candidate)
 #   main/       a checkout of main, the candidate's base
 # Env: HOOK_SCRIPT (compose.hook_script), HOOK_INPUTS (read-only inputs dir,
 # passed to the hook as JBQ_HOOK_INPUTS), HOOK_TIMEOUT (seconds, default 900).
@@ -37,7 +37,8 @@ case "$rc" in
   75|124|137) retry "the hook exited $rc" ;;
   *) refuse "the hook exited $rc" ;;
 esac
-git -C "$c" reset -q --soft "$cand" && git -C "$c" add -A || retry "cannot read what the hook changed"
+# .mq/ is the get's run details, never the hook's
+git -C "$c" reset -q --soft "$cand" && git -C "$c" add -A && git -C "$c" rm -r -q --cached --ignore-unmatch -- .mq || retry "cannot read what the hook changed"
 changed="$(git -C "$c" diff --cached --name-only --no-renames "$cand")" || retry "cannot read what the hook changed"
 while IFS= read -r p; do
   [ -z "$p" ] || grep -qxF -- "$p" <<< "$owned" || refuse "the hook changed a file it does not own"
