@@ -43,3 +43,31 @@ Feature: Composing a batch with git
     And change "c", built on "p", changes that file, or deletes it
     When the batch "c" is composed onto main
     Then the candidate has only "c"'s own changes on top of main
+
+  Scenario: A compose hook's output is in the candidate commit
+    Given a compose hook that writes a generated file
+    When the batch "a" is composed onto main
+    Then the candidate has the generated file
+    And main is unchanged
+
+  Scenario: A compose hook that fails gives no verdict and ejects nobody
+    Given a compose hook that exits with status 3
+    When the batch "a" is composed onto main
+    Then composing fails with "compose hook failed: exit 3" and no conflict
+    And the candidate branch is not created
+
+  Scenario: A compose hook that changes paths outside hook_owned gives no verdict
+    Given a compose hook that writes some files outside the paths it owns
+    When the batch "a" is composed onto main
+    Then composing fails naming how many paths are outside hook_owned, never their names, and no conflict
+    And the candidate branch is not created
+
+  Scenario: A compose hook that runs too long gives no verdict
+    Given a compose hook still running after the hook timeout
+    When the batch "a" is composed onto main
+    Then composing fails with "compose hook failed: timeout" and no conflict
+
+  Scenario: With no compose hook the candidate is only the composed changes
+    Given no compose hook is configured
+    When the batch "a" is composed onto main
+    Then the candidate is one commit on top of main, "land(a)"

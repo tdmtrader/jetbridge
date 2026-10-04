@@ -68,7 +68,10 @@ type Pause struct {
 }
 
 type Compose struct {
-	Committer Committer `yaml:"committer"`
+	Committer   Committer     `yaml:"committer"`
+	Hook        []string      `yaml:"hook"`         // argv, no shell; run in the composed tree, its changes join the candidate
+	HookOwned   []string      `yaml:"hook_owned"`   // if set, path prefixes the hook may change; any other change is a failure
+	HookTimeout time.Duration `yaml:"hook_timeout"` // a hook still running after this is a failure
 }
 
 type Committer struct {
@@ -95,7 +98,7 @@ func Defaults() Config {
 		Admission: Admission{Source: "refs", Prefix: "refs/queue/admit/", ControlPrefix: "refs/queue/control/"},
 		// Small batches bisect cheaply; one retry rides out an infra blip.
 		Batch:   Batch{Max: 4, RetryNone: 1, Strategy: "serial"},
-		Compose: Compose{Committer: Committer{Name: "merge-queue", Email: "merge-queue@localhost"}},
+		Compose: Compose{Committer: Committer{Name: "merge-queue", Email: "merge-queue@localhost"}, HookTimeout: 15 * time.Minute},
 		// Merge commits are disabled in the repo settings. Three land errors in a
 		// row is past a race on main; a person should look.
 		Lander: Lander{MaxFailures: 3, LeaseRef: "refs/queue/lease"},
@@ -112,7 +115,7 @@ var known = map[string][]string{
 	"admission":         {"source", "prefix", "control_prefix", "operators_file"},
 	"batch":             {"max", "retry_none", "strategy", "adaptive"},
 	"batch.adaptive":    {"start", "min", "grow_after"},
-	"compose":           {"committer"},
+	"compose":           {"committer", "hook", "hook_owned", "hook_timeout"},
 	"compose.committer": {"name", "email"},
 	"lander":            {"max_failures", "lease_ref", "scratch"},
 	"store":             {"ref"},
@@ -165,6 +168,15 @@ func (c Config) validate() error {
 	}
 	if c.Pause.Cooldown < 0 {
 		return errors.New("pause.cooldown must be at least 0")
+	}
+	if h := c.Compose.Hook; h != nil && (len(h) == 0 || slices.Contains(h, "")) {
+		return errors.New("compose.hook must be a command and its arguments, none empty")
+	}
+	if slices.Contains(c.Compose.HookOwned, "") || (c.Compose.HookOwned != nil && c.Compose.Hook == nil) {
+		return errors.New("compose.hook_owned needs compose.hook and prefixes that are not empty")
+	}
+	if c.Compose.HookTimeout <= 0 {
+		return errors.New("compose.hook_timeout must be positive")
 	}
 	if c.Lander.MaxFailures < 1 {
 		return errors.New("lander.max_failures must be at least 1")

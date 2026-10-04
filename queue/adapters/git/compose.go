@@ -3,10 +3,14 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/core"
@@ -16,11 +20,15 @@ import (
 // change, in batch order, onto base as one commit titled land(<id>) naming the
 // original, and force-pushes the result to the queue's own scratch ref
 // refs/heads/<Candidate>; Compose never pushes any other ref, and never main.
-type Composer struct{ Remote, Main, Candidate, Name, Email string }
+type Composer struct {
+	Remote, Main, Candidate, Name, Email string
+	Hook, HookOwned                      []string
+	HookTimeout                          time.Duration
+}
 
 // NewComposer uses repository.uri, the lander's remote.
 func NewComposer(c config.Config) Composer {
-	return Composer{c.Repository.URI, c.Repository.Main, c.Repository.Candidate, c.Compose.Committer.Name, c.Compose.Committer.Email}
+	return Composer{c.Repository.URI, c.Repository.Main, c.Repository.Candidate, c.Compose.Committer.Name, c.Compose.Committer.Email, c.Compose.Hook, c.Compose.HookOwned, c.Compose.HookTimeout}
 }
 
 // Compose returns the candidate's full sha, or a core.ConflictError naming
@@ -55,6 +63,9 @@ func (c Composer) Compose(ctx context.Context, base string, entries []core.Entry
 		if err != nil {
 			return "", err
 		}
+	}
+	if err := c.runHook(ctx, dir, git); err != nil {
+		return "", err
 	}
 	if _, err := git("push", "-q", c.Remote, "+HEAD:refs/heads/"+c.Candidate); err != nil {
 		return "", err
@@ -133,4 +144,47 @@ func (c Composer) composeGit(ctx context.Context, dir string, args ...string) (s
 		return "", gitFailed(args[0], err, stderr.String())
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// runHook runs the hook, if any, in the composed tree and commits what it
+// changed on top of the composition. Its output is dropped, not echoed. A
+// failure, a timeout or a change outside HookOwned is a plain error: no verdict.
+func (c Composer) runHook(ctx context.Context, dir string, git func(...string) (string, error)) error {
+	if len(c.Hook) == 0 {
+		return nil
+	}
+	limit := c.HookTimeout
+	if limit <= 0 {
+		limit = 15 * time.Minute
+	}
+	hctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	cmd := exec.CommandContext(hctx, c.Hook[0], c.Hook[1:]...)
+	cmd.Dir, cmd.WaitDelay = dir, time.Second
+	var exit *exec.ExitError
+	if err := cmd.Run(); hctx.Err() != nil && ctx.Err() == nil {
+		return errors.New("compose hook failed: timeout")
+	} else if errors.As(err, &exit) {
+		return fmt.Errorf("compose hook failed: exit %d", exit.ExitCode())
+	} else if err != nil {
+		return errors.New("compose hook failed: could not run")
+	}
+	if _, err := git("add", "-A"); err != nil {
+		return err
+	}
+	names, err := git("diff", "--cached", "--name-only", "-z")
+	if err != nil || names == "" {
+		return err
+	}
+	outside := 0
+	for _, n := range strings.Split(strings.Trim(names, "\x00"), "\x00") {
+		if c.HookOwned != nil && !slices.ContainsFunc(c.HookOwned, func(p string) bool { return strings.HasPrefix(n, p) }) {
+			outside++
+		}
+	}
+	if outside > 0 {
+		return fmt.Errorf("compose hook changed %d path(s) outside hook_owned", outside)
+	}
+	_, err = git("commit", "-q", "-m", "compose hook: regenerate files")
+	return err
 }

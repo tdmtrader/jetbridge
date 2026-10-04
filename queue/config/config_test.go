@@ -152,7 +152,7 @@ var _ = Describe("Parse", func() {
 	})
 
 	It("A key nothing reads is refused as unknown", func() {
-		for _, bad := range []string{"admission: {require: [x]}", "compose: {hook: x}", "compose: {mode: squash}",
+		for _, bad := range []string{"admission: {require: [x]}", "compose: {mode: squash}",
 			"lander: {credential: x}", "lander: {mode: ff-only}", "batch: {bisect: halves}"} {
 			_, err := config.Parse([]byte(minimal + bad + "\n"))
 			Expect(err).To(MatchError(ContainSubstring("unknown key")), bad)
@@ -243,6 +243,25 @@ var _ = Describe("Parse", func() {
 			_, err := config.Parse([]byte(minimal + "compose: {committer: {name: '" + name + "'}}\n"))
 			Expect(err).To(MatchError(ContainSubstring("compose.committer.name: a URL must not hold credentials")), name)
 			Expect(err.Error()).NotTo(ContainSubstring("F4ke"), name)
+		}
+	})
+
+	It("A compose hook is read as an argument list with a timeout", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Compose.Hook).To(BeNil())
+		Expect(c.Compose.HookTimeout).To(Equal(15 * time.Minute))
+		c, err = config.Parse([]byte(minimal + "compose: {hook: [make, generate], hook_owned: [gen/], hook_timeout: 90s}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Compose.Hook).To(Equal([]string{"make", "generate"}))
+		Expect(c.Compose.HookOwned).To(Equal([]string{"gen/"}))
+		Expect(c.Compose.HookTimeout).To(Equal(90 * time.Second))
+	})
+
+	It("A compose hook that is not an argument list or whose timeout is not positive is refused", func() {
+		for _, bad := range []string{"hook: make generate", "hook: []", "hook: ['']", "hook_timeout: 0s", "hook_timeout: -1m", "hook: [make], hook_timeout: soon", "hook_owned: [gen/]", "hook: [make], hook_owned: [\"\"]"} {
+			_, err := config.Parse([]byte(minimal + "compose: {" + bad + "}\n"))
+			Expect(err).To(HaveOccurred(), bad)
 		}
 	})
 })

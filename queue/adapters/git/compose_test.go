@@ -215,4 +215,52 @@ var _ = Describe("Composer", func() {
 		_, err := config.Parse([]byte(base + "compose: {committer: {emial: a@b}}\n"))
 		Expect(err).To(MatchError(`unknown key "compose.committer.emial"; did you mean "compose.committer.email"?`))
 	})
+
+	withHook := func(compose string) git.Composer {
+		c, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: " + remote + ", main: main}\ncompose: " + compose + "\n"))
+		Expect(err).NotTo(HaveOccurred())
+		return git.NewComposer(c)
+	}
+
+	It("A compose hook's output is in the candidate commit", func() {
+		a := change("a", "main", "a.txt", "a\n")
+		before := ref("main")
+		sha, err := withHook(`{hook: [sh, -c, "cat a.txt > gen.txt; echo built >> gen.txt"]}`).Compose(ctx, "main", []core.Entry{a})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(composeRun(remote, "show", sha+":gen.txt")).To(Equal("a\nbuilt"))
+		Expect(ref("main")).To(Equal(before))
+	})
+
+	It("A compose hook that fails gives no verdict and ejects nobody", func() {
+		batch := []core.Entry{change("a", "main", "a.txt", "a\n")}
+		_, err := withHook(`{hook: [sh, -c, "echo secret-ish output >&2; exit 3"]}`).Compose(ctx, "main", batch)
+		Expect(err).To(MatchError("compose hook failed: exit 3"))
+		Expect(core.ComposeVerdict(err, batch)).To(Equal(core.None))
+		Expect(composeRun(remote, "for-each-ref", "refs/heads/queue-next")).To(BeEmpty())
+	})
+
+	It("A compose hook that changes paths outside hook_owned gives no verdict", func() {
+		batch := []core.Entry{change("a", "main", "a.txt", "a\\n")}
+		h := `[sh, -c, "mkdir -p gen; echo x > gen/ok; echo y > stray1; echo z > stray2"]`
+		_, err := withHook(`{hook: `+h+`, hook_owned: [gen/]}`).Compose(ctx, "main", batch)
+		Expect(err).To(MatchError("compose hook changed 2 path(s) outside hook_owned"))
+		Expect(core.ComposeVerdict(err, batch)).To(Equal(core.None))
+		Expect(composeRun(remote, "for-each-ref", "refs/heads/queue-next")).To(BeEmpty())
+		_, err = withHook(`{hook: `+h+`, hook_owned: [gen/, stray]}`).Compose(ctx, "main", batch)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("A compose hook that runs too long gives no verdict", func() {
+		batch := []core.Entry{change("a", "main", "a.txt", "a\n")}
+		_, err := withHook(`{hook: [sleep, "30"], hook_timeout: 300ms}`).Compose(ctx, "main", batch)
+		Expect(err).To(MatchError("compose hook failed: timeout"))
+		Expect(core.ComposeVerdict(err, batch)).To(Equal(core.None))
+	})
+
+	It("With no compose hook the candidate is only the composed changes", func() {
+		a := change("a", "main", "a.txt", "a\n")
+		sha, err := composer.Compose(ctx, "main", []core.Entry{a})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(subjects("main.." + sha)).To(Equal([]string{"land(a): change a"}))
+	})
 })
