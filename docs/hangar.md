@@ -21,18 +21,15 @@ disjoint from the artifact hostPath:
 
 ```yaml
 artifactDaemon:
-  enabled: true
   tls:
-    enabled: true
+    source: existingSecret
     existingSecret: concourse-artifact-daemon-tls
-  durable:
-    store: gcs
-    bucket: concourse-hangar
-    prefix: production
-    timeout: 5m
   hangar:
     enabled: true
     webEnabled: false
+    store: gcs
+    bucket: concourse-hangar
+    prefix: production
     allowGeneratedKey: false
     scratchPath: /var/concourse/hangar-scratch
     maxContentBytes: 10737418240
@@ -40,14 +37,14 @@ artifactDaemon:
     capabilityTTL: 900s
 ```
 
-With `artifactDaemon.hangar.store` unset, Hangar inherits the legacy durable
-GCS configuration. Set `hangar.store: gcs` and `hangar.bucket` explicitly to
-configure strict-input storage independently, with an optional `hangar.prefix`.
-Only an unset store selector inherits `durable.prefix`; timeout still uses
-`durable.timeout`. On GKE,
-grant the artifact-daemon ServiceAccount bucket access with Workload Identity
-and leave `durable.existingSecret` empty. There is no separate Hangar cloud
-credential block and task Pods never receive bucket credentials.
+Hangar names its own storage. With Hangar enabled, `artifactDaemon.hangar.store`
+(`gcs` or `disk`) and `hangar.bucket` are required, and the chart refuses a
+render without them; `hangar.prefix` is optional, and `hangar.endpoint`
+overrides the GCS endpoint for an emulator. Hangar shares nothing with the
+resource-cache store. Its per-operation timeout is the daemon binary's fixed
+5m default. On GKE, grant the artifact-daemon ServiceAccount bucket access with
+Workload Identity. There is no separate Hangar cloud credential block and task
+Pods never receive bucket credentials.
 
 The chart creates a private, transient `emptyDir` mounted only in the daemon at
 `scratchPath`. It is used for complete canonicalization and verification, not
