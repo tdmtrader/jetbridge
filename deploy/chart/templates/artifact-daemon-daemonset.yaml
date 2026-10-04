@@ -49,8 +49,7 @@
 {{- /*
    Resolve mirror.replicas: numbers pass through (including the explicit
    value 0 = disabled); the literal "all" maps to -1 (the daemon's flag
-   value for "every live peer"). Anything else is a misconfiguration and
-   we let Helm fail loudly.
+   value for "every live peer"). _validate.tpl refuses any other string.
    Note: we read the value directly rather than using `default` because
    `default` treats Go's zero-value (int 0) as "unset" and would silently
    override an operator's intentional `replicas: 0` with the chart default.
@@ -60,12 +59,8 @@
   {{- $mirrorReplicasRaw = 2 }}
 {{- end }}
 {{- $mirrorReplicas := $mirrorReplicasRaw }}
-{{- if kindIs "string" $mirrorReplicasRaw }}
-  {{- if eq $mirrorReplicasRaw "all" }}
-    {{- $mirrorReplicas = -1 }}
-  {{- else }}
-    {{- fail (printf "artifactDaemon.mirror.replicas must be an integer or the string \"all\", got %q" $mirrorReplicasRaw) }}
-  {{- end }}
+{{- if and (kindIs "string" $mirrorReplicasRaw) (eq $mirrorReplicasRaw "all") }}
+  {{- $mirrorReplicas = -1 }}
 {{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
