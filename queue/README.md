@@ -219,7 +219,8 @@ onto main. Never mix spellings; write both as short branch names.
 ## Operating notes
 
 - **Pause.** The queue pauses after `batch.retry_none` retries on no verdict, or
-  after `lander.max_failures` land errors in a row. `status` shows `Paused` and
+  after `lander.max_failures` land errors in a row (see the next note for
+  where that count lives). `status` shows `Paused` and
   `Why`. A paused queue still drains admissions and polls runs; it starts none.
   Each pause has a number (`PauseSeq`, counted up on every pause). `queue resume`
   reads it from the saved state and pushes main's current sha to
@@ -227,6 +228,12 @@ onto main. Never mix spellings; write both as short branch names.
   pause on its next step, announces `resumed`, and deletes the request. A request
   for any other pause, or on a queue that is not paused, is logged, deleted and
   changes nothing.
+- **Land errors and the resource.** A long-running process (`queue run`) pauses
+  after `lander.max_failures` consecutive land errors (`core/driver.go:448`).
+  The Concourse resource builds a fresh driver on every `check`
+  (`wire/wire.go:39-48`, `cmd/queue-resource/main.go:134`), so that count does
+  not carry over and the resource does not pause on repeated land errors: a
+  failing land is retried on the next check.
 - **Auto-resume.** A pause for no verdict (not a land-error or unreadable-main
   pause) ends by itself once `pause.cooldown` has passed since it began (default
   `5m`; `0s` turns it off). The queue announces `resumed` with the reason
