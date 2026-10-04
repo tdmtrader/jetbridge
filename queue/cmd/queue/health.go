@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/queue/config"
@@ -25,13 +26,32 @@ func health(c config.Config, load func(context.Context) (core.Snapshot, error), 
 		return 1
 	}
 	main, _ := head(context.Background())
+	alarm := landAlarm(s, c.Lander.MaxFailures)
 	why := unhealthy(s, c.Health, c.Pause.Cooldown, now, main)
-	if why == "" {
+	if alarm == "" && why == "" {
 		fmt.Fprintln(out, "healthy")
 		return 0
 	}
-	fmt.Fprintln(out, "unhealthy:", core.Redact(why))
+	if alarm != "" {
+		fmt.Fprintln(out, alarm)
+	}
+	if why != "" {
+		fmt.Fprintln(out, "unhealthy:", core.Redact(why))
+	}
 	return 3
+}
+
+// landAlarm is the ALARM line once max failed landings have come in a row, else "".
+// The queue neither pauses nor ejects for them: it keeps retrying, and the next land clears the alarm.
+func landAlarm(s core.Snapshot, max int) string {
+	if s.LandFails < max {
+		return ""
+	}
+	last, _, _ := strings.Cut(core.Redact(s.LandErr), "\n")
+	if r := []rune(last); len(r) > 120 {
+		last = string(r[:120]) + "..."
+	}
+	return fmt.Sprintf("ALARM: %d consecutive failed landings (last: %s)", s.LandFails, last)
 }
 
 // unhealthy returns why the queue is red at now, or "" when it is not.

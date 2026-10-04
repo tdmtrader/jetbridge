@@ -880,37 +880,69 @@ var _ = Describe("Driver", func() {
 		Expect(store.snap().Landing).To(BeNil())
 	})
 
-	It("A recompose does not reset the count of other landing failures", func() {
+	// afresh runs Steps, each on a driver built anew as every resource check is, until Land has been called n times.
+	afresh := func(n int) {
+		for range 40 {
+			if land.lands >= n {
+				return
+			}
+			_ = driver().Step(ctx)
+		}
+		Fail(fmt.Sprintf("Land was called %d times, not %d", land.lands, n))
+	}
+
+	It("A recompose neither counts nor clears the count of other landing failures", func() {
 		land.fails = 2
-		d := driver()
-		admit(d, "a")
-		attempt(d)
-		attempt(d)
+		admit(driver(), "a")
+		afresh(2)
+		Expect(store.snap().LandFails).To(Equal(2))
 		land.moved = 1
-		attempt(d)
-		Expect(store.snap().Paused).To(BeFalse())
+		afresh(3)
+		Expect(store.snap().LandFails).To(Equal(2))
 		land.fails = 1
-		attempt(d)
-		Expect(store.snap().Paused).To(BeTrue(), "the third other failure still pauses")
+		afresh(4)
+		Expect(store.snap().LandFails).To(Equal(3))
+		Expect(store.snap().Paused).To(BeFalse())
 	})
 
-	It("Repeated landing failures pause the queue with the reason", func() {
+	It("Landing failures under max_failures are counted across drivers, with the last error", func() {
 		land.fails = 100
-		d := driver()
-		admit(d, "a")
-		for range 12 {
-			_ = d.Step(ctx)
-		}
-		Expect(land.lands).To(Equal(3))
-		paused := note.of(core.PausedEvent)
-		Expect(paused).To(HaveLen(1))
-		Expect(paused[0].Why).To(Equal("landing failed 3 times: main moved"))
+		admit(driver(), "a")
+		afresh(2)
 		snap := store.snap()
-		Expect(snap.Paused).To(BeTrue())
-		Expect(snap.Why).To(Equal(paused[0].Why))
-		Expect(ids(snap.Queued)).To(Equal([]string{"a"}))
+		Expect(snap.LandFails).To(Equal(2))
+		Expect(snap.LandErr).To(Equal("main moved"))
+		Expect(snap.Paused).To(BeFalse())
+	})
+
+	It("Repeated landing failures never pause or eject, and the queue keeps retrying the land", func() {
+		land.fails = 100
+		admit(driver(), "a")
+		afresh(6)
+		snap := store.snap()
+		Expect(snap.LandFails).To(Equal(6), "the count keeps rising; the alarm is health's, at max_failures")
+		Expect(snap.Paused).To(BeFalse())
+		Expect(note.of(core.PausedEvent)).To(BeEmpty())
 		Expect(snap.Ejected).To(BeEmpty())
+		Expect(ids(snap.Queued)).To(Equal([]string{"a"}))
 		Expect(land.landed).To(BeEmpty())
+	})
+
+	It("A successful land clears the count of landing failures", func() {
+		land.fails = 3
+		admit(driver(), "a")
+		afresh(3)
+		Expect(store.snap().LandFails).To(Equal(3))
+		for range 40 {
+			if len(land.landed) > 0 {
+				break
+			}
+			_ = driver().Step(ctx)
+		}
+		Expect(land.landed).To(Equal([]string{"a"}))
+		snap := store.snap()
+		Expect(snap.LandFails).To(Equal(0))
+		Expect(snap.LandErr).To(BeEmpty())
 	})
 
 	It("resets the landing failure count on a landing", func() {
@@ -1001,25 +1033,6 @@ var _ = Describe("Driver", func() {
 		}
 		Expect(land.landed).To(Equal([]string{"a", "b"}))
 		Expect(note.of(core.PausedEvent)).To(BeEmpty())
-	})
-
-	It("keeps the landing failure count when the pause cannot be saved", func() {
-		land.fails = 100
-		land.before = func() {
-			if land.lands == 3 {
-				store.refuse = 1 // the pause save fails
-			}
-		}
-		d := driver()
-		admit(d, "a")
-		for range 12 {
-			_ = d.Step(ctx)
-		}
-		Expect(land.lands).To(Equal(4), "the next failure pauses")
-		paused := note.of(core.PausedEvent)
-		Expect(paused).To(HaveLen(1))
-		Expect(paused[0].Why).To(Equal("landing failed 4 times: main moved"))
-		Expect(store.snap().Paused).To(BeTrue())
 	})
 
 	It("refuses to admit the main branch itself", func() {

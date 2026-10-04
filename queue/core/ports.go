@@ -30,6 +30,14 @@ type Snapshot struct {
 	Settled  []SettleRecord    // the latest MaxSettled lands, ejects, pauses and flakes, oldest first
 
 	ResumedOnMain string // the main sha the last auto-resume was on; empty in a snapshot saved before it existed
+
+	// LandFails counts land errors in a row, kept here because a driver built
+	// afresh for each step, as the resource does, has no memory. A land clears
+	// it. A land refused because main moved is no land error. LandErr is the
+	// latest error's text. The queue keeps retrying; `queue health` raises the
+	// alarm at lander.max_failures.
+	LandFails int    `json:",omitempty"`
+	LandErr   string `json:",omitempty"`
 }
 
 const MaxRefused = 20

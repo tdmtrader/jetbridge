@@ -32,7 +32,7 @@ runner:
   wait_cap: 1h                        # a build not done by then is no verdict
 
 lander:
-  max_failures: 3                     # land errors in a row before the queue pauses
+  max_failures: 3                     # failed landings in a row before health raises the alarm
   lease_ref: refs/queue/lease
 
 notify: {kind: log, path: "-"}        # one JSON line per event on stdout

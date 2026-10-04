@@ -87,7 +87,7 @@ type Committer struct {
 }
 
 type Lander struct {
-	MaxFailures int    `yaml:"max_failures"` // land errors in a row before the queue pauses
+	MaxFailures int    `yaml:"max_failures"` // failed landings in a row before health raises the alarm
 	LeaseRef    string `yaml:"lease_ref"`    // the ref that holds the lander's fence
 	Scratch     string `yaml:"scratch"`      // parent dir for its private repo; default os.TempDir
 }
@@ -107,8 +107,8 @@ func Defaults() Config {
 		// Order is fairness, not correctness: every landing is tested on the main it lands on.
 		Batch:   Batch{Max: 4, RetryNone: 1, Strategy: "serial", Order: "proven-first"},
 		Compose: Compose{Committer: Committer{Name: "merge-queue", Email: "merge-queue@localhost"}, HookTimeout: 15 * time.Minute},
-		// Merge commits are disabled in the repo settings. Three land errors in a
-		// row is past a race on main; a person should look.
+		// Merge commits are disabled in the repo settings. Three failed landings
+		// in a row is past a race on main; a person should look.
 		Lander: Lander{MaxFailures: 3, LeaseRef: "refs/queue/lease"},
 		Store:  Store{Ref: "refs/queue/state"},
 		// An outage that left no verdict usually ends within minutes.

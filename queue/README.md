@@ -148,7 +148,7 @@ cd queue && go build ./cmd/queue
 6. Resume a paused queue: `queue resume --config queue.yaml` (see Pause).
 
 Exit codes: 0 done, 2 admit refused (unsafe id), 1 anything else. `health`
-exits 0 healthy and 3 unhealthy; any other non-zero means the state could not
+exits 0 healthy and 3 unhealthy (a pause, a stale run, or the failed-landings ALARM); any other non-zero means the state could not
 be read. Run `queue --help` for the full list of verbs and codes.
 
 ## Configuration
@@ -179,7 +179,7 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `runner.credential` | none | Required. `env:NAME` or `file:PATH`; holds a bearer token, read on every call. |
 | `runner.wait_cap` | `1h` | A build not done by then is no verdict. |
 | `pause.cooldown` | `5m` | How long a pause for no verdict lasts before the queue resumes itself; `0s` never; not negative. |
-| `lander.max_failures` | `3` | Land errors in a row before the queue pauses; at least 1. Landing is always fast-forward only. |
+| `lander.max_failures` | `3` | Failed landings in a row before `queue health` raises an ALARM (exit 3); at least 1. The queue never pauses or ejects for them: it keeps retrying, and the next land clears the alarm. Landing is always fast-forward only. |
 | `lander.lease_ref` | `refs/queue/lease` | Ref that holds the fence. |
 | `lander.scratch` | OS temp dir | Parent of the lander's private bare repo. |
 | `notify.kind` | none (no notifier) | `log`. |
@@ -207,9 +207,8 @@ onto main. Never mix spellings; write both as short branch names.
 
 ## Operating notes
 
-- **Pause.** The queue pauses after `batch.retry_none` retries on no verdict, or
-  after `lander.max_failures` land errors in a row (see the next note for
-  where that count lives). `status` shows `Paused` and
+- **Pause.** The queue pauses after `batch.retry_none` retries on no verdict.
+  Land errors never pause it (see the next note). `status` shows `Paused` and
   `Why`. A paused queue still drains admissions and polls runs; it starts none.
   Each pause has a number (`PauseSeq`, counted up on every pause). `queue resume`
   reads it from the saved state and pushes main's current sha to
@@ -217,12 +216,15 @@ onto main. Never mix spellings; write both as short branch names.
   pause on its next step, announces `resumed`, and deletes the request. A request
   for any other pause, or on a queue that is not paused, is logged, deleted and
   changes nothing.
-- **Land errors and the resource.** A long-running process (`queue run`) pauses
-  after `lander.max_failures` consecutive land errors (`core/driver.go:448`).
-  The Concourse resource builds a fresh driver on every `check`
-  (`wire/wire.go:39-48`, `cmd/queue-resource/main.go:134`), so that count does
-  not carry over and the resource does not pause on repeated land errors: a
-  failing land is retried on the next check.
+- **Failed landings and the alarm.** A failed landing is any land error after a
+  green test except main having moved, which composes the batch again. It never
+  ejects the batch and never pauses the queue: the next step tries it again.
+  The count of failed landings in a row is kept in the saved state (`LandFails`,
+  with the last error as `LandErr`; `status --json` shows both), so it holds
+  across the resource's fresh driver on every `check` as it does in `queue run`.
+  A land clears it. When it reaches `lander.max_failures`, `queue health` prints
+  `ALARM: <N> consecutive failed landings (last: <error>)` and exits 3, until
+  the next land.
 - **Auto-resume.** A pause for no verdict (not a land-error or unreadable-main
   pause) ends by itself once `pause.cooldown` has passed since it began (default
   `5m`; `0s` turns it off). The queue announces `resumed` with the reason

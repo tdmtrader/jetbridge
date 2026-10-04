@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,6 +30,36 @@ var _ = Describe("health", func() {
 		Expect(out).To(Equal("healthy\n"))
 		code, _ = check(core.Snapshot{InFlight: []core.Flight{{Run: core.Run{ID: "old"}}}}, nil) // no start kept: not judged
 		Expect(code).To(Equal(0))
+	})
+
+	It("Failed landings under max_failures raise no alarm", func() {
+		code, out := check(core.Snapshot{LandFails: 2, LandErr: "push refused"}, nil)
+		Expect(code).To(Equal(0))
+		Expect(out).To(Equal("healthy\n"))
+	})
+
+	It("max_failures failed landings in a row raise the alarm, and the queue is not paused", func() {
+		code, out := check(core.Snapshot{LandFails: 3, LandErr: "push refused"}, nil)
+		Expect(code).To(Equal(3))
+		Expect(out).To(Equal("ALARM: 3 consecutive failed landings (last: push refused)\n"))
+		c.Lander.MaxFailures = 5
+		defer func() { c.Lander.MaxFailures = 3 }()
+		code, _ = check(core.Snapshot{LandFails: 4}, nil)
+		Expect(code).To(Equal(0), "the alarm follows lander.max_failures")
+	})
+
+	It("The alarm hides secrets in the last error, and shortens it", func() {
+		_, out := check(core.Snapshot{LandFails: 3, LandErr: "push https://user:SECRET@host/repo failed\n" + strings.Repeat("x", 500)}, nil)
+		Expect(out).NotTo(ContainSubstring("SECRET"))
+		Expect(strings.Count(out, "\n")).To(Equal(1))
+		Expect(len(out)).To(BeNumerically("<", 250))
+	})
+
+	It("The alarm and a pause are both reported", func() {
+		code, out := check(core.Snapshot{LandFails: 3, LandErr: "e", Paused: true, Why: "w", PausedAt: now.Add(-6 * time.Minute)}, nil)
+		Expect(code).To(Equal(3))
+		Expect(out).To(HavePrefix("ALARM: 3 consecutive failed landings (last: e)\n"))
+		Expect(out).To(ContainSubstring("unhealthy: paused for 6m0s"))
 	})
 
 	It("An unreadable queue state is unknown, not unhealthy, and prints nothing", func() {

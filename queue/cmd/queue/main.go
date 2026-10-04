@@ -29,7 +29,7 @@ const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|hea
 
 // exitCodes is printed by --help.
 const exitCodes = `exit codes:
-  health: 0 healthy, 3 unhealthy (the reason on stdout),
+  health: 0 healthy, 3 unhealthy (the reason on stdout; an ALARM line once lander.max_failures landings failed in a row),
           any other non-zero: the state could not be read, unknown, nothing on stdout
   admit:  2 refused, an unsafe id
   else:   0 done, 1 failed
@@ -248,5 +248,7 @@ func summary(s core.Snapshot) any {
 		Why              string              `json:",omitempty"`
 		Refused          []core.Refusal      `json:",omitempty"`
 		Flakes           []core.SettleRecord `json:",omitempty"`
-	}{queued, flying, landed, ejected, s.Paused, s.Why, s.Refused, flakes}
+		LandFails        int                 `json:",omitempty"`
+		LandErr          string              `json:",omitempty"`
+	}{queued, flying, landed, ejected, s.Paused, s.Why, s.Refused, flakes, s.LandFails, s.LandErr}
 }

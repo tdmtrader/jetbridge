@@ -46,6 +46,12 @@ Feature: Running the queue as a resource type
     When the job puts errored, twice, the next check retries it, and the new run passes
     Then nothing is ejected or paused, the retry tests the same change on the same main in a new run, and it lands
 
+  Scenario: A land that keeps failing raises an alarm after max_failures, across checks, never pauses or ejects, keeps retrying, and clears on a land
+    Given a change that passed its test job, and main refuses every push
+    When the land fails on three checks, with a main-moved recompose between the second and third that does not count
+    Then health exits 3 with the ALARM line, the queue is not paused and nothing is ejected
+    And once main accepts pushes the next check lands the change and health is healthy again
+
   Scenario: A test job that keeps erroring pauses the queue after its retries, across checks, and health goes red
     Given a queue that retries no verdict twice, and a change is admitted
     When its test job errors on three runs, each found by a separate check

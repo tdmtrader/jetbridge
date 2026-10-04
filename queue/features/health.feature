@@ -38,3 +38,23 @@ Feature: The queue reports when it is unhealthy
     Given a run that started two hours ago
     When the operator checks its health
     Then the check fails naming the run and how long it has been in flight
+
+  Scenario: Failed landings under max_failures raise no alarm
+    Given two landings in a row have failed and max_failures is three
+    When the operator checks its health
+    Then the queue is healthy
+
+  Scenario: max_failures failed landings in a row raise the alarm, and the queue is not paused
+    Given three landings in a row have failed and max_failures is three
+    When the operator checks its health
+    Then the check fails with an ALARM line giving the count and the last error
+
+  Scenario: The alarm hides secrets in the last error, and shortens it
+    Given the last landing error holds a secret and is very long
+    When the operator checks its health
+    Then the ALARM line is one short line without the secret
+
+  Scenario: The alarm and a pause are both reported
+    Given three landings in a row have failed and the queue is also paused too long
+    When the operator checks its health
+    Then the check fails with the ALARM line and the pause reason
