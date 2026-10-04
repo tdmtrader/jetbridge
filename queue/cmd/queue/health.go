@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/concourse/concourse/queue/config"
@@ -35,9 +34,10 @@ func health(c config.Config, load func(context.Context) (core.Snapshot, error), 
 func unhealthy(s core.Snapshot, h config.Health, cooldown time.Duration, now time.Time, main string) string {
 	if s.Paused {
 		paused := now.Sub(s.PausedAt)
-		autoResumes := strings.HasPrefix(s.Why, "no verdict after ") && cooldown > 0
+		noVerdict, held := core.PauseReason(s.Why)
+		autoResumes := noVerdict && cooldown > 0
 		// the one auto-resume per main is spent: the pause holds until an operator acts
-		spent := strings.HasPrefix(s.Why, "no verdict twice on main") || (autoResumes && main != "" && s.ResumedOnMain == main)
+		spent := held || (autoResumes && main != "" && s.ResumedOnMain == main)
 		switch {
 		case spent, !autoResumes && paused > h.PauseAfter:
 			return fmt.Sprintf("paused for %s: %s; nothing auto-resumes it; run `queue resume`", paused.Round(time.Second), s.Why)

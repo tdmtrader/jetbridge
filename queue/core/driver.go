@@ -153,7 +153,7 @@ func (d *Driver) resume(ctx context.Context, seq uint64, why string) error {
 // autoResume ends a no-verdict pause once the cool-down has passed; any other pause waits for an operator.
 func (d *Driver) autoResume(ctx context.Context) error {
 	s := d.s
-	if !s.Paused || !noVerdict(s.Why) || d.Cooldown <= 0 {
+	if nv, held := PauseReason(s.Why); !s.Paused || !nv && !held || d.Cooldown <= 0 {
 		return nil
 	}
 	at := s.PausedAt

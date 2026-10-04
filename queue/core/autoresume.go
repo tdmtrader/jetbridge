@@ -12,9 +12,11 @@ const (
 	holdPrefix    = "no verdict twice on "
 )
 
-// noVerdict reports whether a pause's reason is one a main move may still auto-resume.
-func noVerdict(why string) bool {
-	return strings.HasPrefix(why, noVerdictWhy) || strings.HasPrefix(why, holdPrefix)
+// PauseReason classifies a pause by its reason: noVerdict is a no-verdict pause,
+// which the cool-down ends once per main; held is one whose auto-resume on its
+// main is spent, so only an operator or a new main ends it.
+func PauseReason(why string) (noVerdict, held bool) {
+	return strings.HasPrefix(why, noVerdictWhy), strings.HasPrefix(why, holdPrefix)
 }
 
 // resumeOncePerMain auto-resumes the cooled-down pause once per main sha. On a
@@ -33,7 +35,7 @@ func (d *Driver) resumeOncePerMain(ctx context.Context) error {
 		d.s.ResumedOnMain = head
 		return d.resume(ctx, d.s.PauseSeq, autoResumeWhy)
 	}
-	if strings.HasPrefix(d.s.Why, holdPrefix) {
+	if _, held := PauseReason(d.s.Why); held {
 		return nil
 	}
 	ev := Event{Kind: PausedEvent, Why: fmt.Sprintf(holdWhy, head[:min(8, len(head))]), At: d.now()}
