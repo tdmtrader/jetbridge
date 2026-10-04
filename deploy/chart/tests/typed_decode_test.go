@@ -73,8 +73,6 @@ var typedModes = []struct {
 			"ingress.host=ci.example",
 			"pdb.enabled=true",
 			"postgresql.enabled=true",
-			"artifactDaemon.durable.store=gcs",
-			"artifactDaemon.durable.bucket=jb-durable",
 			"rbac.brineLive=true",
 		),
 		floor: 34,
