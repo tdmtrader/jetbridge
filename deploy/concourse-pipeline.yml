@@ -186,7 +186,9 @@ jobs:
           echo ""
 
           # The heavy Ginkgo suites run under the Ginkgo CLI with -p, beside a
-          # plain `go test` of everything else. Under `go test` alone each
+          # plain `go test` of everything else. -p runs the whole test binary
+          # in each process, so a suite's plain Go tests run once per process
+          # -- as they always have under `make test-unit`. Under `go test` alone each
           # suite is one process, and atc/db (~1000 specs, 278s) was the whole
           # job's critical path; `make test-unit` already runs these with -p.
           # Procs scale with the node (nproc sees the whole node: there is no
@@ -204,34 +206,43 @@ jobs:
             fi
           fi
           HEAVY=""
-          for d in atc/db atc/api atc/db/migration atc/exec atc/scheduler/algorithm atc/engine atc/runs; do
+          for d in atc/db atc/api atc/db/migration atc/exec atc/scheduler/algorithm atc/engine atc/runs atc/worker/jetbridge; do
             if echo "$PACKAGES" | grep -Fxq "$MODULE/$d"; then HEAVY="$HEAVY $d"; fi
           done
           HEAVY_PKGS=$(for d in $HEAVY; do echo "$MODULE/$d"; done)
           REST=$(echo "$PACKAGES" | grep -Fxv "$HEAVY_PKGS" || true)
-          PROCS=$(( $(nproc) / 3 ))
+          # Per suite, and up to seven suites run at once beside go test.
+          PROCS=$(( $(nproc) / 6 ))
           [ "$PROCS" -ge 2 ] || PROCS=2
-          [ "$PROCS" -le 8 ] || PROCS=8
-          GINKGO_STATUS=0
-          GINKGO_PID=""
+          [ "$PROCS" -le 6 ] || PROCS=6
+          # One Ginkgo process per suite, all at once: a single `ginkgo` with
+          # several suites runs them one after another.
+          GINKGO_PIDS=""
           if [ -n "$HEAVY" ]; then
-            echo "Ginkgo -p (procs=$PROCS):$HEAVY"
-            go run github.com/onsi/ginkgo/v2/ginkgo -p --procs="$PROCS" --keep-going \
-              --flake-attempts=1 --timeout=20m $(for d in $HEAVY; do echo "./$d"; done) \
-              >/tmp/ginkgo-heavy.log 2>&1 &
-            GINKGO_PID=$!
+            go build -o /tmp/ginkgo github.com/onsi/ginkgo/v2/ginkgo
+            echo "Ginkgo -p (procs=$PROCS each):$HEAVY"
+            for d in $HEAVY; do
+              /tmp/ginkgo -p --procs="$PROCS" --keep-going --flake-attempts=1 \
+                --timeout=20m "./$d" >"/tmp/ginkgo-$(echo "$d" | tr / -).log" 2>&1 &
+              GINKGO_PIDS="$GINKGO_PIDS $!:$d"
+            done
           fi
           GO_TEST_STATUS=0
           if [ -n "$REST" ]; then
             go test -count=1 -timeout 20m $REST || GO_TEST_STATUS=$?
           fi
-          if [ -n "$GINKGO_PID" ]; then
-            wait "$GINKGO_PID" || GINKGO_STATUS=$?
-            echo "=== Ginkgo -p suites (exit $GINKGO_STATUS) ==="
-            cat /tmp/ginkgo-heavy.log
-          fi
+          GINKGO_FAILED=""
+          for entry in $GINKGO_PIDS; do
+            status=0
+            wait "${entry%%:*}" || status=$?
+            d="${entry#*:}"
+            echo "=== ginkgo ./$d (exit $status) ==="
+            cat "/tmp/ginkgo-$(echo "$d" | tr / -).log"
+            [ "$status" -eq 0 ] || GINKGO_FAILED="$GINKGO_FAILED $d"
+          done
+          [ -z "$GINKGO_FAILED" ] || echo "=== FAILED Ginkgo suites:$GINKGO_FAILED ==="
           # Not `[ ] && [ ]`: sh -e does not exit on a failure inside an && list.
-          if [ "$GO_TEST_STATUS" -ne 0 ] || [ "$GINKGO_STATUS" -ne 0 ]; then exit 1; fi
+          if [ "$GO_TEST_STATUS" -ne 0 ] || [ -n "$GINKGO_FAILED" ]; then exit 1; fi
           echo "=== All unit tests passed ==="
 
 - name: k8s-runtime-tests

@@ -41,5 +41,45 @@ fi
 
 echo "==> $(wc -l <<<"$dirs" | tr -d ' ') package(s) affected since $BASE:" >&2
 sed 's/^/      /' <<<"$dirs" >&2
-# shellcheck disable=SC2046
-exec ginkgo -p --keep-going --flake-attempts=1 "$@" $(tr '\n' ' ' <<<"$dirs")
+
+# The same split as the pipeline's unit-tests job: the heavy Ginkgo suites
+# under ginkgo -p, everything else under one `go test`, both at once. Plain
+# `ginkgo` runs suites one after another, which on a 10-core Mac took ~7m for a
+# 20-package selection. Parallelism is capped because every test postgres
+# holds a SysV segment and macOS allows 32 system-wide (kern.sysv.shmmni).
+heavy=() rest=()
+while IFS= read -r d; do
+  case "$d" in
+    ./atc/db | ./atc/api | ./atc/db/migration | ./atc/exec | ./atc/scheduler/algorithm | ./atc/engine | ./atc/runs | ./atc/worker/jetbridge) heavy+=("$d") ;;
+    *) rest+=("$d") ;;
+  esac
+done <<<"$dirs"
+
+ncpu="$(getconf _NPROCESSORS_ONLN)"
+# Per suite; up to seven suites run at once beside go test.
+procs=2
+pkgs=$(( ncpu / 2 )); [ "$pkgs" -ge 2 ] || pkgs=2
+
+started=$(date +%s)
+go_status=0 failed=()
+logdir="$(mktemp -d "${TMPDIR:-/tmp}/test-affected.XXXXXX")"
+pids=()
+for d in "${heavy[@]+"${heavy[@]}"}"; do
+  ginkgo -p --procs="$procs" --keep-going --flake-attempts=1 "$@" "$d" \
+    >"$logdir/$(tr / - <<<"${d#./}").log" 2>&1 &
+  pids+=("$!")
+done
+[ ${#heavy[@]} -eq 0 ] || echo "==> ginkgo -p --procs=$procs, one process per suite: ${heavy[*]}" >&2
+if [ ${#rest[@]} -gt 0 ]; then
+  echo "==> go test -p $pkgs: ${#rest[@]} package(s)" >&2
+  go test -count=1 -p "$pkgs" "${rest[@]}" || go_status=$?
+fi
+for i in "${!pids[@]}"; do
+  d="${heavy[$i]}"
+  if ! wait "${pids[$i]}"; then failed+=("$d"); fi
+  echo "==> ginkgo $d:" >&2
+  cat "$logdir/$(tr / - <<<"${d#./}").log"
+done
+rm -rf "$logdir"
+echo "==> test-affected: $(( $(date +%s) - started ))s; go test exit $go_status; failed ginkgo suites: ${failed[*]:-none}" >&2
+[ "$go_status" -eq 0 ] && [ ${#failed[@]} -eq 0 ]
