@@ -7,8 +7,8 @@ value or a message naming the fix. Each message names the value and what to
 set instead.
 
 Hangar's rules stay with Hangar until its values are reshaped: the
-_hangar-*.tpl and hangar-*.yaml templates and the artifactDaemon.hangar and
-artifactDaemon.durable rules in artifact-daemon-daemonset.yaml.
+_hangar-*.tpl and hangar-*.yaml templates and the artifactDaemon.hangar rules
+in artifact-daemon-daemonset.yaml.
 
 web-deployment.yaml includes this on its first line, and Helm renders that
 template first, so these rules run before anything else in the chart.
@@ -19,6 +19,7 @@ template first, so these rules run before anything else in the chart.
   release so this table can say where it went; the release after, both go.
 */ -}}
 {{- range $removed := list
+  (list "artifactDaemon.durable" "the durable tier is not configurable from the chart. Remove the value.")
   (list "artifactDaemon.enabled" "the artifact daemon is always deployed. Remove the value.")
   (list "artifactDaemon.tls.enabled" "mTLS is always required. Set tls.source and remove the old value.")
   (list "web.enablePipelineRunCreation" "Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch.")
