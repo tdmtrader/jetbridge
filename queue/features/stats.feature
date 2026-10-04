@@ -18,3 +18,10 @@ Feature: A fixed set of queue stats
     When the stats are read for the last hour
     Then two landings are counted per hour
     And the walk time runs from the earliest admit in each landing to its land
+
+  Scenario: Stats count the runs that gave no verdict inside the wait cap
+    Given one run gave no verdict inside the wait cap after an hour within the last hour
+    And another did two hours ago
+    When the stats are read for the last hour
+    Then one wait cap expiry is counted
+    And its hour of waiting is counted
