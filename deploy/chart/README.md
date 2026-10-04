@@ -227,7 +227,9 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
 | `artifactDaemon.port` | `7780` | Port the daemon serves on. |
 | `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
-| `artifactDaemon.hangar.enabled` | `false` | Enable fail-closed exact immutable tree inputs. Requires TLS and native GCS. |
+| `artifactDaemon.hangar.enabled` | `false` | Enable fail-closed exact immutable tree inputs. Requires TLS, `hangar.store` and `hangar.bucket`. |
+| `artifactDaemon.hangar.store` | `""` | Hangar's own store, `gcs` or `disk`. Required when `enabled`. |
+| `artifactDaemon.hangar.bucket` | `""` | Hangar's own bucket (GCS) or namespace (disk). Required when `enabled`. |
 | `artifactDaemon.hangar.webEnabled` | `false` | Enable web emission after daemon support is ready. Requires `enabled`. |
 | `artifactDaemon.hangar.allowGeneratedKey` | `false` | Allow live Helm to generate/persist `hangar.key`; unsupported for offline/GitOps rendering. |
 | `artifactDaemon.hangar.scratchPath` | `/var/concourse/hangar-scratch` | Private daemon-only `emptyDir` mount, disjoint from `hostPath`. |
@@ -238,17 +240,14 @@ directories or ephemeral emptyDirs.
 `artifactDaemon` also carries `mirror`, `preemption`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
 
-Hangar reuses `artifactDaemon.durable`'s GCS bucket, prefix, endpoint, timeout,
-and Workload Identity; S3-compatible and filesystem stores are unsupported.
-When `artifactDaemon.tls.existingSecret` is set, that Secret must include
+Hangar names its own store, bucket, prefix and endpoint and shares nothing
+with the resource-cache store. Native GCS authenticates with Workload
+Identity; S3-compatible and filesystem stores are unsupported. When
+`artifactDaemon.tls.existingSecret` is set, that Secret must include
 `hangar.key` containing exactly 32 raw bytes after base64 decoding. The key is
 mounted only into web and artifact-daemon Pods, never task Pods. See
 [`docs/hangar.md`](../../docs/hangar.md) for rollout order, sizing, security,
 and fail-closed behavior.
-
-`artifactDaemon.durable.existingSecret` is only for S3-compatible credentials;
-the chart rejects it with `store: gcs`. Native GCS uses Application Default
-Credentials/Workload Identity.
 
 The opt-in artifact-daemon NetworkPolicy includes both current GKE Workload
 Identity metadata profiles: standard/Calico (GKE 1.21+) at
