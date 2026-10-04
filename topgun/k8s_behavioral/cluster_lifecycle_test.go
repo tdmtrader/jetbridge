@@ -326,8 +326,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
 		"--set", "postgresql.persistence.enabled=false",
-		"--set", "cachePvc.enabled=false",
-		"--set", "artifactStorePvc.enabled=false",
 		// Disposable live Helm cluster: explicitly own generated certificates.
 		"--set", "artifactDaemon.tls.source=generated",
 		"--set", "mcp.clients[0].client_id=integration-test",

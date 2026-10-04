@@ -284,10 +284,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// Use emptyDir for PostgreSQL — ephemeral test clusters don't need
 		// persistent storage, and PVC provisioning can stall in DinD.
 		"--set", "postgresql.persistence.enabled=false",
-		// Disable cache PVC — the flag --kubernetes-cache-pvc doesn't exist
-		// in the built binary yet. The artifact daemon approach is used instead.
-		"--set", "cachePvc.enabled=false",
-		"--set", "artifactStorePvc.enabled=false",
 		// Disposable live Helm cluster: explicitly own generated certificates.
 		"--set", "artifactDaemon.tls.source=generated",
 		"--set", "mcp.clients[0].client_id=integration-test",

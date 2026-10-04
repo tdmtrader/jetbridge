@@ -1,24 +1,617 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
+  "$comment": "Closed: every object refuses a key it does not list, except the free-form Kubernetes maps and lists on openMaps and the inside of the groups on deferredGroups (deploy/chart/tests/shape_test.go). A new value needs an entry here, and the guards in shape_test.go decide whether it may have one.",
+  "definitions": {
+    "port": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        {
+          "type": "string",
+          "pattern": "^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3})$"
+        }
+      ]
+    },
+    "optionalPort": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/port"
+        },
+        {
+          "type": "string",
+          "enum": [
+            ""
+          ]
+        }
+      ]
+    },
+    "goDuration": {
+      "type": "string",
+      "pattern": "^(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$"
+    },
+    "optionalGoDuration": {
+      "type": "string",
+      "pattern": "^(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)?$"
+    },
+    "prometheusDuration": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$"
+    },
+    "quantity": {
+      "type": [
+        "string",
+        "integer"
+      ]
+    },
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "openMap": {
+      "type": "object"
+    },
+    "openList": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "removed": {
+      "description": "Removed. The schema still accepts it for one release so the render fails in templates/_validate.tpl with a message naming the replacement."
+    }
+  },
   "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "artifactDaemon": {
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "image": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "description": "A string; --set parses an all-digit tag as an integer.",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "pullSecrets": {
+          "$ref": "#/definitions/strings"
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": {
+          "type": "integer"
+        },
+        "strategy": {
+          "$ref": "#/definitions/openMap"
+        },
+        "externalUrl": {
+          "type": "string"
+        },
+        "clusterName": {
+          "type": "string"
+        },
+        "logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "error",
+            "fatal"
+          ]
+        },
+        "localUsers": {
+          "type": "string"
+        },
+        "mainTeamLocalUser": {
+          "type": "string"
+        },
+        "podSecurityContext": {
+          "$ref": "#/definitions/openMap"
+        },
+        "containerSecurityContext": {
+          "$ref": "#/definitions/openMap"
+        },
+        "apiMaxConns": {
+          "type": "integer"
+        },
+        "backendMaxConns": {
+          "type": "integer"
+        },
+        "startupProbe": {
+          "$ref": "#/definitions/openMap"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer"
+        },
+        "resources": {
+          "$ref": "#/definitions/openMap"
+        },
         "tls": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "source": {
-              "type": "string",
-              "enum": [
-                "existingSecret",
-                "generated"
-              ]
+            "enabled": {
+              "type": "boolean"
+            },
+            "bindPort": {
+              "$ref": "#/definitions/port"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "mountPath": {
+              "type": "string"
+            },
+            "certFilename": {
+              "type": "string"
+            },
+            "keyFilename": {
+              "type": "string"
+            }
+          }
+        },
+        "env": {
+          "$ref": "#/definitions/openList"
+        },
+        "extraArgs": {
+          "$ref": "#/definitions/strings"
+        },
+        "pipelineRunActivationEpoch": {
+          "type": "integer"
+        },
+        "enablePipelineRunCreation": {
+          "$ref": "#/definitions/removed"
+        },
+        "runInputSigningKeySecret": {
+          "type": "string"
+        },
+        "runCredentialWorkerImages": {
+          "$ref": "#/definitions/strings"
+        },
+        "runResults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scratchSizeLimit": {
+              "$ref": "#/definitions/quantity"
+            },
+            "readConcurrency": {
+              "type": "integer"
+            }
+          }
+        },
+        "extraVolumeMounts": {
+          "$ref": "#/definitions/openList"
+        },
+        "extraVolumes": {
+          "$ref": "#/definitions/openList"
+        },
+        "livenessProbe": {
+          "$ref": "#/definitions/openMap"
+        },
+        "readinessProbe": {
+          "$ref": "#/definitions/openMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/openMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/openList"
+        },
+        "affinity": {
+          "$ref": "#/definitions/openMap"
+        }
+      }
+    },
+    "kubernetes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "serviceAccount": {
+          "type": "string"
+        },
+        "stepPodGrants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "serviceAccount": {
+                "type": "string"
+              },
+              "privileged": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "podStartupTimeout": {
+          "$ref": "#/definitions/optionalGoDuration"
+        },
+        "imagePullSecrets": {
+          "$ref": "#/definitions/strings"
+        },
+        "artifactHelperImage": {
+          "type": "string"
+        },
+        "imageRegistryPrefix": {
+          "type": "string"
+        },
+        "imageRegistrySecret": {
+          "type": "string"
+        },
+        "credentialManager": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "namespacePrefix": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "cacheStore": {
+      "type": "string",
+      "enum": [
+        "",
+        "hostpath",
+        "emptydir"
+      ]
+    },
+    "cacheHostPath": {
+      "type": "string"
+    },
+    "postgresql": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "passwordSecretKey": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "$ref": "#/definitions/optionalPort"
+        },
+        "socket": {
+          "type": "string"
+        },
+        "sslmode": {
+          "type": "string",
+          "enum": [
+            "disable",
+            "require",
+            "verify-ca",
+            "verify-full"
+          ]
+        },
+        "caCert": {
+          "type": "string"
+        },
+        "clientCert": {
+          "type": "string"
+        },
+        "clientKey": {
+          "type": "string"
+        },
+        "connectTimeout": {
+          "$ref": "#/definitions/optionalGoDuration"
+        },
+        "podSecurityContext": {
+          "$ref": "#/definitions/openMap"
+        },
+        "containerSecurityContext": {
+          "$ref": "#/definitions/openMap"
+        },
+        "resources": {
+          "$ref": "#/definitions/openMap"
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "$ref": "#/definitions/quantity"
+            },
+            "storageClass": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "httpPort": {
+          "$ref": "#/definitions/port"
+        },
+        "tsaPort": {
+          "$ref": "#/definitions/port"
+        },
+        "annotations": {
+          "$ref": "#/definitions/openMap"
+        },
+        "labels": {
+          "$ref": "#/definitions/openMap"
+        },
+        "loadBalancerIP": {
+          "type": "string"
+        },
+        "loadBalancerSourceRanges": {
+          "$ref": "#/definitions/strings"
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/definitions/openMap"
+        },
+        "host": {
+          "type": "string"
+        },
+        "tls": {
+          "$ref": "#/definitions/openList"
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "brineLive": {
+          "type": "boolean"
+        },
+        "brineLiveServiceAccount": {
+          "type": "string"
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/definitions/openMap"
+        }
+      }
+    },
+    "tracing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otlpAddress": {
+          "type": "string"
+        },
+        "otlpHeaders": {
+          "$ref": "#/definitions/openMap"
+        },
+        "otlpUseTLS": {
+          "type": "boolean"
+        },
+        "serviceName": {
+          "type": "string"
+        }
+      }
+    },
+    "otelMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otlpAddress": {
+          "type": "string"
+        },
+        "otlpHeaders": {
+          "$ref": "#/definitions/openMap"
+        },
+        "otlpUseTLS": {
+          "type": "boolean"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "signingKeySecret": {
+          "type": "string"
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressFrom": {
+          "$ref": "#/definitions/openList"
+        },
+        "taskEgressTo": {
+          "$ref": "#/definitions/openList"
+        }
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "description": "A Kubernetes IntOrString: a count or a percentage.",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "$ref": "#/definitions/port"
+        }
+      }
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "interval": {
+          "$ref": "#/definitions/prometheusDuration"
+        },
+        "labels": {
+          "$ref": "#/definitions/openMap"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      }
+    },
+    "alertingRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "labels": {
+          "$ref": "#/definitions/openMap"
+        }
+      }
+    },
+    "artifactDaemon": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/removed"
+        },
+        "port": {
+          "$ref": "#/definitions/optionalPort"
+        },
+        "hostPath": {
+          "type": "string"
+        },
+        "ttl": {
+          "$ref": "#/definitions/optionalGoDuration"
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": {
+              "$ref": "#/definitions/optionalPort"
             }
           }
         },
         "hangar": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "store": {
               "type": "string",
@@ -36,9 +629,173 @@
             },
             "prefix": {
               "type": "string"
+            },
+            "enabled": {},
+            "webEnabled": {},
+            "allowGeneratedKey": {},
+            "keySecret": {},
+            "scratchPath": {},
+            "scratchSizeLimit": {},
+            "maxContentBytes": {},
+            "maxEntries": {},
+            "capabilityTTL": {}
+          }
+        },
+        "durable": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retention": {},
+            "maintenanceInterval": {},
+            "store": {},
+            "bucket": {},
+            "prefix": {},
+            "endpoint": {},
+            "region": {},
+            "path": {},
+            "timeout": {},
+            "maxBytes": {},
+            "existingSecret": {}
+          }
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "resources": {
+          "$ref": "#/definitions/openMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/openMap"
+        },
+        "affinity": {
+          "$ref": "#/definitions/openMap"
+        },
+        "tolerations": {
+          "$ref": "#/definitions/openList"
+        },
+        "preemption": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "budget": {
+              "$ref": "#/definitions/optionalGoDuration"
+            }
+          }
+        },
+        "mirror": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "replicas": {
+              "description": "An integer, or \"all\"; the template names any other string.",
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "concurrency": {
+              "type": "integer"
+            },
+            "timeout": {
+              "$ref": "#/definitions/optionalGoDuration"
+            }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "$ref": "#/definitions/removed"
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "existingSecret",
+                "generated"
+              ]
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "resolveCapability": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "ttl": {
+              "$ref": "#/definitions/optionalGoDuration"
+            }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
             }
           }
         }
+      }
+    },
+    "hangarBootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {},
+        "secretNames": {},
+        "referencedKeys": {},
+        "database": {}
+      }
+    },
+    "hangarOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "store": {
+          "type": "string",
+          "enum": [
+            "gcs",
+            "disk"
+          ]
+        },
+        "executionControl": {},
+        "capabilityKeySecret": {},
+        "enabled": {},
+        "webEnabled": {},
+        "bucket": {},
+        "prefix": {},
+        "tenant": {},
+        "activationEpoch": {},
+        "cacheBucket": {},
+        "strictInputBucket": {},
+        "sharedBucketPrefixOnlyIsolation": {},
+        "endpoint": {},
+        "captureDeadline": {},
+        "sealDeadline": {},
+        "publicationGrace": {},
+        "leaseTerm": {},
+        "leaseRenewInterval": {},
+        "operationTimeout": {},
+        "receipt": {},
+        "materializationKeySecret": {},
+        "materializationKeyID": {},
+        "readControlURL": {},
+        "readControlCA": {},
+        "daemon": {},
+        "inventory": {},
+        "reclaimer": {},
+        "database": {},
+        "activation": {},
+        "networkPolicy": {}
       }
     },
     "mcp": {
@@ -91,20 +848,9 @@
         }
       }
     },
-    "hangarOutput": {
-      "type": "object",
-      "properties": {
-        "store": {
-          "type": "string",
-          "enum": [
-            "gcs",
-            "disk"
-          ]
-        }
-      }
-    },
     "hangarStorage": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "disk": {
           "type": "object",
