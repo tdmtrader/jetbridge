@@ -12,6 +12,7 @@ type Bisect struct {
 	policy  Policy
 	pending []*part // sub-batches still to run, next first
 	retries int     // no-verdict retries of the next sub-batch
+	solo    *part   // the suspect's run, its parent the whole red batch
 	Flakes  [][]Entry
 	Paused  bool
 	batch   Batch
@@ -26,10 +27,12 @@ type Orphan struct {
 }
 
 // part is one sub-batch; a red part counts how many of its halves passed.
+// flake, if set, is what a flake is recorded against instead of entries.
 type part struct {
 	entries []Entry
 	parent  *part
 	passed  int
+	flake   []Entry
 }
 
 // NewStackBisect starts a bisect of a failed Batch of two or more entries.
@@ -84,11 +87,13 @@ func (b *Bisect) Record(v Verdict) (Decision, error) {
 		return d, nil
 	}
 	b.retries, b.pending = 0, b.pending[1:]
-	if d == Split {
+	if cur == b.solo {
+		d = b.settleHint(d)
+	} else if d == Split {
 		b.split(cur)
 	} else if p := cur.parent; d == Land && p != nil {
 		if p.passed++; p.passed == 2 {
-			b.Flakes = append(b.Flakes, p.entries)
+			b.Flakes = append(b.Flakes, p.flaked())
 		}
 	}
 	if d == Eject {

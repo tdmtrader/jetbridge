@@ -294,7 +294,11 @@ func (d *Driver) start(ctx context.Context, r Run) error {
 // (a run from before a restart) is dropped; its entries stay queued.
 func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 	d.notify(ctx, Event{Kind: VerdictIn, Entries: f.Run.Entries, Run: f.Run, Verdict: v})
+	d.hint(ctx, f, v)
 	out, err := d.st.Record(d.view(), f.Run.ID, v)
+	for _, n := range out.Notes {
+		d.logf("%s: %s", f.Run.ID, n)
+	}
 	d.drop(f.Run.ID)
 	if err != nil {
 		d.logf("record %s: %v: verdict dropped", f.Run.ID, err)

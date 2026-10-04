@@ -48,6 +48,7 @@ type Outcome struct {
 	Settle []Settle
 	Cancel []string
 	Flakes [][]Entry
+	Notes  []string // lines for the log on how the verdict was decided
 }
 
 // Strategy decides; it does no I/O and cannot write the queue. Plan also
@@ -80,6 +81,9 @@ type Serial struct {
 	bisect  *Bisect
 	size    int // adaptive: the current batch size, 0 until the first batch
 	streak  int // adaptive: green landed batches in a row
+
+	failed  []string            // the hint for the run in flight: its failed test names
+	changed map[string][]string // and the files each of its entries changed
 }
 
 // Plan starts the next run if nothing is in flight and a slot is free.
@@ -157,6 +161,7 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 			if s.bisect, err = NewStackBisect(s.batch, s.Policy); err != nil {
 				return Outcome{}, err
 			}
+			out.Notes = append(out.Notes, s.suspect())
 		}
 	}
 	if s.bisect != nil {
