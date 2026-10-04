@@ -120,25 +120,25 @@ func ownBase(git func(...string) (string, error), fork string, e core.Entry, ear
 }
 
 // composeOne applies e's diff from own (see ownBase) onto HEAD as one commit; an empty result adds none.
-// A conflict in a list of union merges key by key (keyedUnion); one only in files of keep then takes HEAD's side of them.
+// A list of union both sides changed merges key by key (unionMerge); a conflict only in files of keep takes HEAD's side.
 func composeOne(git func(...string) (string, error), dir string, e core.Entry, own string, keep, union []string) error {
 	pick, err := git("commit-tree", e.Commit+"^{tree}", "-p", own, "-m", "pick")
 	if err != nil {
 		return err
 	}
+	unmerged := ""
 	if _, err := git("cherry-pick", "--no-commit", pick); err != nil {
-		unmerged, _ := git("diff", "--name-only", "--diff-filter=U")
-		if unmerged == "" {
+		if unmerged, _ = git("diff", "--name-only", "--diff-filter=U"); unmerged == "" {
 			return err
 		}
-		rest, err := unionMerge(git, dir, strings.Split(unmerged, "\n"), union)
-		if err != nil {
-			return err
-		}
-		if keepOurs(git, rest, keep) != nil {
-			_, _ = git("reset", "-q", "--hard")
-			return core.ConflictError{EntryID: e.ID}
-		}
+	}
+	rest, conflict, err := unionMerge(git, dir, own, pick, strings.Split(unmerged, "\n"), union)
+	if err != nil {
+		return err
+	}
+	if conflict || unmerged != "" && keepOurs(git, rest, keep) != nil {
+		_, _ = git("reset", "-q", "--hard")
+		return core.ConflictError{EntryID: e.ID}
 	}
 	if _, err := git("diff", "--cached", "--quiet"); err == nil {
 		return nil

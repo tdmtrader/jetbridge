@@ -11,6 +11,11 @@ Feature: Keyed-line lists named by the hook script are merged key by key
     When the batch "a", "b" is composed onto main
     Then "b" is named as the conflict
 
+  Scenario: One key added with two values at separate places is a conflict, not two lines
+    Given main's hook script names file-length.toml, and changes "a" and "b" add one key with two values far apart
+    When the batch "a", "b" is composed onto main
+    Then "b" is named as the conflict
+
   Scenario: A conflict in a file the hook does not list is still a conflict
     Given main's hook script names file-length.toml, and changes "a" and "b" both edit another file
     When the batch "a", "b" is composed onto main
