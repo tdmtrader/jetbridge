@@ -203,6 +203,20 @@ var _ = Describe("Compose ahead when main cannot be read", func() {
 		}
 		Expect(land.landed).To(Equal([]string{"a"}))
 	})
+
+	It("A red run composed while main could not be read is recomposed, never ejected", func() {
+		ctx, store, comp, note := context.Background(), &memStore{}, &memComposer{}, &memNotifier{}
+		land := &blindHeads{headLander{memLander: &memLander{c: comp}, head: "m0"}, true}
+		d := &core.Driver{Store: store, Composer: comp, Runner: &memRunner{verdict: failsWith("a")}, Lander: land, Notifier: note,
+			Main: "core", NewStrategy: func() core.Strategy { return &core.Serial{Max: 4, Policy: core.Policy{RetryNone: 1}} }}
+		Expect(d.Admit(ctx, entry("a"))).To(Succeed())
+		Expect(d.Step(ctx)).To(Succeed()) // composed on the branch name: its base is unknown
+		land.blind, land.head = false, "m1"
+		Expect(d.Step(ctx)).To(Succeed())
+		Expect(store.snap().Ejected).To(BeEmpty())
+		Expect(land.landed).To(BeEmpty())
+		Expect(note.of(core.RecomposeEvent)).To(HaveLen(1))
+	})
 })
 
 // blindHeads is a headLander whose Head fails while blind.

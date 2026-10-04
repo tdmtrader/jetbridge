@@ -317,12 +317,13 @@ func (d *Driver) start(ctx context.Context, r Run) error {
 
 // record applies the Strategy's Outcome for a verdict. A verdict it refuses
 // (a run from before a restart) is dropped; its entries stay queued. A run
-// tested on a base that is no longer main is recomposed: its verdict is unused.
+// tested on a base that is no longer main, or on a base never read, is
+// recomposed: its verdict is unused.
 func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 	d.notify(ctx, Event{Kind: VerdictIn, Entries: f.Run.Entries, Run: f.Run, Verdict: v})
-	if f.BaseSHA != "" && f.BaseSHA != d.main {
+	if _, heads := d.Lander.(Heads); (heads && f.BaseSHA == "") || (f.BaseSHA != "" && f.BaseSHA != d.main) { // "": composed while main could not be read
 		d.drop(f.Run.ID)
-		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", f.BaseSHA, cmp.Or(d.main, "unknown")))
+		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", cmp.Or(f.BaseSHA, "unknown"), cmp.Or(d.main, "unknown")))
 	}
 	d.hint(ctx, f, v) // only a verdict that is used gives a hint
 	out, err := d.st.Record(d.view(), f.Run.ID, v)
@@ -352,6 +353,9 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 		case Land:
 			if f.Candidate == "" {
 				return fmt.Errorf("driver: a land needs the run that tested it")
+			}
+			if why := d.mainMovedNow(ctx, "land"); why != "" {
+				return d.recompose(ctx, f, f.Run.Entries, why)
 			}
 			d.s.Landing = &Landing{Main: d.Main, Candidate: f.Candidate, Entries: st.Entries, Fence: d.fence()}
 			if err := d.save(ctx); err != nil {

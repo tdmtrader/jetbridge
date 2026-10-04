@@ -131,6 +131,22 @@ var _ = Describe("Side lane: the check just before an eject", func() {
 		Expect(recomposed()).To(HaveLen(1))
 	})
 
+	It("A green whose main moves just before the land is recomposed, not landed", func() {
+		run.verdict = nil
+		d := driver(all)
+		admit(d, "a")
+		steps(d, 1)
+		run.on = func() { land.head = "m1" } // pushed outside the queue after the Step read main
+		steps(d, 1)
+		Expect(land.landed).To(BeEmpty())
+		rec := recomposed()
+		Expect(rec).To(HaveLen(1))
+		Expect(rec[0].Why).To(Equal("main moved m0 to m1"))
+		run.on = nil
+		steps(d, 2)
+		Expect(land.landed).To(Equal([]string{"a"}))
+	})
+
 	It("A red tested without a change that would land before it is recomposed, not ejected", func() {
 		d := driver(lastFirst)
 		admit(d, "a", "c")

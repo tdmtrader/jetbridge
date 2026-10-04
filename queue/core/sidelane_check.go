@@ -33,14 +33,8 @@ func (d *Driver) ejectRefused(ctx context.Context, f Flight, st Settle) string {
 	if f.Run.ID == "" || st.Cause == ParentEjected {
 		return "" // no run's red: an ancestor was ejected
 	}
-	if h, ok := d.Lander.(Heads); ok {
-		sha, err := h.Head(ctx, d.Main)
-		if err != nil {
-			return fmt.Sprintf("main cannot be read before the eject: %v", err)
-		}
-		if sha != d.main {
-			return fmt.Sprintf("main moved %s to %s", cmp.Or(d.main, "unknown"), sha)
-		}
+	if why := d.mainMovedNow(ctx, "eject"); why != "" {
+		return why
 	}
 	a, ok := d.st.(AheadOf)
 	if !ok {
@@ -54,6 +48,23 @@ func (d *Driver) ejectRefused(ctx context.Context, f Flight, st Settle) string {
 	}
 	if same, why := SameAhead(tested, a.WouldLandBefore(d.view(), st.Entries)); !same {
 		return why
+	}
+	return ""
+}
+
+// mainMovedNow reads main again just before a land or eject: unless it is
+// still the main the driver holds, it returns why the act is refused.
+func (d *Driver) mainMovedNow(ctx context.Context, act string) string {
+	h, ok := d.Lander.(Heads)
+	if !ok {
+		return ""
+	}
+	sha, err := h.Head(ctx, d.Main)
+	if err != nil {
+		return fmt.Sprintf("main cannot be read before the %s: %v", act, err)
+	}
+	if sha != d.main {
+		return fmt.Sprintf("main moved %s to %s", cmp.Or(d.main, "unknown"), sha)
 	}
 	return ""
 }
