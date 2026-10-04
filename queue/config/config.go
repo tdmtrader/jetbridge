@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"go.yaml.in/yaml/v3"
@@ -27,6 +28,7 @@ type Config struct {
 	Lander     Lander     `yaml:"lander"`
 	Notify     yaml.Node  `yaml:"notify"` // opaque: kept raw, never interpreted here
 	Store      Store      `yaml:"store"`
+	Pause      Pause      `yaml:"pause"`
 }
 
 type Repository struct {
@@ -57,6 +59,12 @@ type Adaptive struct {
 }
 
 // Compose squashes: each change lands as one commit on main.
+// Pause is the core's only other section. Cooldown is how long a pause for no verdict lasts before
+// the queue resumes itself; 0 means it waits for an operator.
+type Pause struct {
+	Cooldown time.Duration `yaml:"cooldown"`
+}
+
 type Compose struct {
 	Committer Committer `yaml:"committer"`
 }
@@ -90,12 +98,14 @@ func Defaults() Config {
 		// row is past a race on main; a person should look.
 		Lander: Lander{MaxFailures: 3, LeaseRef: "refs/queue/lease"},
 		Store:  Store{Ref: "refs/queue/state"},
+		// An outage that left no verdict usually ends within minutes.
+		Pause: Pause{Cooldown: 5 * time.Minute},
 	}
 }
 
 // known lists the keys allowed at each path; runner and notify are absent, so never walked.
 var known = map[string][]string{
-	"":                  {"apiVersion", "repository", "admission", "batch", "compose", "runner", "lander", "notify", "store"},
+	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
 	"admission":         {"source", "prefix", "control_prefix"},
 	"batch":             {"max", "retry_none", "strategy", "adaptive"},
@@ -104,6 +114,7 @@ var known = map[string][]string{
 	"compose.committer": {"name", "email"},
 	"lander":            {"max_failures", "lease_ref", "scratch"},
 	"store":             {"ref"},
+	"pause":             {"cooldown"},
 }
 
 // Parse reads one queue's config file, refusing unknown keys and values.
@@ -149,6 +160,9 @@ func (c Config) validate() error {
 	}
 	if p := c.Admission.ControlPrefix; !strings.HasPrefix(p, "refs/") || !strings.HasSuffix(p, "/") {
 		return errors.New("admission.control_prefix must be a ref prefix under refs/ ending in /")
+	}
+	if c.Pause.Cooldown < 0 {
+		return errors.New("pause.cooldown must be at least 0")
 	}
 	if c.Lander.MaxFailures < 1 {
 		return errors.New("lander.max_failures must be at least 1")

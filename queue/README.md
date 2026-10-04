@@ -177,6 +177,7 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `runner.resource` | none | Required. The resource the job gets the candidate from. |
 | `runner.credential` | none | Required. `env:NAME` or `file:PATH`; holds a bearer token, read on every call. |
 | `runner.wait_cap` | `1h` | A build not done by then is no verdict. |
+| `pause.cooldown` | `5m` | How long a pause for no verdict lasts before the queue resumes itself; `0s` never; not negative. |
 | `lander.max_failures` | `3` | Land errors in a row before the queue pauses; at least 1. Landing is always fast-forward only. |
 | `lander.lease_ref` | `refs/queue/lease` | Ref that holds the fence. |
 | `lander.scratch` | OS temp dir | Parent of the lander's private bare repo. |
@@ -195,6 +196,13 @@ and merge keys are refused. Defaults are applied before your file is read.
   pause on its next step, announces `resumed`, and deletes the request. A request
   for any other pause, or on a queue that is not paused, is logged, deleted and
   changes nothing.
+- **Auto-resume.** A pause for no verdict (not a land-error or unreadable-main
+  pause) ends by itself once `pause.cooldown` has passed since it began (default
+  `5m`; `0s` turns it off). The queue announces `resumed` with the reason
+  "auto-resume after cool-down" and saves it as a settle record, as it does a
+  manual resume. If the next run again has no verdict the queue pauses anew, as
+  a new `PauseSeq` with its own cool-down. A resume request for the earlier pause
+  is then stale and clears nothing. Every other pause waits for `queue resume`.
 - **Lease.** One lease, held in `store.ref`, for a minute, renewed on each step.
   A second `queue run` fails with "lease held by ..." until it expires. Every
   save carries the token, and every land carries a higher fence written to

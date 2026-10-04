@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -41,6 +43,20 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(MatchError("admission.prefix must be a ref prefix under refs/ ending in /"))
 		Expect(c.Batch).To(Equal(config.Batch{Max: 4, RetryNone: 1, Strategy: "serial"}))
 		Expect(c.Runner.Content).To(HaveLen(4))
+	})
+
+	It("The pause cool-down defaults to five minutes and zero turns auto-resume off", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Pause.Cooldown).To(Equal(5 * time.Minute))
+		c, err = config.Parse([]byte(minimal + "pause: {cooldown: 30s}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Pause.Cooldown).To(Equal(30 * time.Second))
+		c, err = config.Parse([]byte(minimal + "pause: {cooldown: 0s}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Pause.Cooldown).To(BeZero())
+		_, err = config.Parse([]byte(minimal + "pause: {cooldown: -1m}\n"))
+		Expect(err).To(MatchError("pause.cooldown must be at least 0"))
 	})
 
 	It("The strategy defaults to serial and an unknown one is refused", func() {

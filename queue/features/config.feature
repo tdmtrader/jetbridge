@@ -24,3 +24,8 @@ Feature: One config file describes one queue
     When the config file is loaded
     Then loading is refused naming the repository address setting
     And the refusal does not show the password
+
+  Scenario: The pause cool-down defaults to five minutes and zero turns auto-resume off
+    Given a queue config file with no pause section, one that sets pause.cooldown to 30s and one that sets it to 0s or less than 0s
+    When the config file is loaded
+    Then the cool-down is five minutes, thirty seconds, none, and a negative one is refused

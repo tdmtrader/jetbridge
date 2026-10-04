@@ -36,6 +36,7 @@ type Driver struct {
 	MaxFailures int              // land errors in a row before pausing; 0 means 3
 	Admissions  Admissions       // drained at the start of each Step; nil means none
 	Resumes     Resumes          // checked at the start of each Step; nil means none
+	Cooldown    time.Duration    // how long a no-verdict pause lasts before it ends by itself; 0 means never
 	Now         func() time.Time // the clock for every timestamp; nil means time.Now
 
 	lease  Lease
@@ -132,6 +133,11 @@ func (d *Driver) Resume(ctx context.Context, seq uint64) error {
 	if err := d.hold(ctx); err != nil {
 		return err
 	}
+	return d.resume(ctx, seq, "resume requested")
+}
+
+// resume ends pause seq and records it with why, in the settle records and as an event.
+func (d *Driver) resume(ctx context.Context, seq uint64, why string) error {
 	if !d.s.Paused || d.s.PauseSeq != seq {
 		return &StaleResumeError{seq, d.s.PauseSeq, d.s.Paused}
 	}
@@ -139,14 +145,24 @@ func (d *Driver) Resume(ctx context.Context, seq uint64) error {
 		r.Resume()
 	}
 	d.s.Paused, d.s.Why = false, ""
+	ev := Event{Kind: ResumedEvent, Why: why, At: d.now()}
+	d.settled(ev)
 	if err := d.save(ctx); err != nil {
 		return err
 	}
 	if d.s.Landing != nil {
 		d.reset() // reconcile it again before anything runs
 	}
-	d.notify(ctx, Event{Kind: ResumedEvent})
+	d.notify(ctx, ev)
 	return nil
+}
+
+// autoResume ends a no-verdict pause once the cool-down has passed; any other pause waits for an operator.
+func (d *Driver) autoResume(ctx context.Context) error {
+	if s := d.s; !s.Paused || !s.PauseNone || d.Cooldown <= 0 || d.now().Sub(s.PausedAt) < d.Cooldown {
+		return nil
+	}
+	return d.resume(ctx, d.s.PauseSeq, "auto-resume after cool-down")
 }
 
 // resumeRequested resumes a paused queue on request, then deletes the request
@@ -199,6 +215,9 @@ func (d *Driver) Step(ctx context.Context) error {
 		return err
 	}
 	if err := d.resumeRequested(ctx); err != nil {
+		return err
+	}
+	if err := d.autoResume(ctx); err != nil {
 		return err
 	}
 	if err := d.drain(ctx); err != nil {
@@ -308,7 +327,7 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 			mark(d.s.Ejected, st.Entries)
 		case Pause:
 			ev.Kind = PausedEvent
-			d.pause(st.Why)
+			d.pause(st.Why, true)
 		default:
 			return fmt.Errorf("driver: cannot settle %q", st.Decision)
 		}
@@ -337,7 +356,7 @@ func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error
 	if d.fails++; d.fails >= cmp.Or(d.MaxFailures, 3) {
 		why := fmt.Sprintf("landing failed %d times: %v", d.fails, err)
 		ev := Event{Kind: PausedEvent, Entries: es, Run: f.Run, Why: why, At: d.now()}
-		d.pause(why)
+		d.pause(why, false)
 		d.settled(ev)
 		if d.save(ctx) == nil {
 			d.fails = 0
@@ -410,7 +429,7 @@ func (d *Driver) load(ctx context.Context) error {
 		ev = Event{Kind: PausedEvent, Entries: in.Entries, Why: fmt.Sprintf("cannot tell whether main holds %s: %v", in.Candidate, err)}
 		ev.At = d.now()
 		again = d.s.Paused && d.s.Why == Redact(ev.Why) // as saved
-		d.pause(ev.Why)
+		d.pause(ev.Why, false)
 	} else if d.s.Landing = nil; landed {
 		d.fails = 0
 		mark(d.s.Landed, in.Entries)
@@ -446,9 +465,11 @@ func (d *Driver) fence() uint64 {
 }
 
 // pause marks the queue paused; only a pause that was not already one is a new pause.
-func (d *Driver) pause(why string) {
+// noVerdict marks a pause that the cool-down may end.
+func (d *Driver) pause(why string, noVerdict bool) {
 	if !d.s.Paused {
 		d.s.PauseSeq++
+		d.s.PausedAt, d.s.PauseNone = d.now(), noVerdict
 	}
 	d.s.Paused, d.s.Why = true, why
 }
