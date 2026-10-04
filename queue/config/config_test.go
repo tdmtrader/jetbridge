@@ -7,7 +7,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/concourse/concourse/queue/adapters/jetbridge"
 	"github.com/concourse/concourse/queue/adapters/lognotify"
 	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/wire"
@@ -54,11 +53,25 @@ var _ = Describe("Parse", func() {
 		Expect(c.Admission).To(Equal(config.Admission{Prefix: "refs/mq/admit/", ControlPrefix: "refs/mq/control/", LegacyRefs: "refs/queue/"}))
 		Expect([]string{c.Store.Ref, c.Lander.LeaseRef}).To(Equal([]string{"refs/mq/state", "refs/mq/lease"}))
 		Expect(c.Compose.HookScript).To(Equal("ci/jb-compose-hook.sh"))
-		Expect(c.Batch.Max).To(Equal(1))
-		_, err = jetbridge.Parse(&c.Runner)
-		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Max).To(Equal(8), "the old queue's max-rows=8")
+		Expect(c.Batch.RetryNone).To(Equal(2), "two re-runs after a None; the third None pauses")
+		Expect(c.Runner.IsZero()).To(BeTrue(), "the resource runs the git runner, which reads no runner section")
 		_, err = lognotify.Parse(&c.Notify)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("The source's batch_max overrides batch.max, so the cap is raised without a new image", func() {
+		src := wire.Source{ConfigFile: "../example/flip-queue.yaml", URI: "git@example.invalid:o/r.git", BatchMax: 1}
+		c, err := wire.LoadConfig(src)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Max).To(Equal(1))
+		src.BatchMax = 3
+		c, err = wire.LoadConfig(src)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Max).To(Equal(3))
+		src.BatchMax = -1
+		_, err = wire.LoadConfig(src)
+		Expect(err).To(MatchError("batch.max must be at least 1 and batch.retry_none at least 0"))
 	})
 
 	It("A missing repository is refused", func() {

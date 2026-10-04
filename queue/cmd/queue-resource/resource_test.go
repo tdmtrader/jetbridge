@@ -112,6 +112,20 @@ var _ = Describe("queue resource", func() {
 		Expect(check()).To(BeEmpty())
 	})
 
+	It("The flip config wires the git runner with no runner section, and the source's batch_max caps a batch", func() {
+		flip, err := os.ReadFile("../../example/flip-queue.yaml")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(flip)).NotTo(ContainSubstring("FILL-IN"))
+		Expect(string(flip)).NotTo(MatchRegexp(`(?m)^runner:`))
+		delete(source, "config")
+		source["config_file"], source["batch_max"] = "../../example/flip-queue.yaml", 1
+		Expect(check()).To(BeEmpty())
+		source["batch_max"] = -1
+		code, _, errw := call("check", map[string]any{"source": source})
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("batch.max must be at least 1"))
+	})
+
 	It("A check composes an admitted change and starts its test run", func() {
 		admit()
 		vs := check()

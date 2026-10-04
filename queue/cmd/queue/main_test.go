@@ -225,7 +225,7 @@ var _ = Describe("queue command", func() {
 		}
 		Expect(pauses).To(Equal(2), "paused, auto-resumed once, paused again")
 		var out bytes.Buffer
-		Expect(health(c, store.Load, head, clock, &out)).To(Equal(3), out.String())
+		Expect(health(c, store.Load, head, clock, &out, io.Discard)).To(Equal(3), out.String())
 		Expect(out.String()).To(ContainSubstring("nothing auto-resumes it; run `queue resume`"))
 	})
 
