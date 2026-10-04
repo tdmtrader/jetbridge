@@ -12,3 +12,9 @@ Feature: A fixed set of queue stats
     Given one change was admitted, paused once, and then landed within the hour
     When the stats are read for the last hour
     Then one change is counted as admitted
+
+  Scenario: The stats count landings and time their walk
+    Given two changes landed together and a third landed later in the last hour
+    When the stats are read for the last hour
+    Then two landings are counted per hour
+    And the walk time runs from the earliest admit in each landing to its land

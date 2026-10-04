@@ -57,6 +57,26 @@ var _ = Describe("Stats", func() {
 		Expect(s.P90QueueSeconds).To(Equal(2400.0))
 	})
 
+	It("The stats count landings and time their walk", func() {
+		in := func(id, run string, adm int) core.SettleRecord {
+			r := landed(id, 10, adm)
+			r.Run = run
+			return r
+		}
+		later := in("c", "r2", 20)
+		later.At = ago(5)
+		s := stats(in("a", "r1", 40), in("b", "r1", 30), later, landed("old", 120, 130))
+		Expect(s.Landed).To(Equal(3))
+		Expect(s.LandsPerHour).To(Equal(2.0))
+		Expect(s.MedianWalkSeconds).To(Equal(1350.0)) // 15 and 30 minutes
+		Expect(s.P90WalkSeconds).To(Equal(1800.0))
+	})
+
+	It("keys the new stats in JSON beside the old ones", func() {
+		b, _ := json.Marshal(stats())
+		Expect(string(b)).To(ContainSubstring(`"landed_per_hour":0,"lands_per_hour":0,"median_walk_seconds":0,"p90_walk_seconds":0`))
+	})
+
 	It("gives zeros for an empty snapshot", func() {
 		Expect(core.Stats(core.Snapshot{}, now, time.Hour)).To(Equal(core.Summary{}))
 	})

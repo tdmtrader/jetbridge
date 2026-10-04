@@ -26,6 +26,9 @@ type Summary struct {
 	MedianQueueSeconds float64     `json:"median_queue_seconds"`
 	P90QueueSeconds    float64     `json:"p90_queue_seconds"`
 	LandedPerHour      float64     `json:"landed_per_hour"`
+	LandsPerHour       float64     `json:"lands_per_hour"`      // landing events (batches), not rows
+	MedianWalkSeconds  float64     `json:"median_walk_seconds"` // earliest admit in a landing to its land
+	P90WalkSeconds     float64     `json:"p90_walk_seconds"`
 }
 
 // Stats folds the settle records and the queue into a Summary of the window
@@ -34,6 +37,8 @@ func Stats(s Snapshot, now time.Time, window time.Duration) Summary {
 	out := Summary{Queued: len(s.Queued), InFlight: len(s.InFlight), Paused: s.Paused, PausedWhy: Redact(s.Why)}
 	in := func(t time.Time) bool { return !t.IsZero() && !t.Before(now.Add(-window)) && !t.After(now) }
 	admitted, waits := map[string]bool{}, []float64{}
+	type landing struct{ at, first time.Time }
+	landings := map[string]landing{} // keyed by run, or by land time when a record has no run
 	for _, e := range s.Queued {
 		admitted[e.ID+e.AdmittedAt.String()] = in(e.AdmittedAt)
 	}
@@ -48,6 +53,15 @@ func Stats(s Snapshot, now time.Time, window time.Duration) Summary {
 		case r.Kind == LandedEvent:
 			out.Landed++
 			waits = append(waits, r.At.Sub(r.AdmittedAt).Seconds())
+			k := r.Run
+			if k == "" {
+				k = r.At.String()
+			}
+			l, ok := landings[k]
+			if !ok || r.AdmittedAt.Before(l.first) {
+				l = landing{r.At, r.AdmittedAt}
+			}
+			landings[k] = l
 		case r.Kind == "flaky":
 			out.Flakes++
 		case r.Kind == RefusedEvent:
@@ -65,13 +79,23 @@ func Stats(s Snapshot, now time.Time, window time.Duration) Summary {
 			out.Admitted++
 		}
 	}
-	slices.Sort(waits)
-	if n := len(waits); n > 0 {
-		out.MedianQueueSeconds = (waits[(n-1)/2] + waits[n/2]) / 2
-		out.P90QueueSeconds = waits[(n*9+9)/10-1]
+	out.MedianQueueSeconds, out.P90QueueSeconds = medianP90(waits)
+	walks := []float64{}
+	for _, l := range landings {
+		walks = append(walks, l.at.Sub(l.first).Seconds())
 	}
+	out.MedianWalkSeconds, out.P90WalkSeconds = medianP90(walks)
 	if window > 0 {
 		out.LandedPerHour = float64(out.Landed) / window.Hours()
+		out.LandsPerHour = float64(len(landings)) / window.Hours()
 	}
 	return out
+}
+
+func medianP90(xs []float64) (median, p90 float64) {
+	slices.Sort(xs)
+	if n := len(xs); n > 0 {
+		median, p90 = (xs[(n-1)/2]+xs[n/2])/2, xs[(n*9+9)/10-1]
+	}
+	return
 }
