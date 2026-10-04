@@ -13,8 +13,8 @@ import (
 var daemonHangarSets = []string{
 	"artifactDaemon.hangar.enabled=true",
 	"artifactDaemon.tls.existingSecret=operator-daemon-tls",
-	"artifactDaemon.durable.store=gcs",
-	"artifactDaemon.durable.bucket=hangar-bucket",
+	"artifactDaemon.hangar.store=gcs",
+	"artifactDaemon.hangar.bucket=hangar-bucket",
 }
 
 var enabledHangarSets = append(append([]string{}, daemonHangarSets...), "artifactDaemon.hangar.webEnabled=true")
@@ -55,16 +55,15 @@ func TestHangarEnabledRendersSharedBoundedConfiguration(t *testing.T) {
 		"artifactDaemon.hangar.maxContentBytes=123456",
 		"artifactDaemon.hangar.maxEntries=321",
 		"artifactDaemon.hangar.capabilityTTL=420s",
-		"artifactDaemon.durable.prefix=cluster-a",
-		"artifactDaemon.durable.endpoint=http://gcs.test",
-		"artifactDaemon.durable.timeout=45s",
+		"artifactDaemon.hangar.prefix=cluster-a",
+		"artifactDaemon.hangar.endpoint=http://gcs.test",
 	)
 	for _, want := range []string{
 		"--hangar-enabled", "--hangar-scratch-dir=/private/hangar-scratch",
 		"--hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key",
 		"--hangar-warrant-ttl=420s", "--hangar-max-content-bytes=123456", "--hangar-max-entries=321",
-		"--durable-store=gcs", "--durable-bucket=hangar-bucket", "--durable-prefix=cluster-a",
-		"--durable-endpoint=http://gcs.test", "--durable-timeout=45s",
+		"--hangar-store=gcs", "--hangar-bucket=hangar-bucket", "--hangar-prefix=cluster-a",
+		"--hangar-endpoint=http://gcs.test",
 		"--kubernetes-hangar-enabled", "--kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key",
 		"--kubernetes-hangar-warrant-ttl=420s", "concourse.dev/hangar-v1", "name: hangar-scratch",
 		"mountPath: /private/hangar-scratch", "emptyDir: {}",
@@ -75,6 +74,10 @@ func TestHangarEnabledRendersSharedBoundedConfiguration(t *testing.T) {
 	}
 	if got := strings.Count(out, "--hangar-warrant-ttl=420s") + strings.Count(out, "--kubernetes-hangar-warrant-ttl=420s"); got != 2 {
 		t.Errorf("capability TTL was not rendered once to each binary: count=%d", got)
+	}
+	// Hangar is handed its own store and nothing of the resource-cache tier's.
+	if strings.Contains(out, "--durable-") {
+		t.Error("enabled render passes the daemon a durable-tier flag")
 	}
 	for _, unwanted := range []string{"GOOGLE_APPLICATION_CREDENTIALS", "credentials.json", "artifactDaemon.hangar.existingSecret"} {
 		if strings.Contains(out, unwanted) {
@@ -91,9 +94,12 @@ func TestHangarRejectsInvalidPrerequisitesAtRender(t *testing.T) {
 	}{
 		{"daemon disabled", []string{"artifactDaemon.enabled=false", "artifactDaemon.hangar.enabled=true"}, "artifactDaemon.enabled"},
 		{"web without daemon support", []string{"artifactDaemon.hangar.webEnabled=true"}, "hangar.enabled"},
-		{"TLS disabled", []string{"artifactDaemon.tls.enabled=false", "artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=b"}, "tls.enabled"},
-		{"non-GCS", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=s3", "artifactDaemon.durable.bucket=b"}, "hangar.store must be gcs or disk"},
-		{"missing bucket", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=gcs"}, "durable.bucket"},
+		{"TLS disabled", []string{"artifactDaemon.tls.enabled=false", "artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=gcs", "artifactDaemon.hangar.bucket=b"}, "tls.enabled"},
+		// The schema refuses s3 before any template runs. "must be one of" is
+		// the schema's enum message under Helm 3 and Helm 4 alike, and not the
+		// template's own "must be gcs or disk".
+		{"S3 store", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=s3", "artifactDaemon.hangar.bucket=b"}, "must be one of"},
+		{"missing bucket", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=gcs"}, "hangar.bucket"},
 		{"relative scratch", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=relative"), "absolute"},
 		{"scratch below artifacts", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=/var/concourse/artifacts/scratch"), "disjoint"},
 		{"artifacts below scratch", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=/private/hangar-scratch", "artifactDaemon.hostPath=/private/hangar-scratch/artifacts"), "disjoint"},
@@ -121,8 +127,8 @@ func TestHangarRejectsImplicitGeneratedKey(t *testing.T) {
 		"artifactDaemon.tls.source=generated",
 		"artifactDaemon.tls.existingSecret=",
 		"artifactDaemon.hangar.enabled=true",
-		"artifactDaemon.durable.store=gcs",
-		"artifactDaemon.durable.bucket=hangar-bucket",
+		"artifactDaemon.hangar.store=gcs",
+		"artifactDaemon.hangar.bucket=hangar-bucket",
 	}
 	if out := renderHangarError(t, sets...); !strings.Contains(out, "allowGeneratedKey") {
 		t.Fatalf("implicit generated key error did not name the opt-in:\n%s", out)
@@ -135,8 +141,8 @@ func TestHangarExplicitLiveHelmGenerationContainsStrongRawKey(t *testing.T) {
 		"artifactDaemon.tls.existingSecret=",
 		"artifactDaemon.hangar.enabled=true",
 		"artifactDaemon.hangar.allowGeneratedKey=true",
-		"artifactDaemon.durable.store=gcs",
-		"artifactDaemon.durable.bucket=hangar-bucket",
+		"artifactDaemon.hangar.store=gcs",
+		"artifactDaemon.hangar.bucket=hangar-bucket",
 	)
 	for _, doc := range strings.Split(out, "\n---") {
 		var secret struct {
