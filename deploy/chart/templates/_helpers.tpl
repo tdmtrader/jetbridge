@@ -98,12 +98,13 @@ Uses artifactDaemon.serviceName verbatim when set, otherwise defaults to
 
 {{/*
 PostgreSQL host. Internal service name when bundled, external host otherwise.
+_validate.tpl refuses an external database with no host.
 */}}
 {{- define "concourse.postgresHost" -}}
 {{- if .Values.postgresql.enabled }}
 {{- printf "%s-db" (include "concourse.fullname" .) }}
 {{- else }}
-{{- required "postgresql.host is required when postgresql.enabled=false" .Values.postgresql.host }}
+{{- .Values.postgresql.host }}
 {{- end }}
 {{- end }}
 
