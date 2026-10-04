@@ -17,6 +17,8 @@
 //	ci-extract-task -jobs <pipeline.yml>                 # print every job that has a task
 //	ci-extract-task -cpu-request <millicores> <pipeline.yml> <job-name>
 //	                                                     # the config, with container_requests.cpu replaced
+//	ci-extract-task -param KEY=VALUE <pipeline.yml> <job-name>
+//	                                                     # the config, with params.KEY set (repeatable)
 //
 // A job with more than one task is rejected rather than guessed at.
 package main
@@ -26,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 )
@@ -99,6 +102,7 @@ func flatten(plan []step) []step {
 func main() {
 	var wantInputs, wantJobs, wantPrivileged bool
 	var cpuRequest uint64
+	params := map[string]string{}
 
 	args := os.Args[1:]
 	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
@@ -118,6 +122,16 @@ func main() {
 				fatalf("-cpu-request %q: want a positive integer of millicores", args[1])
 			}
 			cpuRequest = n
+			args = args[1:]
+		case "-param", "--param":
+			if len(args) < 2 {
+				fatalf("-param needs KEY=VALUE")
+			}
+			key, value, ok := strings.Cut(args[1], "=")
+			if !ok || key == "" {
+				fatalf("-param %q: want KEY=VALUE", args[1])
+			}
+			params[key] = value
 			args = args[1:]
 		default:
 			fatalf("unknown flag %q", args[0])
@@ -210,6 +224,12 @@ func main() {
 				fatalf("setting the cpu request of %q: %v", jobName, err)
 			}
 		}
+		if len(params) > 0 {
+			config, err = withParams(config, params)
+			if err != nil {
+				fatalf("setting params of %q: %v", jobName, err)
+			}
+		}
 		out, err := yaml.JSONToYAML(config)
 		if err != nil {
 			fatalf("re-encoding config of %q: %v", jobName, err)
@@ -236,6 +256,23 @@ func withCPURequest(config []byte, millicores uint64) ([]byte, error) {
 	}
 	requests["cpu"] = millicores
 	cfg["container_requests"] = requests
+	return json.Marshal(cfg)
+}
+
+// withParams sets task params, keeping the ones the pipeline already gives.
+func withParams(config []byte, set map[string]string) ([]byte, error) {
+	var cfg map[string]any
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return nil, err
+	}
+	params, _ := cfg["params"].(map[string]any)
+	if params == nil {
+		params = map[string]any{}
+	}
+	for k, v := range set {
+		params[k] = v
+	}
+	cfg["params"] = params
 	return json.Marshal(cfg)
 }
 

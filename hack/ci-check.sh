@@ -21,7 +21,14 @@
 # task here hangs your terminal, not a serial group.
 #
 # Usage:
-#   hack/ci-check.sh [ref] [job ...]
+#   hack/ci-check.sh [--affected[=base]] [ref] [job ...]
+#
+#   --affected  the inner loop: run only unit-tests, and only over the
+#               packages whose tests the change since `base` (default
+#               origin/core, merge-base semantics) can reach -- see
+#               hack/ci-affected. A change it cannot bound (go.mod, a file in
+#               no Go package) runs the full unit tier. NOT a merge gate: run
+#               the full check before offering the branch.
 #
 #   ref   git ref to test (default: HEAD)
 #   job   pipeline jobs to run, in order (default: build-and-vet unit-tests);
@@ -74,10 +81,18 @@ BATTLE_STATION_MIN_CPU="${BATTLE_STATION_MIN_CPU:-9000}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+AFFECTED_BASE=""
+case "${1:-}" in
+  --affected) AFFECTED_BASE="origin/core"; shift ;;
+  --affected=*) AFFECTED_BASE="${1#--affected=}"; shift ;;
+esac
+
 REF="${1:-HEAD}"
 if [ $# -gt 0 ]; then shift; fi
 if [ $# -gt 0 ]; then
   JOBS=("$@")
+elif [ -n "$AFFECTED_BASE" ]; then
+  JOBS=(unit-tests)
 else
   JOBS=(build-and-vet unit-tests)
 fi
@@ -191,6 +206,25 @@ fi
 
 SHA="$(materialise)"
 log "ref $REF -> $SHA"
+
+AFFECTED_PKGS=""
+if [ -n "$AFFECTED_BASE" ]; then
+  if ! affected="$(cd "$REPO_ROOT" && go run ./hack/ci-affected -tree "$WORK/src" "$AFFECTED_BASE" "$SHA")"; then
+    log "could not compute the affected packages"
+    exit 1
+  fi
+  if [ "$affected" = ALL ]; then
+    log "affected since $AFFECTED_BASE: every package (full unit tier)"
+  elif [ -z "$affected" ]; then
+    log "affected since $AFFECTED_BASE: no Go package; nothing to run"
+    exit 0
+  else
+    AFFECTED_PKGS="$(tr '\n' ' ' <<<"$affected")"
+    AFFECTED_PKGS="${AFFECTED_PKGS% }"
+    log "affected since $AFFECTED_BASE: $(wc -l <<<"$affected" | tr -d ' ') package(s)"
+    sed 's/^/      /' <<<"$affected" >&2
+  fi
+fi
 log "jobs: ${JOBS[*]}"
 
 # Prepare one job: its task config, the inputs to upload, whether the step is
@@ -205,6 +239,9 @@ prepare_job() {
   # that changes its own CI task should be checked with the task it ships.
   if [ -n "$cpu_request" ]; then
     extract+=(-cpu-request "$cpu_request")
+  fi
+  if [ "$job" = unit-tests ] && [ -n "$AFFECTED_PKGS" ]; then
+    extract+=(-param "UNIT_PACKAGES=$AFFECTED_PKGS")
   fi
   if ! "${extract[@]}" "$WORK/src/deploy/concourse-pipeline.yml" "$job" >"$cfg"; then
     echo "$job: SKIPPED (could not extract task config)"
@@ -370,9 +407,12 @@ if [ -n "$BOOST" ]; then
   done
 
   if [ "$FAILED" -eq 0 ]; then
+    # One job has nothing to interleave with: stream it like the old path.
+    mode=quiet
+    [ "${#JOBS[@]}" -gt 1 ] || mode=tee
     declare -a PIDS=()
     for job in "${JOBS[@]}"; do
-      run_job "$job" quiet &
+      run_job "$job" "$mode" &
       PIDS+=($!)
     done
     for i in "${!JOBS[@]}"; do

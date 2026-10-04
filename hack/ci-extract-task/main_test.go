@@ -36,3 +36,13 @@ func TestWithCPURequestAddsTheBlockWhenAbsent(t *testing.T) {
 		t.Fatalf("got %s", out)
 	}
 }
+
+func TestWithParamsKeepsThePipelinesOwn(t *testing.T) {
+	out, err := withParams([]byte(`{"params":{"A":"1"}}`), map[string]string{"UNIT_PACKAGES": "x y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `{"params":{"A":"1","UNIT_PACKAGES":"x y"}}` {
+		t.Fatalf("got %s", out)
+	}
+}

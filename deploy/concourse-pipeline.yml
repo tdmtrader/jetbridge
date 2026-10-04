@@ -191,24 +191,45 @@ jobs:
           # job's critical path; `make test-unit` already runs these with -p.
           # Procs scale with the node (nproc sees the whole node: there is no
           # CPU limit), so theborg gets fewer than the battle station.
-          HEAVY="atc/db atc/api atc/db/migration atc/exec atc/scheduler/algorithm atc/engine atc/runs"
           MODULE=$(go list -m)
+          # hack/ci-check.sh --affected sets UNIT_PACKAGES to the packages a
+          # change can reach (hack/ci-affected). The exclusions above still
+          # apply; the pipeline itself never sets it.
+          if [ -n "${UNIT_PACKAGES:-}" ]; then
+            PACKAGES=$(echo "$PACKAGES" | grep -Fx "$(echo "$UNIT_PACKAGES" | tr ' ' '\n')" || true)
+            echo "UNIT_PACKAGES narrows the run to $(echo "$PACKAGES" | grep -c . || true) package(s)"
+            if [ -z "$PACKAGES" ]; then
+              echo "=== Nothing to test ==="
+              exit 0
+            fi
+          fi
+          HEAVY=""
+          for d in atc/db atc/api atc/db/migration atc/exec atc/scheduler/algorithm atc/engine atc/runs; do
+            if echo "$PACKAGES" | grep -Fxq "$MODULE/$d"; then HEAVY="$HEAVY $d"; fi
+          done
           HEAVY_PKGS=$(for d in $HEAVY; do echo "$MODULE/$d"; done)
-          REST=$(echo "$PACKAGES" | grep -Fxv "$HEAVY_PKGS")
+          REST=$(echo "$PACKAGES" | grep -Fxv "$HEAVY_PKGS" || true)
           PROCS=$(( $(nproc) / 3 ))
           [ "$PROCS" -ge 2 ] || PROCS=2
           [ "$PROCS" -le 8 ] || PROCS=8
-          echo "Ginkgo -p (procs=$PROCS): $HEAVY"
           GINKGO_STATUS=0
-          go run github.com/onsi/ginkgo/v2/ginkgo -p --procs="$PROCS" --keep-going \
-            --flake-attempts=1 --timeout=20m $(for d in $HEAVY; do echo "./$d"; done) \
-            >/tmp/ginkgo-heavy.log 2>&1 &
-          GINKGO_PID=$!
+          GINKGO_PID=""
+          if [ -n "$HEAVY" ]; then
+            echo "Ginkgo -p (procs=$PROCS):$HEAVY"
+            go run github.com/onsi/ginkgo/v2/ginkgo -p --procs="$PROCS" --keep-going \
+              --flake-attempts=1 --timeout=20m $(for d in $HEAVY; do echo "./$d"; done) \
+              >/tmp/ginkgo-heavy.log 2>&1 &
+            GINKGO_PID=$!
+          fi
           GO_TEST_STATUS=0
-          go test -count=1 -timeout 20m $REST || GO_TEST_STATUS=$?
-          wait "$GINKGO_PID" || GINKGO_STATUS=$?
-          echo "=== Ginkgo -p suites (exit $GINKGO_STATUS) ==="
-          cat /tmp/ginkgo-heavy.log
+          if [ -n "$REST" ]; then
+            go test -count=1 -timeout 20m $REST || GO_TEST_STATUS=$?
+          fi
+          if [ -n "$GINKGO_PID" ]; then
+            wait "$GINKGO_PID" || GINKGO_STATUS=$?
+            echo "=== Ginkgo -p suites (exit $GINKGO_STATUS) ==="
+            cat /tmp/ginkgo-heavy.log
+          fi
           # Not `[ ] && [ ]`: sh -e does not exit on a failure inside an && list.
           if [ "$GO_TEST_STATUS" -ne 0 ] || [ "$GINKGO_STATUS" -ne 0 ]; then exit 1; fi
           echo "=== All unit tests passed ==="
