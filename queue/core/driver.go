@@ -98,13 +98,9 @@ func (d *Driver) drain(ctx context.Context) error {
 			}
 		}
 		if p.Why != "" && (!seen || d.s.Commits[p.ID] != p.Commit) { // a refused repeat of a settled id too
-			d.s.Refused = append(d.s.Refused, Refusal{p.ID, p.Commit, p.Why})[max(0, len(d.s.Refused)+1-MaxRefused):]
-			ev := Event{Kind: RefusedEvent, Entries: []Entry{{ID: p.ID, Commit: p.Commit}}, Why: p.Why, At: d.now()}
-			d.settled(ev)
-			if err := d.save(ctx); err != nil {
+			if err := d.refuse(ctx, Refusal{p.ID, p.Commit, p.Why}); err != nil {
 				return err
 			}
-			d.notify(ctx, ev)
 		}
 		if err := d.Admissions.Done(ctx, p.ID, p.Commit); err != nil {
 			d.logf("admissions: done %s: %v", p.ID, err)
@@ -145,15 +141,12 @@ func (d *Driver) resume(ctx context.Context, seq uint64, why string) error {
 	if why != autoResumeWhy {
 		d.s.ResumedOnMain = "" // a manual resume clears the hold
 	}
-	ev := Event{Kind: ResumedEvent, Why: why, At: d.now()}
-	d.settled(ev)
-	if err := d.save(ctx); err != nil {
+	if err := d.announce(ctx, Event{Kind: ResumedEvent, Why: why, At: d.now()}); err != nil {
 		return err
 	}
 	if d.s.Landing != nil {
 		d.reset() // reconcile it again before anything runs
 	}
-	d.notify(ctx, ev)
 	return nil
 }
 
@@ -203,18 +196,6 @@ func (d *Driver) resumeRequested(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
-}
-
-// refuse records a refused request, kept with its reason, settled and announced.
-func (d *Driver) refuse(ctx context.Context, ref Refusal) error {
-	d.s.Refused = append(d.s.Refused, ref)[max(0, len(d.s.Refused)+1-MaxRefused):]
-	ev := Event{Kind: RefusedEvent, Entries: []Entry{{ID: ref.ID, Commit: ref.Commit}}, Why: ref.Why, At: d.now()}
-	d.settled(ev)
-	if err := d.save(ctx); err != nil {
-		return err
-	}
-	d.notify(ctx, ev)
 	return nil
 }
 
@@ -578,6 +559,22 @@ func (d *Driver) now() time.Time {
 		return time.Now().UTC()
 	}
 	return d.Now().UTC()
+}
+
+// announce records ev in the settle records, saves, then notifies it.
+func (d *Driver) announce(ctx context.Context, ev Event) error {
+	d.settled(ev)
+	if err := d.save(ctx); err != nil {
+		return err
+	}
+	d.notify(ctx, ev)
+	return nil
+}
+
+// refuse keeps r among the latest MaxRefused refusals and announces it.
+func (d *Driver) refuse(ctx context.Context, r Refusal) error {
+	d.s.Refused = append(d.s.Refused, r)[max(0, len(d.s.Refused)+1-MaxRefused):]
+	return d.announce(ctx, Event{Kind: RefusedEvent, Entries: []Entry{{ID: r.ID, Commit: r.Commit}}, Why: r.Why, At: d.now()})
 }
 
 func (d *Driver) settled(ev Event) {

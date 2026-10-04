@@ -38,10 +38,5 @@ func (d *Driver) resumeOncePerMain(ctx context.Context) error {
 	}
 	ev := Event{Kind: PausedEvent, Why: fmt.Sprintf(holdWhy, head[:min(8, len(head))]), At: d.now()}
 	d.pause(ev.Why)
-	d.settled(ev)
-	if err := d.save(ctx); err != nil {
-		return err
-	}
-	d.notify(ctx, ev)
-	return nil
+	return d.announce(ctx, ev)
 }

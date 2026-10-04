@@ -106,13 +106,7 @@ func (d *Driver) Withdraw(ctx context.Context, id, commit string) error {
 	}
 	delete(d.s.BuildsOn, id)
 	d.replan()
-	ev := Event{Kind: WithdrawnEvent, Entries: []Entry{e}, Why: "withdrawn by its author", At: d.now()}
-	d.settled(ev)
-	if err := d.save(ctx); err != nil {
-		return err
-	}
-	d.notify(ctx, ev)
-	return nil
+	return d.announce(ctx, Event{Kind: WithdrawnEvent, Entries: []Entry{e}, Why: "withdrawn by its author", At: d.now()})
 }
 
 // lifecycleRequested acts on each request, then deletes it after the save. A
