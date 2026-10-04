@@ -1,12 +1,16 @@
 package config_test
 
 import (
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/concourse/concourse/queue/adapters/jetbridge"
+	"github.com/concourse/concourse/queue/adapters/lognotify"
 	"github.com/concourse/concourse/queue/config"
+	"github.com/concourse/concourse/queue/wire"
 )
 
 const minimal = "apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: https://example.test/repo.git}\n"
@@ -26,6 +30,35 @@ var _ = Describe("Parse", func() {
 		c, err := config.Parse([]byte(minimal + "notify: {kind: log, path: \"-\"}\n"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c.Notify.IsZero()).To(BeFalse())
+	})
+
+	It("The existing request refs are read only when named, and never where the queue keeps its own refs", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Admission.LegacyRefs).To(BeEmpty())
+		own := "admission: {prefix: refs/mq/admit/, control_prefix: refs/mq/control/, legacy_refs: refs/queue/}\nlander: {lease_ref: refs/mq/lease}\nstore: {ref: refs/mq/state}\n"
+		c, err = config.Parse([]byte(minimal + own))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Admission.LegacyRefs).To(Equal("refs/queue/"))
+		_, err = config.Parse([]byte(minimal + "admission: {legacy_refs: refs/queue/}\n"))
+		Expect(err).To(MatchError("admission.legacy_refs overlaps a ref the queue owns; keep store.ref, lander.lease_ref, admission.prefix and admission.control_prefix outside refs/queue/, refs/queue-out/ and refs/queue-state/"))
+		_, err = config.Parse([]byte(minimal + strings.Replace(own, "refs/mq/state", "refs/queue-state/mq", 1)))
+		Expect(err).To(HaveOccurred())
+		_, err = config.Parse([]byte(minimal + strings.Replace(own, "legacy_refs: refs/queue/", "legacy_refs: refs/queue", 1)))
+		Expect(err).To(MatchError("admission.legacy_refs must be a ref prefix under refs/ ending in /"))
+	})
+
+	It("The flip config parses, with every section its adapters read", func() {
+		c, err := wire.LoadConfig(wire.Source{ConfigFile: "../example/flip-queue.yaml", URI: "git@example.invalid:o/r.git"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Admission).To(Equal(config.Admission{Prefix: "refs/mq/admit/", ControlPrefix: "refs/mq/control/", LegacyRefs: "refs/queue/"}))
+		Expect([]string{c.Store.Ref, c.Lander.LeaseRef}).To(Equal([]string{"refs/mq/state", "refs/mq/lease"}))
+		Expect(c.Compose.HookScript).To(Equal("ci/jb-compose-hook.sh"))
+		Expect(c.Batch.Max).To(Equal(1))
+		_, err = jetbridge.Parse(&c.Runner)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = lognotify.Parse(&c.Notify)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("A missing repository is refused", func() {

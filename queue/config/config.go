@@ -43,6 +43,16 @@ type Admission struct {
 	ControlPrefix string `yaml:"control_prefix"` // the operator's requests to the runner go under it
 	// OperatorsFile, if set, is a git allowed-signers file (ssh keys): only a change, or a resume, promote, withdraw or resolve request, signed by one of its keys is honoured.
 	OperatorsFile string `yaml:"operators_file"`
+	// LegacyRefs, if set, is the prefix of the existing request refs, the rows the old
+	// queue's admit pushes (refs/queue/): they are admitted as well, never signed.
+	LegacyRefs string `yaml:"legacy_refs"`
+}
+
+// LegacyPrefixes are the three prefixes the old queue keeps under rows, e.g.
+// refs/queue/: its rows, its eject records and its own state.
+func LegacyPrefixes(rows string) []string {
+	base := strings.TrimSuffix(rows, "/")
+	return []string{rows, base + "-out/", base + "-state/"}
 }
 
 // Batch is the only section the core receives, as this plain struct.
@@ -123,7 +133,7 @@ func Defaults() Config {
 var known = map[string][]string{
 	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "health", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
-	"admission":         {"prefix", "control_prefix", "operators_file"},
+	"admission":         {"prefix", "control_prefix", "operators_file", "legacy_refs"},
 	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
 	"batch.adaptive":    {"start", "min", "grow_after"},
 	"compose":           {"committer", "hook", "hook_owned", "hook_timeout", "hook_script"},
@@ -217,11 +227,35 @@ func (c Config) validate() error {
 			}
 		}
 	}
+	if err := c.legacy(owned); err != nil {
+		return err
+	}
 	return errors.Join(
 		oneOf("apiVersion", c.APIVersion, APIVersion),
 		oneOf("batch.strategy", c.Batch.Strategy, "serial"),
 		oneOf("batch.order", c.Batch.Order, "proven-first", "strict"),
 	)
+}
+
+// legacy refuses existing request refs that are not a ref prefix, or that hold or lie inside a ref the queue owns.
+func (c Config) legacy(owned []string) error {
+	p := c.Admission.LegacyRefs
+	if p == "" {
+		return nil
+	}
+	if !strings.HasPrefix(p, "refs/") || !strings.HasSuffix(p, "/") || p == "refs/" {
+		return errors.New("admission.legacy_refs must be a ref prefix under refs/ ending in /")
+	}
+	ps := LegacyPrefixes(p)
+	for _, r := range owned {
+		r = strings.TrimSuffix(r, "/") + "/"
+		for _, l := range ps {
+			if strings.HasPrefix(r, l) || strings.HasPrefix(l, r) {
+				return fmt.Errorf("admission.legacy_refs overlaps a ref the queue owns; keep store.ref, lander.lease_ref, admission.prefix and admission.control_prefix outside %s", strings.Join(ps[:2], ", ")+" and "+ps[2])
+			}
+		}
+	}
+	return nil
 }
 
 // urls refuses a URL holding credentials in any scalar of the file, keys included, before
