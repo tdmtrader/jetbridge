@@ -38,3 +38,4 @@ Feature: Testing candidates through results kept in git
     When a failing result is recorded for the same candidate
     Then the second result is refused
     And the run still reports pass
+    But the same passing result again is accepted

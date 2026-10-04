@@ -228,8 +228,15 @@ var _ = Describe("queue resource", func() {
 		Expect(code).To(Equal(0), errw)
 		Expect(gitIn(remote, "rev-parse", git.HookedRef(v["candidate"]))).To(Equal(commit), "keyed by the candidate, as the lander reads it")
 		Expect(gitIn(remote, "rev-parse", "refs/mq/verdicts/"+v["run"])).NotTo(BeEmpty())
-		code, _ = put("pass", "hook")
-		Expect(code).To(Equal(1), "both refs are create-only")
+		code, errw = put("pass", "hook")
+		Expect(code).To(Equal(0), "a repeat of the same put is accepted: %s", errw)
+		hookedIn(filepath.Join(sources(), "run"), v["candidate"], "gen2", 1)
+		code, errw = put("pass", "hook")
+		Expect(code).To(Equal(1), "another hook commit for a recorded candidate is refused")
+		Expect(errw).To(ContainSubstring("already recorded"))
+		code, _ = put("fail")
+		Expect(code).To(Equal(1), "another verdict for a recorded run is refused")
+		Expect(gitIn(remote, "rev-parse", git.HookedRef(v["candidate"]))).To(Equal(commit))
 	})
 
 	It("A pass with a hook dir holding no bundle records the verdict only", func() {

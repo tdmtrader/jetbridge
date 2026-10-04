@@ -95,6 +95,7 @@ var _ = Describe("Runner", func() {
 	It("A recorded test result cannot be overwritten", func() {
 		start(newer)
 		Expect(record(newer, core.Pass)).To(Succeed())
+		Expect(record(newer, core.Pass)).To(Succeed(), "the same result again is accepted")
 		Expect(record(newer, core.Fail)).To(MatchError(ContainSubstring("already")))
 		Expect(verdict(runner)).To(Equal(core.Pass))
 	})

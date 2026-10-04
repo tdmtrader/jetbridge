@@ -58,7 +58,8 @@ Feature: Running the queue as a resource type
     And the test job made one commit on the candidate
     When the test job records a pass with that commit
     Then the pass is recorded for the run and the commit for its candidate
-    And neither can be recorded again
+    And the same put again is accepted
+    But another commit or another verdict for the run is refused
 
   Scenario: A hook commit that is not one commit on the candidate is refused, and nothing is recorded
     Given a change is admitted and the resource was checked
