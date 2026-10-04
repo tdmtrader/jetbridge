@@ -112,7 +112,8 @@ func (s *Serial) Resume() {
 	}
 }
 
-// Record decides the verdict of the run in flight, as Decide and Bisect do.
+// Record decides the verdict of the run in flight, as Decide and Bisect do. A
+// flake the bisect proves on this verdict is in this Outcome, whatever path returns it.
 func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 	if s.run == nil || s.run.ID != run {
 		return Outcome{}, fmt.Errorf("serial: run %q is not in flight", run)
@@ -120,8 +121,12 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 	cur := s.run.Entries
 	var d Decision
 	var err error
+	var out Outcome
 	if s.bisect != nil {
+		proven := len(s.bisect.Flakes)
 		d, err = s.bisect.Record(verdict)
+		out.Flakes = slices.Clone(s.bisect.Flakes[proven:])
+		s.Flakes = append(s.Flakes, out.Flakes...)
 	} else {
 		d, err = Decide(verdict, cur, s.retries, s.Policy)
 	}
@@ -129,7 +134,6 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 		return Outcome{}, err
 	}
 	s.run = nil
-	var out Outcome
 	switch d {
 	case Land:
 		out.Settle = append(out.Settle, Settle{Entries: cur, Decision: Land, Why: "passed on main"})
@@ -138,7 +142,8 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 	case Pause:
 		s.Paused = true
 		why := fmt.Sprintf("no verdict after %d retries", s.Policy.RetryNone)
-		return Outcome{Settle: []Settle{{Entries: cur, Decision: Pause, Why: why}}}, nil
+		out.Settle = append(out.Settle, Settle{Entries: cur, Decision: Pause, Why: why})
+		return out, nil
 	case Retry:
 		if s.bisect == nil {
 			s.retries++
@@ -159,8 +164,6 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 		if s.bisect.Next() != nil {
 			return out, nil
 		}
-		s.Flakes = append(s.Flakes, s.bisect.Flakes...)
-		out.Flakes = s.bisect.Flakes
 	}
 	s.adapt(s.bisect != nil || d == Eject)
 	s.batch, s.retries, s.bisect = Batch{}, 0, nil

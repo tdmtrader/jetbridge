@@ -144,6 +144,28 @@ var _ = Describe("Serial strategy", func() {
 		Expect(ids(last.Flakes[0])).To(Equal([]string{"a", "b"}))
 	})
 
+	It("A flake proven inside a bisect is surfaced on the verdict that proves it, before the bisect ends", func() {
+		s := &core.Serial{Max: 4, Policy: pol}
+		v := core.View{Queued: ents("a", "b", "c", "d"), Landed: map[string]bool{}, Ejected: map[string]bool{}, Slots: 1}
+		verdicts := map[string]core.Verdict{"a b c d": core.Fail, "a b": core.Fail, "a": core.Pass, "b": core.Pass}
+		var got [][]string
+		for range 4 {
+			runs, _ := s.Plan(v)
+			Expect(runs).To(HaveLen(1))
+			out, err := s.Record(v, runs[0].ID, verdicts[strings.Join(ids(runs[0].Entries), " ")])
+			Expect(err).NotTo(HaveOccurred())
+			for _, f := range out.Flakes {
+				got = append(got, ids(f))
+			}
+		}
+		Expect(got).To(Equal([][]string{{"a", "b"}}), "[a b] is proven flaky while [c d] is still to run")
+		runs, _ := s.Plan(v)
+		Expect(ids(runs[0].Entries)).To(Equal([]string{"c", "d"}))
+		out, err := s.Record(v, runs[0].ID, core.Pass)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Flakes).To(BeEmpty(), "a flake is surfaced once")
+	})
+
 	It("refuses a verdict for a run that is not in flight", func() {
 		s := &core.Serial{Max: 4, Policy: pol}
 		_, err := s.Record(core.View{}, "nope", core.Pass)
