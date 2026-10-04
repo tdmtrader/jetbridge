@@ -59,3 +59,17 @@ Feature: Admitting changes by pushing them, drained by the runner
     Given change "a" was seen and its pushed ref deleted
     When the same deletion is asked for again
     Then it succeeds and nothing changes
+
+  Scenario: A change admitted twice before the runner drains is queued once and the repeat is refused
+    When change "b", then change "a", then change "b" again at the same commit are admitted
+    And the runner takes its next step
+    Then "b" and "a" are queued once each, "b" first
+    And the repeat of "b" is refused, which status keeps
+    And every pushed ref is deleted
+
+  Scenario: A change on a refused repeat does not build on the accepted one
+    When change "a" is admitted, then "a" again at a sibling commit, then change "c" on that sibling
+    And the runner takes its next step
+    Then the repeat of "a" is refused and "c" is queued
+    And "c" builds on nothing, not on the accepted "a"
+    And every pushed ref is deleted

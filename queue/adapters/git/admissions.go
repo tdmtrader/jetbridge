@@ -24,7 +24,7 @@ var (
 type Admissions struct {
 	Lander *Lander
 	Prefix string
-	refs   map[string]string // "<id> <sha>" -> the ref it was read from
+	refs   map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
 }
 
 // stamp is the arrival clock of Admit: nanoseconds, never repeated or going back.
@@ -69,27 +69,39 @@ func Admit(ctx context.Context, c config.Config, dir, id, sha string) error {
 	return err
 }
 
-// Pending lists every ref under the prefix, refusing an unsafe ID or a
+// Pending lists every ref under the prefix, refusing an unsafe ID, a repeat or a
 // non-commit, each building on the queued and pending changes it descends from.
 func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.Pending, error) {
 	out, err := a.Lander.git(ctx, "ls-remote", a.Lander.remote, a.Prefix+"*")
 	var ps []core.Pending
-	at := map[string]int64{}
-	a.refs = map[string]string{}
+	at, kept := map[string]int64{}, map[string]string{}
+	a.refs = map[string][]string{}
 	fetch, pending := []string{"fetch", "-q", "--no-tags", a.Lander.remote}, map[string]bool{}
 	taken := map[string]bool{} // a pending change under a queued ID is refused, so no change builds on it
 	for _, e := range queued {
 		taken[e.ID] = true
 	}
+	type read struct {
+		at           int64
+		id, sha, ref string
+	}
+	var rs []read
 	for f := strings.Fields(out); len(f) >= 2; f = f[2:] {
 		if name, ok := strings.CutPrefix(f[1], a.Prefix); ok {
 			stampAt, id := splitRef(name)
-			at[id], a.refs[id+" "+f[0]] = stampAt, f[1]
-			ps, fetch = append(ps, core.Pending{ID: id, Commit: f[0]}), append(fetch, f[0])
-			if !taken[id] {
-				queued, pending[id] = append(queued, core.Entry{ID: id, Commit: f[0]}), true
-			}
+			rs = append(rs, read{stampAt, id, f[0], f[1]})
 		}
+	}
+	slices.SortStableFunc(rs, func(x, y read) int { return cmp.Compare(x.at, y.at) })
+	for _, r := range rs { // one live admit per id, the oldest; the driver judges a repeat of a queued id
+		a.refs[r.id+" "+r.sha] = append(a.refs[r.id+" "+r.sha], r.ref)
+		p := core.Pending{ID: r.id, Commit: r.sha}
+		if old, dup := kept[r.id]; dup && !taken[r.id] {
+			p.Why = fmt.Sprintf("id %s already has an admit waiting at %.7s; admit the new commit under a new id", r.id, old)
+		} else if !dup {
+			at[r.id], kept[r.id] = r.at, r.sha
+		}
+		ps, fetch = append(ps, p), append(fetch, r.sha)
 	}
 	if err != nil || len(ps) == 0 {
 		return nil, err
@@ -104,6 +116,13 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		if err := SafeID(p.ID); err != nil {
 			ps[i].Why = err.Error()
 		}
+	}
+	for _, p := range ps { // only an accepted change is an ancestor candidate
+		if p.Why == "" && !taken[p.ID] {
+			queued, pending[p.ID] = append(queued, core.Entry{ID: p.ID, Commit: p.Commit}), true
+		}
+	}
+	for i, p := range ps {
 		for _, o := range queued { // a queued commit not fetched with p's history is not its ancestor
 			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && ps[i].Why == "" {
 				ps[i].BuildsOn = append(ps[i].BuildsOn, o.ID)
@@ -111,11 +130,13 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		}
 	}
 	// By arrival, but after every pending change it builds on: each of those builds on fewer.
+	// A refused repeat of an id comes before its kept admit, so it is announced before the id is queued.
 	depth := func(p core.Pending) int {
 		return len(slices.DeleteFunc(slices.Clone(p.BuildsOn), func(id string) bool { return !pending[id] }))
 	}
+	refused := func(p core.Pending) int { return min(len(p.Why), 1) }
 	slices.SortFunc(ps, func(x, y core.Pending) int {
-		return cmp.Or(depth(x)-depth(y), cmp.Compare(at[x.ID], at[y.ID]), strings.Compare(x.ID, y.ID))
+		return cmp.Or(depth(x)-depth(y), cmp.Compare(at[x.ID], at[y.ID]), strings.Compare(x.ID, y.ID), refused(y)-refused(x))
 	})
 	return ps, nil
 }
@@ -123,9 +144,13 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 // Done deletes the ref of id, only if it still points at sha. A ref that is
 // already gone is a repeat, and nothing to do; one moved to another commit stays.
 func (a *Admissions) Done(ctx context.Context, id, sha string) error {
-	ref, ok := a.refs[id+" "+sha]
-	if !ok {
+	rs := a.refs[id+" "+sha] // repeats at one sha are Done refused first, so the latest ref goes first
+	if len(rs) == 0 {
 		return fmt.Errorf("no admit ref of %s was read at %.7s", id, sha)
+	}
+	ref := rs[len(rs)-1]
+	if len(rs) > 1 {
+		a.refs[id+" "+sha] = rs[:len(rs)-1]
 	}
 	_, err := a.Lander.git(ctx, "push", "-q", "--force-with-lease="+ref+":"+sha, a.Lander.remote, ":"+ref)
 	if err != nil {

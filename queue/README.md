@@ -138,7 +138,9 @@ cd queue && go build ./cmd/queue
    `git push origin <sha>:refs/queue/admit/<id>`. `queue admit` pushes to
    `refs/queue/admit/<stamp>.<id>`, the stamp being the arrival time in nanoseconds,
    never repeated: changes admitted in the same second keep their order. A ref
-   pushed by hand has no stamp and is ordered by id.
+   pushed by hand has no stamp and is ordered by id. An id has one admit waiting
+   at a time: a later ref for it, at any commit, is refused and the oldest kept;
+   no change builds on a refused one.
 5. Read state, all read-only (they load the state ref and never take the lease):
    - `queue status` prints JSON: `Queued`, `InFlight`, `Landed`, `Ejected`
      (each with `Why`, `Cause`, `At`), `Paused`, `Why`, the latest `Refused`

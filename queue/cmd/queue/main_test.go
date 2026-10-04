@@ -212,6 +212,51 @@ var _ = Describe("queue command", func() {
 		Expect(gitIn(remote, "for-each-ref", "refs/queue/control/")).To(BeEmpty())
 	})
 
+	// drain admits each [id, sha] by the command, then runs one runner step and returns what it saved.
+	drain := func(admits ...[2]string) core.Snapshot {
+		ctx := context.Background()
+		for _, a := range admits {
+			code, _, errw := queue("admit", "--config", file, a[0], a[1])
+			Expect(errw).To(BeEmpty())
+			Expect(code).To(Equal(0))
+		}
+		c, err := config.Parse(fmt.Appendf(nil, sample, remote, GinkgoT().TempDir()))
+		Expect(err).NotTo(HaveOccurred())
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
+		Expect(err).NotTo(HaveOccurred())
+		defer closeFn()
+		d.Owner, d.NewStrategy = "runner", func() core.Strategy { return idleStrategy{} }
+		Expect(d.Step(ctx)).To(Succeed())
+		snap, err := git.NewStore(c).Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gitIn(remote, "for-each-ref", "refs/queue/admit/")).To(BeEmpty())
+		return snap
+	}
+	queued := func(s core.Snapshot) (out []string) {
+		for _, e := range s.Queued {
+			out = append(out, e.ID+" "+e.Commit)
+		}
+		return out
+	}
+
+	It("A change admitted twice before the runner drains is queued once and the repeat is refused", func() {
+		b := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-m", "b")
+		s := drain([2]string{"b", b}, [2]string{"a", sha}, [2]string{"b", b})
+		Expect(queued(s)).To(Equal([]string{"b " + b, "a " + sha}))
+		Expect(s.Refused).To(HaveLen(1))
+		Expect(s.Refused[0].ID).To(Equal("b"))
+	})
+
+	It("A change on a refused repeat does not build on the accepted one", func() {
+		a2 := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-m", "a2")
+		cc := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", a2, "-m", "c")
+		s := drain([2]string{"a", sha}, [2]string{"a", a2}, [2]string{"c", cc})
+		Expect(queued(s)).To(Equal([]string{"a " + sha, "c " + cc}))
+		Expect(s.Refused).To(HaveLen(1))
+		Expect(s.Refused[0].Commit).To(Equal(a2))
+		Expect(s.BuildsOn["c"]).To(BeEmpty())
+	})
+
 	It("exits 2 with one plain line when the change id is unsafe", func() {
 		code, out, errw := queue("admit", "--config", file, "../x", sha)
 		Expect(code).To(Equal(2))
