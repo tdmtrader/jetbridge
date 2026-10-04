@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,6 +37,20 @@ func (r *memResumes) Done(_ context.Context, q core.ResumeRequest) error {
 	}
 	r.reqs = slices.DeleteFunc(r.reqs, func(x core.ResumeRequest) bool { return x == q })
 	return nil
+}
+
+// stallStore runs stall once, on Acquire call number at, as if its driver stalled there.
+type stallStore struct {
+	*memStore
+	at, n int
+	stall func()
+}
+
+func (s *stallStore) Acquire(ctx context.Context, owner string, ttl time.Duration) (core.Lease, error) {
+	if s.n++; s.n == s.at {
+		s.stall()
+	}
+	return s.memStore.Acquire(ctx, owner, ttl)
 }
 
 // failCompose cannot compose anything, so a started run has no verdict.
@@ -115,6 +130,28 @@ var _ = Describe("Driver resume requests", func() {
 		Expect(store.snap().Paused).To(BeTrue(), "the request was for no pause yet")
 		Expect(note.of(core.ResumedEvent)).To(BeEmpty())
 		Expect(res.reqs).To(BeEmpty(), "the stale request is deleted")
+	})
+
+	It("A resume checked against one pause never clears the next, however long its driver stalls", func() {
+		_, err := store.Save(ctx, 0, core.Snapshot{Version: "0", Paused: true, PauseSeq: 1, Why: "no verdict", Queued: []core.Entry{{ID: "a", Commit: "ca"}}})
+		Expect(err).NotTo(HaveOccurred())
+		res.reqs = []core.ResumeRequest{{Seq: 1, SHA: "sha-main"}}
+		b := serial(failCompose{}, &memRunner{})
+		b.Owner = "B"
+		stalled := false
+		a := driver()
+		a.Owner, a.Store = "A", &stallStore{memStore: store, at: 2, stall: func() {
+			stalled = true
+			store.now = store.now.Add(2 * time.Minute) // A's lease runs out while it stalls
+			Expect(b.Step(ctx)).To(Succeed())          // B ends pause 1, then pauses again
+			Expect(store.snap().PauseSeq).To(BeEquivalentTo(2))
+			store.now = store.now.Add(2 * time.Minute)
+		}}
+		Expect(a.Step(ctx)).To(Succeed())
+		Expect(stalled).To(BeTrue(), "A stalled between its check and its resume")
+		Expect(store.snap().Paused).To(BeTrue(), "pause 2 is not cleared by the request for pause 1")
+		Expect(store.snap().PauseSeq).To(BeEquivalentTo(2))
+		Expect(note.of(core.ResumedEvent)).To(HaveLen(1))
 	})
 
 	It("A resume request whose delete failed is never applied to a later pause", func() {

@@ -116,10 +116,25 @@ func (d *Driver) drain(ctx context.Context) error {
 	return nil
 }
 
-// Resume clears a pause, the Strategy's own too if it keeps one.
-func (d *Driver) Resume(ctx context.Context) error {
+// StaleResumeError refuses a resume of pause Seq: the queue is at pause At, or not paused.
+type StaleResumeError struct {
+	Seq, At uint64
+	Paused  bool
+}
+
+func (e *StaleResumeError) Error() string {
+	return fmt.Sprintf("resume of pause %d refused: the queue is at pause %d, paused %t", e.Seq, e.At, e.Paused)
+}
+
+// Resume clears pause number seq, the Strategy's own too if it keeps one. It
+// checks seq against the snapshot it holds under the lease, which the save's
+// compare-and-swap then proves current, so it never clears a later pause.
+func (d *Driver) Resume(ctx context.Context, seq uint64) error {
 	if err := d.hold(ctx); err != nil {
 		return err
+	}
+	if !d.s.Paused || d.s.PauseSeq != seq {
+		return &StaleResumeError{seq, d.s.PauseSeq, d.s.Paused}
 	}
 	if r, ok := d.st.(interface{ Resume() }); ok {
 		r.Resume()
@@ -146,12 +161,11 @@ func (d *Driver) resumeRequested(ctx context.Context) error {
 		d.logf("resume request: %v", err)
 	}
 	for _, r := range reqs {
-		if d.s.Paused && r.Seq == d.s.PauseSeq {
-			if err := d.Resume(ctx); err != nil {
-				return err
-			}
-		} else {
-			d.logf("resume request %d ignored: the queue is at pause %d, paused %t", r.Seq, d.s.PauseSeq, d.s.Paused)
+		var stale *StaleResumeError
+		if err := d.Resume(ctx, r.Seq); errors.As(err, &stale) {
+			d.logf("resume request ignored: %v", err)
+		} else if err != nil {
+			return err
 		}
 		if err := d.Resumes.Done(ctx, r); err != nil {
 			d.logf("resume request: done: %v", err)

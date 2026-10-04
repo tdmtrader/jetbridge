@@ -681,7 +681,7 @@ var _ = Describe("Driver", func() {
 		Expect(snap.Ejected).To(BeEmpty())
 
 		land.blind = nil
-		Expect(d2.Resume(ctx)).To(Succeed())
+		Expect(d2.Resume(ctx, store.snap().PauseSeq)).To(Succeed())
 		steps(d2, 2)
 		Expect(store.snap().Landed).To(Equal(map[string]bool{"a": true}))
 		Expect(store.snap().Ejected).To(BeEmpty())
@@ -732,7 +732,7 @@ var _ = Describe("Driver", func() {
 		d := driver()
 		steps(d, 3)
 		Expect(run.starts).To(BeEmpty())
-		Expect(d.Resume(ctx)).To(Succeed())
+		Expect(d.Resume(ctx, store.snap().PauseSeq)).To(Succeed())
 		Expect(note.of(core.ResumedEvent)).To(HaveLen(1))
 		Expect(store.snap().Paused).To(BeFalse())
 		steps(d, 3)
@@ -753,7 +753,7 @@ var _ = Describe("Driver", func() {
 		steps(d, 6)
 		Expect(store.snap().Paused).To(BeTrue())
 		halves = core.Pass
-		Expect(d.Resume(ctx)).To(Succeed())
+		Expect(d.Resume(ctx, store.snap().PauseSeq)).To(Succeed())
 		steps(d, 4)
 		Expect(land.landed).To(Equal([]string{"a", "b"}))
 	})
@@ -839,7 +839,7 @@ var _ = Describe("Driver", func() {
 		d2 := driverAs("d2")
 		Expect(d2.Admit(ctx, entry("b"))).To(MatchError(ContainSubstring("lease held by d1")))
 		Expect(d2.Step(ctx)).To(MatchError(ContainSubstring("lease held by d1")))
-		Expect(d2.Resume(ctx)).To(MatchError(ContainSubstring("lease held by d1")))
+		Expect(d2.Resume(ctx, store.snap().PauseSeq)).To(MatchError(ContainSubstring("lease held by d1")))
 		Expect(store.snap()).To(Equal(before), "no plan, no reconcile, no clearing")
 		Expect(run.starts).To(HaveLen(1))
 		Expect(land.fence>>32).To(Equal(uint64(1)), "fenced at d1's lease")
