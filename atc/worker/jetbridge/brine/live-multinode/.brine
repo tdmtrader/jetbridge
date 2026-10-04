@@ -1,0 +1,17 @@
+# The cross-node artifact tier: the live artifact fixture on every approved
+# node at once (brine.dev/live-artifacts=approved), so a task's output crosses
+# nodes through the real daemons. It needs two approved nodes up, which most
+# runs do not have -- a desktop node sleeps -- so it is kept out of the suite
+# root's recursive walk and run from this directory only when they are
+# (scripts/coverage decides, and says so either way).
+discover: false
+runner:
+  name: jetbridge
+  binary: ../scripts/run-live-cluster
+  contract: 5
+contract: 5
+features: ../features/live-multinode/*.feature
+budgets:
+  undefined: 0
+  # Counted out of ../features/live-multinode/*.feature on 2026-10-04.
+  scenarios_min: 1

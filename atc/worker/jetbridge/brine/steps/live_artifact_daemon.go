@@ -49,72 +49,106 @@ func newLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder) (*liveArtif
 
 func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bool) (*liveArtifactDaemon, error) {
 	started := time.Now()
+	port, bin, err := prepareLiveDaemon()
+	if err != nil {
+		return nil, err
+	}
+	defer bin.remove()
+	s, err := newLiveArtifactStore(ctx, rec)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("live daemon storage ready after %s\n", time.Since(started))
+	d, err := launchLiveDaemon(ctx, rec, s, bin, port, mirror)
+	if err != nil {
+		return nil, err
+	}
+	if err := publishLiveDaemons(ctx, s.cluster, d); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// liveDaemonBinary is the current daemon executable, compressed once for every
+// node's upload; sha is the original ELF's checksum each pod verifies.
+type liveDaemonBinary struct {
+	packed  string
+	sha     string
+	machine elf.Machine
+}
+
+func (b liveDaemonBinary) remove() { os.Remove(b.packed) }
+
+// prepareLiveDaemon checks the approvals and the approved port, and packs the
+// static daemon ELF named by BRINE_LIVE_ARTIFACT_DAEMON_BINARY.
+func prepareLiveDaemon() (int, liveDaemonBinary, error) {
+	started := time.Now()
 	if os.Getenv("BRINE_ALLOW_HOSTPATH_TESTS") != "1" {
-		return nil, fmt.Errorf("live artifact storage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 approval")
+		return 0, liveDaemonBinary{}, fmt.Errorf("live artifact storage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 approval")
 	}
 	if os.Getenv("BRINE_ALLOW_HOSTPORT_TESTS") != "1" {
-		return nil, fmt.Errorf("live artifact daemon requires explicit BRINE_ALLOW_HOSTPORT_TESTS=1 approval")
+		return 0, liveDaemonBinary{}, fmt.Errorf("live artifact daemon requires explicit BRINE_ALLOW_HOSTPORT_TESTS=1 approval")
 	}
 	port, err := strconv.Atoi(os.Getenv("BRINE_LIVE_ARTIFACT_DAEMON_PORT"))
 	if err != nil || port < 49152 || port > 60999 {
-		return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_DAEMON_PORT must select an approved unused TCP port in 49152..60999")
+		return 0, liveDaemonBinary{}, fmt.Errorf("BRINE_LIVE_ARTIFACT_DAEMON_PORT must select an approved unused TCP port in 49152..60999")
 	}
 	binary := os.Getenv("BRINE_LIVE_ARTIFACT_DAEMON_BINARY")
 	if !filepath.IsAbs(binary) {
-		return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_DAEMON_BINARY must name an absolute static Linux executable built from current source")
+		return 0, liveDaemonBinary{}, fmt.Errorf("BRINE_LIVE_ARTIFACT_DAEMON_BINARY must name an absolute static Linux executable built from current source")
 	}
 	object, err := elf.Open(binary)
 	if err != nil {
-		return nil, fmt.Errorf("read daemon ELF: %w", err)
+		return 0, liveDaemonBinary{}, fmt.Errorf("read daemon ELF: %w", err)
 	}
 	defer object.Close()
 	for _, p := range object.Progs {
 		if p.Type == elf.PT_INTERP {
-			return nil, fmt.Errorf("live daemon must be static; rebuild with CGO_ENABLED=0")
+			return 0, liveDaemonBinary{}, fmt.Errorf("live daemon must be static; rebuild with CGO_ENABLED=0")
 		}
 	}
 	file, err := os.Open(binary)
 	if err != nil {
-		return nil, err
+		return 0, liveDaemonBinary{}, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return 0, liveDaemonBinary{}, err
 	}
 	if !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > maxLiveDaemonBinaryBytes {
-		return nil, fmt.Errorf("daemon must be a regular executable between 1 byte and %d MiB; rebuild with -ldflags='-s -w' to fit the %d MiB pod storage budget", maxLiveDaemonBinaryBytes>>20, liveDaemonEphemeralBudget>>20)
+		return 0, liveDaemonBinary{}, fmt.Errorf("daemon must be a regular executable between 1 byte and %d MiB; rebuild with -ldflags='-s -w' to fit the %d MiB pod storage budget", maxLiveDaemonBinaryBytes>>20, liveDaemonEphemeralBudget>>20)
 	}
 	// Compress only the executable's transport, not any artifact result.
 	// The pod verifies the original ELF checksum after real decompression.
 	packed, err := AttributedTempFile("brine-live-daemon-*.gz")
 	if err != nil {
-		return nil, err
+		return 0, liveDaemonBinary{}, err
 	}
-	defer os.Remove(packed.Name())
 	defer packed.Close()
 	hash := sha256.New()
 	zipper := gzip.NewWriter(packed)
 	_, copyErr := io.Copy(io.MultiWriter(hash, zipper), file)
 	closeErr := zipper.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
-		return nil, err
+		os.Remove(packed.Name())
+		return 0, liveDaemonBinary{}, err
 	}
 	packedInfo, err := packed.Stat()
 	if err != nil {
-		return nil, err
-	}
-	if _, err := packed.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		os.Remove(packed.Name())
+		return 0, liveDaemonBinary{}, err
 	}
 	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), packedInfo.Size(), time.Since(started))
-	s, err := newLiveArtifactStore(ctx, rec)
-	if err != nil {
-		return nil, err
-	}
-	fmt.Printf("live daemon storage ready after %s\n", time.Since(started))
-	d := &liveArtifactDaemon{store: s, port: uint16(port), binarySHA: fmt.Sprintf("%x", hash.Sum(nil))}
-	TrackDisposer(rec, "the live artifact daemon", func() error {
+	return port, liveDaemonBinary{packed: packed.Name(), sha: fmt.Sprintf("%x", hash.Sum(nil)), machine: object.Machine}, nil
+}
+
+// launchLiveDaemon starts and verifies a daemon on s's node, serving s.root on
+// the approved host port. It does not publish it; see publishLiveDaemons.
+func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactStore, bin liveDaemonBinary, port int, mirror bool) (*liveArtifactDaemon, error) {
+	started := time.Now()
+	d := &liveArtifactDaemon{store: s, port: uint16(port), binarySHA: bin.sha}
+	TrackDisposer(rec, "the live artifact daemon"+s.suffix, func() error {
 		clean, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		return d.close(clean)
@@ -125,8 +159,8 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 	}
 	machines := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}
 	machine, known := machines[node.Status.NodeInfo.Architecture]
-	if !known || node.Status.NodeInfo.OperatingSystem != "linux" || object.Machine != machine {
-		return nil, fmt.Errorf("daemon ELF %s does not match actual node %s/%s", object.Machine, node.Status.NodeInfo.OperatingSystem, node.Status.NodeInfo.Architecture)
+	if !known || node.Status.NodeInfo.OperatingSystem != "linux" || bin.machine != machine {
+		return nil, fmt.Errorf("daemon ELF %s does not match actual node %s/%s", bin.machine, node.Status.NodeInfo.OperatingSystem, node.Status.NodeInfo.Architecture)
 	}
 	d.nodeIP, err = jetbridge.NewNodeIPResolver(s.cluster.Clientset).Resolve(ctx, node.Name)
 	if err != nil {
@@ -150,7 +184,7 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 	}
 	directory := corev1.HostPathDirectory
 	binaryLimit := *resource.NewQuantity(liveDaemonEphemeralBudget, resource.BinarySI)
-	pod := s.pod("artifact-daemon", s.anchor.Spec.NodeName,
+	pod := s.pod("artifact-daemon"+s.suffix, s.anchor.Spec.NodeName,
 		[]corev1.Volume{
 			{Name: "artifacts", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: s.root, Type: &directory}}},
 			{Name: "binary", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &binaryLimit}}},
@@ -192,7 +226,18 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 	if err := validatePodMounts(ready); err != nil {
 		return nil, err
 	}
+	// The root this daemon serves must be this node's store, whether s.root
+	// is the kubelet path itself or the shared link that resolves to it.
+	owner, err := s.exec(ctx, ready.Name, []string{"cat", filepath.Join(s.root, ".brine-owner")}, nil)
+	if err != nil || owner != string(s.anchor.UID) {
+		return nil, fmt.Errorf("daemon's root %s is not anchor %s's store: got %q, err=%v", s.root, s.anchor.UID, owner, err)
+	}
 	fmt.Printf("live daemon pod ready for upload after %s\n", time.Since(started))
+	packed, err := os.Open(bin.packed)
+	if err != nil {
+		return nil, err
+	}
+	defer packed.Close()
 	checksum, err := s.exec(ctx, ready.Name, []string{"sh", "-ec", "gzip -dc > /opt/brine/artifact-daemon; chmod 0755 /opt/brine/artifact-daemon; sha256sum /opt/brine/artifact-daemon"}, packed)
 	if err != nil {
 		return nil, err
@@ -251,34 +296,54 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	// Publish only the endpoint whose real listener and node identity were
-	// verified above. No Kubernetes response or daemon result is synthesized.
-	service, err := s.cluster.Clientset.CoreV1().Services(s.cluster.Namespace).Create(ctx, &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: liveArtifactDaemonService},
-		Spec:       corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "http", Port: int32(d.port)}}},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return nil, err
-	}
-	addressType := discoveryv1.AddressTypeIPv4
-	if net.ParseIP(d.nodeIP).To4() == nil {
-		addressType = discoveryv1.AddressTypeIPv6
-	}
-	readyEndpoint, nodeName, portName, endpointPort := true, d.pod.Spec.NodeName, "http", int32(d.port)
-	slice, err := s.cluster.Clientset.DiscoveryV1().EndpointSlices(s.cluster.Namespace).Create(ctx, &discoveryv1.EndpointSlice{
-		ObjectMeta:  metav1.ObjectMeta{Name: liveArtifactDaemonService, Labels: map[string]string{discoveryv1.LabelServiceName: service.Name, discoveryv1.LabelManagedBy: "brine-runtime-tests"}, OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Service", Name: service.Name, UID: service.UID}}},
-		AddressType: addressType, Ports: []discoveryv1.EndpointPort{{Name: &portName, Port: &endpointPort}},
-		Endpoints: []discoveryv1.Endpoint{{Addresses: []string{d.nodeIP}, NodeName: &nodeName, Conditions: discoveryv1.EndpointConditions{Ready: &readyEndpoint}, TargetRef: &corev1.ObjectReference{APIVersion: "v1", Kind: "Pod", Namespace: s.cluster.Namespace, Name: d.pod.Name, UID: d.pod.UID}}},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return nil, err
-	}
-	if slice.UID == "" || service.UID == "" {
-		return nil, fmt.Errorf("owned daemon discovery lacks API identity")
-	}
-	fmt.Printf("published verified live daemon endpoint %s in owned EndpointSlice %s/%s UID %s for pod UID %s\n", d.url(), s.cluster.Namespace, slice.Name, slice.UID, d.pod.UID)
 	fmt.Printf("real artifact daemon pod %s/%s UID %s node %s serves owned storage %s; binary SHA256 %s; node endpoint %s\n", s.cluster.Namespace, d.pod.Name, d.pod.UID, d.pod.Spec.NodeName, s.root, d.binarySHA, d.url())
 	return d, nil
+}
+
+// publishLiveDaemons publishes, as the owned daemon service, exactly the
+// daemons whose real listener and node identity launchLiveDaemon verified --
+// one endpoint per node. No Kubernetes response or daemon result is
+// synthesized.
+func publishLiveDaemons(ctx context.Context, cluster liveKubernetes, daemons ...*liveArtifactDaemon) error {
+	if len(daemons) == 0 {
+		return fmt.Errorf("no daemon to publish")
+	}
+	port := daemons[0].port
+	service, err := cluster.Clientset.CoreV1().Services(cluster.Namespace).Create(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: liveArtifactDaemonService},
+		Spec:       corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "http", Port: int32(port)}}},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	addressType := discoveryv1.AddressTypeIPv4
+	if net.ParseIP(daemons[0].nodeIP).To4() == nil {
+		addressType = discoveryv1.AddressTypeIPv6
+	}
+	readyEndpoint, portName, endpointPort := true, "http", int32(port)
+	var endpoints []discoveryv1.Endpoint
+	for _, d := range daemons {
+		if d.port != port {
+			return fmt.Errorf("daemons on one service must share a port: %d and %d", port, d.port)
+		}
+		nodeName := d.pod.Spec.NodeName
+		endpoints = append(endpoints, discoveryv1.Endpoint{Addresses: []string{d.nodeIP}, NodeName: &nodeName, Conditions: discoveryv1.EndpointConditions{Ready: &readyEndpoint}, TargetRef: &corev1.ObjectReference{APIVersion: "v1", Kind: "Pod", Namespace: cluster.Namespace, Name: d.pod.Name, UID: d.pod.UID}})
+	}
+	slice, err := cluster.Clientset.DiscoveryV1().EndpointSlices(cluster.Namespace).Create(ctx, &discoveryv1.EndpointSlice{
+		ObjectMeta:  metav1.ObjectMeta{Name: liveArtifactDaemonService, Labels: map[string]string{discoveryv1.LabelServiceName: service.Name, discoveryv1.LabelManagedBy: "brine-runtime-tests"}, OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Service", Name: service.Name, UID: service.UID}}},
+		AddressType: addressType, Ports: []discoveryv1.EndpointPort{{Name: &portName, Port: &endpointPort}},
+		Endpoints: endpoints,
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	if slice.UID == "" || service.UID == "" {
+		return fmt.Errorf("owned daemon discovery lacks API identity")
+	}
+	for _, d := range daemons {
+		fmt.Printf("published verified live daemon endpoint %s (node %s) in owned EndpointSlice %s/%s UID %s for pod UID %s\n", d.url(), d.pod.Spec.NodeName, cluster.Namespace, slice.Name, slice.UID, d.pod.UID)
+	}
+	return nil
 }
 
 func (d *liveArtifactDaemon) url() string {

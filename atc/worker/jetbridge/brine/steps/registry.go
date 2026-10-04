@@ -17,6 +17,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, PlaceholderVolumeDefinitions()...)
 	defs = append(defs, VolumeRouteDefinitions()...)
 	defs = append(defs, ArtifactHandoffDefinitions()...)
+	defs = append(defs, CrossNodeHandoffDefinitions()...)
 	defs = append(defs, TaskCommandDefinitions()...)
 	defs = append(defs, PodNameDefinitions()...)
 	defs = append(defs, ConfigDefinitions()...)

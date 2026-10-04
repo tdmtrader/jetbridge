@@ -106,6 +106,32 @@ fi
 go run ./cmd/brine-verify-run "$report_dir/brine.log" \
     "$module_root/.brine=$module_root/.brine" \
     "$module_root/live/.brine=$module_root/live/.brine"
+
+# The cross-node tier (live-multinode/.brine, discover: false) needs two
+# approved artifact nodes up -- one of them may be a desktop that sleeps -- so
+# count them the way the fixture does and say which way it went: a tier that
+# did not run must never read as one that passed.
+if [ "${BRINE_KUBE_CONTEXT:-}" = in-cluster ]; then context_flag=""; else context_flag="--context=${BRINE_KUBE_CONTEXT:-}"; fi
+if [ -n "${BRINE_LIVE_ARTIFACT_NODE:-}" ]; then
+    approved_up=1
+else
+    approved_up=$(kubectl $context_flag get nodes -l brine.dev/live-artifacts=approved \
+        -o jsonpath='{range .items[*]}{.spec.unschedulable}|{.status.conditions[?(@.type=="Ready")].status}|{.metadata.labels.concourse\.dev/artifact-cache}{"\n"}{end}' |
+        grep -c '^|True|ready$' || true)
+fi
+if [ "$approved_up" -ge 2 ]; then
+    echo "cross-node tier: $approved_up approved artifact nodes up; running live-multinode/.brine" >&2
+    if ! (cd live-multinode && brine run --no-engine --mode sync --format jsonl) > "$report_dir/brine-multinode.log" 2>&1; then
+        echo "cross-node tier failed. Scenarios that did not pass:" >&2
+        grep '"type":"scenario_end"' "$report_dir/brine-multinode.log" | grep -v '"status":"passed"' >&2 || true
+        tail -80 "$report_dir/brine-multinode.log" >&2
+        exit 1
+    fi
+    go run ./cmd/brine-verify-run "$report_dir/brine-multinode.log" \
+        "$module_root/live-multinode/.brine=$module_root/live-multinode/.brine"
+else
+    echo "cross-node tier NOT run: $approved_up approved artifact node(s) up, it needs 2" >&2
+fi
 go tool covdata textfmt -i="$GOCOVERDIR" -pkg="$production_package" \
     -o="$report_dir/coverage.out"
 go tool covdata percent -i="$GOCOVERDIR" -pkg="$production_package"

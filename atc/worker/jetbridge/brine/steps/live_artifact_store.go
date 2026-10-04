@@ -29,45 +29,67 @@ type liveArtifactStore struct {
 	cluster          liveKubernetes
 	executor         *jetbridge.SPDYExecutor
 	anchor, observer *corev1.Pod
-	root, ownerRoot  string
-	observerReady    bool
-	cleaned          bool
+	// root is the path every production pod and daemon uses. dataRoot is the
+	// anchor's emptyDir under the kubelet; root is dataRoot itself, or -- in
+	// a multi-node fixture -- the shared link that resolves to it (link).
+	root, dataRoot, ownerRoot string
+	// suffix tells this node's fixture pods apart in a shared namespace.
+	suffix        string
+	linker        *corev1.Pod
+	observerReady bool
+	cleaned       bool
 }
 
 func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifactStore, error) {
-	if os.Getenv("BRINE_ALLOW_HOSTPATH_TESTS") != "1" {
-		return nil, fmt.Errorf("live artifact storage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 approval")
-	}
-	cluster, err := newLiveKubernetes(ctx, rec, 4)
+	cluster, err := newLiveArtifactCluster(ctx, rec, 4)
 	if err != nil {
 		return nil, err
 	}
-	s := &liveArtifactStore{cluster: cluster, executor: jetbridge.NewSPDYExecutor(cluster.Clientset, cluster.Config)}
-	TrackDisposer(rec, "the live artifact store", func() error {
-		clean, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		return s.close(clean)
-	})
-	// Only the newly created, UID-matched namespace receives this exception.
-	ns, err := cluster.Clientset.CoreV1().Namespaces().Get(ctx, cluster.Namespace, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	if string(ns.UID) != cluster.Marker || ns.Labels["app.kubernetes.io/managed-by"] != "brine-runtime-tests" {
-		return nil, fmt.Errorf("refusing hostPath exception for an unowned namespace")
-	}
-	ns.Labels["pod-security.kubernetes.io/enforce"] = "privileged"
-	ns.Annotations = map[string]string{"brine.dev/hostpath-purpose": "owned artifact handoff migration"}
-	if _, err := cluster.Clientset.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{}); err != nil {
-		return nil, err
-	}
-
 	node, err := approvedArtifactNode(ctx, cluster.Clientset)
 	if err != nil {
 		return nil, err
 	}
-	nodeName := node.Name
-	anchor := s.pod("artifact-store-owner", nodeName, nil, nil)
+	return newLiveArtifactStoreOn(ctx, rec, cluster, node.Name, "")
+}
+
+// newLiveArtifactCluster is an owned namespace granted the hostPath exception
+// this fixture needs, with room for podLimit pods.
+func newLiveArtifactCluster(ctx context.Context, rec *brine.Recorder, podLimit int64) (liveKubernetes, error) {
+	if os.Getenv("BRINE_ALLOW_HOSTPATH_TESTS") != "1" {
+		return liveKubernetes{}, fmt.Errorf("live artifact storage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 approval")
+	}
+	cluster, err := newLiveKubernetes(ctx, rec, podLimit)
+	if err != nil {
+		return liveKubernetes{}, err
+	}
+	// Only the newly created, UID-matched namespace receives this exception.
+	ns, err := cluster.Clientset.CoreV1().Namespaces().Get(ctx, cluster.Namespace, metav1.GetOptions{})
+	if err != nil {
+		return liveKubernetes{}, err
+	}
+	if string(ns.UID) != cluster.Marker || ns.Labels["app.kubernetes.io/managed-by"] != "brine-runtime-tests" {
+		return liveKubernetes{}, fmt.Errorf("refusing hostPath exception for an unowned namespace")
+	}
+	ns.Labels["pod-security.kubernetes.io/enforce"] = "privileged"
+	ns.Annotations = map[string]string{"brine.dev/hostpath-purpose": "owned artifact handoff migration"}
+	if _, err := cluster.Clientset.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{}); err != nil {
+		return liveKubernetes{}, err
+	}
+	return cluster, nil
+}
+
+// newLiveArtifactStoreOn builds the owned store on one node of cluster:
+// an anchor whose emptyDir is the store, and an observer that reads it
+// through the kubelet path. suffix keeps several nodes' pods apart.
+func newLiveArtifactStoreOn(ctx context.Context, rec *brine.Recorder, cluster liveKubernetes, nodeName, suffix string) (*liveArtifactStore, error) {
+	s := &liveArtifactStore{cluster: cluster, executor: jetbridge.NewSPDYExecutor(cluster.Clientset, cluster.Config), suffix: suffix}
+	TrackDisposer(rec, "the live artifact store"+suffix, func() error {
+		clean, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		return s.close(clean)
+	})
+	var err error
+	anchor := s.pod("artifact-store-owner"+suffix, nodeName, nil, nil)
 	size := resource.MustParse("16Mi")
 	anchor.Spec.Volumes = []corev1.Volume{{Name: "artifacts", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &size}}}}
 	anchor.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "artifacts", MountPath: "/store"}}
@@ -90,11 +112,12 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 		return nil, fmt.Errorf("invalid kubelet root or anchor UID")
 	}
 	s.ownerRoot = filepath.Join(kubeletRoot, "pods", string(s.anchor.UID))
-	s.root = filepath.Join(s.ownerRoot, "volumes", "kubernetes.io~empty-dir", "artifacts")
+	s.dataRoot = filepath.Join(s.ownerRoot, "volumes", "kubernetes.io~empty-dir", "artifacts")
+	s.root = s.dataRoot
 	directory := corev1.HostPathDirectory // Never create an assumed kubelet path.
-	observer := s.pod("artifact-store-observer", s.anchor.Spec.NodeName,
+	observer := s.pod("artifact-store-observer"+suffix, s.anchor.Spec.NodeName,
 		[]corev1.Volume{
-			{Name: "data", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: s.root, Type: &directory}}},
+			{Name: "data", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: s.dataRoot, Type: &directory}}},
 			{Name: "owner", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: s.ownerRoot, Type: &directory}}},
 		},
 		[]corev1.VolumeMount{{Name: "data", MountPath: "/store"}, {Name: "owner", MountPath: "/owner", ReadOnly: true}},
@@ -121,17 +144,90 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	return s, nil
 }
 
+// link publishes this node's store at linkRoot -- the same path on every node
+// of a multi-node fixture, because the runtime takes one artifact host path
+// for all of them -- as a symlink into the anchor's emptyDir. The kubelet still
+// reclaims the data with the anchor; close removes the link, and a later run's
+// link sweeps one a killed run left behind. Afterwards root is linkRoot.
+func (s *liveArtifactStore) link(ctx context.Context, linkRoot string) error {
+	dir, name := filepath.Dir(linkRoot), filepath.Base(linkRoot)
+	if !filepath.IsAbs(linkRoot) || dir == "/" || name != s.cluster.Marker {
+		return fmt.Errorf("link root %q must be an absolute path named after the owned namespace UID", linkRoot)
+	}
+	create := corev1.HostPathDirectoryOrCreate
+	linker := s.pod("artifact-store-linker"+s.suffix, s.anchor.Spec.NodeName,
+		[]corev1.Volume{{Name: "links", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: dir, Type: &create}}}},
+		[]corev1.VolumeMount{{Name: "links", MountPath: "/links"}})
+	created, err := s.cluster.Clientset.CoreV1().Pods(s.cluster.Namespace).Create(ctx, linker, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	s.linker = created
+	if s.linker, err = awaitLiveStoragePod(ctx, s, created); err != nil {
+		s.linker = created
+		return err
+	}
+	if err := s.sweepStaleLinks(ctx); err != nil {
+		return err
+	}
+	if _, err := s.exec(ctx, s.linker.Name, []string{"ln", "-sfn", s.dataRoot, "/links/" + name}, nil); err != nil {
+		return err
+	}
+	s.root = linkRoot
+	fmt.Printf("linked %s -> %s on node %s\n", linkRoot, s.dataRoot, s.anchor.Spec.NodeName)
+	return nil
+}
+
+// sweepStaleLinks removes links named after a brine namespace that no longer
+// exists: a run killed before its close. Their targets were already reclaimed
+// with their anchors. Anything that is not a symlink is left alone.
+func (s *liveArtifactStore) sweepStaleLinks(ctx context.Context) error {
+	namespaces, err := s.cluster.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=brine-runtime-tests"})
+	if err != nil {
+		return err
+	}
+	live := map[string]bool{}
+	for _, ns := range namespaces.Items {
+		live[string(ns.UID)] = true
+	}
+	listing, err := s.exec(ctx, s.linker.Name, []string{"sh", "-c", `for l in /links/*; do [ -L "$l" ] && basename "$l"; done; true`}, nil)
+	if err != nil {
+		return err
+	}
+	for _, entry := range strings.Fields(listing) {
+		if live[entry] {
+			continue
+		}
+		if _, err := s.exec(ctx, s.linker.Name, []string{"rm", "-f", "/links/" + entry}, nil); err != nil {
+			return err
+		}
+		fmt.Printf("swept stale artifact link %s on node %s\n", entry, s.anchor.Spec.NodeName)
+	}
+	return nil
+}
+
 // liveArtifactApproval is the node label that approves a node to carry this
 // fixture's hostPath root and host port. Approval travels with the node, so
 // the fixture runs on any cluster where someone has labelled one.
 const liveArtifactApproval = "brine.dev/live-artifacts"
 
-// approvedArtifactNode picks the node the fixture lives on: the one
-// BRINE_LIVE_ARTIFACT_NODE names, when set, or else the first by name of the
-// nodes labelled liveArtifactApproval=approved that can take it now --
-// Ready, schedulable, with a ready production artifact cache. A labelled node
-// that is asleep or cordoned is passed over, not waited for.
+// approvedArtifactNode picks the node a single-node fixture lives on: the
+// first of approvedArtifactNodes.
 func approvedArtifactNode(ctx context.Context, cs kubernetes.Interface) (*corev1.Node, error) {
+	nodes, err := approvedArtifactNodes(ctx, cs)
+	if err != nil {
+		return nil, err
+	}
+	return nodes[0], nil
+}
+
+// approvedArtifactNodes are the nodes the fixture may live on now: the one
+// BRINE_LIVE_ARTIFACT_NODE names, when set, or else every node labelled
+// liveArtifactApproval=approved that can take it -- Ready, schedulable, with a
+// ready production artifact cache -- sorted by name. A labelled node that is
+// asleep or cordoned is passed over, not waited for; with none left the error
+// names each one and why.
+func approvedArtifactNodes(ctx context.Context, cs kubernetes.Interface) ([]*corev1.Node, error) {
 	if name := os.Getenv("BRINE_LIVE_ARTIFACT_NODE"); name != "" {
 		node, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -140,7 +236,7 @@ func approvedArtifactNode(ctx context.Context, cs kubernetes.Interface) (*corev1
 		if why := artifactNodeUnfit(node); why != "" {
 			return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_NODE %q %s", name, why)
 		}
-		return node, nil
+		return []*corev1.Node{node}, nil
 	}
 	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: liveArtifactApproval + "=approved"})
 	if err != nil {
@@ -150,15 +246,22 @@ func approvedArtifactNode(ctx context.Context, cs kubernetes.Interface) (*corev1
 		return nil, fmt.Errorf("no node is approved for the live artifact fixture: label one %s=approved, or name it in BRINE_LIVE_ARTIFACT_NODE", liveArtifactApproval)
 	}
 	sort.Slice(nodes.Items, func(i, j int) bool { return nodes.Items[i].Name < nodes.Items[j].Name })
+	var fit []*corev1.Node
 	var unfit []string
 	for i := range nodes.Items {
 		if why := artifactNodeUnfit(&nodes.Items[i]); why != "" {
 			unfit = append(unfit, nodes.Items[i].Name+" "+why)
 			continue
 		}
-		return &nodes.Items[i], nil
+		fit = append(fit, &nodes.Items[i])
 	}
-	return nil, fmt.Errorf("no approved node can take the live artifact fixture now: %s", strings.Join(unfit, "; "))
+	if len(fit) == 0 {
+		return nil, fmt.Errorf("no approved node can take the live artifact fixture now: %s", strings.Join(unfit, "; "))
+	}
+	if len(unfit) > 0 {
+		fmt.Printf("approved artifact nodes passed over: %s\n", strings.Join(unfit, "; "))
+	}
+	return fit, nil
 }
 
 // artifactNodeUnfit says why a node cannot carry the fixture now, or "".
@@ -299,6 +402,17 @@ func (s *liveArtifactStore) close(ctx context.Context) error {
 	}
 	// Callers register their task-pod disposers after this store, so those pods
 	// are gone before the anchor is removed. The observer must remain alive.
+	if s.linker != nil {
+		if s.root != s.dataRoot {
+			if _, err := s.exec(ctx, s.linker.Name, []string{"rm", "-f", "/links/" + filepath.Base(s.root)}, nil); err != nil {
+				return err
+			}
+		}
+		if err := deleteLiveStoragePod(ctx, s, s.linker); err != nil {
+			return err
+		}
+		s.linker = nil
+	}
 	if !s.observerReady {
 		if err := deleteLiveStoragePod(ctx, s, s.observer); err != nil {
 			return err
