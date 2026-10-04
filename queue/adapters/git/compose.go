@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -27,11 +28,12 @@ type Composer struct {
 	Remote, Main, Candidate, Name, Email string
 	Hook, HookOwned                      []string
 	HookTimeout                          time.Duration
+	HookScript                           string // its owned files, asked of main's copy, take main's side in a conflict
 }
 
 // NewComposer uses repository.uri, the lander's remote.
 func NewComposer(c config.Config) Composer {
-	return Composer{c.Repository.URI, c.Repository.Main, c.Repository.Candidate, c.Compose.Committer.Name, c.Compose.Committer.Email, c.Compose.Hook, c.Compose.HookOwned, c.Compose.HookTimeout}
+	return Composer{c.Repository.URI, c.Repository.Main, c.Repository.Candidate, c.Compose.Committer.Name, c.Compose.Committer.Email, c.Compose.Hook, c.Compose.HookOwned, c.Compose.HookTimeout, c.Compose.HookScript}
 }
 
 // Compose returns the candidate's full sha, or a core.ConflictError naming
@@ -55,13 +57,19 @@ func (c Composer) Compose(ctx context.Context, base string, entries []core.Entry
 			return "", err
 		}
 	}
+	var keep []string
+	if c.HookScript != "" {
+		if keep, _, err = ownedOn(ctx, git, "refs/compose/base", c.HookScript, c.HookTimeout); err != nil {
+			return "", err
+		}
+	}
 	for i, e := range entries {
 		own, err := git("merge-base", e.Commit, "refs/compose/base")
 		if err == nil {
 			own, err = ownBase(git, own, e, entries[:i])
 		}
 		if err == nil {
-			err = composeOne(git, e, own)
+			err = composeOne(git, e, own, keep)
 		}
 		if err != nil {
 			return "", err
@@ -112,17 +120,21 @@ func ownBase(git func(...string) (string, error), fork string, e core.Entry, ear
 }
 
 // composeOne applies e's diff from own (see ownBase) onto HEAD as one commit; an empty result adds none.
-func composeOne(git func(...string) (string, error), e core.Entry, own string) error {
+// A conflict only in files of keep takes HEAD's side of them.
+func composeOne(git func(...string) (string, error), e core.Entry, own string, keep []string) error {
 	pick, err := git("commit-tree", e.Commit+"^{tree}", "-p", own, "-m", "pick")
 	if err != nil {
 		return err
 	}
 	if _, err := git("cherry-pick", "--no-commit", pick); err != nil {
-		if unmerged, _ := git("ls-files", "-u"); unmerged == "" {
+		unmerged, _ := git("diff", "--name-only", "--diff-filter=U")
+		if unmerged == "" {
 			return err
 		}
-		_, _ = git("reset", "-q", "--hard")
-		return core.ConflictError{EntryID: e.ID}
+		if keepOurs(git, strings.Split(unmerged, "\n"), keep) != nil {
+			_, _ = git("reset", "-q", "--hard")
+			return core.ConflictError{EntryID: e.ID}
+		}
 	}
 	if _, err := git("diff", "--cached", "--quiet"); err == nil {
 		return nil
@@ -156,14 +168,21 @@ func (c Composer) runHook(ctx context.Context, dir string, git func(...string) (
 	if len(c.Hook) == 0 {
 		return nil
 	}
-	limit := c.HookTimeout
+	if err := hookExec(ctx, c.HookTimeout, dir, nil, c.Hook...); err != nil {
+		return err
+	}
+	return c.commitHook(dir, git)
+}
+
+// hookExec runs argv in dir as its own process group, all of it killed at limit.
+func hookExec(ctx context.Context, limit time.Duration, dir string, stdout io.Writer, argv ...string) error {
 	if limit <= 0 {
 		limit = 15 * time.Minute
 	}
 	hctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	cmd := exec.CommandContext(hctx, c.Hook[0], c.Hook[1:]...)
-	cmd.Dir, cmd.WaitDelay = dir, time.Second
+	cmd := exec.CommandContext(hctx, argv[0], argv[1:]...)
+	cmd.Dir, cmd.WaitDelay, cmd.Stdout = dir, time.Second, stdout
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // the hook and its children are one group
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	var exit *exec.ExitError
@@ -178,6 +197,11 @@ func (c Composer) runHook(ctx context.Context, dir string, git func(...string) (
 	} else if err != nil {
 		return errors.New("compose hook failed: could not run")
 	}
+	return nil
+}
+
+// commitHook commits what the hook changed, if it stayed inside HookOwned.
+func (c Composer) commitHook(dir string, git func(...string) (string, error)) error {
 	if _, err := git("add", "-A"); err != nil {
 		return err
 	}
