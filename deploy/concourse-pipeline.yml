@@ -20,8 +20,11 @@
 #   - `deploy` orders the release chain (tag-rc .. release) across commits.
 #   - `live-tier`: brine's live tier and k8s-live-tests both drive the live
 #     deployment; two at once poison each other's namespaces and quotas.
-#   - `upgrade-<job>`: self-upgrade restarts web, which errors every in-flight
-#     build, so it holds one group per test job and waits for all of them.
+#   - `solo-<job>`: one per test job, held also by every job that must run
+#     with none of them -- self-upgrade (restarting web errors every in-flight
+#     build) and brine (its live tier needs a quiet cluster: on theborg alone,
+#     overlapping the next commit's jobs timed seven pod-lifecycle scenarios
+#     out, 2026-10-04). The test jobs still overlap each other.
 # Until 2026-10-04 every job shared one `pipeline` group; with a second node
 # that left most of the cluster idle.
 #
@@ -42,7 +45,7 @@ resources:
     branch: core
 jobs:
 - name: build-and-vet
-  serial_groups: [upgrade-build-and-vet]
+  serial_groups: [solo-build-and-vet]
   plan:
   - get: repo
     trigger: true
@@ -92,7 +95,7 @@ jobs:
 
 
 - name: unit-tests
-  serial_groups: [upgrade-unit-tests]
+  serial_groups: [solo-unit-tests]
   plan:
   - get: repo
     trigger: true
@@ -260,7 +263,7 @@ jobs:
 
 - name: k8s-runtime-tests
   serial: true
-  serial_groups: [upgrade-k8s-runtime-tests]
+  serial_groups: [solo-k8s-runtime-tests]
   plan:
   - get: repo
     trigger: true
@@ -318,7 +321,7 @@ jobs:
 # suite now holds the release chain, which is the point of running it.
 - name: brine
   serial: true
-  serial_groups: [upgrade-brine, live-tier]
+  serial_groups: [solo-brine, live-tier, solo-build-and-vet, solo-unit-tests, solo-k8s-runtime-tests, solo-worker-image]
   plan:
   - get: repo
     trigger: true
@@ -437,6 +440,7 @@ jobs:
   # step is privileged only because it owns the Docker daemon; nothing is
   # pushed. hack/test-worker-image runs the same tests as real task Pods.
   serial: true
+  serial_groups: [solo-worker-image]
   plan:
   - get: repo
     trigger: true
@@ -904,7 +908,7 @@ jobs:
           echo "=== Image built and pushed: ${RC_TAG} ==="
 
 - name: self-upgrade
-  serial_groups: [deploy, upgrade-build-and-vet, upgrade-unit-tests, upgrade-k8s-runtime-tests, upgrade-brine]
+  serial_groups: [deploy, solo-build-and-vet, solo-unit-tests, solo-k8s-runtime-tests, solo-brine, solo-worker-image]
   plan:
   - get: repo
     trigger: true
