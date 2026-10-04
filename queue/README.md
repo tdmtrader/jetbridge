@@ -15,7 +15,8 @@ Vocabulary is in [CONTEXT.md](CONTEXT.md); behaviour is specified in
 - Blame is proven by bisect, never guessed. A change is ejected only when it
   fails on its own (or, as a batch of one, fails to compose).
 - A confirmed culprit is ejected with no automatic requeue. An ejected id is
-  never admitted again; a fixed change is admitted under a new id.
+  not admitted again unless an operator clears it with `queue resolve`; a fixed
+  change is normally admitted under a new id.
 - A missing verdict (poll error, no result inside `runner.wait_cap`, compose
   error that names no entry) means retry, then pause. It never ejects.
 - Flakes are surfaced, never hidden: a red batch whose halves both pass lands,
@@ -54,7 +55,7 @@ flowchart LR
     GS["git store (one ref)"]
     GC["git composer"]
     GL["git lander"]
-    JR["jetbridge runner"]
+    JR["runner (JetBridge API)"]
     LN["lognotify"]
     GA["git admissions"]
   end
@@ -127,7 +128,7 @@ cd queue && go build ./cmd/queue
 ```
 
 1. Write a config (see [example/](example/)). `repository.uri` is required and
-   never guessed.
+   never guessed. See "Configuring main and candidate" below.
 2. Give the runner a JetBridge pipeline whose resource follows the candidate
    branch and whose job tests it.
 3. Start the queue: `queue run --config queue.yaml` (`--every 5s` between
@@ -146,7 +147,9 @@ cd queue && go build ./cmd/queue
    and the latest 10 `Flakes` (flaky batches).
 6. Resume a paused queue: `queue resume --config queue.yaml` (see Pause).
 
-Exit codes: 0 done, 2 admission refused (unsafe id), 1 anything else.
+Exit codes: 0 done, 2 admit refused (unsafe id), 1 anything else. `health`
+exits 0 healthy and 3 unhealthy; any other non-zero means the state could not
+be read. Run `queue --help` for the full list of verbs and codes.
 
 ## Configuration
 
@@ -162,10 +165,9 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `admission.source` | removed | Changes always arrive as pushed refs; the key had one value and no effect, and is now refused as unknown. |
 | `admission.prefix` | `refs/queue/admit/` | Ref prefix ending in `/`. Must not overlap any ref the queue owns. |
 | `admission.control_prefix` | `refs/queue/control/` | Ref prefix ending in `/` for operator requests; `queue resume` writes `<prefix>resume-<PauseSeq>`. Same overlap rule. |
-| `batch.max` | `4` | Largest batch; at least 1. |
+| `batch.max` | `4` | The batch size; at least 1. A resource may override it with source `batch_max`. |
 | `batch.retry_none` | `1` | Retries on no verdict before pausing; at least 0. |
 | `batch.strategy` | `serial` | The only value: one batch at a time, bisecting a red batch by halves. |
-| `batch.adaptive` | off | `{start, min, grow_after}`. Batches start at `start`, halve (floor `min`) after a red batch, double (cap `batch.max`) after `grow_after` green batches in a row. Needs `1 <= min <= start <= max`, `grow_after >= 1`. Size resets to `start` on reload. |
 | `compose.committer.name` | `merge-queue` | Author and committer of composed commits; one squashed commit per change, titled `land(<id>)`. |
 | `compose.committer.email` | `merge-queue@localhost` | |
 | `runner.kind` | none | Required: `jetbridge`. |
@@ -184,10 +186,30 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `notify.path` | none | Required for `log`: a file (appended) or `-` for stdout. |
 | `store.ref` | `refs/queue/state` | The one ref holding queue state and the lease. |
 
+## Configuring main and candidate
+
+`repository.main` and `repository.candidate` must name different branches. Use
+the short form for both, for example:
+
+```yaml
+repository:
+  main: main
+  candidate: queue-next
+```
+
+The queue force-pushes the candidate branch on every compose. Load refuses
+equal names (`config/config.go:186`) and the composer refuses to push when the
+two are equal (`adapters/git/compose.go:42`), but both checks compare the
+strings only. Spelling one as a full ref (`refs/heads/main`) and the other as
+the same short name (`main`) is not detected: the candidate push
+(`adapters/git/compose.go:81`) resolves to main and force-pushes untested code
+onto main. Never mix spellings; write both as short branch names.
+
 ## Operating notes
 
 - **Pause.** The queue pauses after `batch.retry_none` retries on no verdict, or
-  after `lander.max_failures` land errors in a row. `status` shows `Paused` and
+  after `lander.max_failures` land errors in a row (see the next note for
+  where that count lives). `status` shows `Paused` and
   `Why`. A paused queue still drains admissions and polls runs; it starts none.
   Each pause has a number (`PauseSeq`, counted up on every pause). `queue resume`
   reads it from the saved state and pushes main's current sha to
@@ -195,6 +217,12 @@ and merge keys are refused. Defaults are applied before your file is read.
   pause on its next step, announces `resumed`, and deletes the request. A request
   for any other pause, or on a queue that is not paused, is logged, deleted and
   changes nothing.
+- **Land errors and the resource.** A long-running process (`queue run`) pauses
+  after `lander.max_failures` consecutive land errors (`core/driver.go:448`).
+  The Concourse resource builds a fresh driver on every `check`
+  (`wire/wire.go:39-48`, `cmd/queue-resource/main.go:134`), so that count does
+  not carry over and the resource does not pause on repeated land errors: a
+  failing land is retried on the next check.
 - **Auto-resume.** A pause for no verdict (not a land-error or unreadable-main
   pause) ends by itself once `pause.cooldown` has passed since it began (default
   `5m`; `0s` turns it off). The queue announces `resumed` with the reason
@@ -211,8 +239,9 @@ and merge keys are refused. Defaults are applied before your file is read.
   holder cannot move main.
 - **Crash.** State is saved before each run, before each land and after each
   settlement. On restart a saved landing is settled by asking whether main
-  already holds the candidate; if that cannot be read, the queue pauses. Runs in
-  flight are dropped and their entries rerun.
+  already holds the candidate; if that cannot be read, the queue pauses. A run
+  in flight when the process stopped is picked up again by a fresh strategy
+  rather than started over.
 - **Admit-ref ids.** One ref component: letters, digits, `_` and `-`, starting
   with a letter or digit, at most 100 characters. An id that was ever queued is
   refused for a different commit, and a settled id is never admitted again. The
@@ -260,5 +289,7 @@ and merge keys are refused. Defaults are applied before your file is read.
 ## Limits and not in v1
 
 - Side-lane: not in v1. `serial` is the only strategy.
-- Hint-ranked bisect: not in v1. Every bisect is plain halves.
+- Hint-ranked bisect: an optional strategy capability (`Hinter` in `core`), fed
+  the failed test names and changed files of a red run. Without a hint a bisect
+  is plain halves.
 - `github-pr` admission is not supported; changes arrive as pushed refs.
