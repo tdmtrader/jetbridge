@@ -122,6 +122,25 @@ func TestHangarRejectsInvalidPrerequisitesAtRender(t *testing.T) {
 	}
 }
 
+// Hangar names its own store. It once borrowed the durable tier's store and
+// bucket when hangar.store was unset; a durable tier alone now enables nothing.
+func TestHangarWithoutItsOwnStoreFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sets []string
+	}{
+		{"no store", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.bucket=b"}},
+		{"only the durable tier's store", []string{"artifactDaemon.hangar.enabled=true",
+			"artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := renderHangarError(t, tc.sets...); !strings.Contains(out, "artifactDaemon.hangar.store") {
+				t.Fatalf("error did not name artifactDaemon.hangar.store:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestHangarRejectsImplicitGeneratedKey(t *testing.T) {
 	sets := []string{
 		"artifactDaemon.tls.source=generated",
