@@ -249,6 +249,25 @@ var shapeGuards = []shapeGuard{
 		},
 	},
 	{
+		name:  "every removed key fails the render naming its removal",
+		names: "artifactDaemon.durable",
+		check: checkRemovedKeys,
+		breakIt: func(t *testing.T, dir string) {
+			path := filepath.Join(dir, "templates", "_validate.tpl")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := regexp.MustCompile(`(?m)^\s*\(list "artifactDaemon\.durable" .*\n`)
+			if !entry.Match(raw) {
+				t.Fatal("the removed-keys table has no artifactDaemon.durable entry to delete")
+			}
+			if err := os.WriteFile(path, entry.ReplaceAll(raw, nil), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	},
+	{
 		name:  "a render with no values names what is missing",
 		names: "mcp.clients",
 		check: checkBareRender,
@@ -405,6 +424,26 @@ func checkClosedObjects(dir string) []string {
 		}
 		closed(path, node)
 	})
+	return violations
+}
+
+// checkRemovedKeys: setting any key on removedKeys fails the render with
+// "<key> has been removed", so the list and the removed-keys table in
+// templates/_validate.tpl name the same keys. It renders with the tests'
+// required values, read relative to the package directory go test runs in.
+func checkRemovedKeys(dir string) []string {
+	var violations []string
+	for _, key := range removedKeys {
+		out, err := exec.Command("helm", "template", "jb", dir,
+			"-f", filepath.Join("testdata", "required-values.yaml"), "--set", key+"=1").CombinedOutput()
+		if err == nil {
+			violations = append(violations, fmt.Sprintf("setting %s rendered; add it to the removed-keys table in templates/_validate.tpl", key))
+			continue
+		}
+		if !strings.Contains(string(out), key+" has been removed") {
+			violations = append(violations, fmt.Sprintf("setting %s failed without saying %q:\n%s", key, key+" has been removed", out))
+		}
+	}
 	return violations
 }
 
