@@ -41,9 +41,8 @@ still set one (`networkPolicy.hermeticEgressTo`) after the chart dropped it.
   values, or that needs a message naming the fix. Schema messages are generic;
   a template message names the value and what to set. `web-deployment.yaml`
   includes it on its first line. Hangar's rules stay with Hangar
-  (`_hangar-*.tpl`, `hangar-*.yaml`, and the `artifactDaemon.hangar` and
-  `durable` rules in `artifact-daemon-daemonset.yaml`) until its values are
-  reshaped.
+  (`_hangar-*.tpl`, `hangar-*.yaml`, and the `artifactDaemon.hangar` rules in
+  `artifact-daemon-daemonset.yaml`) until its values are reshaped.
 - A removed key stays in the schema as an open type for one release, and
   the removed-keys table in `_validate.tpl` fails it with
   "<key> has been removed; <action>". The release after, both entries go.
@@ -55,6 +54,7 @@ still set one (`networkPolicy.hermeticEgressTo`) after the chart dropped it.
     `grandfathered`;
   - every key has a typed schema entry;
   - every schema object is closed;
+  - every removed key fails the render naming its removal;
   - a render with no values fails naming what is missing.
 
 ## Exceptions
@@ -66,10 +66,9 @@ Two lists name what the schema leaves open:
   security contexts, OTLP headers, extra volumes and mounts, env, ingress TLS
   and NetworkPolicy peers. Each counts as one value, and nothing inside one
   is checked.
-- `deferredGroups` are the Hangar and durable groups (`artifactDaemon.hangar`,
-  `artifactDaemon.durable`, `hangarBootstrap`, `hangarOutput`,
-  `hangarStorage`), which later tracks reshape. Each is closed at its top
-  level only. The list only shrinks.
+- `deferredGroups` are the Hangar groups (`artifactDaemon.hangar`,
+  `hangarBootstrap`, `hangarOutput`, `hangarStorage`), which later tracks
+  reshape. Each is closed at its top level only. The list only shrinks.
 
 ## The raise rule
 
@@ -91,5 +90,11 @@ is written beside the constant. A raise is a one-line diff a reviewer sees.
   that removes a key.
 - `web.extraArgs` and `web.env` remain, grandfathered, until their settings
   become typed values or binary defaults.
-- The amendment to ADR-0002 that removes the durable tier from the chart
-  lands with that removal.
+- ADR-0002's durable-tier consequences no longer apply to the chart. The
+  chart does not configure the durable tier: `artifactDaemon.durable` is a
+  removed key, the daemon is handed no `--durable-*` flag, and Hangar names
+  its own store rather than inheriting the tier's. The tier's fail-open
+  semantics, its retention classes and its separation from Hangar still hold
+  in the daemon, which keeps its durable-tier code and flags; only the
+  chart's way of setting them is gone. ADR-0002 is unedited, and this is its
+  amendment.
