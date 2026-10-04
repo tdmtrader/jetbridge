@@ -24,7 +24,7 @@ RUN apk add --no-cache bash git openssh-client ca-certificates
 ARG QUEUE_CONFIG=queue.yaml
 COPY ${QUEUE_CONFIG} /etc/mq/queue.yaml
 COPY --from=build /out/queue-resource /usr/local/bin/queue-resource
-# The queue CLI, for the pipeline's health and drain steps on this image.
+# The queue CLI, for the pipeline's health step on this image.
 COPY --from=build /out/queue /usr/local/bin/queue
 RUN mkdir -p /opt/resource \
  && ln -s /usr/local/bin/queue-resource /opt/resource/check \

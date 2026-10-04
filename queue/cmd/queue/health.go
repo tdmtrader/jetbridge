@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/core"
+	"github.com/concourse/concourse/queue/wire"
 )
 
 // health prints one line and returns 0 if the queue is healthy, else 3 with the first reason it is not;
@@ -51,4 +55,44 @@ func unhealthy(s core.Snapshot, h config.Health, cooldown time.Duration, now tim
 		}
 	}
 	return ""
+}
+
+// loadConfig reads --config, or for health without it the queue resource's
+// source JSON ({"source": {...}}) from --source or stdin, as the resource does.
+func loadConfig(verb, file, srcFile string) (config.Config, func(), error) {
+	none := func() {}
+	if verb != "health" || file != "" {
+		if srcFile != "" {
+			return config.Config{}, none, errors.New("--source is for health without --config")
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return config.Config{}, none, err
+		}
+		c, err := config.Parse(data)
+		return c, none, err
+	}
+	in := io.Reader(os.Stdin)
+	if srcFile != "" {
+		f, err := os.Open(srcFile)
+		if err != nil {
+			return config.Config{}, none, err
+		}
+		defer f.Close()
+		in = f
+	}
+	var req struct{ Source wire.Source }
+	if err := json.NewDecoder(in).Decode(&req); err != nil {
+		return config.Config{}, none, errors.New("the source is not valid JSON")
+	}
+	cleanup, err := wire.SSHKey(req.Source)
+	if err != nil {
+		return config.Config{}, none, err
+	}
+	c, err := wire.LoadConfig(req.Source)
+	if err != nil {
+		cleanup()
+		return config.Config{}, none, err
+	}
+	return c, cleanup, nil
 }

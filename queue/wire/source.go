@@ -12,7 +12,7 @@ import (
 )
 
 // Source is the queue resource's source, the same in both resources but for
-// mode; queue drain reads it too.
+// mode; queue health reads it too.
 type Source struct {
 	Mode       string `json:"mode"` // candidate or verdict
 	URI        string `json:"uri"`

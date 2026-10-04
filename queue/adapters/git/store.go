@@ -37,12 +37,6 @@ func (s *Store) Load(ctx context.Context) (snap core.Snapshot, err error) {
 	return snap, err
 }
 
-// LoadLease reads the Snapshot and the lease from one read of the ref, writing nothing.
-func (s *Store) LoadLease(ctx context.Context) (snap core.Snapshot, l core.Lease, err error) {
-	err = s.storeDo(ctx, func(_ string, st storeState) error { snap, l = st.snap, st.lease; return nil })
-	return snap, l, err
-}
-
 func (s *Store) Save(ctx context.Context, token uint64, snap core.Snapshot) (version string, err error) {
 	err = s.storeDo(ctx, func(dir string, st storeState) (err error) {
 		if snap.Version != st.version {
