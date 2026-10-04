@@ -1,7 +1,7 @@
-# The queue's config for the flip. repository.uri is not here: the queue
-# resource's source.uri gives it, the same repository the old queue uses.
-# runner.url and runner.pipeline are filled in from the existing land pipeline
-# before this file is baked; until then the runner cannot start a test.
+# The queue's config for the flip, run by the queue resource with the git
+# runner, which reads no runner section. The resource's source gives
+# repository.uri, the same repository the old queue uses, and batch_max,
+# which caps a batch below batch.max until the pipeline raises it.
 apiVersion: jetbridge.dev/queue/v2
 
 repository:
@@ -14,7 +14,7 @@ admission:
   legacy_refs: refs/queue/
 
 batch:
-  max: 1
+  max: 8
   retry_none: 2
   strategy: serial
   order: proven-first
@@ -25,20 +25,9 @@ compose:
     email: jbq@invalid
   hook_script: ci/jb-compose-hook.sh
 
-runner:
-  kind: jetbridge
-  url: FILL-IN-ATC-URL
-  team: main
-  pipeline: FILL-IN-LAND-PIPELINE
-  job: test-candidate
-  resource: mq-candidate
-  credential: env:MQ_ATC_TOKEN
-  wait_cap: 3h
-
 lander:
   max_failures: 3
   lease_ref: refs/mq/lease
-  scratch: /tmp/mq
 
 notify: {kind: log, path: "-"}
 
