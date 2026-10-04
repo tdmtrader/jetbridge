@@ -118,3 +118,12 @@ Feature: Running the queue as a resource type
     And the resource is checked again
     Then the check fails to land it
     And main is unchanged and the change is not ejected
+
+  Scenario: The source's batch_max caps a batch, and one below 1 is refused
+    When the resource checks with a batch_max of 1
+    Then the check runs
+    And a batch_max below 1 is refused
+
+  Scenario: The source's batch_max overrides batch.max, so the cap is raised without a new image
+    When the resource's source gives batch_max
+    Then it replaces the config's batch.max

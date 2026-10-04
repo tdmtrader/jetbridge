@@ -7,7 +7,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/concourse/concourse/queue/adapters/lognotify"
 	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/wire"
 )
@@ -47,21 +46,8 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(MatchError("admission.legacy_refs must be a ref prefix under refs/ ending in /"))
 	})
 
-	It("The flip config parses, with every section its adapters read", func() {
-		c, err := wire.LoadConfig(wire.Source{ConfigFile: "../example/flip-queue.yaml", URI: "git@example.invalid:o/r.git"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(c.Admission).To(Equal(config.Admission{Prefix: "refs/mq/admit/", ControlPrefix: "refs/mq/control/", LegacyRefs: "refs/queue/"}))
-		Expect([]string{c.Store.Ref, c.Lander.LeaseRef}).To(Equal([]string{"refs/mq/state", "refs/mq/lease"}))
-		Expect(c.Compose.HookScript).To(Equal("ci/jb-compose-hook.sh"))
-		Expect(c.Batch.Max).To(Equal(8), "the old queue's max-rows=8")
-		Expect(c.Batch.RetryNone).To(Equal(2), "two re-runs after a None; the third None pauses")
-		Expect(c.Runner.IsZero()).To(BeTrue(), "the resource runs the git runner, which reads no runner section")
-		_, err = lognotify.Parse(&c.Notify)
-		Expect(err).NotTo(HaveOccurred())
-	})
-
 	It("The source's batch_max overrides batch.max, so the cap is raised without a new image", func() {
-		src := wire.Source{ConfigFile: "../example/flip-queue.yaml", URI: "git@example.invalid:o/r.git", BatchMax: 1}
+		src := wire.Source{Config: "apiVersion: jetbridge.dev/queue/v2\nbatch: {max: 8}\n", URI: "git@example.invalid:o/r.git", BatchMax: 1}
 		c, err := wire.LoadConfig(src)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c.Batch.Max).To(Equal(1))

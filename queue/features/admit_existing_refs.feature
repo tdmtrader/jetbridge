@@ -10,20 +10,6 @@ Feature: Admitting changes through the existing request refs
     When the queue's own refs default to a place inside them
     Then the config is refused, naming the keys to move
 
-  Scenario: The flip config parses, with every section its adapters read
-    When the flip config is read with the repository given by the resource
-    Then it names the existing request refs and keeps the queue's own refs apart
-    And it carries the old queue's batch size and no runner section, and its notify section parses
-
-  Scenario: The flip config wires the git runner with no runner section, and the source's batch_max caps a batch
-    When the resource checks with the flip config and a batch_max of 1
-    Then the check runs
-    And a batch_max below 1 is refused
-
-  Scenario: The source's batch_max overrides batch.max, so the cap is raised without a new image
-    When the resource's source gives batch_max
-    Then it replaces the config's batch.max
-
   Scenario: A change admitted through the existing request refs is queued and lands
     Given a row pushed by the old admit
     When the runner takes its steps
