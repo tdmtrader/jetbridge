@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,4 +68,56 @@ func keepOurs(git func(...string) (string, error), unmerged, keep []string) erro
 	}
 	_, _ = git("cherry-pick", "--quit")
 	return nil
+}
+
+// HookedRef is where the test job publishes the hook's commit on candidate.
+func HookedRef(candidate string) string { return "refs/mq/hooked/" + candidate }
+
+// hooked is the commit that lands for candidate. With the hook script on main
+// it is the one at HookedRef: exactly one commit on candidate, changing only
+// files main's script owns. Missing or otherwise, nothing lands: a land error,
+// never an eject. Without the script on main it is candidate.
+func (l *Lander) hooked(ctx context.Context, mainOID, candidate string) (string, error) {
+	if l.hookScript == "" {
+		return candidate, nil
+	}
+	git := func(args ...string) (string, error) { return l.git(ctx, args...) }
+	owned, found, err := ownedOn(ctx, git, mainOID, l.hookScript, l.hookTimeout)
+	if err != nil || !found {
+		return candidate, err
+	}
+	ref := HookedRef(candidate)
+	out, err := git("ls-remote", l.remote, ref)
+	if err != nil {
+		return "", err
+	}
+	h := ""
+	for line := range strings.SplitSeq(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == ref && fullSHA.MatchString(f[0]) {
+			h = f[0]
+		}
+	}
+	if h == "" {
+		return "", fmt.Errorf("candidate %s has no hooked commit at %s: main's hook must run before it lands", candidate, ref)
+	}
+	if _, err := git("fetch", "-q", "--no-tags", l.remote, h); err != nil {
+		return "", err
+	}
+	if parents, err := git("rev-list", "--parents", "-n", "1", h); err != nil || parents != h+" "+candidate {
+		return "", errors.Join(err, fmt.Errorf("the hooked commit %s is not one commit on the candidate %s", h, candidate))
+	}
+	changed, err := git("diff-tree", "-r", "-z", "--name-only", "--no-renames", candidate, h)
+	if err != nil {
+		return "", err
+	}
+	outside := 0
+	for _, p := range strings.Split(changed, "\x00") {
+		if p != "" && !slices.Contains(owned, p) {
+			outside++
+		}
+	}
+	if outside > 0 {
+		return "", fmt.Errorf("the hooked commit %s changes %d file(s) the hook does not own", h, outside)
+	}
+	return h, nil
 }

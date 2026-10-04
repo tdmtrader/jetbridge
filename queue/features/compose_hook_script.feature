@@ -27,3 +27,28 @@ Feature: A hook script on main regenerates files before a land
     Given a queue config file whose hook script is absolute or climbs out, or comes with a hook command or owned paths
     When the config file is loaded
     Then loading is refused
+
+  Scenario: A land refreshes the generated boundaries before it reaches main
+    Given main has a hook script, and the test job published the hook's commit on the candidate
+    When the candidate passes and lands
+    Then main is the hook's commit, holding the regenerated file
+
+  Scenario: A candidate whose hook has not run does not land while main has a hook script
+    Given main has a hook script and the candidate has no hooked commit
+    When the candidate passes and lands
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: A hooked commit that is not one commit on the candidate does not land
+    Given the hooked commit of the candidate is made on main instead
+    When the candidate passes and lands
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: A hooked commit that changes a file the hook does not own does not land
+    Given the hooked commit of the candidate writes a file the hook does not own
+    When the candidate passes and lands
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: With no hook script on main the candidate lands as it is
+    Given the config names a hook script that main does not have
+    When the candidate passes and lands
+    Then main is the candidate

@@ -35,6 +35,8 @@ var staleMain = regexp.MustCompile(`\((stale info|non-fast-forward|fetch first|c
 type Lander struct {
 	remote, leaseRef, dir, emptyTree string
 	beforePush                       func()
+	hookScript                       string // see hooked
+	hookTimeout                      time.Duration
 }
 
 // New takes a config.Parse-checked config; its private repo goes in lander.scratch or os.TempDir.
@@ -47,7 +49,7 @@ func New(c config.Config) (*Lander, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Lander{remote: c.Repository.URI, leaseRef: c.Lander.LeaseRef, dir: dir, beforePush: func() {}}
+	l := &Lander{remote: c.Repository.URI, leaseRef: c.Lander.LeaseRef, dir: dir, beforePush: func() {}, hookScript: c.Compose.HookScript, hookTimeout: c.Compose.HookTimeout}
 	if _, err = l.git(context.Background(), "init", "-q", "--bare"); err == nil {
 		l.emptyTree, err = l.git(context.Background(), "mktree")
 	}
@@ -76,7 +78,11 @@ func (l *Lander) Land(ctx context.Context, main, candidate string, fence uint64)
 	} else if !ok {
 		return &core.MainMovedError{Main: mainRef, Candidate: candidate, Head: mainOID}
 	}
-	if err = l.push(ctx, fence, leaseOID, mainRef, mainOID, candidate+":"+mainRef); err == nil {
+	target, err := l.hooked(ctx, mainOID, candidate)
+	if err != nil {
+		return err
+	}
+	if err = l.push(ctx, fence, leaseOID, mainRef, mainOID, target+":"+mainRef); err == nil {
 		return nil
 	}
 	if !staleMain.MatchString(err.Error()) { // any other refusal, auth for one, is a land error
