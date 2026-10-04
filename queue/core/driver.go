@@ -38,6 +38,7 @@ type Driver struct {
 	Resumes     Resumes          // checked at the start of each Step; nil means none
 	Promotes    Promotes         // checked at the start of each Step; nil means none
 	Cooldown    time.Duration    // how long a no-verdict pause lasts before it ends by itself; 0 means never
+	Lifecycle   Lifecycle        // withdraw requests, acted on after the drain; nil means none
 	Now         func() time.Time // the clock for every timestamp; nil means time.Now
 
 	lease  Lease
@@ -248,6 +249,9 @@ func (d *Driver) Step(ctx context.Context) error {
 		return err
 	}
 	if err := d.drain(ctx); err != nil {
+		return err
+	}
+	if err := d.lifecycleRequested(ctx); err != nil {
 		return err
 	}
 	if h, ok := d.Lander.(Heads); ok && len(d.s.InFlight)+len(d.s.Queued) > 0 { // an idle queue reads nothing
