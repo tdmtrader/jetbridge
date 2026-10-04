@@ -20,16 +20,8 @@ func urgentFirst(kept []Entry, ancestors map[string][]string) []Entry {
 	if len(front) == 0 {
 		return kept
 	}
-	out := slices.Clone(kept)
-	slices.SortStableFunc(out, func(x, y Entry) int { return b2i(!front[x.ID]) - b2i(!front[y.ID]) })
-	return out
-}
-
-func b2i(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
+	out := slices.DeleteFunc(slices.Clone(kept), func(e Entry) bool { return !front[e.ID] })
+	return append(out, slices.DeleteFunc(slices.Clone(kept), func(e Entry) bool { return front[e.ID] })...)
 }
 
 // Promote marks a queued entry urgent; anything not queued is refused.

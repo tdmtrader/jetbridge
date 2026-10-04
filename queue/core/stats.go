@@ -62,7 +62,7 @@ func Stats(s Snapshot, now time.Time, window time.Duration) Summary {
 				l = landing{r.At, r.AdmittedAt}
 			}
 			landings[k] = l
-		case r.Kind == "flaky":
+		case r.Kind == FlakeEvent:
 			out.Flakes++
 		case r.Kind == RefusedEvent:
 			out.Ejected.Refused++

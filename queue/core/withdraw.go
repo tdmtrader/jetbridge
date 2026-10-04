@@ -148,6 +148,5 @@ func (d *Driver) lifecycleRequested(ctx context.Context) error {
 func ignored(err error) bool {
 	var deps *DependentsError
 	var stale *StaleRequestError
-	var div *DivergentError
-	return refusal(err) || errors.As(err, &deps) || errors.As(err, &stale) || errors.As(err, &div)
+	return refusal(err) || errors.As(err, &deps) || errors.As(err, &stale)
 }

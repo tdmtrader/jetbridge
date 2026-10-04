@@ -167,8 +167,7 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 	}
 	if s.bisect != nil {
 		for _, o := range s.bisect.TakeOrphans() {
-			why := fmt.Sprintf("builds on %q, which was ejected", o.Parent)
-			out.Settle = append(out.Settle, Settle{Entries: []Entry{o.Entry}, Decision: Eject, Why: why, Cause: ParentEjected, Parent: o.Parent})
+			out.Settle = append(out.Settle, orphaned(o.Entry, o.Parent))
 		}
 		if s.bisect.Next() != nil {
 			return out, nil
@@ -219,10 +218,14 @@ func Orphans(v View) []Settle {
 	b, out := FormBatch(all, v.BuildsOn, landed), []Settle(nil)
 	for _, e := range v.Queued {
 		if i := slices.IndexFunc(b.Ancestors(e.ID), func(a string) bool { return v.Ejected[a] }); i >= 0 {
-			p := b.Ancestors(e.ID)[i]
-			why := fmt.Sprintf("builds on %q, which was ejected", p)
-			out = append(out, Settle{Entries: []Entry{e}, Decision: Eject, Why: why, Cause: ParentEjected, Parent: p})
+			out = append(out, orphaned(e, b.Ancestors(e.ID)[i]))
 		}
 	}
 	return out
+}
+
+// orphaned ejects e, unrun, because parent, which it builds on, was ejected.
+func orphaned(e Entry, parent string) Settle {
+	why := fmt.Sprintf("builds on %q, which was ejected", parent)
+	return Settle{Entries: []Entry{e}, Decision: Eject, Why: why, Cause: ParentEjected, Parent: parent}
 }
