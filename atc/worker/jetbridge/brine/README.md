@@ -54,8 +54,9 @@ both `.brine` and `live/.brine` together.
 
 The artifact-handoff hostPath/hostPort fixture needs explicit additional
 approval and is not part of an ordinary live run:
-`BRINE_ALLOW_HOSTPATH_TESTS=1`, `BRINE_ALLOW_HOSTPORT_TESTS=1`,
-`BRINE_LIVE_ARTIFACT_NODE`, `BRINE_LIVE_ARTIFACT_DAEMON_PORT` (an unused port
+`BRINE_ALLOW_HOSTPATH_TESTS=1`, `BRINE_ALLOW_HOSTPORT_TESTS=1`, at least
+one node labelled `brine.dev/live-artifacts=approved` (or one named in
+`BRINE_LIVE_ARTIFACT_NODE`), `BRINE_LIVE_ARTIFACT_DAEMON_PORT` (an unused port
 in 49152–60999), and `BRINE_LIVE_ARTIFACT_DAEMON_BINARY` (an absolute path to
 a current, stripped, static Linux `artifact-daemon` build — see
 `features/live/artifact-handoff.feature` for the exact build command). CI

@@ -21,7 +21,9 @@ if [ "${BRINE_ALLOW_HOSTPATH_TESTS:-}" != 1 ] || [ "${BRINE_ALLOW_HOSTPORT_TESTS
     echo "Full coverage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 and BRINE_ALLOW_HOSTPORT_TESTS=1 approval" >&2
     exit 1
 fi
-: "${BRINE_LIVE_ARTIFACT_NODE:?Set the explicitly approved artifact node}"
+# The artifact node is approved by its label (brine.dev/live-artifacts=approved)
+# or named in BRINE_LIVE_ARTIFACT_NODE; the fixture refuses if neither yields a
+# Ready node, so there is nothing to check here.
 : "${BRINE_LIVE_ARTIFACT_DAEMON_PORT:?Set the approved unused high TCP port}"
 : "${BRINE_LIVE_ARTIFACT_DAEMON_BINARY:?Build and name the current static Linux artifact daemon}"
 case "$BRINE_LIVE_ARTIFACT_DAEMON_BINARY" in

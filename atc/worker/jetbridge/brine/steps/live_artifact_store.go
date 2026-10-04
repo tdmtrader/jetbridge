@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 // A hostPath rooted in this scenario's own kubelet-managed emptyDir. Removing
@@ -60,21 +62,11 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 		return nil, err
 	}
 
-	nodeName := os.Getenv("BRINE_LIVE_ARTIFACT_NODE")
-	if nodeName == "" {
-		return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_NODE must name the approved node")
-	}
-	node, err := cluster.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	node, err := approvedArtifactNode(ctx, cluster.Clientset)
 	if err != nil {
-		return nil, fmt.Errorf("the approved artifact node %q: %w", nodeName, err)
+		return nil, err
 	}
-	// The owned root exists on this node alone, and a production pod's
-	// DirectoryOrCreate on any other node would make an unowned one there.
-	// The cluster may have other nodes: every production pod over this store
-	// takes runtimeConfig, which REQUIRES this node.
-	if node.Spec.Unschedulable || node.Labels["concourse.dev/artifact-cache"] != "ready" {
-		return nil, fmt.Errorf("handoff requires the approved node %q schedulable with existing artifact-cache=ready", nodeName)
-	}
+	nodeName := node.Name
 	anchor := s.pod("artifact-store-owner", nodeName, nil, nil)
 	size := resource.MustParse("16Mi")
 	anchor.Spec.Volumes = []corev1.Volume{{Name: "artifacts", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &size}}}}
@@ -127,6 +119,65 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	}
 	fmt.Printf("verified owned live artifact storage %s on node %s; anchor UID %s observer UID %s\n", s.root, s.anchor.Spec.NodeName, s.anchor.UID, s.observer.UID)
 	return s, nil
+}
+
+// liveArtifactApproval is the node label that approves a node to carry this
+// fixture's hostPath root and host port. Approval travels with the node, so
+// the fixture runs on any cluster where someone has labelled one.
+const liveArtifactApproval = "brine.dev/live-artifacts"
+
+// approvedArtifactNode picks the node the fixture lives on: the one
+// BRINE_LIVE_ARTIFACT_NODE names, when set, or else the first by name of the
+// nodes labelled liveArtifactApproval=approved that can take it now --
+// Ready, schedulable, with a ready production artifact cache. A labelled node
+// that is asleep or cordoned is passed over, not waited for.
+func approvedArtifactNode(ctx context.Context, cs kubernetes.Interface) (*corev1.Node, error) {
+	if name := os.Getenv("BRINE_LIVE_ARTIFACT_NODE"); name != "" {
+		node, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_NODE %q: %w", name, err)
+		}
+		if why := artifactNodeUnfit(node); why != "" {
+			return nil, fmt.Errorf("BRINE_LIVE_ARTIFACT_NODE %q %s", name, why)
+		}
+		return node, nil
+	}
+	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: liveArtifactApproval + "=approved"})
+	if err != nil {
+		return nil, err
+	}
+	if len(nodes.Items) == 0 {
+		return nil, fmt.Errorf("no node is approved for the live artifact fixture: label one %s=approved, or name it in BRINE_LIVE_ARTIFACT_NODE", liveArtifactApproval)
+	}
+	sort.Slice(nodes.Items, func(i, j int) bool { return nodes.Items[i].Name < nodes.Items[j].Name })
+	var unfit []string
+	for i := range nodes.Items {
+		if why := artifactNodeUnfit(&nodes.Items[i]); why != "" {
+			unfit = append(unfit, nodes.Items[i].Name+" "+why)
+			continue
+		}
+		return &nodes.Items[i], nil
+	}
+	return nil, fmt.Errorf("no approved node can take the live artifact fixture now: %s", strings.Join(unfit, "; "))
+}
+
+// artifactNodeUnfit says why a node cannot carry the fixture now, or "".
+func artifactNodeUnfit(node *corev1.Node) string {
+	if node.Spec.Unschedulable {
+		return "is cordoned"
+	}
+	if node.Labels["concourse.dev/artifact-cache"] != "ready" {
+		return "has no ready artifact cache"
+	}
+	for _, c := range node.Status.Conditions {
+		if c.Type == corev1.NodeReady {
+			if c.Status == corev1.ConditionTrue {
+				return ""
+			}
+			break
+		}
+	}
+	return "is not Ready"
 }
 
 // runtimeConfig is the jetbridge config every production pod over this store

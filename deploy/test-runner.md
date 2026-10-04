@@ -88,8 +88,14 @@ one chart value on the cluster it runs in:
 |---|---|---|
 | `brine-allow-hostpath-tests` | `BRINE_ALLOW_HOSTPATH_TESTS` | `1` to approve the artifact-handoff hostPath fixture on this cluster |
 | `brine-allow-hostport-tests` | `BRINE_ALLOW_HOSTPORT_TESTS` | `1` to approve that fixture's hostPort daemon |
-| `brine-artifact-node` | `BRINE_LIVE_ARTIFACT_NODE` | the one node approved to carry the fixture's hostPath |
-| `brine-artifact-daemon-port` | `BRINE_LIVE_ARTIFACT_DAEMON_PORT` | an unused TCP port in 49152–60999 on that node |
+| `brine-artifact-daemon-port` | `BRINE_LIVE_ARTIFACT_DAEMON_PORT` | an unused TCP port in 49152–60999 on the approved nodes |
+
+The nodes that may carry the fixture's hostPath and host port are approved by
+a label, not a variable: `kubectl label node <name> brine.dev/live-artifacts=approved`.
+The fixture takes the first such node (by name) that is Ready, schedulable and
+has a ready artifact cache, so a cluster needs at least one labelled node and
+any of them may be asleep. `BRINE_LIVE_ARTIFACT_NODE` still names one node
+outright, for a local run that wants a specific node.
 
 The live tier runs under the task pod's ServiceAccount and creates its own
 namespaces, so the chart must be deployed with `rbac.brineLive=true`

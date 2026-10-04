@@ -366,11 +366,12 @@ jobs:
         # Explicitly authorize the bounded live tier on the task cluster.
         # Its service account must be allowed to create/delete test namespaces.
         BRINE_KUBE_CONTEXT: in-cluster
-        # Set these only for the explicitly approved test node and port.
-        # Missing approval is a hard failure, never a local-only fallback.
+        # Set these only for the explicitly approved test port. The node is
+        # approved by its label (brine.dev/live-artifacts=approved), so the
+        # fixture follows whichever approved node is up. Missing approval is
+        # a hard failure, never a local-only fallback.
         BRINE_ALLOW_HOSTPATH_TESTS: ((brine-allow-hostpath-tests))
         BRINE_ALLOW_HOSTPORT_TESTS: ((brine-allow-hostport-tests))
-        BRINE_LIVE_ARTIFACT_NODE: ((brine-artifact-node))
         BRINE_LIVE_ARTIFACT_DAEMON_PORT: ((brine-artifact-daemon-port))
       run:
         path: sh
