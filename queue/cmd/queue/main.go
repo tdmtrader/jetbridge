@@ -28,6 +28,15 @@ import (
 
 const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|health|list|ejected|explain|drain --config <file>|--source <file> [--every 5s] [--window 1h] [--once] [--owner name] [--json] [id sha]"
 
+// exitCodes is printed by --help.
+const exitCodes = `exit codes:
+  health: 0 healthy, 3 unhealthy (the reason on stdout),
+          any other non-zero: the state could not be read, unknown, nothing on stdout
+  drain:  0 the lines printed whole, any other non-zero: nothing on stdout
+  admit:  2 refused, an unsafe id
+  else:   0 done, 1 failed
+health and drain read --config, or else the resource's source JSON from --source or stdin.`
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := entry(ctx, os.Args[1:], os.Stdout, os.Stderr)
@@ -46,7 +55,7 @@ func entry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return run(ctx, args, out, errw)
 }
 
-// run returns the exit code: 0 done, 2 admission refused (an unsafe id), 3 health: unhealthy, 1 anything else.
+// run returns the exit code: 0 done, 2 admission refused (an unsafe id), 3 health: unhealthy, 1 anything else (see exitCodes).
 func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fail := func(err error) int { fmt.Fprintln(errw, "queue:", core.Redact(err.Error())); return 1 }
 	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "withdraw", "resolve", "resume", "promote", "status", "stats", "view", "health", "list", "ejected", "explain", "drain"}, args[0]) {
@@ -63,13 +72,16 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errw)
 	file := fs.String("config", "", "the queue's config file")
-	srcFile := fs.String("source", "", "drain: the queue resource's source JSON, instead of --config; default stdin")
+	srcFile := fs.String("source", "", "health, drain: the queue resource's source JSON, instead of --config; default stdin")
 	every := fs.Duration("every", 5*time.Second, "run: time between steps")
 	once := fs.Bool("once", false, "run: take one step and exit")
 	owner := fs.String("owner", "", "run: the lease owner, fixed so a new process renews its lease; default unique per process")
 	asJSON := fs.Bool("json", false, "list, ejected, explain: print JSON")
 	window := fs.Duration("window", time.Hour, "stats: the span to count over")
-	if err := fs.Parse(args[1:]); err != nil {
+	fs.Usage = func() { fmt.Fprintln(errw, usage); fs.PrintDefaults(); fmt.Fprintln(errw, exitCodes) }
+	if err := fs.Parse(args[1:]); errors.Is(err, flag.ErrHelp) {
+		return 0
+	} else if err != nil {
 		return 1
 	}
 	if args[0] == "run" && *every <= 0 {
@@ -115,7 +127,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 			defer l.Close()
 			return l.Head(ctx, c.Repository.Main)
 		}
-		return health(c, git.NewStore(c).Load, head, time.Now(), out)
+		return health(c, git.NewStore(c).Load, head, time.Now(), out, errw)
 	}
 	if args[0] == "admit" {
 		if fs.NArg() != 2 {

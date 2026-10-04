@@ -53,13 +53,13 @@ func drainLines(s core.Snapshot, l core.Lease, now time.Time, out io.Writer) {
 	fmt.Fprintln(out, "LEASE "+holder)
 }
 
-// loadConfig reads --config, or for drain without it the queue resource's
+// loadConfig reads --config, or for health and drain without it the queue resource's
 // source JSON ({"source": {...}}) from --source or stdin, as the resource does.
 func loadConfig(verb, file, srcFile string) (config.Config, func(), error) {
 	none := func() {}
-	if verb != "drain" || file != "" {
+	if verb != "drain" && verb != "health" || file != "" {
 		if srcFile != "" {
-			return config.Config{}, none, errors.New("--source is for drain without --config")
+			return config.Config{}, none, errors.New("--source is for health or drain without --config")
 		}
 		data, err := os.ReadFile(file)
 		if err != nil {
