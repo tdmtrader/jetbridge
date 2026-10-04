@@ -54,6 +54,10 @@ type Strategy interface {
 	Record(v View, run string, verdict Verdict) (Outcome, error)
 }
 
+// Adaptive sizes Serial's batches: from Start, halved (floor Min) after a red
+// batch, doubled (cap Max) after GrowAfter green batches in a row.
+type Adaptive struct{ Start, Min, GrowAfter int }
+
 // Serial runs one batch at a time on current main: the first Max entries of
 // the batch FormBatch forms from the whole queue, so a deferred entry never
 // holds back the entries behind it. A red batch is bisected; no verdict retries
@@ -63,12 +67,16 @@ type Serial struct {
 	Policy Policy
 	Flakes [][]Entry // red batches whose halves all passed
 	Paused bool
+	// Adaptive, if set, sizes batches instead of Max; its state is only here, so a rebuilt Serial restarts at Start.
+	Adaptive *Adaptive
 
 	runs    int
 	run     *Run
 	batch   Batch
 	retries int
 	bisect  *Bisect
+	size    int // adaptive: the current batch size, 0 until the first batch
+	streak  int // adaptive: green landed batches in a row
 }
 
 // Plan starts the next run if nothing is in flight and a slot is free.
@@ -81,7 +89,7 @@ func (s *Serial) Plan(v View) ([]Run, []Settle) {
 	}
 	if s.bisect == nil && s.batch.entries == nil {
 		s.batch = FormBatch(v.Queued, v.BuildsOn, v.Landed) // a prefix keeps its ancestors
-		s.batch.entries = s.batch.entries[:min(s.Max, len(s.batch.entries))]
+		s.batch.entries = s.batch.entries[:min(s.limit(), len(s.batch.entries))]
 	}
 	entries := s.batch.entries
 	if s.bisect != nil {
@@ -154,8 +162,32 @@ func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
 		s.Flakes = append(s.Flakes, s.bisect.Flakes...)
 		out.Flakes = s.bisect.Flakes
 	}
+	s.adapt(s.bisect != nil || d == Eject)
 	s.batch, s.retries, s.bisect = Batch{}, 0, nil
 	return out, nil
+}
+
+func (s *Serial) limit() int {
+	if a := s.Adaptive; a != nil {
+		if s.size == 0 {
+			s.size = a.Start
+		}
+		return min(s.size, s.Max)
+	}
+	return s.Max
+}
+
+func (s *Serial) adapt(red bool) {
+	a := s.Adaptive
+	if a == nil {
+		return
+	}
+	if s.streak++; red {
+		s.size, s.streak = max(a.Min, s.size/2), 0
+	} else if s.streak >= a.GrowAfter {
+		// double, saturating at Max: size+min(size, Max-size) never overflows
+		s.size, s.streak = s.size+min(s.size, s.Max-s.size), 0
+	}
 }
 
 // Orphans ejects each queued entry with an ejected ancestor, naming it as

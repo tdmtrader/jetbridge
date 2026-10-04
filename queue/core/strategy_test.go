@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"slices"
 	"strings"
@@ -319,3 +320,107 @@ func ancestry(id string, buildsOn map[string][]string) []string {
 	}
 	return seen
 }
+
+// batchSizes plans n entries named by letter (broken ones fail), runs each
+// batch to the end of its bisect, and returns the size of each batch's first run.
+func batchSizes(s *core.Serial, n int, broken ...string) []int {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = string(rune('a' + i))
+	}
+	v := core.View{Queued: ents(names...), Landed: map[string]bool{}, Ejected: map[string]bool{}, Slots: 1}
+	sizes, open := []int{}, map[string]bool{}
+	for step := 0; step < 1000; step++ {
+		runs, _ := s.Plan(v)
+		if len(runs) == 0 {
+			return sizes
+		}
+		if len(open) == 0 {
+			sizes = append(sizes, len(runs[0].Entries))
+			for _, e := range runs[0].Entries {
+				open[e.ID] = true
+			}
+		}
+		out, err := s.Record(v, runs[0].ID, failsWith(broken...)(ids(runs[0].Entries)))
+		Expect(err).NotTo(HaveOccurred())
+		for _, st := range out.Settle {
+			for _, e := range st.Entries {
+				delete(open, e.ID)
+				v.Queued = slices.DeleteFunc(slices.Clone(v.Queued), func(q core.Entry) bool { return q.ID == e.ID })
+			}
+		}
+	}
+	Fail("the strategy never stops")
+	return nil
+}
+
+var _ = Describe("Serial strategy adaptive batch size", func() {
+	pol := core.Policy{RetryNone: 1}
+	adaptive := func(max, start, min, growAfter int) *core.Serial {
+		return &core.Serial{Max: max, Policy: pol, Adaptive: &core.Adaptive{Start: start, Min: min, GrowAfter: growAfter}}
+	}
+
+	It("After a red batch the next batch is half the size", func() {
+		Expect(batchSizes(adaptive(8, 4, 2, 9), 8, "d")).To(Equal([]int{4, 2, 2}))
+	})
+
+	It("After greens the batch size grows back", func() {
+		Expect(batchSizes(adaptive(4, 1, 1, 2), 10)).To(Equal([]int{1, 1, 2, 2, 4}))
+	})
+
+	It("grows after a red too, streak counted from the red", func() {
+		Expect(batchSizes(adaptive(8, 4, 1, 2), 12, "a")).To(Equal([]int{4, 2, 2, 4}))
+	})
+
+	It("never halves below the floor", func() {
+		Expect(batchSizes(adaptive(8, 4, 2, 9), 12, "a", "e", "g")).To(Equal([]int{4, 2, 2, 2, 2}))
+	})
+
+	It("never grows past the cap", func() {
+		Expect(batchSizes(adaptive(4, 2, 1, 1), 16)).To(Equal([]int{2, 4, 4, 4, 2}))
+	})
+
+	It("leaves the size unchanged when no verdict arrives", func() {
+		s := adaptive(8, 4, 1, 3)
+		v := core.View{Queued: ents("a", "b", "c", "d", "e", "f", "g", "h"), Landed: map[string]bool{}, Ejected: map[string]bool{}, Slots: 1}
+		runs, _ := s.Plan(v)
+		Expect(runs[0].Entries).To(HaveLen(4))
+		out, err := s.Record(v, runs[0].ID, core.None) // retried, not a red
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Settle).To(BeEmpty())
+		runs, _ = s.Plan(v)
+		_, err = s.Record(v, runs[0].ID, core.Pass)
+		Expect(err).NotTo(HaveOccurred())
+		v.Queued = v.Queued[4:]
+		runs, _ = s.Plan(v)
+		Expect(runs[0].Entries).To(HaveLen(4))
+	})
+
+	It("is off by default: the size stays at max", func() {
+		Expect(batchSizes(&core.Serial{Max: 4, Policy: pol}, 12, "a")).To(Equal([]int{4, 4, 4}))
+	})
+
+	It("starts again at the start size on a rebuilt strategy", func() {
+		Expect(batchSizes(adaptive(8, 4, 1, 9), 8, "a")).To(Equal([]int{4, 2, 2}))
+		Expect(batchSizes(adaptive(8, 4, 1, 9), 4)).To(Equal([]int{4}))
+	})
+	It("saturates doubling at max instead of overflowing", func() {
+		s := adaptive(math.MaxInt64, math.MaxInt64/2+1, 1, 1)
+		v := core.View{Queued: ents("a"), Landed: map[string]bool{}, Ejected: map[string]bool{}, Slots: 1}
+		runs, _ := s.Plan(v)
+		_, err := s.Record(v, runs[0].ID, core.Pass)
+		Expect(err).NotTo(HaveOccurred())
+		v.Queued = ents("b", "c")
+		runs, _ = s.Plan(v)
+		Expect(runs).To(HaveLen(1))
+		Expect(ids(runs[0].Entries)).To(Equal([]string{"b", "c"}))
+	})
+
+	// Guard, green on the old code: a small size splits a stack at the
+	// boundary; the child waits for the landed parent, never runs without it.
+	It("plans a stack's parent alone, then the child on the landed parent", func() {
+		runs, settled := drive(adaptive(4, 1, 1, 9), ents("parent", "child"), map[string][]string{"child": {"parent"}}, failsWith())
+		Expect(runs).To(Equal([][]string{{"parent"}, {"child"}}))
+		Expect(decisions(settled)).To(Equal(map[string]core.Decision{"parent": core.Land, "child": core.Land}))
+	})
+})
