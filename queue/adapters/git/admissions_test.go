@@ -122,8 +122,56 @@ var _ = Describe("Admissions", func() {
 	It("deletes an admit ref only at the sha it was seen at", func() {
 		c1, c2 := r.commit("c1", r.base), r.commit("c2", r.base)
 		admit("a", c1)
+		pending()
 		Expect(adm.Done(ctx, "a", c2)).NotTo(Succeed())
-		Expect(run(r.bare, "rev-parse", prefix+"a")).To(Equal(c1))
+		Expect(run(r.bare, "for-each-ref", "--format=%(objectname)", prefix)).To(Equal(c1))
+		Expect(adm.Done(ctx, "a", c1)).To(Succeed())
+		Expect(run(r.bare, "for-each-ref", prefix)).To(BeEmpty())
+	})
+})
+
+var _ = Describe("Admission order and repeats", func() {
+	ctx := context.Background()
+	var (
+		r   *remote
+		adm *git.Admissions
+		c   config.Config
+	)
+	BeforeEach(func() {
+		r = newRemote()
+		c = r.config()
+		c.Admission.Prefix = prefix
+		adm = &git.Admissions{Lander: r.lander(), Prefix: prefix}
+	})
+
+	It("Two changes admitted in the same second keep their order", func() {
+		cb, ca := r.commit("b", r.base), r.commit("a", r.base)
+		Expect(git.Admit(ctx, c, r.work, "b", cb)).To(Succeed())
+		Expect(git.Admit(ctx, c, r.work, "a", ca)).To(Succeed())
+		ps, err := adm.Pending(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]string{ps[0].ID, ps[1].ID}).To(Equal([]string{"b", "a"}))
+		Expect(adm.Done(ctx, "b", cb)).To(Succeed())
+		Expect(adm.Done(ctx, "a", ca)).To(Succeed())
+		Expect(run(r.bare, "for-each-ref", prefix)).To(BeEmpty())
+	})
+
+	It("A change updated after its test is not ejected", func() {
+		c1, c2 := r.commit("c1", r.base), r.commit("c2", r.base)
+		Expect(git.Admit(ctx, c, r.work, "a", c1)).To(Succeed())
+		_, err := adm.Pending(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(git.Admit(ctx, c, r.work, "a", c2)).To(Succeed())
+		Expect(adm.Done(ctx, "a", c1)).To(Succeed())
+		Expect(run(r.bare, "for-each-ref", "--format=%(objectname)", prefix)).To(Equal(c2))
+	})
+
+	It("Settling an already settled change again changes nothing", func() {
+		c1 := r.commit("c1", r.base)
+		Expect(git.Admit(ctx, c, r.work, "a", c1)).To(Succeed())
+		_, err := adm.Pending(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(adm.Done(ctx, "a", c1)).To(Succeed())
 		Expect(adm.Done(ctx, "a", c1)).To(Succeed())
 		Expect(run(r.bare, "for-each-ref", prefix)).To(BeEmpty())
 	})

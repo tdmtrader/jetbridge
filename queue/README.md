@@ -135,7 +135,10 @@ cd queue && go build ./cmd/queue
    steps, `--once` for a single step).
 4. Admit a change from a clone that has the commit:
    `queue admit --config queue.yaml <id> <sha>`, or
-   `git push origin <sha>:refs/queue/admit/<id>`.
+   `git push origin <sha>:refs/queue/admit/<id>`. `queue admit` pushes to
+   `refs/queue/admit/<stamp>.<id>`, the stamp being the arrival time in nanoseconds,
+   never repeated: changes admitted in the same second keep their order. A ref
+   pushed by hand has no stamp and is ordered by id.
 5. Read state, all read-only (they load the state ref and never take the lease):
    - `queue status` prints JSON: `Queued`, `InFlight`, `Landed`, `Ejected`
      (each with `Why`, `Cause`, `At`), `Paused`, `Why`, the latest `Refused`
@@ -243,6 +246,9 @@ and merge keys are refused. Defaults are applied before your file is read.
   quote (not stopping at `/`), holds an `@`. The refusal names the key path,
   never the value. Git authenticates the way it does outside the queue:
   an ssh key, a credential helper or `GIT_ASKPASS` in the runner's environment.
+  Every git call gets its own ssh control directory (added to `GIT_SSH_COMMAND`,
+  `core.sshCommand` or plain `ssh`; a `GIT_SSH` program is left alone), removed
+  when the call ends, so calls running at once never share a connection.
   The runner's bearer token comes only from `runner.credential` and is sent in a
   header. A URL error from the runner names the setting or the request path and
   the cause, never the URL; a `runner.url` that does not parse is reported as such, with no detail.

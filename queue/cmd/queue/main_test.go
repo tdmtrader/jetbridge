@@ -152,7 +152,7 @@ var _ = Describe("queue command", func() {
 		Expect(errw).To(BeEmpty())
 		Expect(code).To(Equal(0))
 		Expect(out).To(Equal("admitted a; the runner will queue it\n"))
-		Expect(gitIn(remote, "rev-parse", "refs/queue/admit/a")).To(Equal(sha))
+		Expect(gitIn(remote, "for-each-ref", "--format=%(objectname)", "refs/queue/admit/*.a")).To(Equal(sha))
 		gitIn(remote, "update-ref", "refs/queue/admit/team/x", sha)
 		type status struct {
 			Queued  []struct{ ID, Commit string }

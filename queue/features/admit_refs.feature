@@ -44,3 +44,18 @@ Feature: Admitting changes by pushing them, drained by the runner
     When "a" and "b" are pushed for admission again
     And the runner takes its next step
     Then neither is queued and both pushed refs are deleted
+
+  Scenario: Two changes admitted in the same second keep their order
+    When change "b" and then change "a" are admitted in the same second
+    Then the runner sees "b" before "a"
+    And each pushed ref is deleted once its change is saved
+
+  Scenario: A change updated after its test is not ejected
+    Given change "a" was seen at one commit
+    When "a" is admitted again at another commit before the first ref is deleted
+    Then deleting the first ref leaves the new one in place
+
+  Scenario: Settling an already settled change again changes nothing
+    Given change "a" was seen and its pushed ref deleted
+    When the same deletion is asked for again
+    Then it succeeds and nothing changes

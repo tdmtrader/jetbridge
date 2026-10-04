@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/core"
@@ -22,6 +24,30 @@ var (
 type Admissions struct {
 	Lander *Lander
 	Prefix string
+	refs   map[string]string // "<id> <sha>" -> the ref it was read from
+}
+
+// stamp is the arrival clock of Admit: nanoseconds, never repeated or going back.
+var stamp struct {
+	sync.Mutex
+	last int64
+}
+
+func nextStamp() int64 {
+	stamp.Lock()
+	defer stamp.Unlock()
+	stamp.last = max(time.Now().UnixNano(), stamp.last+1)
+	return stamp.last
+}
+
+// splitRef reads <Prefix><19 digit stamp>.<id> as (stamp, id); a ref pushed by hand, <Prefix><id>, has stamp 0.
+func splitRef(name string) (int64, string) {
+	if n, id, ok := strings.Cut(name, "."); ok && len(n) == 19 {
+		if at, err := strconv.ParseInt(n, 10, 64); err == nil {
+			return at, id
+		}
+	}
+	return 0, name
 }
 
 // SafeID refuses an ID that is not one plain ref component of letters,
@@ -33,12 +59,13 @@ func SafeID(id string) error {
 	return nil
 }
 
-// Admit pushes sha (any commit-ish), from the repo at dir, to <admission.prefix><id> on repository.uri.
+// Admit pushes sha (any commit-ish), from the repo at dir, to <admission.prefix><stamp>.<id> on repository.uri;
+// the stamp keeps arrival order, however many changes are admitted in one second.
 func Admit(ctx context.Context, c config.Config, dir, id, sha string) error {
 	if err := SafeID(id); err != nil {
 		return err
 	}
-	_, err := (&Lander{dir: dir}).git(ctx, "push", "-q", "--end-of-options", c.Repository.URI, sha+":"+c.Admission.Prefix+id)
+	_, err := (&Lander{dir: dir}).git(ctx, "push", "-q", "--end-of-options", c.Repository.URI, sha+":"+fmt.Sprintf("%s%019d.%s", c.Admission.Prefix, nextStamp(), id))
 	return err
 }
 
@@ -47,13 +74,17 @@ func Admit(ctx context.Context, c config.Config, dir, id, sha string) error {
 func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.Pending, error) {
 	out, err := a.Lander.git(ctx, "ls-remote", a.Lander.remote, a.Prefix+"*")
 	var ps []core.Pending
+	at := map[string]int64{}
+	a.refs = map[string]string{}
 	fetch, pending := []string{"fetch", "-q", "--no-tags", a.Lander.remote}, map[string]bool{}
 	taken := map[string]bool{} // a pending change under a queued ID is refused, so no change builds on it
 	for _, e := range queued {
 		taken[e.ID] = true
 	}
 	for f := strings.Fields(out); len(f) >= 2; f = f[2:] {
-		if id, ok := strings.CutPrefix(f[1], a.Prefix); ok {
+		if name, ok := strings.CutPrefix(f[1], a.Prefix); ok {
+			stampAt, id := splitRef(name)
+			at[id], a.refs[id+" "+f[0]] = stampAt, f[1]
 			ps, fetch = append(ps, core.Pending{ID: id, Commit: f[0]}), append(fetch, f[0])
 			if !taken[id] {
 				queued, pending[id] = append(queued, core.Entry{ID: id, Commit: f[0]}), true
@@ -79,17 +110,29 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 			}
 		}
 	}
-	// By ID, but after every pending change it builds on: each of those builds on fewer.
+	// By arrival, but after every pending change it builds on: each of those builds on fewer.
 	depth := func(p core.Pending) int {
 		return len(slices.DeleteFunc(slices.Clone(p.BuildsOn), func(id string) bool { return !pending[id] }))
 	}
-	slices.SortFunc(ps, func(x, y core.Pending) int { return cmp.Or(depth(x)-depth(y), strings.Compare(x.ID, y.ID)) })
+	slices.SortFunc(ps, func(x, y core.Pending) int {
+		return cmp.Or(depth(x)-depth(y), cmp.Compare(at[x.ID], at[y.ID]), strings.Compare(x.ID, y.ID))
+	})
 	return ps, nil
 }
 
-// Done deletes the ref of id, only if it still points at sha.
+// Done deletes the ref of id, only if it still points at sha. A ref that is
+// already gone is a repeat, and nothing to do; one moved to another commit stays.
 func (a *Admissions) Done(ctx context.Context, id, sha string) error {
-	_, err := a.Lander.git(ctx, "push", "-q", "--force-with-lease="+a.Prefix+id+":"+sha, a.Lander.remote, ":"+a.Prefix+id)
+	ref, ok := a.refs[id+" "+sha]
+	if !ok {
+		return fmt.Errorf("no admit ref of %s was read at %.7s", id, sha)
+	}
+	_, err := a.Lander.git(ctx, "push", "-q", "--force-with-lease="+ref+":"+sha, a.Lander.remote, ":"+ref)
+	if err != nil {
+		if out, e := a.Lander.git(ctx, "ls-remote", a.Lander.remote, ref); e == nil && out == "" {
+			return nil
+		}
+	}
 	return err
 }
 

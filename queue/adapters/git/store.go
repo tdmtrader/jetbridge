@@ -131,12 +131,5 @@ func (s *Store) storeWrite(ctx context.Context, dir string, st storeState) (stri
 }
 
 func storeGit(ctx context.Context, dir, stdin string, args ...string) (string, error) {
-	cmd := gitCmd(ctx, append([]string{"-C", dir, "-c", "user.name=queue", "-c", "user.email=queue@localhost"}, args...)...)
-	var errb strings.Builder
-	cmd.Stdin, cmd.Stderr = strings.NewReader(stdin), &errb
-	out, err := cmd.Output()
-	if err != nil {
-		return "", gitFailed(args[0], err, errb.String())
-	}
-	return strings.TrimSpace(string(out)), nil
+	return runGit(ctx, stdin, []string{"-C", dir, "-c", "user.name=queue", "-c", "user.email=queue@localhost"}, args...)
 }

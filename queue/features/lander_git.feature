@@ -53,3 +53,9 @@ Feature: Landing with git
     Given a remote that refuses a push and names a URL with a password
     When a candidate is landed, or the state is saved
     Then the error shows the URL with the password hidden
+
+  Scenario: Two git calls at once do not share a connection
+    Given a remote reached over ssh
+    When two git calls run at once
+    Then each uses its own ssh control directory
+    And those directories are removed afterwards

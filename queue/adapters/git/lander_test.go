@@ -231,3 +231,41 @@ var _ = Describe("Git errors", func() {
 		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
 	})
 })
+
+var _ = Describe("ssh isolation", func() {
+	It("Two git calls at once do not share a connection", func() {
+		dir := GinkgoT().TempDir()
+		log := filepath.Join(dir, "log")
+		fake := filepath.Join(dir, "ssh.sh")
+		Expect(os.WriteFile(fake, []byte("#!/bin/sh\necho \"$@\" >> "+log+"\nexit 255\n"), 0o755)).To(Succeed())
+		GinkgoT().Setenv("GIT_SSH_COMMAND", fake)
+		GinkgoT().Setenv("GIT_SSH", "")
+		c := newRemote().config()
+		c.Repository.URI = "ssh://example.invalid/repo.git"
+		l, err := git.New(c)
+		Expect(err).NotTo(HaveOccurred())
+		defer l.Close()
+		done := make(chan struct{}, 2)
+		for range 2 {
+			go func() {
+				defer GinkgoRecover()
+				_, _ = git.Git(l, context.Background(), "ls-remote", c.Repository.URI)
+				done <- struct{}{}
+			}()
+		}
+		<-done
+		<-done
+		b, err := os.ReadFile(log)
+		Expect(err).NotTo(HaveOccurred())
+		dirs := map[string]bool{}
+		for _, f := range strings.Fields(string(b)) {
+			if p, ok := strings.CutPrefix(f, "ControlPath="); ok {
+				dirs[filepath.Dir(p)] = true
+			}
+		}
+		Expect(dirs).To(HaveLen(2))
+		for d := range dirs {
+			Expect(d).NotTo(BeADirectory())
+		}
+	})
+})

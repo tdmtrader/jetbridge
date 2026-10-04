@@ -151,16 +151,36 @@ func (l *Lander) holds(ctx context.Context, args ...string) (bool, error) {
 }
 
 func (l *Lander) git(ctx context.Context, args ...string) (string, error) {
-	cmd := gitCmd(ctx, append([]string{"-C", l.dir, "-c", "user.name=queue",
-		"-c", "user.email=queue@localhost"}, args...)...)
+	return runGit(ctx, "", []string{"-C", l.dir, "-c", "user.name=queue", "-c", "user.email=queue@localhost"}, args...)
+}
+
+// runGit runs one git child with its own ssh control directory, removed when
+// it ends, so concurrent calls never share a connection.
+func runGit(ctx context.Context, stdin string, global []string, args ...string) (string, error) {
+	dir, err := os.MkdirTemp("", "queue-ssh-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	cmd := gitCmd(ctx, append(global, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if os.Getenv("GIT_SSH") == "" || os.Getenv("GIT_SSH_COMMAND") != "" { // a GIT_SSH program is left alone
+		base := cmp.Or(os.Getenv("GIT_SSH_COMMAND"), sshConfigured(ctx), "ssh")
+		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+base+" -o ControlMaster=no -o ControlPath="+strings.ReplaceAll(dir, " ", "\\ ")+"/s")
+	}
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmd.Stdin, cmd.Stderr = strings.NewReader(stdin), &stderr
 	out, err := cmd.Output()
 	if err != nil {
 		return "", gitFailed(args[0], err, stderr.String())
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// sshConfigured is git's own core.sshCommand, kept as the base of the ssh command.
+func sshConfigured(ctx context.Context) string {
+	out, _ := gitCmd(ctx, "config", "--get", "core.sshCommand").Output()
+	return strings.TrimSpace(string(out))
 }
 
 // gitCmd is every git child: once ctx ends it is killed, and a grandchild
