@@ -20,7 +20,10 @@ names a cache with `DurableKey()` and says nothing about anything else. The
 node-local copy stays a cache with a TTL; the durable copy is what outlives the
 sweeper, the node, and the cluster.
 
-It is **off by default**. With `artifactDaemon.durable.store` unset the daemon
+It is **off by default**, and it is **not configurable from the Helm chart**:
+the chart passes the daemon no `--durable-*` flag, and its old values group is
+a removed key (ADR-0008). The tier is set with the daemon's own flags (see
+[Configuration](#configuration)). With `--durable-store` unset the daemon
 behaves exactly as it did before.
 
 ## Relationship to core Hangar
@@ -166,8 +169,8 @@ Objects are named `<class>/<identity>` — today only `resource-caches/rc-<sha>`
 The daemon walks the store on an interval, deleting objects in a configured
 class that are older than its retention period, and reporting what remains.
 
-Policy is `--durable-retention CLASS=DURATION`, repeatable, surfaced in the chart
-as `artifactDaemon.durable.retention`. **A class with no entry is kept forever**,
+Policy is `--durable-retention CLASS=DURATION`, repeatable. **A class with no
+entry is kept forever**,
 and an unset policy reclaims nothing at all. Silence has to mean keep, because
 the alternative is that a typo in a class name empties a bucket.
 
@@ -218,10 +221,9 @@ age.
   measurement shares it. The gauges therefore describe the store as the pass
   leaves it.
 
-`DurableClassResourceCache` (`atc/worker/jetbridge/resource_cache_key.go`) and
-the class documented in `deploy/chart/values.yaml` must agree, or a retention
-entry names a class nothing produces and is inert.
-`TestDocumentedPrefixMatchesTheCodesRetentionClass` holds them together.
+`DurableClassResourceCache` (`atc/worker/jetbridge/resource_cache_key.go`) is
+the class a `--durable-retention` entry must name; an entry naming any other
+class names a class nothing produces and is inert.
 
 ### The two key namespaces
 
@@ -330,7 +332,7 @@ mount, and the backend every test in the package runs against. Writes go through
 a temp file and a rename, so a crashed or over-limit upload never leaves a short
 file that a later `Get` would serve as whole.
 
-> A `hostPath` for `durable.path` is **not** durable — it is a second local
+> A `hostPath` for `--durable-path` is **not** durable — it is a second local
 > copy. Point it at shared storage, or use `gcs`/`s3`.
 >
 > A **GCS Fuse** mount is also not a safe target for the `filesystem` backend:
@@ -340,29 +342,32 @@ file that a later `Get` would serve as whole.
 
 ## Configuration
 
-```yaml
-artifactDaemon:
-  durable:
-    store: ""                    # "" | gcs | s3 | filesystem
-    bucket: ""                   # gcs, s3
-    prefix: ""                   # namespaces one bucket across clusters/consumers
-    endpoint: ""                 # set for MinIO; empty for GCP and AWS
-    region: "us-east-1"          # s3 only
-    path: ""                     # filesystem
-    timeout: "5m"
-    maxBytes: 5368709120         # 0 disables
-    existingSecret: ""           # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+The Helm chart does not configure this tier. Its `artifactDaemon.durable`
+values were removed (ADR-0008), and setting them fails the render. A
+deployment that wants the tier runs the daemon with its own flags:
+
+```
+--durable-store=""                     # "" | gcs | s3 | filesystem
+--durable-bucket=""                    # gcs, s3
+--durable-prefix=""                    # namespaces one bucket across clusters/consumers
+--durable-endpoint=""                  # set for MinIO; empty for GCP and AWS
+--durable-s3-region=us-east-1          # s3 only
+--durable-path=""                      # filesystem
+--durable-timeout=5m
+--durable-max-bytes=5368709120         # 0 disables
+--durable-maintenance-interval=15m
+--durable-retention=CLASS=DURATION     # repeatable
 ```
 
-Credentials arrive as environment from `existingSecret`, never as flags — a flag
-lands in the process table and in `kubectl describe pod`. On a managed cluster,
-leave `existingSecret` empty and use IRSA or Workload Identity; nothing then
-holds a long-lived key. With `store: gcs` on GKE it is not needed at all.
-The chart reserves `existingSecret` for S3-compatible credentials and rejects
-it with `store: gcs`, which always uses Application Default Credentials.
+Credentials arrive as environment (`AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` for s3), never as flags — a flag lands in the process
+table and in `kubectl describe pod`. On a managed cluster, use IRSA or Workload
+Identity instead; nothing then holds a long-lived key. `gcs` always uses
+Application Default Credentials and needs no credential at all on GKE.
 
-An incomplete config fails at `helm template`, not at runtime: a daemon that
-starts, reports healthy and quietly caches nothing is a much worse failure.
+An incomplete config fails at daemon startup, which exits rather than serving:
+a daemon that starts, reports healthy and quietly caches nothing is a much
+worse failure.
 
 ## Failure modes
 
@@ -445,19 +450,19 @@ serving only the JSON routes accepted every write and missed every read.
 round trip through a real `Server`'s tar writer, a `brokenStore` that fails
 every operation, a nil tier, and upload collapsing under concurrency.
 
-Mutation-verified: making a miss an error, dropping the chart's `int64`
-coercion, and removing the S3 retry cap each fail the suite.
+Mutation-verified: making a miss an error and removing the S3 retry cap each
+fail the suite.
 
 **Cannot be tested locally:** real S3/GCS credentials, IRSA and Workload
 Identity, and behaviour against a bucket under lifecycle policy.
 
 ## Rollout
 
-Resource caches use this tier independently of Hangar. Enabling core Hangar
-reuses native GCS connection values but does not change cache fail-open
-semantics; follow the daemon-first rollout in [the Hangar guide](hangar.md).
+Resource caches use this tier independently of Hangar. Hangar names its own
+store and shares no connection values with this tier; follow the daemon-first
+rollout in [the Hangar guide](hangar.md).
 
-**Kill switch:** set `store: ""` and roll. The daemon reverts to node-local plus
+**Kill switch:** drop `--durable-store` (or set it to `""`) and roll. The daemon reverts to node-local plus
 peers immediately; nothing else depends on the tier, and the objects in the
 bucket are inert.
 
