@@ -71,6 +71,7 @@ Jobs whose task config interpolates `((var))` need the value exported
 - `fly/integration` builds the fly binary and tests it against a mock ATC. The mock's `atcVersion` (`0.1.0`, in `fly/integration/suite_test.go`) is a self-contained fixture — it is deliberately *not* tied to `versions.go`, and does not need updating when the release version moves. The specs that care about version skew set `flyVersion` from it explicitly.
 - The three release version strings — the `VERSION` file, `JetBridgeVersion` in `versions.go`, and `appVersion` in `deploy/chart/Chart.yaml` — must agree. `TestVersionDeclarationsAgree` enforces it; nothing syncs them automatically.
 - `web/public/elm.js` is a gitignored build intermediate. The tracked, served bundle is `web/public/elm.min.js` (see `web/public/index.html`), and `web/handler.go` embeds the whole `public` directory. After changing any Elm source, run `yarn run build` or the bundle goes stale.
+- Helm chart: `deploy/chart/values.schema.json` is closed, so every new value needs an entry there. A rule that relates several values goes in `templates/_validate.tpl`. `deploy/chart/tests/shape_test.go` caps the chart with `maxValues`, `allowedSwitches` and the banned pass-through keys. Read `docs/adr/0008-the-chart-offers-choices-not-flags.md` before adding a value or raising a constant.
 
 ## Agent skills
 
