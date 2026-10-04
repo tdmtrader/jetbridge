@@ -15,6 +15,15 @@
 # bounded attempts still terminate.
 #
 # TestEveryPipelineTaskHasATimeout keeps new tasks from arriving without one.
+#
+# The Go-compiling tasks carry `container_requests: {cpu: 3000}` (millicores).
+# They average 3.5-5 busy cores and burst to 9 on a 12-core node, and one-off
+# `hack/ci-check.sh` runs of the same configs share that node. With no request
+# the scheduler admitted all of them at once and the node ran at load 60;
+# with one, the third concurrent heavy pod waits Pending for a slot (web's
+# --kubernetes-pod-scheduling-timeout) instead. Queued time counts against
+# `timeout:`. The request is a floor, not a cap: an idle node still lets a
+# task burst. Other tasks get web's --default-task-cpu-request.
 resources:
 - name: repo
   type: git
@@ -35,6 +44,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
+      container_requests: {cpu: 3000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -83,6 +93,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
+      container_requests: {cpu: 3000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -179,6 +190,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
+      container_requests: {cpu: 3000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -517,6 +529,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
+      container_requests: {cpu: 3000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
@@ -1027,6 +1040,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
+      container_requests: {cpu: 3000}  # millicores; see header
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
