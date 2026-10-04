@@ -54,6 +54,7 @@ var _ = Describe("Parse", func() {
 		Expect([]string{c.Store.Ref, c.Lander.LeaseRef}).To(Equal([]string{"refs/mq/state", "refs/mq/lease"}))
 		Expect(c.Compose.HookScript).To(Equal("ci/jb-compose-hook.sh"))
 		Expect(c.Batch.Max).To(Equal(8), "the old queue's max-rows=8")
+		Expect(c.Batch.RetryNone).To(Equal(2), "two re-runs after a None; the third None pauses")
 		Expect(c.Runner.IsZero()).To(BeTrue(), "the resource runs the git runner, which reads no runner section")
 		_, err = lognotify.Parse(&c.Notify)
 		Expect(err).NotTo(HaveOccurred())
