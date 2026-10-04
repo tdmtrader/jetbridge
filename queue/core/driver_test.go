@@ -851,7 +851,7 @@ var _ = Describe("Driver", func() {
 		Fail("no landing was attempted")
 	}
 
-	It("A landing refused because main moved is recomposed and never counts toward the pause", func() {
+	It("A landing refused because main moved is recomposed and never counts toward the alarm", func() {
 		land.moved = 5 // more than the 3 failures that pause
 		d := driver()
 		admit(d, "a")
