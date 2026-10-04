@@ -123,12 +123,10 @@ func TestDiskInitializationIsExplicitAndStopsTheOwnerDuringProvisioning(t *testi
 	}
 }
 
-func TestExplicitStrictInputStorageCannotSilentlyInheritTheCacheBucket(t *testing.T) {
+func TestStrictInputStorageRequiresItsOwnBucket(t *testing.T) {
 	message := renderHangarError(t,
 		"artifactDaemon.hangar.enabled=true",
-		"artifactDaemon.hangar.store=gcs",
-		"artifactDaemon.durable.store=gcs",
-		"artifactDaemon.durable.bucket=resource-cache")
+		"artifactDaemon.hangar.store=gcs")
 	if !strings.Contains(message, "hangar.bucket") {
 		t.Fatal(message)
 	}
@@ -142,42 +140,33 @@ func TestDiskRefusesSharedInputAndOutputNamespace(t *testing.T) {
 	}
 }
 
-func TestStrictInputPrefixIsIndependentOfResourceCacheStorage(t *testing.T) {
+func TestStrictInputStorageRendersItsOwnPrefix(t *testing.T) {
 	for _, profile := range []string{"disk", "gcs"} {
 		for _, prefix := range []string{"", "strict-trees"} {
-			for _, cachePrefix := range []string{"cache-v1", "cache-v2"} {
-				sets := append(append([]string{}, diskSets...),
-					"artifactDaemon.hangar.store="+profile,
-					"artifactDaemon.hangar.prefix="+prefix,
-					"artifactDaemon.durable.store=gcs",
-					"artifactDaemon.durable.bucket=resource-cache",
-					"artifactDaemon.durable.prefix="+cachePrefix)
-				out := renderOutput(t, sets...)
-				doc := objectNamed(t, out, "DaemonSet", "-artifact-daemon")
-				var daemon appsv1.DaemonSet
-				if err := yaml.UnmarshalStrict([]byte(doc.body), &daemon); err != nil {
-					t.Fatal(err)
-				}
-				found := false
-				for _, container := range daemon.Spec.Template.Spec.Containers {
-					for _, arg := range container.Command {
-						if !strings.HasPrefix(arg, "--hangar-prefix=") {
-							continue
-						}
-						found = true
-						if arg != "--hangar-prefix="+prefix {
-							t.Fatalf("%s storage follows cache prefix: %s", profile, arg)
-						}
+			sets := append(append([]string{}, diskSets...),
+				"artifactDaemon.hangar.store="+profile,
+				"artifactDaemon.hangar.prefix="+prefix)
+			out := renderOutput(t, sets...)
+			doc := objectNamed(t, out, "DaemonSet", "-artifact-daemon")
+			var daemon appsv1.DaemonSet
+			if err := yaml.UnmarshalStrict([]byte(doc.body), &daemon); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, container := range daemon.Spec.Template.Spec.Containers {
+				for _, arg := range container.Command {
+					if !strings.HasPrefix(arg, "--hangar-prefix=") {
+						continue
+					}
+					found = true
+					if arg != "--hangar-prefix="+prefix {
+						t.Fatalf("%s storage renders another prefix: %s", profile, arg)
 					}
 				}
-				if !found {
-					t.Fatal("explicit strict-input storage has no prefix flag")
-				}
+			}
+			if !found {
+				t.Fatal("explicit strict-input storage has no prefix flag")
 			}
 		}
-	}
-	out := render(t, "artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=legacy", "artifactDaemon.durable.prefix=legacy-prefix")
-	if strings.Contains(out, "--hangar-prefix=") || !strings.Contains(out, "--durable-prefix=legacy-prefix") {
-		t.Fatal("legacy prefix inheritance changed")
 	}
 }
