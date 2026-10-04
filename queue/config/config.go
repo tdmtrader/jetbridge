@@ -135,7 +135,11 @@ var known = map[string][]string{
 }
 
 // Parse reads one queue's config file, refusing unknown keys and values.
-func Parse(data []byte) (Config, error) {
+func Parse(data []byte) (Config, error) { return ParseWith(data, nil) }
+
+// ParseWith is Parse with set, if not nil, applied before validation, so a
+// caller may supply values the file leaves out.
+func ParseWith(data []byte, set func(*Config)) (Config, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return Config{}, errors.New("config is not valid YAML") // a yaml error may quote a value
@@ -152,6 +156,9 @@ func Parse(data []byte) (Config, error) {
 	c := Defaults()
 	if err := doc.Content[0].Decode(&c); err != nil {
 		return Config{}, errors.New("config: a value has the wrong type") // a yaml error may quote a value
+	}
+	if set != nil {
+		set(&c)
 	}
 	return c, c.validate()
 }

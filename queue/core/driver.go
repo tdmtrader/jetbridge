@@ -297,7 +297,7 @@ func (d *Driver) Step(ctx context.Context) error {
 }
 
 func (d *Driver) start(ctx context.Context, r Run) error {
-	f, base, err := Flight{Run: r, BaseSHA: d.main, Started: d.now().UTC()}, cmp.Or(d.main, d.Main), error(nil)
+	f, base, err := Flight{Run: r, BaseSHA: d.main, Started: d.now().UTC(), Fence: d.s.Fence}, cmp.Or(d.main, d.Main), error(nil)
 	if r.Base != "" {
 		b, ok := d.flight(r.Base)
 		if base, f.BaseSHA, f.Ahead = b.Candidate, b.Candidate, aheadOf(b); !ok {
@@ -339,6 +339,12 @@ func (d *Driver) keep(ctx context.Context, id string) error {
 // recomposed: its verdict is unused.
 func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 	d.notify(ctx, Event{Kind: VerdictIn, Entries: f.Run.Entries, Run: f.Run, Verdict: v})
+	if w, ok := d.Runner.(WaitCapper); ok && v == None && w.Expired(f.Run.ID) { // saved with the outcome below
+		d.settled(Event{Kind: WaitCapEvent, Entries: f.Run.Entries, Run: f.Run, Why: "no verdict inside the wait cap", At: d.now()})
+		if !f.Started.IsZero() {
+			d.s.Settled[len(d.s.Settled)-1].Waited = d.now().Sub(f.Started)
+		}
+	}
 	if _, heads := d.Lander.(Heads); (heads && f.BaseSHA == "") || (f.BaseSHA != "" && f.BaseSHA != d.main) { // "": composed while main could not be read
 		d.drop(f.Run.ID)
 		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", cmp.Or(f.BaseSHA, "unknown"), cmp.Or(d.main, "unknown")))
@@ -623,11 +629,11 @@ func (d *Driver) settled(ev Event) {
 		batch = append(batch, e.ID)
 	}
 	es := ev.Entries
-	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent { // one record naming all its entries
+	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent || ev.Kind == WaitCapEvent { // one record naming all its entries
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {
-		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base, ev.Failure})
+		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base, ev.Failure, 0})
 	}
 	d.s.Settled = d.s.Settled[max(0, len(d.s.Settled)-MaxSettled):]
 }

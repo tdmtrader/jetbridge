@@ -77,6 +77,16 @@ var _ = Describe("Stats", func() {
 		Expect(string(b)).To(ContainSubstring(`"landed_per_hour":0,"lands_per_hour":0,"median_walk_seconds":0,"p90_walk_seconds":0`))
 	})
 
+	It("Stats count the runs that gave no verdict inside the wait cap", func() {
+		capped := rec("a", core.WaitCapEvent, ago(10), ago(80), "")
+		capped.Waited = time.Hour
+		s := stats(capped, rec("b", core.WaitCapEvent, ago(90), ago(150), ""))
+		Expect(s.WaitCapExpired).To(Equal(1))
+		Expect(s.WaitCapSeconds).To(Equal(3600.0))
+		b, _ := json.Marshal(s)
+		Expect(string(b)).To(ContainSubstring(`"waitcap_expired":1,"waitcap_wait_seconds":3600`))
+	})
+
 	It("gives zeros for an empty snapshot", func() {
 		Expect(core.Stats(core.Snapshot{}, now, time.Hour)).To(Equal(core.Summary{}))
 	})
