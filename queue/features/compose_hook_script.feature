@@ -52,3 +52,23 @@ Feature: A hook script on main regenerates files before a land
     Given the config names a hook script that main does not have
     When the candidate passes and lands
     Then main is the candidate
+
+  Scenario: The test job's hook step publishes the regenerated files as one commit on the candidate, and that commit lands
+    Given main has a hook script that regenerates a file from the tree and a read-only input
+    When the test job's hook step runs on the candidate and its commit is published
+    Then the hook was asked which files it owns before it ran, and main becomes that commit
+
+  Scenario: A hook that refuses, or changes a file it does not own, fails the test job's hook step
+    Given main has a hook script that exits with status 3, or one that writes a file it does not own
+    When the test job's hook step runs on the candidate
+    Then the step fails, as a red test would, and publishes nothing
+
+  Scenario: A hook that cannot finish or runs out of time leaves the test job's hook step without a verdict
+    Given main has a hook script that exits with status 75, or one that outlives the hook timeout
+    When the test job's hook step runs on the candidate
+    Then the step exits 75, which gives no verdict, and publishes nothing
+
+  Scenario: With no hook script on main the test job's hook step does nothing
+    Given main has no hook script
+    When the test job's hook step runs on the candidate
+    Then the candidate is tested as it is and nothing is published
