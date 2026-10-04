@@ -164,12 +164,15 @@ var _ = Describe("PanelView", func() {
 var _ = Describe("Redact", func() {
 	It("hides only the userinfo inside a URL's authority", func() {
 		for in, want := range map[string]string{
-			"https://host?contact=dev@example.com": "https://host?contact=dev@example.com",
-			"https://host/x#dev@example.com":       "https://host/x#dev@example.com",
-			"https://user:pw@host/x":               "https://***@host/x",
-			"ssh://git@host/x":                     "ssh://***@host/x",
-			"git@host:path":                        "git@host:path",
-			`parse "https://user:pw@host/%zz"`:     `parse "https://***@host/%zz"`,
+			"https://host?contact=dev@example.com":                         "https://host?contact=dev@example.com",
+			"https://host/x#dev@example.com":                               "https://host/x#dev@example.com",
+			"https://user:pw@host/x":                                       "https://***@host/x",
+			"ssh://git@host/x":                                             "ssh://***@host/x",
+			"git@host:path":                                                "git@host:path",
+			`parse "https://user:pw@host/%zz"`:                             `parse "https://***@host/%zz"`,
+			`{"url":"https://host","contact":"dev@example.com"}`:           `{"url":"https://host","contact":"dev@example.com"}`,
+			`{"url":"https://user:pw@host/x","contact":"dev@example.com"}`: `{"url":"https://***@host/x","contact":"dev@example.com"}`,
+			"https://user:p@ss@host/x":                                     "https://***@host/x",
 		} {
 			Expect(core.Redact(in)).To(Equal(want), in)
 		}
