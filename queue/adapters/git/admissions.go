@@ -3,6 +3,7 @@ package git
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -26,7 +27,9 @@ type Admissions struct {
 	Prefix string
 	// Operators, if set, is a git allowed-signers file: a change not signed by one of its keys is refused.
 	Operators string
-	refs      map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
+	// Legacy, if set, admits the rows of the existing request refs too; see legacy.go.
+	Legacy *Legacy
+	refs   map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
 }
 
 // stamp is the arrival clock of Admit: nanoseconds, never repeated or going back.
@@ -75,6 +78,15 @@ func Admit(ctx context.Context, c config.Config, dir, id, sha string) error {
 // non-commit, each building on the queued and pending changes it descends from.
 func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.Pending, error) {
 	out, err := a.Lander.git(ctx, "ls-remote", a.Lander.remote, a.Prefix+"*")
+	var lv *legacyView
+	var lerr error // a row not retired is retried next step; the admissions go on
+	if a.Legacy != nil {
+		lv, lerr = a.Legacy.view(ctx)
+		if lv != nil { // one the old queue withdrew is no ancestor: it leaves in this step
+			gone := lv.leaving()
+			queued = slices.DeleteFunc(slices.Clone(queued), func(e core.Entry) bool { _, ok := gone[e.ID]; return ok })
+		}
+	}
 	var ps []core.Pending
 	at, kept := map[string]int64{}, map[string]string{}
 	a.refs = map[string][]string{}
@@ -94,6 +106,15 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 			rs = append(rs, read{stampAt, id, f[0], f[1]})
 		}
 	}
+	existing := map[string]bool{} // the refs read from the existing request refs: fetched with them, never signed
+	if lv != nil {
+		for rid, r := range lv.rows {
+			if !lv.held(rid) {
+				rs, existing[a.Legacy.Prefix+rid] = append(rs, read{r.at(), rid, r.commit, a.Legacy.Prefix + rid}), true
+			}
+		}
+	}
+	var unsigned []bool
 	slices.SortStableFunc(rs, func(x, y read) int { return cmp.Compare(x.at, y.at) })
 	for _, r := range rs { // one live admit per id, the oldest; the driver judges a repeat of a queued id
 		a.refs[r.id+" "+r.sha] = append(a.refs[r.id+" "+r.sha], r.ref)
@@ -103,15 +124,23 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		} else if !dup {
 			at[r.id], kept[r.id] = r.at, r.sha
 		}
-		ps, fetch = append(ps, p), append(fetch, r.sha)
+		if ps, unsigned = append(ps, p), append(unsigned, existing[r.ref]); !existing[r.ref] {
+			fetch = append(fetch, r.sha)
+		}
 	}
 	if err != nil || len(ps) == 0 {
-		return nil, err
+		return nil, errors.Join(err, lerr)
 	}
-	if _, err := a.Lander.git(ctx, fetch...); err != nil {
-		return nil, err
+	if len(fetch) > 4 {
+		if _, err := a.Lander.git(ctx, fetch...); err != nil {
+			return nil, err
+		}
 	}
 	for i, p := range ps {
+		if unsigned[i] {
+			ps[i].Owner = a.owner(ctx, p.Commit)
+			continue
+		}
 		if _, err := a.Lander.git(ctx, "rev-parse", "-q", "--verify", p.Commit+"^{commit}"); err != nil {
 			ps[i].Why = p.Commit + " is not a commit"
 		}
@@ -149,7 +178,7 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 	slices.SortFunc(ps, func(x, y core.Pending) int {
 		return cmp.Or(depth(x)-depth(y), cmp.Compare(at[x.ID], at[y.ID]), strings.Compare(x.ID, y.ID), refused(y)-refused(x))
 	})
-	return ps, nil
+	return ps, lerr
 }
 
 // Done deletes the ref of id, only if it still points at sha. A ref that is
@@ -162,6 +191,9 @@ func (a *Admissions) Done(ctx context.Context, id, sha string) error {
 	ref := rs[len(rs)-1]
 	if len(rs) > 1 {
 		a.refs[id+" "+sha] = rs[:len(rs)-1]
+	}
+	if a.Legacy != nil && strings.HasPrefix(ref, a.Legacy.Prefix) {
+		return nil // kept where the old queue reads it until the entry settles
 	}
 	err := a.Lander.deleteRef(ctx, ref, sha)
 	if err != nil {
