@@ -20,7 +20,9 @@
 #       wrong ServiceAccount, a token outside a grant, or privilege (a
 #       privileged container, an added capability, a host namespace, a hostPath
 #       outside the step's own directories) beyond the grant. With --non-step it
-#       also fails on any other pod there running under `default` with a token.
+#       also fails on any other pod there running under `default` with a token
+#       mounted -- read from its projected token volume, so a ServiceAccount
+#       declared with automountServiceAccountToken: false counts as no token.
 #
 # The runtime is the authority on identities; this reads the same rules from
 # outside to produce evidence. FLY_TARGET (default home) and WEB_DEPLOYMENT
@@ -167,7 +169,7 @@ pods() {
 		others=$(kubectl get pods -n "$ns" -o json | jq -r '.items[]
 			| select((.metadata.labels["concourse.ci/handle"] // "") == "")
 			| select((.spec.serviceAccountName // "default") == "default")
-			| select(.spec.automountServiceAccountToken != false)
+			| select(any(.spec.volumes[]?; .projected.sources[]?.serviceAccountToken))
 			| .metadata.name')
 		if [ -n "$others" ]; then
 			echo "$others"
