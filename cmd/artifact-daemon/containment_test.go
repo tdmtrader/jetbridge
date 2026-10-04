@@ -115,6 +115,9 @@ func symlinksUnder(t *testing.T, root string) []string {
 
 // AC 1 / AC 6 — the reproduced escape: a symlink out, then a write through it.
 func TestPeerFetch_SymlinkEscape_Refused(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	victim, assertUntouched := guardedFile(t)
 	outside := filepath.Dir(victim)
 
@@ -133,6 +136,9 @@ func TestPeerFetch_SymlinkEscape_Refused(t *testing.T) {
 
 // AC 2 — a name that walks upward out of the destination.
 func TestPeerFetch_NameTraversal_Refused(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	victim, assertUntouched := guardedFile(t)
 
 	host, port := serveTar(t,
@@ -149,6 +155,9 @@ func TestPeerFetch_NameTraversal_Refused(t *testing.T) {
 
 // AC 4 — an absolute symlink target is refused, and no symlink is left behind.
 func TestPeerFetch_AbsoluteSymlink_Refused(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	host, port := serveTar(t,
 		tarEntry{hdr: &tar.Header{Name: "hatch", Typeflag: tar.TypeSymlink, Linkname: "/etc", Mode: 0777}},
 	)
@@ -165,6 +174,9 @@ func TestPeerFetch_AbsoluteSymlink_Refused(t *testing.T) {
 
 // AC 5 — a chain whose composition escapes, even though each hop looks local.
 func TestPeerFetch_SymlinkChain_Refused(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	victim, assertUntouched := guardedFile(t)
 	outside := filepath.Dir(victim)
 
@@ -267,6 +279,9 @@ func TestPeerFetch_HardLinkIsMaterialized(t *testing.T) {
 
 // F1 — a hard link whose target escapes takes the same rule as a symlink.
 func TestPeerFetch_HardLinkEscape_Refused(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	victim, assertUntouched := guardedFile(t)
 
 	host, port := serveTar(t,
@@ -287,6 +302,9 @@ func TestPeerFetch_HardLinkEscape_Refused(t *testing.T) {
 // F1 — an entry type the daemon cannot materialize fails loudly rather than
 // being skipped into a tree the caller thinks is complete.
 func TestPeerFetch_UnsupportedEntryType_Refused(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	host, port := serveTar(t,
 		tarEntry{hdr: &tar.Header{Name: "dev", Typeflag: tar.TypeChar, Mode: 0666, Devmajor: 1, Devminor: 3}},
 	)
@@ -300,6 +318,9 @@ func TestPeerFetch_UnsupportedEntryType_Refused(t *testing.T) {
 // F2 — a refused extraction leaves nothing at the destination, not even the
 // entries that preceded the refusal.
 func TestPeerFetch_RefusalLeavesNoResidue(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	host, port := serveTar(t,
 		tarEntry{hdr: &tar.Header{Name: "good.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "legit"},
 		tarEntry{hdr: &tar.Header{Name: "sub/also-good.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "legit"},
@@ -336,6 +357,9 @@ func TestPeerFetch_RefusalLeavesNoResidue(t *testing.T) {
 // F3 — the error the operator finally sees must name the real cause, not a
 // spurious "file exists" produced by a retry re-running over its own residue.
 func TestPeerFetch_RetryReportsTheRealCause(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	host, port := serveTar(t,
 		tarEntry{hdr: &tar.Header{Name: "first.txt", Typeflag: tar.TypeReg, Mode: 0644}, body: "x"},
 		tarEntry{hdr: &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "first.txt", Mode: 0777}},

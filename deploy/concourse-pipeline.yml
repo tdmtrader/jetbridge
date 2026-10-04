@@ -215,17 +215,30 @@ jobs:
           PROCS=$(( $(nproc) / 6 ))
           [ "$PROCS" -ge 2 ] || PROCS=2
           [ "$PROCS" -le 6 ] || PROCS=6
-          # One Ginkgo process per suite, all at once: a single `ginkgo` with
-          # several suites runs them one after another.
+          # On a big node (the battle station, 28 cores) each suite gets its
+          # own Ginkgo process, all at once: a single `ginkgo` given several
+          # suites runs them one after another. A smaller node is CPU-bound
+          # and that fan-out only slows every suite down (measured on a
+          # 10-core laptop: 4m12s against 3m17s), so there one `ginkgo` takes
+          # them in turn.
           GINKGO_PIDS=""
           if [ -n "$HEAVY" ]; then
             go build -o /tmp/ginkgo github.com/onsi/ginkgo/v2/ginkgo
-            echo "Ginkgo -p (procs=$PROCS each):$HEAVY"
-            for d in $HEAVY; do
+            if [ "$(nproc)" -ge 24 ]; then
+              echo "Ginkgo -p (procs=$PROCS each, one process per suite):$HEAVY"
+              for d in $HEAVY; do
+                /tmp/ginkgo -p --procs="$PROCS" --keep-going --flake-attempts=1 \
+                  --timeout=20m "./$d" >"/tmp/ginkgo-$(echo "$d" | tr / -).log" 2>&1 &
+                GINKGO_PIDS="$GINKGO_PIDS $!:$d"
+              done
+            else
+              PROCS=$(( $(nproc) / 3 ))
+              [ "$PROCS" -ge 2 ] || PROCS=2
+              echo "Ginkgo -p (procs=$PROCS, suites in turn):$HEAVY"
               /tmp/ginkgo -p --procs="$PROCS" --keep-going --flake-attempts=1 \
-                --timeout=20m "./$d" >"/tmp/ginkgo-$(echo "$d" | tr / -).log" 2>&1 &
-              GINKGO_PIDS="$GINKGO_PIDS $!:$d"
-            done
+                --timeout=20m $(for d in $HEAVY; do echo "./$d"; done) >/tmp/ginkgo-heavy.log 2>&1 &
+              GINKGO_PIDS="$!:heavy"
+            fi
           fi
           GO_TEST_STATUS=0
           if [ -n "$REST" ]; then
@@ -236,7 +249,7 @@ jobs:
             status=0
             wait "${entry%%:*}" || status=$?
             d="${entry#*:}"
-            echo "=== ginkgo ./$d (exit $status) ==="
+            echo "=== ginkgo $d (exit $status) ==="
             cat "/tmp/ginkgo-$(echo "$d" | tr / -).log"
             [ "$status" -eq 0 ] || GINKGO_FAILED="$GINKGO_FAILED $d"
           done

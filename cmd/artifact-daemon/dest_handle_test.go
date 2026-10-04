@@ -467,6 +467,9 @@ func TestFetchFromPeer_RefusalLeavesNoPartialParent(t *testing.T) {
 // and it left an attacker-named root-owned directory in the store every time —
 // reclaimed by nothing, since the sweeper only walks steps/ and artifacts/.
 func TestFetchFromPeer_FailedFetchLeavesNoCreatedDirectories(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	s, root, _ := seedForDestSwap(t)
 	s.SetPeerResolver(NewPeerResolver(lagertest.NewTestLogger("peer"), nil, "", "", 1, "", nil))
 

@@ -73,6 +73,9 @@ func TestPeerFetch_DownloadsAndExtractsTar(t *testing.T) {
 
 // TestPeerFetch_RetriesOnFailure verifies retry behavior when peer returns errors.
 func TestPeerFetch_RetriesOnFailure(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	attempts := 0
 	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -123,6 +126,9 @@ func TestPeerProbe_NoPeers(t *testing.T) {
 // when the peer takes longer than the old 10s timeout to respond (simulating
 // a large artifact transfer).
 func TestPeerFetch_LargeArtifactSlowTransfer(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate a slow transfer — delay 2s before sending tar data.
 		// With the old shared 10s http.Client timeout this would work,
@@ -155,6 +161,9 @@ func TestPeerFetch_LargeArtifactSlowTransfer(t *testing.T) {
 // TestPeerProbe_UsesShortTimeout verifies that Probe uses a short timeout
 // so it doesn't wait excessively for unresponsive peers.
 func TestPeerProbe_UsesShortTimeout(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	// Peer that never responds (accepts connection but hangs).
 	slowPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Block until context is cancelled.
@@ -204,6 +213,9 @@ func TestPeerProbe_UsesShortTimeout(t *testing.T) {
 // 3 peers × 10s probe timeout = 30s. With concurrent probing, all 3 are probed
 // in parallel, so total time ≈ 10s. We verify that Probe completes in <15s.
 func TestPeerProbe_ConcurrentFirstHitWins(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	// Use non-routable TEST-NET addresses as "peers" — they'll all timeout.
 	ready := true
 	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{

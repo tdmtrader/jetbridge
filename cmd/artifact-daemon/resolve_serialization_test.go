@@ -109,6 +109,9 @@ func TestResolveOne_PeerFetchWaitsForTheDestinationLock(t *testing.T) {
 // ignored the RemoveAll error, hit ENOTEMPTY on the rename, and reported the
 // whole fetch as success — delivering whatever was already sitting at dest.
 func TestPeerFetch_FailedClearIsAnErrorNotSuccess(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory write bits; the failed clear cannot be staged")
 	}

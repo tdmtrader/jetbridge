@@ -42,44 +42,43 @@ fi
 echo "==> $(wc -l <<<"$dirs" | tr -d ' ') package(s) affected since $BASE:" >&2
 sed 's/^/      /' <<<"$dirs" >&2
 
-# The same split as the pipeline's unit-tests job: the heavy Ginkgo suites
-# under ginkgo -p, everything else under one `go test`, both at once. Plain
-# `ginkgo` runs suites one after another, which on a 10-core Mac took ~7m for a
-# 20-package selection. Parallelism is capped because every test postgres
-# holds a SysV segment and macOS allows 32 system-wide (kern.sysv.shmmni).
+# The pipeline's split, sized for a laptop: the heavy Ginkgo suites under ONE
+# ginkgo -p (suites in turn), everything else under one `go test`, both at once.
+# Plain `ginkgo` over the whole selection took ~7m for 20 packages on a 10-core
+# Mac; this took ~3m20s. The pipeline runs a ginkgo per suite instead, but a
+# laptop is CPU-bound -- measured, that took 4m12s here, every suite slower --
+# and jetbridge stays under `go test` because -p would rerun its plain tests in
+# every process. Parallelism is capped because every test postgres holds a
+# SysV segment and macOS allows 32 system-wide (kern.sysv.shmmni).
 heavy=() rest=()
 while IFS= read -r d; do
   case "$d" in
-    ./atc/db | ./atc/api | ./atc/db/migration | ./atc/exec | ./atc/scheduler/algorithm | ./atc/engine | ./atc/runs | ./atc/worker/jetbridge) heavy+=("$d") ;;
+    ./atc/db | ./atc/api | ./atc/db/migration | ./atc/exec | ./atc/scheduler/algorithm | ./atc/engine | ./atc/runs) heavy+=("$d") ;;
     *) rest+=("$d") ;;
   esac
 done <<<"$dirs"
 
 ncpu="$(getconf _NPROCESSORS_ONLN)"
-# Per suite; up to seven suites run at once beside go test.
-procs=2
+procs=$(( ncpu / 3 )); [ "$procs" -ge 2 ] || procs=2
 pkgs=$(( ncpu / 2 )); [ "$pkgs" -ge 2 ] || pkgs=2
 
 started=$(date +%s)
-go_status=0 failed=()
-logdir="$(mktemp -d "${TMPDIR:-/tmp}/test-affected.XXXXXX")"
-pids=()
-for d in "${heavy[@]+"${heavy[@]}"}"; do
-  ginkgo -p --procs="$procs" --keep-going --flake-attempts=1 "$@" "$d" \
-    >"$logdir/$(tr / - <<<"${d#./}").log" 2>&1 &
-  pids+=("$!")
-done
-[ ${#heavy[@]} -eq 0 ] || echo "==> ginkgo -p --procs=$procs, one process per suite: ${heavy[*]}" >&2
+go_status=0 ginkgo_status=0 ginkgo_pid=""
+log="$(mktemp "${TMPDIR:-/tmp}/test-affected-ginkgo.XXXXXX")"
+if [ ${#heavy[@]} -gt 0 ]; then
+  echo "==> ginkgo -p --procs=$procs: ${heavy[*]}" >&2
+  ginkgo -p --procs="$procs" --keep-going --flake-attempts=1 "$@" "${heavy[@]}" >"$log" 2>&1 &
+  ginkgo_pid=$!
+fi
 if [ ${#rest[@]} -gt 0 ]; then
   echo "==> go test -p $pkgs: ${#rest[@]} package(s)" >&2
   go test -count=1 -p "$pkgs" "${rest[@]}" || go_status=$?
 fi
-for i in "${!pids[@]}"; do
-  d="${heavy[$i]}"
-  if ! wait "${pids[$i]}"; then failed+=("$d"); fi
-  echo "==> ginkgo $d:" >&2
-  cat "$logdir/$(tr / - <<<"${d#./}").log"
-done
-rm -rf "$logdir"
-echo "==> test-affected: $(( $(date +%s) - started ))s; go test exit $go_status; failed ginkgo suites: ${failed[*]:-none}" >&2
-[ "$go_status" -eq 0 ] && [ ${#failed[@]} -eq 0 ]
+if [ -n "$ginkgo_pid" ]; then
+  wait "$ginkgo_pid" || ginkgo_status=$?
+  echo "==> ginkgo suites (exit $ginkgo_status):" >&2
+  cat "$log"
+fi
+rm -f "$log"
+echo "==> test-affected: $(( $(date +%s) - started ))s; go test exit $go_status; ginkgo exit $ginkgo_status" >&2
+[ "$go_status" -eq 0 ] && [ "$ginkgo_status" -eq 0 ]

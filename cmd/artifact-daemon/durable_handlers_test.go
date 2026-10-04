@@ -256,6 +256,9 @@ func TestConcurrentRestoresOfOneKeyCollapse(t *testing.T) {
 // without it must upload nothing, which is what keeps step outputs — and caches
 // with no content key — out of permanent storage.
 func TestRegisterPromotesOnlyWhenTheATCNamesADurableKey(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		body       string

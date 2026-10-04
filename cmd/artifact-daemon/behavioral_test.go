@@ -604,6 +604,9 @@ func TestRegistry_RegisterAlias_AddsToBothMaps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRegistry_ConcurrentAccess(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	logger := lagertest.NewTestLogger("registry")
 	dir := t.TempDir()
 	r := daemon.NewRegistry(logger, dir)
@@ -907,6 +910,9 @@ func TestRegistry_RemoveByPath_TriggersAliasPersistence(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPeerResolver_PeerIPs_WithEndpointSlices(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	logger := lagertest.NewTestLogger("peer-discovery")
 
 	ready := true
@@ -1116,6 +1122,9 @@ func TestPeerFetch_CountsRetryAttempts(t *testing.T) {
 }
 
 func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	var attempts int
 	fakePeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -1152,6 +1161,9 @@ func TestPeerFetch_AllAttemptsExhausted(t *testing.T) {
 // rather than being silently dropped, and nothing lands outside the
 // destination. The symlink vectors are covered in containment_test.go.
 func TestExtractTar_PathTraversal_FailsExtraction(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	// A file outside the destination that the archive will try to reach.
 	outside := t.TempDir()
 	victim := filepath.Join(outside, "victim.txt")

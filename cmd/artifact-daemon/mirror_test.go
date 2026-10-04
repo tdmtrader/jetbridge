@@ -202,6 +202,9 @@ func TestPeerSelector_ReplicasZero_DisablesMirror(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
+	// Waits out retry backoff or a probe timeout; overlapping the waits
+	// is most of this package's wall time.
+	t.Parallel()
 	// Source directory with one file.
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("hello"), 0644); err != nil {
