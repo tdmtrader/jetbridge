@@ -140,31 +140,22 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		}
 		return fail2(git.Promote(ctx, c, ".", fs.Arg(0)), fail)
 	}
-	if args[0] == "status" {
-		s, err := git.NewStore(c).Load(ctx)
-		if err != nil {
-			return fail(err)
-		}
-		return fail2(json.NewEncoder(out).Encode(summary(s)), fail)
-	}
-	if args[0] == "stats" { // read-only: Load, never Save or the lease
-		s, err := git.NewStore(c).Load(ctx)
-		if err != nil {
-			return fail(err)
-		}
-		return fail2(json.NewEncoder(out).Encode(core.Stats(s, time.Now(), *window)), fail)
-	}
-	if args[0] == "view" { // read-only: Load, never Save or the lease
+	if args[0] == "status" || args[0] == "stats" || args[0] == "view" { // read-only: Load, never Save or the lease
 		s, err := git.NewStore(c).Load(ctx)
 		if err != nil {
 			return fail(err)
 		}
 		now := time.Now()
-		b, err := core.PanelView(s, core.Stats(s, now, time.Hour), now)
-		if err != nil {
-			return fail(err)
+		switch args[0] {
+		case "status":
+			return fail2(json.NewEncoder(out).Encode(summary(s)), fail)
+		case "stats":
+			return fail2(json.NewEncoder(out).Encode(core.Stats(s, now, *window)), fail)
 		}
-		_, err = fmt.Fprintln(out, string(b))
+		b, err := core.PanelView(s, core.Stats(s, now, time.Hour), now)
+		if err == nil {
+			_, err = fmt.Fprintln(out, string(b))
+		}
 		return fail2(err, fail)
 	}
 	d, closeFn, err := newDriver(c, out, errw)

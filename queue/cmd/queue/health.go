@@ -39,9 +39,7 @@ func unhealthy(s core.Snapshot, h config.Health, cooldown time.Duration, now tim
 		// the one auto-resume per main is spent: the pause holds until an operator acts
 		spent := strings.HasPrefix(s.Why, "no verdict twice on main") || (autoResumes && main != "" && s.ResumedOnMain == main)
 		switch {
-		case spent:
-			return fmt.Sprintf("paused for %s: %s; nothing auto-resumes it; run `queue resume`", paused.Round(time.Second), s.Why)
-		case !autoResumes && paused > h.PauseAfter:
+		case spent, !autoResumes && paused > h.PauseAfter:
 			return fmt.Sprintf("paused for %s: %s; nothing auto-resumes it; run `queue resume`", paused.Round(time.Second), s.Why)
 		case autoResumes && paused > cooldown+h.ResumeOverdue:
 			return fmt.Sprintf("paused for %s: auto-resumes after %s, but is overdue", paused.Round(time.Second), cooldown)
