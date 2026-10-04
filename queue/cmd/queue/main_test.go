@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,8 +12,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -572,6 +575,35 @@ var _ = Describe("queue command", func() {
 				Expect(text).NotTo(ContainSubstring(part), what)
 			}
 		}
+	})
+
+	It("A queue step that restarts keeps waiting for the same test build", func() {
+		var builds atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reply := map[string]string{"check": `{"id":1,"status":"started"}`, "input_to": `[{"id":100}]`,
+				"versions": fmt.Sprintf(`[{"id":7,"version":{"ref":%q}}]`, strings.TrimPrefix(r.URL.Query().Get("filter"), "ref:"))}
+			if p := path.Base(r.URL.Path); p == "builds" {
+				fmt.Fprintf(w, `{"id":%d}`, 99+builds.Add(1))
+			} else if reply[p] != "" || strings.HasPrefix(r.URL.Path, "/api/v1/builds/") {
+				fmt.Fprint(w, cmp.Or(reply[p], `{"status":"succeeded"}`))
+			}
+		}))
+		DeferCleanup(srv.Close)
+		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
+		c := must(config.Parse([]byte(strings.NewReplacer("https://ci.example.invalid", srv.URL, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN").Replace(string(must(os.ReadFile(file)))))))
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		code, _, errw := queue("admit", "--config", file, "a", gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "a"))
+		Expect(code).To(Equal(0), errw)
+		ctx := context.Background()
+		for range 4 { // each step a new process: a new driver and runner over the same refs
+			d, closeFn, err := newDriver(c, io.Discard, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			d.Owner = "runner"
+			Expect(d.Step(ctx)).To(Succeed())
+			closeFn()
+		}
+		Expect(must(git.NewStore(c).Load(ctx)).Landed).To(Equal(map[string]bool{"a": true}), "the verdict was read after the restarts")
+		Expect(builds.Load()).To(Equal(int32(1)), "one build, never triggered again")
 	})
 
 	It("runs one step and stops with --once", func() {

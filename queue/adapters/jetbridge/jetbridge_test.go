@@ -372,6 +372,15 @@ var _ = Describe("JetBridge runner", func() {
 		Expect([]any{v, done, err}).To(Equal([]any{core.Fail, true, nil}))
 	})
 
+	It("a runner in a new process takes back a saved run and never triggers its build again", func() {
+		Expect(r.Start(ctx, core.Run{ID: "serial-1"}, candidate)).To(Succeed())
+		_, _, _ = r.Poll(ctx, "serial-1") // build 100 is triggered
+		r, saved := newRunner(srv.URL), r.Build("serial-1")
+		r.Resume("serial-1", saved)
+		Expect(test("serial-1")).To(Equal(core.Pass), "started again: the same build, kept")
+		Expect(f.builds).To(Equal(1))
+	})
+
 	It("gives no verdict for a run it never started", func() {
 		v, _, err := r.Poll(ctx, "serial-9")
 		Expect(err).To(HaveOccurred())

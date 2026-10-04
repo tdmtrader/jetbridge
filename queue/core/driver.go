@@ -14,8 +14,8 @@ import (
 // Driver carries out a Strategy's decisions through the ports and decides
 // nothing itself. It saves the Snapshot before starting a run, before a land
 // and after every settle. At start, and after any failed save or land, it drops
-// all it holds and replans from the Store; a run its Strategy does not know is
-// dropped and its entries rerun. A Landing found on load is settled by what
+// all it holds and replans from the Store; a run in flight is polled on, its
+// build kept by a Resumer runner. A Landing found on load is settled by what
 // main holds. Each call first takes or renews the Store's lease and does
 // nothing without it. Every save carries the lease token, so the Store refuses
 // a driver that stalled past its lease; every land and reconcile carries a new,
@@ -263,10 +263,17 @@ func (d *Driver) Step(ctx context.Context) error {
 		if _, ok := d.flight(f.Run.Base); ok && f.Run.Base != "" {
 			continue // composed ahead: polled only once its base run is recorded
 		}
+		if r, ok := d.Runner.(Resumer); ok && f.Build != "" {
+			r.Resume(f.Run.ID, f.Build)
+		}
 		v, done, err := d.Runner.Poll(ctx, f.Run.ID)
 		if err != nil {
 			d.logf("poll %s: %v: no verdict", f.Run.ID, err)
 			v, done = None, true
+		} else if !done {
+			if err := d.keep(ctx, f.Run.ID); err != nil {
+				return err
+			}
 		}
 		if done {
 			if err := d.record(ctx, f, v); err != nil || d.s == nil { // nil: a recompose dropped what the driver holds
@@ -312,6 +319,16 @@ func (d *Driver) start(ctx context.Context, r Run) error {
 	if err := d.Runner.Start(ctx, r, f.Candidate); err != nil {
 		d.logf("start %s: %v: no verdict", r.ID, err)
 		return d.record(ctx, f, None)
+	}
+	return d.keep(ctx, r.ID)
+}
+
+// keep saves a Resumer runner's hold on run id when it changed.
+func (d *Driver) keep(ctx context.Context, id string) error {
+	r, ok := d.Runner.(Resumer)
+	if i := slices.IndexFunc(d.s.InFlight, func(f Flight) bool { return f.Run.ID == id }); ok && i >= 0 && r.Build(id) != d.s.InFlight[i].Build {
+		d.s.InFlight[i].Build = r.Build(id)
+		return d.save(ctx)
 	}
 	return nil
 }

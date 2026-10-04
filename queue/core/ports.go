@@ -115,6 +115,7 @@ type Flight struct {
 	BaseSHA   string
 	Started   time.Time // when the run started; zero in state saved before it was kept
 	Ahead     []string  `json:",omitempty"`
+	Build     string    `json:",omitempty"` // a Resumer runner's hold on the run's build; "" in state saved before it was kept
 }
 
 // Store loads and saves the Snapshot. Save is a compare-and-swap: it refuses if
@@ -140,12 +141,19 @@ type Composer interface {
 	Compose(ctx context.Context, base string, entries []Entry) (candidate string, err error)
 }
 
-// Runner tests a candidate. Starting an ID again replaces its earlier run. Poll
+// Runner tests a candidate. Starting an ID again on another candidate replaces its earlier run. Poll
 // reports the Verdict once done; an error, or no result inside the runner's
 // cap, is no verdict: never red.
 type Runner interface {
 	Start(ctx context.Context, run Run, candidate string) error
 	Poll(ctx context.Context, runID string) (v Verdict, done bool, err error)
+}
+
+// Resumer is an optional Runner capability: Build is its hold on a run, saved in
+// the Flight; Resume gives it back in a new process, so no build is triggered twice.
+type Resumer interface {
+	Build(runID string) string
+	Resume(runID, build string)
 }
 
 // FailureReporter is an optional Runner capability: the distinct test names a

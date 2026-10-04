@@ -52,8 +52,11 @@ func New(c Config, logf func(format string, args ...any)) *Runner {
 		runs: map[string]*run{}, failed: map[string][]string{}, builds: map[string]string{}}
 }
 
-// Start begins a run, first releasing any run in flight (best effort).
+// Start begins a run, first releasing any run in flight (best effort); one it holds on candidate is kept.
 func (j *Runner) Start(ctx context.Context, r core.Run, candidate string) error {
+	if old, ok := j.runs[r.ID]; ok && old.candidate == candidate {
+		return nil
+	}
 	delete(j.failed, r.ID)
 	for id, old := range j.runs {
 		delete(j.runs, id)
@@ -243,4 +246,20 @@ func (j *Runner) failedTests(ctx context.Context, build int) []string {
 // BuiltOn is the job and build a failed run was tested on.
 func (j *Runner) BuiltOn(id string) string { return j.builds[id] }
 
-var _ core.FailureReporter = (*Runner)(nil)
+// Build is the runner's hold on run id, as text to save; "" for a run it does not hold.
+func (j *Runner) Build(id string) string {
+	if r, ok := j.runs[id]; ok {
+		return fmt.Sprintf("%d %d %d %d %s", r.check, r.version, r.build, r.started.UnixNano(), r.candidate)
+	}
+	return ""
+}
+
+// Resume takes back a run Build gave, unless it holds that run already.
+func (j *Runner) Resume(id, build string) {
+	r, ns := &run{}, int64(0)
+	if _, err := fmt.Sscan(build, &r.check, &r.version, &r.build, &ns, &r.candidate); err == nil && j.runs[id] == nil {
+		r.started, j.runs[id] = time.Unix(0, ns), r
+	}
+}
+
+var _, _ = core.FailureReporter((*Runner)(nil)), core.Resumer((*Runner)(nil))

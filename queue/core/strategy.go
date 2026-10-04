@@ -122,7 +122,11 @@ func (s *Serial) Resume() {
 
 // Record decides the verdict of the run in flight, as Decide and Bisect do. A
 // flake the bisect proves on this verdict is in this Outcome, whatever path returns it.
-func (s *Serial) Record(_ View, run string, verdict Verdict) (Outcome, error) {
+// A run in flight it never planned, started before a restart, is taken up whole.
+func (s *Serial) Record(v View, run string, verdict Verdict) (Outcome, error) {
+	if i := slices.IndexFunc(v.InFlight, func(r Run) bool { return r.ID == run }); s.run == nil && s.bisect == nil && i >= 0 {
+		s.run, s.batch = &v.InFlight[i], FormBatch(v.InFlight[i].Entries, v.BuildsOn, v.Landed) // the driver's view is a fresh slice
+	}
 	if s.run == nil || s.run.ID != run {
 		return Outcome{}, fmt.Errorf("serial: run %q is not in flight", run)
 	}

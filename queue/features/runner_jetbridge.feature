@@ -86,3 +86,8 @@ Feature: A JetBridge job tests each candidate
     Given a JetBridge server that cannot say which version a finished build tested
     When the next candidate is started
     Then the next candidate is pinned and tested
+
+  Scenario: A queue step that restarts keeps waiting for the same test build
+    Given a candidate whose test build was started by an earlier queue step
+    When each later queue step runs as a new process
+    Then the verdict of that same build is used, and it was triggered only once
