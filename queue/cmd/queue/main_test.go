@@ -249,6 +249,25 @@ var _ = Describe("queue command", func() {
 		return out
 	}
 
+	It("queue withdraw asks the live runner to remove a queued change", func() {
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		Expect(queued(drain([2]string{"a", sha}))).To(Equal([]string{"a " + sha}))
+		code, _, errw := queue("admit", "--config", file, "a", sha) // an admit still waiting
+		Expect(code).To(Equal(0), errw)
+		code, _, errw = queue("withdraw", "--config", file, "a")
+		Expect(code).To(Equal(0), errw)
+		Expect(gitIn(remote, "for-each-ref", "refs/queue/admit/")).To(BeEmpty())
+		Expect(gitIn(remote, "for-each-ref", "refs/queue/control/")).To(ContainSubstring("withdraw-a." + sha))
+		s := drain()
+		Expect(s.Queued).To(BeEmpty())
+		Expect(s.Settled).To(HaveLen(1))
+		Expect(s.Settled[0].Kind).To(Equal(core.WithdrawnEvent))
+		Expect(gitIn(remote, "for-each-ref", "refs/queue/control/")).To(BeEmpty())
+		code, _, errw = queue("withdraw", "--config", file, "a")
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("not queued"))
+	})
+
 	It("A change admitted twice before the runner drains is queued once and the repeat is refused", func() {
 		b := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-m", "b")
 		s := drain([2]string{"b", b}, [2]string{"a", sha}, [2]string{"b", b})

@@ -29,3 +29,8 @@ Feature: An author withdraws a queued change
     When the author asks to withdraw "a" at an earlier commit
     And the runner takes its next step
     Then "a" is still queued and the request is deleted
+
+  Scenario: queue withdraw asks the live runner to remove a queued change
+    Given change "a" is queued and a runner holds the lease
+    When the author runs queue withdraw for "a" and the runner takes its next step
+    Then "a" is no longer queued, its waiting admit ref and the request are deleted
