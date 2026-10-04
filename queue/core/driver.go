@@ -339,15 +339,6 @@ func (d *Driver) keep(ctx context.Context, id string) error {
 // recomposed: its verdict is unused.
 func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 	d.notify(ctx, Event{Kind: VerdictIn, Entries: f.Run.Entries, Run: f.Run, Verdict: v})
-	if w, ok := d.Runner.(WaitCapper); ok && v == None && w.Expired(f.Run.ID) { // saved with the outcome below
-		d.settled(Event{Kind: WaitCapEvent, Entries: f.Run.Entries, Run: f.Run, Why: "no verdict inside the wait cap", At: d.now()})
-		if !f.Started.IsZero() {
-			d.s.Settled[len(d.s.Settled)-1].Waited = d.now().Sub(f.Started)
-		}
-	}
-	if e, ok := d.Runner.(Errorer); ok && v == None && e.Errored(f.Run.ID) { // saved with the outcome below
-		d.settled(Event{Kind: ErroredEvent, Entries: f.Run.Entries, Run: f.Run, Why: "the test job errored", At: d.now()})
-	}
 	if _, heads := d.Lander.(Heads); (heads && f.BaseSHA == "") || (f.BaseSHA != "" && f.BaseSHA != d.main) { // "": composed while main could not be read
 		d.drop(f.Run.ID)
 		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", cmp.Or(f.BaseSHA, "unknown"), cmp.Or(d.main, "unknown")))
@@ -632,11 +623,11 @@ func (d *Driver) settled(ev Event) {
 		batch = append(batch, e.ID)
 	}
 	es := ev.Entries
-	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent || ev.Kind == WaitCapEvent || ev.Kind == ErroredEvent { // one record naming all its entries
+	if len(es) == 0 || ev.Kind == FlakeEvent || ev.Kind == RecomposeEvent { // one record naming all its entries
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {
-		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base, ev.Failure, 0})
+		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base, ev.Failure})
 	}
 	d.s.Settled = d.s.Settled[max(0, len(d.s.Settled)-MaxSettled):]
 }

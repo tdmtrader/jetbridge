@@ -261,6 +261,4 @@ and merge keys are refused. Defaults are applied before your file is read.
 
 - Side-lane: not in v1. `serial` is the only strategy.
 - Hint-ranked bisect: not in v1. Every bisect is plain halves.
-- Record notifier: not in this change. It needs an append route from a separate
-  record feature; events go to a log line only.
 - `github-pr` admission is not supported; changes arrive as pushed refs.

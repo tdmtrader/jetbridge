@@ -182,14 +182,6 @@ var _ = Describe("queue resource", func() {
 		Expect(second[0]["run"]).NotTo(Equal(first[0]["run"]))
 		s := snapshot()
 		Expect(s.Ejected).To(BeEmpty())
-		var expired []core.SettleRecord
-		for _, r := range s.Settled {
-			if r.Kind == core.WaitCapEvent {
-				expired = append(expired, r)
-			}
-		}
-		Expect(expired).To(HaveLen(1))
-		Expect(expired[0].Waited).To(BeNumerically(">=", time.Second))
 	})
 
 	It("A get of a candidate that holds its own .mq dir is refused", func() {
@@ -221,12 +213,6 @@ var _ = Describe("queue resource", func() {
 		s := snapshot()
 		Expect(s.Ejected).To(BeEmpty())
 		Expect(s.Paused).To(BeFalse())
-		kinds := []core.EventKind{}
-		for _, r := range s.Settled {
-			kinds = append(kinds, r.Kind)
-		}
-		Expect(kinds).To(ContainElement(core.ErroredEvent))
-		Expect(kinds).NotTo(ContainElement(core.WaitCapEvent))
 		Expect(os.RemoveAll(filepath.Join(sources(), "run"))).To(Succeed())
 		dest := get(vs[0])
 		Expect(gitIn(dest, "rev-parse", "HEAD^{tree}", "HEAD~1")).To(Equal(tree+"\n"+parent), "the same change composed again on the same main")

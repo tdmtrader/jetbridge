@@ -51,7 +51,6 @@ type SettleRecord struct {
 	Owner      string // the owner of the entry, kept so an eject says whom it concerns
 	Base       string // the sha the run was tested on; kept on a recompose
 	Failure
-	Waited time.Duration `json:",omitempty"` // a wait-cap record: how long its run waited
 }
 
 // Failure is what a red run's log named: the failing test names (at most
@@ -158,18 +157,6 @@ type Resumer interface {
 	Resume(runID, build string)
 }
 
-// WaitCapper is an optional Runner capability: whether a run's no verdict was
-// its wait cap running out, recorded with how long the run waited.
-type WaitCapper interface {
-	Expired(runID string) bool
-}
-
-// Errorer is an optional Runner capability: whether a run's no verdict was its
-// test job erroring (cancelled or timed out), recorded as such.
-type Errorer interface {
-	Errored(runID string) bool
-}
-
 // FailureReporter is an optional Runner capability: the distinct test names a
 // failed run's log gave, as a hint only. Empty when there are none.
 type FailureReporter interface {
@@ -207,8 +194,6 @@ const (
 	ResumedEvent   EventKind = "resumed"
 	RefusedEvent   EventKind = "refused"
 	RecomposeEvent EventKind = "recompose"
-	WaitCapEvent   EventKind = "wait-cap" // a run gave no verdict inside its runner's wait cap
-	ErroredEvent   EventKind = "errored"  // a run's test job errored: no verdict, at once
 )
 
 // Event is one thing the driver announces. Why, Cause and Parent are copied

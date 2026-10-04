@@ -39,8 +39,7 @@ Feature: Running the queue as a resource type
     Given a change is admitted and the resource was checked
     When the test job records nothing until the wait cap passes
     And the resource is checked again
-    Then the change is not ejected
-    And one wait cap expiry is recorded
+    Then the change is not ejected and its change is retried in a new run
 
   Scenario: A test job that errored gives no verdict at once, never ejects, and a new run on the same candidate lands on a pass
     Given a change is admitted and its test job was cancelled or timed out

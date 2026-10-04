@@ -130,7 +130,7 @@ func call(ctx context.Context, as string, args []string, stdin io.Reader, out, e
 
 // check takes one queue step and reports the newest run in flight, if any.
 func check(ctx context.Context, c config.Config, owner string, waitCap time.Duration, errw io.Writer) ([]map[string]string, error) {
-	r := &capped{Runner: git.NewRunner(c.Repository.URI, waitCap), expired: map[string]bool{}, errored: map[string]bool{}}
+	r := git.NewRunner(c.Repository.URI, waitCap)
 	d, closeFn, err := wire.Driver(c, errw, log.New(errw, "", log.LstdFlags).Printf, r)
 	if err != nil {
 		return nil, err
@@ -240,23 +240,6 @@ func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir s
 	}
 	return v, r.RecordPassHooked(ctx, v["run"], v["candidate"], bundle)
 }
-
-// capped marks a run whose poll gave no verdict and no error: its test job
-// recorded errored, or else its wait cap ran out.
-type capped struct {
-	*git.Runner
-	expired, errored map[string]bool
-}
-
-func (c *capped) Poll(ctx context.Context, id string) (core.Verdict, bool, error) {
-	v, done, errored, err := c.Runner.PollErrored(ctx, id)
-	c.errored[id] = err == nil && errored
-	c.expired[id] = err == nil && done && v == core.None && !errored
-	return v, done, err
-}
-
-func (c *capped) Expired(id string) bool { return c.expired[id] }
-func (c *capped) Errored(id string) bool { return c.errored[id] }
 
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
