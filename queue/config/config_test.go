@@ -45,6 +45,17 @@ var _ = Describe("Parse", func() {
 		Expect(c.Runner.Content).To(HaveLen(4))
 	})
 
+	It("The health limits default and must be positive", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Health).To(Equal(config.Health{PauseAfter: 5 * time.Minute, ResumeOverdue: 2 * time.Minute, MaxInFlight: time.Hour}))
+		c, err = config.Parse([]byte(minimal + "health: {max_in_flight: 30m}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Health.MaxInFlight).To(Equal(30 * time.Minute))
+		_, err = config.Parse([]byte(minimal + "health: {max_in_flight: 0s}\n"))
+		Expect(err).To(HaveOccurred())
+	})
+
 	It("The pause cool-down defaults to five minutes and zero turns auto-resume off", func() {
 		c, err := config.Parse([]byte(minimal))
 		Expect(err).NotTo(HaveOccurred())

@@ -101,6 +101,7 @@ type Flight struct {
 	Run       Run
 	Candidate string
 	BaseSHA   string
+	Started   time.Time // when the run started; zero in state saved before it was kept
 }
 
 // Store loads and saves the Snapshot. Save is a compare-and-swap: it refuses if

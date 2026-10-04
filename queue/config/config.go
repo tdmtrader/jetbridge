@@ -29,6 +29,7 @@ type Config struct {
 	Notify     yaml.Node  `yaml:"notify"` // opaque: kept raw, never interpreted here
 	Store      Store      `yaml:"store"`
 	Pause      Pause      `yaml:"pause"`
+	Health     Health     `yaml:"health"`
 }
 
 type Repository struct {
@@ -66,6 +67,13 @@ type Adaptive struct {
 // the queue resumes itself; 0 means it waits for an operator.
 type Pause struct {
 	Cooldown time.Duration `yaml:"cooldown"`
+}
+
+// Health holds the limits the health command turns red at.
+type Health struct {
+	PauseAfter    time.Duration `yaml:"pause_after"`    // a pause nothing resumes by itself
+	ResumeOverdue time.Duration `yaml:"resume_overdue"` // past the cool-down, an auto-resume still not done
+	MaxInFlight   time.Duration `yaml:"max_in_flight"`  // a run in flight this long is stuck
 }
 
 type Compose struct {
@@ -106,13 +114,14 @@ func Defaults() Config {
 		Lander: Lander{MaxFailures: 3, LeaseRef: "refs/queue/lease"},
 		Store:  Store{Ref: "refs/queue/state"},
 		// An outage that left no verdict usually ends within minutes.
-		Pause: Pause{Cooldown: 5 * time.Minute},
+		Pause:  Pause{Cooldown: 5 * time.Minute},
+		Health: Health{PauseAfter: 5 * time.Minute, ResumeOverdue: 2 * time.Minute, MaxInFlight: time.Hour},
 	}
 }
 
 // known lists the keys allowed at each path; runner and notify are absent, so never walked.
 var known = map[string][]string{
-	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "compose", "runner", "lander", "notify", "store"},
+	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "health", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
 	"admission":         {"source", "prefix", "control_prefix", "operators_file"},
 	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
@@ -122,6 +131,7 @@ var known = map[string][]string{
 	"lander":            {"max_failures", "lease_ref", "scratch"},
 	"store":             {"ref"},
 	"pause":             {"cooldown"},
+	"health":            {"pause_after", "resume_overdue", "max_in_flight"},
 }
 
 // Parse reads one queue's config file, refusing unknown keys and values.
@@ -179,6 +189,9 @@ func (c Config) validate() error {
 	}
 	if c.Compose.HookTimeout <= 0 {
 		return errors.New("compose.hook_timeout must be positive")
+	}
+	if h := c.Health; h.PauseAfter <= 0 || h.ResumeOverdue <= 0 || h.MaxInFlight <= 0 {
+		return errors.New("health.pause_after, health.resume_overdue and health.max_in_flight must be positive")
 	}
 	if c.Lander.MaxFailures < 1 {
 		return errors.New("lander.max_failures must be at least 1")

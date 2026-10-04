@@ -289,7 +289,7 @@ func (d *Driver) Step(ctx context.Context) error {
 }
 
 func (d *Driver) start(ctx context.Context, r Run) error {
-	f, base, err := Flight{Run: r, BaseSHA: d.main}, cmp.Or(d.main, d.Main), error(nil)
+	f, base, err := Flight{Run: r, BaseSHA: d.main, Started: d.now().UTC()}, cmp.Or(d.main, d.Main), error(nil)
 	if r.Base != "" {
 		b, ok := d.flight(r.Base)
 		if base, f.BaseSHA = b.Candidate, b.Candidate; !ok {
