@@ -105,12 +105,16 @@ func (r *Runner) Poll(ctx context.Context, id string) (v core.Verdict, done bool
 	return v, done, nil
 }
 
-// RecordVerdict writes the run's verdict for candidate, refusing if one is already recorded.
+// RecordVerdict writes the run's verdict for candidate, refusing if another is
+// already recorded; the same one again is accepted, as a retried put.
 func (r *Runner) RecordVerdict(ctx context.Context, id, candidate string, v core.Verdict) error {
 	if !fullSHA.MatchString(candidate) || (v != core.Pass && v != core.Fail) {
 		return fmt.Errorf("verdict %q for %q: want pass or fail for a full commit sha", v, candidate)
 	}
 	return runnerDo(ctx, func(dir string) error {
+		if same, err := r.recorded(ctx, dir, id, candidate, v); err != nil || same {
+			return err
+		}
 		tree, err := storeGit(ctx, dir, "", "mktree")
 		if err != nil {
 			return err
@@ -124,6 +128,26 @@ func (r *Runner) RecordVerdict(ctx context.Context, id, candidate string, v core
 		}
 		return nil
 	})
+}
+
+// recorded reports whether the run already holds verdict v for candidate,
+// refusing if it holds any other; false when none is recorded.
+func (r *Runner) recorded(ctx context.Context, dir, id, candidate string, v core.Verdict) (bool, error) {
+	_, verdict, err := r.refs(ctx, dir, id)
+	if err != nil || verdict == "" {
+		return false, err
+	}
+	if _, err := storeGit(ctx, dir, "", "fetch", "-q", "--no-tags", r.Remote, verdict); err != nil {
+		return false, err
+	}
+	msg, err := storeGit(ctx, dir, "", "show", "-s", "--format=%B", verdict)
+	if err != nil {
+		return false, err
+	}
+	if msg != "candidate "+candidate+"\nverdict "+string(v) {
+		return false, fmt.Errorf("another verdict for run %q is already recorded", id)
+	}
+	return true, nil
 }
 
 // refs reads the run's tag and verdict ids on the remote; "" for one absent.
