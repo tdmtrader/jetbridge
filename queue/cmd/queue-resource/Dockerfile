@@ -16,7 +16,8 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/queue-resource ./cmd/queue-resource
 # another pinned image, and copies them into the final image below.
 
 FROM ${BASE}
-RUN apk add --no-cache git openssh-client ca-certificates
+# bash and git: check runs the hook script's "owned" verb from main.
+RUN apk add --no-cache bash git openssh-client ca-certificates
 # The queue config the pipeline names as source.config_file. QUEUE_CONFIG is
 # its path in the build context (the module dir); CI passes the planned one.
 ARG QUEUE_CONFIG=queue.yaml

@@ -223,7 +223,8 @@ func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir s
 	switch {
 	case err != nil || len(bundles) > 1:
 		return nil, errors.New("params.hook_dir holds more than one .bundle file")
-	case len(bundles) == 0: // the hook changed nothing
+	case len(bundles) == 0: // a lander with a hook script on main will refuse to land it
+		log.Printf("warning: the hook dir holds no bundle, so no hook commit is recorded for %s", v["candidate"])
 		return v, r.RecordVerdict(ctx, v["run"], v["candidate"], core.Pass)
 	}
 	bundle, err := filepath.Abs(bundles[0])

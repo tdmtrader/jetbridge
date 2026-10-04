@@ -201,18 +201,21 @@ var _ = Describe("queue resource", func() {
 		Expect(strings.TrimSpace(gitIn(remote, "for-each-ref", "refs/mq/verdicts/"))).To(BeEmpty())
 	})
 
-	// hooked commits n commits on top of from in repo and bundles them, beyond from, into sources/hook.
-	hooked := func(repo, from string, n int) string {
+	// hookedIn commits n commits changing file on top of from in repo and bundles
+	// them, beyond from, as refs/heads/hooked into sources/hook/hook.bundle, as the hook step does.
+	hookedIn := func(repo, from, file string, n int) string {
 		gitIn(repo, "checkout", "-q", "--detach", from)
 		for i := range n {
-			Expect(os.WriteFile(filepath.Join(repo, "gen"), []byte(fmt.Sprint(i)), 0o600)).To(Succeed())
-			gitIn(repo, "add", "gen")
+			Expect(os.WriteFile(filepath.Join(repo, file), []byte(fmt.Sprint(i)), 0o600)).To(Succeed())
+			gitIn(repo, "add", file)
 			gitIn(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "generated")
 		}
+		gitIn(repo, "update-ref", "refs/heads/hooked", "HEAD")
 		Expect(os.MkdirAll(filepath.Join(sources(), "hook"), 0o700)).To(Succeed())
-		gitIn(repo, "bundle", "create", "-q", filepath.Join(sources(), "hook", "h.bundle"), "HEAD", "^"+from)
+		gitIn(repo, "bundle", "create", "-q", filepath.Join(sources(), "hook", "hook.bundle"), "refs/heads/hooked", "^"+from)
 		return gitIn(repo, "rev-parse", "HEAD")
 	}
+	hooked := func(repo, from string, n int) string { return hookedIn(repo, from, "gen", n) }
 	refs := func() string {
 		return gitIn(remote, "for-each-ref", "--format=%(refname)", "refs/mq/verdicts/", "refs/mq/hooked/")
 	}
@@ -223,7 +226,7 @@ var _ = Describe("queue resource", func() {
 		commit := hooked(get(v), v["candidate"], 1)
 		code, errw := put("pass", "hook")
 		Expect(code).To(Equal(0), errw)
-		Expect(gitIn(remote, "rev-parse", "refs/mq/hooked/"+v["run"])).To(Equal(commit))
+		Expect(gitIn(remote, "rev-parse", git.HookedRef(v["candidate"]))).To(Equal(commit), "keyed by the candidate, as the lander reads it")
 		Expect(gitIn(remote, "rev-parse", "refs/mq/verdicts/"+v["run"])).NotTo(BeEmpty())
 		code, _ = put("pass", "hook")
 		Expect(code).To(Equal(1), "both refs are create-only")
@@ -236,6 +239,7 @@ var _ = Describe("queue resource", func() {
 		Expect(os.MkdirAll(filepath.Join(sources(), "hook"), 0o700)).To(Succeed())
 		code, errw := put("pass", "hook")
 		Expect(code).To(Equal(0), errw)
+		Expect(errw).To(ContainSubstring("warning: the hook dir holds no bundle"))
 		Expect(refs()).To(Equal("refs/mq/verdicts/" + v["run"]))
 	})
 
@@ -248,6 +252,58 @@ var _ = Describe("queue resource", func() {
 		Expect(code).To(Equal(1))
 		Expect(errw).To(ContainSubstring("more than one"))
 		Expect(refs()).To(BeEmpty())
+	})
+
+	It("A hook bundle with more than one ref is refused, and nothing is recorded", func() {
+		admit()
+		v := check()[0]
+		dest := get(v)
+		hooked(dest, v["candidate"], 1)
+		gitIn(dest, "update-ref", "refs/heads/other", "HEAD")
+		gitIn(dest, "bundle", "create", "-q", filepath.Join(sources(), "hook", "hook.bundle"), "refs/heads/hooked", "refs/heads/other", "^"+v["candidate"])
+		code, errw := put("pass", "hook")
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("one ref"))
+		Expect(refs()).To(BeEmpty())
+	})
+
+	Context("when main has a hook script", func() {
+		BeforeEach(func() {
+			work := filepath.Join(dir, "work")
+			gitIn(work, "checkout", "-q", "--detach", base)
+			Expect(os.WriteFile(filepath.Join(work, "hook.sh"), []byte("#!/bin/sh\n[ \"$1\" = owned ] && echo gen\n"), 0o755)).To(Succeed())
+			gitIn(work, "add", "hook.sh")
+			gitIn(work, "commit", "-q", "-m", "hook script")
+			base = gitIn(work, "rev-parse", "HEAD")
+			gitIn(work, "push", "-q", "-f", remote, base+":refs/heads/trunk")
+			source["config"] = source["config"].(string) + "compose: {hook_script: hook.sh}\n"
+		})
+
+		It("The queue lands the hook's commit after its test job records a pass with it", func() {
+			admit()
+			v := check()[0]
+			commit := hooked(get(v), v["candidate"], 1)
+			code, errw := put("pass", "hook")
+			Expect(code).To(Equal(0), errw)
+			Expect(check()).To(BeEmpty())
+			Expect(gitIn(remote, "rev-parse", "refs/heads/trunk")).To(Equal(commit))
+			Expect(snapshot().Landed).To(HaveKey("a"))
+		})
+
+		It("A hook commit that changes a file the hook does not own never lands and never ejects", func() {
+			admit()
+			v := check()[0]
+			hookedIn(get(v), v["candidate"], "b", 1)
+			code, errw := put("pass", "hook")
+			Expect(code).To(Equal(0), errw)
+			code, _, errw = call("check", map[string]any{"source": source})
+			Expect(errw).To(ContainSubstring("does not own"))
+			Expect(code).To(Equal(1), "a land error")
+			Expect(gitIn(remote, "rev-parse", "refs/heads/trunk")).To(Equal(base))
+			s := snapshot()
+			Expect(s.Landed).To(BeEmpty())
+			Expect(s.Ejected).To(BeEmpty())
+		})
 	})
 
 	It("A hook commit that is not one commit on the candidate is refused, and nothing is recorded", func() {

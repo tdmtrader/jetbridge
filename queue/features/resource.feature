@@ -57,7 +57,7 @@ Feature: Running the queue as a resource type
     Given a change is admitted and the resource was checked
     And the test job made one commit on the candidate
     When the test job records a pass with that commit
-    Then the pass and the commit are both recorded for the run
+    Then the pass is recorded for the run and the commit for its candidate
     And neither can be recorded again
 
   Scenario: A hook commit that is not one commit on the candidate is refused, and nothing is recorded
@@ -76,9 +76,29 @@ Feature: Running the queue as a resource type
     And the hook changed nothing, so its dir holds no bundle
     When the test job records a pass with that dir
     Then the pass is recorded and no commit is recorded for the run
+    And the put warns that no hook commit was given
 
   Scenario: A hook dir holding more than one bundle is refused, and nothing is recorded
     Given a change is admitted and the resource was checked
     When the test job records a pass with a hook dir holding two bundles
     Then the put fails
     And no verdict and no commit are recorded
+
+  Scenario: A hook bundle with more than one ref is refused, and nothing is recorded
+    Given a change is admitted and the resource was checked
+    When the test job records a pass with a bundle naming two refs
+    Then the put fails
+    And no verdict and no commit are recorded
+
+  Scenario: The queue lands the hook's commit after its test job records a pass with it
+    Given main has a hook script and a change is admitted and the resource was checked
+    When the test job records a pass with the hook's one commit on the candidate
+    And the resource is checked again
+    Then main holds the hook's commit
+
+  Scenario: A hook commit that changes a file the hook does not own never lands and never ejects
+    Given main has a hook script and a change is admitted and the resource was checked
+    When the test job records a pass with a hook commit changing a file the hook does not own
+    And the resource is checked again
+    Then the check fails to land it
+    And main is unchanged and the change is not ejected
