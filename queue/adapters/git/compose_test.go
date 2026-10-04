@@ -72,6 +72,15 @@ var _ = Describe("Composer", func() {
 		Expect(composeRun(remote, "log", "-1", "--format=%an|%cn|%ce", sha)).To(Equal("dev|merge-queue|merge-queue@localhost"))
 	})
 
+	It("lists the files each change touched since main, a stacked one with its parent's", func() {
+		a := change("a", "main", "a.txt", "a\n")
+		b := change("b", "a", "b.txt", "b\n")
+		changed, err := composer.Changed(ctx, []core.Entry{a, b})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(Equal(map[string][]string{"a": {"a.txt"}, "b": {"a.txt", "b.txt"}}))
+		Expect(ref("main")).NotTo(Equal(a.Commit))
+	})
+
 	It("A change that conflicts with an earlier one in the batch is named as the conflict", func() {
 		a, b := change("a", "main", "shared.txt", "from a\n"), change("b", "main", "shared.txt", "from b\n")
 		batch := []core.Entry{a, b}
