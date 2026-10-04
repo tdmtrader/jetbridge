@@ -27,7 +27,7 @@ var _ = Describe("Driver auto-resume", func() {
 	// driver pauses on its first run, which cannot compose and so has no verdict.
 	driver := func() *core.Driver {
 		return &core.Driver{
-			Store: store, Composer: failCompose{}, Runner: &memRunner{}, Lander: headLander{&memLander{c: &memComposer{}}, &main}, Notifier: note,
+			Store: store, Composer: failCompose{}, Runner: &memRunner{}, Lander: mainShaLander{&memLander{c: &memComposer{}}, &main}, Notifier: note,
 			NewStrategy: func() core.Strategy { return &core.Serial{Max: 1} }, Main: "core", Owner: "runner",
 			Resumes: res, Cooldown: cooldown, Now: func() time.Time { return clock }, Log: func(string, ...any) {},
 		}
@@ -179,10 +179,10 @@ var _ = Describe("Driver auto-resume", func() {
 	})
 })
 
-// headLander is a Lander that also reports the sha main is at.
-type headLander struct {
+// mainShaLander is a Lander that also reports the sha main is at.
+type mainShaLander struct {
 	*memLander
 	sha *string
 }
 
-func (h headLander) Head(context.Context, string) (string, error) { return *h.sha, nil }
+func (h mainShaLander) Head(context.Context, string) (string, error) { return *h.sha, nil }

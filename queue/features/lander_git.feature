@@ -58,3 +58,14 @@ Feature: Landing with git
     Given a remote reached over ssh
     When two git calls run at once
     Then neither uses an ssh control connection, whatever ssh options the user set
+
+  Scenario: The lander reads where main points now
+    Given a remote whose main points at a commit
+    When main is moved and read again
+    Then the lander reads the commit main points at now
+    And a branch that does not exist is refused, named
+
+  Scenario: A batch composes on main's sha, not on wherever the branch points later
+    Given main's sha was read and main then moved
+    When a batch is composed on the sha that was read
+    Then the candidate sits on that sha

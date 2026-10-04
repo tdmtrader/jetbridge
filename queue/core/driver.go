@@ -42,6 +42,7 @@ type Driver struct {
 
 	lease  Lease
 	fails  int    // land errors in a row
+	main   string // main's sha: read this Step if the Lander is Heads, or the candidate last landed; "" unknown
 	prefix string // of every run ID the current Strategy names
 	s      *Snapshot
 	q      *Queue
@@ -240,9 +241,19 @@ func (d *Driver) Step(ctx context.Context) error {
 	if err := d.drain(ctx); err != nil {
 		return err
 	}
+	if h, ok := d.Lander.(Heads); ok && len(d.s.InFlight)+len(d.s.Queued) > 0 { // an idle queue reads nothing
+		sha, err := h.Head(ctx, d.Main)
+		if err != nil { // unknown: no verdict of a run with a tested base is used
+			d.logf("read main: %v", err)
+		}
+		d.main = sha
+	}
 	for _, f := range slices.Clone(d.s.InFlight) {
 		if _, ok := d.flight(f.Run.ID); !ok {
 			continue // cancelled by an earlier verdict
+		}
+		if _, ok := d.flight(f.Run.Base); ok && f.Run.Base != "" {
+			continue // composed ahead: polled only once its base run is recorded
 		}
 		v, done, err := d.Runner.Poll(ctx, f.Run.ID)
 		if err != nil {
@@ -271,10 +282,10 @@ func (d *Driver) Step(ctx context.Context) error {
 }
 
 func (d *Driver) start(ctx context.Context, r Run) error {
-	f, base, err := Flight{Run: r}, d.Main, error(nil)
+	f, base, err := Flight{Run: r, BaseSHA: d.main}, cmp.Or(d.main, d.Main), error(nil)
 	if r.Base != "" {
 		b, ok := d.flight(r.Base)
-		if base = b.Candidate; !ok {
+		if base, f.BaseSHA = b.Candidate, b.Candidate; !ok {
 			err = fmt.Errorf("base run %q is not in flight", r.Base)
 		}
 	}
@@ -298,10 +309,15 @@ func (d *Driver) start(ctx context.Context, r Run) error {
 }
 
 // record applies the Strategy's Outcome for a verdict. A verdict it refuses
-// (a run from before a restart) is dropped; its entries stay queued.
+// (a run from before a restart) is dropped; its entries stay queued. A run
+// tested on a base that is no longer main is recomposed: its verdict is unused.
 func (d *Driver) record(ctx context.Context, f Flight, v Verdict) error {
 	d.notify(ctx, Event{Kind: VerdictIn, Entries: f.Run.Entries, Run: f.Run, Verdict: v})
-	d.hint(ctx, f, v)
+	if f.BaseSHA != "" && f.BaseSHA != d.main {
+		d.drop(f.Run.ID)
+		return d.recompose(ctx, f, f.Run.Entries, fmt.Sprintf("tested on %s, but main is now %s", f.BaseSHA, cmp.Or(d.main, "unknown")))
+	}
+	d.hint(ctx, f, v) // only a verdict that is used gives a hint
 	out, err := d.st.Record(d.view(), f.Run.ID, v)
 	for _, n := range out.Notes {
 		d.logf("%s: %s", f.Run.ID, n)
@@ -337,7 +353,7 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 			if err := LandBatch(ctx, d.Lander, d.q, d.Main, f.Candidate, d.s.Landing.Fence, st.Entries); err != nil {
 				return d.landFailed(ctx, f, st.Entries, err)
 			}
-			d.fails, ev.Kind, d.s.Landing = 0, LandedEvent, nil
+			d.fails, ev.Kind, d.s.Landing, d.main = 0, LandedEvent, nil, f.Candidate
 			mark(d.s.Landed, st.Entries)
 		case Eject:
 			if err := Apply(d.q, Eject, st.Entries); err != nil {
@@ -376,7 +392,7 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error) error {
 	var moved *MainMovedError
 	if errors.As(err, &moved) {
-		return d.recompose(ctx, f, es, moved)
+		return d.recompose(ctx, f, es, moved.Error())
 	}
 	if d.fails++; d.fails >= cmp.Or(d.MaxFailures, 3) {
 		why := fmt.Sprintf("landing failed %d times: %v", d.fails, err)
@@ -392,12 +408,12 @@ func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error
 	return fmt.Errorf("land %s: %w", f.Run.ID, err)
 }
 
-// recompose records that main moved under a batch that passed: nothing was
-// pushed and nothing is settled, so the batch is composed again on the new main
-// and retested. It is no land error, so it neither counts toward the pause nor
-// clears that count. The saved Landing is reconciled on the next Step.
-func (d *Driver) recompose(ctx context.Context, f Flight, es []Entry, moved *MainMovedError) error {
-	ev := Event{Kind: RecomposeEvent, Entries: es, Run: f.Run, Why: moved.Error(), At: d.now()}
+// recompose records that main moved under a run: nothing was pushed and
+// nothing is settled, so the batch is composed again on the new main and
+// retested. It is no land error, so it neither counts toward the pause nor
+// clears that count, and spends no retry. A saved Landing is reconciled on the next Step.
+func (d *Driver) recompose(ctx context.Context, f Flight, es []Entry, why string) error {
+	ev := Event{Kind: RecomposeEvent, Entries: es, Run: f.Run, Why: why, At: d.now(), Base: f.BaseSHA}
 	d.settled(ev)
 	if d.save(ctx) == nil {
 		d.notify(ctx, ev)
@@ -512,7 +528,7 @@ func (d *Driver) pause(why string) {
 	d.s.Paused, d.s.Why = true, why
 }
 
-func (d *Driver) reset() { d.s, d.q, d.st = nil, nil, nil }
+func (d *Driver) reset() { d.s, d.q, d.st, d.main = nil, nil, nil, "" }
 
 func (d *Driver) view() View {
 	runs := []Run{}
@@ -520,7 +536,7 @@ func (d *Driver) view() View {
 		runs = append(runs, f.Run)
 	}
 	return View{Queued: d.q.SelectBatch(math.MaxInt), BuildsOn: d.s.BuildsOn, Landed: d.s.Landed,
-		Ejected: d.s.Ejected, InFlight: runs, Slots: max(0, max(d.Slots, 1)-len(runs)), Prefix: d.prefix}
+		Ejected: d.s.Ejected, InFlight: runs, Slots: max(0, max(d.Slots, 1)-len(runs)), Prefix: d.prefix, Main: d.main}
 }
 
 func (d *Driver) flight(id string) (Flight, bool) {

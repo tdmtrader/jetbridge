@@ -54,15 +54,6 @@ func New(c config.Config) (*Lander, error) {
 	return l, nil
 }
 
-// Head reports the sha main is at on the remote.
-func (l *Lander) Head(ctx context.Context, main string) (string, error) {
-	out, err := l.git(ctx, "ls-remote", l.remote, branch(main))
-	if f := strings.Fields(out); err == nil && len(f) >= 1 {
-		return f[0], nil
-	}
-	return "", errors.Join(err, fmt.Errorf("main %q not found", main))
-}
-
 func (l *Lander) Close() error { return os.RemoveAll(l.dir) }
 
 // Land fast-forwards main to candidate, moving the lease ref to fence in the
@@ -102,6 +93,19 @@ func (l *Lander) Contains(ctx context.Context, main, candidate string, fence uin
 		return false, err
 	}
 	return l.holds(ctx, "merge-base", "--is-ancestor", candidate, "refs/seen/main")
+}
+
+// Head reads the sha main points at on the remote now; a missing branch is an error.
+func (l *Lander) Head(ctx context.Context, main string) (string, error) {
+	ref := branch(main)
+	out, err := l.git(ctx, "ls-remote", l.remote, ref)
+	if err != nil {
+		return "", err
+	}
+	if f := strings.Fields(out); len(f) >= 2 && f[1] == ref && fullSHA.MatchString(f[0]) {
+		return f[0], nil
+	}
+	return "", fmt.Errorf("%s is not on the remote", ref)
 }
 
 // observe reads and fetches main and the lease ref, and refuses unless fence is
