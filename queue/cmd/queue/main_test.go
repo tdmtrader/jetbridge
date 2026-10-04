@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,10 +91,10 @@ var _ = Describe("queue command", func() {
 	It("builds the driver from the config", func() {
 		c, err := config.Parse(fmt.Appendf(nil, sample, "/r.git", GinkgoT().TempDir()))
 		Expect(err).NotTo(HaveOccurred())
-		d, closeFn, err := newDriver(c)
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
-		d2, closeFn2, err := newDriver(c)
+		d2, closeFn2, err := newDriver(c, io.Discard, io.Discard)
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn2()
 		Expect(d.Main).To(Equal("trunk"))
@@ -106,7 +109,7 @@ var _ = Describe("queue command", func() {
 		c, err := config.Parse(fmt.Appendf(nil, sample+"", "/r.git", GinkgoT().TempDir()))
 		Expect(err).NotTo(HaveOccurred())
 		c.Batch.Adaptive = &config.Adaptive{Start: 2, Min: 1, GrowAfter: 2}
-		d, closeFn, err := newDriver(c)
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
 		s := d.NewStrategy()
@@ -117,7 +120,7 @@ var _ = Describe("queue command", func() {
 	It("A queue config with the log notifier builds its driver", func() {
 		c, err := config.Parse(fmt.Appendf(nil, sample+"notify: {kind: log, path: \"-\"}\n", "/r.git", GinkgoT().TempDir()))
 		Expect(err).NotTo(HaveOccurred())
-		d, closeFn, err := newDriver(c)
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
 		Expect(d.Notifier).To(BeAssignableToTypeOf(&lognotify.Notifier{}))
@@ -126,14 +129,14 @@ var _ = Describe("queue command", func() {
 	It("refuses a log notify section without a path", func() {
 		c, err := config.Parse(fmt.Appendf(nil, sample+"notify: {kind: log}\n", "/r.git", GinkgoT().TempDir()))
 		Expect(err).NotTo(HaveOccurred())
-		_, _, err = newDriver(c)
+		_, _, err = newDriver(c, io.Discard, io.Discard)
 		Expect(err).To(MatchError(ContainSubstring("notify.path is required")))
 	})
 
 	It("refuses a notify kind it cannot wire", func() {
 		c, err := config.Parse(fmt.Appendf(nil, sample+"notify:\n  kind: carrier-pigeon\n", "/r.git", GinkgoT().TempDir()))
 		Expect(err).NotTo(HaveOccurred())
-		_, _, err = newDriver(c)
+		_, _, err = newDriver(c, io.Discard, io.Discard)
 		Expect(err).To(MatchError(ContainSubstring("carrier-pigeon")))
 	})
 
@@ -163,7 +166,7 @@ var _ = Describe("queue command", func() {
 		}
 		Expect(read().Queued).To(BeEmpty())
 
-		d, closeFn, err := newDriver(c)
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
 		d.Owner, d.NewStrategy = "runner", func() core.Strategy { return idleStrategy{} }
@@ -197,7 +200,7 @@ var _ = Describe("queue command", func() {
 		Expect(out).To(BeEmpty())
 		Expect(gitIn(remote, "rev-parse", "refs/queue/control/resume-4")).To(Equal(sha))
 
-		d, closeFn, err := newDriver(c)
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
 		d.Owner, d.NewStrategy = "runner", func() core.Strategy { return idleStrategy{} }
@@ -240,6 +243,34 @@ var _ = Describe("queue command", func() {
 			Expect(errw).To(ContainSubstring("https://***@host/"))
 			Expect(errw).NotTo(ContainSubstring("SECRET"))
 		}
+	})
+
+	It("hides a credential in a flag the command refuses", func() {
+		var o, e bytes.Buffer
+		code := entry(context.Background(), []string{"status", "--window", "https://user:SECRET@host"}, &o, &e)
+		Expect(code).To(Equal(1))
+		Expect(e.String()).To(ContainSubstring("https://***@host"))
+		Expect(o.String() + e.String()).NotTo(ContainSubstring("SECRET"))
+	})
+
+	It("hides every credential the whole command writes, a bad flag and a runner error alike", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "https://user:SECRET@host/%zz")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}))
+		DeferCleanup(srv.Close)
+		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
+		cfg := strings.NewReplacer("https://ci.example.invalid", srv.URL, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN").Replace(string(must(os.ReadFile(file))))
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "b")
+		var o, e bytes.Buffer
+		Expect(entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)).To(Equal(0), e.String())
+		Expect(entry(context.Background(), []string{"run", "--config", file, "--every", "https://user:SECRET@host"}, &o, &e)).To(Equal(1))
+		Expect(entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)).To(Equal(0), e.String())
+		Expect(e.String()).To(ContainSubstring("start "), "the runner error reaches stderr")
+		Expect(e.String()).To(ContainSubstring("://***@host"))
+		Expect(o.String() + e.String()).NotTo(ContainSubstring("SECRET"))
 	})
 
 	It("runs one step and stops with --once", func() {
@@ -299,3 +330,8 @@ var _ = Describe("status", func() {
 			{"a", "red as a batch, green when split", "r1"}, {"b", "red as a batch, green when split", "r1"}}))
 	})
 })
+
+func must[T any](v T, err error) T {
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return v
+}

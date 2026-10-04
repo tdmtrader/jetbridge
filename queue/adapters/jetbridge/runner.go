@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -43,9 +42,9 @@ type item struct {
 	Version struct{ Ref string }
 }
 
-// New returns a Runner with a 30s HTTP timeout, the wall clock and log.Printf.
-func New(c Config) *Runner {
-	return &Runner{Config: c, Client: &http.Client{Timeout: 30 * time.Second}, Now: time.Now, Log: log.Printf,
+// New returns a Runner with a 30s HTTP timeout, the wall clock and the given logger.
+func New(c Config, logf func(format string, args ...any)) *Runner {
+	return &Runner{Config: c, Client: &http.Client{Timeout: 30 * time.Second}, Now: time.Now, Log: logf,
 		runs: map[string]*run{}}
 }
 
@@ -168,7 +167,7 @@ func (j *Runner) call(ctx context.Context, method, path string, out any) error {
 // try is a best-effort call: a failure is logged, never a verdict.
 func (j *Runner) try(ctx context.Context, method, path string) {
 	if err := j.call(ctx, method, path, nil); err != nil {
-		j.Log("%s %s: %v (ignored)", method, path, err)
+		j.Log("%s", core.Redact(fmt.Sprintf("%s %s: %v (ignored)", method, path, err))) // a redirect's parse error quotes its Location
 	}
 }
 

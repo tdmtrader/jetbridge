@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"maps"
 	"math"
 	"slices"
@@ -510,7 +509,7 @@ func (d *Driver) notify(ctx context.Context, e Event) {
 
 func (d *Driver) logf(format string, args ...any) {
 	if d.Log == nil {
-		d.Log = log.Printf
+		return
 	}
 	d.Log("%s", Redact(fmt.Sprintf(format, args...)))
 }

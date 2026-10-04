@@ -45,26 +45,27 @@ func Parse(n *yaml.Node) (Config, error) {
 type Notifier struct {
 	mu sync.Mutex
 	w  io.Writer
+	f  *os.File // the file Open made, if any
 }
 
 func New(w io.Writer) *Notifier { return &Notifier{w: w} }
 
-// Open appends to the file c names, creating it; "-" is stdout.
-func Open(c Config) (*Notifier, error) {
+// Open appends to the file c names, creating it; "-" is the given stdout.
+func Open(c Config, stdout io.Writer) (*Notifier, error) {
 	if c.Path == "-" {
-		return New(os.Stdout), nil
+		return New(stdout), nil
 	}
 	f, err := os.OpenFile(c.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	return New(f), nil
+	return &Notifier{w: f, f: f}, nil
 }
 
 // Close closes the file Open made; stdout and a plain writer stay open.
 func (n *Notifier) Close() error {
-	if f, ok := n.w.(*os.File); ok && f != os.Stdout {
-		return f.Close()
+	if n.f != nil {
+		return n.f.Close()
 	}
 	return nil
 }

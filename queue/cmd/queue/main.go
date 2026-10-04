@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	"slices"
@@ -31,8 +32,20 @@ const usage = "usage: queue run|admit|resume|status|stats|view --config <file> [
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
+	code := entry(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
+}
+
+// entry is the one place process output is wired: stdout, stderr, the flag and
+// log packages and every logger below all write through one redacting writer each.
+func entry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	out, errw := core.NewRedactWriter(stdout), core.NewRedactWriter(stderr)
+	defer out.Flush()
+	defer errw.Flush()
+	flag.CommandLine.SetOutput(errw)
+	log.SetOutput(errw)
+	return run(ctx, args, out, errw)
 }
 
 // run returns the exit code: 0 done, 2 admission refused (an unsafe id), 1 anything else.
@@ -105,7 +118,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		_, err = fmt.Fprintln(out, string(b))
 		return fail2(err, fail)
 	}
-	d, closeFn, err := newDriver(c)
+	d, closeFn, err := newDriver(c, out, errw)
 	if err != nil {
 		return fail(err)
 	}
@@ -126,12 +139,14 @@ func fail2(err error, fail func(error) int) int {
 	return 0
 }
 
-func newDriver(c config.Config) (d *core.Driver, closeFn func(), err error) {
+// newDriver wires the driver; its logs go to errw and a "-" log notifier to out.
+func newDriver(c config.Config, out, errw io.Writer) (d *core.Driver, closeFn func(), err error) {
 	rc, err := jetbridge.Parse(&c.Runner)
 	if err != nil {
 		return nil, nil, err
 	}
-	notifier, err := newNotifier(c.Notify)
+	logf := log.New(errw, "", log.LstdFlags).Printf
+	notifier, err := newNotifier(c.Notify, out)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -144,7 +159,7 @@ func newDriver(c config.Config) (d *core.Driver, closeFn func(), err error) {
 	_, _ = rand.Read(suffix)
 	host, _ := os.Hostname()
 	return &core.Driver{
-			Store: git.NewStore(c), Composer: git.NewComposer(c), Runner: jetbridge.New(rc), Lander: lander, Notifier: notifier,
+			Store: git.NewStore(c), Composer: git.NewComposer(c), Runner: jetbridge.New(rc, logf), Lander: lander, Notifier: notifier,
 			NewStrategy: func() core.Strategy {
 				s := &core.Serial{Max: b.Max, Policy: core.Policy{RetryNone: b.RetryNone}}
 				if a := b.Adaptive; a != nil {
@@ -152,7 +167,7 @@ func newDriver(c config.Config) (d *core.Driver, closeFn func(), err error) {
 				}
 				return s
 			},
-			Main: c.Repository.Main, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures,
+			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures,
 			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix},
 			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-"},
 			Owner:      fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(suffix)),
@@ -168,7 +183,7 @@ type nopNotifier struct{}
 
 func (nopNotifier) Notify(context.Context, core.Event) error { return nil }
 
-func newNotifier(n yaml.Node) (core.Notifier, error) {
+func newNotifier(n yaml.Node, out io.Writer) (core.Notifier, error) {
 	var k struct{ Kind string }
 	if err := n.Decode(&k); err != nil {
 		return nil, err
@@ -181,7 +196,7 @@ func newNotifier(n yaml.Node) (core.Notifier, error) {
 		if err != nil {
 			return nil, err
 		}
-		return lognotify.Open(c)
+		return lognotify.Open(c, out)
 	}
 	return nil, fmt.Errorf("notify.kind %q is not supported by this command", k.Kind)
 }

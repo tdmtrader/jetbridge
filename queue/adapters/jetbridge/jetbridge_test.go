@@ -135,10 +135,30 @@ var _ = Describe("JetBridge runner", func() {
 	newRunner := func(url string) *jetbridge.Runner {
 		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
 		r := jetbridge.New(jetbridge.Config{Kind: "jetbridge", URL: url, Team: "main", Pipeline: "demo-pipeline",
-			Job: "demo-job", Resource: "demo-repo", Credential: "env:FAKE_JB_TOKEN", WaitCap: time.Hour})
-		r.Now, r.Log = clk.now, func(string, ...any) {}
+			Job: "demo-job", Resource: "demo-repo", Credential: "env:FAKE_JB_TOKEN", WaitCap: time.Hour}, func(string, ...any) {})
+		r.Now = clk.now
 		return r
 	}
+
+	It("A credential in a redirect on a best-effort unpin is hidden in the log", func() {
+		clk = &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if strings.HasSuffix(req.URL.Path, "/unpin") {
+				w.Header().Set("Location", "https://user:SECRET@host/%zz")
+				w.WriteHeader(http.StatusTemporaryRedirect)
+				return
+			}
+			fmt.Fprint(w, `{"id":1}`)
+		}))
+		DeferCleanup(srv.Close)
+		var logs []string
+		r := newRunner(srv.URL)
+		r.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+		Expect(r.Start(ctx, core.Run{ID: "r1"}, candidate)).To(Succeed())
+		Expect(r.Start(ctx, core.Run{ID: "r2"}, candidate)).To(Succeed()) // releases r1: unpin is redirected
+		Expect(logs).NotTo(BeEmpty())
+		Expect(strings.Join(logs, "\n")).NotTo(ContainSubstring("SECRET"))
+	})
 
 	It("A credential in a runner url that does not parse is hidden in the error", func() {
 		clk = &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}

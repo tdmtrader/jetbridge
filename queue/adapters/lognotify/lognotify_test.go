@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,7 +147,7 @@ var _ = Describe("Parse and Open", func() {
 		for range 2 {
 			c, err := lognotify.Parse(section("{kind: log, path: " + path + "}"))
 			Expect(err).NotTo(HaveOccurred())
-			n, err := lognotify.Open(c)
+			n, err := lognotify.Open(c, io.Discard)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n.Notify(context.Background(), core.Event{Kind: core.ResumedEvent})).To(Succeed())
 			Expect(n.Close()).To(Succeed())
