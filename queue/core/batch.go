@@ -97,7 +97,7 @@ func (b Batch) Cyclic() []string { return b.cyclic }
 // buildsOn maps an entry to the IDs it builds on, followed through nodes
 // outside the batch. An entry with an ancestor that is neither landed nor in
 // the batch, or that sits on or builds on a cycle, is deferred: left out, still
-// queued, neither run nor ejected. The rest are ordered ancestors first, then FIFO.
+// queued, neither run nor ejected. The rest are ordered ancestors first, then FIFO, except that urgent entries and their ancestors go first.
 func FormBatch(entries []Entry, buildsOn map[string][]string, landed map[string]bool) Batch {
 	b, pos := Batch{}, map[string]int{}
 	for i, e := range entries {
@@ -126,6 +126,7 @@ func FormBatch(entries []Entry, buildsOn map[string][]string, landed map[string]
 			live = kept
 			continue
 		}
+		kept = urgentFirst(kept, b.ancestors)
 		done := map[string]bool{}
 		for len(b.entries) < len(kept) { // Kahn: the ready entry first in FIFO order
 			e := kept[slices.IndexFunc(kept, func(e Entry) bool {
