@@ -19,6 +19,7 @@ type LifecycleRequest struct {
 	Kind       EventKind
 	ID, Commit string
 	SHA        string
+	Why        string // if set, the request is refused: recorded and deleted, and nothing happens
 }
 
 // Lifecycle is where an author's requests wait: Pending lists them; Done removes
@@ -125,10 +126,12 @@ func (d *Driver) lifecycleRequested(ctx context.Context) error {
 		d.logf("lifecycle request: %v", err)
 	}
 	for _, r := range reqs {
-		switch r.Kind {
-		case WithdrawnEvent:
+		switch {
+		case r.Why != "":
+			err = d.refuse(ctx, Refusal{string(r.Kind) + "-" + r.ID, r.SHA, r.Why})
+		case r.Kind == WithdrawnEvent:
 			err = d.Withdraw(ctx, r.ID, r.Commit)
-		case ResolvedEvent:
+		case r.Kind == ResolvedEvent:
 			err = d.Resolve(ctx, r.ID, r.Commit)
 		default:
 			err = &StaleRequestError{r.ID, r.Commit}

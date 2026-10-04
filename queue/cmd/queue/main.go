@@ -235,7 +235,7 @@ func newDriver(c config.Config, out, errw io.Writer) (d *core.Driver, closeFn fu
 			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix, Operators: c.Admission.OperatorsFile},
 			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-", Operators: c.Admission.OperatorsFile},
 			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/", Operators: c.Admission.OperatorsFile},
-			Lifecycle:  &git.Lifecycle{Lander: lander, Prefix: c.Admission.ControlPrefix},
+			Lifecycle:  &git.Lifecycle{Lander: lander, Prefix: c.Admission.ControlPrefix, Operators: c.Admission.OperatorsFile},
 			Owner:      fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(suffix)),
 		}, func() {
 			lander.Close()

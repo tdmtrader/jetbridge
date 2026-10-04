@@ -50,6 +50,19 @@ var _ = Describe("Driver withdraw", func() {
 		life.reqs = append(life.reqs, core.LifecycleRequest{Kind: core.WithdrawnEvent, ID: id, Commit: commit, SHA: "sha-main"})
 	}
 
+	It("A refused request withdraws nothing; it is recorded and deleted", func() {
+		d := driver(0)
+		d.NewStrategy = func() core.Strategy { return idle{} }
+		admit(d, "a")
+		life.reqs = append(life.reqs, core.LifecycleRequest{Kind: core.WithdrawnEvent, ID: "a", Commit: "ca", SHA: "sha-main", Why: "not signed"})
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(ids(snap.Queued)).To(Equal([]string{"a"}))
+		Expect(snap.Refused).To(Equal([]core.Refusal{{ID: "withdrawn-a", Commit: "sha-main", Why: "not signed"}}))
+		Expect(note.of(core.RefusedEvent)).To(HaveLen(1))
+		Expect(life.reqs).To(BeEmpty())
+	})
+
 	It("A queued change is withdrawn without being ejected or blamed", func() {
 		d := driver(0)
 		d.NewStrategy = func() core.Strategy { return idle{} }

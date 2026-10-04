@@ -6,7 +6,7 @@ import (
 )
 
 // operators checks a commit against a git allowed-signers file (ssh keys); the
-// zero file accepts everything. Admits, resume and promote requests share it.
+// zero file accepts everything. Admits and resume, promote, withdraw and resolve requests share it.
 type operators struct {
 	l    *Lander
 	file string

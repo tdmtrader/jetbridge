@@ -188,14 +188,9 @@ func (d *Driver) resumeRequested(ctx context.Context) error {
 	for _, r := range reqs {
 		var stale *StaleResumeError
 		if r.Why != "" {
-			ref := Refusal{fmt.Sprintf("resume-%d", r.Seq), r.SHA, r.Why}
-			d.s.Refused = append(d.s.Refused, ref)[max(0, len(d.s.Refused)+1-MaxRefused):]
-			ev := Event{Kind: RefusedEvent, Entries: []Entry{{ID: ref.ID, Commit: r.SHA}}, Why: r.Why, At: d.now()}
-			d.settled(ev)
-			if err := d.save(ctx); err != nil {
+			if err := d.refuse(ctx, Refusal{fmt.Sprintf("resume-%d", r.Seq), r.SHA, r.Why}); err != nil {
 				return err
 			}
-			d.notify(ctx, ev)
 		} else if err := d.Resume(ctx, r.Seq); errors.As(err, &stale) {
 			d.logf("resume request ignored: %v", err)
 		} else if err != nil {
@@ -208,6 +203,18 @@ func (d *Driver) resumeRequested(ctx context.Context) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// refuse records a refused request, kept with its reason, settled and announced.
+func (d *Driver) refuse(ctx context.Context, ref Refusal) error {
+	d.s.Refused = append(d.s.Refused, ref)[max(0, len(d.s.Refused)+1-MaxRefused):]
+	ev := Event{Kind: RefusedEvent, Entries: []Entry{{ID: ref.ID, Commit: ref.Commit}}, Why: ref.Why, At: d.now()}
+	d.settled(ev)
+	if err := d.save(ctx); err != nil {
+		return err
+	}
+	d.notify(ctx, ev)
 	return nil
 }
 

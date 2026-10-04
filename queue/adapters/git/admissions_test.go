@@ -319,6 +319,38 @@ var _ = Describe("Signed promotes", func() {
 	})
 })
 
+var _ = Describe("Signed withdraw and resolve", func() {
+	It("With operators configured, a request signed by an operator is honoured and any other is refused", func() {
+		ctx, dir := context.Background(), GinkgoT().TempDir()
+		op, other := sshKey(dir, "op"), sshKey(dir, "other")
+		pub, err := os.ReadFile(op + ".pub")
+		Expect(err).NotTo(HaveOccurred())
+		operators := filepath.Join(dir, "operators")
+		Expect(os.WriteFile(operators, append([]byte("t@example.com "), pub...), 0o600)).To(Succeed())
+		r := newRemote()
+		c := config.Defaults()
+		c.Repository.URI, c.Repository.Main, c.Admission.OperatorsFile = r.bare, "main", operators
+		for i, kv := range [][2]string{{"gpg.format", "ssh"}, {"user.signingkey", op}} {
+			GinkgoT().Setenv("GIT_CONFIG_KEY_"+strconv.Itoa(i), kv[0])
+			GinkgoT().Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(i), kv[1])
+		}
+		GinkgoT().Setenv("GIT_CONFIG_COUNT", "2")
+		Expect(git.Request(ctx, c, r.work, "withdraw-", "signed", "c1")).To(Succeed())
+		run(r.bare, "update-ref", c.Admission.ControlPrefix+"resolve-unsigned.c2", r.main())
+		strange := run(r.work, "-c", "gpg.format=ssh", "-c", "user.signingkey="+other, "commit-tree", "-S", run(r.work, "mktree"), "-p", r.base, "-m", "x")
+		run(r.work, "push", "-q", r.bare, strange+":"+c.Admission.ControlPrefix+"withdraw-stranger.c3")
+		reqs, err := (&git.Lifecycle{Lander: r.lander(), Prefix: c.Admission.ControlPrefix, Operators: operators}).Pending(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		why := map[string]string{}
+		for _, q := range reqs {
+			why[q.ID] = q.Why
+		}
+		Expect(why).To(Equal(map[string]string{"signed": "",
+			"unsigned": fmt.Sprintf("resolve request %.7s is not signed by an operator", r.main()),
+			"stranger": fmt.Sprintf("withdraw request %.7s is not signed by an operator", strange)}))
+	})
+})
+
 var _ = Describe("Admission owner", func() {
 	authored := func(name string) string {
 		ctx, r := context.Background(), newRemote()
