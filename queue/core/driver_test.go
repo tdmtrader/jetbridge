@@ -330,6 +330,191 @@ var _ = Describe("Driver", func() {
 		Expect(snap.Ejected).To(Equal(map[string]bool{"b": true, "c": true}))
 	})
 
+	Describe("settle records", func() {
+		at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.FixedZone("x", -5*3600))
+		clocked := func() *core.Driver {
+			d := driver()
+			d.Now = func() time.Time { return at }
+			return d
+		}
+
+		It("A flaky batch is recorded and shown, never hidden", func() {
+			run.verdict = func(es []string) core.Verdict {
+				if len(es) == 2 {
+					return core.Fail
+				}
+				return core.Pass
+			}
+			d := clocked()
+			admit(d, "a")
+			admit(d, "b")
+			steps(d, 8)
+			var flaky []core.SettleRecord
+			for _, r := range store.snap().Settled {
+				if r.Kind == core.FlakeEvent {
+					flaky = append(flaky, r)
+				}
+			}
+			Expect(flaky).To(HaveLen(1), "one record for the batch, not one per entry")
+			Expect(flaky[0].ID).To(Equal("a, b"))
+			Expect(flaky[0].Kind).To(Equal(core.EventKind("flaky")))
+			Expect(flaky[0].Batch).To(Equal([]string{"a", "b"}))
+			Expect(flaky[0].Run).NotTo(BeEmpty())
+			Expect(flaky[0].Why).To(Equal("red as a batch, green when split"))
+			Expect(flaky[0].At).To(Equal(at.UTC()))
+		})
+
+		It("A flake is saved with the outcome it accompanies", func() {
+			run.verdict = func(es []string) core.Verdict {
+				if len(es) == 2 {
+					return core.Fail
+				}
+				return core.Pass
+			}
+			d, flakes := clocked(), func(s core.Snapshot) int {
+				return len(slices.DeleteFunc(slices.Clone(s.Settled), func(r core.SettleRecord) bool { return r.Kind != core.FlakeEvent }))
+			}
+			gone := &afterLanding{memStore: store}
+			d.Store = gone
+			admit(d, "a")
+			admit(d, "b")
+			for range 8 {
+				_ = d.Step(ctx) // the save after b's landing fails once
+			}
+			Expect(gone.failed).To(BeTrue())
+			Expect(gone.kept.Landing).NotTo(BeNil(), "b's landing was saved")
+			Expect(flakes(gone.kept)).To(Equal(1), "so its flake was saved with it")
+			Expect(store.snap().Landed).To(HaveLen(2))
+			Expect(flakes(store.snap())).To(Equal(1))
+		})
+
+		It("Every landed change leaves a timestamped settle record", func() {
+			d := clocked()
+			admit(d, "a")
+			admit(d, "b")
+			steps(d, 3)
+			recs := store.snap().Settled
+			Expect(recs).To(HaveLen(2))
+			for i, id := range []string{"a", "b"} {
+				Expect(recs[i].ID).To(Equal(id))
+				Expect(recs[i].Commit).To(Equal("sha-" + id))
+				Expect(recs[i].Kind).To(Equal(core.LandedEvent))
+				Expect(recs[i].At).To(BeTemporally("==", at))
+				Expect(recs[i].At.Location()).To(Equal(time.UTC))
+				Expect(recs[i].AdmittedAt).To(BeTemporally("==", time.Unix(0, 0)))
+				Expect(recs[i].Run).NotTo(BeEmpty())
+				Expect(recs[i].Batch).To(Equal([]string{"a", "b"}))
+			}
+			Expect(note.of(core.LandedEvent)[0].At).To(BeTemporally("==", at))
+			Expect(note.of(core.BatchStarted)[0].At).To(BeTemporally("==", at))
+		})
+
+		It("An ejected change records when it was ejected and why", func() {
+			run.verdict = failsWith("b")
+			d := clocked()
+			admit(d, "a")
+			admit(d, "b")
+			admit(d, "c", "b")
+			steps(d, 12)
+			var got []core.SettleRecord
+			for _, r := range store.snap().Settled {
+				if r.Kind == core.EjectedEvent {
+					got = append(got, r)
+				}
+			}
+			Expect(got).To(HaveLen(2))
+			Expect(got[0].ID).To(Equal("b"))
+			Expect(got[0].Why).To(Equal("failed on its own"))
+			Expect(got[0].At).To(BeTemporally("==", at))
+			Expect(got[1].ID).To(Equal("c"))
+			Expect(got[1].Cause).To(Equal(core.ParentEjected))
+			Expect(got[1].Why).To(ContainSubstring("b"))
+		})
+
+		It("records a pause with its reason", func() {
+			run.timeout = true
+			d := clocked()
+			admit(d, "a")
+			steps(d, 6)
+			recs := store.snap().Settled
+			Expect(recs).To(HaveLen(1))
+			Expect(recs[0].Kind).To(Equal(core.PausedEvent))
+			Expect(recs[0].Why).To(ContainSubstring("no verdict"))
+		})
+
+		It("a restart that finds the queue still paused for the same reason adds no second pause record", func() {
+			land.onLand = func() { store.crash = true }
+			d1 := clocked()
+			admit(d1, "a")
+			Expect(func() {
+				for range 2 {
+					_ = d1.Step(ctx)
+				}
+			}).To(PanicWith("killed"))
+			store.crash, land.onLand, land.blind = false, nil, errors.New("main unreadable")
+			steps(clocked(), 2)
+			expire()
+			steps(clocked(), 2)
+			var paused []core.SettleRecord
+			for _, r := range store.snap().Settled {
+				if r.Kind == core.PausedEvent {
+					paused = append(paused, r)
+				}
+			}
+			Expect(paused).To(HaveLen(1))
+		})
+
+		It("an ejected culprit has the cause culprit", func() {
+			run.verdict = failsWith("a")
+			d := clocked()
+			admit(d, "a")
+			steps(d, 3)
+			recs := store.snap().Settled
+			Expect(recs).To(HaveLen(1))
+			Expect(recs[0].Kind).To(Equal(core.EjectedEvent))
+			Expect(recs[0].Cause).To(Equal("culprit"))
+		})
+
+		It("a culprit proved by bisecting has the cause culprit and its orphan keeps parent-ejected", func() {
+			run.verdict = failsWith("b")
+			d := clocked()
+			admit(d, "a")
+			admit(d, "b")
+			admit(d, "c", "b")
+			steps(d, 12)
+			causes := map[string]string{}
+			for _, r := range store.snap().Settled {
+				if r.Kind == core.EjectedEvent {
+					causes[r.ID] = r.Cause
+				}
+			}
+			Expect(causes).To(Equal(map[string]string{"b": "culprit", "c": core.ParentEjected}))
+		})
+
+		It("keeps only the last MaxSettled records", func() {
+			max = core.MaxSettled + 5
+			d := clocked()
+			for i := range core.MaxSettled + 5 {
+				admit(d, "c"+strconv.Itoa(i))
+			}
+			steps(d, 3)
+			recs := store.snap().Settled
+			Expect(recs).To(HaveLen(core.MaxSettled))
+			Expect(recs[len(recs)-1].ID).To(Equal("c" + strconv.Itoa(core.MaxSettled+4)))
+			Expect(recs[0].ID).To(Equal("c5"))
+		})
+
+		It("loads a snapshot saved before settle records existed", func() {
+			store.data = []byte(`{"Landed":{"old":true}}`)
+			d := clocked()
+			admit(d, "a")
+			steps(d, 3)
+			snap := store.snap()
+			Expect(snap.Landed).To(Equal(map[string]bool{"old": true, "a": true}))
+			Expect(snap.Settled).To(HaveLen(1))
+		})
+	})
+
 	It("A runner timeout is retried, then the queue pauses and ejects nothing", func() {
 		run.timeout = true
 		d := driver()
