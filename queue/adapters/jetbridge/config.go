@@ -44,8 +44,11 @@ func Parse(n *yaml.Node) (Config, error) {
 	case c.WaitCap <= 0:
 		return Config{}, errors.New("runner.wait_cap must be more than zero")
 	}
+	if err := config.URL("runner.url", c.URL); err != nil { // as decoded, whoever loaded the section
+		return Config{}, err
+	}
 	c.URL = strings.TrimRight(c.URL, "/")
-	return c, nil // config.Parse refused any URL holding credentials
+	return c, nil
 }
 
 // Secret is the bearer token Credential names, read afresh.

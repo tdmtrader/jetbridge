@@ -163,10 +163,10 @@ var _ = Describe("JetBridge runner", func() {
 
 	It("A credential in a runner url that does not parse is hidden in the error", func() {
 		clk = &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-		err := newRunner("https://user:SECRET@host/%zz").Start(ctx, core.Run{ID: "r1"}, candidate)
-		Expect(err).To(MatchError(`runner.url: invalid URL escape "%zz"`), "the field and the cause, never the URL")
-		err = newRunner("https://host/%zz").Start(ctx, core.Run{ID: "r1"}, candidate)
-		Expect(err).To(MatchError(`runner.url: invalid URL escape "%zz"`))
+		for _, u := range []string{"https://user:SECRET@host/%zz", "https://host/%zz", "https://user:SECRET/x@host/"} {
+			err := newRunner(u).Start(ctx, core.Run{ID: "r1"}, candidate)
+			Expect(err).To(MatchError("runner.url: does not parse as a URL"), "the field only, never the URL or its port: %s", u)
+		}
 	})
 
 	// test starts a run and polls it until done, at most 10 times.
@@ -381,6 +381,10 @@ var _ = Describe("JetBridge runner", func() {
 				Expect(err).To(MatchError(ContainSubstring("runner.url: a URL must not hold credentials")), "url %q", u)
 				Expect(err.Error()).NotTo(ContainSubstring("F4ke"), "url %q", u)
 			}
+			// checked again as decoded here, whoever loaded the section
+			_, err := parse(strings.Replace(ok, "https://ci.example.test", "!!binary aHR0cHM6Ly91c2VyOkY0a2UvUGE1NUBob3N0LyV6eg==", 1) + "}")
+			Expect(err).To(MatchError(ContainSubstring("runner.url: a URL must not hold credentials")))
+			Expect(err.Error()).NotTo(ContainSubstring("F4ke"))
 		})
 	})
 })

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -170,10 +172,18 @@ func (c Config) validate() error {
 }
 
 // urls refuses a URL holding credentials in any scalar of the file, keys included, before
-// any other check can quote one; the refusal names the key path, never the value.
+// any other check can quote one; the refusal names the key path, never the value. Each
+// scalar is checked as it decodes, so a tag such as !!binary cannot hide a URL.
 func urls(n *yaml.Node, path string) error {
 	if n.Kind == yaml.ScalarNode {
-		return URL(cmp.Or(path, "config"), n.Value)
+		value := n.Value
+		var v any
+		if n.Decode(&v) == nil {
+			if s, ok := v.(string); ok {
+				value = s
+			}
+		}
+		return URL(cmp.Or(path, "config"), value)
 	}
 	for i, child := range n.Content {
 		p := path
@@ -187,18 +197,33 @@ func urls(n *yaml.Node, path string) error {
 	return nil
 }
 
-// URL refuses a scheme:// value that does not parse, or that holds userinfo in its authority
-// (between :// and the first / ? #), naming key and never the value. Only an ssh:// login name
-// with no password is allowed. Values with no :// (paths, git@host:repo) are left to git.
+var wholeURL = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+
+// URL refuses a value that is a scheme:// URL if it does not parse or holds userinfo in its
+// authority (between :// and the first / ? #); only an ssh:// login name with no password is
+// allowed. Inside free text, a scheme:// is refused only if its authority, up to the first
+// space, / ? # or closing bracket or quote, holds an @. Either names the key, never the
+// value. Values with no :// (paths, git@host:repo) are left to git.
 func URL(key, value string) error {
-	_, rest, ok := strings.Cut(value, "://")
-	if !ok {
-		return nil
+	refuse := fmt.Errorf("%s: a URL must not hold credentials and must parse; give credentials to git or the runner out of band (see Credentials in the README)", key)
+	free := strings.Split(value, "://")[1:]
+	if v := strings.TrimSpace(value); wholeURL.MatchString(v) {
+		_, rest, _ := strings.Cut(v, "://")
+		authority := rest[:strings.IndexAny(rest+"/", "/?#")]
+		u, err := url.Parse(v)
+		if err != nil || (strings.Contains(authority, "@") || u.User != nil) && !sshLogin(u) {
+			return refuse
+		}
+		free = free[1:] // any later scheme:// is free text
 	}
-	authority := rest[:strings.IndexAny(rest+"/", "/?#")]
-	u, err := url.Parse(value)
-	if err != nil || (strings.Contains(authority, "@") || u.User != nil) && !sshLogin(u) {
-		return fmt.Errorf("%s: a URL must not hold credentials and must parse; give credentials to git or the runner out of band (see Credentials in the README)", key)
+	for _, rest := range free {
+		end := strings.IndexFunc(rest, func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune("/?#)]}>\"'", r) })
+		if end < 0 {
+			end = len(rest)
+		}
+		if strings.Contains(rest[:end], "@") {
+			return refuse
+		}
 	}
 	return nil
 }

@@ -194,4 +194,29 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(MatchError(ContainSubstring("repository.uri: a URL must not hold credentials")))
 		Expect(err.Error()).NotTo(MatchRegexp("F4ke|Pa55"))
 	})
+	It("checks each value as it decodes, so a tag cannot hide a URL credential", func() {
+		const hidden = "!!binary aHR0cHM6Ly91c2VyOkY0a2UvUGE1NUBob3N0LyV6eg==" // https://user:F4ke/Pa55@host/%zz
+		for extra, key := range map[string]string{
+			"runner: {kind: jetbridge, url: " + hidden + "}\n":      "runner.url",
+			"lander: {scratch: !!str 'https://user:F4ke@host/x'}\n": "lander.scratch",
+			"? " + hidden + "\n: 1\n":                               "config",
+		} {
+			_, err := config.Parse([]byte(minimal + extra))
+			Expect(err).To(MatchError(ContainSubstring(key+": a URL must not hold credentials")), extra)
+			Expect(err.Error()).NotTo(MatchRegexp("F4ke|Pa55"), extra)
+		}
+	})
+
+	It("allows a URL inside free text unless its authority holds credentials", func() {
+		for _, name := range []string{"Queue (https://ci.example.test)", "Queue, see https://host/%zz", "a :// b"} {
+			c, err := config.Parse([]byte(minimal + "compose: {committer: {name: '" + name + "'}}\n"))
+			Expect(err).NotTo(HaveOccurred(), name)
+			Expect(c.Compose.Committer.Name).To(Equal(name))
+		}
+		for _, name := range []string{"Queue (https://u:F4ke@ci.example.test)", "see https://F4ke@host/x", "Queue <ssh://git:F4ke@host>", "https://ci.example.test/ or https://u:F4ke@ci.example.test"} {
+			_, err := config.Parse([]byte(minimal + "compose: {committer: {name: '" + name + "'}}\n"))
+			Expect(err).To(MatchError(ContainSubstring("compose.committer.name: a URL must not hold credentials")), name)
+			Expect(err.Error()).NotTo(ContainSubstring("F4ke"), name)
+		}
+	})
 })

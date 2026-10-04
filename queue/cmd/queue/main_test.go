@@ -276,6 +276,23 @@ var _ = Describe("queue command", func() {
 		}
 	})
 
+	It("refuses a runner url hidden behind a !!binary tag at load, never echoing it", func() {
+		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
+		old := core.Secrets
+		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
+		DeferCleanup(func() { core.Secrets = old })
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "b")
+		hidden := "!!binary aHR0cHM6Ly91c2VyOkY0a2UvUGE1NUBob3N0LyV6eg==" // https://user:F4ke/Pa55@host/%zz
+		cfg := strings.NewReplacer("https://ci.example.invalid", hidden, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN").Replace(string(must(os.ReadFile(file))))
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		var o, e bytes.Buffer
+		entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)
+		code := entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)
+		Expect(o.String() + e.String()).NotTo(MatchRegexp("F4ke|Pa55"))
+		Expect(code).NotTo(Equal(0))
+	})
+
 	It("refuses a notify path holding a credential at load, never echoing it", func() {
 		old := core.Secrets
 		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec

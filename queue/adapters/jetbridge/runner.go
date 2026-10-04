@@ -146,8 +146,8 @@ func (j *Runner) call(ctx context.Context, method, path string, out any) error {
 	}
 	core.Secrets.Add(token) // a replaced token is hidden too
 	req, err := http.NewRequestWithContext(ctx, method, j.Config.URL+path, strings.NewReader("{}"))
-	if err != nil {
-		return cause("runner.url", err)
+	if err != nil { // a parse error quotes the URL, or its port text
+		return errors.New("runner.url: does not parse as a URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)

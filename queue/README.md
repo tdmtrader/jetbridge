@@ -219,15 +219,18 @@ and merge keys are refused. Defaults are applied before your file is read.
   `time`, `entries`, `run`, `why`, `cause`, `parent`. A notifier error is logged
   and never changes a decision. With no notifier, nothing is announced.
 - **Credentials.** No URL carries one. Every string in the config file, keys
-  included, and every command-line argument is refused at load if it is a
+  included and checked as decoded (so a `!!binary` tag hides nothing), and every
+  command-line argument is refused at load if it is a
   `scheme://` value holding `user:password@` or a bare `user@` in its authority
   (only an `ssh://` login name such as `ssh://git@host/repo` is allowed; an `@`
   in the path, as in `file:///srv/a@b.git`, is not userinfo), or if it does not
-  parse; the refusal names the key path, never the value. Git authenticates the way it does outside the queue:
+  parse. A `scheme://` inside free text, as in `Queue (https://ci.example.test)`,
+  is refused only if its authority holds an `@`. The refusal names the key path,
+  never the value. Git authenticates the way it does outside the queue:
   an ssh key, a credential helper or `GIT_ASKPASS` in the runner's environment.
   The runner's bearer token comes only from `runner.credential` and is sent in a
   header. A URL error from the runner names the setting or the request path and
-  the cause, never the URL.
+  the cause, never the URL; a `runner.url` that does not parse is reported as such, with no detail.
 - **Redaction.** Every output line, saved reason, event and log passes through
   one filter. It hides the runner's token by value in every encoding: raw,
   URL-escaped, JSON-escaped (once or twice, with or without escaped slashes) and
