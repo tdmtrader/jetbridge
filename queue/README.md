@@ -30,6 +30,10 @@ Vocabulary is in [CONTEXT.md](CONTEXT.md); behaviour is specified in
 - One owner at a time: a lease with a growing token, and a fence on every land.
   Landing is crash-safe: an intent is saved before the land and reconciled
   against main on the next load.
+- When main moved under a batch that passed, nothing is pushed and nothing is
+  settled: the batch is composed again on the new main and retested. This is
+  recorded as `recompose` with the reason (main's new head and the candidate),
+  never counts toward the three-failure pause, and ejects nothing.
 
 ## Architecture
 

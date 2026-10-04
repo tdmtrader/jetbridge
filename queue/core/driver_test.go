@@ -175,6 +175,7 @@ type memLander struct {
 	fence  uint64
 	lands  int // Land calls
 	fails  int
+	moved  int // Lands refused with a MainMovedError
 	kill   bool
 	before func() // runs as Land is called, before main moves
 	onLand func()
@@ -220,6 +221,10 @@ func (l *memLander) Land(ctx context.Context, main, cand string, fence uint64) e
 	}
 	if err := l.fenced(fence); err != nil {
 		return err
+	}
+	if l.moved > 0 {
+		l.moved--
+		return &core.MainMovedError{Main: main, Candidate: cand}
 	}
 	if l.fails > 0 {
 		l.fails--
@@ -861,6 +866,61 @@ var _ = Describe("Driver", func() {
 		steps(d2, 3)
 		Expect(land.landed).To(Equal([]string{"a", "b"}))
 		Expect(store.snap().Ejected).To(BeEmpty())
+	})
+
+	// attempt steps until the lander has been asked to land once more.
+	attempt := func(d *core.Driver) {
+		before := land.lands
+		for range 6 {
+			_ = d.Step(ctx)
+			if land.lands > before {
+				return
+			}
+		}
+		Fail("no landing was attempted")
+	}
+
+	It("A landing refused because main moved is recomposed and never counts toward the pause", func() {
+		land.moved = 5 // more than the 3 failures that pause
+		d := driver()
+		admit(d, "a")
+		for range 5 {
+			attempt(d)
+			Expect(store.snap().Paused).To(BeFalse())
+		}
+		snap := store.snap()
+		Expect(snap.Ejected).To(BeEmpty())
+		Expect(ids(snap.Queued)).To(Equal([]string{"a"}))
+		Expect(land.landed).To(BeEmpty())
+		rec := note.of(core.RecomposeEvent)
+		Expect(rec).To(HaveLen(5))
+		Expect(rec[0].Why).To(ContainSubstring("main moved"))
+		Expect(ids(rec[0].Entries)).To(Equal([]string{"a"}))
+		Expect(note.of(core.PausedEvent)).To(BeEmpty())
+		kept := 0
+		for _, r := range snap.Settled {
+			if r.Kind == core.RecomposeEvent {
+				kept++
+			}
+		}
+		Expect(kept).To(Equal(5))
+		attempt(d)
+		Expect(land.landed).To(Equal([]string{"a"}))
+		Expect(store.snap().Landing).To(BeNil())
+	})
+
+	It("A recompose does not reset the count of other landing failures", func() {
+		land.fails = 2
+		d := driver()
+		admit(d, "a")
+		attempt(d)
+		attempt(d)
+		land.moved = 1
+		attempt(d)
+		Expect(store.snap().Paused).To(BeFalse())
+		land.fails = 1
+		attempt(d)
+		Expect(store.snap().Paused).To(BeTrue(), "the third other failure still pauses")
 	})
 
 	It("Repeated landing failures pause the queue with the reason", func() {

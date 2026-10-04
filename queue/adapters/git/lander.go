@@ -67,8 +67,10 @@ func (l *Lander) Land(ctx context.Context, main, candidate string, fence uint64)
 	if err != nil {
 		return err
 	}
-	if ok, err := l.holds(ctx, "merge-base", "--is-ancestor", mainOID, candidate); err != nil || !ok {
+	if ok, err := l.holds(ctx, "merge-base", "--is-ancestor", mainOID, candidate); err != nil {
 		return errors.Join(err, fmt.Errorf("candidate %s is not ahead of main %q", candidate, mainOID))
+	} else if !ok {
+		return &core.MainMovedError{Main: mainRef, Candidate: candidate, Head: mainOID}
 	}
 	return l.push(ctx, fence, leaseOID, mainRef, mainOID, candidate+":"+mainRef)
 }

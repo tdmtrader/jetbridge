@@ -14,6 +14,7 @@ Feature: Landing with git
     Given a remote whose main has moved past where a candidate branched
     When the candidate is landed
     Then the landing is refused
+    And it is named as main having moved
     And main does not move
 
   Scenario: A landing with an older fence is refused and main does not move

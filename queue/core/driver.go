@@ -233,7 +233,7 @@ func (d *Driver) Step(ctx context.Context) error {
 			v, done = None, true
 		}
 		if done {
-			if err := d.record(ctx, f, v); err != nil {
+			if err := d.record(ctx, f, v); err != nil || d.s == nil { // nil: a recompose dropped what the driver holds
 				return err
 			}
 		}
@@ -242,7 +242,7 @@ func (d *Driver) Step(ctx context.Context) error {
 		return nil
 	}
 	runs, settles := d.st.Plan(d.view())
-	if err := d.apply(ctx, Flight{}, Outcome{Settle: settles}); err != nil {
+	if err := d.apply(ctx, Flight{}, Outcome{Settle: settles}); err != nil || d.s == nil {
 		return err
 	}
 	for _, r := range runs {
@@ -353,6 +353,10 @@ func (d *Driver) apply(ctx context.Context, f Flight, out Outcome) error {
 // the MaxFailures-th error in a row it first saves a pause, keeping the
 // Landing; the count restarts only once the pause is saved.
 func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error) error {
+	var moved *MainMovedError
+	if errors.As(err, &moved) {
+		return d.recompose(ctx, f, es, moved)
+	}
 	if d.fails++; d.fails >= cmp.Or(d.MaxFailures, 3) {
 		why := fmt.Sprintf("landing failed %d times: %v", d.fails, err)
 		ev := Event{Kind: PausedEvent, Entries: es, Run: f.Run, Why: why, At: d.now()}
@@ -365,6 +369,20 @@ func (d *Driver) landFailed(ctx context.Context, f Flight, es []Entry, err error
 	}
 	d.reset()
 	return fmt.Errorf("land %s: %w", f.Run.ID, err)
+}
+
+// recompose records that main moved under a batch that passed: nothing was
+// pushed and nothing is settled, so the batch is composed again on the new main
+// and retested. It is no land error, so it neither counts toward the pause nor
+// clears that count. The saved Landing is reconciled on the next Step.
+func (d *Driver) recompose(ctx context.Context, f Flight, es []Entry, moved *MainMovedError) error {
+	ev := Event{Kind: RecomposeEvent, Entries: es, Run: f.Run, Why: moved.Error(), At: d.now()}
+	d.settled(ev)
+	if d.save(ctx) == nil {
+		d.notify(ctx, ev)
+	}
+	d.reset()
+	return nil
 }
 
 // hold takes or renews the lease, then loads. A new token means another

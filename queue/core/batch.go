@@ -157,3 +157,14 @@ func reach(id string, buildsOn map[string][]string, in, landed map[string]bool) 
 	}
 	return
 }
+
+// MainMovedError: a Lander refused because main is no longer where the
+// candidate was composed. Head, when known, is the commit main is at now.
+type MainMovedError struct{ Main, Candidate, Head string }
+
+func (e *MainMovedError) Error() string {
+	if e.Head == "" {
+		return fmt.Sprintf("main moved: candidate %s is not ahead of %q", e.Candidate, e.Main)
+	}
+	return fmt.Sprintf("main moved to %s: candidate %s is not ahead of main %q", e.Head, e.Candidate, e.Main)
+}

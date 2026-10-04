@@ -141,14 +141,15 @@ type Lander interface {
 type EventKind string
 
 const (
-	BatchStarted EventKind = "batch-started"
-	VerdictIn    EventKind = "verdict"
-	LandedEvent  EventKind = "landed"
-	EjectedEvent EventKind = "ejected"
-	FlakeEvent   EventKind = "flaky"
-	PausedEvent  EventKind = "paused"
-	ResumedEvent EventKind = "resumed"
-	RefusedEvent EventKind = "refused"
+	BatchStarted   EventKind = "batch-started"
+	VerdictIn      EventKind = "verdict"
+	LandedEvent    EventKind = "landed"
+	EjectedEvent   EventKind = "ejected"
+	FlakeEvent     EventKind = "flaky"
+	PausedEvent    EventKind = "paused"
+	ResumedEvent   EventKind = "resumed"
+	RefusedEvent   EventKind = "refused"
+	RecomposeEvent EventKind = "recompose"
 )
 
 // Event is one thing the driver announces. Why, Cause and Parent are copied

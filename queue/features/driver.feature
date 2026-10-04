@@ -77,6 +77,18 @@ Feature: The queue makes progress on its own
     Then the stalled landing is refused
     And the second driver lands "a" and "b"
 
+  Scenario: A landing refused because main moved is recomposed and never counts toward the pause
+    Given the lander refuses a green batch five times because main moved
+    When the queue runs five times
+    Then each is recorded as a recompose with the reason and the batch stays queued
+    And the queue is not paused and nothing is ejected
+    And the batch lands once main stops moving
+
+  Scenario: A recompose does not reset the count of other landing failures
+    Given two landings failed for another reason and one was refused because main moved
+    When a third other landing fails
+    Then the queue pauses
+
   Scenario: Repeated landing failures pause the queue with the reason
     Given every landing fails
     And change "a" is admitted

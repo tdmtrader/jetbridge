@@ -2,6 +2,7 @@ package git_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/concourse/concourse/queue/adapters/git"
 	"github.com/concourse/concourse/queue/config"
+	"github.com/concourse/concourse/queue/core"
 )
 
 const lease = "refs/queue/lease"
@@ -80,7 +82,10 @@ var _ = Describe("Lander", func() {
 	It("A candidate that is not ahead of main is refused", func() {
 		c1, c2 := r.commit("c1", r.base), r.commit("c2", r.base)
 		r.setMain(c1)
-		Expect(r.lander().Land(ctx, "main", c2, 5)).To(MatchError(ContainSubstring("not ahead of main")))
+		err := r.lander().Land(ctx, "main", c2, 5)
+		Expect(err).To(MatchError(ContainSubstring("not ahead of main")))
+		var moved *core.MainMovedError
+		Expect(errors.As(err, &moved)).To(BeTrue(), "named as main moved so the driver recomposes")
 		Expect(r.main()).To(Equal(c1))
 	})
 
