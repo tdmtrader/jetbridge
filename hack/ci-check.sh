@@ -24,12 +24,28 @@
 #   hack/ci-check.sh [ref] [job ...]
 #
 #   ref   git ref to test (default: HEAD)
-#   job   pipeline jobs to run, in order (default: build-and-vet unit-tests)
+#   job   pipeline jobs to run, in order (default: build-and-vet unit-tests);
+#         on the battle station they run at once
 #
 # Environment:
 #   FLY_TARGET   fly target to execute against (default: home)
 #   KUBECONFIG   defaults to $HOME/.kube/config
 #   PORT_FORWARD_NS / PORT_FORWARD_SVC / FLY_PORT  where to point the tunnel
+#   BATTLE_STATION        auto (default) or off
+#   BATTLE_STATION_LABEL  node label of the big CI node
+#                         (default: jetbridge.dev/battle-station=true)
+#   BATTLE_STATION_MIN_CPU  smallest per-job boost worth taking, millicores
+#                         (default: 9000)
+#
+# Battle station. When the node carrying BATTLE_STATION_LABEL is Ready, not
+# cordoned, has a ready artifact daemon and enough unrequested CPU, the jobs run
+# in PARALLEL, each with its container_requests.cpu raised to an equal share of
+# that free CPU (at least BATTLE_STATION_MIN_CPU, which is more than theborg
+# can offer, so the boosted pods land on the battle station). Their output goes
+# to a log per job; a failing job's tail is printed and its full log kept.
+# Otherwise -- the desktop asleep, rebooting or cordoned for a game -- the jobs
+# run one after another with the pipeline's own requests, exactly as before.
+# Either way the summary reports each job's wall time and the total.
 #
 # The tunnel is opened only when the target's API is 127.0.0.1:$FLY_PORT (a
 # port-forwarded target); `home` reaches concourse.home directly. Two runs at
@@ -50,6 +66,11 @@ FLY_PORT="${FLY_PORT:-18080}"
 PORT_FORWARD_NS="${PORT_FORWARD_NS:-cicd}"
 PORT_FORWARD_SVC="${PORT_FORWARD_SVC:-svc/concourse-web}"
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+BATTLE_STATION="${BATTLE_STATION:-auto}"
+BATTLE_STATION_LABEL="${BATTLE_STATION_LABEL:-jetbridge.dev/battle-station=true}"
+# Above theborg's unrequested CPU (~8.8 cores of 12), so a boosted one-off
+# cannot fit there: it runs on the battle station or waits.
+BATTLE_STATION_MIN_CPU="${BATTLE_STATION_MIN_CPU:-9000}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -172,60 +193,74 @@ SHA="$(materialise)"
 log "ref $REF -> $SHA"
 log "jobs: ${JOBS[*]}"
 
-declare -a VERDICTS=()
-FAILED=0
-
-for job in "${JOBS[@]}"; do
-  cfg="$WORK/$job.yml"
+# Prepare one job: its task config, the inputs to upload, whether the step is
+# privileged, and its pipeline vars. Everything lands in $WORK/<job>.* so a run
+# can happen later, possibly in the background. Prints a SKIPPED reason and
+# returns 1 if the job cannot be run.
+prepare_job() {
+  local job="$1" cpu_request="$2" cfg="$WORK/$1.yml"
+  local extract=(go run "$REPO_ROOT/hack/ci-extract-task")
 
   # The task config comes from the *ref*, not from the working tree: a branch
   # that changes its own CI task should be checked with the task it ships.
-  if ! go run "$REPO_ROOT/hack/ci-extract-task" "$WORK/src/deploy/concourse-pipeline.yml" "$job" >"$cfg"; then
-    VERDICTS+=("$job: SKIPPED (could not extract task config)")
-    FAILED=1
-    break
+  if [ -n "$cpu_request" ]; then
+    extract+=(-cpu-request "$cpu_request")
+  fi
+  if ! "${extract[@]}" "$WORK/src/deploy/concourse-pipeline.yml" "$job" >"$cfg"; then
+    echo "$job: SKIPPED (could not extract task config)"
+    return 1
   fi
 
-  inputs=()
+  : >"$WORK/$job.args"
   while IFS= read -r in_name; do
     [ -n "$in_name" ] || continue
-    inputs+=(-i "$in_name=$WORK/src")
+    printf '%s\n' -i "$in_name=$WORK/src" >>"$WORK/$job.args"
   done < <(go run "$REPO_ROOT/hack/ci-extract-task" -inputs "$WORK/src/deploy/concourse-pipeline.yml" "$job")
 
-  if [ ${#inputs[@]} -eq 0 ]; then
-    VERDICTS+=("$job: SKIPPED (task declares no inputs; nothing to upload)")
-    FAILED=1
-    break
+  if [ ! -s "$WORK/$job.args" ]; then
+    echo "$job: SKIPPED (task declares no inputs; nothing to upload)"
+    return 1
   fi
 
   # `privileged: true` lives on the STEP, outside the config fly is given, and
   # fly execute only applies it as -p. Dropping it turned the brine job's
   # namespace launcher into an EPERM that looked like a branch failure.
-  privileged=()
   if [ "$(go run "$REPO_ROOT/hack/ci-extract-task" -privileged "$WORK/src/deploy/concourse-pipeline.yml" "$job")" = "true" ]; then
-    privileged=(-p)
+    printf '%s\n' -p >>"$WORK/$job.args"
     log "'$job' runs privileged"
   fi
 
   if ! vars_for "$cfg" "$job"; then
-    VERDICTS+=("$job: SKIPPED (unresolved pipeline vars)")
-    FAILED=1
-    break
+    echo "$job: SKIPPED (unresolved pipeline vars)"
+    return 1
   fi
+  if [ ${#FLY_VARS[@]} -gt 0 ]; then
+    printf '%s\n' "${FLY_VARS[@]}" >>"$WORK/$job.args"
+  fi
+}
 
-  log "executing '$job' ($(basename "$cfg"))"
+# Run one prepared job. Output goes to $WORK/<job>.out and, when $2 is "tee",
+# to the terminal too. Writes the verdict to $WORK/<job>.verdict and the wall
+# time to $WORK/<job>.secs; returns the job's status.
+run_job() {
+  local job="$1" mode="$2" status=0 started args=()
+  started=$(date +%s)
+  while IFS= read -r a; do args+=("$a"); done <"$WORK/$job.args"
 
-  status=0
+  log "executing '$job' ($(basename "$WORK/$job.yml"))"
+
   # --include-ignored: the materialised tree is not a git repo, so fly's
   # `git ls-files` probe there is meaningless. Upload exactly what git archive
   # produced.
-  fly -t "$FLY_TARGET" execute \
-    -c "$cfg" \
-    --include-ignored \
-    ${privileged+"${privileged[@]}"} \
-    "${inputs[@]}" \
-    ${FLY_VARS+"${FLY_VARS[@]}"} 2>&1 | tee "$WORK/$job.out" || status=1
+  if [ "$mode" = tee ]; then
+    fly -t "$FLY_TARGET" execute -c "$WORK/$job.yml" --include-ignored "${args[@]}" 2>&1 \
+      | tee "$WORK/$job.out" || status=1
+  else
+    fly -t "$FLY_TARGET" execute -c "$WORK/$job.yml" --include-ignored "${args[@]}" \
+      >"$WORK/$job.out" 2>&1 || status=1
+  fi
 
+  local build_line build_id
   build_line="$(grep -m1 '^executing build ' "$WORK/$job.out" || true)"
   build_id="${build_line#executing build }"
   build_id="${build_id%% *}"
@@ -252,17 +287,128 @@ for job in "${JOBS[@]}"; do
     done
   fi
 
+  local secs=$(( $(date +%s) - started ))
+  echo "$secs" >"$WORK/$job.secs"
   if [ "$status" -eq 0 ]; then
-    VERDICTS+=("$job: PASS (build $build_id)")
+    echo "$job: PASS (build $build_id, $(fmt_secs "$secs"))" >"$WORK/$job.verdict"
   else
-    VERDICTS+=("$job: FAIL (build $build_id) -- ${build_line#*at }")
-    FAILED=1
-    break
+    echo "$job: FAIL (build $build_id, $(fmt_secs "$secs")) -- ${build_line#*at }" >"$WORK/$job.verdict"
   fi
-done
+  return "$status"
+}
+
+fmt_secs() { printf '%dm%02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
+
+# Millicores from a Kubernetes CPU quantity ("28", "1.5", "250m").
+to_millicores() {
+  awk '{ q = $1; if (q ~ /m$/) { sub(/m$/, "", q); print int(q) } else if (q != "") print int(q * 1000) }'
+}
+
+# The battle station is the big CI node (label $BATTLE_STATION_LABEL). It is a
+# desktop that sleeps, reboots for updates, and is cordoned while its owner
+# games, so "is it there" is asked every run, not assumed. Prints the per-job
+# CPU request (millicores) to boost to when it is Ready, schedulable, carries a
+# ready artifact daemon, and has room for every job at once at no less than
+# $BATTLE_STATION_MIN_CPU each; prints nothing otherwise, and logs why.
+battle_station_boost() {
+  local njobs="$1" nodes name unsched ready cache alloc requested free per
+  if [ "$BATTLE_STATION" = off ]; then
+    log "battle station: off (BATTLE_STATION=off)"
+    return
+  fi
+  if ! nodes="$(kubectl get nodes -l "$BATTLE_STATION_LABEL" --request-timeout=10s -o jsonpath='{range .items[*]}{.metadata.name}|{.spec.unschedulable}|{.status.conditions[?(@.type=="Ready")].status}|{.metadata.labels.concourse\.dev/artifact-cache}{"\n"}{end}' 2>/dev/null)"; then
+    log "battle station: cannot read nodes with kubectl; running as usual"
+    return
+  fi
+  if [ -z "$nodes" ]; then
+    log "battle station: no node labelled $BATTLE_STATION_LABEL; running as usual"
+    return
+  fi
+  IFS='|' read -r name unsched ready cache <<<"$(head -1 <<<"$nodes")"
+  if [ "$ready" != True ]; then
+    log "battle station: $name is not Ready (asleep or off?); running as usual"
+    return
+  fi
+  if [ "$unsched" = true ]; then
+    log "battle station: $name is cordoned; running as usual"
+    return
+  fi
+  if [ "$cache" != ready ]; then
+    log "battle station: $name has no ready artifact daemon; running as usual"
+    return
+  fi
+
+  alloc="$(kubectl get node "$name" --request-timeout=10s -o jsonpath='{.status.allocatable.cpu}' | to_millicores)"
+  requested="$(kubectl get pods -A --request-timeout=10s \
+    --field-selector "spec.nodeName=$name,status.phase!=Succeeded,status.phase!=Failed" \
+    -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.resources.requests.cpu}{"\n"}{end}{end}' \
+    | to_millicores | awk '{ s += $1 } END { print s + 0 }')"
+  # Leave a core for whatever lands between this read and the submit.
+  free=$(( alloc - requested - 1000 ))
+  per=$(( free / njobs / 1000 * 1000 ))
+  if [ "$per" -lt "$BATTLE_STATION_MIN_CPU" ]; then
+    log "battle station: $name has ${free}m CPU free, under ${BATTLE_STATION_MIN_CPU}m for each of $njobs job(s); running as usual"
+    return
+  fi
+  log "battle station: $name is live with ${free}m CPU free; running $njobs job(s) in parallel at ${per}m each"
+  echo "$per"
+}
+
+declare -a VERDICTS=()
+FAILED=0
+RUN_STARTED=$(date +%s)
+BOOST="$(battle_station_boost "${#JOBS[@]}" || true)"
+
+if [ -n "$BOOST" ]; then
+  # Prepare every job first: a SKIP should stop the run before any build burns.
+  for job in "${JOBS[@]}"; do
+    if ! skip="$(prepare_job "$job" "$BOOST")"; then
+      VERDICTS+=("$skip")
+      FAILED=1
+      break
+    fi
+  done
+
+  if [ "$FAILED" -eq 0 ]; then
+    declare -a PIDS=()
+    for job in "${JOBS[@]}"; do
+      run_job "$job" quiet &
+      PIDS+=($!)
+    done
+    for i in "${!JOBS[@]}"; do
+      job="${JOBS[$i]}"
+      if wait "${PIDS[$i]}"; then
+        log "$job finished: $(cat "$WORK/$job.verdict")"
+      else
+        FAILED=1
+        log "$job FAILED -- last 40 lines:"
+        tail -40 "$WORK/$job.out" >&2
+        kept="${TMPDIR:-/tmp}/ci-check-${SHA:0:10}-$job.log"
+        cp "$WORK/$job.out" "$kept"
+        log "full log: $kept"
+      fi
+      VERDICTS+=("$(cat "$WORK/$job.verdict")")
+    done
+  fi
+else
+  for job in "${JOBS[@]}"; do
+    if ! skip="$(prepare_job "$job" "")"; then
+      VERDICTS+=("$skip")
+      FAILED=1
+      break
+    fi
+    status=0
+    run_job "$job" tee || status=1
+    VERDICTS+=("$(cat "$WORK/$job.verdict")")
+    if [ "$status" -ne 0 ]; then
+      FAILED=1
+      break
+    fi
+  done
+fi
 
 echo >&2
-log "ci-check $SHA on $FLY_TARGET"
+log "ci-check $SHA on $FLY_TARGET in $(fmt_secs $(( $(date +%s) - RUN_STARTED )))${BOOST:+ (battle station, ${BOOST}m per job)}"
 for v in "${VERDICTS[@]}"; do
   printf '    %s\n' "$v" >&2
 done

@@ -15,6 +15,8 @@
 //	ci-extract-task -inputs <pipeline.yml> <job-name>    # print the task's input names
 //	ci-extract-task -privileged <pipeline.yml> <job-name> # print "true" if the step is privileged
 //	ci-extract-task -jobs <pipeline.yml>                 # print every job that has a task
+//	ci-extract-task -cpu-request <millicores> <pipeline.yml> <job-name>
+//	                                                     # the config, with container_requests.cpu replaced
 //
 // A job with more than one task is rejected rather than guessed at.
 package main
@@ -23,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"sigs.k8s.io/yaml"
 )
@@ -95,6 +98,7 @@ func flatten(plan []step) []step {
 
 func main() {
 	var wantInputs, wantJobs, wantPrivileged bool
+	var cpuRequest uint64
 
 	args := os.Args[1:]
 	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
@@ -105,6 +109,16 @@ func main() {
 			wantJobs = true
 		case "-privileged", "--privileged":
 			wantPrivileged = true
+		case "-cpu-request", "--cpu-request":
+			if len(args) < 2 {
+				fatalf("-cpu-request needs a value in millicores")
+			}
+			n, err := strconv.ParseUint(args[1], 10, 64)
+			if err != nil || n == 0 {
+				fatalf("-cpu-request %q: want a positive integer of millicores", args[1])
+			}
+			cpuRequest = n
+			args = args[1:]
 		default:
 			fatalf("unknown flag %q", args[0])
 		}
@@ -189,7 +203,14 @@ func main() {
 			return
 		}
 
-		out, err := yaml.JSONToYAML(task.Config)
+		config := []byte(task.Config)
+		if cpuRequest > 0 {
+			config, err = withCPURequest(config, cpuRequest)
+			if err != nil {
+				fatalf("setting the cpu request of %q: %v", jobName, err)
+			}
+		}
+		out, err := yaml.JSONToYAML(config)
 		if err != nil {
 			fatalf("re-encoding config of %q: %v", jobName, err)
 		}
@@ -199,6 +220,23 @@ func main() {
 	}
 
 	fatalf("no job named %q in %s (jobs: %v)", jobName, args[0], known)
+}
+
+// withCPURequest replaces container_requests.cpu (millicores) and keeps every
+// other request and config key as written. It is how ci-check sizes a one-off
+// for the node it is meant to land on without editing the pipeline.
+func withCPURequest(config []byte, millicores uint64) ([]byte, error) {
+	var cfg map[string]any
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return nil, err
+	}
+	requests, _ := cfg["container_requests"].(map[string]any)
+	if requests == nil {
+		requests = map[string]any{}
+	}
+	requests["cpu"] = millicores
+	cfg["container_requests"] = requests
+	return json.Marshal(cfg)
 }
 
 func fatalf(format string, args ...any) {
