@@ -183,9 +183,6 @@
 {{- if and $output.strictInputBucket (eq $output.bucket $output.strictInputBucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published and attests inputs." $output.bucket) -}}
 {{- end -}}
-{{- if and (eq $output.store "gcs") .Values.artifactDaemon.durable.bucket (eq $output.bucket .Values.artifactDaemon.durable.bucket) -}}
-{{- fail (printf "hangarOutput.bucket is %q, which is artifactDaemon.durable.bucket. The output plane needs a DEDICATED bucket and never the durable cache one." $output.bucket) -}}
-{{- end -}}
 {{- end }}
 
 {{- define "concourse.hangarOutput.validateKeys" -}}
