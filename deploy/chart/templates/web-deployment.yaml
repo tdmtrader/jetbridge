@@ -1,4 +1,4 @@
-{{- include "concourse.standardCapabilities.validate" . }}
+{{- include "concourse.validate" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
