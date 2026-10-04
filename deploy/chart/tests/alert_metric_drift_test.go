@@ -55,14 +55,12 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 	// default render would check none of them and this guard would report
 	// coverage it does not have -- which is the exact shape of the defect it
 	// was written for, one level up. The artifact daemon's rules are gated the
-	// same way, on its metrics listener and its durable store.
+	// same way, on its metrics listener.
 	rendered := renderChart(t,
 		append([]string{
 			"alertingRules.enabled=true",
 			"serviceMonitor.enabled=true",
 			"artifactDaemon.metrics.port=9392",
-			"artifactDaemon.durable.store=filesystem",
-			"artifactDaemon.durable.path=/durable",
 			"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
 		}, outputSets...)...,
 	)
@@ -98,7 +96,9 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 				alert, ref, expr, nearestMetrics(declared, ref))
 		}
 	}
-	if daemonRules < 2 {
+	// One: the daemon's overload rule. The durable-store rule that made it two
+	// left the chart with artifactDaemon.durable.
+	if daemonRules < 1 {
 		t.Errorf("only %d artifact_daemon_ references in the rendered rules; the daemon's "+
 			"rules did not render and none of them was checked", daemonRules)
 	}
