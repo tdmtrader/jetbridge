@@ -97,7 +97,15 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		return fail2(readVerb(args[0], c.Repository.Main, s, fs.Arg(0), *asJSON, out), fail)
 	}
 	if args[0] == "health" { // read-only: Load, never Save or the lease
-		return health(c, git.NewStore(c).Load, time.Now(), out)
+		head := func(ctx context.Context) (string, error) {
+			l, err := git.New(c)
+			if err != nil {
+				return "", err
+			}
+			defer l.Close()
+			return l.Head(ctx, c.Repository.Main)
+		}
+		return health(c, git.NewStore(c).Load, head, time.Now(), out)
 	}
 	if args[0] == "admit" {
 		if fs.NArg() != 2 {

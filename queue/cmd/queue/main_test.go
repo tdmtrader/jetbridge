@@ -192,6 +192,40 @@ var _ = Describe("queue command", func() {
 		Expect(l.Token).To(Equal(uint64(1)), "admitting never took the runner's lease")
 	})
 
+	It("A dead JetBridge, after its one auto-resume, turns health red at once", func() {
+		ctx := context.Background()
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "child")
+		code, _, errw := queue("admit", "--config", file, "a", child)
+		Expect(code).To(Equal(0), errw)
+		c, err := config.Parse(fmt.Appendf(nil, sample, remote, GinkgoT().TempDir()))
+		Expect(err).NotTo(HaveOccurred())
+		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
+		Expect(err).NotTo(HaveOccurred())
+		defer closeFn()
+		clock := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+		d.Owner, d.Now = "runner", func() time.Time { return clock }
+		store := git.NewStore(c)
+		head := func(context.Context) (string, error) { return sha, nil }
+		pauses := 0
+		for i := 0; i < 20 && pauses < 2; i++ {
+			Expect(d.Step(ctx)).To(Succeed())
+			snap, err := store.Load(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if snap.Paused && int(snap.PauseSeq) > pauses {
+				pauses = int(snap.PauseSeq)
+				if pauses == 1 {
+					clock = clock.Add(c.Pause.Cooldown) // the one auto-resume
+				}
+			}
+			clock = clock.Add(time.Second)
+		}
+		Expect(pauses).To(Equal(2), "paused, auto-resumed once, paused again")
+		var out bytes.Buffer
+		Expect(health(c, store.Load, head, clock, &out)).To(Equal(3), out.String())
+		Expect(out.String()).To(ContainSubstring("nothing auto-resumes it; run `queue resume`"))
+	})
+
 	It("queue resume asks the live runner to resume", func() {
 		ctx := context.Background()
 		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")

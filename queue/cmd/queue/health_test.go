@@ -18,7 +18,7 @@ var _ = Describe("health", func() {
 	c := config.Defaults()
 	check := func(s core.Snapshot, err error) (int, string) {
 		var b bytes.Buffer
-		code := health(c, func(context.Context) (core.Snapshot, error) { return s, err }, now, &b)
+		code := health(c, func(context.Context) (core.Snapshot, error) { return s, err }, func(context.Context) (string, error) { return "main1", nil }, now, &b)
 		return code, b.String()
 	}
 
@@ -60,6 +60,19 @@ var _ = Describe("health", func() {
 		c.Pause.Cooldown = 0
 		DeferCleanup(func() { c.Pause.Cooldown = 5 * time.Minute })
 		code, out := check(core.Snapshot{Paused: true, Why: "no verdict after 2 tries", PausedAt: now.Add(-10 * time.Minute)}, nil)
+		Expect(code).To(Equal(3))
+		Expect(out).To(ContainSubstring("nothing auto-resumes it; run `queue resume`"))
+	})
+
+	It("A no-verdict pause on the main its one auto-resume was spent on is unhealthy at once", func() {
+		s := core.Snapshot{Paused: true, Why: "no verdict after 2 tries", PausedAt: now.Add(-time.Minute), ResumedOnMain: "main0"}
+		code, _ := check(s, nil)
+		Expect(code).To(Equal(0), "a new main still auto-resumes it")
+		s.ResumedOnMain = "main1"
+		code, out := check(s, nil)
+		Expect(code).To(Equal(3))
+		Expect(out).To(ContainSubstring("nothing auto-resumes it; run `queue resume`"))
+		code, out = check(core.Snapshot{Paused: true, Why: "no verdict twice on main main1; held", PausedAt: now.Add(-time.Minute)}, nil)
 		Expect(code).To(Equal(3))
 		Expect(out).To(ContainSubstring("nothing auto-resumes it; run `queue resume`"))
 	})
