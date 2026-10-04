@@ -165,19 +165,9 @@ spec:
             {{- if .Values.kubernetes.serviceAccount }}
             - --kubernetes-service-account={{ .Values.kubernetes.serviceAccount }}
             {{- end }}
-            {{- range $i, $grant := .Values.kubernetes.stepPodGrants }}
+            {{- range $grant := .Values.kubernetes.stepPodGrants }}
             {{- $privileged := eq (toString ($grant.privileged | default false)) "true" }}
-            {{- $grantFlag := "" }}
-            {{- range $field := list "name" "owner" "serviceAccount" }}
-            {{- $value := index $grant $field | default "" | toString }}
-            {{- if and (not $value) (or (ne $field "serviceAccount") (not $privileged)) }}
-            {{- fail (printf "kubernetes.stepPodGrants[%d].%s must be set (serviceAccount may be left out only when privileged is true)" $i $field) }}
-            {{- end }}
-            {{- if or (contains "," $value) (contains "=" $value) }}
-            {{- fail (printf "kubernetes.stepPodGrants[%d].%s must hold no ',' or '=' (got %q)" $i $field $value) }}
-            {{- end }}
-            {{- end }}
-            {{- $grantFlag = printf "name=%s,owner=%s" $grant.name $grant.owner }}
+            {{- $grantFlag := printf "name=%s,owner=%s" $grant.name $grant.owner }}
             {{- with $grant.serviceAccount }}{{ $grantFlag = printf "%s,service-account=%s" $grantFlag . }}{{ end }}
             {{- if $privileged }}{{ $grantFlag = printf "%s,privileged=true" $grantFlag }}{{ end }}
             - {{ printf "--kubernetes-step-pod-grant=%s" $grantFlag | quote }}
@@ -446,22 +436,6 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.web.runResults.scratchSizeLimit }}
         {{- end }}
-        {{- /*
-  secrets.create mints the session signing key into an emptyDir, so each pod
-  gets its own: a restart invalidates every session, and two replicas reject
-  each other's tokens outright. That is survivable for a single-replica dev
-  install and broken for anything else, so an explicit request for both is a
-  contradiction and fails the render rather than deploying something that
-  half-works.
-  Deliberately NOT solved with Helm `lookup` + genPrivateKey: `lookup` returns
-  nothing under `helm template`, which is ArgoCD's render mode, so every sync
-  would mint a fresh key AND write the private key into the rendered manifest
-  in cleartext. Pre-create the Secret and set secrets.create=false with
-  secrets.signingKeySecret instead.
-*/}}
-{{- if and .Values.secrets.create (gt (int .Values.web.replicas) 1) }}
-{{- fail "secrets.create=true generates a per-pod session signing key, which cannot work with web.replicas > 1. Pre-create a Secret and set secrets.create=false with secrets.signingKeySecret." }}
-{{- end }}
 {{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
         - name: keys
           secret:
