@@ -134,6 +134,11 @@ type Config struct {
 	// pod to be scheduled. If zero, DefaultPodSchedulingTimeout is used.
 	PodSchedulingTimeout time.Duration
 
+	// PreferredStepNode, when non-nil, is a node label every step pod
+	// prefers (see PreferredStepNodeWeight). It steers work toward a bigger
+	// or idler node without making that node a dependency.
+	PreferredStepNode *PreferredStepNode
+
 	// ResourceTypeImages maps base resource type names (e.g. "time", "git")
 	// to Docker image references. When the ATC requests a container for a
 	// base resource type, this mapping is used to resolve the image name

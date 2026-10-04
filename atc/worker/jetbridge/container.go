@@ -903,6 +903,16 @@ func (c *Container) buildAffinity() *corev1.Affinity {
 	if c.storageBackend != nil {
 		affinity = c.storageBackend.BuildAffinity(c.containerSpec.Inputs, c.containerSpec.ExecutionControl)
 	}
+	if preferred := c.config.PreferredStepNode; preferred != nil {
+		if affinity == nil {
+			affinity = &corev1.Affinity{}
+		}
+		if affinity.NodeAffinity == nil {
+			affinity.NodeAffinity = &corev1.NodeAffinity{}
+		}
+		affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+			affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution, preferred.term())
+	}
 	control := c.containerSpec.ExecutionControl
 	if control == nil || control.Node == nil {
 		return affinity
