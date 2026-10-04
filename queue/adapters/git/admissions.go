@@ -123,6 +123,7 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 				ps[i].Why = fmt.Sprintf("%.7s is not signed by an operator", p.Commit) // git's own message may quote key material
 			}
 		}
+		ps[i].Owner = a.owner(ctx, p.Commit)
 	}
 	for _, p := range ps { // only an accepted change is an ancestor candidate
 		if p.Why == "" && !taken[p.ID] {

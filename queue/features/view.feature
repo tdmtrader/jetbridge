@@ -36,3 +36,8 @@ Feature: The queue publishes its state for the panel
     Given a queue with 201 landed changes
     When the queue's view is published
     Then the landed list has 200 rows, the last of them the "+N more" marker
+
+  Scenario: The panel shows each queued and ejected change with its owner
+    Given a queued change owned by alice and an ejected change owned by bob
+    When the queue publishes its state in the panel's view format
+    Then each row names its owner

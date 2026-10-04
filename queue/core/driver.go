@@ -95,7 +95,7 @@ func (d *Driver) drain(ctx context.Context) error {
 			p.Why, seen = fmt.Sprintf("id %s already used for %.7s; admit the new commit under a new id", p.ID, old), false
 		}
 		if b := slices.DeleteFunc(slices.Clone(p.BuildsOn), func(id string) bool { return d.q.states[id] != Queued }); !seen && p.Why == "" {
-			if err := d.Admit(ctx, Entry{ID: p.ID, Commit: p.Commit, AdmittedAt: d.now()}, b...); refusal(err) {
+			if err := d.Admit(ctx, Entry{ID: p.ID, Commit: p.Commit, Owner: p.Owner, AdmittedAt: d.now()}, b...); refusal(err) {
 				p.Why = err.Error()
 			} else if err != nil {
 				return err
@@ -552,7 +552,7 @@ func (d *Driver) settled(ev Event) {
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {
-		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch})
+		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner})
 	}
 	d.s.Settled = d.s.Settled[max(0, len(d.s.Settled)-MaxSettled):]
 }

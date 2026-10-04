@@ -78,13 +78,14 @@ type entry struct {
 	ID         string `json:"id"`
 	Commit     string `json:"commit,omitempty"`
 	Ref        string `json:"ref,omitempty"`
+	Owner      string `json:"owner,omitempty"`
 	AdmittedAt string `json:"admitted_at,omitempty"`
 }
 
 func entries(in []core.Entry) []entry {
 	var out []entry
 	for _, e := range in {
-		x := entry{ID: e.ID, Commit: e.Commit, Ref: e.Ref}
+		x := entry{ID: e.ID, Commit: e.Commit, Ref: e.Ref, Owner: core.Redact(e.Owner)}
 		if !e.AdmittedAt.IsZero() {
 			x.AdmittedAt = e.AdmittedAt.UTC().Format(time.RFC3339)
 		}

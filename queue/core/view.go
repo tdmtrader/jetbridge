@@ -143,7 +143,7 @@ func marshalView(s Snapshot, sum Summary, now time.Time, groups []viewGroup, kee
 	return json.Marshal(map[string]any{
 		"schema": "view/v1", "badge": badge, "badge_style": style, "summary": why, "banner": banner,
 		"as_of": now.Unix(), "stale_after": 600,
-		"columns": []map[string]string{{"key": "id", "heading": "Change"}, {"key": "commit", "heading": "Commit", "type": "sha"}, {"key": "note", "heading": "Note"}, {"key": "at", "heading": "When", "type": "age"}},
+		"columns": []map[string]string{{"key": "id", "heading": "Change"}, {"key": "commit", "heading": "Commit", "type": "sha"}, {"key": "owner", "heading": "Owner"}, {"key": "note", "heading": "Note"}, {"key": "at", "heading": "When", "type": "age"}},
 		"legend": []map[string]string{{"style": "blue", "label": "testing"}, {"style": "green", "label": "landed"},
 			{"style": "red", "label": "ejected"}, {"style": "amber", "label": "flake", "meaning": "failed in a batch, passed alone"}},
 		"groups": cut, "tiles": viewTiles(sum), "tables": []any{},
@@ -170,8 +170,8 @@ func viewTiles(sum Summary) []viewTile {
 }
 
 func viewGroups(s Snapshot) []viewGroup {
-	cells := func(id, commit, note string, at time.Time) map[string]string {
-		c := map[string]string{"id": id, "commit": commit, "note": note}
+	cells := func(id, commit, note, owner string, at time.Time) map[string]string {
+		c := map[string]string{"id": id, "commit": commit, "note": note, "owner": owner}
 		if !at.IsZero() {
 			c["at"] = fmt.Sprint(at.Unix())
 		}
@@ -179,11 +179,11 @@ func viewGroups(s Snapshot) []viewGroup {
 	}
 	testing := viewGroup{Key: "testing", Title: "Testing", Empty: "Nothing is being tested."}
 	for _, f := range s.InFlight {
-		testing.Rows = append(testing.Rows, viewRow{ID: f.Run.ID, Style: "blue", Cells: cells(f.Run.ID, f.Candidate, "being tested", time.Time{})})
+		testing.Rows = append(testing.Rows, viewRow{ID: f.Run.ID, Style: "blue", Cells: cells(f.Run.ID, f.Candidate, "being tested", "", time.Time{})})
 	}
 	queued := viewGroup{Key: "queued", Title: "Queued, in order", Empty: "The queue is empty."}
 	for _, e := range s.Queued {
-		r := viewRow{ID: e.ID, Cells: cells(e.ID, e.Commit, "", e.AdmittedAt)}
+		r := viewRow{ID: e.ID, Cells: cells(e.ID, e.Commit, "", e.Owner, e.AdmittedAt)}
 		if p := s.BuildsOn[e.ID]; len(p) > 0 {
 			r.Cells["note"] = "builds on " + strings.Join(p, ", ")
 		}
@@ -193,7 +193,7 @@ func viewGroups(s Snapshot) []viewGroup {
 	ejected := viewGroup{Key: "ejected", Title: "Ejected", Empty: "Nothing has been ejected."}
 	for _, r := range slices.Backward(s.Settled) {
 		note := strings.Trim(r.Cause+": "+r.Why, ": ")
-		row := viewRow{ID: r.ID, Cells: cells(r.ID, r.Commit, note, r.At), Tip: r.Why}
+		row := viewRow{ID: r.ID, Cells: cells(r.ID, r.Commit, note, r.Owner, r.At), Tip: r.Why}
 		switch r.Kind {
 		case LandedEvent:
 			row.Style = "green"

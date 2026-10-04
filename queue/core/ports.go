@@ -48,6 +48,7 @@ type SettleRecord struct {
 	Why, Cause string
 	Run        string
 	Batch      []string
+	Owner      string // the owner of the entry, kept so an eject says whom it concerns
 }
 
 // Refusal is a change refused at admission: never queued, its reason kept.
@@ -58,6 +59,7 @@ type Pending struct {
 	ID, Commit string
 	BuildsOn   []string
 	Why        string
+	Owner      string // the name of whoever admitted it
 }
 
 // Admissions is where changes wait. Pending lists each after those it builds

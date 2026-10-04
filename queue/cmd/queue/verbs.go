@@ -82,7 +82,7 @@ func readVerb(verb, main string, s core.Snapshot, id string, asJSON bool, out io
 		rows := []ejection{}
 		for _, r := range slices.Backward(s.Settled) { // newest first
 			if r.Kind == core.EjectedEvent {
-				rows = append(rows, ejection{r.ID, r.Why, r.Cause, r.At})
+				rows = append(rows, ejection{r.ID, r.Why, r.Cause, r.Owner, r.At})
 			}
 		}
 		if asJSON {

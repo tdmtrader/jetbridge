@@ -87,6 +87,12 @@ var _ = Describe("Notifier", func() {
 		}
 	})
 
+	It("The log notifier writes the owner of each change", func() {
+		e := core.Event{Kind: core.EjectedEvent, Entries: []core.Entry{{ID: "c1", Owner: "alice"}}}
+		Expect(n.Notify(context.Background(), e)).To(Succeed())
+		Expect(lines()[0]["entries"]).To(Equal([]any{map[string]any{"id": "c1", "owner": "alice"}}))
+	})
+
 	It("A started batch is written to the log with every change in full", func() {
 		at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.FixedZone("x", -5*3600))
 		a := core.Entry{ID: "c1", Commit: "abc", Ref: "refs/heads/f", AdmittedAt: at}

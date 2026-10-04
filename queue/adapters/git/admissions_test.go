@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -52,7 +53,7 @@ var _ = Describe("Admissions", func() {
 		admit("other", other)
 		queued := []core.Entry{{ID: "p", Commit: p}}
 		ps := pending(queued...)
-		Expect(ps).To(Equal([]core.Pending{{ID: "child", Commit: child, BuildsOn: []string{"p"}}, {ID: "other", Commit: other}}))
+		Expect(ps).To(Equal([]core.Pending{{ID: "child", Commit: child, Owner: "t", BuildsOn: []string{"p"}}, {ID: "other", Commit: other, Owner: "t"}}))
 		b := core.FormBatch(append(queued, core.Entry{ID: "child"}), map[string][]string{"child": ps[0].BuildsOn}, nil)
 		Expect(ids(b.Entries())).To(Equal([]string{"p", "child"}))
 		Expect(b.Ancestors("child")).To(Equal([]string{"p"}))
@@ -62,8 +63,8 @@ var _ = Describe("Admissions", func() {
 		top := r.commit("top", mid)
 		admit("aa-top", top)
 		admit("zz-mid", mid)
-		Expect(pending()).To(Equal([]core.Pending{{ID: "child", Commit: child}, {ID: "other", Commit: other},
-			{ID: "zz-mid", Commit: mid}, {ID: "aa-top", Commit: top, BuildsOn: []string{"zz-mid"}}}))
+		Expect(pending()).To(Equal([]core.Pending{{ID: "child", Commit: child, Owner: "t"}, {ID: "other", Commit: other, Owner: "t"},
+			{ID: "zz-mid", Commit: mid, Owner: "t"}, {ID: "aa-top", Commit: top, Owner: "t", BuildsOn: []string{"zz-mid"}}}))
 	})
 
 	It("derives every queued ancestor of a merge, so a divergent merge can be refused", func() {
@@ -71,7 +72,7 @@ var _ = Describe("Admissions", func() {
 		m := run(r.work, "commit-tree", run(r.work, "mktree"), "-p", a, "-p", b, "-m", "m")
 		admit("x", m)
 		Expect(pending(core.Entry{ID: "a", Commit: a}, core.Entry{ID: "b", Commit: b})).To(Equal(
-			[]core.Pending{{ID: "x", Commit: m, BuildsOn: []string{"a", "b"}}}))
+			[]core.Pending{{ID: "x", Commit: m, BuildsOn: []string{"a", "b"}, Owner: "t"}}))
 	})
 
 	It("a pending replacement of a queued id is no ancestor candidate for a child", func() {
@@ -81,7 +82,7 @@ var _ = Describe("Admissions", func() {
 		admit("a", b)
 		admit("c", cc)
 		ps := pending(core.Entry{ID: "a", Commit: a})
-		Expect(ps).To(ConsistOf(core.Pending{ID: "a", Commit: b}, core.Pending{ID: "c", Commit: cc}))
+		Expect(ps).To(ConsistOf(core.Pending{ID: "a", Commit: b, Owner: "t"}, core.Pending{ID: "c", Commit: cc, Owner: "t"}))
 	})
 
 	It("a git call returns soon after its context ends even when a child holds its stderr", func() {
@@ -278,5 +279,24 @@ var _ = Describe("Promotes", func() {
 		Expect(pro.Done(context.Background(), core.PromoteRequest{ID: "fix-1", SHA: r.commit("other", r.base)})).NotTo(Succeed())
 		Expect(pro.Done(context.Background(), reqs[0])).To(Succeed())
 		Expect(run(r.bare, "for-each-ref", prefix)).To(BeEmpty())
+	})
+})
+
+var _ = Describe("Admission owner", func() {
+	It("A change is owned by the author of its commit", func() {
+		ctx, r := context.Background(), newRemote()
+		c := r.config()
+		c.Admission.Prefix = prefix
+		cmd := exec.Command("git", "-C", r.work, "commit-tree", run(r.work, "mktree"), "-m", "x", "-p", r.base)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=alice", "GIT_AUTHOR_EMAIL=alice@example.test",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		out, err := cmd.Output()
+		Expect(err).NotTo(HaveOccurred())
+		sha := strings.TrimSpace(string(out))
+		Expect(git.Admit(ctx, c, r.work, "x", sha)).To(Succeed())
+		ps, err := (&git.Admissions{Lander: r.lander(), Prefix: prefix}).Pending(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ps).To(HaveLen(1))
+		Expect(ps[0].Owner).To(Equal("alice"))
 	})
 })

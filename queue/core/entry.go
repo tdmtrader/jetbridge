@@ -7,6 +7,7 @@ type Entry struct {
 	ID         string
 	Commit     string
 	Ref        string // the branch the change is on
+	Owner      string // who admitted it, a name only: who hears if it is ejected
 	AdmittedAt time.Time
 	Urgent     bool // the one urgent lane: formed into the next batch ahead of the rest
 }
