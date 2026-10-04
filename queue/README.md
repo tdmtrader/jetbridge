@@ -175,10 +175,9 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `admission.source` | removed | Changes always arrive as pushed refs; the key had one value and no effect, and is now refused as unknown. |
 | `admission.prefix` | `refs/queue/admit/` | Ref prefix ending in `/`. Must not overlap any ref the queue owns. |
 | `admission.control_prefix` | `refs/queue/control/` | Ref prefix ending in `/` for operator requests; `queue resume` writes `<prefix>resume-<PauseSeq>`. Same overlap rule. |
-| `batch.max` | `4` | Largest batch; at least 1. |
+| `batch.max` | `4` | The batch size; at least 1. A resource may override it with source `batch_max`. |
 | `batch.retry_none` | `1` | Retries on no verdict before pausing; at least 0. |
 | `batch.strategy` | `serial` | The only value: one batch at a time, bisecting a red batch by halves. |
-| `batch.adaptive` | off | `{start, min, grow_after}`. Batches start at `start`, halve (floor `min`) after a red batch, double (cap `batch.max`) after `grow_after` green batches in a row. Needs `1 <= min <= start <= max`, `grow_after >= 1`. Size resets to `start` whenever the strategy is rebuilt, which is on every resource check; it is not kept between checks. <!-- adaptive-persist --> |
 | `compose.committer.name` | `merge-queue` | Author and committer of composed commits; one squashed commit per change, titled `land(<id>)`. |
 | `compose.committer.email` | `merge-queue@localhost` | |
 | `runner.kind` | none | Required: `jetbridge`. |
