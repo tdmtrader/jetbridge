@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -273,6 +274,61 @@ var _ = Describe("queue command", func() {
 		Expect(o.String() + e.String()).NotTo(ContainSubstring("SECRET"))
 	})
 
+	It("hides every configured secret in every encoding from every output", func() {
+		ctx := context.Background()
+		const pass, token = "Xq7v&Zk9r,Lm4t'Pw8s%2FYh2n", "Tk5mQw2zRb9x" // the password holds & , ' and an encoded /
+		uri := "https://user:" + pass + "@repo.example.invalid/repo"
+		GinkgoT().Setenv("GIT_CONFIG_COUNT", "1") // git reaches the local remote through the secret URL
+		GinkgoT().Setenv("GIT_CONFIG_KEY_0", "url."+remote+".insteadOf")
+		GinkgoT().Setenv("GIT_CONFIG_VALUE_0", uri)
+		GinkgoT().Setenv("FAKE_JB_TOKEN", token)
+		dir := GinkgoT().TempDir()
+		events := filepath.Join(dir, "events.jsonl")
+		cfg := strings.NewReplacer("https://ci.example.invalid", "https://bot:Rv3n'Hq8w@ci.example.invalid",
+			"file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN").Replace(fmt.Sprintf(sample, uri, dir)) + "notify: {kind: log, path: " + events + "}\n"
+		Expect(os.WriteFile(file, []byte(cfg), 0o600)).To(Succeed())
+		c, err := config.Parse([]byte(cfg))
+		Expect(err).NotTo(HaveOccurred())
+		store := git.NewStore(c)
+		l, err := store.Acquire(ctx, "runner", time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		snap, err := store.Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		snap.Landing = &core.Landing{Main: "trunk", Candidate: sha, Entries: []core.Entry{{ID: "a", Commit: sha}}}
+		_, err = store.Save(ctx, l.Token, snap)
+		Expect(err).NotTo(HaveOccurred())
+
+		var o, e bytes.Buffer
+		Expect(entry(ctx, []string{"status", "--config", file}, &o, &e)).To(Equal(0), e.String()) // registers the secrets
+		decoded, _ := url.PathUnescape(pass)
+		j, _ := json.Marshal(map[string]string{"url": uri, "pw": decoded, "auth": "Bearer " + token, "bot": "Rv3n'Hq8w"})
+		jj, _ := json.Marshal(string(j))
+		leak := fmt.Errorf("denied %s %s %s %s %q %q %s", uri, j, jj, strings.ReplaceAll(string(jj), "/", `\\/`), uri, decoded, url.QueryEscape(decoded))
+		errw := core.NewRedactWriter(&e)
+		d, closeFn, err := newDriver(c, &o, errw)
+		Expect(err).NotTo(HaveOccurred())
+		defer closeFn()
+		d.Owner, d.Lander, d.Admissions = "runner", leakyLander{d.Lander, leak}, leakyAdmissions{leak}
+		Expect(d.Step(ctx)).To(Succeed())
+		Expect(errw.Flush()).To(Succeed())
+		Expect(entry(ctx, []string{"status", "--config", file}, &o, &e)).To(Equal(0), e.String())
+		Expect(entry(ctx, []string{"view", "--config", file}, &o, &e)).To(Equal(0), e.String())
+		saved, err := store.Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(saved.Paused).To(BeTrue(), "the leak reached the saved state")
+		note := string(must(os.ReadFile(events)))
+		Expect(note).To(ContainSubstring(`"paused"`))
+		Expect(e.String()).To(ContainSubstring("admissions: denied"))
+		outputs := map[string]string{"stderr": e.String(), "stdout (status, view)": o.String(), "notify file": note,
+			"snapshot": gitIn(remote, "log", "-p", "refs/queue/state")}
+		for what, text := range outputs {
+			Expect(text).To(ContainSubstring("denied"), what)
+			for _, part := range []string{"Xq7v", "Zk9r", "Lm4t", "Pw8s", "Yh2n", "Tk5mQw2zRb9x", "Rv3n", "Hq8w"} {
+				Expect(text).NotTo(ContainSubstring(part), what)
+			}
+		}
+	})
+
 	It("runs one step and stops with --once", func() {
 		code, _, errw := queue("run", "--config", file, "--once")
 		Expect(errw).To(BeEmpty())
@@ -330,6 +386,22 @@ var _ = Describe("status", func() {
 			{"a", "red as a batch, green when split", "r1"}, {"b", "red as a batch, green when split", "r1"}}))
 	})
 })
+
+type leakyLander struct {
+	core.Lander
+	err error
+}
+
+func (l leakyLander) Contains(context.Context, string, string, uint64) (bool, error) {
+	return false, l.err
+}
+
+type leakyAdmissions struct{ err error }
+
+func (l leakyAdmissions) Pending(context.Context, []core.Entry) ([]core.Pending, error) {
+	return nil, l.err
+}
+func (leakyAdmissions) Done(context.Context, string, string) error { return nil }
 
 func must[T any](v T, err error) T {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())

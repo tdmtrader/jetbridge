@@ -218,6 +218,12 @@ and merge keys are refused. Defaults are applied before your file is read.
   `verdict`, `landed`, `ejected`, `flaky`, `paused`, `resumed`, `refused`, with
   `time`, `entries`, `run`, `why`, `cause`, `parent`. A notifier error is logged
   and never changes a decision. With no notifier, nothing is announced.
+- **Redaction.** Every output line, saved reason, event and log passes through
+  one filter. At startup the command registers each secret the config holds or
+  names: the userinfo of every URL in it and the runner's token. These are hidden
+  by value in every encoding: raw, URL-escaped, JSON-escaped (once or twice, with
+  or without escaped slashes) and quoted. Any other URL's userinfo is hidden by a
+  pattern as a fallback; it stops at `'` and `,` so nearby text is not mangled.
 - **Runner.** The pin is per resource, so one run is in flight at a time; a new
   run aborts and unpins the previous one. The candidate must be reachable by the
   resource's configured branch.

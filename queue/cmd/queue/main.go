@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"slices"
@@ -74,6 +75,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	register(data, c)
 	if args[0] == "admit" {
 		if fs.NArg() != 2 {
 			return fail(errors.New(usage))
@@ -130,6 +132,32 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		return fail(err)
 	}
 	return 0
+}
+
+// register gives core.Secrets every credential the config holds or names, before any
+// adapter runs: the userinfo of each URL in it, under any key, and the runner's token.
+func register(data []byte, c config.Config) {
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		if u, err := url.Parse(n.Value); err == nil && u.User != nil {
+			pw, _ := u.User.Password()
+			auth, _, _ := strings.Cut(n.Value[strings.Index(n.Value, "://")+3:], "/")
+			for _, s := range []string{auth[:max(0, strings.LastIndex(auth, "@"))], u.User.String(), pw, u.User.Username() + ":" + pw} {
+				core.Secrets.Add(strings.TrimSuffix(s, ":")) // as written, canonical, password, user:password
+			}
+		}
+		for _, k := range n.Content {
+			walk(k)
+		}
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) == nil {
+		walk(&doc)
+	}
+	if rc, err := jetbridge.Parse(&c.Runner); err == nil {
+		token, _ := rc.Secret()
+		core.Secrets.Add(token)
+	}
 }
 
 func fail2(err error, fail func(error) int) int {

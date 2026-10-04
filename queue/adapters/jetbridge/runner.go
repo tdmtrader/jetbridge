@@ -140,10 +140,11 @@ func (j *Runner) status(ctx context.Context, build int) (string, error) {
 // call sends one request with the bearer token, read on every call so it can
 // be replaced while running, and decodes a JSON reply into out.
 func (j *Runner) call(ctx context.Context, method, path string, out any) error {
-	token, err := j.Config.secret()
+	token, err := j.Config.Secret()
 	if err != nil {
 		return err
 	}
+	core.Secrets.Add(token) // a replaced token is hidden too
 	req, err := http.NewRequestWithContext(ctx, method, j.Config.URL+path, strings.NewReader("{}"))
 	if err != nil {
 		return errors.New(core.Redact(err.Error())) // url.Parse quotes the url, password and all

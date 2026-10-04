@@ -5,22 +5,72 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // MaxViewBytes is the largest view the panel accepts.
 const MaxViewBytes = 64 << 10
 
-// userinfo is a URL's user and password: after :// (or the JSON-escaped :\/\/), up to the last @
-// before the first whitespace, / \ " ? or #. Commas, quotes and the like are userinfo, so they are hidden.
-var userinfo = regexp.MustCompile(`(://|:\\/\\/)(?:[^\s/?#@"\\]*@)+`)
+// userinfo is a URL's user and password: after :// (or :\/\/, escaped once or more), up to the last @
+// before the first whitespace, / \ " ' , ? or #. It is the fallback for secrets not in Secrets.
+var userinfo = regexp.MustCompile(`(://|:(?:\\+/){2})(?:[^\s/?#@"\\',]*@)+`)
 
-// Redact hides the user and password of every URL in text: scheme://user:pass@ becomes scheme://***@.
-// It is the one filter every reason passes through before the driver saves, announces or logs it.
-func Redact(text string) string { return userinfo.ReplaceAllString(text, "${1}***@") }
+// Redact hides every configured secret in any encoding, then the user and password of every
+// other URL: scheme://user:pass@ becomes scheme://***@. It is the one filter every reason
+// passes through before the driver saves, announces or logs it, and every output line.
+func Redact(text string) string { return Secrets.Redact(text) }
+
+// Secrets holds the process's configured secrets; Redact hides each of them in every encoding.
+var Secrets = &SecretSet{}
+
+// SecretSet is a set of secrets and the encoded forms they take in text; safe for concurrent use.
+type SecretSet struct {
+	mu    sync.RWMutex
+	forms []string // longest first, so a longer form wins where two start together
+}
+
+var unescapeHTML = strings.NewReplacer(`\u0026`, "&", `\u003c`, "<", `\u003e`, ">")
+
+// Add registers s raw, query- and path-escaped, as URL userinfo, JSON-escaped (with and
+// without HTML escapes, and with escaped slashes) and Go-quoted, then each escaped once more.
+// A secret shorter than 4 bytes is ignored: hiding it would mangle ordinary text.
+func (r *SecretSet) Add(s string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(s) < 4 || slices.Contains(r.forms, s) {
+		return
+	}
+	forms := []string{s, url.QueryEscape(s), url.PathEscape(s), url.User(s).String(), url.UserPassword("", s).String()[1:]}
+	for range 2 {
+		for _, f := range forms {
+			b, _ := json.Marshal(f) // a string always marshals
+			q, h := strconv.Quote(f), string(b[1:len(b)-1])
+			forms = append(forms, q[1:len(q)-1])
+			for _, j := range []string{h, unescapeHTML.Replace(h)} {
+				forms = append(forms, j, strings.ReplaceAll(j, "/", `\/`))
+			}
+		}
+	}
+	r.forms = append(r.forms, forms...)
+	slices.SortFunc(r.forms, func(a, b string) int { return cmp.Or(len(b)-len(a), strings.Compare(a, b)) })
+	r.forms = slices.Compact(r.forms)
+}
+
+// Redact replaces every registered form with ***, then hides the userinfo of any other URL.
+func (r *SecretSet) Redact(text string) string {
+	r.mu.RLock()
+	for _, f := range r.forms {
+		text = strings.ReplaceAll(text, f, "***")
+	}
+	r.mu.RUnlock()
+	return userinfo.ReplaceAllString(text, "${1}***@")
+}
 
 // RedactSnapshot is s with the reasons it holds redacted; s itself is not changed.
 func RedactSnapshot(s Snapshot) Snapshot {

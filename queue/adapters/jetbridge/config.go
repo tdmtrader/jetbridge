@@ -49,7 +49,8 @@ func Parse(n *yaml.Node) (Config, error) {
 	return c, nil
 }
 
-func (c Config) secret() (string, error) {
+// Secret is the bearer token Credential names, read afresh.
+func (c Config) Secret() (string, error) {
 	b, err := []byte(os.Getenv(strings.TrimPrefix(c.Credential, "env:"))), error(nil)
 	if path, ok := strings.CutPrefix(c.Credential, "file:"); ok {
 		b, err = os.ReadFile(path)
