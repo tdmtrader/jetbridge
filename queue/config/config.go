@@ -39,7 +39,6 @@ type Repository struct {
 }
 
 type Admission struct {
-	Source        string `yaml:"source"`
 	Prefix        string `yaml:"prefix"`         // refs: a change is admitted by pushing it to <prefix><id>
 	ControlPrefix string `yaml:"control_prefix"` // the operator's requests to the runner go under it
 	// OperatorsFile, if set, is a git allowed-signers file (ssh keys): only a change, or a resume, promote, withdraw or resolve request, signed by one of its keys is honoured.
@@ -104,7 +103,7 @@ func Defaults() Config {
 		// GitHub's default branch is main, but all work lands on core.
 		Repository: Repository{Main: "core", Candidate: "queue-next"},
 		// 0 merged PRs ever: work arrives as pushed branches.
-		Admission: Admission{Source: "refs", Prefix: "refs/queue/admit/", ControlPrefix: "refs/queue/control/"},
+		Admission: Admission{Prefix: "refs/queue/admit/", ControlPrefix: "refs/queue/control/"},
 		// Small batches bisect cheaply; one retry rides out an infra blip.
 		// Order is fairness, not correctness: every landing is tested on the main it lands on.
 		Batch:   Batch{Max: 4, RetryNone: 1, Strategy: "serial", Order: "proven-first"},
@@ -123,7 +122,7 @@ func Defaults() Config {
 var known = map[string][]string{
 	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "health", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
-	"admission":         {"source", "prefix", "control_prefix", "operators_file"},
+	"admission":         {"prefix", "control_prefix", "operators_file"},
 	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
 	"batch.adaptive":    {"start", "min", "grow_after"},
 	"compose":           {"committer", "hook", "hook_owned", "hook_timeout"},
@@ -209,7 +208,6 @@ func (c Config) validate() error {
 	}
 	return errors.Join(
 		oneOf("apiVersion", c.APIVersion, APIVersion),
-		oneOf("admission.source", c.Admission.Source, "refs"),
 		oneOf("batch.strategy", c.Batch.Strategy, "serial"),
 		oneOf("batch.order", c.Batch.Order, "proven-first", "strict"),
 	)

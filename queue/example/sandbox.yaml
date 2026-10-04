@@ -8,7 +8,6 @@ repository:
   candidate: queue-next                           # scratch branch the queue force-pushes
 
 admission:
-  source: refs                                    # changes arrive as pushed refs
   prefix: refs/queue/admit/                       # push <sha>:refs/queue/admit/<id>
   control_prefix: refs/queue/control/             # where `queue resume` leaves its request
 

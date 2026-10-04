@@ -169,7 +169,7 @@ and merge keys are refused. Defaults are applied before your file is read.
 | `repository.uri` | none | Required. Remote that holds main, the candidate, and all queue refs. Must not hold credentials (see Credentials). |
 | `repository.main` | `core` | Branch that runs compose on and land to. |
 | `repository.candidate` | `queue-next` | Scratch branch, force-pushed by the queue. Must differ from main. |
-| `admission.source` | `refs` | The only value. |
+| `admission.source` | removed | Changes always arrive as pushed refs; the key had one value and no effect, and is now refused as unknown. |
 | `admission.prefix` | `refs/queue/admit/` | Ref prefix ending in `/`. Must not overlap any ref the queue owns. |
 | `admission.control_prefix` | `refs/queue/control/` | Ref prefix ending in `/` for operator requests; `queue resume` writes `<prefix>resume-<PauseSeq>`. Same overlap rule. |
 | `batch.max` | `4` | Largest batch; at least 1. |

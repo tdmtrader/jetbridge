@@ -37,7 +37,6 @@ var _ = Describe("Parse", func() {
 		c, err := config.Parse([]byte(minimal + "runner: {job: x.yml, anything: [1, 2]}\n"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c.Repository.Main).To(Equal("core"))
-		Expect(c.Admission.Source).To(Equal("refs"))
 		Expect(c.Admission.Prefix).To(Equal("refs/queue/admit/"))
 		_, err = config.Parse([]byte(minimal + "admission: {prefix: refs/queue/admit}\n"))
 		Expect(err).To(MatchError("admission.prefix must be a ref prefix under refs/ ending in /"))
@@ -128,9 +127,7 @@ var _ = Describe("Parse", func() {
 	})
 
 	It("refuses an unknown value, listing the allowed ones", func() {
-		_, err := config.Parse([]byte(minimal + "admission: {source: email}\n"))
-		Expect(err).To(MatchError(`admission.source: unsupported value; use one of: refs`))
-		_, err = config.Parse([]byte("apiVersion: jetbridge.dev/queue/v1\nrepository: {uri: u}\n"))
+		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v1\nrepository: {uri: u}\n"))
 		Expect(err).To(MatchError(`apiVersion: unsupported value; use one of: jetbridge.dev/queue/v2`))
 	})
 
@@ -170,12 +167,10 @@ var _ = Describe("Parse", func() {
 
 	It("A key nothing reads is refused as unknown", func() {
 		for _, bad := range []string{"admission: {require: [x]}", "compose: {mode: squash}",
-			"lander: {credential: x}", "lander: {mode: ff-only}", "batch: {bisect: halves}"} {
+			"lander: {credential: x}", "lander: {mode: ff-only}", "batch: {bisect: halves}", "admission: {source: refs}"} {
 			_, err := config.Parse([]byte(minimal + bad + "\n"))
 			Expect(err).To(MatchError(ContainSubstring("unknown key")), bad)
 		}
-		_, err := config.Parse([]byte(minimal + "admission: {source: github-pr}\n"))
-		Expect(err).To(MatchError(`admission.source: unsupported value; use one of: refs`))
 	})
 
 	It("adaptive batch size is off by default and read when set", func() {
