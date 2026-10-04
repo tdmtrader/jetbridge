@@ -61,6 +61,16 @@ var _ = Describe("Lander with a hook script on main", func() {
 		refusedWith(land(), "changes 1 file(s) the hook does not own")
 	})
 
+	It("A hooked commit with an older fence does not land", func() {
+		hooked(a.Commit, "gen/map.txt", "regenerated\n")
+		l, err := git.New(r.config(""))
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(l.Close)
+		_, err = l.Contains(ctx, "main", a.Commit, 5)
+		Expect(err).NotTo(HaveOccurred())
+		refusedWith(l.Land(ctx, "main", a.Commit, 4), "fence 4 refused")
+	})
+
 	It("With no hook script on main the candidate lands as it is", func() {
 		composeRun(r.work, "checkout", "-q", "main")
 		composeRun(r.work, "rm", "-q", "ci/hook.sh")

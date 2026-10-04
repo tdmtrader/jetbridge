@@ -48,6 +48,11 @@ Feature: A hook script on main regenerates files before a land
     When the candidate passes and lands
     Then the land is refused, nobody is ejected and main is unchanged
 
+  Scenario: A hooked commit with an older fence does not land
+    Given the hooked commit of the candidate is published, and a newer queue step has fenced main
+    When the older step lands the candidate
+    Then the land is refused, nobody is ejected and main is unchanged
+
   Scenario: With no hook script on main the candidate lands as it is
     Given the config names a hook script that main does not have
     When the candidate passes and lands
