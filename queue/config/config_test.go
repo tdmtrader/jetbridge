@@ -1,0 +1,150 @@
+package config_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/concourse/concourse/queue/config"
+)
+
+const minimal = "apiVersion: jetbridge.dev/queue/v2\nrepository: {uri: https://example.test/repo.git}\n"
+
+var _ = Describe("Parse", func() {
+	It("An unknown key is refused naming the nearest", func() {
+		_, err := config.Parse([]byte(minimal + "batch: {maxx: 4}\n"))
+		Expect(err).To(MatchError(`unknown key "batch.maxx"; did you mean "batch.max"?`))
+	})
+
+	It("An alias cannot bypass the strict key check", func() {
+		_, err := config.Parse([]byte(minimal + "runner: &b {maxx: 9}\nbatch: *b\n"))
+		Expect(err).To(MatchError(`aliases are not supported (at "batch")`))
+	})
+
+	It("reads a notify section for its adapter", func() {
+		c, err := config.Parse([]byte(minimal + "notify: {kind: log, path: \"-\"}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Notify.IsZero()).To(BeFalse())
+	})
+
+	It("A missing repository is refused", func() {
+		_, err := config.Parse([]byte("apiVersion: jetbridge.dev/queue/v2\nrepository: {main: core}\n"))
+		Expect(err).To(MatchError("repository.uri is required; it is never guessed"))
+	})
+
+	It("fills the defaults and keeps runner raw", func() {
+		c, err := config.Parse([]byte(minimal + "runner: {job: x.yml, anything: [1, 2]}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Repository.Main).To(Equal("core"))
+		Expect(c.Admission.Source).To(Equal("refs"))
+		Expect(c.Admission.Prefix).To(Equal("refs/queue/admit/"))
+		_, err = config.Parse([]byte(minimal + "admission: {prefix: refs/queue/admit}\n"))
+		Expect(err).To(MatchError("admission.prefix must be a ref prefix under refs/ ending in /"))
+		Expect(c.Batch).To(Equal(config.Batch{Max: 4, RetryNone: 1, Strategy: "serial"}))
+		Expect(c.Runner.Content).To(HaveLen(4))
+	})
+
+	It("The strategy defaults to serial and an unknown one is refused", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Strategy).To(Equal("serial"))
+		c, err = config.Parse([]byte(minimal + "batch: {strategy: serial}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Strategy).To(Equal("serial"))
+		_, err = config.Parse([]byte(minimal + "batch: {strategy: speculative}\n"))
+		Expect(err).To(MatchError(`batch.strategy "speculative" is not allowed; use one of: serial`))
+		_, err = config.Parse([]byte(minimal + "batch: {strategey: serial}\n"))
+		Expect(err).To(MatchError(`unknown key "batch.strategey"; did you mean "batch.strategy"?`))
+	})
+
+	It("allows three land failures in a row by default and refuses fewer than one", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Lander.MaxFailures).To(Equal(3))
+		c, err = config.Parse([]byte(minimal + "lander: {max_failures: 5}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Lander.MaxFailures).To(Equal(5))
+		_, err = config.Parse([]byte(minimal + "lander: {max_failures: 0}\n"))
+		Expect(err).To(MatchError("lander.max_failures must be at least 1"))
+		_, err = config.Parse([]byte(minimal + "lander: {max_failure: 2}\n"))
+		Expect(err).To(MatchError(`unknown key "lander.max_failure"; did you mean "lander.max_failures"?`))
+	})
+
+	It("reads the git lander's lease ref, defaulting the lease ref", func() {
+		c, err := config.Parse([]byte(minimal + "lander: {scratch: /var/tmp/q}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Lander).To(Equal(config.Lander{MaxFailures: 3,
+			LeaseRef: "refs/queue/lease", Scratch: "/var/tmp/q"}))
+		_, err = config.Parse([]byte(minimal + "lander: {remote: ../origin.git}\n"))
+		Expect(err).To(MatchError(ContainSubstring(`unknown key "lander.remote"`)))
+		_, err = config.Parse([]byte(minimal + "lander: {lease_ref: lease}\n"))
+		Expect(err).To(MatchError("lander.lease_ref must be a full ref name under refs/"))
+		_, err = config.Parse([]byte(minimal + "lander: {lease_rf: refs/x}\n"))
+		Expect(err).To(MatchError(`unknown key "lander.lease_rf"; did you mean "lander.lease_ref"?`))
+	})
+
+	It("batch.order is refused as an unknown key", func() {
+		_, err := config.Parse([]byte(minimal + "batch: {order: strict}\n"))
+		Expect(err).To(MatchError(ContainSubstring(`unknown key "batch.order"`)))
+	})
+
+	It("refuses an unknown value, listing the allowed ones", func() {
+		_, err := config.Parse([]byte(minimal + "admission: {source: email}\n"))
+		Expect(err).To(MatchError(`admission.source "email" is not allowed; use one of: refs`))
+		_, err = config.Parse([]byte("apiVersion: jetbridge.dev/queue/v1\nrepository: {uri: u}\n"))
+		Expect(err).To(MatchError(`apiVersion "jetbridge.dev/queue/v1" is not allowed; use one of: jetbridge.dev/queue/v2`))
+	})
+
+	It("refuses an admission prefix that overlaps a ref the queue owns, and accepts the default", func() {
+		for _, p := range []string{"refs/queue/", "refs/", "refs/queue/state/", "refs/queue/lease/", "refs/heads/", "refs/heads/core/", "refs/heads/queue-next/"} {
+			_, err := config.Parse([]byte(minimal + "admission: {prefix: " + p + "}\n"))
+			Expect(err).To(MatchError(ContainSubstring("overlaps")), p)
+		}
+		_, err := config.Parse([]byte(minimal + "admission: {prefix: refs/queue/state}\n"))
+		Expect(err).To(HaveOccurred())
+		_, err = config.Parse([]byte(minimal + "admission: {prefix: refs/queue/admit/}\nstore: {ref: refs/queue/admit/x}\n"))
+		Expect(err).To(MatchError(ContainSubstring("overlaps")))
+		_, err = config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("A control prefix that overlaps a ref the queue owns is refused", func() {
+		for _, p := range []string{"refs/queue/admit/", "refs/queue/admit/x/", "refs/queue/", "refs/queue/state/", "refs/queue/lease/", "refs/heads/core/", "refs/"} {
+			_, err := config.Parse([]byte(minimal + "admission: {control_prefix: " + p + "}\n"))
+			Expect(err).To(MatchError(ContainSubstring("overlaps")), p)
+		}
+		_, err := config.Parse([]byte(minimal + "admission: {control_prefix: refs/queue/control}\n"))
+		Expect(err).To(MatchError("admission.control_prefix must be a ref prefix under refs/ ending in /"))
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Admission.ControlPrefix).To(Equal("refs/queue/control/"))
+	})
+
+	It("A key nothing reads is refused as unknown", func() {
+		for _, bad := range []string{"admission: {require: [x]}", "compose: {hook: x}", "compose: {mode: squash}",
+			"lander: {credential: x}", "lander: {mode: ff-only}", "batch: {bisect: halves}"} {
+			_, err := config.Parse([]byte(minimal + bad + "\n"))
+			Expect(err).To(MatchError(ContainSubstring("unknown key")), bad)
+		}
+		_, err := config.Parse([]byte(minimal + "admission: {source: github-pr}\n"))
+		Expect(err).To(MatchError(`admission.source "github-pr" is not allowed; use one of: refs`))
+	})
+
+	It("adaptive batch size is off by default and read when set", func() {
+		c, err := config.Parse([]byte(minimal))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Adaptive).To(BeNil())
+		c, err = config.Parse([]byte(minimal + "batch: {max: 8, adaptive: {start: 4, min: 2, grow_after: 3}}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Batch.Adaptive).To(Equal(&config.Adaptive{Start: 4, Min: 2, GrowAfter: 3}))
+	})
+
+	It("refuses adaptive sizes out of order, or no growth streak, or an unknown key", func() {
+		for _, bad := range []string{"{start: 9, min: 1, grow_after: 1}", "{start: 4, min: 5, grow_after: 1}",
+			"{start: 4, min: 0, grow_after: 1}", "{start: 4, min: 1, grow_after: 0}", "{start: 4, min: 1}"} {
+			_, err := config.Parse([]byte(minimal + "batch: {max: 8, adaptive: " + bad + "}\n"))
+			Expect(err).To(MatchError("batch.adaptive needs 1 <= min <= start <= batch.max and grow_after >= 1"), bad)
+		}
+		_, err := config.Parse([]byte(minimal + "batch: {adaptive: {strat: 2}}\n"))
+		Expect(err).To(MatchError(`unknown key "batch.adaptive.strat"; did you mean "batch.adaptive.start"?`))
+	})
+})
