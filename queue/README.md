@@ -220,12 +220,13 @@ and merge keys are refused. Defaults are applied before your file is read.
   and never changes a decision. With no notifier, nothing is announced.
 - **Credentials.** No URL carries one. Every string in the config file, keys
   included and checked as decoded (so a `!!binary` tag hides nothing), and every
-  command-line argument is refused at load if it is a
+  command-line argument (a `--flag=value` checked whole and as its value) is refused at load if it is a
   `scheme://` value holding `user:password@` or a bare `user@` in its authority
   (only an `ssh://` login name such as `ssh://git@host/repo` is allowed; an `@`
   in the path, as in `file:///srv/a@b.git`, is not userinfo), or if it does not
   parse. A `scheme://` inside free text, as in `Queue (https://ci.example.test)`,
-  is refused only if its authority holds an `@`. The refusal names the key path,
+  is refused if the text after `://`, up to the first space or closing bracket or
+  quote (not stopping at `/`), holds an `@`. The refusal names the key path,
   never the value. Git authenticates the way it does outside the queue:
   an ssh key, a credential helper or `GIT_ASKPASS` in the runner's environment.
   The runner's bearer token comes only from `runner.credential` and is sent in a

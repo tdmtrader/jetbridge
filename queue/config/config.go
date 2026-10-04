@@ -201,8 +201,8 @@ var wholeURL = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
 
 // URL refuses a value that is a scheme:// URL if it does not parse or holds userinfo in its
 // authority (between :// and the first / ? #); only an ssh:// login name with no password is
-// allowed. Inside free text, a scheme:// is refused only if its authority, up to the first
-// space, / ? # or closing bracket or quote, holds an @. Either names the key, never the
+// allowed. Inside free text, a scheme:// is refused if the text after it, up to the first
+// space or closing bracket or quote (not stopping at / ? #), holds an @; this fails closed. Either names the key, never the
 // value. Values with no :// (paths, git@host:repo) are left to git.
 func URL(key, value string) error {
 	refuse := fmt.Errorf("%s: a URL must not hold credentials and must parse; give credentials to git or the runner out of band (see Credentials in the README)", key)
@@ -217,7 +217,7 @@ func URL(key, value string) error {
 		free = free[1:] // any later scheme:// is free text
 	}
 	for _, rest := range free {
-		end := strings.IndexFunc(rest, func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune("/?#)]}>\"'", r) })
+		end := strings.IndexFunc(rest, func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune(")]}>\"'", r) })
 		if end < 0 {
 			end = len(rest)
 		}

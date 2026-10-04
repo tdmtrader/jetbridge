@@ -213,7 +213,8 @@ var _ = Describe("Parse", func() {
 			Expect(err).NotTo(HaveOccurred(), name)
 			Expect(c.Compose.Committer.Name).To(Equal(name))
 		}
-		for _, name := range []string{"Queue (https://u:F4ke@ci.example.test)", "see https://F4ke@host/x", "Queue <ssh://git:F4ke@host>", "https://ci.example.test/ or https://u:F4ke@ci.example.test"} {
+		for _, name := range []string{"Queue (https://u:F4ke@ci.example.test)", "see https://F4ke@host/x", "Queue <ssh://git:F4ke@host>", "https://ci.example.test/ or https://u:F4ke@ci.example.test",
+			"Queue (https://u:a/F4ke@x)", "see https://u:F4ke/x@host now", "Queue [https://u:F4ke?x@host]", "Queue \"https://u#F4ke@host\""} {
 			_, err := config.Parse([]byte(minimal + "compose: {committer: {name: '" + name + "'}}\n"))
 			Expect(err).To(MatchError(ContainSubstring("compose.committer.name: a URL must not hold credentials")), name)
 			Expect(err.Error()).NotTo(ContainSubstring("F4ke"), name)

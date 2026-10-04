@@ -348,6 +348,19 @@ var _ = Describe("queue command", func() {
 		Expect(gitIn(remote, "show", "refs/queue/state:snapshot.json")).NotTo(ContainSubstring(token))
 	})
 
+	It("refuses a credential URL given as one --flag=value argument, never echoing it", func() {
+		old := core.Secrets
+		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
+		DeferCleanup(func() { core.Secrets = old })
+		for _, a := range []string{"--config=https://user:F4ke/Pa55@host/q.yaml", "-config=https://user:F4ke/Pa55@host/q.yaml"} {
+			var o, e bytes.Buffer
+			code := entry(context.Background(), []string{"status", a}, &o, &e)
+			Expect(code).NotTo(Equal(0), a)
+			Expect(e.String()).To(ContainSubstring("argument: a URL must not hold credentials"), a)
+			Expect(o.String()+e.String()).NotTo(MatchRegexp("F4ke|Pa55"), a)
+		}
+	})
+
 	It("hides a credential in a flag the command refuses", func() {
 		var o, e bytes.Buffer
 		code := entry(context.Background(), []string{"status", "--window", "https://user:SECRET@host"}, &o, &e)

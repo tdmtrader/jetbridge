@@ -54,9 +54,12 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "resume", "status", "stats", "view"}, args[0]) {
 		return fail(errors.New(usage))
 	}
-	for _, a := range args { // before any error can quote one
-		if err := config.URL("argument", a); err != nil {
-			return fail(err)
+	for _, a := range args { // before any error can quote one; a --flag=value is checked whole and as its value
+		_, v, _ := strings.Cut(a, "=")
+		for _, s := range []string{a, v} {
+			if err := config.URL("argument", s); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
