@@ -54,6 +54,15 @@ func New(c config.Config) (*Lander, error) {
 	return l, nil
 }
 
+// Head reports the sha main is at on the remote.
+func (l *Lander) Head(ctx context.Context, main string) (string, error) {
+	out, err := l.git(ctx, "ls-remote", l.remote, branch(main))
+	if f := strings.Fields(out); err == nil && len(f) >= 1 {
+		return f[0], nil
+	}
+	return "", errors.Join(err, fmt.Errorf("main %q not found", main))
+}
+
 func (l *Lander) Close() error { return os.RemoveAll(l.dir) }
 
 // Land fast-forwards main to candidate, moving the lease ref to fence in the

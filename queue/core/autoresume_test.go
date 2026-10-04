@@ -17,16 +17,17 @@ var _ = Describe("Driver auto-resume", func() {
 		res   *memResumes
 		note  *memNotifier
 		clock time.Time
+		main  string
 	)
 	const cooldown = 5 * time.Minute
 	BeforeEach(func() {
 		ctx, store, note, res = context.Background(), &memStore{}, &memNotifier{}, &memResumes{}
-		clock = time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+		clock, main = time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC), "aaaaaaaa11"
 	})
 	// driver pauses on its first run, which cannot compose and so has no verdict.
 	driver := func() *core.Driver {
 		return &core.Driver{
-			Store: store, Composer: failCompose{}, Runner: &memRunner{}, Lander: &memLander{c: &memComposer{}}, Notifier: note,
+			Store: store, Composer: failCompose{}, Runner: &memRunner{}, Lander: headLander{&memLander{c: &memComposer{}}, &main}, Notifier: note,
 			NewStrategy: func() core.Strategy { return &core.Serial{Max: 1} }, Main: "core", Owner: "runner",
 			Resumes: res, Cooldown: cooldown, Now: func() time.Time { return clock }, Log: func(string, ...any) {},
 		}
@@ -43,6 +44,54 @@ var _ = Describe("Driver auto-resume", func() {
 		step(d, cooldown)
 		return d
 	}
+
+	// held leaves a dead runner's second no-verdict pause on one main held.
+	held := func() *core.Driver {
+		d := pausedTwice()
+		step(d, cooldown)
+		return d
+	}
+	resumes := func() int { return len(note.of(core.ResumedEvent)) }
+
+	It("A dead runner is auto-resumed once, then the pause holds", func() {
+		d := held()
+		Expect(resumes()).To(Equal(1))
+		snap := store.snap()
+		Expect(snap.Paused).To(BeTrue())
+		Expect(snap.Why).To(Equal("no verdict twice on main aaaaaaaa; nothing auto-resumes it — run `queue resume`"))
+		Expect(snap.Settled[len(snap.Settled)-1].Why).To(Equal(snap.Why))
+		step(d, 100*cooldown)
+		Expect(resumes()).To(Equal(1))
+		Expect(store.snap().Ejected).To(BeEmpty())
+		Expect(store.snap().Queued).To(HaveLen(1))
+	})
+
+	It("A new main allows one more auto-resume", func() {
+		d := held()
+		main = "bbbbbbbb22"
+		step(d, time.Second)
+		Expect(resumes()).To(Equal(2))
+		step(d, cooldown)
+		Expect(resumes()).To(Equal(2), "the second pause on the new main is held")
+		Expect(store.snap().Why).To(ContainSubstring("twice on main bbbbbbbb"))
+	})
+
+	It("A restart keeps the auto-resume count for the main", func() {
+		pausedTwice()
+		step(driver(), cooldown) // a new process takes over the second pause
+		Expect(resumes()).To(Equal(1))
+		Expect(store.snap().Why).To(ContainSubstring("no verdict twice"))
+	})
+
+	It("A manual resume clears the hold", func() {
+		d := held()
+		Expect(d.Resume(ctx, store.snap().PauseSeq)).To(Succeed())
+		Expect(store.snap().ResumedOnMain).To(BeEmpty())
+		step(d, 0)
+		Expect(store.snap().Paused).To(BeTrue())
+		step(d, cooldown)
+		Expect(resumes()).To(Equal(3), "the manual resume and one more auto-resume")
+	})
 
 	It("A queue paused for no verdict resumes after the cool-down", func() {
 		d := driver()
@@ -129,3 +178,11 @@ var _ = Describe("Driver auto-resume", func() {
 		Expect(last[len(last)-1].Why).To(Equal("resume requested"))
 	})
 })
+
+// headLander is a Lander that also reports the sha main is at.
+type headLander struct {
+	*memLander
+	sha *string
+}
+
+func (h headLander) Head(context.Context, string) (string, error) { return *h.sha, nil }

@@ -33,3 +33,24 @@ Feature: A queue paused for no verdict resumes itself after a cool-down
     Given a queue paused for no verdict and a new process that takes it over
     When the new process takes a step after the cool-down is over
     Then the queue resumes
+
+  Scenario: A dead runner is auto-resumed once, then the pause holds
+    Given a runner that never gives a verdict and a cool-down of five minutes
+    When the runner takes steps through a pause, its auto-resume and a second pause
+    Then the queue stays paused with a reason saying nothing auto-resumes it
+    And it is never resumed again, and nothing is ejected
+
+  Scenario: A new main allows one more auto-resume
+    Given a held pause
+    When main moves to a new commit and the runner takes a step
+    Then the queue auto-resumes once more
+
+  Scenario: A restart keeps the auto-resume count for the main
+    Given a queue that auto-resumed once and paused again
+    When a new process takes it over after the cool-down
+    Then the pause is held, not resumed
+
+  Scenario: A manual resume clears the hold
+    Given a held pause
+    When the operator resumes it and the queue pauses again
+    Then it auto-resumes once more after the cool-down

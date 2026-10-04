@@ -28,6 +28,8 @@ type Snapshot struct {
 	Refused  []Refusal         // the latest MaxRefused admissions refused, oldest first
 	Commits  map[string]string // the commit each id was admitted at, kept once it settles
 	Settled  []SettleRecord    // the latest MaxSettled lands, ejects, pauses and flakes, oldest first
+
+	ResumedOnMain string // the main sha the last auto-resume was on; empty in a snapshot saved before it existed
 }
 
 const MaxRefused = 20

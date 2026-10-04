@@ -145,6 +145,9 @@ func (d *Driver) resume(ctx context.Context, seq uint64, why string) error {
 		r.Resume()
 	}
 	d.s.Paused, d.s.Why = false, ""
+	if why != autoResumeWhy {
+		d.s.ResumedOnMain = "" // a manual resume clears the hold
+	}
 	ev := Event{Kind: ResumedEvent, Why: why, At: d.now()}
 	d.settled(ev)
 	if err := d.save(ctx); err != nil {
@@ -160,7 +163,7 @@ func (d *Driver) resume(ctx context.Context, seq uint64, why string) error {
 // autoResume ends a no-verdict pause once the cool-down has passed; any other pause waits for an operator.
 func (d *Driver) autoResume(ctx context.Context) error {
 	s := d.s
-	if !s.Paused || !strings.HasPrefix(s.Why, noVerdictWhy) || d.Cooldown <= 0 {
+	if !s.Paused || !noVerdict(s.Why) || d.Cooldown <= 0 {
 		return nil
 	}
 	at := s.PausedAt
@@ -172,7 +175,7 @@ func (d *Driver) autoResume(ctx context.Context) error {
 	if d.now().Sub(at) < d.Cooldown {
 		return nil
 	}
-	return d.resume(ctx, d.s.PauseSeq, "auto-resume after cool-down")
+	return d.resumeOncePerMain(ctx)
 }
 
 // resumeRequested resumes a paused queue on request, then deletes the request

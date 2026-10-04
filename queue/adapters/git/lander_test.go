@@ -114,6 +114,12 @@ var _ = Describe("Lander", func() {
 		Expect(r.fence()).To(Equal("fence 1"))
 	})
 
+	It("Head reports the sha main is at", func() {
+		Expect(r.lander().Head(ctx, "main")).To(Equal(r.base))
+		_, err := r.lander().Head(ctx, "missing")
+		Expect(err).To(HaveOccurred())
+	})
+
 	It("Contains reports a landed candidate", func() {
 		l, c1, c2 := r.lander(), r.commit("c1", r.base), r.commit("c2", r.base)
 		Expect(l.Land(ctx, "main", c1, 5)).To(Succeed())
