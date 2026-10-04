@@ -27,3 +27,8 @@ Feature: Drain lists in-flight work for a safe rollback
     Given a queue whose state cannot be read
     When I drain the queue
     Then it fails and prints nothing
+
+  Scenario: Drain reads the resource's source, from a file or on stdin, as well as a config file
+    Given a queue with one change queued, and the resource's source for it
+    When I drain the queue with that source in a file, on stdin, or with the config file
+    Then each prints the same lines, and giving both a source and a config file is refused

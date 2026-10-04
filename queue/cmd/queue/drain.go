@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/queue/config"
 	"github.com/concourse/concourse/queue/core"
+	"github.com/concourse/concourse/queue/wire"
 )
 
 // drainLines writes what drain prints: "ROW <id> <sha> inflight|queued", the
@@ -46,4 +51,44 @@ func drainLines(s core.Snapshot, l core.Lease, now time.Time, out io.Writer) {
 		holder += " " + s.InFlight[0].Run.ID
 	}
 	fmt.Fprintln(out, "LEASE "+holder)
+}
+
+// loadConfig reads --config, or for drain without it the queue resource's
+// source JSON ({"source": {...}}) from --source or stdin, as the resource does.
+func loadConfig(verb, file, srcFile string) (config.Config, func(), error) {
+	none := func() {}
+	if verb != "drain" || file != "" {
+		if srcFile != "" {
+			return config.Config{}, none, errors.New("--source is for drain without --config")
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return config.Config{}, none, err
+		}
+		c, err := config.Parse(data)
+		return c, none, err
+	}
+	in := io.Reader(os.Stdin)
+	if srcFile != "" {
+		f, err := os.Open(srcFile)
+		if err != nil {
+			return config.Config{}, none, err
+		}
+		defer f.Close()
+		in = f
+	}
+	var req struct{ Source wire.Source }
+	if err := json.NewDecoder(in).Decode(&req); err != nil {
+		return config.Config{}, none, errors.New("the source is not valid JSON")
+	}
+	cleanup, err := wire.SSHKey(req.Source)
+	if err != nil {
+		return config.Config{}, none, err
+	}
+	c, err := wire.LoadConfig(req.Source)
+	if err != nil {
+		cleanup()
+		return config.Config{}, none, err
+	}
+	return c, cleanup, nil
 }

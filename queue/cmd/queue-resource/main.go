@@ -30,17 +30,7 @@ import (
 )
 
 // source is the same in both resources but for mode.
-type source struct {
-	Mode       string `json:"mode"` // candidate or verdict
-	URI        string `json:"uri"`
-	PrivateKey string `json:"private_key"`
-	KnownHosts string `json:"known_hosts"` // required with private_key
-	Main       string `json:"main"`
-	Config     string `json:"config"`      // the queue config, inline
-	ConfigFile string `json:"config_file"` // or a path to it
-	Owner      string `json:"owner"`       // the fixed lease owner, so each check renews the lease
-	WaitCap    string `json:"wait_cap"`    // how long a run waits for a verdict; default 1h
-}
+type source = wire.Source
 
 type request struct {
 	Source  source            `json:"source"`
@@ -96,12 +86,12 @@ func call(ctx context.Context, as string, args []string, stdin io.Reader, out, e
 	if (as == "in" || as == "out") && len(args) != 1 {
 		return fmt.Errorf("%s takes one directory", as)
 	}
-	cleanup, err := sshKey(s)
+	cleanup, err := wire.SSHKey(s)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	c, err := loadConfig(s)
+	c, err := wire.LoadConfig(s)
 	if err != nil {
 		return err
 	}
@@ -232,55 +222,6 @@ func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir s
 		return nil, err
 	}
 	return v, r.RecordPassHooked(ctx, v["run"], v["candidate"], bundle)
-}
-
-// loadConfig reads the queue config, inline or from a file; source.uri and source.main, if set, replace the config's.
-func loadConfig(s source) (config.Config, error) {
-	data := []byte(s.Config)
-	if (s.Config == "") == (s.ConfigFile == "") {
-		return config.Config{}, errors.New("give one of source.config or source.config_file")
-	}
-	if s.ConfigFile != "" {
-		b, err := os.ReadFile(s.ConfigFile)
-		if err != nil {
-			return config.Config{}, errors.New("source.config_file cannot be read")
-		}
-		data = b
-	}
-	if err := config.URL("source.uri", s.URI); err != nil {
-		return config.Config{}, err
-	}
-	return config.ParseWith(data, func(c *config.Config) {
-		c.Repository.URI, c.Repository.Main = cmp.Or(s.URI, c.Repository.URI), cmp.Or(s.Main, c.Repository.Main)
-	})
-}
-
-// sshKey writes the private key and known hosts to 0600 files git's ssh uses, removed by cleanup.
-func sshKey(s source) (cleanup func(), err error) {
-	if s.PrivateKey == "" {
-		return func() {}, nil
-	}
-	for line := range strings.SplitSeq(s.PrivateKey, "\n") {
-		if l := strings.TrimSpace(line); l != "" && !strings.HasPrefix(l, "-----") {
-			core.Secrets.Add(l)
-		}
-	}
-	if s.KnownHosts == "" {
-		return nil, errors.New("source.known_hosts is required with source.private_key")
-	}
-	dir, err := os.MkdirTemp("", "queue-resource-ssh-")
-	if err != nil {
-		return nil, err
-	}
-	cleanup = func() { os.RemoveAll(dir) }
-	key, hosts := filepath.Join(dir, "key"), filepath.Join(dir, "known_hosts")
-	if err := errors.Join(os.WriteFile(key, []byte(strings.TrimSpace(s.PrivateKey)+"\n"), 0o600),
-		os.WriteFile(hosts, []byte(s.KnownHosts+"\n"), 0o600)); err != nil {
-		cleanup()
-		return nil, err
-	}
-	os.Setenv("GIT_SSH_COMMAND", "ssh -i "+key+" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="+hosts)
-	return cleanup, nil
 }
 
 // capped marks a run whose poll gave no verdict and no error: with the git

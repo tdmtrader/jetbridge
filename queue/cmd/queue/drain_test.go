@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,6 +83,32 @@ var _ = Describe("queue drain", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, out = drain()
 		Expect(out).To(HaveSuffix("PUSH idle\nLEASE none\n"))
+	})
+
+	It("Drain reads the resource's source, from a file or on stdin, as well as a config file", func() {
+		save(0, core.Snapshot{Queued: []core.Entry{e("a", "a")}})
+		cfg, err := os.ReadFile(file)
+		Expect(err).NotTo(HaveOccurred())
+		src, err := json.Marshal(map[string]any{"source": map[string]string{"mode": "candidate", "config": string(cfg)}})
+		Expect(err).NotTo(HaveOccurred())
+		srcFile := filepath.Join(GinkgoT().TempDir(), "source.json")
+		Expect(os.WriteFile(srcFile, src, 0o600)).To(Succeed())
+		want := "ROW a " + sha("a") + " queued\nPUSH idle\nLEASE none\n"
+		var o, errw bytes.Buffer
+		Expect(run(ctx, []string{"drain", "--source", srcFile}, &o, &errw)).To(Equal(0), errw.String())
+		Expect(o.String()).To(Equal(want))
+		stdin := os.Stdin
+		DeferCleanup(func() { os.Stdin = stdin })
+		os.Stdin, err = os.Open(srcFile)
+		Expect(err).NotTo(HaveOccurred())
+		o.Reset()
+		Expect(run(ctx, []string{"drain"}, &o, &errw)).To(Equal(0), errw.String())
+		Expect(o.String()).To(Equal(want))
+		_, out := drain()
+		Expect(out).To(Equal(want))
+		o.Reset()
+		Expect(run(ctx, []string{"drain", "--source", srcFile, "--config", file}, &o, &errw)).NotTo(Equal(0))
+		Expect(o.String()).To(BeEmpty())
 	})
 
 	It("An unreadable store drains nothing and fails", func() {

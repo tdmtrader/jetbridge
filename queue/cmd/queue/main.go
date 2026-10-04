@@ -26,7 +26,7 @@ import (
 	"github.com/concourse/concourse/queue/wire"
 )
 
-const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|health|list|ejected|explain|drain --config <file> [--every 5s] [--window 1h] [--once] [--owner name] [--json] [id sha]"
+const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|health|list|ejected|explain|drain --config <file>|--source <file> [--every 5s] [--window 1h] [--once] [--owner name] [--json] [id sha]"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -63,6 +63,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(errw)
 	file := fs.String("config", "", "the queue's config file")
+	srcFile := fs.String("source", "", "drain: the queue resource's source JSON, instead of --config; default stdin")
 	every := fs.Duration("every", 5*time.Second, "run: time between steps")
 	once := fs.Bool("once", false, "run: take one step and exit")
 	owner := fs.String("owner", "", "run: the lease owner, fixed so a new process renews its lease; default unique per process")
@@ -74,14 +75,11 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if args[0] == "run" && *every <= 0 {
 		return fail(errors.New("--every must be positive"))
 	}
-	data, err := os.ReadFile(*file)
+	c, cleanup, err := loadConfig(args[0], *file, *srcFile)
 	if err != nil {
 		return fail(err)
 	}
-	c, err := config.Parse(data)
-	if err != nil {
-		return fail(err)
-	}
+	defer cleanup()
 	if err := register(c); err != nil {
 		return fail(err)
 	}
