@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -362,6 +363,34 @@ var _ = Describe("Driver", func() {
 			Expect(flaky[0].Run).NotTo(BeEmpty())
 			Expect(flaky[0].Why).To(Equal("red as a batch, green when split"))
 			Expect(flaky[0].At).To(Equal(at.UTC()))
+		})
+
+		It("A flaky outcome's settle record feeds the stats and the panel view", func() {
+			run.verdict = func(es []string) core.Verdict {
+				if len(es) == 2 {
+					return core.Fail
+				}
+				return core.Pass
+			}
+			d := clocked()
+			admit(d, "a")
+			admit(d, "b")
+			steps(d, 8)
+			sn := store.snap()
+			var flaky []core.SettleRecord
+			for _, r := range sn.Settled {
+				if r.Kind == core.FlakeEvent {
+					flaky = append(flaky, r)
+				}
+			}
+			sn.Settled = flaky
+			s := core.Stats(sn, at, time.Hour)
+			Expect(s.Flakes).To(Equal(1), "flaky batches are counted, not entries")
+			b, err := core.PanelView(sn, s, at)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(b)).To(ContainSubstring(`"` + flaky[0].ID + `"`))
+			Expect(string(b)).To(ContainSubstring("flake: red as a batch, green when split"))
+			Expect(strings.Count(string(b), `"tip":"red as a batch`)).To(Equal(1), "one row names all the entries")
 		})
 
 		It("A flake is saved with the outcome it accompanies", func() {
