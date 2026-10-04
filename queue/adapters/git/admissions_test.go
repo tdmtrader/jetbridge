@@ -283,12 +283,12 @@ var _ = Describe("Promotes", func() {
 })
 
 var _ = Describe("Admission owner", func() {
-	It("A change is owned by the author of its commit", func() {
+	authored := func(name string) string {
 		ctx, r := context.Background(), newRemote()
 		c := r.config()
 		c.Admission.Prefix = prefix
 		cmd := exec.Command("git", "-C", r.work, "commit-tree", run(r.work, "mktree"), "-m", "x", "-p", r.base)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=alice", "GIT_AUTHOR_EMAIL=alice@example.test",
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME="+name, "GIT_AUTHOR_EMAIL=a@example.com",
 			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
 		out, err := cmd.Output()
 		Expect(err).NotTo(HaveOccurred())
@@ -297,6 +297,20 @@ var _ = Describe("Admission owner", func() {
 		ps, err := (&git.Admissions{Lander: r.lander(), Prefix: prefix}).Pending(ctx, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ps).To(HaveLen(1))
-		Expect(ps[0].Owner).To(Equal("alice"))
+		return ps[0].Owner
+	}
+	It("A change is owned by the author of its commit", func() {
+		Expect(authored("alice")).To(Equal("alice"))
 	})
+	DescribeTable("an author name that looks like an address is not kept",
+		func(name, want string) { Expect(authored(name)).To(Equal(want)) },
+		Entry("a plain name is kept", "Alice Smith", "Alice Smith"),
+		Entry("an email-like name", "alice@example.test", "unknown"),
+		Entry("userinfo with a comma in the password", "https://alice:p,ass@example.test", "unknown"),
+		Entry("a url without userinfo", "https://example.test/x", "unknown"),
+		Entry("a path", "a/b", "unknown"),
+		Entry("a backslash", `a\b`, "unknown"),
+		Entry("a colon then text", "user:secret", "unknown"),
+		Entry("a colon then space is kept", "Team: Alice", "Team: Alice"),
+	)
 })

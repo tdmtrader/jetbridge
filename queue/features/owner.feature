@@ -17,3 +17,14 @@ Feature: Every entry records its owner
     Given a log notifier writing to a log
     When the queue announces an eject of a change owned by alice
     Then the log line names alice as the owner
+
+  Scenario Outline: An author name that looks like an address is not kept
+    Given a change whose commit author name is "<name>"
+    When the queue reads the admission
+    Then the pending change is owned by "<owner>"
+
+    Examples:
+      | name                              | owner       |
+      | Alice Smith                       | Alice Smith |
+      | alice@example.test                | unknown     |
+      | https://alice:p,ass@example.test  | unknown     |
