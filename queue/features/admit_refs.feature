@@ -73,3 +73,9 @@ Feature: Admitting changes by pushing them, drained by the runner
     Then the repeat of "a" is refused and "c" is queued
     And "c" builds on nothing, not on the accepted "a"
     And every pushed ref is deleted
+
+  Scenario: With operators configured, a change signed by an operator is admitted and any other is refused
+    Given the queue lists its operators
+    When a change signed by an operator, one signed by someone else and an unsigned one are pushed for admission
+    Then only the operator's change is accepted
+    And the others are refused with the reason, which never names a key

@@ -3,6 +3,7 @@ package git_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -208,5 +209,56 @@ var _ = Describe("Resumes", func() {
 		Expect(run(r.bare, "rev-parse", prefix+"3")).To(Equal(main))
 		Expect(res.Done(ctx, reqs[0])).To(Succeed())
 		Expect(run(r.bare, "for-each-ref", c.Admission.ControlPrefix)).NotTo(ContainSubstring(prefix + "3"))
+	})
+})
+
+var _ = Describe("Signed admits", func() {
+	ctx := context.Background()
+
+	// key makes an ed25519 key in dir and returns its path; the key is never read or printed here.
+	key := func(dir, name string) string {
+		f := filepath.Join(dir, name)
+		out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", f).CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+		return f
+	}
+
+	It("With operators configured, a change signed by an operator is admitted and any other is refused", func() {
+		r, dir := newRemote(), GinkgoT().TempDir()
+		op, other := key(dir, "op"), key(dir, "other")
+		pub, err := os.ReadFile(op + ".pub")
+		Expect(err).NotTo(HaveOccurred())
+		operators := filepath.Join(dir, "operators")
+		Expect(os.WriteFile(operators, append([]byte("t@example.com "), pub...), 0o600)).To(Succeed())
+		sign := func(name, k string) string {
+			sha := run(r.work, "-c", "gpg.format=ssh", "-c", "user.signingkey="+k, "commit-tree", "-S", run(r.work, "mktree"), "-p", r.base, "-m", name)
+			run(r.work, "push", "-q", r.bare, sha+":refs/heads/"+name)
+			return sha
+		}
+		c := r.config()
+		c.Admission.Prefix = prefix
+		good, stranger, unsigned := sign("good", op), sign("stranger", other), r.commit("unsigned", r.base)
+		for id, sha := range map[string]string{"good": good, "stranger": stranger, "unsigned": unsigned} {
+			Expect(git.Admit(ctx, c, r.work, id, sha)).To(Succeed())
+		}
+		why := map[string]string{}
+		adm := &git.Admissions{Lander: r.lander(), Prefix: prefix, Operators: operators}
+		ps, err := adm.Pending(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		for _, p := range ps {
+			why[p.ID] = p.Why
+		}
+		Expect(why["good"]).To(BeEmpty())
+		for _, id := range []string{"stranger", "unsigned"} {
+			Expect(why[id]).To(ContainSubstring("not signed by an operator"), id)
+			Expect(why[id]).NotTo(ContainSubstring("ssh-ed25519"), id)
+		}
+
+		By("with no operators configured, signing is not asked for")
+		ps, err = (&git.Admissions{Lander: r.lander(), Prefix: prefix}).Pending(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		for _, p := range ps {
+			Expect(p.Why).To(BeEmpty(), p.ID)
+		}
 	})
 })

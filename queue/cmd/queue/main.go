@@ -194,7 +194,7 @@ func newDriver(c config.Config, out, errw io.Writer) (d *core.Driver, closeFn fu
 				return s
 			},
 			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures, Cooldown: c.Pause.Cooldown,
-			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix},
+			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix, Operators: c.Admission.OperatorsFile},
 			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-"},
 			Owner:      fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(suffix)),
 		}, func() {

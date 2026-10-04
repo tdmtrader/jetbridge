@@ -24,7 +24,9 @@ var (
 type Admissions struct {
 	Lander *Lander
 	Prefix string
-	refs   map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
+	// Operators, if set, is a git allowed-signers file: a change not signed by one of its keys is refused.
+	Operators string
+	refs      map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
 }
 
 // stamp is the arrival clock of Admit: nanoseconds, never repeated or going back.
@@ -115,6 +117,11 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		}
 		if err := SafeID(p.ID); err != nil {
 			ps[i].Why = err.Error()
+		}
+		if a.Operators != "" && ps[i].Why == "" {
+			if _, err := a.Lander.git(ctx, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+a.Operators, "verify-commit", p.Commit); err != nil {
+				ps[i].Why = fmt.Sprintf("%.7s is not signed by an operator", p.Commit) // git's own message may quote key material
+			}
 		}
 	}
 	for _, p := range ps { // only an accepted change is an ancestor candidate
