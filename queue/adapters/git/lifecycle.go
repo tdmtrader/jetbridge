@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -21,6 +22,23 @@ type Lifecycle struct {
 	Lander    *Lander
 	Prefix    string
 	Operators string // if set, a request not signed by one of its keys is refused
+	// Legacy, if set, adds the withdraws and eject clears the existing request refs ask for; see legacy.go.
+	Legacy *Legacy
+	legacy map[core.LifecycleRequest]bool
+}
+
+// Pending lists the requests under the prefix, then those of the existing request refs.
+func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error) {
+	reqs, err := r.pending(ctx)
+	if r.Legacy == nil {
+		return reqs, err
+	}
+	old, lerr := r.Legacy.requests(ctx)
+	r.legacy = map[core.LifecycleRequest]bool{}
+	for _, q := range old {
+		r.legacy[q] = true
+	}
+	return append(reqs, old...), errors.Join(err, lerr)
 }
 
 // Request pushes the current main sha, fetched into dir, to the request ref for
@@ -70,8 +88,8 @@ func Resolve(ctx context.Context, c config.Config, dir, id string) error {
 	return Request(ctx, c, dir, "resolve-", id, snap.Commits[id])
 }
 
-// Pending lists the requests; a ref that is not a plain kind, id and commit is no request.
-func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error) {
+// pending lists the requests; a ref that is not a plain kind, id and commit is no request.
+func (r *Lifecycle) pending(ctx context.Context) ([]core.LifecycleRequest, error) {
 	rs, err := r.Lander.requests(ctx, r.Prefix)
 	var reqs []core.LifecycleRequest
 	for _, q := range rs {
@@ -103,6 +121,9 @@ func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error
 
 // Done deletes the request, only if it still points at its sha.
 func (r *Lifecycle) Done(ctx context.Context, q core.LifecycleRequest) error {
+	if r.legacy[q] {
+		return nil // the old queue's record stays as it wrote it
+	}
 	return r.Lander.deleteRef(ctx, r.Prefix+prefixOf(q.Kind)+q.ID+"."+q.Commit, q.SHA)
 }
 
