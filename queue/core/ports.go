@@ -49,6 +49,7 @@ type SettleRecord struct {
 	Run        string
 	Batch      []string
 	Owner      string // the owner of the entry, kept so an eject says whom it concerns
+	Base       string // the sha the run was tested on; kept on a recompose
 }
 
 // Refusal is a change refused at admission: never queued, its reason kept.
@@ -92,10 +93,13 @@ type Landing struct {
 	Fence     uint64
 }
 
-// Flight is a started run and the candidate it tests.
+// Flight is a started run and the candidate it tests. BaseSHA is the sha the
+// candidate was composed on: main's head, or the base run's candidate; "" when
+// main's head could not be read and the run composed on the branch name.
 type Flight struct {
 	Run       Run
 	Candidate string
+	BaseSHA   string
 }
 
 // Store loads and saves the Snapshot. Save is a compare-and-swap: it refuses if
@@ -135,6 +139,13 @@ type FailureReporter interface {
 	FailedTests(runID string) []string
 }
 
+// Heads reads the sha a branch points at now. A Lander that is also Heads has
+// main read at the start of every Step, so each run composes on main's sha and
+// a verdict is used only if its run was tested on the main it would land on.
+type Heads interface {
+	Head(ctx context.Context, branch string) (sha string, err error)
+}
+
 // Lander fast-forwards main to the candidate and refuses if main moved.
 // Contains reports whether main already holds the candidate. Both take a
 // fence, higher on every call even from the same lease holder, and refuse one
@@ -172,6 +183,7 @@ type Event struct {
 	Cause   string
 	Parent  string
 	At      time.Time // when the driver announced it, from its clock
+	Base    string    // the sha the run was tested on; set on a recompose
 }
 
 // Notifier announces events; its error is logged and dropped, never changing a decision.

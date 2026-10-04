@@ -552,7 +552,7 @@ func (d *Driver) settled(ev Event) {
 		es = []Entry{{ID: strings.Join(batch, ", ")}}
 	}
 	for _, e := range es {
-		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner})
+		d.s.Settled = append(d.s.Settled, SettleRecord{e.ID, e.Commit, ev.Kind, ev.At, e.AdmittedAt, ev.Why, ev.Cause, ev.Run.ID, batch, e.Owner, ev.Base})
 	}
 	d.s.Settled = d.s.Settled[max(0, len(d.s.Settled)-MaxSettled):]
 }

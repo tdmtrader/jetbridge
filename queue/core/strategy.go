@@ -9,7 +9,7 @@ import (
 // Run is one test run a Strategy asks for.
 type Run struct {
 	ID      string
-	Base    string  // "" = current main at compose time; else an in-flight run's ID
+	Base    string  // "" = current main at compose time; else an in-flight run's ID, whose candidate it composes on
 	Entries []Entry // whole stacks, ancestors first
 }
 
@@ -41,6 +41,7 @@ type View struct {
 	InFlight []Run
 	Slots    int
 	Prefix   string // starts every run ID, unique per lease and Strategy
+	Main     string // main's sha now: the head read this Step, or the candidate just landed; "" if unknown
 }
 
 // Outcome is what one verdict settles, the runs it makes stale, and the flaky red batches it proved.
