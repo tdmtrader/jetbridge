@@ -57,9 +57,9 @@ func (c Composer) Compose(ctx context.Context, base string, entries []core.Entry
 			return "", err
 		}
 	}
-	var keep []string
+	var keep, union []string
 	if c.HookScript != "" {
-		if keep, _, err = ownedOn(ctx, git, "refs/compose/base", c.HookScript, c.HookTimeout); err != nil {
+		if keep, union, err = hookLists(ctx, git, "refs/compose/base", c.HookScript, c.HookTimeout); err != nil {
 			return "", err
 		}
 	}
@@ -69,7 +69,7 @@ func (c Composer) Compose(ctx context.Context, base string, entries []core.Entry
 			own, err = ownBase(git, own, e, entries[:i])
 		}
 		if err == nil {
-			err = composeOne(git, e, own, keep)
+			err = composeOne(git, dir, e, own, keep, union)
 		}
 		if err != nil {
 			return "", err
@@ -120,8 +120,8 @@ func ownBase(git func(...string) (string, error), fork string, e core.Entry, ear
 }
 
 // composeOne applies e's diff from own (see ownBase) onto HEAD as one commit; an empty result adds none.
-// A conflict only in files of keep takes HEAD's side of them.
-func composeOne(git func(...string) (string, error), e core.Entry, own string, keep []string) error {
+// A conflict in a list of union merges key by key (keyedUnion); one only in files of keep then takes HEAD's side of them.
+func composeOne(git func(...string) (string, error), dir string, e core.Entry, own string, keep, union []string) error {
 	pick, err := git("commit-tree", e.Commit+"^{tree}", "-p", own, "-m", "pick")
 	if err != nil {
 		return err
@@ -131,7 +131,11 @@ func composeOne(git func(...string) (string, error), e core.Entry, own string, k
 		if unmerged == "" {
 			return err
 		}
-		if keepOurs(git, strings.Split(unmerged, "\n"), keep) != nil {
+		rest, err := unionMerge(git, dir, strings.Split(unmerged, "\n"), union)
+		if err != nil {
+			return err
+		}
+		if keepOurs(git, rest, keep) != nil {
 			_, _ = git("reset", "-q", "--hard")
 			return core.ConflictError{EntryID: e.ID}
 		}

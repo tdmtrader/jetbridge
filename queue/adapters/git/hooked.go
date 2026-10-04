@@ -19,6 +19,13 @@ import (
 // nothing is owned, when ref has no such script. A script that cannot answer
 // is a plain error: no verdict.
 func ownedOn(ctx context.Context, git func(...string) (string, error), ref, script string, limit time.Duration) (owned []string, found bool, err error) {
+	return askOn(ctx, git, ref, script, limit, "owned")
+}
+
+var errOutside = errors.New("compose hook named a path outside the repository")
+
+// askOn is ownedOn for any verb: the paths script on ref prints for it.
+func askOn(ctx context.Context, git func(...string) (string, error), ref, script string, limit time.Duration, verb string) (paths []string, found bool, err error) {
 	ent, err := git("ls-tree", ref, "--", script)
 	if err != nil || ent == "" {
 		return nil, false, err
@@ -40,14 +47,14 @@ func ownedOn(ctx context.Context, git func(...string) (string, error), ref, scri
 		return nil, true, err
 	}
 	var out bytes.Buffer
-	if err := hookExec(ctx, limit, empty, &out, path, "owned"); err != nil {
+	if err := hookExec(ctx, limit, empty, &out, path, verb); err != nil {
 		return nil, true, err
 	}
-	owned = strings.Fields(out.String())
-	if slices.ContainsFunc(owned, func(p string) bool { return !config.RepoPath(p) }) {
-		return nil, true, errors.New("compose hook owned a path outside the repository")
+	paths = strings.Fields(out.String())
+	if slices.ContainsFunc(paths, func(p string) bool { return !config.RepoPath(p) }) {
+		return nil, true, errOutside
 	}
-	return owned, true, nil
+	return paths, true, nil
 }
 
 // keepOurs resolves each unmerged path, all of them in keep, to HEAD's side.

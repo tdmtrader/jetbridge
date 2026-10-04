@@ -6,7 +6,7 @@ Feature: A hook script on main regenerates files before a land
   Scenario: Changes that both touch a generated file compose, keeping main's copy for the hook to regenerate
     Given main has a hook script that owns a generated file, and changes "a" and "b" both edit that file
     When the batch "a", "b" is composed onto main
-    Then the candidate composes, the hook was only asked which files it owns
+    Then the candidate composes, the hook was only asked which files it owns and which lists it merges
 
   Scenario: The files a hook owns are asked of main's script, never of one a queued change brings
     Given change "b" rewrites the hook script to own a file "a" and "b" both edit

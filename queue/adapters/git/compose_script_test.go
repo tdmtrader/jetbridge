@@ -62,7 +62,7 @@ var _ = Describe("Composer with a hook script on main", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(composeRun(r.remote, "show", sha+":gen/map.txt")).To(Equal("from a"))
 		v, _ := os.ReadFile(r.verbs)
-		Expect(string(v)).To(Equal("owned\n"))
+		Expect(string(v)).To(Equal("owned\nunion\n"))
 	})
 
 	It("The files a hook owns are asked of main's script, never of one a queued change brings", func() {
