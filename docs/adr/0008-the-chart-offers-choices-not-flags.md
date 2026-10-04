@@ -84,7 +84,8 @@ is written beside the constant. A raise is a one-line diff a reviewer sees.
 - A new chart value needs a schema entry, a kind from the list above, and
   room under `maxValues`. A new rule goes in `_validate.tpl` with a message
   naming the fix.
-- A deployment that sets a key the chart does not read fails to render, so
+- A deployment that sets a key the chart does not read fails to render
+  (below a deferred group's own keys, only once its track closes it), so
   a stale or misspelt key surfaces at the next sync instead of being
   ignored. A deployment's values file has to change in step with a chart
   that removes a key.

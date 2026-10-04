@@ -237,6 +237,17 @@ var shapeGuards = []shapeGuard{
 		},
 	},
 	{
+		name:  "every list item object outside openMaps is closed",
+		names: `"kubernetes.stepPodGrants[]"`,
+		check: checkClosedObjects,
+		breakIt: func(t *testing.T, dir string) {
+			editSchema(t, dir, func(schema map[string]any) {
+				grants := schemaProperties(schema, "kubernetes")["stepPodGrants"].(map[string]any)
+				delete(resolveSchema(schema, grants["items"].(map[string]any)), "additionalProperties")
+			})
+		},
+	},
+	{
 		name:  "a render with no values names what is missing",
 		names: "mcp.clients",
 		check: checkBareRender,
@@ -450,6 +461,7 @@ func TestAValueTheCodeDoesNotAcceptFailsTheRender(t *testing.T) {
 		"kubernetes.podStartupTimeout=banana",
 		"service.httpPort=0",
 		"artifactDaemon.metrics.port=65536",
+		"artifactDaemon.metrics.port=banana",
 		"serviceMonitor.interval=30",
 		"cacheStore=pvc",
 	} {
@@ -539,7 +551,9 @@ func (shape chartShape) walkSchema(visit func(path string, node map[string]any, 
 			}
 			walk(path, child, inItems)
 			if items, ok := child["items"].(map[string]any); ok {
-				walk(path+"[]", resolveSchema(shape.schema, items), true)
+				itemNode := resolveSchema(shape.schema, items)
+				visit(path+"[]", itemNode, true)
+				walk(path+"[]", itemNode, true)
 			}
 		}
 	}
