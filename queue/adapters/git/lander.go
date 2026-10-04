@@ -27,6 +27,10 @@ import (
 var _ core.Lander = (*Lander)(nil)
 var fullSHA = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
+// staleMain is how git reports a push lost to a ref that moved: refused by the
+// lease or as no fast-forward on our side, or by the remote's own ref lock.
+var staleMain = regexp.MustCompile(`\((stale info|non-fast-forward|fetch first|cannot lock ref[^)]*)\)`)
+
 // Lander works in a private bare repo, which Close removes.
 type Lander struct {
 	remote, leaseRef, dir, emptyTree string
@@ -74,6 +78,9 @@ func (l *Lander) Land(ctx context.Context, main, candidate string, fence uint64)
 	}
 	if err = l.push(ctx, fence, leaseOID, mainRef, mainOID, candidate+":"+mainRef); err == nil {
 		return nil
+	}
+	if !staleMain.MatchString(err.Error()) { // any other refusal, auth for one, is a land error
+		return err
 	}
 	if head, herr := l.Head(ctx, mainRef); herr == nil && head != mainOID { // lost to main moving after the check
 		return &core.MainMovedError{Main: mainRef, Candidate: candidate, Head: head}

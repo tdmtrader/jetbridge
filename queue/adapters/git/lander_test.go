@@ -114,6 +114,26 @@ var _ = Describe("Lander", func() {
 		Expect(r.fence()).To(Equal("fence 1"))
 	})
 
+	It("A push refused for another reason is a land error, even if main moved meanwhile", func() {
+		l, c1, other := r.lander(), r.commit("c1", r.base), r.commit("other", r.base)
+		hook := filepath.Join(r.bare, "hooks", "pre-receive") // moves main, then declines: as a refusal racing a push would
+		script := "#!/bin/sh\nenv -u GIT_QUARANTINE_PATH -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES git update-ref refs/heads/main " + other + "\nexit 1\n"
+		git.SetBeforePush(l, func() { Expect(os.WriteFile(hook, []byte(script), 0o755)).To(Succeed()) })
+		err := l.Land(ctx, "main", c1, 5)
+		Expect(err).To(MatchError(ContainSubstring("pre-receive hook declined")))
+		var moved *core.MainMovedError
+		Expect(errors.As(err, &moved)).To(BeFalse(), "counted toward the pause, never recomposed")
+		Expect(r.main()).To(Equal(other))
+	})
+
+	It("A push refused because main moved is named as main moved", func() {
+		l, c1, other := r.lander(), r.commit("c1", r.base), r.commit("other", r.base)
+		git.SetBeforePush(l, func() { r.setMain(other) })
+		var moved *core.MainMovedError
+		Expect(errors.As(l.Land(ctx, "main", c1, 5), &moved)).To(BeTrue())
+		Expect(moved.Head).To(Equal(other))
+	})
+
 	It("Head reports the sha main is at", func() {
 		Expect(r.lander().Head(ctx, "main")).To(Equal(r.base))
 		_, err := r.lander().Head(ctx, "missing")
