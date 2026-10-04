@@ -11,6 +11,10 @@ type Run struct {
 	ID      string
 	Base    string  // "" = current main at compose time; else an in-flight run's ID, whose candidate it composes on
 	Entries []Entry // whole stacks, ancestors first
+	// Retries counts the no-verdict retries of this batch before this run. Kept
+	// with the run in flight, so a strategy rebuilt in a new process, as each
+	// resource check does, goes on counting toward the pause.
+	Retries int `json:",omitempty"`
 }
 
 // noVerdictWhy starts the reason of a pause for no verdict, the one pause that ends by itself.
@@ -108,7 +112,7 @@ func (s *Serial) Plan(v View) ([]Run, []Settle) {
 		return nil, nil
 	}
 	s.runs++
-	s.run = &Run{ID: fmt.Sprintf("%sserial-%d", v.Prefix, s.runs), Entries: entries}
+	s.run = &Run{ID: fmt.Sprintf("%sserial-%d", v.Prefix, s.runs), Entries: entries, Retries: s.retries}
 	return []Run{*s.run}, nil
 }
 
@@ -126,6 +130,7 @@ func (s *Serial) Resume() {
 func (s *Serial) Record(v View, run string, verdict Verdict) (Outcome, error) {
 	if i := slices.IndexFunc(v.InFlight, func(r Run) bool { return r.ID == run }); s.run == nil && s.bisect == nil && i >= 0 {
 		s.run, s.batch = &v.InFlight[i], FormBatch(v.InFlight[i].Entries, v.BuildsOn, v.Landed) // the driver's view is a fresh slice
+		s.retries = s.run.Retries
 	}
 	if s.run == nil || s.run.ID != run {
 		return Outcome{}, fmt.Errorf("serial: run %q is not in flight", run)

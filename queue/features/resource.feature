@@ -47,6 +47,11 @@ Feature: Running the queue as a resource type
     When the job puts errored, twice, the next check retries it, and the new run passes
     Then nothing is ejected or paused, the retry tests the same change on the same main in a new run, and it lands
 
+  Scenario: A test job that keeps erroring pauses the queue after its retries, across checks, and health goes red
+    Given a queue that retries no verdict twice, and a change is admitted
+    When its test job errors on three runs, each found by a separate check
+    Then the queue pauses without ejecting the change, and health reports it unhealthy
+
   Scenario: A put with a verdict other than pass, fail or errored is refused
     Given a change is admitted and the resource was checked
     When the test job puts a verdict that is neither pass, fail nor errored
