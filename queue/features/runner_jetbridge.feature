@@ -14,6 +14,34 @@ Feature: A JetBridge job tests each candidate
     When the candidate is tested
     Then the verdict is fail
 
+  Scenario: A failing build with test names in its log reports them
+    Given a JetBridge job that fails the candidate commit and prints FAILED: lines in its log
+    When the candidate is tested
+    Then the verdict is fail
+    And the failed test names are reported, each once
+
+  Scenario: A failing build without test names is a plain fail
+    Given a JetBridge job that fails the candidate commit without naming a test
+    When the candidate is tested
+    Then the verdict is fail
+    And no failed test names are reported
+
+  Scenario: A failing build whose log cannot be read is still a fail
+    Given a JetBridge job that fails the candidate commit and a log that cannot be read
+    When the candidate is tested
+    Then the verdict is fail
+    And no failed test names are reported
+
+  Scenario: A passing build reports no test names
+    Given a JetBridge job that passes the candidate commit
+    When the candidate is tested
+    Then no failed test names are reported
+
+  Scenario: A configured pattern picks the test names out of the log
+    Given a JetBridge job that fails the candidate commit and a pattern for its log lines
+    When the candidate is tested
+    Then the failed test names are those the pattern picks
+
   Scenario: An errored or aborted build gives no verdict
     Given a JetBridge build that ends errored, or aborted
     When the candidate is tested

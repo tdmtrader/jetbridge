@@ -125,6 +125,12 @@ type Runner interface {
 	Poll(ctx context.Context, runID string) (v Verdict, done bool, err error)
 }
 
+// FailureReporter is an optional Runner capability: the distinct test names a
+// failed run's log gave, as a hint only. Empty when there are none.
+type FailureReporter interface {
+	FailedTests(runID string) []string
+}
+
 // Lander fast-forwards main to the candidate and refuses if main moved.
 // Contains reports whether main already holds the candidate. Both take a
 // fence, higher on every call even from the same lease holder, and refuse one

@@ -1,12 +1,14 @@
 package jetbridge
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +30,7 @@ type Runner struct {
 	Now    func() time.Time
 	Log    func(format string, args ...any)
 	runs   map[string]*run
+	failed map[string][]string // the names a failed run's log gave, by run ID
 }
 
 type run struct {
@@ -45,11 +48,12 @@ type item struct {
 // New returns a Runner with a 30s HTTP timeout, the wall clock and the given logger.
 func New(c Config, logf func(format string, args ...any)) *Runner {
 	return &Runner{Config: c, Client: &http.Client{Timeout: 30 * time.Second}, Now: time.Now, Log: logf,
-		runs: map[string]*run{}}
+		runs: map[string]*run{}, failed: map[string][]string{}}
 }
 
 // Start begins a run, first releasing any run in flight (best effort).
 func (j *Runner) Start(ctx context.Context, r core.Run, candidate string) error {
+	delete(j.failed, r.ID)
 	for id, old := range j.runs {
 		delete(j.runs, id)
 		if old.build != 0 {
@@ -94,6 +98,9 @@ func (j *Runner) Poll(ctx context.Context, id string) (core.Verdict, bool, error
 		}
 		if slices.ContainsFunc(in, func(b item) bool { return b.ID == r.build }) {
 			v = verdict
+			if v == core.Fail {
+				j.failed[id] = j.failedTests(ctx, r.build)
+			}
 		}
 	}
 	delete(j.runs, id)
@@ -187,3 +194,48 @@ func (j *Runner) pipe(p string) string {
 func (j *Runner) res(p string) string {
 	return j.pipe("/resources/" + url.PathEscape(j.Config.Resource) + p)
 }
+
+const maxEventPages, maxFailedTests = 100, 200
+
+// FailedTests are the distinct test names the failed build of run id printed in
+// its log, in order, as Config.FailedPattern matches them; empty for a run that
+// did not fail or whose log named none or could not be read. It is a hint only.
+func (j *Runner) FailedTests(id string) []string { return j.failed[id] }
+
+// failedTests reads a build's log by pages and picks the test names out of it.
+// The log is only parsed, never logged. A page that cannot be read ends the read.
+func (j *Runner) failedTests(ctx context.Context, build int) []string {
+	re := regexp.MustCompile(cmp.Or(j.Config.FailedPattern, DefaultFailedPattern))
+	var log strings.Builder
+	for cursor, n := "", 0; n < maxEventPages; n++ {
+		var page struct {
+			Events []struct {
+				Event string
+				Data  struct{ Payload string }
+			}
+			NextCursor *string `json:"next_cursor"`
+		}
+		if err := j.call(ctx, "GET", fmt.Sprintf("/api/v1/builds/%d/events?format=json&max_bytes=65536&cursor=%s", build, url.QueryEscape(cursor)), &page); err != nil {
+			j.Log("%s", core.Redact(fmt.Sprintf("build log: %v (ignored)", err)))
+			break
+		}
+		for _, e := range page.Events {
+			if e.Event == "log" {
+				log.WriteString(e.Data.Payload)
+			}
+		}
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	var names []string
+	for line := range strings.Lines(log.String()) {
+		if m := re.FindStringSubmatch(strings.TrimRight(line, "\r\n")); m != nil && !slices.Contains(names, m[1]) && len(names) < maxFailedTests {
+			names = append(names, core.Redact(m[1]))
+		}
+	}
+	return names
+}
+
+var _ core.FailureReporter = (*Runner)(nil)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,7 @@ type fake struct {
 	running     int
 	builds      int
 	calls       []string
+	pages       [][]string // log payloads of the failed build's event pages, one slice per page
 }
 
 func (f *fake) versions(r *http.Request) []map[string]any {
@@ -92,6 +94,16 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		send(builds)
+	case strings.HasSuffix(p, "/events") && r.URL.Query().Get("format") == "json":
+		i, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Query().Get("cursor"), "p"))
+		page := map[string]any{"events": []map[string]any{{"event": "status", "data": map[string]any{"status": "x"}}}, "finished": true, "caught_up": true}
+		for _, payload := range f.pages[i] {
+			page["events"] = append(page["events"].([]map[string]any), map[string]any{"event": "log", "version": "5.1", "data": map[string]any{"payload": payload}})
+		}
+		if i+1 < len(f.pages) {
+			page["next_cursor"], page["caught_up"] = fmt.Sprintf("p%d", i+1), false
+		}
+		send(page)
 	case strings.HasSuffix(p, "/resources") && strings.HasPrefix(p, "/api/v1/builds/"):
 		inputs := f.inputs
 		if inputs == nil {
@@ -201,6 +213,38 @@ var _ = Describe("JetBridge runner", func() {
 	It("A failing build is red", func() {
 		f.final = "failed"
 		Expect(test("serial-1")).To(Equal(core.Fail))
+	})
+
+	It("A failing build with test names in its log reports them", func() {
+		f.final, f.pages = "failed", [][]string{{"compiling\nFAILED: TestAlpha\n", "FAILED: TestBeta  \nnoise FAILED: no\n"}, {"FAILED: TestAlpha\nFAILED: TestGamma\n"}}
+		Expect(test("serial-1")).To(Equal(core.Fail))
+		Expect(r.FailedTests("serial-1")).To(Equal([]string{"TestAlpha", "TestBeta", "TestGamma"}))
+	})
+
+	It("A failing build without test names is a plain fail", func() {
+		f.final, f.pages = "failed", [][]string{{"compiling\nboom\n"}}
+		Expect(test("serial-1")).To(Equal(core.Fail))
+		Expect(r.FailedTests("serial-1")).To(BeEmpty())
+	})
+
+	It("A failing build whose log cannot be read is still a fail", func() {
+		f.final, f.pages = "failed", nil // the fake has no page to serve: a 500
+		Expect(test("serial-1")).To(Equal(core.Fail))
+		Expect(r.FailedTests("serial-1")).To(BeEmpty())
+	})
+
+	It("A passing build reports no test names", func() {
+		f.pages = [][]string{{"FAILED: TestAlpha\n"}}
+		Expect(test("serial-1")).To(Equal(core.Pass))
+		Expect(r.FailedTests("serial-1")).To(BeEmpty())
+		Expect(f.saw("GET /api/v1/builds/100/events")).To(BeFalse())
+	})
+
+	It("A configured pattern picks the test names out of the log", func() {
+		f.final, f.pages = "failed", [][]string{{"--- FAIL: TestAlpha (0.1s)\nFAILED: TestBeta\n"}}
+		r.Config.FailedPattern = `^--- FAIL: (\S+)`
+		Expect(test("serial-1")).To(Equal(core.Fail))
+		Expect(r.FailedTests("serial-1")).To(Equal([]string{"TestAlpha"}))
 	})
 
 	It("An errored or aborted build gives no verdict", func() {
@@ -356,9 +400,17 @@ var _ = Describe("JetBridge runner", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(c.Team).To(Equal("main"))
 			Expect(c.WaitCap).To(Equal(time.Hour))
+			Expect(c.FailedPattern).To(Equal(jetbridge.DefaultFailedPattern))
 			c, err = parse(ok + ", team: t, wait_cap: 20m}")
 			Expect(err).NotTo(HaveOccurred())
 			Expect([]any{c.Team, c.WaitCap}).To(Equal([]any{"t", 20 * time.Minute}))
+		})
+
+		It("refuses a failed_pattern that is not a regular expression with one group", func() {
+			for _, bad := range []string{`"("`, `"FAILED"`, `"(a)(b)"`} {
+				_, err := parse(ok + ", failed_pattern: " + bad + "}")
+				Expect(err).To(MatchError(ContainSubstring("runner.failed_pattern")))
+			}
 		})
 
 		It("refuses an unknown key naming the nearest", func() {
