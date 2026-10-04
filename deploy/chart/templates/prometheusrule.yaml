@@ -105,21 +105,6 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
           annotations:
             summary: "An artifact daemon is refusing work for load"
             description: "The daemon on {{ `{{ $labels.node }}` }} has refused {{ `{{ $value }}` }} Hangar materialization(s) as overloaded in the last ten minutes, for ten minutes running. Each is a step whose strict inputs could not be materialized on that node."
-{{- if .Values.artifactDaemon.durable.store }}
-        - alert: ArtifactDaemonDurableStoreErrors
-          # The durable tier fails open, so an error is never a failed build --
-          # it is a warm that became a miss, or a cache that was not kept, and
-          # nothing else reports it. The counter is per node's own work, so
-          # sum() across nodes is correct (its Help says so; the store-size
-          # gauges are the ones that must never be summed).
-          expr: sum by (namespace, op) (increase(artifact_daemon_durable_operations_total{outcome="error"}[30m])) > 0
-          for: 30m
-          labels:
-            severity: warning
-          annotations:
-            summary: "The artifact daemons' durable store is failing"
-            description: "Durable {{ `{{ $labels.op }}` }} operations have errored for thirty minutes. Resource caches are silently not being restored or kept; builds still pass, and pay for it in fetch time."
-{{- end }}
 {{- end }}
 {{- if .Values.hangarOutput.enabled }}
         # The Hangar output plane. Requirement 52 asks the plane to ALERT when
