@@ -101,6 +101,23 @@ var _ = Describe("Driver supersede", func() {
 		Expect(snap.Queued[0].Commit).To(Equal("sha-a2"))
 	})
 
+	It("A change built on a refused replacement is refused with it, never queued on the old commit", func() {
+		queue("a")
+		queue("d", "a")
+		push("a")
+		adm.push(core.Pending{ID: "b", Commit: "sha-b", BuildsOn: []string{"a"}})
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(ids(snap.Queued)).To(Equal([]string{"a", "d"}))
+		Expect(snap.Queued[0].Commit).To(Equal("sha-a"))
+		Expect(snap.Refused).To(HaveLen(2))
+		Expect(snap.Refused[1].ID).To(Equal("b"))
+		Expect(snap.Refused[1].Why).To(HavePrefix("built on a@sha-a2, which was refused: "))
+		Expect(snap.BuildsOn).NotTo(HaveKey("b"))
+		Expect(snap.Ejected).NotTo(HaveKey("b"))
+		Expect(adm.pending).To(BeEmpty())
+	})
+
 	It("A new commit that merges two unrelated queued changes does not replace the queued one", func() {
 		queue("a")
 		queue("b")
