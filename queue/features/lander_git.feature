@@ -69,3 +69,13 @@ Feature: Landing with git
     Given main's sha was read and main then moved
     When a batch is composed on the sha that was read
     Then the candidate sits on that sha
+
+  Scenario: A push lost to a main that moved after the check is named as main having moved
+    Given a candidate passed the check that it is ahead of main
+    When main moves before the push
+    Then the landing is refused, named as main having moved, so the queue recomposes
+
+  Scenario: A push refused while main stayed put is an error, not a main that moved
+    Given a candidate passed the check that it is ahead of main
+    When the lease ref moves before the push and main does not
+    Then the landing fails as an ordinary error

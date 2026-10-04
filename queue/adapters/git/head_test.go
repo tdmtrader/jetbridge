@@ -2,6 +2,7 @@ package git_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -52,5 +53,26 @@ var _ = Describe("Main's head", func() {
 		sha, err := git.NewComposer(c).Compose(ctx, tested, []core.Entry{a})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(composeRun(remote, "rev-parse", sha+"~1")).To(Equal(tested))
+	})
+
+	It("A push lost to a main that moved after the check is named as main having moved", func() {
+		r := newRemote()
+		l, c1, other := r.lander(), r.commit("c1", r.base), r.commit("other", r.base)
+		git.SetBeforePush(l, func() { r.setMain(other) })
+		err := l.Land(ctx, "main", c1, 5)
+		var moved *core.MainMovedError
+		Expect(errors.As(err, &moved)).To(BeTrue(), "the driver recomposes, not counting it toward a pause: %v", err)
+		Expect(moved.Head).To(Equal(other))
+		Expect(r.main()).To(Equal(other))
+	})
+
+	It("A push refused while main stayed put is an error, not a main that moved", func() {
+		r := newRemote()
+		l, c1, x := r.lander(), r.commit("c1", r.base), r.commit("x", r.base)
+		git.SetBeforePush(l, func() { run(r.bare, "update-ref", lease, x) }) // the lease moved; main did not
+		err := l.Land(ctx, "main", c1, 5)
+		Expect(err).To(HaveOccurred())
+		var moved *core.MainMovedError
+		Expect(errors.As(err, &moved)).To(BeFalse())
 	})
 })

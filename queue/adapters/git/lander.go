@@ -72,7 +72,13 @@ func (l *Lander) Land(ctx context.Context, main, candidate string, fence uint64)
 	} else if !ok {
 		return &core.MainMovedError{Main: mainRef, Candidate: candidate, Head: mainOID}
 	}
-	return l.push(ctx, fence, leaseOID, mainRef, mainOID, candidate+":"+mainRef)
+	if err = l.push(ctx, fence, leaseOID, mainRef, mainOID, candidate+":"+mainRef); err == nil {
+		return nil
+	}
+	if head, herr := l.Head(ctx, mainRef); herr == nil && head != mainOID { // lost to main moving after the check
+		return &core.MainMovedError{Main: mainRef, Candidate: candidate, Head: head}
+	}
+	return err
 }
 
 // Contains first moves the lease ref to fence, so no earlier Land can move
