@@ -2,7 +2,6 @@ package core_test
 
 import (
 	"context"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -29,16 +28,5 @@ var _ = Describe("Entry owner", func() {
 		rec := store.snap().Settled
 		Expect(rec).To(HaveLen(1))
 		Expect(rec[0].Owner).To(Equal("alice"))
-	})
-
-	It("The panel shows each queued and ejected change with its owner", func() {
-		now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-		s := core.Snapshot{
-			Queued:  []core.Entry{{ID: "q", Commit: "cq", Owner: "alice", AdmittedAt: now}},
-			Settled: []core.SettleRecord{{ID: "x", Kind: core.EjectedEvent, At: now, Owner: "bob"}},
-		}
-		b, err := core.PanelView(s, core.Stats(s, now, time.Hour), now)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(b)).To(And(ContainSubstring(`"owner":"alice"`), ContainSubstring(`"owner":"bob"`)))
 	})
 })

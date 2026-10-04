@@ -25,7 +25,7 @@ import (
 	"github.com/concourse/concourse/queue/wire"
 )
 
-const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|health|list|ejected|explain --config <file>|--source <file> [--every 5s] [--window 1h] [--once] [--owner name] [--json] [id sha]"
+const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|health|list|ejected|explain --config <file>|--source <file> [--every 5s] [--once] [--owner name] [--json] [id sha]"
 
 // exitCodes is printed by --help.
 const exitCodes = `exit codes:
@@ -56,7 +56,7 @@ func entry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // run returns the exit code: 0 done, 2 admission refused (an unsafe id), 3 health: unhealthy, 1 anything else (see exitCodes).
 func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fail := func(err error) int { fmt.Fprintln(errw, "queue:", core.Redact(err.Error())); return 1 }
-	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "withdraw", "resolve", "resume", "promote", "status", "stats", "view", "health", "list", "ejected", "explain"}, args[0]) {
+	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "withdraw", "resolve", "resume", "promote", "status", "health", "list", "ejected", "explain"}, args[0]) {
 		return fail(errors.New(usage))
 	}
 	for _, a := range args { // before any error can quote one; a --flag=value is checked whole and as its value
@@ -75,7 +75,6 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	once := fs.Bool("once", false, "run: take one step and exit")
 	owner := fs.String("owner", "", "run: the lease owner, fixed so a new process renews its lease; default unique per process")
 	asJSON := fs.Bool("json", false, "list, ejected, explain: print JSON")
-	window := fs.Duration("window", time.Hour, "stats: the span to count over")
 	fs.Usage = func() { fmt.Fprintln(errw, usage); fs.PrintDefaults(); fmt.Fprintln(errw, exitCodes) }
 	if err := fs.Parse(args[1:]); errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -147,23 +146,12 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		}
 		return fail2(git.Promote(ctx, c, ".", fs.Arg(0)), fail)
 	}
-	if args[0] == "status" || args[0] == "stats" || args[0] == "view" { // read-only: Load, never Save or the lease
+	if args[0] == "status" { // read-only: Load, never Save or the lease
 		s, err := git.NewStore(c).Load(ctx)
 		if err != nil {
 			return fail(err)
 		}
-		now := time.Now()
-		switch args[0] {
-		case "status":
-			return fail2(json.NewEncoder(out).Encode(summary(s)), fail)
-		case "stats":
-			return fail2(json.NewEncoder(out).Encode(core.Stats(s, now, *window)), fail)
-		}
-		b, err := core.PanelView(s, core.Stats(s, now, time.Hour), now)
-		if err == nil {
-			_, err = fmt.Fprintln(out, string(b))
-		}
-		return fail2(err, fail)
+		return fail2(json.NewEncoder(out).Encode(summary(s)), fail)
 	}
 	d, closeFn, err := newDriver(c, out, errw)
 	if err != nil {

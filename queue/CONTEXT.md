@@ -52,24 +52,18 @@ entry that fails on its own is ejected; blame is never guessed.
 
 **Flake**: a red batch whose halves both pass. Its entries land and a flake
 record (kind `flaky`, one per flaky batch, naming all its entries) is saved with
-the outcome that lands them; nobody is ejected. Stats count flaky batches.
+the outcome that lands them; nobody is ejected.
 
 **Settle record**: one saved line of history in the queue state for each land,
 eject, pause, refusal or flake: id, commit, kind, time, admission time, reason,
-cause, run and batch. The latest 1000 are kept, across restarts. Status, stats
-and view are all read from them and the queue.
-
-**Stats**: `queue stats [--window]`, a fixed set of counts and queue-time
-figures over a window, folded from the settle records.
+cause, run and batch. The latest 1000 are kept, across restarts. Status is
+read from them and the queue.
 
 **Control ref**: a ref under `admission.control_prefix` (default
 `refs/queue/control/`) through which an operator asks the running queue for
 something. `queue resume` writes `<prefix>resume-<PauseSeq>`, naming the pause it ends;
 the driver clears that pause at its next step and deletes the ref. A ref for
 another pause is deleted and changes nothing.
-
-**View**: `queue view`, the queue's state as the panel's generic `view/v1`
-JSON, cut to a size cap with "+N more" rows. Read-only.
 
 **Stack**: an entry that builds on other queued entries (their heads are
 ancestors of its head). The admission source derives which from git; the core

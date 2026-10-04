@@ -159,13 +159,13 @@ type Resumer interface {
 }
 
 // WaitCapper is an optional Runner capability: whether a run's no verdict was
-// its wait cap running out, so the stats count what an errored test costs.
+// its wait cap running out, recorded with how long the run waited.
 type WaitCapper interface {
 	Expired(runID string) bool
 }
 
 // Errorer is an optional Runner capability: whether a run's no verdict was its
-// test job erroring (cancelled or timed out), so the stats count it.
+// test job erroring (cancelled or timed out), recorded as such.
 type Errorer interface {
 	Errored(runID string) bool
 }

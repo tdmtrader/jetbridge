@@ -182,9 +182,14 @@ var _ = Describe("queue resource", func() {
 		Expect(second[0]["run"]).NotTo(Equal(first[0]["run"]))
 		s := snapshot()
 		Expect(s.Ejected).To(BeEmpty())
-		st := core.Stats(s, time.Now(), time.Hour)
-		Expect(st.WaitCapExpired).To(Equal(1))
-		Expect(st.WaitCapSeconds).To(BeNumerically(">=", 1))
+		var expired []core.SettleRecord
+		for _, r := range s.Settled {
+			if r.Kind == core.WaitCapEvent {
+				expired = append(expired, r)
+			}
+		}
+		Expect(expired).To(HaveLen(1))
+		Expect(expired[0].Waited).To(BeNumerically(">=", time.Second))
 	})
 
 	It("A get of a candidate that holds its own .mq dir is refused", func() {

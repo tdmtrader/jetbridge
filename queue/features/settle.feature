@@ -22,7 +22,6 @@ Feature: Every settled change leaves a record
     Then the saved state holds one flaky record naming "a" and "b"
     And the record carries the run, the batch and why it is flaky
     And the status lists the flake
-    And the stats count one flaky batch
 
   Scenario: A flake is saved with the outcome it accompanies
     Given changes "a" and "b" are admitted and their batch is flaky

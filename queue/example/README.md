@@ -37,5 +37,4 @@ named by `runner.credential`.
    is followed by `ejected`. The change is not requeued.
 5. **Read status:** `queue status --config sandbox.yaml` prints JSON with
    `Queued`, `InFlight`, `Landed`, `Ejected`, `Paused`, `Refused` and `Flakes`.
-   `queue stats` prints the counts and `queue view` the panel's JSON. Here
-   `add-docs` is under `Landed` and `break-tests` under `Ejected`.
+   Here `add-docs` is under `Landed` and `break-tests` under `Ejected`.

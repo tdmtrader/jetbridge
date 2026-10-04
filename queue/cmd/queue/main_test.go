@@ -560,14 +560,13 @@ var _ = Describe("queue command", func() {
 		Expect(d.Step(ctx)).To(Succeed())
 		Expect(errw.Flush()).To(Succeed())
 		Expect(entry(ctx, []string{"status", "--config", file}, &o, &e)).To(Equal(0), e.String())
-		Expect(entry(ctx, []string{"view", "--config", file}, &o, &e)).To(Equal(0), e.String())
 		saved, err := store.Load(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(saved.Paused).To(BeTrue(), "the leak reached the saved state")
 		note := string(must(os.ReadFile(events)))
 		Expect(note).To(ContainSubstring(`"paused"`))
 		Expect(e.String()).To(ContainSubstring("admissions: denied"))
-		outputs := map[string]string{"stderr": e.String(), "stdout (status, view)": o.String(), "notify file": note,
+		outputs := map[string]string{"stderr": e.String(), "stdout (status)": o.String(), "notify file": note,
 			"snapshot": gitIn(remote, "log", "-p", "refs/queue/state")}
 		for what, text := range outputs {
 			Expect(text).To(ContainSubstring("denied"), what)

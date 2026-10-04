@@ -20,8 +20,7 @@ Vocabulary is in [CONTEXT.md](CONTEXT.md); behaviour is specified in
   error that names no entry) means retry, then pause. It never ejects.
 - Flakes are surfaced, never hidden: a red batch whose halves both pass lands,
   is announced as a `flaky` event, and is kept as one settle record (kind
-  `flaky`, naming every entry of the batch) that `status`, `stats` and `view`
-  show. `flakes` counts flaky batches, not entries.
+  `flaky`, naming every entry of the batch) that `status` shows.
 - Stacked changes (one built on another queued change) are always tested with
   their parents. A descendant of an ejected change is ejected, unrun, with
   cause `parent-ejected` and the ejected ancestor named.
@@ -141,19 +140,10 @@ cd queue && go build ./cmd/queue
    pushed by hand has no stamp and is ordered by id. An id has one admit waiting
    at a time: a later ref for it, at any commit, is refused and the oldest kept;
    no change builds on a refused one.
-5. Read state, all read-only (they load the state ref and never take the lease):
-   - `queue status` prints JSON: `Queued`, `InFlight`, `Landed`, `Ejected`
-     (each with `Why`, `Cause`, `At`), `Paused`, `Why`, the latest `Refused`
-     and the latest 10 `Flakes` (flaky batches).
-   - `queue stats [--window 1h]` prints a fixed set of numbers over the window:
-     `queued`, `in_flight`, `paused`, `paused_why` (these four are the queue
-     now), `landed`, `admitted`, `ejected` (`culprit`, `parent_ejected`,
-     `refused`, `other`), `flakes` (flaky batches), `median_queue_seconds`,
-     `p90_queue_seconds`, `landed_per_hour`. It counts the settle records kept,
-     at most the latest 1000.
-   - `queue view` prints the panel's `view/v1` JSON (testing, queued, landed,
-     ejected, a paused banner, flakes with their reason), over a one-hour
-     window. The visual panel ships later with the resource-views feature.
+5. Read state, read-only (it loads the state ref and never takes the lease):
+   `queue status` prints JSON: `Queued`, `InFlight`, `Landed`, `Ejected`
+   (each with `Why`, `Cause`, `At`), `Paused`, `Why`, the latest `Refused`
+   and the latest 10 `Flakes` (flaky batches).
 6. Resume a paused queue: `queue resume --config queue.yaml` (see Pause).
 
 Exit codes: 0 done, 2 admission refused (unsafe id), 1 anything else.
@@ -231,8 +221,8 @@ and merge keys are refused. Defaults are applied before your file is read.
   `status` and announced as `refused`.
 - **Settle records.** Every land, eject, pause, refusal and flake is also saved
   in the queue state as a record (the latest 1000) with its id, commit, kind,
-  time, admission time, reason, cause, run and batch. `status`, `stats` and
-  `view` read them, so they survive a restart.
+  time, admission time, reason, cause, run and batch. `status` reads them, so
+  they survive a restart.
 - **Events.** With `notify.kind: log`, one JSON line per event: `batch-started`,
   `verdict`, `landed`, `ejected`, `flaky`, `paused`, `resumed`, `refused`, with
   `time`, `entries`, `run`, `why`, `cause`, `parent`. A notifier error is logged
@@ -271,8 +261,6 @@ and merge keys are refused. Defaults are applied before your file is read.
 
 - Side-lane: not in v1. `serial` is the only strategy.
 - Hint-ranked bisect: not in v1. Every bisect is plain halves.
-- Panel: `queue view` emits the view JSON; the visual panel ships later with
-  the resource-views feature.
 - Record notifier: not in this change. It needs an append route from a separate
   record feature; events go to a log line only.
 - `github-pr` admission is not supported; changes arrive as pushed refs.
