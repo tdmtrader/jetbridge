@@ -31,7 +31,7 @@ behaves exactly as it did before.
 This resource-cache tier is one consumer policy, not the future boundary for
 all durable artifacts. Core Hangar now provides a separate opt-in strict path
 for exact immutable tree references; see [Hangar exact tree
-storage](hangar.md). It currently supports native GCS only.
+storage](hangar.md). Its store is GCS or disk.
 
 Every resource-cache artifact described here is re-derivable by re-running the
 step that produced it. Applying Hangar's strictness to these derivable bytes

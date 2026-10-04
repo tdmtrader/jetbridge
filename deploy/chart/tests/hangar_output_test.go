@@ -339,15 +339,17 @@ func TestEveryOutputWorkloadIsGivenTheSameDerivedNamespace(t *testing.T) {
 }
 
 // Decision F3. The output plane's endpoint override is its own value and its
-// own flag, and it never reaches the artifact daemon's cache flags.
-func TestTheOutputEndpointAndTheDurableCacheEndpointAreIndependent(t *testing.T) {
-	outputOnly := renderOutput(t, "hangarOutput.endpoint=http://fake-gcs.cicd.svc:4443")
-	if !strings.Contains(outputOnly, "--output-endpoint=http://fake-gcs.cicd.svc:4443") {
+// own flag: it reaches --output-endpoint and no other endpoint flag.
+func TestTheOutputEndpointReachesOnlyItsOwnFlag(t *testing.T) {
+	const endpoint = "http://fake-gcs.cicd.svc:4443"
+	out := renderOutput(t, "hangarOutput.endpoint="+endpoint)
+	if !strings.Contains(out, "--output-endpoint="+endpoint) {
 		t.Error("hangarOutput.endpoint did not reach --output-endpoint")
 	}
-	if strings.Contains(outputOnly, "--durable-endpoint=http://fake-gcs.cicd.svc:4443") {
-		t.Error("hangarOutput.endpoint populated the durable CACHE tier's endpoint too; the " +
-			"two are different buckets under different identities")
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "-endpoint="+endpoint) && !strings.Contains(line, "--output-endpoint=") {
+			t.Errorf("hangarOutput.endpoint reached another endpoint flag: %s", strings.TrimSpace(line))
+		}
 	}
 }
 

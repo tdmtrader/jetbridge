@@ -25,7 +25,7 @@ var diskSets = []string{
 
 func TestDiskStorageRendersWithoutGCSAndProjectsOnlyEachRolesCredential(t *testing.T) {
 	out := renderOutput(t, diskSets...)
-	if strings.Contains(out, "policy-attestor") || strings.Contains(out, "--output-store=gcs") || strings.Contains(out, "--durable-store=gcs") {
+	if strings.Contains(out, "policy-attestor") || strings.Contains(out, "--output-store=gcs") {
 		t.Fatal("disk render requires GCS or retired attestation")
 	}
 	roles := map[string]string{"artifact-daemon": "input", outputDaemonComponent: "publisher", outputInventoryComponent: "inventory", outputReclaimerComponent: "reclaimer"}

@@ -773,3 +773,12 @@ func editValues(t *testing.T, dir string, edit func(map[string]any)) {
 		t.Fatal(err)
 	}
 }
+
+// The removed-keys guard sets each key to a scalar; a deployment's old values
+// file sets the removed group's children. That nested form fails the same way.
+func TestARemovedGroupFailsWhenItsChildrenAreSet(t *testing.T) {
+	out := renderHangarError(t, "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=cache")
+	if !strings.Contains(out, "artifactDaemon.durable has been removed") {
+		t.Fatalf("setting artifactDaemon.durable's children did not name its removal:\n%s", out)
+	}
+}
