@@ -3,9 +3,6 @@
 {{- if and $hangarWebEnabled (not $hangarEnabled) }}
   {{- fail "artifactDaemon.hangar.webEnabled requires artifactDaemon.hangar.enabled" }}
 {{- end }}
-{{- if and (eq .Values.artifactDaemon.durable.store "gcs") (not (empty .Values.artifactDaemon.durable.existingSecret)) }}
-  {{- fail "artifactDaemon.durable.existingSecret supplies s3 credentials and must be empty for gcs; use Workload Identity/Application Default Credentials" }}
-{{- end }}
 {{- if $hangarEnabled }}
   {{- if not (has .Values.artifactDaemon.hangar.store (list "gcs" "disk")) }}
     {{- fail "artifactDaemon.hangar.store is required when Hangar is enabled and must be gcs or disk" }}
@@ -142,44 +139,6 @@ spec:
             - --preemption-watch
             - --preemption-budget={{ .Values.artifactDaemon.preemption.budget | default "25s" }}
             {{- end }}
-            {{- with .Values.artifactDaemon.durable }}
-            {{- if .store }}
-            - --durable-store={{ .store }}
-            - --durable-timeout={{ .timeout | default "5m" }}
-            - --durable-max-bytes={{ .maxBytes | default 5368709120 | int64 }}
-            {{- with .maintenanceInterval }}
-            - --durable-maintenance-interval={{ . }}
-            {{- end }}
-            {{- range $class, $age := .retention }}
-            - --durable-retention={{ $class }}={{ $age }}
-            {{- end }}
-            {{- if or (eq .store "s3") (eq .store "gcs") }}
-            - --durable-bucket={{ required "artifactDaemon.durable.bucket is required when durable.store is gcs or s3" .bucket }}
-            {{- with .prefix }}
-            - --durable-prefix={{ . }}
-            {{- end }}
-            {{- with .endpoint }}
-            - --durable-endpoint={{ . }}
-            {{- end }}
-            {{- end }}
-            {{- if eq .store "s3" }}
-            - --durable-s3-region={{ .region | default "us-east-1" }}
-            {{- end }}
-            {{- if eq .store "filesystem" }}
-            - --durable-path={{ required "artifactDaemon.durable.path is required when durable.store is filesystem" .path }}
-            {{- end }}
-            {{- end }}
-            {{- end }}
-          {{- with .Values.artifactDaemon.durable }}
-          {{- if and (eq .store "s3") .existingSecret }}
-          envFrom:
-            # Bucket credentials as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
-            # Prefer IRSA or Workload Identity on a managed cluster and leave
-            # existingSecret empty -- nothing then holds a long-lived key.
-            - secretRef:
-                name: {{ .existingSecret }}
-          {{- end }}
-          {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
