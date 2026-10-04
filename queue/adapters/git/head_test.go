@@ -30,6 +30,16 @@ var _ = Describe("Main's head", func() {
 		Expect(err).To(MatchError(ContainSubstring("refs/heads/absent")))
 	})
 
+	It("A branch whose name ends in main's ref is never read as main", func() {
+		r := newRemote()
+		other := r.commit("other", r.base)
+		run(r.work, "push", "-q", r.bare, other+":refs/heads/a/refs/heads/main")
+		Expect(r.lander().Head(ctx, "main")).To(Equal(r.base))
+		run(r.bare, "update-ref", "-d", "refs/heads/main")
+		_, err := r.lander().Head(ctx, "main")
+		Expect(err).To(MatchError(ContainSubstring("refs/heads/main is not on the remote")))
+	})
+
 	It("A batch composes on main's sha, not on wherever the branch points later", func() {
 		dir := GinkgoT().TempDir()
 		remote, work := filepath.Join(dir, "remote.git"), filepath.Join(dir, "work")

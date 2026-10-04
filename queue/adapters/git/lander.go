@@ -108,8 +108,10 @@ func (l *Lander) Head(ctx context.Context, main string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if f := strings.Fields(out); len(f) >= 2 && f[1] == ref && fullSHA.MatchString(f[0]) {
-		return f[0], nil
+	for line := range strings.SplitSeq(out, "\n") { // ls-remote suffix-matches: a/refs/heads/main is listed too
+		if f := strings.Fields(line); len(f) == 2 && f[1] == ref && fullSHA.MatchString(f[0]) {
+			return f[0], nil
+		}
 	}
 	return "", fmt.Errorf("%s is not on the remote", ref)
 }

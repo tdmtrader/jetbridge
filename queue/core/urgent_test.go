@@ -97,4 +97,13 @@ var _ = Describe("Driver promote requests", func() {
 		Expect(last().Why).To(ContainSubstring("promote of z refused"))
 		Expect(pro.reqs).To(BeEmpty())
 	})
+
+	It("A promote request its source refuses, as unsigned, is recorded and promotes nothing", func() {
+		pro.reqs = []core.PromoteRequest{{ID: "c", SHA: "s", Why: "promote request s is not signed by an operator"}}
+		Expect(d.Step(ctx)).To(Succeed())
+		Expect(core.FormBatch(store.snap().Queued, nil, nil).Entries()[0].ID).To(Equal("a"))
+		Expect(last().Kind).To(Equal(core.RefusedEvent))
+		Expect(last().Why).To(Equal("promote of c refused: promote request s is not signed by an operator"))
+		Expect(pro.reqs).To(BeEmpty())
+	})
 })

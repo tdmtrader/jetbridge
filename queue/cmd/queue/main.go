@@ -223,7 +223,7 @@ func newDriver(c config.Config, out, errw io.Writer) (d *core.Driver, closeFn fu
 			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures, Cooldown: c.Pause.Cooldown,
 			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix, Operators: c.Admission.OperatorsFile},
 			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-", Operators: c.Admission.OperatorsFile},
-			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/"},
+			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/", Operators: c.Admission.OperatorsFile},
 			Lifecycle:  &git.Lifecycle{Lander: lander, Prefix: c.Admission.ControlPrefix},
 			Owner:      fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(suffix)),
 		}, func() {

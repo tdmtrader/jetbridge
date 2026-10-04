@@ -158,6 +158,18 @@ var _ = Describe("Driver admissions", func() {
 		Expect(note.of(core.RefusedEvent)[0].Why).To(Equal(why("l", "sha-l")))
 	})
 
+	It("Every repeat of a settled id is refused and recorded, even two before one drain", func() {
+		data, err := json.Marshal(core.Snapshot{Landed: map[string]bool{"a": true}, Commits: map[string]string{"a": "sha-a"}})
+		Expect(err).NotTo(HaveOccurred())
+		store.data = data
+		adm.push(core.Pending{ID: "a", Commit: "sha-b"}, core.Pending{ID: "a", Commit: "sha-c", Why: "id a already has an admit waiting at sha-b"})
+		Expect(driver("runner").Step(ctx)).To(Succeed())
+		refused := store.snap().Refused
+		Expect(refused).To(HaveLen(2))
+		Expect([]string{refused[0].Commit, refused[1].Commit}).To(Equal([]string{"sha-b", "sha-c"}))
+		Expect(note.of(core.RefusedEvent)).To(HaveLen(2))
+	})
+
 	It("ignores a parent that is no longer queued", func() {
 		d := driver("runner")
 		adm.push(pending("b", "gone"))

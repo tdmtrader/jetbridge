@@ -97,7 +97,7 @@ func (d *Driver) drain(ctx context.Context) error {
 				return err
 			}
 		}
-		if !seen && p.Why != "" {
+		if p.Why != "" && (!seen || d.s.Commits[p.ID] != p.Commit) { // a refused repeat of a settled id too
 			d.s.Refused = append(d.s.Refused, Refusal{p.ID, p.Commit, p.Why})[max(0, len(d.s.Refused)+1-MaxRefused):]
 			ev := Event{Kind: RefusedEvent, Entries: []Entry{{ID: p.ID, Commit: p.Commit}}, Why: p.Why, At: d.now()}
 			d.settled(ev)

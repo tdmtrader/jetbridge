@@ -3,7 +3,8 @@ package core
 import "context"
 
 // PromoteRequest asks to move queued change ID into the urgent lane; SHA is what the request holds.
-type PromoteRequest struct{ ID, SHA string }
+// If Why is set, the request is refused: recorded and deleted, and it promotes nothing.
+type PromoteRequest struct{ ID, SHA, Why string }
 
 // Promotes is where an operator's promote requests wait: Pending lists them;
 // Done removes one only if it still holds the same SHA.
@@ -27,7 +28,9 @@ func (d *Driver) promoteRequested(ctx context.Context) error {
 	}
 	for _, r := range reqs {
 		ev := Event{Kind: PromotedEvent, Entries: []Entry{{ID: r.ID, Commit: d.s.Commits[r.ID]}}, Why: "promoted " + r.ID + " to the urgent lane", At: d.now()}
-		if err := d.q.Promote(r.ID); err != nil {
+		if r.Why != "" {
+			ev.Kind, ev.Why = RefusedEvent, "promote of "+r.ID+" refused: "+r.Why
+		} else if err := d.q.Promote(r.ID); err != nil {
 			ev.Kind, ev.Why = RefusedEvent, "promote of "+r.ID+" refused: "+err.Error()
 		}
 		d.settled(ev)
