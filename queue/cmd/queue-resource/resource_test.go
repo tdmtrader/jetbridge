@@ -229,6 +229,27 @@ var _ = Describe("queue resource", func() {
 		Expect(code).To(Equal(1), "both refs are create-only")
 	})
 
+	It("A pass with a hook dir holding no bundle records the verdict only", func() {
+		admit()
+		v := check()[0]
+		get(v)
+		Expect(os.MkdirAll(filepath.Join(sources(), "hook"), 0o700)).To(Succeed())
+		code, errw := put("pass", "hook")
+		Expect(code).To(Equal(0), errw)
+		Expect(refs()).To(Equal("refs/mq/verdicts/" + v["run"]))
+	})
+
+	It("A hook dir holding more than one bundle is refused, and nothing is recorded", func() {
+		admit()
+		v := check()[0]
+		hooked(get(v), v["candidate"], 1)
+		gitIn(filepath.Join(sources(), "run"), "bundle", "create", "-q", filepath.Join(sources(), "hook", "h2.bundle"), "HEAD", "^"+v["candidate"])
+		code, errw := put("pass", "hook")
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("more than one"))
+		Expect(refs()).To(BeEmpty())
+	})
+
 	It("A hook commit that is not one commit on the candidate is refused, and nothing is recorded", func() {
 		admit()
 		v := check()[0]

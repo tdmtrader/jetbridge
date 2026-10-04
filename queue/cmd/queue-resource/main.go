@@ -194,7 +194,7 @@ func get(ctx context.Context, uri string, v map[string]string, dest string) erro
 }
 
 // put records the verdict for the run the get in runDir fetched, read from runDir/.mq; it never lands.
-// A pass with hookDir also records the hook's commit, in the same push.
+// A pass with hookDir also records the hook's commit, in the same push; a hookDir with no bundle is a hook that changed nothing.
 func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir string) (map[string]string, error) {
 	if verdict != string(core.Pass) && verdict != string(core.Fail) {
 		return nil, errors.New("params.verdict must be pass or fail")
@@ -216,9 +216,15 @@ func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir s
 	if hookDir == "" || verdict != string(core.Pass) {
 		return v, r.RecordVerdict(ctx, v["run"], v["candidate"], core.Verdict(verdict))
 	}
+	if fi, err := os.Stat(filepath.Join(sources, hookDir)); err != nil || !fi.IsDir() {
+		return nil, errors.New("params.hook_dir is not a dir among the job's inputs")
+	}
 	bundles, err := filepath.Glob(filepath.Join(sources, hookDir, "*.bundle"))
-	if err != nil || len(bundles) != 1 {
-		return nil, errors.New("params.hook_dir must hold exactly one .bundle file")
+	switch {
+	case err != nil || len(bundles) > 1:
+		return nil, errors.New("params.hook_dir holds more than one .bundle file")
+	case len(bundles) == 0: // the hook changed nothing
+		return v, r.RecordVerdict(ctx, v["run"], v["candidate"], core.Pass)
 	}
 	bundle, err := filepath.Abs(bundles[0])
 	if err != nil {

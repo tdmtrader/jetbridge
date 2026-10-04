@@ -70,3 +70,15 @@ Feature: Running the queue as a resource type
     Given an admitted change adds a .mq dir of its own and the resource was checked
     When the test job gets the run
     Then the get fails naming .mq
+
+  Scenario: A pass with a hook dir holding no bundle records the verdict only
+    Given a change is admitted and the resource was checked
+    And the hook changed nothing, so its dir holds no bundle
+    When the test job records a pass with that dir
+    Then the pass is recorded and no commit is recorded for the run
+
+  Scenario: A hook dir holding more than one bundle is refused, and nothing is recorded
+    Given a change is admitted and the resource was checked
+    When the test job records a pass with a hook dir holding two bundles
+    Then the put fails
+    And no verdict and no commit are recorded
