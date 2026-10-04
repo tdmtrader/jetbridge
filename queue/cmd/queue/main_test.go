@@ -606,6 +606,20 @@ var _ = Describe("queue command", func() {
 		Expect(builds.Load()).To(Equal(int32(1)), "one build, never triggered again")
 	})
 
+	It("A queue step keeps its lease across restarts; another owner is refused while it is live", func() {
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		for _, id := range []string{"a", "b"} { // each --once a new process: both make progress
+			code, _, errw := queue("admit", "--config", file, id, gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", id))
+			Expect(code).To(Equal(0), errw)
+			code, _, errw = queue("run", "--config", file, "--once", "--owner", "mq-drive")
+			Expect(code).To(Equal(0), errw)
+			Expect(gitIn(remote, "for-each-ref", "refs/queue/admit/")).To(BeEmpty(), "the admission was drained")
+		}
+		code, _, errw := queue("run", "--config", file, "--once", "--owner", "other")
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring(`lease held by "mq-drive"`))
+	})
+
 	It("runs one step and stops with --once", func() {
 		code, _, errw := queue("run", "--config", file, "--once")
 		Expect(errw).To(BeEmpty())

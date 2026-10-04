@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,7 +29,7 @@ import (
 	"github.com/concourse/concourse/queue/core"
 )
 
-const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|health|list|ejected|explain --config <file> [--every 5s] [--window 1h] [--once] [--json] [id sha]"
+const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|health|list|ejected|explain --config <file> [--every 5s] [--window 1h] [--once] [--owner name] [--json] [id sha]"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -67,6 +68,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	file := fs.String("config", "", "the queue's config file")
 	every := fs.Duration("every", 5*time.Second, "run: time between steps")
 	once := fs.Bool("once", false, "run: take one step and exit")
+	owner := fs.String("owner", "", "run: the lease owner, fixed so a new process renews its lease; default unique per process")
 	asJSON := fs.Bool("json", false, "list, ejected, explain: print JSON")
 	window := fs.Duration("window", time.Hour, "stats: the span to count over")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -163,6 +165,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		return fail(err)
 	}
 	defer closeFn()
+	d.Owner = cmp.Or(*owner, d.Owner)
 	if *once {
 		return fail2(d.Step(ctx), fail)
 	}

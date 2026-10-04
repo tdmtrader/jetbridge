@@ -19,3 +19,8 @@ Feature: Running and operating a queue from the command line
     Given a queue paused for a reason that holds a URL with a password
     When the status is read
     Then it shows the URL with the password hidden
+
+  Scenario: A queue step keeps its lease across restarts; another owner is refused while it is live
+    Given a queue step run as a new process with a fixed owner
+    When the next step runs as another new process with the same owner
+    Then it takes its step, and a step with another owner is refused while the lease is live
