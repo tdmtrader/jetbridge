@@ -18,14 +18,7 @@ import (
 // asks it "owned": the files it regenerates, one per line. found is false, and
 // nothing is owned, when ref has no such script. A script that cannot answer
 // is a plain error: no verdict.
-func ownedOn(ctx context.Context, git func(...string) (string, error), ref, script string, limit time.Duration) (owned []string, found bool, err error) {
-	return askOn(ctx, git, ref, script, limit, "owned")
-}
-
-var errOutside = errors.New("compose hook named a path outside the repository")
-
-// askOn is ownedOn for any verb: the paths script on ref prints for it.
-func askOn(ctx context.Context, git func(...string) (string, error), ref, script string, limit time.Duration, verb string) (paths []string, found bool, err error) {
+func ownedOn(ctx context.Context, git func(...string) (string, error), ref, script string, limit time.Duration) (paths []string, found bool, err error) {
 	ent, err := git("ls-tree", ref, "--", script)
 	if err != nil || ent == "" {
 		return nil, false, err
@@ -47,12 +40,12 @@ func askOn(ctx context.Context, git func(...string) (string, error), ref, script
 		return nil, true, err
 	}
 	var out bytes.Buffer
-	if err := hookExec(ctx, limit, empty, &out, path, verb); err != nil {
+	if err := hookExec(ctx, limit, empty, &out, path, "owned"); err != nil {
 		return nil, true, err
 	}
 	paths = strings.Fields(out.String())
 	if slices.ContainsFunc(paths, func(p string) bool { return !config.RepoPath(p) }) {
-		return nil, true, errOutside
+		return nil, true, errors.New("compose hook named a path outside the repository")
 	}
 	return paths, true, nil
 }
