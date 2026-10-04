@@ -10,7 +10,7 @@ import (
 // marker at startup. The epoch is the Run contract's own, so it must reach the
 // binary on its own flag, without the Hangar output plane.
 //
-// These use durable_store_test.go's render, which fails when helm is missing
+// These use render_test.go's render, which fails when helm is missing
 // rather than skipping. A skip is not a pass, and this is the only test that
 // watches the default.
 
