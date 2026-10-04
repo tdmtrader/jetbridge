@@ -18,9 +18,8 @@ var requestKinds = map[string]core.EventKind{"withdraw-": core.WithdrawnEvent, "
 // Lifecycle reads the requests under the control prefix: <Prefix>withdraw-<id>.<commit> or
 // <Prefix>resolve-<id>.<commit>, where commit is the one the requester saw queued or ejected.
 type Lifecycle struct {
-	Lander    *Lander
-	Prefix    string
-	Operators string // if set, a request not signed by one of its keys is refused
+	Lander *Lander
+	Prefix string
 }
 
 // Request pushes the current main sha, fetched into dir, to the request ref for
@@ -29,7 +28,7 @@ func Request(ctx context.Context, c config.Config, dir, kind, id, commit string)
 	if err := SafeID(id); err != nil {
 		return err
 	}
-	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+kind+id+"."+commit, requestMessage(strings.TrimSuffix(kind, "-"), id, commit), true)
+	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+kind+id+"."+commit)
 }
 
 // Withdraw asks the runner to remove queued change id, the commit saved for it,
@@ -83,22 +82,7 @@ func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error
 			}
 		}
 	}
-	if err != nil || r.Operators == "" || len(reqs) == 0 {
-		return reqs, err
-	}
-	fetch := []string{"fetch", "-q", "--no-tags", r.Lander.remote}
-	for _, q := range reqs {
-		fetch = append(fetch, q.SHA)
-	}
-	if _, err := r.Lander.git(ctx, fetch...); err != nil {
-		return nil, err
-	}
-	for i, q := range reqs {
-		if err := (operators{r.Lander, r.Operators}).verify(ctx, q.SHA, requestMessage(strings.TrimSuffix(prefixOf(q.Kind), "-"), q.ID, q.Commit)); err != nil {
-			reqs[i].Why = strings.TrimSuffix(prefixOf(q.Kind), "-") + " request " + err.Error()
-		}
-	}
-	return reqs, nil
+	return reqs, err
 }
 
 // Done deletes the request, only if it still points at its sha.

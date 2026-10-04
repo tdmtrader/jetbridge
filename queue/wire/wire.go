@@ -42,10 +42,10 @@ func Driver(c config.Config, out io.Writer, logf func(string, ...any), runner co
 				return s
 			},
 			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, MaxFailures: c.Lander.MaxFailures, Cooldown: c.Pause.Cooldown,
-			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix, Operators: c.Admission.OperatorsFile},
-			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-", Operators: c.Admission.OperatorsFile},
-			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/", Operators: c.Admission.OperatorsFile},
-			Lifecycle:  &git.Lifecycle{Lander: lander, Prefix: c.Admission.ControlPrefix, Operators: c.Admission.OperatorsFile},
+			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix},
+			Resumes:    &git.Resumes{Lander: lander, Prefix: c.Admission.ControlPrefix + "resume-"},
+			Promotes:   &git.Promotes{Lander: lander, Prefix: c.Admission.ControlPrefix + "promote/"},
+			Lifecycle:  &git.Lifecycle{Lander: lander, Prefix: c.Admission.ControlPrefix},
 			Owner:      fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(suffix)),
 		}, func() {
 			lander.Close()

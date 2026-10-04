@@ -35,16 +35,10 @@ Feature: An operator resumes a paused queue without stopping the runner
     When the config file is loaded
     Then loading is refused
 
-  Scenario: With operators configured, a resume signed by an operator is honoured and any other is refused
-    Given the queue lists its operators
-    When a resume signed by an operator, one signed by someone else and an unsigned one are requested
-    Then only the operator's request is honoured
-    And the others are refused with the reason, which never names a key
-
-  Scenario: With no operators configured, a resume request is honoured unsigned
-    Given the queue lists no operators
+  Scenario: Resume pushes main's sha to the resume ref of the current pause, read as that pause
+    Given a paused queue
     When an operator asks for a resume
-    Then the request is honoured
+    Then the request names the current pause and is honoured
 
   Scenario: A refused resume request is recorded and deleted and does not resume the queue
     Given a paused queue and a resume request that was refused

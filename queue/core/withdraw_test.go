@@ -54,11 +54,11 @@ var _ = Describe("Driver withdraw", func() {
 		d := driver(0)
 		d.NewStrategy = func() core.Strategy { return idle{} }
 		admit(d, "a")
-		life.reqs = append(life.reqs, core.LifecycleRequest{Kind: core.WithdrawnEvent, ID: "a", Commit: "ca", SHA: "sha-main", Why: "not signed"})
+		life.reqs = append(life.reqs, core.LifecycleRequest{Kind: core.WithdrawnEvent, ID: "a", Commit: "ca", SHA: "sha-main", Why: "refused by its source"})
 		Expect(d.Step(ctx)).To(Succeed())
 		snap := store.snap()
 		Expect(ids(snap.Queued)).To(Equal([]string{"a"}))
-		Expect(snap.Refused).To(Equal([]core.Refusal{{ID: "withdrawn-a", Commit: "sha-main", Why: "not signed"}}))
+		Expect(snap.Refused).To(Equal([]core.Refusal{{ID: "withdrawn-a", Commit: "sha-main", Why: "refused by its source"}}))
 		Expect(note.of(core.RefusedEvent)).To(HaveLen(1))
 		Expect(life.reqs).To(BeEmpty())
 	})

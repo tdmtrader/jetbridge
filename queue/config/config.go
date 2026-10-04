@@ -41,8 +41,6 @@ type Repository struct {
 type Admission struct {
 	Prefix        string `yaml:"prefix"`         // refs: a change is admitted by pushing it to <prefix><id>
 	ControlPrefix string `yaml:"control_prefix"` // the operator's requests to the runner go under it
-	// OperatorsFile, if set, is a git allowed-signers file (ssh keys): only a change, or a resume, promote, withdraw or resolve request, signed by one of its keys is honoured.
-	OperatorsFile string `yaml:"operators_file"`
 }
 
 // Batch is the only section the core receives, as this plain struct.
@@ -123,7 +121,7 @@ func Defaults() Config {
 var known = map[string][]string{
 	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "health", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
-	"admission":         {"prefix", "control_prefix", "operators_file"},
+	"admission":         {"prefix", "control_prefix"},
 	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
 	"batch.adaptive":    {"start", "min", "grow_after"},
 	"compose":           {"committer", "hook", "hook_owned", "hook_timeout", "hook_script"},

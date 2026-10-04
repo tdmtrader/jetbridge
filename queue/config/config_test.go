@@ -171,15 +171,6 @@ var _ = Describe("Parse", func() {
 		Expect(c.Admission.ControlPrefix).To(Equal("refs/queue/control/"))
 	})
 
-	It("reads admission.operators_file, empty (signing not asked for) by default", func() {
-		c, err := config.Parse([]byte(minimal + "admission: {operators_file: /etc/queue/operators}\n"))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(c.Admission.OperatorsFile).To(Equal("/etc/queue/operators"))
-		c, err = config.Parse([]byte(minimal))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(c.Admission.OperatorsFile).To(BeEmpty())
-	})
-
 	It("A key nothing reads is refused as unknown", func() {
 		for _, bad := range []string{"admission: {require: [x]}", "compose: {mode: squash}",
 			"lander: {credential: x}", "lander: {mode: ff-only}", "batch: {bisect: halves}", "admission: {source: refs}"} {

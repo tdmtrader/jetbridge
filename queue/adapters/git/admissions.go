@@ -24,9 +24,7 @@ var (
 type Admissions struct {
 	Lander *Lander
 	Prefix string
-	// Operators, if set, is a git allowed-signers file: a change not signed by one of its keys is refused.
-	Operators string
-	refs      map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
+	refs   map[string][]string // "<id> <sha>" -> the refs it was read from, by arrival
 }
 
 // stamp is the arrival clock of Admit: nanoseconds, never repeated or going back.
@@ -120,11 +118,6 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		if err := SafeID(p.ID); err != nil {
 			ps[i].Why = err.Error()
 		}
-		if ps[i].Why == "" {
-			if err := (operators{a.Lander, a.Operators}).verify(ctx, p.Commit, ""); err != nil {
-				ps[i].Why = err.Error()
-			}
-		}
 		ps[i].Owner = a.owner(ctx, p.Commit)
 	}
 	for _, p := range ps { // only an accepted change is an ancestor candidate; one under a queued id at its new commit too
@@ -178,8 +171,6 @@ func (a *Admissions) Done(ctx context.Context, id, sha string) error {
 type Resumes struct {
 	Lander *Lander
 	Prefix string
-	// Operators, if set, is a git allowed-signers file: a request not signed by one of its keys is refused.
-	Operators string
 }
 
 // Resume reads the pause number from the saved state (Load only, no lease),
@@ -190,26 +181,19 @@ func Resume(ctx context.Context, c config.Config, dir string) error {
 	if err != nil {
 		return err
 	}
-	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10), requestMessage("resume", strconv.FormatUint(snap.PauseSeq, 10)), true)
+	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10))
 }
 
 // Pending lists the requests; a ref whose name after the prefix is not a plain number is no request.
 func (r *Resumes) Pending(ctx context.Context) ([]core.ResumeRequest, error) {
 	rs, err := r.Lander.requests(ctx, r.Prefix)
 	var reqs []core.ResumeRequest
-	var shas []string
 	for _, q := range rs {
 		if n, e := strconv.ParseUint(q.name, 10, 64); e == nil && q.name == strconv.FormatUint(n, 10) {
-			reqs, shas = append(reqs, core.ResumeRequest{Seq: n, SHA: q.sha}), append(shas, q.sha)
+			reqs = append(reqs, core.ResumeRequest{Seq: n, SHA: q.sha})
 		}
 	}
-	if err != nil {
-		return reqs, err
-	}
-	if err := (operators{r.Lander, r.Operators}).verifyAll(ctx, shas, func(i int) string { return requestMessage("resume", strconv.FormatUint(reqs[i].Seq, 10)) }, func(i int, err error) { reqs[i].Why = "resume request " + err.Error() }); err != nil {
-		return nil, err
-	}
-	return reqs, nil
+	return reqs, err
 }
 
 // Done deletes the request, only if it still points at its sha.

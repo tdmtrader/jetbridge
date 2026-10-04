@@ -132,14 +132,14 @@ var _ = Describe("Driver supersede", func() {
 		Expect(snap.Refused[1].Why).To(HavePrefix("built on sha-a2, which was refused: "))
 	})
 
-	It("A change built on a commit refused before the drain, unsigned say, is refused", func() {
-		adm.push(core.Pending{ID: "u", Commit: "sha-u", Why: "sha-u is not signed by an operator"},
+	It("A change built on a commit refused before the drain is refused", func() {
+		adm.push(core.Pending{ID: "u", Commit: "sha-u", Why: "sha-u is not a commit"},
 			core.Pending{ID: "c", Commit: "sha-c", Ancestors: []string{"sha-u"}})
 		Expect(d.Step(ctx)).To(Succeed())
 		snap := store.snap()
 		Expect(snap.Queued).To(BeEmpty())
 		Expect(snap.Refused).To(HaveLen(2))
-		Expect(snap.Refused[1].Why).To(Equal("built on sha-u, which was refused: sha-u is not signed by an operator"))
+		Expect(snap.Refused[1].Why).To(Equal("built on sha-u, which was refused: sha-u is not a commit"))
 	})
 
 	It("A change built on the queued commit of an id is admitted when a new commit of that id is refused", func() {
