@@ -19,6 +19,7 @@ Feature: Running the queue as a resource type
   Scenario: The queue lands a change after its test job records a pass
     Given a change is admitted and the resource was checked
     When the test job gets the run, builds its candidate and records a pass
+    And the candidate's own files are left as they are beside the run's details
     And the resource is checked again
     Then main holds the change, landed under its id with its original commit
 
@@ -64,3 +65,8 @@ Feature: Running the queue as a resource type
     When the test job records a pass with two commits on the candidate, or one commit on another parent
     Then the put fails
     And no verdict and no commit are recorded
+
+  Scenario: A get of a candidate that holds its own .mq dir is refused
+    Given an admitted change adds a .mq dir of its own and the resource was checked
+    When the test job gets the run
+    Then the get fails naming .mq

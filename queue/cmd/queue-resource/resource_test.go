@@ -92,7 +92,8 @@ var _ = Describe("queue resource", func() {
 		work := filepath.Join(dir, "work")
 		gitIn(dir, "init", "-q", work)
 		Expect(os.WriteFile(filepath.Join(work, "a"), []byte("a\n"), 0o600)).To(Succeed())
-		gitIn(work, "add", "a")
+		Expect(os.WriteFile(filepath.Join(work, "run"), []byte("the repo's own\n"), 0o600)).To(Succeed())
+		gitIn(work, "add", "a", "run")
 		gitIn(work, "commit", "-q", "-m", "base")
 		base = gitIn(work, "rev-parse", "HEAD")
 		Expect(os.WriteFile(filepath.Join(work, "b"), []byte("b\n"), 0o600)).To(Succeed())
@@ -126,12 +127,13 @@ var _ = Describe("queue resource", func() {
 		vs := check()
 		dest := get(vs[0])
 		for f, want := range map[string]string{"run": vs[0]["run"], "candidate": vs[0]["candidate"], "fence": vs[0]["fence"]} {
-			b, err := os.ReadFile(filepath.Join(dest, f))
+			b, err := os.ReadFile(filepath.Join(dest, ".mq", f))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(string(b))).To(Equal(want))
 		}
 		Expect(gitIn(dest, "rev-parse", "HEAD")).To(Equal(vs[0]["candidate"]))
 		Expect(filepath.Join(dest, "b")).To(BeAnExistingFile())
+		Expect(os.ReadFile(filepath.Join(dest, "run"))).To(Equal([]byte("the repo's own\n")), "the candidate's own files are left alone")
 		code, errw := put("pass")
 		Expect(code).To(Equal(0), errw)
 		Expect(gitIn(remote, "rev-parse", "refs/heads/trunk")).To(Equal(base), "a put never lands")
@@ -173,6 +175,21 @@ var _ = Describe("queue resource", func() {
 		st := core.Stats(s, time.Now(), time.Hour)
 		Expect(st.WaitCapExpired).To(Equal(1))
 		Expect(st.WaitCapSeconds).To(BeNumerically(">=", 1))
+	})
+
+	It("A get of a candidate that holds its own .mq dir is refused", func() {
+		work := filepath.Join(dir, "work")
+		Expect(os.MkdirAll(filepath.Join(work, ".mq"), 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(work, ".mq", "x"), []byte("x\n"), 0o600)).To(Succeed())
+		gitIn(work, "add", ".mq")
+		gitIn(work, "commit", "-q", "-m", "add .mq")
+		change = gitIn(work, "rev-parse", "HEAD")
+		gitIn(work, "push", "-q", remote, change+":refs/heads/topic2")
+		admit()
+		v := check()[0]
+		code, _, errw := call("in", map[string]any{"source": source, "version": v}, filepath.Join(sources(), "run"))
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring(".mq"))
 	})
 
 	It("A put with a verdict other than pass or fail is refused", func() {

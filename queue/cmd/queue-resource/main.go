@@ -161,7 +161,7 @@ func check(ctx context.Context, c config.Config, owner string, waitCap time.Dura
 	return vs, nil
 }
 
-// get checks the run's candidate out at dest and writes its run, candidate and fence files there.
+// get checks the run's candidate out at dest and writes its run, candidate and fence files under dest/.mq.
 func get(ctx context.Context, uri string, v map[string]string, dest string) error {
 	if !runID.MatchString(v["run"]) || !fullSHA.MatchString(v["candidate"]) {
 		return errors.New("the version needs a run id and a full candidate sha")
@@ -178,18 +178,22 @@ func get(ctx context.Context, uri string, v map[string]string, dest string) erro
 	if _, err := runGit(ctx, dest, "checkout", "-q", "--detach", v["candidate"]); err != nil {
 		return err
 	}
+	meta := filepath.Join(dest, ".mq")
+	if _, err := os.Lstat(meta); err == nil {
+		return errors.New("the candidate holds a .mq entry, where the get writes the run's details")
+	}
+	if err := os.Mkdir(meta, 0o755); err != nil {
+		return err
+	}
 	for _, f := range []string{"run", "candidate", "fence"} {
-		if _, err := os.Lstat(filepath.Join(dest, f)); err == nil {
-			return fmt.Errorf("the candidate holds a file named %s, which the get writes", f)
-		}
-		if err := os.WriteFile(filepath.Join(dest, f), []byte(v[f]+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(meta, f), []byte(v[f]+"\n"), 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// put records the verdict for the run the get in runDir fetched; it never lands.
+// put records the verdict for the run the get in runDir fetched, read from runDir/.mq; it never lands.
 // A pass with hookDir also records the hook's commit, in the same push.
 func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir string) (map[string]string, error) {
 	if verdict != string(core.Pass) && verdict != string(core.Fail) {
@@ -200,7 +204,7 @@ func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir s
 	}
 	v := map[string]string{"verdict": verdict}
 	for _, f := range []string{"run", "candidate"} {
-		b, err := os.ReadFile(filepath.Join(sources, runDir, f))
+		b, err := os.ReadFile(filepath.Join(sources, runDir, ".mq", f))
 		if err != nil {
 			return nil, fmt.Errorf("params.run_dir: %s: %w", f, err)
 		}
