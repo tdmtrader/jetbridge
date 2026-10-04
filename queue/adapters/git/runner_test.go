@@ -84,6 +84,17 @@ var _ = Describe("Runner", func() {
 		Expect([]any{v, done}).To(Equal([]any{core.None, true}))
 	})
 
+	It("A test job that errored gives no verdict at once, never pass or fail", func() {
+		start(newer)
+		Expect(record(newer, git.Errored)).To(Succeed())
+		Expect(record(newer, git.Errored)).To(Succeed(), "the same result again is accepted")
+		Expect(record(newer, core.Pass)).To(MatchError(ContainSubstring("already")))
+		v, done, errored, err := runner.PollErrored(ctx, tr.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]any{v, done, errored}).To(Equal([]any{core.None, true, true}), "well inside the wait cap")
+		Expect(verdict(runner)).To(Equal(core.None))
+	})
+
 	It("A restarted runner sees the same runs and results", func() {
 		start(newer)
 		Expect(record(newer, core.Pass)).To(Succeed())

@@ -2,7 +2,8 @@
 // installed as check, in and out, reading a JSON request on stdin and writing
 // JSON on stdout, logs on stderr. Source mode candidate takes one queue step on
 // each check and hands out the run being tested; mode verdict records the test
-// job's pass or fail. Nothing is kept in memory between calls.
+// job's pass or fail, or errored when it was cancelled or timed out (no verdict,
+// retried at once). Nothing is kept in memory between calls.
 package main
 
 import (
@@ -129,7 +130,7 @@ func call(ctx context.Context, as string, args []string, stdin io.Reader, out, e
 
 // check takes one queue step and reports the newest run in flight, if any.
 func check(ctx context.Context, c config.Config, owner string, waitCap time.Duration, errw io.Writer) ([]map[string]string, error) {
-	r := &capped{Runner: git.NewRunner(c.Repository.URI, waitCap), expired: map[string]bool{}}
+	r := &capped{Runner: git.NewRunner(c.Repository.URI, waitCap), expired: map[string]bool{}, errored: map[string]bool{}}
 	d, closeFn, err := wire.Driver(c, errw, log.New(errw, "", log.LstdFlags).Printf, r)
 	if err != nil {
 		return nil, err
@@ -202,8 +203,8 @@ func get(ctx context.Context, uri string, v map[string]string, dest string) erro
 // put records the verdict for the run the get in runDir fetched, read from runDir/.mq; it never lands.
 // A pass with hookDir also records the hook's commit, in the same push; a hookDir with no bundle is a hook that changed nothing.
 func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir string) (map[string]string, error) {
-	if verdict != string(core.Pass) && verdict != string(core.Fail) {
-		return nil, errors.New("params.verdict must be pass or fail")
+	if verdict != string(core.Pass) && verdict != string(core.Fail) && verdict != string(git.Errored) { // errored: cancelled or timed out, no verdict
+		return nil, errors.New("params.verdict must be pass, fail or errored")
 	}
 	if !filepath.IsLocal(runDir) || hookDir != "" && !filepath.IsLocal(hookDir) {
 		return nil, errors.New("params.run_dir and params.hook_dir must name dirs among the job's inputs")
@@ -240,20 +241,22 @@ func put(ctx context.Context, r *git.Runner, verdict, sources, runDir, hookDir s
 	return v, r.RecordPassHooked(ctx, v["run"], v["candidate"], bundle)
 }
 
-// capped marks a run whose poll gave no verdict and no error: with the git
-// runner, only its wait cap running out does that.
+// capped marks a run whose poll gave no verdict and no error: its test job
+// recorded errored, or else its wait cap ran out.
 type capped struct {
-	core.Runner
-	expired map[string]bool
+	*git.Runner
+	expired, errored map[string]bool
 }
 
 func (c *capped) Poll(ctx context.Context, id string) (core.Verdict, bool, error) {
-	v, done, err := c.Runner.Poll(ctx, id)
-	c.expired[id] = err == nil && done && v == core.None
+	v, done, errored, err := c.Runner.PollErrored(ctx, id)
+	c.errored[id] = err == nil && errored
+	c.expired[id] = err == nil && done && v == core.None && !errored
 	return v, done, err
 }
 
 func (c *capped) Expired(id string) bool { return c.expired[id] }
+func (c *capped) Errored(id string) bool { return c.errored[id] }
 
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)

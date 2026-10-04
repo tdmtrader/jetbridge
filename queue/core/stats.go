@@ -31,6 +31,7 @@ type Summary struct {
 	P90WalkSeconds     float64     `json:"p90_walk_seconds"`
 	WaitCapExpired     int         `json:"waitcap_expired"`      // runs that gave no verdict inside the wait cap
 	WaitCapSeconds     float64     `json:"waitcap_wait_seconds"` // the time those runs waited, summed
+	ErroredVerdicts    int         `json:"errored_verdicts"`     // runs whose test job errored
 }
 
 // Stats folds the settle records and the queue into a Summary of the window
@@ -69,6 +70,8 @@ func Stats(s Snapshot, now time.Time, window time.Duration) Summary {
 		case r.Kind == WaitCapEvent:
 			out.WaitCapExpired++
 			out.WaitCapSeconds += r.Waited.Seconds()
+		case r.Kind == ErroredEvent:
+			out.ErroredVerdicts++
 		case r.Kind == RefusedEvent:
 			out.Ejected.Refused++
 		case r.Kind == EjectedEvent && r.Cause == Culprit:
