@@ -29,19 +29,7 @@ func Request(ctx context.Context, c config.Config, dir, kind, id, commit string)
 	if err := SafeID(id); err != nil {
 		return err
 	}
-	l := &Lander{dir: dir}
-	if _, err := l.git(ctx, "fetch", "-q", "--no-tags", "--end-of-options", c.Repository.URI, branch(c.Repository.Main)); err != nil {
-		return err
-	}
-	src := "FETCH_HEAD"
-	if c.Admission.OperatorsFile != "" { // sign with the operator's own git signing config
-		var err error
-		if src, err = l.git(ctx, "commit-tree", "-S", "FETCH_HEAD^{tree}", "-p", "FETCH_HEAD", "-m", kind+id); err != nil {
-			return err
-		}
-	}
-	_, err := l.git(ctx, "push", "-q", "--force", "--end-of-options", c.Repository.URI, src+":"+c.Admission.ControlPrefix+kind+id+"."+commit)
-	return err
+	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+kind+id+"."+commit, kind+id, true)
 }
 
 // Withdraw asks the runner to remove queued change id, the commit saved for it,
@@ -84,18 +72,13 @@ func Resolve(ctx context.Context, c config.Config, dir, id string) error {
 
 // Pending lists the requests; a ref that is not a plain kind, id and commit is no request.
 func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error) {
-	out, err := r.Lander.git(ctx, "ls-remote", r.Lander.remote, r.Prefix+"*")
+	rs, err := r.Lander.requests(ctx, r.Prefix)
 	var reqs []core.LifecycleRequest
-	for line := range strings.SplitSeq(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 || !strings.HasPrefix(f[1], r.Prefix) {
-			continue
-		}
-		name := f[1][len(r.Prefix):]
+	for _, q := range rs {
 		for pre, kind := range requestKinds {
-			if rest, ok := strings.CutPrefix(name, pre); ok {
+			if rest, ok := strings.CutPrefix(q.name, pre); ok {
 				if id, commit, ok := strings.Cut(rest, "."); ok && SafeID(id) == nil && commit != "" {
-					reqs = append(reqs, core.LifecycleRequest{Kind: kind, ID: id, Commit: commit, SHA: f[0]})
+					reqs = append(reqs, core.LifecycleRequest{Kind: kind, ID: id, Commit: commit, SHA: q.sha})
 				}
 			}
 		}
@@ -120,9 +103,7 @@ func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error
 
 // Done deletes the request, only if it still points at its sha.
 func (r *Lifecycle) Done(ctx context.Context, q core.LifecycleRequest) error {
-	ref := r.Prefix + prefixOf(q.Kind) + q.ID + "." + q.Commit
-	_, err := r.Lander.git(ctx, "push", "-q", "--force-with-lease="+ref+":"+q.SHA, r.Lander.remote, ":"+ref)
-	return err
+	return r.Lander.deleteRef(ctx, r.Prefix+prefixOf(q.Kind)+q.ID+"."+q.Commit, q.SHA)
 }
 
 func prefixOf(k core.EventKind) string {

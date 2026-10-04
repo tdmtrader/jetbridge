@@ -160,7 +160,7 @@ func (a *Admissions) Done(ctx context.Context, id, sha string) error {
 	if len(rs) > 1 {
 		a.refs[id+" "+sha] = rs[:len(rs)-1]
 	}
-	_, err := a.Lander.git(ctx, "push", "-q", "--force-with-lease="+ref+":"+sha, a.Lander.remote, ":"+ref)
+	err := a.Lander.deleteRef(ctx, ref, sha)
 	if err != nil {
 		if out, e := a.Lander.git(ctx, "ls-remote", a.Lander.remote, ref); e == nil && out == "" {
 			return nil
@@ -185,55 +185,29 @@ func Resume(ctx context.Context, c config.Config, dir string) error {
 	if err != nil {
 		return err
 	}
-	l := &Lander{dir: dir}
-	if _, err := l.git(ctx, "fetch", "-q", "--no-tags", "--end-of-options", c.Repository.URI, branch(c.Repository.Main)); err != nil {
-		return err
-	}
-	src := "FETCH_HEAD"
-	if c.Admission.OperatorsFile != "" { // sign with the operator's own git signing config
-		if src, err = l.git(ctx, "commit-tree", "-S", "FETCH_HEAD^{tree}", "-p", "FETCH_HEAD", "-m", "resume"); err != nil {
-			return err
-		}
-	}
-	_, err = l.git(ctx, "push", "-q", "--force", "--end-of-options", c.Repository.URI, src+":"+c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10))
-	return err
+	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10), "resume", true)
 }
 
 // Pending lists the requests; a ref whose name after the prefix is not a plain number is no request.
 func (r *Resumes) Pending(ctx context.Context) ([]core.ResumeRequest, error) {
-	out, err := r.Lander.git(ctx, "ls-remote", r.Lander.remote, r.Prefix+"*")
+	rs, err := r.Lander.requests(ctx, r.Prefix)
 	var reqs []core.ResumeRequest
-	for line := range strings.SplitSeq(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 || !strings.HasPrefix(f[1], r.Prefix) {
-			continue
-		}
-		if n, e := strconv.ParseUint(f[1][len(r.Prefix):], 10, 64); e == nil && f[1] == r.ref(n) {
-			reqs = append(reqs, core.ResumeRequest{Seq: n, SHA: f[0]})
+	var shas []string
+	for _, q := range rs {
+		if n, e := strconv.ParseUint(q.name, 10, 64); e == nil && q.name == strconv.FormatUint(n, 10) {
+			reqs, shas = append(reqs, core.ResumeRequest{Seq: n, SHA: q.sha}), append(shas, q.sha)
 		}
 	}
-	if err != nil || r.Operators == "" || len(reqs) == 0 {
+	if err != nil {
 		return reqs, err
 	}
-	fetch := []string{"fetch", "-q", "--no-tags", r.Lander.remote}
-	for _, q := range reqs {
-		fetch = append(fetch, q.SHA)
-	}
-	if _, err := r.Lander.git(ctx, fetch...); err != nil {
+	if err := (operators{r.Lander, r.Operators}).verifyAll(ctx, shas, func(i int, err error) { reqs[i].Why = "resume request " + err.Error() }); err != nil {
 		return nil, err
-	}
-	for i, q := range reqs {
-		if err := (operators{r.Lander, r.Operators}).verify(ctx, q.SHA); err != nil {
-			reqs[i].Why = "resume request " + err.Error()
-		}
 	}
 	return reqs, nil
 }
 
 // Done deletes the request, only if it still points at its sha.
 func (r *Resumes) Done(ctx context.Context, q core.ResumeRequest) error {
-	_, err := r.Lander.git(ctx, "push", "-q", "--force-with-lease="+r.ref(q.Seq)+":"+q.SHA, r.Lander.remote, ":"+r.ref(q.Seq))
-	return err
+	return r.Lander.deleteRef(ctx, r.Prefix+strconv.FormatUint(q.Seq, 10), q.SHA)
 }
-
-func (r *Resumes) ref(seq uint64) string { return r.Prefix + strconv.FormatUint(seq, 10) }
