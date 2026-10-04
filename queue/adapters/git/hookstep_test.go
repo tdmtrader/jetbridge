@@ -18,10 +18,11 @@ var _ = Describe("The test job's hook step", func() {
 	var r scriptRepo
 	var a core.Entry
 	var wd string
+	var prep func() // after the inputs are checked out, before the step runs
 	step, _ := filepath.Abs("../../example/hook-step.sh")
 	BeforeEach(func() {
 		r = newScriptRepo()
-		wd = GinkgoT().TempDir()
+		wd, prep = GinkgoT().TempDir(), func() {}
 		Expect(os.WriteFile(filepath.Join(wd, "input"), []byte("v1\n"), 0o644)).To(Succeed())
 	})
 	// run makes main's hook script do body (none if empty), checks out the
@@ -33,6 +34,7 @@ var _ = Describe("The test job's hook step", func() {
 		a = r.commit("a", "main", "a.txt", "a\n")
 		composeRun(wd, "clone", "-q", "-b", "a", r.remote, "candidate")
 		composeRun(wd, "clone", "-q", "-b", "main", r.remote, "main")
+		prep()
 		cmd := exec.Command("bash", step)
 		cmd.Dir, cmd.Env = wd, append(os.Environ(), "HOOK_SCRIPT=ci/hook.sh", "HOOK_INPUTS="+wd, "HOOK_TIMEOUT=1")
 		out, err := cmd.CombinedOutput()
@@ -58,6 +60,15 @@ var _ = Describe("The test job's hook step", func() {
 		Expect(l.Land(context.Background(), "main", a.Commit, 1)).To(Succeed())
 		Expect(composeRun(r.remote, "rev-parse", "main")).To(Equal(h))
 		Expect(composeRun(r.remote, "show", "main:gen/map.txt")).To(Equal("a\nv1"))
+	})
+
+	It("The test job's hook step leaves the get's .mq dir out of the hook's commit", func() {
+		prep = func() {
+			Expect(os.MkdirAll(filepath.Join(wd, "candidate", ".mq"), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(wd, "candidate", ".mq", "run"), []byte("r\n"), 0o644)).To(Succeed())
+		}
+		Expect(run(`mkdir -p gen; cat a.txt > gen/map.txt`)).To(Equal(0))
+		Expect(composeRun(wd, "-C", "candidate", "diff", "--name-only", a.Commit, "HEAD")).To(Equal("gen/map.txt"))
 	})
 
 	It("A hook that refuses, or changes a file it does not own, fails the test job's hook step", func() {

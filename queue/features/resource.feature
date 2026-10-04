@@ -72,6 +72,11 @@ Feature: Running the queue as a resource type
     When the test job gets the run
     Then the get fails naming .mq
 
+  Scenario: The test job's hook step runs on what the get fetched and commits only the hook's files
+    Given main has a hook script and is more than one commit deep, and a change is admitted
+    When the test job gets the candidate and runs the hook step on it
+    Then the step passes with one commit on the candidate that changes only the hook's files
+
   Scenario: A pass with a hook dir holding no bundle records the verdict only
     Given a change is admitted and the resource was checked
     And the hook changed nothing, so its dir holds no bundle

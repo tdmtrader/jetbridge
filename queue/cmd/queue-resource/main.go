@@ -151,7 +151,7 @@ func check(ctx context.Context, c config.Config, owner string, waitCap time.Dura
 	return vs, nil
 }
 
-// get checks the run's candidate out at dest and writes its run, candidate and fence files under dest/.mq.
+// get checks the run's candidate out at dest, with its history, and writes its run, candidate and fence files under dest/.mq, excluded from the checkout's changes.
 func get(ctx context.Context, uri string, v map[string]string, dest string) error {
 	if !runID.MatchString(v["run"]) || !fullSHA.MatchString(v["candidate"]) {
 		return errors.New("the version needs a run id and a full candidate sha")
@@ -159,7 +159,8 @@ func get(ctx context.Context, uri string, v map[string]string, dest string) erro
 	if _, err := runGit(ctx, "", "init", "-q", dest); err != nil {
 		return err
 	}
-	if _, err := runGit(ctx, dest, "fetch", "-q", "--no-tags", "--depth=1", "--end-of-options", uri, "refs/mq/runs/"+v["run"]); err != nil {
+	// full history: the hook step checks the candidate is on main and reads main's hook script from it
+	if _, err := runGit(ctx, dest, "fetch", "-q", "--no-tags", "--end-of-options", uri, "refs/mq/runs/"+v["run"]); err != nil {
 		return err
 	}
 	if got, err := runGit(ctx, dest, "rev-parse", "FETCH_HEAD^{commit}"); err != nil || got != v["candidate"] {
@@ -173,6 +174,21 @@ func get(ctx context.Context, uri string, v map[string]string, dest string) erro
 		return errors.New("the candidate holds a .mq entry, where the get writes the run's details")
 	}
 	if err := os.Mkdir(meta, 0o755); err != nil {
+		return err
+	}
+	exclude := filepath.Join(dest, ".git", "info", "exclude") // so .mq is no change of the checkout's
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(exclude, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err = f.WriteString("/.mq/\n"); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	for _, f := range []string{"run", "candidate", "fence"} {

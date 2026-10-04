@@ -239,6 +239,33 @@ var _ = Describe("queue resource", func() {
 		Expect(gitIn(remote, "rev-parse", git.HookedRef(v["candidate"]))).To(Equal(commit))
 	})
 
+	It("The test job's hook step runs on what the get fetched and commits only the hook's files", func() {
+		work := filepath.Join(dir, "work")
+		gitIn(work, "checkout", "-q", "--detach", base)
+		Expect(os.MkdirAll(filepath.Join(work, "ci"), 0o700)).To(Succeed())
+		hook := "#!/bin/bash\ncase \"$1\" in owned) echo gen ;; run) echo x > gen ;; esac\n"
+		Expect(os.WriteFile(filepath.Join(work, "ci", "hook.sh"), []byte(hook), 0o755)).To(Succeed())
+		gitIn(work, "add", "ci/hook.sh")
+		gitIn(work, "commit", "-q", "-m", "hook")
+		gitIn(work, "commit", "-q", "--allow-empty", "-m", "a second, so main is more than one commit deep")
+		gitIn(work, "push", "-q", "-f", remote, "HEAD:refs/heads/trunk")
+		admit()
+		v := check()[0]
+		cand := filepath.Join(sources(), "candidate")
+		code, _, errw := call("in", map[string]any{"source": source, "version": v}, cand)
+		Expect(code).To(Equal(0), errw)
+		Expect(gitIn(cand, "status", "--porcelain")).To(BeEmpty(), "the get's .mq is no change of the checkout's")
+		gitIn(sources(), "clone", "-q", "-b", "trunk", remote, "main")
+		step, err := filepath.Abs("../../example/hook-step.sh")
+		Expect(err).NotTo(HaveOccurred())
+		cmd := exec.Command("bash", step)
+		cmd.Dir, cmd.Env = sources(), append(os.Environ(), "HOOK_SCRIPT=ci/hook.sh", "HOOK_TIMEOUT=5", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		out, err := cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+		Expect(gitIn(cand, "rev-parse", "HEAD~1")).To(Equal(v["candidate"]))
+		Expect(gitIn(cand, "diff", "--name-only", v["candidate"], "HEAD")).To(Equal("gen"))
+	})
+
 	It("A pass with a hook dir holding no bundle records the verdict only", func() {
 		admit()
 		v := check()[0]
