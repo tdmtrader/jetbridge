@@ -642,21 +642,7 @@
           }
         },
         "durable": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "retention": {},
-            "maintenanceInterval": {},
-            "store": {},
-            "bucket": {},
-            "prefix": {},
-            "endpoint": {},
-            "region": {},
-            "path": {},
-            "timeout": {},
-            "maxBytes": {},
-            "existingSecret": {}
-          }
+          "$ref": "#/definitions/removed"
         },
         "serviceName": {
           "type": "string"

@@ -33,10 +33,11 @@ import (
 // The plan's starting figure, 276, counted values.yaml leaves outside the
 // deferred groups too. Under this definition the nine resources, probe and
 // security-context defaults are one value each, not the 40 leaves their
-// values.yaml examples hold, so today's count is 245: 131 values.yaml values,
+// values.yaml examples hold, so the count was 245: 131 values.yaml values,
 // the three template-only keys (fullnameOverride, nameOverride,
-// serviceAccount.name) and the 111 leaves of the deferred groups.
-const maxValues = 245
+// serviceAccount.name) and the 111 leaves of the deferred groups. Removing
+// artifactDaemon.durable took its 11 leaves, leaving 234.
+const maxValues = 234
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -103,7 +104,6 @@ var openMaps = []string{
 // one needs an entry, and nothing deeper is checked. Tracks 2-4 of
 // chart_valid_configurations_only empty this list.
 var deferredGroups = []string{
-	"artifactDaemon.durable",
 	"artifactDaemon.hangar",
 	"hangarBootstrap",
 	"hangarOutput",
@@ -130,6 +130,7 @@ var grandfathered = []string{
 // removed-keys table in templates/_validate.tpl can name the replacement.
 // They are not values.
 var removedKeys = []string{
+	"artifactDaemon.durable",
 	"artifactDaemon.enabled",
 	"artifactDaemon.tls.enabled",
 	"web.enablePipelineRunCreation",
