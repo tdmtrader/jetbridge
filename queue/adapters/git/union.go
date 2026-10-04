@@ -30,39 +30,84 @@ func hookLists(ctx context.Context, git func(...string) (string, error), ref, sc
 	return owned, union, nil
 }
 
-// unionMerge merges key by key each unmerged list of union whose base, ours and
-// theirs allow it (keyedUnion), and returns the paths still unmerged.
-func unionMerge(git func(...string) (string, error), dir string, unmerged, union []string) (rest []string, err error) {
-	for _, p := range unmerged {
-		if !slices.Contains(union, p) {
-			rest = append(rest, p)
-			continue
+// unionMerge merges key by key each list of union that both own->HEAD and own->pick changed,
+// conflicted or not, as the old queue's merge driver did. It returns the unmerged paths left,
+// and conflict when a key changed differently on both sides or a list the change touched ends
+// with one key twice in one table.
+func unionMerge(git func(...string) (string, error), dir, own, pick string, unmerged, union []string) (rest []string, conflict bool, err error) {
+	rest = slices.DeleteFunc(slices.Clone(unmerged), func(p string) bool { return slices.Contains(union, p) })
+	for _, p := range union {
+		ids := make([]string, 3)
+		for i, rev := range []string{own, "HEAD", pick} {
+			ids[i], _ = git("rev-parse", "-q", "--verify", rev+":"+p)
 		}
-		out, err := git("checkout-index", "--stage=all", "--temp", "--", p)
-		names, _, _ := strings.Cut(out, "\t")
-		var sides []string
-		for _, n := range strings.Fields(names) {
-			if n != "." {
-				b, rerr := os.ReadFile(filepath.Join(dir, n))
-				err, sides = errors.Join(err, rerr, os.Remove(filepath.Join(dir, n))), append(sides, string(b))
+		o, a, b := ids[0], ids[1], ids[2]
+		fi, lerr := os.Lstat(filepath.Join(dir, p))
+		regular, verdict, merged := lerr == nil && fi.Mode().IsRegular(), 2, ""
+		if o != "" && a != "" && b != "" && o != a && o != b && a != b && regular {
+			sides := make([]string, 3)
+			for i, id := range ids {
+				name, err := git("unpack-file", id)
+				if err != nil {
+					return nil, false, err
+				}
+				body, rerr := os.ReadFile(filepath.Join(dir, name))
+				err, sides[i] = errors.Join(rerr, os.Remove(filepath.Join(dir, name))), string(body)
+				if err != nil {
+					return nil, false, err
+				}
 			}
+			merged, verdict = keyedUnion(sides[0], sides[1], sides[2])
 		}
-		merged, ok := "", false
-		if fi, lerr := os.Lstat(filepath.Join(dir, p)); len(sides) == 3 && lerr == nil && fi.Mode().IsRegular() {
-			merged, ok = keyedUnion(sides[0], sides[1], sides[2])
-		}
-		if err == nil && ok {
+		switch {
+		case verdict == 1:
+			return nil, true, nil
+		case verdict == 0:
 			if err = os.WriteFile(filepath.Join(dir, p), []byte(merged), 0o644); err == nil {
 				_, err = git("add", "--", p)
 			}
-		} else if err == nil {
+		case slices.Contains(unmerged, p):
 			rest = append(rest, p)
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
+		}
+		if body, rerr := os.ReadFile(filepath.Join(dir, p)); b != o && regular && rerr == nil && dupKey(string(body)) {
+			return nil, true, nil
 		}
 	}
-	return rest, nil
+	return rest, false, nil
+}
+
+// dupKey says whether one key is in one table twice.
+func dupKey(s string) bool {
+	seen, sect := map[[2]string]bool{}, ""
+	for i, ln := range strings.Split(s, "\n") {
+		if m := entryRe.FindStringSubmatch(ln); strings.HasPrefix(ln, "[[") {
+			sect = fmt.Sprint(i)
+		} else if strings.HasPrefix(ln, "[") {
+			sect = tableName(ln)
+		} else if m != nil {
+			if seen[[2]string{sect, normKey(m[1])}] {
+				return true
+			}
+			seen[[2]string{sect, normKey(m[1])}] = true
+		}
+	}
+	return false
+}
+
+func tableName(ln string) string {
+	t, _, _ := strings.Cut(ln, "#")
+	return tableRe.ReplaceAllString(strings.TrimRight(t, " \t"), "")
+}
+
+// normKey spells a quoted key that could be bare as bare.
+func normKey(k string) string {
+	if q := strings.Trim(k, `"`); k != q && bareRe.MatchString(q) {
+		return q
+	}
+	return k
 }
 
 var (
@@ -89,18 +134,14 @@ func parseList(s string) (skel []string, blocks []listBlock, ok bool) {
 			return nil, nil, false
 		case strings.Trim(ln, " \t") == "" || strings.HasPrefix(strings.TrimLeft(ln, " \t"), "#") || strings.HasPrefix(ln, "["):
 			if strings.HasPrefix(ln, "[") {
-				sect, _, _ = strings.Cut(ln, "#")
-				sect = tableRe.ReplaceAllString(strings.TrimRight(sect, " \t"), "")
+				sect = tableName(ln)
 			}
 			skel, prevEntry = append(skel, ln), false
 			continue
 		case m == nil:
 			return nil, nil, false
 		}
-		k, v := m[1], strings.TrimRight(strings.TrimLeft(strings.TrimLeft(ln[len(m[1]):], " \t")[1:], " \t"), " \t")
-		if q := strings.Trim(k, `"`); k != q && bareRe.MatchString(q) {
-			k = q
-		}
+		k, v := normKey(m[1]), strings.TrimRight(strings.TrimLeft(strings.TrimLeft(ln[len(m[1]):], " \t")[1:], " \t"), " \t")
 		if v == "" || strings.HasPrefix(v, `"""`) || strings.HasPrefix(v, "'''") ||
 			(v[0] == '[' && !strings.HasSuffix(v, "]")) || (v[0] == '{' && !strings.HasSuffix(v, "}")) {
 			return nil, nil, false
@@ -117,20 +158,20 @@ func parseList(s string) (skel []string, blocks []listBlock, ok bool) {
 	return skel, blocks, s != ""
 }
 
-// keyedUnion merges list o, ours a and theirs b key by key, as the old queue did. All share
-// one skeleton; a key changed differently on both sides, or twice in one table, is not ok.
+// keyedUnion merges list o, ours a and theirs b key by key, as the old queue did: verdict 0.
+// All share one skeleton, else 2; a key changed differently on both sides, or twice in one table, is 1.
 // Ours keeps its order; a key new in theirs follows the key it follows there.
-func keyedUnion(o, a, b string) (string, bool) {
+func keyedUnion(o, a, b string) (merged string, verdict int) {
 	var skel [3][]string
 	var ls [3][]listBlock
 	for i, s := range []string{o, a, b} {
 		var ok bool
 		if skel[i], ls[i], ok = parseList(s); !ok {
-			return "", false
+			return "", 2
 		}
 	}
 	if !slices.Equal(skel[0], skel[1]) || !slices.Equal(skel[0], skel[2]) {
-		return "", false
+		return "", 2
 	}
 	var out []string
 	seen, bi := map[[2]string]bool{}, 0
@@ -143,16 +184,16 @@ func keyedUnion(o, a, b string) (string, bool) {
 		keys, lines, ok := mergeBlock(ls[0][bi], ba, ls[2][bi])
 		bi++
 		if !ok {
-			return "", false
+			return "", 1
 		}
 		for _, k := range keys {
 			if seen[[2]string{ba.sect, k}] {
-				return "", false
+				return "", 1
 			}
 			seen[[2]string{ba.sect, k}], out = true, append(out, lines[k])
 		}
 	}
-	return strings.Join(out, "\n") + "\n", true
+	return strings.Join(out, "\n") + "\n", 0
 }
 
 // mergeBlock returns the keys the merged block keeps, in order, and their lines.
