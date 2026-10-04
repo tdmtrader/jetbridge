@@ -140,6 +140,13 @@ var _ = Describe("JetBridge runner", func() {
 		return r
 	}
 
+	It("A credential in a runner url that does not parse is hidden in the error", func() {
+		clk = &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+		err := newRunner("https://user:SECRET@host/%zz").Start(ctx, core.Run{ID: "r1"}, candidate)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
+	})
+
 	// test starts a run and polls it until done, at most 10 times.
 	test := func(id string) (core.Verdict, error) {
 		if err := r.Start(ctx, core.Run{ID: id}, candidate); err != nil {

@@ -409,7 +409,7 @@ func (d *Driver) load(ctx context.Context) error {
 	if err != nil {
 		ev = Event{Kind: PausedEvent, Entries: in.Entries, Why: fmt.Sprintf("cannot tell whether main holds %s: %v", in.Candidate, err)}
 		ev.At = d.now()
-		again = d.s.Paused && d.s.Why == ev.Why
+		again = d.s.Paused && d.s.Why == Redact(ev.Why) // as saved
 		d.pause(ev.Why)
 	} else if d.s.Landing = nil; landed {
 		d.fails = 0
@@ -429,6 +429,7 @@ func (d *Driver) load(ctx context.Context) error {
 
 func (d *Driver) save(ctx context.Context) error {
 	d.s.Queued = d.q.SelectBatch(math.MaxInt)
+	*d.s = RedactSnapshot(*d.s) // the one place a reason enters the Store
 	v, err := d.Store.Save(ctx, d.lease.Token, *d.s)
 	if err != nil {
 		d.reset()
@@ -501,6 +502,7 @@ func (d *Driver) notify(ctx context.Context, e Event) {
 	if e.At.IsZero() {
 		e.At = d.now()
 	}
+	e.Why = Redact(e.Why)
 	if err := d.Notifier.Notify(ctx, e); err != nil {
 		d.logf("notify %s: %v", e.Kind, err)
 	}
@@ -510,7 +512,7 @@ func (d *Driver) logf(format string, args ...any) {
 	if d.Log == nil {
 		d.Log = log.Printf
 	}
-	d.Log(format, args...)
+	d.Log("%s", Redact(fmt.Sprintf(format, args...)))
 }
 
 func refusal(err error) bool {

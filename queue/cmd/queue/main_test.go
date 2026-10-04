@@ -230,6 +230,18 @@ var _ = Describe("queue command", func() {
 		Expect(code).To(Equal(1))
 	})
 
+	It("hides a credential in any error line it writes", func() {
+		for _, args := range [][]string{
+			{"status", "--config", "https://user:SECRET@host/queue.yaml"},
+			{"admit", "--config", file, "https://user:SECRET@host/x", sha},
+		} {
+			code, _, errw := queue(args...)
+			Expect(code).NotTo(Equal(0))
+			Expect(errw).To(ContainSubstring("https://***@host/"))
+			Expect(errw).NotTo(ContainSubstring("SECRET"))
+		}
+	})
+
 	It("runs one step and stops with --once", func() {
 		code, _, errw := queue("run", "--config", file, "--once")
 		Expect(errw).To(BeEmpty())

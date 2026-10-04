@@ -200,6 +200,16 @@ var _ = Describe("Git errors", func() {
 		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
 	})
 
+	It("A credential in the lease ref's message is hidden in the fence error", func() {
+		r := newRemote()
+		c1 := r.commit("c1", r.base)
+		bad := run(r.work, "commit-tree", run(r.work, "mktree"), "-m", "fence https://user:SECRET@host/repo")
+		run(r.work, "push", "-q", "-f", r.bare, bad+":"+lease)
+		err := r.lander().Land(ctx, "main", c1, 5)
+		Expect(err).To(MatchError(ContainSubstring("does not hold a fence")))
+		Expect(err.Error()).NotTo(ContainSubstring("SECRET"))
+	})
+
 	It("hides a credential in the error of a rejected save", func() {
 		r := newRemote()
 		c := config.Defaults()

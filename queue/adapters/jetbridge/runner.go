@@ -3,6 +3,7 @@ package jetbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -146,7 +147,7 @@ func (j *Runner) call(ctx context.Context, method, path string, out any) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, method, j.Config.URL+path, strings.NewReader("{}"))
 	if err != nil {
-		return err
+		return errors.New(core.Redact(err.Error())) // url.Parse quotes the url, password and all
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)

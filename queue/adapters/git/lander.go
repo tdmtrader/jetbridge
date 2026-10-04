@@ -118,7 +118,7 @@ func (l *Lander) observe(ctx context.Context, mainRef string, fence uint64, want
 		n, ok := strings.CutPrefix(strings.TrimSuffix(strings.TrimSuffix(msg, "\x00"), "\n"), "fence ")
 		seen, perr = strconv.ParseUint(n, 10, 64) // the NUL marks where git's output ended
 		if err != nil || !ok || perr != nil {
-			return "", "", fmt.Errorf("%s does not hold a fence (%q): %v", l.leaseRef, msg, errors.Join(err, perr))
+			return "", "", errors.New(core.Redact(fmt.Sprintf("%s does not hold a fence (%q): %v", l.leaseRef, msg, errors.Join(err, perr))))
 		}
 	}
 	if seen >= fence {

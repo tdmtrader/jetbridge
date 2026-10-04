@@ -37,7 +37,7 @@ func main() {
 
 // run returns the exit code: 0 done, 2 admission refused (an unsafe id), 1 anything else.
 func run(ctx context.Context, args []string, out, errw io.Writer) int {
-	fail := func(err error) int { fmt.Fprintln(errw, "queue:", err); return 1 }
+	fail := func(err error) int { fmt.Fprintln(errw, "queue:", core.Redact(err.Error())); return 1 }
 	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "resume", "status", "stats", "view"}, args[0]) {
 		return fail(errors.New(usage))
 	}
@@ -66,7 +66,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 			return fail(errors.New(usage))
 		}
 		if err := git.SafeID(fs.Arg(0)); err != nil {
-			fmt.Fprintln(errw, "queue:", err)
+			fail(err)
 			return 2
 		}
 		if err := git.Admit(ctx, c, ".", fs.Arg(0), fs.Arg(1)); err != nil {
