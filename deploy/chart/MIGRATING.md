@@ -17,8 +17,8 @@ auditing, or optional infrastructure.
 | --- | --- |
 | `artifactDaemon.enabled` | Remove it, including `true`. The daemon always renders. |
 | `artifactDaemon.tls.enabled` | Remove it. mTLS always renders. |
-| `artifactDaemon.durable` | Remove it. The render fails with "artifactDaemon.durable has been removed; the durable tier is not configurable from the chart". The daemon renders no `--durable-*` flag or credential mount, and the `ArtifactDaemonDurableStoreErrors` alert is gone. |
-| `artifactDaemon.hangar.enabled` without `hangar.store` | Set `artifactDaemon.hangar.store` (`gcs` or `disk`) and `hangar.bucket`, plus `hangar.prefix` or `hangar.endpoint` if the durable tier supplied them. Hangar no longer inherits the durable tier's store, bucket, endpoint or prefix; without a store the render fails naming `artifactDaemon.hangar.store`. Hangar's store timeout is now the daemon's fixed 5m default; a `durable.timeout` no longer reaches it. |
+| `artifactDaemon.durable` | Remove it. The render fails with "artifactDaemon.durable has been removed; the durable tier is not configurable from the chart". The daemon renders no `--durable-*` flag or credential mount, and the `ArtifactDaemonDurableStoreErrors` alert is gone. If you used the tier: its reclaim walk stops with it, so expire the objects already in the bucket with a lifecycle rule on the prefix (or delete the bucket), and an S3 credentials Secret the chart referenced is now unused. The chart offers no way to keep the tier. |
+| `artifactDaemon.hangar.enabled` without `hangar.store` | Set `artifactDaemon.hangar.store` (`gcs` or `disk`) and `hangar.bucket`, plus `hangar.prefix` and `hangar.endpoint`. To keep existing trees reachable, set them to the durable tier's old bucket, prefix and endpoint. Hangar no longer inherits the durable tier's store, bucket, endpoint or prefix; without a store the render fails naming `artifactDaemon.hangar.store`. Hangar's store timeout is now the daemon's fixed 5m default; a `durable.timeout` no longer reaches it. |
 | `artifactDaemon.tls.existingSecret` | Preserve the existing reference and set `artifactDaemon.tls.source: existingSecret`. |
 | Implicit certificate generation | Select `artifactDaemon.tls.source: generated` explicitly and leave `existingSecret` empty. Live Helm only; offline/GitOps rendering cannot preserve generated material. |
 | `artifactDaemon.resolveCapability.existingSecret` | Now required. Preserve an existing key; otherwise provision a Secret with `resolve.key`, exactly 32 random bytes. |
@@ -95,7 +95,10 @@ key rollout; do not rotate or generate a new key implicitly during this change.
 
 1. Render the new chart with the complete migrated values and resolve every
    prerequisite error. Bare defaults intentionally cannot invent clients or
-   external Secrets. Do not use `--reuse-values` without removing obsolete keys.
+   external Secrets. Do not use `--reuse-values`: it carries the previous
+   chart's defaults, so a key the new chart removed (for example
+   `artifactDaemon.durable`) fails the render even if you never set it. Use
+   complete values files, or `--reset-then-reuse-values` (Helm 3.14 or later).
 2. Verify referenced Secrets exist with the required keys, and certificates
    have the daemon service's expected SANs. Rendering cannot verify their contents.
 3. Test the chart and matching application image together. Keep optional

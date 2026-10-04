@@ -32,7 +32,7 @@
     },
     "web.hangar": {
       "expect": "off",
-      "note": "Strict Hangar inputs are off here. Turning them on is a deployment change, not a test one: artifactDaemon.hangar.enabled/webEnabled, a store (artifactDaemon.hangar.store gcs with the durable bucket pointed at the fake-gcs emulator, or disk via hangarStorage.disk), and a hangar.key in the pinned daemon TLS Secret. home-infra sets no artifactDaemon.hangar value since 5db877d. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
+      "note": "Strict Hangar inputs are off here. Turning them on is a deployment change, not a test one: artifactDaemon.hangar.enabled/webEnabled, a store (artifactDaemon.hangar.store gcs with artifactDaemon.hangar.bucket and endpoint pointed at the fake-gcs emulator, or disk via hangarStorage.disk), and a hangar.key in the pinned daemon TLS Secret. home-infra sets no artifactDaemon.hangar value since 5db877d. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
     },
     "web.hangarOutput": {
       "expect": "off",
