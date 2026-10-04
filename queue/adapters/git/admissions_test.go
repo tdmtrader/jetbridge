@@ -84,14 +84,14 @@ var _ = Describe("Admissions", func() {
 			[]core.Pending{{ID: "x", Commit: m, BuildsOn: []string{"a", "b"}, Owner: "t"}}))
 	})
 
-	It("a pending replacement of a queued id is no ancestor candidate for a child", func() {
+	It("A child of a pending replacement of a queued id builds on that id and comes after it", func() {
 		a := r.commit("a", r.base)
-		b := r.commit("b", r.base)
-		cc := r.commit("c", b)
-		admit("a", b)
+		a2 := r.commit("a2", r.base) // not built on a
+		cc := r.commit("c", a2)
 		admit("c", cc)
+		admit("a", a2)
 		ps := pending(core.Entry{ID: "a", Commit: a})
-		Expect(ps).To(ConsistOf(core.Pending{ID: "a", Commit: b, Owner: "t"}, core.Pending{ID: "c", Commit: cc, Owner: "t"}))
+		Expect(ps).To(Equal([]core.Pending{{ID: "a", Commit: a2, Owner: "t"}, {ID: "c", Commit: cc, Owner: "t", BuildsOn: []string{"a"}}}))
 	})
 
 	It("a git call returns soon after its context ends even when a child holds its stderr", func() {

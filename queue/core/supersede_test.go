@@ -2,6 +2,8 @@ package core_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -73,6 +75,30 @@ var _ = Describe("Driver supersede", func() {
 		Expect(snap.Refused).To(HaveLen(1))
 		Expect(snap.Refused[0].Why).To(ContainSubstring("build on it"))
 		Expect(note.of(core.SupersededEvent)).To(BeEmpty())
+	})
+
+	It("A landing settled after a restart lands only the commit it pushed; a replacement made meanwhile stays queued", func() {
+		a1 := core.Entry{ID: "a", Commit: "sha-a"}
+		comp := &memComposer{entries: map[string][]string{"cand-a1": {"a"}}}
+		land := &memLander{c: comp, landed: []string{"a"}, blind: errors.New("unreachable")} // a@sha-a is on main; Contains fails
+		d.Composer, d.Lander = comp, land
+		data, err := json.Marshal(core.Snapshot{Queued: []core.Entry{a1}, Commits: map[string]string{"a": "sha-a"},
+			Landing: &core.Landing{Main: "core", Candidate: "cand-a1", Entries: []core.Entry{a1}}})
+		Expect(err).NotTo(HaveOccurred())
+		store.data = data
+		Expect(d.Step(ctx)).To(Succeed())
+		Expect(store.snap().Paused).To(BeTrue())
+		push("a")
+		Expect(d.Step(ctx)).To(Succeed())
+		Expect(store.snap().Queued[0].Commit).To(Equal("sha-a2"))
+		land.blind = nil
+		Expect(d.Resume(ctx, store.snap().PauseSeq)).To(Succeed())
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(snap.Landing).To(BeNil())
+		Expect(snap.Landed).NotTo(HaveKey("a"))
+		Expect(snap.Queued).To(HaveLen(1))
+		Expect(snap.Queued[0].Commit).To(Equal("sha-a2"))
 	})
 
 	It("A new commit that merges two unrelated queued changes does not replace the queued one", func() {

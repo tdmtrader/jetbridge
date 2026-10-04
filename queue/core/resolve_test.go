@@ -50,6 +50,20 @@ var _ = Describe("Driver resolve", func() {
 		Expect(store.snap().Refused).To(BeEmpty())
 	})
 
+	It("A resolved change admitted again on main builds on nothing it built on before", func() {
+		data, err := json.Marshal(core.Snapshot{Ejected: map[string]bool{"a": true, "b": true},
+			Commits: map[string]string{"a": "sha-a", "b": "sha-b"}, BuildsOn: map[string][]string{"b": {"a"}}})
+		Expect(err).NotTo(HaveOccurred())
+		store.data = data
+		ask("b", "sha-b")
+		Expect(d.Step(ctx)).To(Succeed())
+		adm.push(core.Pending{ID: "b", Commit: "sha-b2"}) // rebased onto main
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(ids(snap.Queued)).To(Equal([]string{"b"}))
+		Expect(snap.BuildsOn).NotTo(HaveKey("b"))
+	})
+
 	It("A resolve request for a change that is not ejected is deleted unheeded", func() {
 		Expect(d.Admit(ctx, core.Entry{ID: "a", Commit: "sha-a"})).To(Succeed())
 		ask("a", "sha-a")

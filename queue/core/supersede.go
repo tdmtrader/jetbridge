@@ -20,6 +20,12 @@ func (q *Queue) Supersede(id, commit string) error {
 	return nil
 }
 
+// superseded reports whether e's id is queued at another commit than e's.
+func (q *Queue) superseded(e Entry) bool {
+	i := slices.IndexFunc(q.order, func(o Entry) bool { return o.ID == e.ID })
+	return i >= 0 && q.states[e.ID] == Queued && e.Commit != "" && q.order[i].Commit != e.Commit
+}
+
 // divergent refuses id building on two queued changes, neither built on the other.
 func (d *Driver) divergent(id string, buildsOn []string) error {
 	b, queued := maps.Clone(d.s.BuildsOn), map[string]bool{}

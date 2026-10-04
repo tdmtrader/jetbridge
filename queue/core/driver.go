@@ -61,7 +61,7 @@ func (d *Driver) Admit(ctx context.Context, e Entry, buildsOn ...string) error {
 	if err := d.q.Admit(e); err != nil {
 		return err
 	}
-	if len(buildsOn) > 0 {
+	if delete(d.s.BuildsOn, e.ID); len(buildsOn) > 0 { // a resolved id admitted again keeps nothing it built on before
 		d.s.BuildsOn[e.ID] = buildsOn
 	}
 	d.s.Commits[e.ID] = e.Commit
@@ -491,6 +491,7 @@ func (d *Driver) load(ctx context.Context) error {
 	if in == nil {
 		return nil
 	}
+	in = &Landing{in.Main, in.Candidate, slices.DeleteFunc(slices.Clone(in.Entries), q.superseded), in.Fence} // settled by commit
 	ev := Event{Kind: LandedEvent, Entries: in.Entries, Why: "landed before a restart", At: d.now()}
 	again := false // already paused for this reason: a restart is no new pause
 	landed, err := ReconcileLanding(ctx, d.Lander, d.q, *in, d.fence())

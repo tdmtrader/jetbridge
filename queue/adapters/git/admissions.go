@@ -79,7 +79,7 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 	at, kept := map[string]int64{}, map[string]string{}
 	a.refs = map[string][]string{}
 	fetch, pending := []string{"fetch", "-q", "--no-tags", a.Lander.remote}, map[string]bool{}
-	taken := map[string]bool{} // a pending change under a queued ID is refused, so no change builds on it
+	taken := map[string]bool{} // a pending change under a queued ID is its supersede, judged by the driver
 	for _, e := range queued {
 		taken[e.ID] = true
 	}
@@ -125,14 +125,14 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 		}
 		ps[i].Owner = a.owner(ctx, p.Commit)
 	}
-	for _, p := range ps { // only an accepted change is an ancestor candidate
-		if p.Why == "" && !taken[p.ID] {
+	for _, p := range ps { // only an accepted change is an ancestor candidate; one under a queued id at its new commit too
+		if p.Why == "" {
 			queued, pending[p.ID] = append(queued, core.Entry{ID: p.ID, Commit: p.Commit}), true
 		}
 	}
 	for i, p := range ps {
 		for _, o := range queued { // a queued commit not fetched with p's history is not its ancestor
-			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && o.ID != p.ID && ps[i].Why == "" {
+			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && o.ID != p.ID && ps[i].Why == "" && !slices.Contains(ps[i].BuildsOn, o.ID) {
 				ps[i].BuildsOn = append(ps[i].BuildsOn, o.ID)
 			}
 		}
