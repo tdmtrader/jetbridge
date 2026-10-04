@@ -132,7 +132,7 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 	}
 	for i, p := range ps {
 		for _, o := range queued { // a queued commit not fetched with p's history is not its ancestor
-			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && ps[i].Why == "" {
+			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && o.ID != p.ID && ps[i].Why == "" {
 				ps[i].BuildsOn = append(ps[i].BuildsOn, o.ID)
 			}
 		}

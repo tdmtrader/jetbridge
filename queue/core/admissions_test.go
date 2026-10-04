@@ -139,27 +139,23 @@ var _ = Describe("Driver admissions", func() {
 		Expect(note.of(core.RefusedEvent)).To(BeEmpty())
 	})
 
-	It("A replacement commit under a used id is refused, announced and its ref deleted; the original stays", func() {
+	It("A replacement commit under a landed or ejected id is refused, announced and its ref deleted; the original stays", func() {
 		data, err := json.Marshal(core.Snapshot{Landed: map[string]bool{"l": true}, Ejected: map[string]bool{"e": true},
 			Commits: map[string]string{"l": "sha-l", "e": "sha-e"}})
 		Expect(err).NotTo(HaveOccurred())
 		store.data = data
 		d := driver("runner")
-		adm.push(pending("a"))
-		Expect(d.Step(ctx)).To(Succeed())
-		adm.push(core.Pending{ID: "a", Commit: "sha-a2"}, core.Pending{ID: "l", Commit: "sha-l2"}, core.Pending{ID: "e", Commit: "sha-e2"})
+		adm.push(core.Pending{ID: "l", Commit: "sha-l2"}, core.Pending{ID: "e", Commit: "sha-e2"})
 		Expect(d.Step(ctx)).To(Succeed())
 		snap := store.snap()
-		Expect(snap.Queued).To(HaveLen(1))
-		Expect(snap.Queued[0].Commit).To(Equal("sha-a"))
+		Expect(snap.Queued).To(BeEmpty())
 		why := func(id, old string) string {
 			return "id " + id + " already used for " + old + "; admit the new commit under a new id"
 		}
-		Expect(snap.Refused).To(Equal([]core.Refusal{{ID: "a", Commit: "sha-a2", Why: why("a", "sha-a")},
-			{ID: "l", Commit: "sha-l2", Why: why("l", "sha-l")}, {ID: "e", Commit: "sha-e2", Why: why("e", "sha-e")}}))
-		Expect(note.of(core.RefusedEvent)).To(HaveLen(3))
+		Expect(snap.Refused).To(Equal([]core.Refusal{{ID: "l", Commit: "sha-l2", Why: why("l", "sha-l")}, {ID: "e", Commit: "sha-e2", Why: why("e", "sha-e")}}))
+		Expect(note.of(core.RefusedEvent)).To(HaveLen(2))
 		Expect(adm.pending).To(BeEmpty(), "every replacement ref was deleted")
-		Expect(note.of(core.RefusedEvent)[0].Why).To(Equal(why("a", "sha-a")))
+		Expect(note.of(core.RefusedEvent)[0].Why).To(Equal(why("l", "sha-l")))
 	})
 
 	It("ignores a parent that is no longer queued", func() {

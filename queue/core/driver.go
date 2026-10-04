@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -56,20 +55,8 @@ func (d *Driver) Admit(ctx context.Context, e Entry, buildsOn ...string) error {
 		return err
 	}
 	buildsOn = slices.Clone(buildsOn) // the caller may reuse its slice
-	b, queued := maps.Clone(d.s.BuildsOn), map[string]bool{}
-	b[e.ID] = buildsOn
-	for id, s := range d.q.states {
-		queued[id] = s == Queued
-	}
-	up := func(id string) []string { a, _, _ := reach(id, b, queued, nil); return a }
-	anc := up(e.ID)
-	slices.Sort(anc)
-	for i, x := range anc {
-		for _, y := range anc[i+1:] {
-			if !slices.Contains(up(x), y) && !slices.Contains(up(y), x) {
-				return &DivergentError{e.ID, x, y}
-			}
-		}
+	if err := d.divergent(e.ID, buildsOn); err != nil {
+		return err
 	}
 	if err := d.q.Admit(e); err != nil {
 		return err
@@ -92,9 +79,16 @@ func (d *Driver) drain(ctx context.Context) error {
 		d.logf("admissions: %v", err)
 	}
 	for _, p := range ps {
-		_, seen := d.q.states[p.ID]
+		state, seen := d.q.states[p.ID]
 		if old := d.s.Commits[p.ID]; seen && old != p.Commit && p.Why == "" { // the same commit is a crash after the save
-			p.Why, seen = fmt.Sprintf("id %s already used for %.7s; admit the new commit under a new id", p.ID, old), false
+			if state != Queued {
+				p.Why = fmt.Sprintf("id %s already used for %.7s; admit the new commit under a new id", p.ID, old)
+			} else if err := d.Supersede(ctx, p.ID, p.Commit, p.BuildsOn); ignored(err) {
+				p.Why = err.Error()
+			} else if err != nil {
+				return err
+			}
+			seen = p.Why == ""
 		}
 		if b := slices.DeleteFunc(slices.Clone(p.BuildsOn), func(id string) bool { return d.q.states[id] != Queued }); !seen && p.Why == "" {
 			if err := d.Admit(ctx, Entry{ID: p.ID, Commit: p.Commit, Owner: p.Owner, AdmittedAt: d.now()}, b...); refusal(err) {

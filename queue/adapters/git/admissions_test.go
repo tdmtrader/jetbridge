@@ -69,6 +69,13 @@ var _ = Describe("Admissions", func() {
 			{ID: "zz-mid", Commit: mid, Owner: "t"}, {ID: "aa-top", Commit: top, Owner: "t", BuildsOn: []string{"zz-mid"}}}))
 	})
 
+	It("A new commit built on the queued one does not make the change build on itself", func() {
+		a := r.commit("a", r.base)
+		a2 := r.commit("a2", a)
+		admit("a", a2)
+		Expect(pending(core.Entry{ID: "a", Commit: a})).To(Equal([]core.Pending{{ID: "a", Commit: a2, Owner: "t"}}))
+	})
+
 	It("derives every queued ancestor of a merge, so a divergent merge can be refused", func() {
 		a, b := r.commit("a", r.base), r.commit("b", r.base)
 		m := run(r.work, "commit-tree", run(r.work, "mktree"), "-p", a, "-p", b, "-m", "m")
