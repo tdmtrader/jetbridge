@@ -184,7 +184,33 @@ jobs:
           echo "$PACKAGES" | head -20
           echo "... ($(echo "$PACKAGES" | wc -l | tr -d ' ') packages total)"
           echo ""
-          go test -count=1 -timeout 20m $PACKAGES
+
+          # The heavy Ginkgo suites run under the Ginkgo CLI with -p, beside a
+          # plain `go test` of everything else. Under `go test` alone each
+          # suite is one process, and atc/db (~1000 specs, 278s) was the whole
+          # job's critical path; `make test-unit` already runs these with -p.
+          # Procs scale with the node (nproc sees the whole node: there is no
+          # CPU limit), so theborg gets fewer than the battle station.
+          HEAVY="atc/db atc/api atc/db/migration atc/exec atc/scheduler/algorithm atc/engine atc/runs"
+          MODULE=$(go list -m)
+          HEAVY_PKGS=$(for d in $HEAVY; do echo "$MODULE/$d"; done)
+          REST=$(echo "$PACKAGES" | grep -Fxv "$HEAVY_PKGS")
+          PROCS=$(( $(nproc) / 3 ))
+          [ "$PROCS" -ge 2 ] || PROCS=2
+          [ "$PROCS" -le 8 ] || PROCS=8
+          echo "Ginkgo -p (procs=$PROCS): $HEAVY"
+          GINKGO_STATUS=0
+          go run github.com/onsi/ginkgo/v2/ginkgo -p --procs="$PROCS" --keep-going \
+            --flake-attempts=1 --timeout=20m $(for d in $HEAVY; do echo "./$d"; done) \
+            >/tmp/ginkgo-heavy.log 2>&1 &
+          GINKGO_PID=$!
+          GO_TEST_STATUS=0
+          go test -count=1 -timeout 20m $REST || GO_TEST_STATUS=$?
+          wait "$GINKGO_PID" || GINKGO_STATUS=$?
+          echo "=== Ginkgo -p suites (exit $GINKGO_STATUS) ==="
+          cat /tmp/ginkgo-heavy.log
+          # Not `[ ] && [ ]`: sh -e does not exit on a failure inside an && list.
+          if [ "$GO_TEST_STATUS" -ne 0 ] || [ "$GINKGO_STATUS" -ne 0 ]; then exit 1; fi
           echo "=== All unit tests passed ==="
 
 - name: k8s-runtime-tests
