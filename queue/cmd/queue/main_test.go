@@ -269,6 +269,32 @@ var _ = Describe("queue command", func() {
 		Expect(o.String() + e.String()).NotTo(MatchRegexp("SEC|RET"))
 	})
 
+	It("hides a password with an apostrophe in a configured URL that does not parse", func() {
+		old := core.Secrets
+		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
+		DeferCleanup(func() { core.Secrets = old })
+		GinkgoT().Setenv("FAKE_JB_TOKEN", "fake-token")
+		cfg := strings.Replace(string(must(os.ReadFile(file))), "https://ci.example.invalid", "https://user:Rv3n'Hq8w@ci.example.invalid/%zz", 1)
+		Expect(os.WriteFile(file, []byte(strings.Replace(cfg, "file:/path/to/auth.hdr", "env:FAKE_JB_TOKEN", 1)), 0o600)).To(Succeed())
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		child := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", sha, "-m", "b")
+		var o, e bytes.Buffer
+		Expect(entry(context.Background(), []string{"admit", "--config", file, "b", child}, &o, &e)).To(Equal(0), e.String())
+		entry(context.Background(), []string{"run", "--config", file, "--once"}, &o, &e)
+		Expect(e.String()).To(ContainSubstring("start "), "the runner's request error reaches stderr")
+		Expect(o.String() + e.String()).NotTo(MatchRegexp("Rv3n|Hq8w"))
+	})
+
+	It("hides a password with a comma in a --config path it cannot open", func() {
+		old := core.Secrets
+		core.Secrets = &core.SecretSet{} // no secret registered by an earlier spec
+		DeferCleanup(func() { core.Secrets = old })
+		var o, e bytes.Buffer
+		Expect(entry(context.Background(), []string{"status", "--config", "https://user:SEC,RET@host/queue.yaml"}, &o, &e)).To(Equal(1))
+		Expect(e.String()).To(ContainSubstring("***@host/queue.yaml"))
+		Expect(o.String() + e.String()).NotTo(MatchRegexp("SEC|RET"))
+	})
+
 	It("never writes a reason it loaded unredacted back to the state ref", func() {
 		const token = "Tk5mQw2zRb9x"
 		ctx := context.Background()

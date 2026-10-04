@@ -68,6 +68,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if args[0] == "run" && *every <= 0 {
 		return fail(errors.New("--every must be positive"))
 	}
+	scan([]byte(*file)) // the path is in every error that names the file
 	data, err := os.ReadFile(*file)
 	if err != nil {
 		return fail(err)
@@ -162,16 +163,32 @@ func register(data []byte, c config.Config) {
 	}
 }
 
-// rawURL is scheme:// then userinfo, which runs to the last @ before a space, quote or line end.
-var rawURL = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://([^\s"']*)@`)
+// rawURL is scheme:// then userinfo, which runs to the last @ before whitespace, / ? or #;
+// quotes, commas and backslashes are kept as part of the password.
+var rawURL = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://([^\s/?#]*)@`)
 
-// scan registers the userinfo of every URL in the raw config text, its user and password
-// parts too, without parsing: it works before Parse, and on a URL that does not parse.
+// scan registers the userinfo of every URL in the raw config text and in each YAML scalar it
+// holds, its user and password parts too, without URL parsing: it works before Parse, and on
+// a URL that does not parse.
 func scan(data []byte) {
-	for _, m := range rawURL.FindAllSubmatch(data, -1) {
-		user, pw, _ := strings.Cut(string(m[1]), ":")
-		for _, s := range []string{string(m[1]), user, pw} {
-			core.Secrets.Add(s)
+	texts := []string{string(data)}
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		texts = append(texts, n.Value)
+		for _, k := range n.Content {
+			walk(k)
+		}
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) == nil {
+		walk(&doc)
+	}
+	for _, t := range texts {
+		for _, m := range rawURL.FindAllStringSubmatch(t, -1) {
+			user, pw, _ := strings.Cut(m[1], ":")
+			for _, s := range []string{m[1], user, pw} {
+				core.Secrets.Add(s)
+			}
 		}
 	}
 }
