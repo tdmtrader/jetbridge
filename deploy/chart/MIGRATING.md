@@ -5,9 +5,11 @@ MCP are standard capabilities. Their deployment configuration is explicit; empty
 prerequisites cause rendering to fail instead of disabling a capability.
 
 Hangar strict inputs, the output plane, activation, and the dependent public Run
-creation gate are unchanged. This upgrade does not require GCS unless the
-installation separately enables Hangar. It does not change global resource
-sharing, rerun policy, credential providers, auditing, or optional infrastructure.
+creation gate are unchanged, except that Hangar names its own store and the
+durable resource-cache tier is no longer configurable from the chart. This
+upgrade does not require GCS unless the installation separately enables Hangar.
+It does not change global resource sharing, rerun policy, credential providers,
+auditing, or optional infrastructure.
 
 ## Values migration
 
@@ -15,6 +17,8 @@ sharing, rerun policy, credential providers, auditing, or optional infrastructur
 | --- | --- |
 | `artifactDaemon.enabled` | Remove it, including `true`. The daemon always renders. |
 | `artifactDaemon.tls.enabled` | Remove it. mTLS always renders. |
+| `artifactDaemon.durable` | Remove it. The render fails with "artifactDaemon.durable has been removed; the durable tier is not configurable from the chart". The daemon renders no `--durable-*` flag or credential mount, and the `ArtifactDaemonDurableStoreErrors` alert is gone. |
+| `artifactDaemon.hangar.enabled` without `hangar.store` | Set `artifactDaemon.hangar.store` (`gcs` or `disk`) and `hangar.bucket`, plus `hangar.prefix` or `hangar.endpoint` if the durable tier supplied them. Hangar no longer inherits the durable tier's store, bucket, endpoint or prefix; without a store the render fails naming `artifactDaemon.hangar.store`. |
 | `artifactDaemon.tls.existingSecret` | Preserve the existing reference and set `artifactDaemon.tls.source: existingSecret`. |
 | Implicit certificate generation | Select `artifactDaemon.tls.source: generated` explicitly and leave `existingSecret` empty. Live Helm only; offline/GitOps rendering cannot preserve generated material. |
 | `artifactDaemon.resolveCapability.existingSecret` | Now required. Preserve an existing key; otherwise provision a Secret with `resolve.key`, exactly 32 random bytes. |
