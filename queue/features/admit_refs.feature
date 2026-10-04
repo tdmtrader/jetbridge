@@ -67,11 +67,11 @@ Feature: Admitting changes by pushing them, drained by the runner
     And the repeat of "b" is refused, which status keeps
     And every pushed ref is deleted
 
-  Scenario: A change on a refused repeat does not build on the accepted one
+  Scenario: A change on a refused repeat is refused too, never queued on the accepted one
     When change "a" is admitted, then "a" again at a sibling commit, then change "c" on that sibling
     And the runner takes its next step
-    Then the repeat of "a" is refused and "c" is queued
-    And "c" builds on nothing, not on the accepted "a"
+    Then the repeat of "a" is refused, and "c" is refused as built on it
+    And "c" is not queued and builds on nothing
     And every pushed ref is deleted
 
   Scenario: With operators configured, a change signed by an operator is admitted and any other is refused

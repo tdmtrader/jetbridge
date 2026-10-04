@@ -78,7 +78,7 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 	var ps []core.Pending
 	at, kept := map[string]int64{}, map[string]string{}
 	a.refs = map[string][]string{}
-	fetch, pending := []string{"fetch", "-q", "--no-tags", a.Lander.remote}, map[string]bool{}
+	fetch := []string{"fetch", "-q", "--no-tags", a.Lander.remote}
 	taken := map[string]bool{} // a pending change under a queued ID is its supersede, judged by the driver
 	for _, e := range queued {
 		taken[e.ID] = true
@@ -127,21 +127,24 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 	}
 	for _, p := range ps { // only an accepted change is an ancestor candidate; one under a queued id at its new commit too
 		if p.Why == "" {
-			queued, pending[p.ID] = append(queued, core.Entry{ID: p.ID, Commit: p.Commit}), true
+			queued = append(queued, core.Entry{ID: p.ID, Commit: p.Commit})
 		}
 	}
 	for i, p := range ps {
+		for _, o := range ps {
+			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && !slices.Contains(ps[i].Ancestors, o.Commit) {
+				ps[i].Ancestors = append(ps[i].Ancestors, o.Commit)
+			}
+		}
 		for _, o := range queued { // a queued commit not fetched with p's history is not its ancestor
 			if ok, _ := a.Lander.holds(ctx, "merge-base", "--is-ancestor", o.Commit, p.Commit); ok && o.Commit != p.Commit && o.ID != p.ID && ps[i].Why == "" && !slices.Contains(ps[i].BuildsOn, o.ID) {
 				ps[i].BuildsOn = append(ps[i].BuildsOn, o.ID)
 			}
 		}
 	}
-	// By arrival, but after every pending change it builds on: each of those builds on fewer.
+	// By arrival, but after every pending commit in its history: each of those has fewer.
 	// A refused repeat of an id comes before its kept admit, so it is announced before the id is queued.
-	depth := func(p core.Pending) int {
-		return len(slices.DeleteFunc(slices.Clone(p.BuildsOn), func(id string) bool { return !pending[id] }))
-	}
+	depth := func(p core.Pending) int { return len(p.Ancestors) }
 	refused := func(p core.Pending) int { return min(len(p.Why), 1) }
 	slices.SortFunc(ps, func(x, y core.Pending) int {
 		return cmp.Or(depth(x)-depth(y), cmp.Compare(at[x.ID], at[y.ID]), strings.Compare(x.ID, y.ID), refused(y)-refused(x))

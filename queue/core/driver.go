@@ -71,7 +71,7 @@ func (d *Driver) Admit(ctx context.Context, e Entry, buildsOn ...string) error {
 
 // drain admits each change in Admissions, on its parents still queued, and
 // marks it done once saved. A refusal is kept and announced, never queued; a
-// change built on a replacement refused in the same drain is refused with it.
+// change whose history holds a commit refused in the same drain is refused too.
 func (d *Driver) drain(ctx context.Context) error {
 	if d.Admissions == nil {
 		return nil
@@ -80,16 +80,16 @@ func (d *Driver) drain(ctx context.Context) error {
 	if err != nil {
 		d.logf("admissions: %v", err)
 	}
-	refused := map[string]string{} // a replacement refused in this drain, or a change built on one, by id
+	// each after its ancestors: they have fewer
+	slices.SortStableFunc(ps, func(x, y Pending) int { return len(x.Ancestors) - len(y.Ancestors) })
+	refused := map[string]string{} // the commits refused in this drain, and why
 	for _, p := range ps {
-		child := false
-		for _, id := range p.BuildsOn {
-			if r, ok := refused[id]; ok && p.Why == "" {
-				p.Why, child = "built on "+r, true
+		for _, a := range p.Ancestors {
+			if why, ok := refused[a]; ok && p.Why == "" {
+				p.Why = fmt.Sprintf("built on %.8s, which was refused: %s", a, why)
 			}
 		}
 		state, seen := d.q.states[p.ID]
-		replace := seen && d.s.Commits[p.ID] != p.Commit
 		if old := d.s.Commits[p.ID]; seen && old != p.Commit && p.Why == "" { // the same commit is a crash after the save
 			if state != Queued {
 				p.Why = fmt.Sprintf("id %s already used for %.7s; admit the new commit under a new id", p.ID, old)
@@ -107,8 +107,8 @@ func (d *Driver) drain(ctx context.Context) error {
 				return err
 			}
 		}
-		if p.Why != "" && (replace || child) { // its children in this drain are refused with it
-			refused[p.ID] = fmt.Sprintf("%s@%.8s, which was refused: %s", p.ID, p.Commit, p.Why)
+		if delete(refused, p.Commit); p.Why != "" { // any change built on it in this drain is refused too
+			refused[p.Commit] = p.Why
 		}
 		if p.Why != "" && (!seen || d.s.Commits[p.ID] != p.Commit) { // a refused repeat of a settled id too
 			if err := d.refuse(ctx, Refusal{p.ID, p.Commit, p.Why}); err != nil {

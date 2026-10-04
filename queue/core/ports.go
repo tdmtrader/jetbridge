@@ -70,7 +70,8 @@ type Pending struct {
 	ID, Commit string
 	BuildsOn   []string
 	Why        string
-	Owner      string // the name of whoever admitted it
+	Owner      string   // the name of whoever admitted it
+	Ancestors  []string // the commits of the other pending changes in its history, refused ones too
 }
 
 // Admissions is where changes wait. Pending lists each after those it builds

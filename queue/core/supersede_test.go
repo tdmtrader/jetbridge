@@ -105,17 +105,53 @@ var _ = Describe("Driver supersede", func() {
 		queue("a")
 		queue("d", "a")
 		push("a")
-		adm.push(core.Pending{ID: "b", Commit: "sha-b", BuildsOn: []string{"a"}})
+		adm.push(core.Pending{ID: "b", Commit: "sha-b", BuildsOn: []string{"a"}, Ancestors: []string{"sha-a2"}})
 		Expect(d.Step(ctx)).To(Succeed())
 		snap := store.snap()
 		Expect(ids(snap.Queued)).To(Equal([]string{"a", "d"}))
 		Expect(snap.Queued[0].Commit).To(Equal("sha-a"))
 		Expect(snap.Refused).To(HaveLen(2))
 		Expect(snap.Refused[1].ID).To(Equal("b"))
-		Expect(snap.Refused[1].Why).To(HavePrefix("built on a@sha-a2, which was refused: "))
+		Expect(snap.Refused[1].Why).To(HavePrefix("built on sha-a2, which was refused: "))
 		Expect(snap.BuildsOn).NotTo(HaveKey("b"))
 		Expect(snap.Ejected).NotTo(HaveKey("b"))
 		Expect(adm.pending).To(BeEmpty())
+	})
+
+	It("A change listed before the refused commit it is built on is refused all the same", func() {
+		queue("a")
+		queue("b", "a") // A0, then B0 on it
+		// B1 on A1 is listed first; A1 on B0 is refused, as b builds on a
+		adm.push(core.Pending{ID: "b", Commit: "sha-b2", BuildsOn: []string{"a"}, Ancestors: []string{"sha-a2"}})
+		push("a", "b")
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(snap.Queued[0].Commit).To(Equal("sha-a"))
+		Expect(snap.Queued[1].Commit).To(Equal("sha-b"))
+		Expect(snap.Refused).To(HaveLen(2))
+		Expect(snap.Refused[1].Why).To(HavePrefix("built on sha-a2, which was refused: "))
+	})
+
+	It("A change built on a commit refused before the drain, unsigned say, is refused", func() {
+		adm.push(core.Pending{ID: "u", Commit: "sha-u", Why: "sha-u is not signed by an operator"},
+			core.Pending{ID: "c", Commit: "sha-c", Ancestors: []string{"sha-u"}})
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(snap.Queued).To(BeEmpty())
+		Expect(snap.Refused).To(HaveLen(2))
+		Expect(snap.Refused[1].Why).To(Equal("built on sha-u, which was refused: sha-u is not signed by an operator"))
+	})
+
+	It("A change built on the queued commit of an id is admitted when a new commit of that id is refused", func() {
+		queue("a")
+		queue("d", "a")
+		push("a")
+		adm.push(core.Pending{ID: "x", Commit: "sha-x", BuildsOn: []string{"a"}}) // on A0, not A1
+		Expect(d.Step(ctx)).To(Succeed())
+		snap := store.snap()
+		Expect(ids(snap.Queued)).To(Equal([]string{"a", "d", "x"}))
+		Expect(snap.BuildsOn["x"]).To(Equal([]string{"a"}))
+		Expect(snap.Refused).To(HaveLen(1))
 	})
 
 	It("A new commit that merges two unrelated queued changes does not replace the queued one", func() {

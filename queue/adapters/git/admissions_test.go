@@ -66,7 +66,7 @@ var _ = Describe("Admissions", func() {
 		admit("aa-top", top)
 		admit("zz-mid", mid)
 		Expect(pending()).To(Equal([]core.Pending{{ID: "child", Commit: child, Owner: "t"}, {ID: "other", Commit: other, Owner: "t"},
-			{ID: "zz-mid", Commit: mid, Owner: "t"}, {ID: "aa-top", Commit: top, Owner: "t", BuildsOn: []string{"zz-mid"}}}))
+			{ID: "zz-mid", Commit: mid, Owner: "t"}, {ID: "aa-top", Commit: top, Owner: "t", BuildsOn: []string{"zz-mid"}, Ancestors: []string{mid}}}))
 	})
 
 	It("A new commit built on the queued one does not make the change build on itself", func() {
@@ -91,7 +91,27 @@ var _ = Describe("Admissions", func() {
 		admit("c", cc)
 		admit("a", a2)
 		ps := pending(core.Entry{ID: "a", Commit: a})
-		Expect(ps).To(Equal([]core.Pending{{ID: "a", Commit: a2, Owner: "t"}, {ID: "c", Commit: cc, Owner: "t", BuildsOn: []string{"a"}}}))
+		Expect(ps).To(Equal([]core.Pending{{ID: "a", Commit: a2, Owner: "t"}, {ID: "c", Commit: cc, Owner: "t", BuildsOn: []string{"a"}, Ancestors: []string{a2}}}))
+	})
+
+	It("A change lists every pending commit in its history, a refused one too, and comes after them", func() {
+		dir := GinkgoT().TempDir()
+		op := sshKey(dir, "op")
+		pub, err := os.ReadFile(op + ".pub")
+		Expect(err).NotTo(HaveOccurred())
+		adm.Operators = filepath.Join(dir, "operators")
+		Expect(os.WriteFile(adm.Operators, append([]byte("t@example.com "), pub...), 0o600)).To(Succeed())
+		a1 := r.commit("a1", r.base) // unsigned
+		b1 := run(r.work, "-c", "gpg.format=ssh", "-c", "user.signingkey="+op, "commit-tree", "-S", run(r.work, "mktree"), "-p", a1, "-m", "b1")
+		admit("b", b1)
+		admit("a", a1)
+		ps := pending()
+		Expect(ps).To(HaveLen(2))
+		Expect(ps[0].ID).To(Equal("a"))
+		Expect(ps[0].Why).To(ContainSubstring("is not signed by an operator"))
+		Expect(ps[1].ID).To(Equal("b"))
+		Expect(ps[1].Why).To(BeEmpty())
+		Expect(ps[1].Ancestors).To(Equal([]string{a1}))
 	})
 
 	It("a git call returns soon after its context ends even when a child holds its stderr", func() {

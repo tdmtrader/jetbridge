@@ -334,13 +334,14 @@ var _ = Describe("queue command", func() {
 		Expect(s.Refused[0].ID).To(Equal("b"))
 	})
 
-	It("A change on a refused repeat does not build on the accepted one", func() {
+	It("A change on a refused repeat is refused too, never queued on the accepted one", func() {
 		a2 := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-m", "a2")
 		cc := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-p", a2, "-m", "c")
 		s := drain([2]string{"a", sha}, [2]string{"a", a2}, [2]string{"c", cc})
-		Expect(queued(s)).To(Equal([]string{"a " + sha, "c " + cc}))
-		Expect(s.Refused).To(HaveLen(1))
+		Expect(queued(s)).To(Equal([]string{"a " + sha}))
+		Expect(s.Refused).To(HaveLen(2))
 		Expect(s.Refused[0].Commit).To(Equal(a2))
+		Expect(s.Refused[1].Why).To(HavePrefix(fmt.Sprintf("built on %.8s, which was refused: ", a2)))
 		Expect(s.BuildsOn["c"]).To(BeEmpty())
 	})
 
