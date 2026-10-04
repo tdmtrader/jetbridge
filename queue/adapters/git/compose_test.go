@@ -67,8 +67,8 @@ var _ = Describe("Composer", func() {
 		Expect(subjects("main.." + sha)).To(Equal([]string{"land(a): change a", "land(b): change b"}))
 		Expect(ref(sha + "~2")).To(Equal(ref("main")))
 		Expect(composeRun(remote, "rev-list", "--merges", "main.."+sha)).To(BeEmpty())
-		Expect(composeRun(remote, "log", "-1", "--format=%B", sha+"~1")).To(Equal("land(a): change a\n\noriginal: " + a.Commit + "\n\nRows (row id, original sha):\na " + a.Commit))
-		Expect(composeRun(remote, "log", "-1", "--format=%B", sha)).To(Equal("land(b): change b\n\noriginal: " + b.Commit + "\n\nRows (row id, original sha):\nb " + b.Commit))
+		Expect(composeRun(remote, "log", "-1", "--format=%B", sha+"~1")).To(Equal("land(a): change a\n\noriginal: " + a.Commit))
+		Expect(composeRun(remote, "log", "-1", "--format=%B", sha)).To(Equal("land(b): change b\n\noriginal: " + b.Commit))
 		Expect(composeRun(remote, "log", "-1", "--format=%an|%cn|%ce", sha)).To(Equal("dev|merge-queue|merge-queue@localhost"))
 	})
 

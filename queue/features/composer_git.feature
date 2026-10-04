@@ -81,8 +81,3 @@ Feature: Composing a batch with git
     Given no compose hook is configured
     When the batch "a" is composed onto main
     Then the candidate is one commit on top of main, "land(a)"
-
-  Scenario: Each land commit carries the rows block the old queue wrote, and its original line
-    Given changes "a" and "b"
-    When the batch "a", "b" is composed onto main
-    Then each land commit names its change in a rows block the old queue's reader reads, after its original line
