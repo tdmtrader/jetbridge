@@ -29,7 +29,7 @@ func Request(ctx context.Context, c config.Config, dir, kind, id, commit string)
 	if err := SafeID(id); err != nil {
 		return err
 	}
-	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+kind+id+"."+commit, kind+id, true)
+	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+kind+id+"."+commit, requestMessage(strings.TrimSuffix(kind, "-"), id, commit), true)
 }
 
 // Withdraw asks the runner to remove queued change id, the commit saved for it,
@@ -94,7 +94,7 @@ func (r *Lifecycle) Pending(ctx context.Context) ([]core.LifecycleRequest, error
 		return nil, err
 	}
 	for i, q := range reqs {
-		if err := (operators{r.Lander, r.Operators}).verify(ctx, q.SHA); err != nil {
+		if err := (operators{r.Lander, r.Operators}).verify(ctx, q.SHA, requestMessage(strings.TrimSuffix(prefixOf(q.Kind), "-"), q.ID, q.Commit)); err != nil {
 			reqs[i].Why = strings.TrimSuffix(prefixOf(q.Kind), "-") + " request " + err.Error()
 		}
 	}

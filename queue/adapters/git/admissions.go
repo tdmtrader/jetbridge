@@ -119,7 +119,7 @@ func (a *Admissions) Pending(ctx context.Context, queued []core.Entry) ([]core.P
 			ps[i].Why = err.Error()
 		}
 		if ps[i].Why == "" {
-			if err := (operators{a.Lander, a.Operators}).verify(ctx, p.Commit); err != nil {
+			if err := (operators{a.Lander, a.Operators}).verify(ctx, p.Commit, ""); err != nil {
 				ps[i].Why = err.Error()
 			}
 		}
@@ -185,7 +185,7 @@ func Resume(ctx context.Context, c config.Config, dir string) error {
 	if err != nil {
 		return err
 	}
-	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10), "resume", true)
+	return pushRequest(ctx, c, dir, c.Admission.ControlPrefix+"resume-"+strconv.FormatUint(snap.PauseSeq, 10), requestMessage("resume", strconv.FormatUint(snap.PauseSeq, 10)), true)
 }
 
 // Pending lists the requests; a ref whose name after the prefix is not a plain number is no request.
@@ -201,7 +201,7 @@ func (r *Resumes) Pending(ctx context.Context) ([]core.ResumeRequest, error) {
 	if err != nil {
 		return reqs, err
 	}
-	if err := (operators{r.Lander, r.Operators}).verifyAll(ctx, shas, func(i int, err error) { reqs[i].Why = "resume request " + err.Error() }); err != nil {
+	if err := (operators{r.Lander, r.Operators}).verifyAll(ctx, shas, func(i int) string { return requestMessage("resume", strconv.FormatUint(reqs[i].Seq, 10)) }, func(i int, err error) { reqs[i].Why = "resume request " + err.Error() }); err != nil {
 		return nil, err
 	}
 	return reqs, nil

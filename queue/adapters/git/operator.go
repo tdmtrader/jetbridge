@@ -15,21 +15,25 @@ type operators struct {
 	file string
 }
 
-// verify is nil if sha, already fetched into l's repo, is signed by a listed key. The error
-// is "<sha7> is not signed by an operator" and never git's own words, which may quote key material.
-func (o operators) verify(ctx context.Context, sha string) error {
+// verify is nil if sha, already fetched into l's repo, is signed by a listed key and, if want
+// is set, its message is exactly want, so a signed request cannot be replayed as another. The
+// error is never git's own words, which may quote key material.
+func (o operators) verify(ctx context.Context, sha, want string) error {
 	if o.file == "" {
 		return nil
 	}
 	if _, err := o.l.git(ctx, "-c", "gpg.format=ssh", "-c", "gpg.ssh.allowedSignersFile="+o.file, "verify-commit", sha); err != nil {
 		return fmt.Errorf("%.7s is not signed by an operator", sha)
 	}
+	if msg, err := o.l.git(ctx, "show", "-s", "--format=%B", sha); want != "" && (err != nil || msg != want) {
+		return fmt.Errorf("%.7s is not signed for %s", sha, want)
+	}
 	return nil
 }
 
 // verifyAll fetches shas and passes refuse the index and error of each one not
-// signed by an operator; the zero file refuses none and fetches nothing.
-func (o operators) verifyAll(ctx context.Context, shas []string, refuse func(int, error)) error {
+// signed by an operator for want(i); the zero file refuses none and fetches nothing.
+func (o operators) verifyAll(ctx context.Context, shas []string, want func(int) string, refuse func(int, error)) error {
 	if o.file == "" || len(shas) == 0 {
 		return nil
 	}
@@ -37,7 +41,7 @@ func (o operators) verifyAll(ctx context.Context, shas []string, refuse func(int
 		return err
 	}
 	for i, sha := range shas {
-		if err := o.verify(ctx, sha); err != nil {
+		if err := o.verify(ctx, sha, want(i)); err != nil {
 			refuse(i, err)
 		}
 	}
@@ -61,6 +65,11 @@ func pushRequest(ctx context.Context, c config.Config, dir, ref, msg string, sig
 	}
 	_, err := l.git(ctx, "push", "-q", "--force", "--end-of-options", c.Repository.URI, src+":"+ref)
 	return err
+}
+
+// requestMessage is the message a signed control request carries: "queue <op> <args...>".
+func requestMessage(op string, args ...string) string {
+	return strings.Join(append([]string{"queue", op}, args...), " ")
 }
 
 // request is one ref under a request prefix: its name after the prefix, and its sha.

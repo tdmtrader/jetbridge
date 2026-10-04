@@ -336,6 +336,13 @@ var _ = Describe("Signed withdraw and resolve", func() {
 		}
 		GinkgoT().Setenv("GIT_CONFIG_COUNT", "2")
 		Expect(git.Request(ctx, c, r.work, "withdraw-", "signed", "c1")).To(Succeed())
+		Expect(run(r.bare, "log", "-1", "--format=%s", c.Admission.ControlPrefix+"withdraw-signed.c1")).To(Equal("queue withdraw signed c1"))
+		Expect(git.Request(ctx, c, r.work, "withdraw-", "other", "c4")).To(Succeed())
+		run(r.bare, "update-ref", c.Admission.ControlPrefix+"withdraw-renamed.c4", run(r.bare, "rev-parse", c.Admission.ControlPrefix+"withdraw-other.c4"))
+		run(r.bare, "update-ref", "-d", c.Admission.ControlPrefix+"withdraw-other.c4")
+		Expect(git.Promote(ctx, c, r.work, "p1")).To(Succeed())
+		promote := run(r.bare, "rev-parse", c.Admission.ControlPrefix+"promote/p1")
+		run(r.bare, "update-ref", c.Admission.ControlPrefix+"withdraw-replayed.c5", promote)
 		run(r.bare, "update-ref", c.Admission.ControlPrefix+"resolve-unsigned.c2", r.main())
 		strange := run(r.work, "-c", "gpg.format=ssh", "-c", "user.signingkey="+other, "commit-tree", "-S", run(r.work, "mktree"), "-p", r.base, "-m", "x")
 		run(r.work, "push", "-q", r.bare, strange+":"+c.Admission.ControlPrefix+"withdraw-stranger.c3")
@@ -345,9 +352,12 @@ var _ = Describe("Signed withdraw and resolve", func() {
 		for _, q := range reqs {
 			why[q.ID] = q.Why
 		}
+		renamed := run(r.bare, "rev-parse", c.Admission.ControlPrefix+"withdraw-renamed.c4")
 		Expect(why).To(Equal(map[string]string{"signed": "",
 			"unsigned": fmt.Sprintf("resolve request %.7s is not signed by an operator", r.main()),
-			"stranger": fmt.Sprintf("withdraw request %.7s is not signed by an operator", strange)}))
+			"stranger": fmt.Sprintf("withdraw request %.7s is not signed by an operator", strange),
+			"renamed":  fmt.Sprintf("withdraw request %.7s is not signed for queue withdraw renamed c4", renamed),
+			"replayed": fmt.Sprintf("withdraw request %.7s is not signed for queue withdraw replayed c5", promote)}))
 	})
 })
 
@@ -439,6 +449,11 @@ var _ = Describe("Signed resumes", func() {
 		signWith(op)
 		Expect(git.Resume(ctx, c, r.work)).To(Succeed())
 		Expect(why()).To(Equal(map[uint64]string{3: ""}), "signed by an operator")
+		Expect(run(r.bare, "log", "-1", "--format=%s", prefix+"3")).To(Equal("queue resume 3"))
+		old := run(r.bare, "rev-parse", prefix+"3")
+		run(r.bare, "update-ref", prefix+"6", old) // replayed for a later pause
+		Expect(why()[6]).To(Equal(fmt.Sprintf("resume request %.7s is not signed for queue resume 6", old)))
+		run(r.bare, "update-ref", "-d", prefix+"6")
 
 		run(r.bare, "update-ref", prefix+"4", r.main())
 		strange := run(r.work, "-c", "gpg.format=ssh", "-c", "user.signingkey="+other, "commit-tree", "-S", run(r.work, "mktree"), "-p", r.base, "-m", "x")
