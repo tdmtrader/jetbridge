@@ -268,6 +268,30 @@ var _ = Describe("queue command", func() {
 		Expect(errw).To(ContainSubstring("not queued"))
 	})
 
+	It("queue resolve asks the live runner to clear an eject", func() {
+		ctx := context.Background()
+		gitIn(".", "push", "-q", remote, sha+":refs/heads/trunk")
+		c, err := config.Parse(fmt.Appendf(nil, sample, remote, GinkgoT().TempDir()))
+		Expect(err).NotTo(HaveOccurred())
+		store := git.NewStore(c)
+		l, err := store.Acquire(ctx, "runner", time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		snap, err := store.Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		snap.Ejected, snap.Commits = map[string]bool{"e": true}, map[string]string{"e": sha}
+		_, err = store.Save(ctx, l.Token, snap)
+		Expect(err).NotTo(HaveOccurred())
+		code, _, errw := queue("resolve", "--config", file, "e")
+		Expect(code).To(Equal(0), errw)
+		Expect(gitIn(remote, "for-each-ref", "refs/queue/control/")).To(ContainSubstring("resolve-e." + sha))
+		Expect(drain().Ejected).To(BeEmpty())
+		Expect(gitIn(remote, "for-each-ref", "refs/queue/control/")).To(BeEmpty())
+		Expect(queued(drain([2]string{"e", sha}))).To(Equal([]string{"e " + sha}))
+		code, _, errw = queue("resolve", "--config", file, "e")
+		Expect(code).To(Equal(1))
+		Expect(errw).To(ContainSubstring("not ejected"))
+	})
+
 	It("A change admitted twice before the runner drains is queued once and the repeat is refused", func() {
 		b := gitIn(".", "commit-tree", gitIn(".", "mktree"), "-m", "b")
 		s := drain([2]string{"b", b}, [2]string{"a", sha}, [2]string{"b", b})

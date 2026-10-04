@@ -128,6 +128,8 @@ func (d *Driver) lifecycleRequested(ctx context.Context) error {
 		switch r.Kind {
 		case WithdrawnEvent:
 			err = d.Withdraw(ctx, r.ID, r.Commit)
+		case ResolvedEvent:
+			err = d.Resolve(ctx, r.ID, r.Commit)
 		default:
 			err = &StaleRequestError{r.ID, r.Commit}
 		}

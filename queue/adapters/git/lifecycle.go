@@ -13,10 +13,10 @@ import (
 var _ core.Lifecycle = (*Lifecycle)(nil)
 
 // requestKinds maps the start of a request ref's name to the act it asks for.
-var requestKinds = map[string]core.EventKind{"withdraw-": core.WithdrawnEvent}
+var requestKinds = map[string]core.EventKind{"withdraw-": core.WithdrawnEvent, "resolve-": core.ResolvedEvent}
 
-// Lifecycle reads the requests under the control prefix: <Prefix>withdraw-<id>.<commit>,
-// where commit is the one the author saw queued.
+// Lifecycle reads the requests under the control prefix: <Prefix>withdraw-<id>.<commit> or
+// <Prefix>resolve-<id>.<commit>, where commit is the one the requester saw queued or ejected.
 type Lifecycle struct {
 	Lander *Lander
 	Prefix string
@@ -60,6 +60,18 @@ func Withdraw(ctx context.Context, c config.Config, dir, id string) error {
 		}
 	}
 	return Request(ctx, c, dir, "withdraw-", id, snap.Queued[i].Commit)
+}
+
+// Resolve asks the runner to clear the eject of change id, at the commit saved for it.
+func Resolve(ctx context.Context, c config.Config, dir, id string) error {
+	snap, err := NewStore(c).Load(ctx)
+	if err != nil {
+		return err
+	}
+	if !snap.Ejected[id] {
+		return fmt.Errorf("change %q is not ejected", id)
+	}
+	return Request(ctx, c, dir, "resolve-", id, snap.Commits[id])
 }
 
 // Pending lists the requests; a ref that is not a plain kind, id and commit is no request.

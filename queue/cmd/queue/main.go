@@ -28,7 +28,7 @@ import (
 	"github.com/concourse/concourse/queue/core"
 )
 
-const usage = "usage: queue run|admit|withdraw|resume|promote|status|stats|view|list|ejected|explain --config <file> [--every 5s] [--window 1h] [--once] [--json] [id sha]"
+const usage = "usage: queue run|admit|withdraw|resolve|resume|promote|status|stats|view|list|ejected|explain --config <file> [--every 5s] [--window 1h] [--once] [--json] [id sha]"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -51,7 +51,7 @@ func entry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // run returns the exit code: 0 done, 2 admission refused (an unsafe id), 1 anything else.
 func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fail := func(err error) int { fmt.Fprintln(errw, "queue:", core.Redact(err.Error())); return 1 }
-	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "withdraw", "resume", "promote", "status", "stats", "view", "list", "ejected", "explain"}, args[0]) {
+	if len(args) == 0 || !slices.Contains([]string{"run", "admit", "withdraw", "resolve", "resume", "promote", "status", "stats", "view", "list", "ejected", "explain"}, args[0]) {
 		return fail(errors.New(usage))
 	}
 	for _, a := range args { // before any error can quote one; a --flag=value is checked whole and as its value
@@ -110,14 +110,14 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		fmt.Fprintf(out, "admitted %s; the runner will queue it\n", fs.Arg(0))
 		return 0
 	}
-	if args[0] == "withdraw" {
+	if verb := map[string]func(context.Context, config.Config, string, string) error{"withdraw": git.Withdraw, "resolve": git.Resolve}[args[0]]; verb != nil {
 		if fs.NArg() != 1 {
 			return fail(errors.New(usage))
 		}
-		if err := git.Withdraw(ctx, c, ".", fs.Arg(0)); err != nil {
+		if err := verb(ctx, c, ".", fs.Arg(0)); err != nil {
 			return fail(err)
 		}
-		fmt.Fprintf(out, "asked the runner to withdraw %s\n", fs.Arg(0))
+		fmt.Fprintf(out, "asked the runner to %s %s\n", args[0], fs.Arg(0))
 		return 0
 	}
 	if args[0] == "resume" {
