@@ -21,14 +21,17 @@ import (
 	"k8s.io/client-go/transport/spdy"
 )
 
-const liveMinIOImage = "quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+// Versity Gateway v1.8.0 (Apache-2.0): an S3 server over a plain directory.
+// MinIO, which this was, withdrew its public images -- quay.io and Docker Hub
+// both answer 401 -- so it ran only where a node still had it cached.
+const liveS3ServerImage = "docker.io/versity/versitygw@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499"
 
 type liveS3Store struct {
 	client                *s3.Client
 	endpoint, key, secret string
 }
 
-// A real, namespace-owned MinIO server. No host storage, host port, supplied
+// A real, namespace-owned S3 server. No host storage, host port, supplied
 // response or user cloud credentials. The independent client uses a loopback
 // Kubernetes port-forward; the resource reaches the server's actual PodIP.
 func newLiveS3Store(w WorkerReady, rec *brine.Recorder) (*liveS3Store, error) {
@@ -57,12 +60,12 @@ func newLiveS3Store(w WorkerReady, rec *brine.Recorder) (*liveS3Store, error) {
 			RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &one,
 			AutomountServiceAccountToken: &no,
 			Containers: []corev1.Container{{
-				Name: "main", Image: liveMinIOImage, Command: []string{"minio", "server", "/data", "--console-address", ":9001"},
+				Name: "main", Image: liveS3ServerImage, Args: []string{"--port", ":9000", "--health", "/health", "posix", "/data"},
 				Env: []corev1.EnvVar{
-					{Name: "MINIO_ROOT_USER", ValueFrom: ref("key")}, {Name: "MINIO_ROOT_PASSWORD", ValueFrom: ref("secret")},
-					{Name: "MINIO_BROWSER", Value: "off"}, {Name: "GOMEMLIMIT", Value: "192MiB"}, {Name: "GOMAXPROCS", Value: "2"},
+					{Name: "ROOT_ACCESS_KEY_ID", ValueFrom: ref("key")}, {Name: "ROOT_SECRET_ACCESS_KEY", ValueFrom: ref("secret")},
+					{Name: "GOMEMLIMIT", Value: "192MiB"}, {Name: "GOMAXPROCS", Value: "2"},
 				},
-				ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/minio/health/ready", Port: intstr.FromInt32(9000)}}, PeriodSeconds: 1, TimeoutSeconds: 1, FailureThreshold: 90},
+				ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/health", Port: intstr.FromInt32(9000)}}, PeriodSeconds: 1, TimeoutSeconds: 1, FailureThreshold: 90},
 				VolumeMounts:   []corev1.VolumeMount{{Name: "data", MountPath: "/data"}},
 				Resources: corev1.ResourceRequirements{
 					Requests: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("64Mi")},
