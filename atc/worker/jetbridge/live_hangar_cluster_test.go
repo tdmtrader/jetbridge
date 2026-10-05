@@ -98,13 +98,27 @@ const (
 // product rather than of this test. A fresh install with every consumer on
 // never becomes Healthy: the artifact daemon proves its disk credential against
 // the store at startup and exits while the store's initialize render holds it
-// at zero replicas, and the inventory and reclaimer controllers exit on their
-// first lease claim until `begin` has written the activation epoch row their
-// leases reference -- which needs the connection-string Secret the PostSync
-// database step writes only after a Healthy sync. So the contract syncs the
-// runbook's order (hangar_stores_enabled_in_cluster S1-S7, then S10 and S13
-// with the activation mode cleared), and every sync after the first is a
-// re-run of the bootstrap.
+// at zero replicas, and disk initialisation is its own explicit step (ADR-0005).
+// The activation epoch row is not what holds it back: the inventory and
+// reclaimer controllers wait as non-owners while their epoch has no row, and
+// the activation walk that begins it is a PostSync hook a wave after the
+// database step that writes the connection-string Secret it runs with. So the
+// contract syncs the runbook's order (hangar_stores_enabled_in_cluster S1-S7,
+// then S10 and S13), and every sync after the first is a re-run of the
+// bootstrap.
+//
+// S7 is the walk to `base`, so from the S4-S7 sync on this contract runs under
+// an ENABLED base facet, where it used to run with both facets `initial`, and
+// every later sync re-runs the walk, which makes no transition. That was
+// re-checked against what S10 and S13 assert. Web loading its rings is a
+// property of its startup and its Ready status, and neither reads the facet.
+// The output daemon reads no epoch row at all, and the handshake below is made
+// with web's client Secret by the contract itself. The inventory's sweep and
+// the reclaimer's passes hold their leases at the epoch whatever its facets,
+// and what an enabled base adds -- admission of an execution under it -- is
+// exercised by nothing here: no build runs, and the node-key membership and
+// the capture locks web would consult both require the output facet enabled
+// as well, which this contract never is.
 //
 // It proves:
 //
@@ -176,7 +190,7 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 	}
 
 	resync("S3 store up", cluster.through("S1", "S2", "S3"))
-	resync("S4-S7 strict inputs, base workloads, begin", cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S7"))
+	resync("S4-S7 strict inputs, base workloads, walk to base", cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S7"))
 
 	// Before the controllers exist, so their FIRST sweep is what finds it.
 	probe := cluster.storePublisherRoundTrip()
@@ -450,23 +464,17 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 	case "S6":
 		return []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi"}
 	case "S7":
-		return []string{"hangarOutput.activation.job.mode=begin"}
-	case "S8":
-		return []string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=base"}
-	case "S9":
-		return []string{"hangarOutput.activation.job.mode=enable", "hangarOutput.activation.job.facet=base"}
+		return []string{"hangarOutput.activation.target=base"}
 	case "S10":
 		// The read-control URL is never dialed here: no read is served.
-		return []string{"hangarOutput.activation.job.mode=", "hangarOutput.activation.job.facet=",
+		return []string{
 			"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=" + liveClusterTenant,
 			"hangarOutput.readControlURL=https://" + names.release + "-web." + names.namespace + ".svc",
 			"hangarOutput.readControlCA.configMap=" + names.readControlCA, "hangarOutput.readControlCA.key=ca.crt"}
 	case "S11":
-		return []string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=output"}
-	case "S12":
-		return []string{"hangarOutput.activation.job.mode=enable", "hangarOutput.activation.job.facet=output"}
+		return []string{"hangarOutput.activation.target=output"}
 	case "S13":
-		return []string{"hangarOutput.activation.job.mode=", "hangarOutput.activation.job.facet=",
+		return []string{
 			"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=" + names.runInput}
 	}
 	cluster.t.Fatalf("no runbook step %q", id)
@@ -571,11 +579,17 @@ type liveSyncOptions struct {
 	// stopBeforePostSync leaves the sync where an interrupted one stops.
 	unwatched          map[string]bool
 	stopBeforePostSync bool
+	// failingHooks names hooks the sync expects to fail. Their logs land in
+	// the result's failed instead of failing the test, and one that completes
+	// fails it.
+	failingHooks map[string]bool
 }
 
 type liveSyncResult struct {
 	rendered []*unstructured.Unstructured
 	hooks    map[string]types.UID
+	// failed holds the logs of each hook in failingHooks, which failed.
+	failed map[string]string
 }
 
 func (result liveSyncResult) only(t *testing.T, kind, name string) *unstructured.Unstructured {
@@ -610,7 +624,8 @@ func liveArgoKindRank(kind string) int {
 // its resources applied (kind order within a wave) and its Sync hooks
 // recreated, waiting for all of them to be healthy before the next wave;
 // pruning what the render no longer holds; and PostSync hooks once
-// everything is healthy. A hook with BeforeHookCreation -- Argo's default --
+// everything is healthy, in ascending wave order and in render order within a
+// wave, as Argo orders them. A hook with BeforeHookCreation -- Argo's default --
 // is deleted and created again, so it runs on every sync.
 func (cluster *liveCluster) sync(label string, sets []string, options liveSyncOptions) liveSyncResult {
 	t := cluster.t
@@ -618,7 +633,16 @@ func (cluster *liveCluster) sync(label string, sets []string, options liveSyncOp
 	started := time.Now()
 	t.Logf("sync %q: begin", label)
 	rendered := cluster.render(sets)
-	result := liveSyncResult{rendered: rendered, hooks: map[string]types.UID{}}
+	result := liveSyncResult{rendered: rendered, hooks: map[string]types.UID{}, failed: map[string]string{}}
+	run := func(hook liveArgoObject) {
+		t.Helper()
+		name := hook.obj.GetName()
+		uid, logs := cluster.runHook(label, hook, options.failingHooks[name])
+		result.hooks[name] = uid
+		if options.failingHooks[name] {
+			result.failed[name] = logs
+		}
+	}
 
 	var resources, preSync, postSync []liveArgoObject
 	syncHooks := map[int][]liveArgoObject{}
@@ -646,7 +670,7 @@ func (cluster *liveCluster) sync(label string, sets []string, options liveSyncOp
 	}
 
 	for _, hook := range preSync {
-		result.hooks[hook.obj.GetName()] = cluster.runHook(label, hook)
+		run(hook)
 	}
 
 	ordered := make([]int, 0, len(waves))
@@ -673,7 +697,7 @@ func (cluster *liveCluster) sync(label string, sets []string, options liveSyncOp
 			current[resource.key()] = resource
 		}
 		for _, hook := range syncHooks[wave] {
-			result.hooks[hook.obj.GetName()] = cluster.runHook(label, hook)
+			run(hook)
 		}
 		var watched []liveArgoObject
 		for _, resource := range inWave {
@@ -695,8 +719,9 @@ func (cluster *liveCluster) sync(label string, sets []string, options liveSyncOp
 		t.Logf("sync %q: stopped before PostSync after %s", label, time.Since(started).Round(time.Second))
 		return result
 	}
+	sort.SliceStable(postSync, func(i, j int) bool { return postSync[i].wave < postSync[j].wave })
 	for _, hook := range postSync {
-		result.hooks[hook.obj.GetName()] = cluster.runHook(label, hook)
+		run(hook)
 	}
 	t.Logf("sync %q: Synced and Healthy after %s", label, time.Since(started).Round(time.Second))
 	return result
@@ -774,8 +799,9 @@ func (cluster *liveCluster) waitGone(object liveArgoObject) {
 }
 
 // runHook deletes the hook's previous incarnation, creates it again and waits
-// for it to complete, returning the new object's UID.
-func (cluster *liveCluster) runHook(label string, hook liveArgoObject) types.UID {
+// for it to complete, returning the new object's UID. A hook expected to fail
+// returns its logs once it has failed, and fails the test if it completes.
+func (cluster *liveCluster) runHook(label string, hook liveArgoObject, expectFailure bool) (types.UID, string) {
 	t := cluster.t
 	t.Helper()
 	if hook.obj.GetKind() != "Job" {
@@ -791,11 +817,28 @@ func (cluster *liveCluster) runHook(label string, hook liveArgoObject) types.UID
 	if err != nil {
 		t.Fatalf("%s: create hook %s: %v", label, hook.obj.GetName(), err)
 	}
-	cluster.waitJobComplete(label, hook.obj.GetName())
-	return created.GetUID()
+	if !expectFailure {
+		cluster.waitJobComplete(label, hook.obj.GetName())
+		return created.GetUID(), ""
+	}
+	if !cluster.waitJobDone(label, hook.obj.GetName()) {
+		return created.GetUID(), cluster.jobLogs(hook.obj.GetName())
+	}
+	t.Fatalf("%s: hook %s was expected to fail and completed:\n%s", label, hook.obj.GetName(), cluster.jobLogs(hook.obj.GetName()))
+	return "", ""
 }
 
 func (cluster *liveCluster) waitJobComplete(label, name string) {
+	t := cluster.t
+	t.Helper()
+	if !cluster.waitJobDone(label, name) {
+		t.Fatalf("%s: Job %s failed:\n%s", label, name, cluster.jobLogs(name))
+	}
+}
+
+// waitJobDone waits for a Job to finish and reports whether it completed
+// rather than failed.
+func (cluster *liveCluster) waitJobDone(label, name string) bool {
 	t := cluster.t
 	t.Helper()
 	for {
@@ -805,10 +848,10 @@ func (cluster *liveCluster) waitJobComplete(label, name string) {
 		}
 		done, failed := liveJobState(job)
 		if done {
-			return
+			return true
 		}
 		if failed {
-			t.Fatalf("%s: Job %s failed:\n%s", label, name, cluster.jobLogs(name))
+			return false
 		}
 		liveDiskPause(t, cluster.ctx, label+": Job "+name)
 	}
@@ -1345,8 +1388,9 @@ func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Clien
 
 // assertOutputDaemonAcceptsWebClient dials the output daemon where web does,
 // the node's IP on its host port. Web itself makes this call only for an
-// execution under an enabled base facet, which this contract does not run, so
-// the contract presents web's mounted client Secret itself.
+// execution under an enabled base facet. The base facet is enabled from S7 on,
+// but this contract runs no execution, so the contract presents web's mounted
+// client Secret itself.
 func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
 	t := cluster.t
 	t.Helper()

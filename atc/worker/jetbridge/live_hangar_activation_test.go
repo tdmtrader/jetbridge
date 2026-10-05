@@ -1,7 +1,7 @@
 // hangar_live only, never live: this contract stands up a whole release of the
-// chart on a disposable cluster, as live_hangar_cluster_test.go does, and moves
-// its activation epoch -- one-way steps nobody may take against the deployed
-// cluster from a test. Its CI home is the hangar-cluster-contract job in
+// chart on a disposable cluster, as live_hangar_cluster_test.go does, and walks
+// its activation epoch -- one-way transitions nobody may make against the
+// deployed cluster from a test. Its CI home is the hangar-cluster-contract job in
 // deploy/k8s-e2e-pipeline.yml; build-and-vet only compiles it.
 //go:build hangar_live
 
@@ -9,13 +9,14 @@ package jetbridge
 
 import (
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -26,113 +27,115 @@ import (
 )
 
 // TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp is
-// hangar_stores_enabled_in_cluster's K3s contract (its T10, acceptance A5):
-// the activation runbook driven through the chart's own activation Jobs, under
-// the same Argo-shaped syncs as the bootstrap contract.
+// hangar_walk_chart_wiring's K3s contract (acceptance A4): the activation walk
+// driven through the chart's own hook, under the same Argo-shaped syncs as the
+// bootstrap contract. The name is the one the k8s-e2e hangar-cluster-contract
+// job runs by, and it still says what is proved: the activation Job is now the
+// walk hook, which every sync recreates after its transitions have committed.
 //
-// The case it exists for is the one Argo makes ordinary: an activation Job
-// whose transition has committed is deleted before it completes -- a node
-// drain, a TTL, an operator -- and Argo, finding it missing from a render that
-// still holds it, creates it again. The recreated Job must not repeat the
-// transition. So the enable-base Job is created from its rendered manifest with
-// its command wrapped in `&& sleep 60`, which holds it running after the
-// transition commits; the contract waits for the committed row, deletes the
-// Job, creates the rendered manifest again unmodified, and requires that the
-// new Job exits 0 as a no-op, the row's revision and updated_at are those of
-// the committed transition, and the output facet is still initial, with
-// capture and Run results off. It then continues through output enable.
+// It proves:
+//
+//  1. the walk to `off` that execution control renders from S6 writes no row;
+//  2. one sync from no row, after the runbook's storage and base-workload
+//     syncs (S1-S6), with the output workloads and the walk to `output` as its
+//     only activation step (S10 plus S11), creates the walk Job only after the
+//     database Job has completed and ends with base and output `enabled`. The
+//     inventory and reclaimer controllers come up in that sync's waves, before
+//     the walk has begun their epoch's row, and show no restarts: they wait as
+//     non-owners rather than exit;
+//  3. a second sync whose walk Job differs in its pod template, as an image
+//     bump makes it differ, recreates the hook -- BeforeHookCreation, where a
+//     plain apply would fail on the immutable template -- and that walk makes
+//     no transition: the row's revision and updated_at are unchanged;
+//  4. `target=base` then leaves output `draining`, and a later
+//     `target=output` fails with logs naming output `draining`.
 //
 // Attest dials each output daemon by pod IP and verifies a certificate that
-// names only the daemon's DNS name. The contract first runs the attest Job
-// without --tls-server-name and requires the handshake to fail and the row to
-// stay untouched, so the attestation that follows is known to have verified
-// the certificate rather than skipped it.
+// names only the daemon's DNS name. Before the walk from no row, the contract
+// runs the walk Job's rendered manifest without --tls-server-name and requires
+// the handshake to fail, so the attestations that follow are known to have
+// verified the certificate rather than skipped it. That walk runs at a probe
+// epoch of its own, so the configured epoch still has no row when the real
+// walk starts: it begins the probe epoch's row and leaves it `initial`.
 func TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp(t *testing.T) {
 	cluster := newLiveCluster(t, "ha", 45*time.Minute)
 	release := cluster.names.release
+	walkJob := release + "-hangar-output-walk"
+	databaseJob := release + "-hangar-bootstrap-database"
 	steps := []string{"S1", "S2"}
-	next := func(label string, ids ...string) liveSyncResult {
-		t.Helper()
-		steps = append(steps, ids...)
-		return cluster.sync(label, cluster.through(steps...), liveSyncOptions{})
-	}
 
 	// Web's init container migrates; the bootstrap writes the Secrets and,
 	// as its PostSync step, the activation database role's credential.
 	cluster.sync("S1-S2 migrate, bootstrap, disk init", cluster.through(steps...), liveSyncOptions{})
-	next("S3 store up", "S3")
-	next("S4-S6 strict inputs and the output daemons", "S4", "S5", "S6")
-
-	begin := next("S7 begin", "S7")
-	began := cluster.epochRow()
-	if began.base != "initial" || began.output != "initial" {
-		t.Fatalf("after begin the activation epoch row is %+v, want both facets initial", began)
-	}
-	cluster.assertJobLogged(begin, release+"-hangar-output-activation-begin-1", fmt.Sprintf("began activation epoch %d", liveClusterEpoch))
-
-	cluster.assertAttestVerifiesTheDaemonCertificate(cluster.through(append(append([]string{}, steps...), "S8")...))
-	attest := next("S8 attest base", "S8")
-	attested := cluster.epochRow()
-	if attested.base != "attested" || attested.output != "initial" || attested.revision <= began.revision {
-		t.Fatalf("after attest base the row is %+v (begin left %+v)", attested, began)
-	}
-	cluster.assertJobLogged(attest, release+"-hangar-output-activation-attest-1", fmt.Sprintf("attested epoch %d's base facet over the cohort digest", liveClusterEpoch))
-
-	// S9, interrupted after its transition commits.
-	steps = append(steps, "S9")
-	enableJob := release + "-hangar-output-activation-enable-1"
-	interrupted := cluster.sync("S9 enable base, held after its transition", cluster.through(steps...), liveSyncOptions{
-		mutate: func(object *unstructured.Unstructured) {
-			if object.GetKind() == "Job" && object.GetName() == enableJob {
-				liveWrapJobCommand(t, object, "sleep 60")
-			}
-		},
-		unwatched:          map[string]bool{enableJob: true},
-		stopBeforePostSync: true,
-	})
-	committed := cluster.waitEpochRow("the enable-base transition to commit", func(row liveEpochRow) bool { return row.base == "enabled" })
-	if committed.output != "initial" || committed.revision <= attested.revision {
-		t.Fatalf("the committed enable-base row is %+v (attest left %+v)", committed, attested)
-	}
-	// The row commits a moment before the command prints that it did.
-	held := cluster.runningJob(enableJob)
-	cluster.waitJobLogged(held, fmt.Sprintf("enabled epoch %d's base facet", liveClusterEpoch))
-	held = cluster.runningJob(enableJob)
-	cluster.deleteJob(enableJob, held)
-
-	recreated := cluster.createRendered(interrupted.only(t, "Job", enableJob))
-	cluster.waitJobComplete("S9 recreated", enableJob)
-	if logs := cluster.jobLogsFor(recreated); !strings.Contains(logs, "already enabled; no transition made") {
-		t.Fatalf("the recreated enable Job did not report a no-op:\n%s", logs)
-	}
-	replayed := cluster.epochRow()
-	if replayed.revision != committed.revision || !replayed.updatedAt.Equal(committed.updatedAt) || replayed.base != "enabled" || replayed.output != "initial" {
-		t.Fatalf("the recreated enable Job moved the row: committed %+v, now %+v", committed, replayed)
-	}
-	cluster.assertCaptureOff()
-
-	// The sync resumes once the Job is Healthy, and is unchanged by it.
-	cluster.sync("S9 enable base, resumed", cluster.through(steps...), liveSyncOptions{})
-	if row := cluster.epochRow(); !row.same(replayed) {
-		t.Fatalf("the resumed sync moved the row: %+v -> %+v", replayed, row)
+	steps = append(steps, "S3")
+	cluster.sync("S3 store up", cluster.through(steps...), liveSyncOptions{})
+	steps = append(steps, "S4", "S5", "S6")
+	base := cluster.sync("S4-S6 strict inputs and the output daemons, walk to off", cluster.through(steps...), liveSyncOptions{})
+	cluster.assertJobLogged(base, walkJob, "nothing written")
+	if _, found := cluster.epochRowAt(liveClusterEpoch); found {
+		t.Fatal("the walk to off wrote an activation epoch row")
 	}
 
-	next("S10 output workloads", "S10")
-	outputAttest := next("S11 attest output", "S11")
-	if row := cluster.epochRow(); row.base != "enabled" || row.output != "attested" {
-		t.Fatalf("after attest output the row is %+v", row)
-	}
-	cluster.assertJobLogged(outputAttest, release+"-hangar-output-activation-attest-1", fmt.Sprintf("attested epoch %d's output facet over the cohort digest", liveClusterEpoch))
-	outputEnable := next("S12 enable output", "S12")
+	cluster.assertWalkVerifiesTheDaemonCertificate(append(cluster.through(steps...), "hangarOutput.activation.target=base"))
+	steps = append(steps, "S10", "S11")
+
+	walked := cluster.sync("S10+S11 output workloads, walk to output from no row", cluster.through(steps...), liveSyncOptions{})
 	enabled := cluster.epochRow()
 	if enabled.base != "enabled" || enabled.output != "enabled" {
-		t.Fatalf("after enable output the row is %+v, want both facets enabled", enabled)
+		t.Fatalf("after one walk to output the row is %+v, want both facets enabled", enabled)
 	}
-	cluster.assertJobLogged(outputEnable, release+"-hangar-output-activation-enable-1", fmt.Sprintf("enabled epoch %d's output facet", liveClusterEpoch))
+	cluster.assertJobLogged(walked, walkJob, fmt.Sprintf("began activation epoch %d", liveClusterEpoch))
+	cluster.assertJobLogged(walked, walkJob, fmt.Sprintf("enabled epoch %d's output facet", liveClusterEpoch))
+	cluster.assertCreatedAfterCompletion(walkJob, databaseJob)
+	for _, component := range []string{"hangar-output-inventory", "hangar-output-reclaimer"} {
+		cluster.assertNoRestarts(component)
+	}
 	for _, label := range []string{executioncontrol.ReadyLabel, output.ReadyLabel} {
 		liveDiskWaitNodeLabel(t, cluster.ctx, cluster.client, cluster.node, label, "ready")
 	}
+
+	// An image bump changes the walk Job's pod template, which a Job never
+	// takes in place. The annotation stands in for the image: the cluster has
+	// only the one image loaded, and the template is what makes it matter.
+	bumped := cluster.sync("S10+S11 again, the walk's pod template changed", cluster.through(steps...), liveSyncOptions{
+		mutate: func(object *unstructured.Unstructured) {
+			if object.GetKind() != "Job" || object.GetName() != walkJob {
+				return
+			}
+			if err := unstructured.SetNestedField(object.Object, "2", "spec", "template", "metadata", "annotations", "contract.jetbridge.dev/image-bump"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+	if bumped.hooks[walkJob] == walked.hooks[walkJob] {
+		t.Fatal("the second sync did not recreate the walk Job")
+	}
+	cluster.assertJobLogged(bumped, walkJob, "already enabled; no transition made")
+	if row := cluster.epochRow(); !row.same(enabled) {
+		t.Fatalf("the repeated walk moved the row: %+v -> %+v", enabled, row)
+	}
+
+	lowered := cluster.sync("walk to base", append(cluster.through(steps...), "hangarOutput.activation.target=base"), liveSyncOptions{})
+	drained := cluster.epochRow()
+	if drained.base != "enabled" || drained.output != "draining" {
+		t.Fatalf("after a walk to base the row is %+v, want base enabled and output draining", drained)
+	}
+	cluster.assertJobLogged(lowered, walkJob, fmt.Sprintf("epoch %d's output facet is draining", liveClusterEpoch))
+
+	refused := cluster.sync("walk to output over a draining output facet", cluster.through(steps...), liveSyncOptions{
+		failingHooks: map[string]bool{walkJob: true},
+	})
+	if logs := refused.failed[walkJob]; !strings.Contains(logs, "output facet is draining") {
+		t.Fatalf("the walk to output over a draining facet failed without naming it:\n%s", logs)
+	}
+	if row := cluster.epochRow(); !row.same(drained) {
+		t.Fatalf("the refused walk moved the row: %+v -> %+v", drained, row)
+	}
 }
+
+// liveClusterProbeEpoch is the epoch the certificate probe walks, so that the
+// configured epoch's row is still absent for the walk from no row.
+const liveClusterProbeEpoch = 99
 
 type liveEpochRow struct {
 	base, output string
@@ -145,33 +148,53 @@ func (row liveEpochRow) same(other liveEpochRow) bool {
 }
 
 func (cluster *liveCluster) epochRow() liveEpochRow {
+	cluster.t.Helper()
+	row, found := cluster.epochRowAt(liveClusterEpoch)
+	if !found {
+		cluster.t.Fatalf("activation epoch %d has no row", liveClusterEpoch)
+	}
+	return row
+}
+
+func (cluster *liveCluster) epochRowAt(epoch int64) (liveEpochRow, bool) {
 	t := cluster.t
 	t.Helper()
 	db, stop := cluster.database()
 	defer stop()
 	var row liveEpochRow
-	if err := db.QueryRowContext(cluster.ctx, `
+	err := db.QueryRowContext(cluster.ctx, `
 		SELECT base_state, output_state, revision, updated_at
-		  FROM hangar_output_activation_epochs WHERE epoch_id = $1`, liveClusterEpoch).
-		Scan(&row.base, &row.output, &row.revision, &row.updatedAt); err != nil {
-		t.Fatalf("read activation epoch %d: %v", liveClusterEpoch, err)
+		  FROM hangar_output_activation_epochs WHERE epoch_id = $1`, epoch).
+		Scan(&row.base, &row.output, &row.revision, &row.updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return liveEpochRow{}, false
 	}
-	return row
+	if err != nil {
+		t.Fatalf("read activation epoch %d: %v", epoch, err)
+	}
+	return row, true
 }
 
-func (cluster *liveCluster) waitEpochRow(what string, done func(liveEpochRow) bool) liveEpochRow {
+// assertCreatedAfterCompletion: one Job was created no earlier than another
+// completed, which is what a later wave of PostSync hooks means.
+func (cluster *liveCluster) assertCreatedAfterCompletion(later, earlier string) {
 	t := cluster.t
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		row := cluster.epochRow()
-		if done(row) {
-			return row
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("wait for %s: the row is %+v", what, row)
-		}
-		liveDiskPause(t, cluster.ctx, what)
+	jobs := cluster.client.BatchV1().Jobs(cluster.names.namespace)
+	after, err := jobs.Get(cluster.ctx, later, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Job %s: %v", later, err)
+	}
+	before, err := jobs.Get(cluster.ctx, earlier, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Job %s: %v", earlier, err)
+	}
+	if before.Status.CompletionTime == nil {
+		t.Fatalf("Job %s has not completed", earlier)
+	}
+	if after.CreationTimestamp.Before(before.Status.CompletionTime) {
+		t.Fatalf("Job %s was created at %s, before Job %s completed at %s", later,
+			after.CreationTimestamp, earlier, before.Status.CompletionTime)
 	}
 }
 
@@ -179,22 +202,6 @@ func (cluster *liveCluster) waitEpochRow(what string, done func(liveEpochRow) bo
 // recreated under the same name is a different Job.
 func (cluster *liveCluster) jobLogsFor(uid types.UID) string {
 	return cluster.podLogs("batch.kubernetes.io/controller-uid=" + string(uid))
-}
-
-func (cluster *liveCluster) waitJobLogged(uid types.UID, line string) {
-	t := cluster.t
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		logs := cluster.jobLogsFor(uid)
-		if strings.Contains(logs, line) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the Job did not log %q:\n%s", line, logs)
-		}
-		liveDiskPause(t, cluster.ctx, "the Job to log "+line)
-	}
 }
 
 func (cluster *liveCluster) assertJobLogged(result liveSyncResult, name, line string) {
@@ -208,21 +215,6 @@ func (cluster *liveCluster) assertJobLogged(result liveSyncResult, name, line st
 	if logs := cluster.jobLogsFor(job.UID); !strings.Contains(logs, line) {
 		t.Fatalf("Job %s did not log %q:\n%s", name, line, logs)
 	}
-}
-
-// runningJob returns the UID of a Job whose pod is still running, which is
-// what makes deleting it an interruption rather than a cleanup.
-func (cluster *liveCluster) runningJob(name string) types.UID {
-	t := cluster.t
-	t.Helper()
-	job, err := cluster.client.BatchV1().Jobs(cluster.names.namespace).Get(cluster.ctx, name, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get Job %s: %v", name, err)
-	}
-	if complete, failed := liveJobState(job); complete || failed || job.Status.Active != 1 {
-		t.Fatalf("Job %s is no longer running (complete %t, failed %t, active %d); the interruption must land before it finishes", name, complete, failed, job.Status.Active)
-	}
-	return job.UID
 }
 
 // deleteJob deletes one incarnation of a Job and waits for it and its pods to
@@ -264,36 +256,13 @@ func (cluster *liveCluster) createRendered(object *unstructured.Unstructured) ty
 	return created.GetUID()
 }
 
-// liveWrapJobCommand runs a Job's command, then the suffix, under sh.
-func liveWrapJobCommand(t *testing.T, job *unstructured.Unstructured, suffix string) {
-	t.Helper()
-	containers, found, err := unstructured.NestedSlice(job.Object, "spec", "template", "spec", "containers")
-	if err != nil || !found || len(containers) != 1 {
-		t.Fatalf("Job %s has containers %v (%v)", job.GetName(), containers, err)
-	}
-	container := containers[0].(map[string]any)
-	command, found, err := unstructured.NestedStringSlice(container, "command")
-	if err != nil || !found || len(command) == 0 {
-		t.Fatalf("Job %s's container has no command (%v)", job.GetName(), err)
-	}
-	quoted := make([]string, 0, len(command))
-	for _, argument := range command {
-		if strings.Contains(argument, "'") {
-			t.Fatalf("argument %q cannot be single-quoted", argument)
-		}
-		quoted = append(quoted, "'"+argument+"'")
-	}
-	container["command"] = []any{"sh", "-c", strings.Join(quoted, " ") + " && " + suffix}
-	if err := unstructured.SetNestedSlice(job.Object, containers, "spec", "template", "spec", "containers"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// assertAttestVerifiesTheDaemonCertificate runs the attest-base Job's
-// rendered manifest without --tls-server-name. The daemon's certificate names
-// only its DNS name and the Job dials pod IPs, so a handshake that verifies
-// must fail -- and fail before the row is touched.
-func (cluster *liveCluster) assertAttestVerifiesTheDaemonCertificate(sets []string) {
+// assertWalkVerifiesTheDaemonCertificate runs the walk Job's rendered
+// manifest without --tls-server-name, at the probe epoch. The daemon's
+// certificate names only its DNS name and the walk dials pod IPs, so a
+// handshake that verifies must fail -- and fail before anything is attested:
+// the walk begins the probe epoch's row and leaves it `initial`, and the
+// configured epoch still has none.
+func (cluster *liveCluster) assertWalkVerifiesTheDaemonCertificate(sets []string) {
 	t := cluster.t
 	t.Helper()
 	names := cluster.names
@@ -309,17 +278,17 @@ func (cluster *liveCluster) assertAttestVerifiesTheDaemonCertificate(sets []stri
 		t.Fatalf("the output daemon's certificate names %v and %v; want only %s", certificate.DNSNames, certificate.IPAddresses, names.outputDaemonServerName())
 	}
 
-	before := cluster.epochRow()
 	var job *unstructured.Unstructured
 	for _, object := range cluster.render(sets) {
-		if object.GetKind() == "Job" && object.GetName() == names.release+"-hangar-output-activation-attest-1" {
+		if object.GetKind() == "Job" && object.GetName() == names.release+"-hangar-output-walk" {
 			job = object
 		}
 	}
 	if job == nil {
-		t.Fatal("the attest-base render holds no attest Job")
+		t.Fatal("the render holds no walk Job")
 	}
 	job.SetName(job.GetName() + "-no-server-name")
+	job.SetAnnotations(nil)
 	if err := unstructured.SetNestedField(job.Object, int64(0), "spec", "backoffLimit"); err != nil {
 		t.Fatal(err)
 	}
@@ -327,16 +296,20 @@ func (cluster *liveCluster) assertAttestVerifiesTheDaemonCertificate(sets []stri
 	container := containers[0].(map[string]any)
 	command, _, _ := unstructured.NestedStringSlice(container, "command")
 	var kept []any
-	dropped := false
+	dropped, probed := false, false
 	for _, argument := range command {
-		if strings.HasPrefix(argument, "--tls-server-name=") {
+		switch {
+		case strings.HasPrefix(argument, "--tls-server-name="):
 			dropped = true
 			continue
+		case strings.HasPrefix(argument, "--epoch="):
+			argument = fmt.Sprintf("--epoch=%d", liveClusterProbeEpoch)
+			probed = true
 		}
 		kept = append(kept, argument)
 	}
-	if !dropped {
-		t.Fatalf("the attest Job renders no --tls-server-name: %v", command)
+	if !dropped || !probed {
+		t.Fatalf("the walk Job renders no --tls-server-name or no --epoch: %v", command)
 	}
 	container["command"] = kept
 	if err := unstructured.SetNestedSlice(job.Object, containers, "spec", "template", "spec", "containers"); err != nil {
@@ -353,41 +326,23 @@ func (cluster *liveCluster) assertAttestVerifiesTheDaemonCertificate(sets []stri
 		}
 		complete, failed := liveJobState(live)
 		if complete {
-			t.Fatalf("attest without --tls-server-name succeeded against a certificate that names no IP:\n%s", cluster.jobLogsFor(uid))
+			t.Fatalf("a walk without --tls-server-name succeeded against a certificate that names no IP:\n%s", cluster.jobLogsFor(uid))
 		}
 		if failed {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("attest without --tls-server-name neither failed nor succeeded:\n%s", cluster.jobLogsFor(uid))
+			t.Fatalf("a walk without --tls-server-name neither failed nor succeeded:\n%s", cluster.jobLogsFor(uid))
 		}
-		liveDiskPause(t, cluster.ctx, "attest without --tls-server-name")
+		liveDiskPause(t, cluster.ctx, "a walk without --tls-server-name")
 	}
 	if logs := cluster.jobLogsFor(uid); !strings.Contains(logs, "x509:") {
-		t.Fatalf("attest without --tls-server-name failed for a reason other than certificate verification:\n%s", logs)
+		t.Fatalf("a walk without --tls-server-name failed for a reason other than certificate verification:\n%s", logs)
 	}
-	if after := cluster.epochRow(); !after.same(before) {
-		t.Fatalf("a failed attestation moved the row: %+v -> %+v", before, after)
+	if row, found := cluster.epochRowAt(liveClusterProbeEpoch); !found || row.base != "initial" || row.output != "initial" {
+		t.Fatalf("the failed walk left the probe epoch's row at %+v (found %t), want both facets initial", row, found)
 	}
-}
-
-// assertCaptureOff: until both facets are enabled, web runs with neither
-// capture nor Run results.
-func (cluster *liveCluster) assertCaptureOff() {
-	t := cluster.t
-	t.Helper()
-	deployment, err := cluster.client.AppsV1().Deployments(cluster.names.namespace).Get(cluster.ctx, cluster.names.release+"-web", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var web corev1.Container
-	for _, container := range deployment.Spec.Template.Spec.Containers {
-		if container.Name == "concourse-web" {
-			web = container
-		}
-	}
-	args := strings.Join(web.Args, " ")
-	if web.Name == "" || strings.Contains(args, "--kubernetes-hangar-output-capture-enabled") || strings.Contains(args, "--run-result-scratch-dir") {
-		t.Fatalf("web runs with capture or Run results on before the output facet is enabled: %s", args)
+	if _, found := cluster.epochRowAt(liveClusterEpoch); found {
+		t.Fatal("the probe walk wrote the configured epoch's row")
 	}
 }
