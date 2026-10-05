@@ -195,10 +195,9 @@ func (walker Walker) Walk(ctx context.Context, epoch executioncontrol.Activation
 		if err := walker.refuseWhileAnotherEpochIsEnabled(ctx, epoch); err != nil {
 			return err
 		}
-		if err := walker.Epochs.Begin(ctx, epoch); err != nil && !errors.Is(err, ErrAlreadyAtTarget) {
+		if err := walker.begin(ctx, epoch); err != nil {
 			return err
 		}
-		walker.printf("began activation epoch %d (base=initial output=initial)\n", epoch)
 	case err != nil:
 		return err
 	}
@@ -224,24 +223,59 @@ func (walker Walker) Walk(ctx context.Context, epoch executioncontrol.Activation
 	return nil
 }
 
-// againIfStale runs a step and, when its compare-and-set found the row moved,
-// runs it once more. Every step reads the row first, so the second run goes on
-// from wherever the row now is.
+// begin creates the epoch's row, or finds that another walk already has.
+//
+// Begin answers ErrAlreadyAtTarget for a row still initial/initial and
+// ErrConflict for one that has moved on. Both mean the row now exists, which is
+// all this step is for: an overlapping walk began it, and may have advanced it,
+// between this walk's read and its insert. The facet steps after it read the
+// row and go on from wherever it is.
+func (walker Walker) begin(ctx context.Context, epoch executioncontrol.ActivationEpoch) error {
+	err := walker.Epochs.Begin(ctx, epoch)
+	switch {
+	case err == nil:
+		walker.printf("began activation epoch %d (base=initial output=initial)\n", epoch)
+
+		return nil
+	case errors.Is(err, ErrAlreadyAtTarget), errors.Is(err, output.ErrConflict):
+		state, readErr := walker.Epochs.Read(ctx, epoch)
+		if readErr != nil {
+			return err
+		}
+		walker.printf("epoch %d was begun by another walk (base=%s output=%s); going on from it\n",
+			epoch, state.Base, state.Output)
+
+		return nil
+	}
+
+	return err
+}
+
+// againIfStale runs a step and, when the row moved under it, runs it once
+// more. Every step reads the row first, so the second run goes on from wherever
+// the row now is.
 //
 // Two walks overlap in the ordinary course: Argo recreates the hook while an
-// older pod may still be running. When the other walk made the transition
-// first, this one's CAS is ErrStaleEpoch, and failing on it would fail the sync
-// over a row that is already where the walk was taking it. Once, because a row
-// still moving under a second read is not an overlap but a contest, and the
-// error says so.
+// older pod may still be running. When the other walk made a transition between
+// this one's read and its write, this one's CAS answers ErrStaleEpoch when the
+// row went elsewhere, or ErrAlreadyAtTarget when it went exactly where this
+// walk was taking it -- a drain or a disable the other walk made first. Failing
+// on either would fail the sync over a row already on its way to the target.
+// Once, because a row still moving under a second read is not an overlap but a
+// contest; a second ErrAlreadyAtTarget is the target reached, and anything else
+// stands.
 func (walker Walker) againIfStale(step func() error) error {
 	err := step()
-	if !errors.Is(err, ErrStaleEpoch) {
+	if !errors.Is(err, ErrStaleEpoch) && !errors.Is(err, ErrAlreadyAtTarget) {
 		return err
 	}
 	walker.printf("the row moved under this walk (%v); reading it again\n", err)
 
-	return step()
+	if err := step(); err != nil && !errors.Is(err, ErrAlreadyAtTarget) {
+		return err
+	}
+
+	return nil
 }
 
 // takeOut drains every facet above the target, output first.

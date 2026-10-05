@@ -498,3 +498,137 @@ func TestAWalkGoesOnFromARowAnotherWalkAdvanced(t *testing.T) {
 		t.Errorf("the walk ended at base=%s output=%s", row.base, row.output)
 	}
 }
+
+// waitForALockWaiter returns once some session of the activation role is
+// waiting on a lock: the walk under test has reached the row another
+// transaction holds.
+func waitForALockWaiter(t *testing.T, role *sql.DB) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := role.QueryRow(`SELECT count(*) FROM pg_stat_activity
+			 WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatalf("reading pg_stat_activity: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the walk never blocked on the row the other transaction holds")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Another walk drains the output facet between this walk's read and its
+// drain. This walk's CAS then finds the facet already draining, which is where
+// it was taking it: the walk reads the row again and reaches its target
+// rather than failing the sync.
+func TestAWalkGoesOnWhenAnotherWalkDrainedFirst(t *testing.T) {
+	ctx := context.Background()
+	epochs, conn := activationFixture(t)
+	const epoch = executioncontrol.ActivationEpoch(109)
+	mustWalk(t, walkerFor(epochs, epoch, nil), epoch, activation.TargetOutput, false)
+
+	// The other walk's drain, uncommitted, holding the row.
+	other, err := epochs.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Rollback() }()
+	if _, err := other.ExecContext(ctx, `UPDATE hangar_output_activation_epochs
+		   SET output_state = 'draining', revision = revision + 1, updated_at = now()
+		 WHERE epoch_id = $1 AND output_state = 'enabled'`, int64(epoch)); err != nil {
+		t.Fatalf("the other walk's drain: %v", err)
+	}
+
+	var out strings.Builder
+	walker := walkerFor(epochs, epoch, &out)
+	done := make(chan error, 1)
+	go func() { done <- walker.Walk(ctx, epoch, activation.TargetBase, false) }()
+	waitForALockWaiter(t, epochs.DB)
+	if err := other.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("the walk failed over a facet another walk had drained to its target: %v\n%s",
+			err, out.String())
+	}
+	row := mustSnapshotRow(t, conn, epoch)
+	if row.base != "enabled" || row.output != "draining" {
+		t.Errorf("the walk ended at base=%s output=%s", row.base, row.output)
+	}
+	if !strings.Contains(out.String(), "reading it again") {
+		t.Errorf("the walk did not meet the moved row, so this proves nothing:\n%s", out.String())
+	}
+}
+
+// Another walk begins the row and attests base between this walk's read,
+// which found no row, and its begin. The begin then finds a row that has moved
+// on, which is a row that exists: the walk goes on from it.
+func TestAWalkGoesOnWhenAnotherWalkBeganAndAdvancedTheRow(t *testing.T) {
+	ctx := context.Background()
+	epochs, conn := activationFixture(t)
+	const epoch = executioncontrol.ActivationEpoch(110)
+
+	evidence := baseEvidence()
+	other, err := epochs.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Rollback() }()
+	for _, statement := range []struct {
+		sql       string
+		arguments []any
+	}{
+		{`INSERT INTO hangar_output_activation_epochs (epoch_id) VALUES ($1)`, []any{int64(epoch)}},
+		{`UPDATE hangar_output_activation_epochs
+		     SET base_state = 'attested', base_attestation = $2::jsonb, protocol_version = $3,
+		         ledger_version = $4, cohort_digest = $5, revision = revision + 1, updated_at = now()
+		   WHERE epoch_id = $1`, []any{int64(epoch), []byte(evidence.Attestation),
+			evidence.ProtocolVersion, evidence.LedgerVersion, evidence.CohortDigest}},
+	} {
+		if _, err := other.ExecContext(ctx, statement.sql, statement.arguments...); err != nil {
+			t.Fatalf("the other walk's begin and attest: %v", err)
+		}
+	}
+
+	var out strings.Builder
+	walker := walkerFor(epochs, epoch, &out)
+	done := make(chan error, 1)
+	go func() { done <- walker.Walk(ctx, epoch, activation.TargetBase, false) }()
+	waitForALockWaiter(t, epochs.DB)
+	if err := other.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("the walk failed over a row another walk had begun and advanced: %v\n%s",
+			err, out.String())
+	}
+	if row := mustSnapshotRow(t, conn, epoch); row.base != "enabled" {
+		t.Errorf("the walk ended at base=%s", row.base)
+	}
+	if !strings.Contains(out.String(), "begun by another walk") {
+		t.Errorf("the walk did not meet the other walk's row, so this proves nothing:\n%s", out.String())
+	}
+}
+
+// The base facet is never finalized implicitly (owner ruling, amendment A2.3):
+// a walk to off without --finalize drains it and leaves it draining.
+func TestAWalkToOffNeverFinalizesBaseWithoutFinalize(t *testing.T) {
+	epochs, conn := activationFixture(t)
+	const epoch = executioncontrol.ActivationEpoch(111)
+	walker := walkerFor(epochs, epoch, nil)
+	mustWalk(t, walker, epoch, activation.TargetBase, false)
+
+	mustWalk(t, walker, epoch, activation.TargetOff, false)
+	row := mustSnapshotRow(t, conn, epoch)
+	if row.base != "draining" || row.output != "initial" {
+		t.Errorf("a walk to off without --finalize left base=%s output=%s, want base draining",
+			row.base, row.output)
+	}
+}
