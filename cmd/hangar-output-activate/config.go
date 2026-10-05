@@ -11,7 +11,8 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// Mode is one of the four guarded transitions.
+// Mode is one of the four guarded transitions, the walk that composes them,
+// or the integrity reconciliation.
 //
 // A FLAG and not a positional subcommand. The plan writes them as
 // `hangar-output begin|attest|enable|drain`, and they are the same four
@@ -27,7 +28,15 @@ const (
 	ModeEnable             Mode = "enable"
 	ModeDrain              Mode = "drain"
 	ModeReconcileIntegrity Mode = "reconcile-integrity"
+
+	// ModeWalk moves the epoch's row toward --target, making only the
+	// transitions the row shows are still needed. The chart runs it on every
+	// sync, which a step mode could not survive.
+	ModeWalk Mode = "walk"
 )
+
+// modeList is every mode, in the order the help and the refusals name them.
+const modeList = "begin, attest, enable, drain, walk, reconcile-integrity"
 
 // Config is what one activation Job was told.
 type Config struct {
@@ -50,9 +59,20 @@ type Config struct {
 	// assertion is checked against the live tables rather than taken.
 	Finalize bool
 
+	// Target is where a walk takes the epoch: off, base or output.
+	Target activation.Target
+
 	Namespace      string
 	DaemonSelector string
 	DaemonPort     int
+
+	// DaemonSetName is the output DaemonSet a walk waits on before each
+	// attestation. A name and not the selector, because the walk reads the
+	// DaemonSet through a namespaced `daemonsets get`, which RBAC can confine
+	// to that one name.
+	DaemonSetName string
+	// ReadinessTimeout bounds that wait.
+	ReadinessTimeout time.Duration
 
 	TLSCert   string
 	TLSKey    string
@@ -69,16 +89,24 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"PostgreSQL connection string. It is the ACTIVATION role's, distinct from the web pod's: the architecture guard saying only this command writes hangar_output_activation_epochs is enforceable only while that is true of the credential as well as of the code.")
 	flags.Int64Var(&config.Epoch, "epoch", 0,
 		"The activation epoch to act on. Rotation creates a NEW epoch rather than replacing a key in place, so this is the one being brought up or taken down.")
-	flags.Func("mode", "One of begin, attest, enable, drain, reconcile-integrity.", func(value string) error {
+	flags.Func("mode", "One of "+modeList+".", func(value string) error {
 		switch Mode(strings.TrimSpace(value)) {
-		case ModeBegin, ModeAttest, ModeEnable, ModeDrain, ModeReconcileIntegrity:
+		case ModeBegin, ModeAttest, ModeEnable, ModeDrain, ModeWalk, ModeReconcileIntegrity:
 			config.Mode = Mode(strings.TrimSpace(value))
 
 			return nil
 		}
 
-		return fmt.Errorf("%w: --mode %q; choose: begin, attest, enable, drain, reconcile-integrity",
-			output.ErrUnknownMember, value)
+		return fmt.Errorf("%w: --mode %q; choose: %s", output.ErrUnknownMember, value, modeList)
+	})
+	flags.Func("target", "For walk: off, base or output. The walk moves the epoch's row toward it, skipping every step already done; a lower target drains the facets above it.", func(value string) error {
+		target, err := activation.ParseTarget(value)
+		if err != nil {
+			return err
+		}
+		config.Target = target
+
+		return nil
 	})
 	flags.StringVar(&config.IntegrityViolation, "integrity-violation", "", "Runtime finding class to reconcile: out_of_band_absence or runtime_principal_denied. Repair the cause first; this acknowledges it and does not restore objects.")
 	flags.StringVar(&config.IntegritySubject, "integrity-subject", "", "Exact subject of one open finding in the selected epoch. No wildcard or blanket reconciliation.")
@@ -101,7 +129,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		return nil
 	})
 	flags.BoolVar(&config.Finalize, "finalize", false,
-		"Let a drain take a facet to the terminal `disabled` state. Without it a drain stops new admission and reports what is still live; unsafe removal is blocked rather than promised after a finite drain.")
+		"Let a drain, or a walk to a lower target, take a facet to the terminal `disabled` state. Without it a drain stops new admission and reports what is still live; unsafe removal is blocked rather than promised after a finite drain.")
 	flags.StringVar(&config.Namespace, "namespace", "",
 		"Kubernetes namespace the output daemon runs in. Attestation enumerates the cohort from the API and never from node labels.")
 	flags.StringVar(&config.DaemonSelector, "daemon-selector",
@@ -109,6 +137,10 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Label selector for the output daemon's pods.")
 	flags.IntVar(&config.DaemonPort, "daemon-port", 7781,
 		"Control port of the node-local output daemon.")
+	flags.StringVar(&config.DaemonSetName, "daemonset-name", "",
+		"For walk: the output daemon's DaemonSet, read through a namespaced get. Each attestation waits until its updated, ready and desired counts are equal and every member pod is Ready.")
+	flags.DurationVar(&config.ReadinessTimeout, "readiness-timeout", 10*time.Minute,
+		"For walk: how long an attestation waits for the output DaemonSet to settle before the walk fails.")
 	flags.StringVar(&config.TLSCert, "tls-cert", "",
 		"Client certificate for the daemon control API. The extension handshake names a bucket and a derived namespace, so it is behind the same certificate every other off-node call is.")
 	flags.StringVar(&config.TLSKey, "tls-key", "", "Client private key.")
@@ -136,8 +168,7 @@ func (config Config) Validate() error {
 			"of an epoch", output.ErrIncomplete)
 	}
 	if config.Mode == "" {
-		return fmt.Errorf("%w: --mode is required; choose: begin, attest, enable, drain, reconcile-integrity",
-			output.ErrIncomplete)
+		return fmt.Errorf("%w: --mode is required; choose: %s", output.ErrIncomplete, modeList)
 	}
 	if config.Mode == ModeReconcileIntegrity {
 		if _, err := output.ParsePolicyViolation(config.IntegrityViolation); err != nil {
@@ -158,6 +189,9 @@ func (config Config) Validate() error {
 		// a thing: there is one row.
 		return nil
 	}
+	if config.Mode == ModeWalk {
+		return config.validateWalk()
+	}
 	if config.Facet == "" {
 		return fmt.Errorf("%w: --facet is required for --mode=%s", output.ErrIncomplete, config.Mode)
 	}
@@ -167,29 +201,63 @@ func (config Config) Validate() error {
 			"is: output can never be ready without base", output.ErrIncomplete)
 	}
 	if config.Mode == ModeAttest {
-		if strings.TrimSpace(config.Namespace) == "" {
-			return fmt.Errorf("%w: --namespace is required for --mode=attest; the cohort is "+
-				"enumerated from the Kubernetes API", output.ErrIncomplete)
+		return config.validateCohortAccess()
+	}
+
+	return nil
+}
+
+// validateWalk refuses a walk that could not reach any target.
+//
+// It names no facet: the target says how far, and the walk takes base before
+// output itself. A --facet beside it would read as "walk this facet", which
+// would skip the ordering the walk exists to keep.
+func (config Config) validateWalk() error {
+	if config.Facet != "" || config.All {
+		return fmt.Errorf("%w: --facet is not meaningful for --mode=walk; --target says how "+
+			"far, and the walk takes base before output itself", output.ErrIncomplete)
+	}
+	if config.Target == "" {
+		return fmt.Errorf("%w: --target is required for --mode=walk; choose: off, base, output",
+			output.ErrIncomplete)
+	}
+	if strings.TrimSpace(config.DaemonSetName) == "" {
+		return fmt.Errorf("%w: --daemonset-name is required for --mode=walk; each "+
+			"attestation waits on the output DaemonSet's rollout", output.ErrIncomplete)
+	}
+	if config.ReadinessTimeout <= 0 {
+		return fmt.Errorf("%w: --readiness-timeout must be positive", output.ErrIncomplete)
+	}
+
+	return config.validateCohortAccess()
+}
+
+// validateCohortAccess is what attesting needs, whether one step attests or
+// the walk does: the namespace the cohort is enumerated in, a receipt key
+// lifetime, and the client TLS whole or not at all.
+func (config Config) validateCohortAccess() error {
+	if strings.TrimSpace(config.Namespace) == "" {
+		return fmt.Errorf("%w: --namespace is required for --mode=%s; the cohort is "+
+			"enumerated from the Kubernetes API", output.ErrIncomplete, config.Mode)
+	}
+	if config.ReceiptKeyLifetime <= 0 {
+		return fmt.Errorf("%w: --receipt-key-lifetime must be positive",
+			output.ErrIncomplete)
+	}
+	var missing []string
+	for _, one := range []struct{ name, value string }{
+		{"--tls-cert", config.TLSCert},
+		{"--tls-key", config.TLSKey},
+		{"--tls-ca-cert", config.TLSCACert},
+	} {
+		if strings.TrimSpace(one.value) == "" {
+			missing = append(missing, one.name)
 		}
-		if config.ReceiptKeyLifetime <= 0 {
-			return fmt.Errorf("%w: --receipt-key-lifetime must be positive",
-				output.ErrIncomplete)
-		}
-		var missing []string
-		for _, one := range []struct{ name, value string }{
-			{"--tls-cert", config.TLSCert},
-			{"--tls-key", config.TLSKey},
-			{"--tls-ca-cert", config.TLSCACert},
-		} {
-			if strings.TrimSpace(one.value) == "" {
-				missing = append(missing, one.name)
-			}
-		}
-		if len(missing) != 0 && len(missing) != 3 {
-			return fmt.Errorf("%w: the daemon control API's client TLS is partially "+
-				"configured; %s must also be set", output.ErrIncomplete,
-				strings.Join(missing, " and "))
-		}
+	}
+	if len(missing) != 0 && len(missing) != 3 {
+		return fmt.Errorf("%w: the daemon control API's client TLS is partially "+
+			"configured; %s must also be set", output.ErrIncomplete,
+			strings.Join(missing, " and "))
 	}
 
 	return nil

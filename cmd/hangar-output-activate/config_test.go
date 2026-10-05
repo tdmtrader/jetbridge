@@ -41,6 +41,8 @@ func TestEachModeIsAcceptedWhenItIsComplete(t *testing.T) {
 			"--database=postgres://x"},
 		"attest": {"--mode=attest", "--facet=output", "--epoch=7",
 			"--database=postgres://x", "--namespace=cicd"},
+		"walk": {"--mode=walk", "--target=output", "--epoch=7", "--database=postgres://x",
+			"--namespace=cicd", "--daemonset-name=concourse-hangar-output-daemon"},
 	} {
 		if _, err := parse(t, arguments...); err != nil {
 			t.Errorf("a complete %s invocation was refused: %v", name, err)
@@ -172,5 +174,77 @@ func TestIntegrityReconciliationRequiresOneRuntimeFinding(t *testing.T) {
 		if err := invalid.Validate(); err == nil {
 			t.Errorf("accepted unscoped reconciliation: %+v", invalid)
 		}
+	}
+}
+
+// A walk needs a target, the DaemonSet it waits on and the cohort's namespace,
+// and it is refused naming whichever is missing.
+func TestAnIncompleteWalkIsRefusedAndSaysWhat(t *testing.T) {
+	complete := []string{"--mode=walk", "--epoch=7", "--database=postgres://x"}
+	for name, expected := range map[string]struct {
+		arguments []string
+		says      string
+	}{
+		"no target": {
+			[]string{"--namespace=cicd", "--daemonset-name=d"}, "--target",
+		},
+		"no daemonset name": {
+			[]string{"--target=base", "--namespace=cicd"}, "--daemonset-name",
+		},
+		"no namespace": {
+			[]string{"--target=base", "--daemonset-name=d"}, "--namespace",
+		},
+		"no readiness timeout": {
+			[]string{"--target=base", "--namespace=cicd", "--daemonset-name=d",
+				"--readiness-timeout=0s"},
+			"--readiness-timeout",
+		},
+		"no receipt key lifetime": {
+			[]string{"--target=output", "--namespace=cicd", "--daemonset-name=d",
+				"--receipt-key-lifetime=0s"},
+			"--receipt-key-lifetime",
+		},
+		"half a client certificate": {
+			[]string{"--target=base", "--namespace=cicd", "--daemonset-name=d", "--tls-key=/k"},
+			"partially configured",
+		},
+	} {
+		_, err := parse(t, append(append([]string{}, complete...), expected.arguments...)...)
+		if err == nil {
+			t.Errorf("a walk with %s was accepted", name)
+
+			continue
+		}
+		if !strings.Contains(err.Error(), expected.says) {
+			t.Errorf("a walk with %s was refused without saying %q: %v", name, expected.says, err)
+		}
+	}
+}
+
+// The walk takes base before output itself; a --facet beside it would read as
+// "walk this facet" and skip the ordering the walk exists to keep.
+func TestAWalkNamesNoFacet(t *testing.T) {
+	for _, facet := range []string{"base", "output", "all"} {
+		_, err := parse(t, "--mode=walk", "--target=output", "--facet="+facet, "--epoch=7",
+			"--database=postgres://x", "--namespace=cicd", "--daemonset-name=d")
+		if err == nil {
+			t.Errorf("--facet=%s was accepted for --mode=walk", facet)
+
+			continue
+		}
+		if !strings.Contains(err.Error(), "--facet is not meaningful for --mode=walk") {
+			t.Errorf("the refusal of --facet=%s does not say why: %v", facet, err)
+		}
+	}
+}
+
+func TestAnUnknownTargetIsRefusedAtParse(t *testing.T) {
+	_, err := parse(t, "--mode=walk", "--target=everything", "--epoch=7", "--database=x",
+		"--namespace=cicd", "--daemonset-name=d")
+	if err == nil {
+		t.Fatal("an unknown target was accepted")
+	}
+	if !strings.Contains(err.Error(), "off, base and output") {
+		t.Errorf("the refusal does not name the three targets: %v", err)
 	}
 }

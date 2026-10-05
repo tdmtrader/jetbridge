@@ -1,5 +1,6 @@
 // Command hangar-output-activate moves the Hangar output plane's activation
-// epoch through its four guarded transitions.
+// epoch through its four guarded transitions, one step at a time or as a walk
+// toward a target.
 //
 // It is an INTERNAL command, run as a one-shot Kubernetes Job under its own
 // service account and its own least-privilege PostgreSQL role. There is
@@ -27,6 +28,8 @@ import (
 	"os"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -107,9 +110,14 @@ func run(ctx context.Context, config Config, out *os.File) error {
 			return err
 		}
 
+	case ModeWalk:
+		// The walk prints each transition and the final row itself, and
+		// returns here rather than reading the row below: a walk to off with
+		// no row writes nothing and succeeds, and that read would fail it.
+		return walk(ctx, epochs, epoch, config, out)
+
 	default:
-		return fmt.Errorf("%w: --mode %q; there are four: begin, attest, enable, drain",
-			output.ErrUnknownMember, config.Mode)
+		return fmt.Errorf("%w: --mode %q; choose: %s", output.ErrUnknownMember, config.Mode, modeList)
 	}
 
 	state, err := epochs.Read(ctx, epoch)
@@ -228,20 +236,66 @@ func drain(ctx context.Context, epochs activation.Epochs,
 	return nil
 }
 
-// attest builds the evidence from the live cohort.
-func attest(ctx context.Context, config Config,
-	epoch executioncontrol.ActivationEpoch) (activation.Evidence, error) {
+// walk moves the epoch toward --target through activation.Walker, which owns
+// the order, the skips and the refusals; this wires it to the cluster.
+func walk(ctx context.Context, epochs activation.Epochs,
+	epoch executioncontrol.ActivationEpoch, config Config, out io.Writer) error {
+	client, err := inClusterClient()
+	if err != nil {
+		return err
+	}
+	handshaker, err := newHandshaker(config)
+	if err != nil {
+		return err
+	}
+
+	walker := activation.Walker{
+		Epochs: epochs,
+		Cohort: &podCohort{
+			pods:      client,
+			namespace: config.Namespace,
+			selector:  config.DaemonSelector,
+			port:      config.DaemonPort,
+		},
+		Handshakes: handshaker,
+		Readiness: &daemonSetCohort{
+			client:    client,
+			namespace: config.Namespace,
+			name:      config.DaemonSetName,
+			selector:  config.DaemonSelector,
+		},
+		ReceiptKeyLifetime: config.ReceiptKeyLifetime,
+		ReadinessTimeout:   config.ReadinessTimeout,
+		Out:                out,
+	}
+
+	return walker.Walk(ctx, epoch, config.Target, config.Finalize)
+}
+
+// inClusterClient is the Job's own Kubernetes client.
+func inClusterClient() (kubernetes.Interface, error) {
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
-		return activation.Evidence{}, fmt.Errorf("%w: attestation enumerates the daemon cohort "+
+		return nil, fmt.Errorf("%w: attestation enumerates the daemon cohort "+
 			"from the Kubernetes API rather than from node labels -- a label is a hint the "+
 			"daemon itself wrote -- and this Job cannot reach the API: %v",
 			output.ErrInfrastructure, err)
 	}
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return activation.Evidence{}, fmt.Errorf("%w: building the Kubernetes client: %v",
+		return nil, fmt.Errorf("%w: building the Kubernetes client: %v",
 			output.ErrInfrastructure, err)
+	}
+
+	return client, nil
+}
+
+// attest builds the evidence from the live cohort.
+func attest(ctx context.Context, config Config,
+	epoch executioncontrol.ActivationEpoch) (activation.Evidence, error) {
+	client, err := inClusterClient()
+	if err != nil {
+		return activation.Evidence{}, err
 	}
 
 	source := &podCohort{
@@ -300,6 +354,68 @@ func (cohort *podCohort) Members(ctx context.Context) ([]activation.Member, erro
 	}
 
 	return members, nil
+}
+
+// daemonSetCohort reads the output DaemonSet's rollout state for the walk.
+//
+// The DaemonSet only through a namespaced get of the one name, which is all the
+// activation Role grants on DaemonSets; its member pods through the same
+// selector list the cohort is enumerated from.
+type daemonSetCohort struct {
+	client    kubernetes.Interface
+	namespace string
+	name      string
+	selector  string
+}
+
+func (cohort *daemonSetCohort) Readiness(ctx context.Context) (activation.DaemonSetReadiness, error) {
+	set, err := cohort.client.AppsV1().DaemonSets(cohort.namespace).Get(ctx, cohort.name,
+		metav1.GetOptions{})
+	if err != nil {
+		return activation.DaemonSetReadiness{Name: cohort.name}, fmt.Errorf("%w: reading the "+
+			"output DaemonSet %s in %s: %v", output.ErrInfrastructure, cohort.name,
+			cohort.namespace, err)
+	}
+	pods, err := cohort.client.CoreV1().Pods(cohort.namespace).List(ctx,
+		metav1.ListOptions{LabelSelector: cohort.selector})
+	if err != nil {
+		return activation.DaemonSetReadiness{Name: cohort.name}, fmt.Errorf("%w: listing "+
+			"output daemon pods in %s: %v", output.ErrInfrastructure, cohort.namespace, err)
+	}
+
+	return daemonSetReadiness(*set, pods.Items), nil
+}
+
+// daemonSetReadiness is the pure reading of a DaemonSet and its member pods.
+//
+// numberReady and not numberAvailable: available adds minReadySeconds, which
+// is a rollout pacing knob and not a statement about whether a daemon answers.
+// updatedNumberScheduled is what says the rollout has finished, so the old
+// pods that still speak the previous epoch are gone from the count. A member
+// that is terminating is not Ready here whatever its condition says: it is
+// leaving, and it may still answer a handshake for the epoch being replaced.
+func daemonSetReadiness(set appsv1.DaemonSet, pods []corev1.Pod) activation.DaemonSetReadiness {
+	readiness := activation.DaemonSetReadiness{
+		Name:    set.Name,
+		Desired: int(set.Status.DesiredNumberScheduled),
+		Updated: int(set.Status.UpdatedNumberScheduled),
+		Ready:   int(set.Status.NumberReady),
+	}
+	for _, pod := range pods {
+		ready := pod.DeletionTimestamp == nil
+		if ready {
+			ready = false
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.PodReady {
+					ready = condition.Status == corev1.ConditionTrue
+				}
+			}
+		}
+		readiness.Members = append(readiness.Members,
+			activation.MemberReadiness{Pod: pod.Name, Ready: ready})
+	}
+
+	return readiness
 }
 
 // httpHandshaker speaks the daemon's control API over the control plane's own
