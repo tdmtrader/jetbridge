@@ -26,6 +26,7 @@ template first, so these rules run before anything else in the chart.
   (list "hangarOutput.activation.job.mode" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
   (list "rbac.brineLive" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
+  (list "secrets.create" "name a Secret holding session_signing_key in secrets.signingKeySecret, which every web pod mounts. Remove the value.")
   (list "web.enablePipelineRunCreation" "Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch.")
 -}}
 {{- $key := index $removed 0 -}}
@@ -98,22 +99,6 @@ template first, so these rules run before anything else in the chart.
 {{- fail (printf "kubernetes.stepPodGrants[%d].%s must hold no ',' or '=' (got %q)" $i $field $value) -}}
 {{- end -}}
 {{- end -}}
-{{- end -}}
-{{- /*
-  secrets.create mints the session signing key into an emptyDir, so each pod
-  gets its own: a restart invalidates every session, and two replicas reject
-  each other's tokens outright. That is survivable for a single-replica dev
-  install and broken for anything else, so an explicit request for both is a
-  contradiction and fails the render rather than deploying something that
-  half-works.
-  Deliberately NOT solved with Helm `lookup` + genPrivateKey: `lookup` returns
-  nothing under `helm template`, which is ArgoCD's render mode, so every sync
-  would mint a fresh key AND write the private key into the rendered manifest
-  in cleartext. Pre-create the Secret and set secrets.create=false with
-  secrets.signingKeySecret instead.
-*/ -}}
-{{- if and .Values.secrets.create (gt (int .Values.web.replicas) 1) -}}
-{{- fail "secrets.create=true generates a per-pod session signing key, which cannot work with web.replicas > 1. Pre-create a Secret and set secrets.create=false with secrets.signingKeySecret." -}}
 {{- end -}}
 {{- if and .Values.serviceMonitor.enabled (not .Values.metrics.enabled) -}}
 {{- fail "serviceMonitor.enabled requires metrics.enabled: the ATC serves Prometheus metrics only on its own bind port, so a ServiceMonitor without it scrapes the web UI's HTML and every alerting rule evaluates against no data" -}}

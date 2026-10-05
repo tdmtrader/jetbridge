@@ -40,8 +40,9 @@ import (
 // replaced hangarOutput.activation.job.mode and job.facet, two step values,
 // with one target, hangarOutput.activation.target, leaving 233. Moving the
 // brine live identity to the cluster that uses it took rbac.brineLive and
-// rbac.brineLiveServiceAccount, leaving 231.
-const maxValues = 231
+// rbac.brineLiveServiceAccount, leaving 231. Requiring one signing-key Secret
+// instead of minting a key per pod took secrets.create, leaving 230.
+const maxValues = 230
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -60,7 +61,6 @@ var allowedSwitches = []string{
 	"postgresql.enabled",
 	"postgresql.persistence.enabled",
 	"rbac.create",
-	"secrets.create",
 	"serviceAccount.create",
 	"serviceMonitor.enabled",
 	"tracing.otlpUseTLS",
@@ -143,6 +143,7 @@ var removedKeys = []string{
 	"hangarOutput.activation.job.mode",
 	"rbac.brineLive",
 	"rbac.brineLiveServiceAccount",
+	"secrets.create",
 	"web.enablePipelineRunCreation",
 }
 
@@ -150,6 +151,7 @@ var removedKeys = []string{
 // it fails, so an operator who forgot one is told which.
 var bareRenderNames = []string{
 	"mcp.clients",
+	"secrets.signingKeySecret",
 }
 
 func TestTheChartHoldsItsShape(t *testing.T) {
