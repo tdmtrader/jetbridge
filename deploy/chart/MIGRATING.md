@@ -32,6 +32,7 @@ auditing, or optional infrastructure.
 | `--enable-mcp` and `--mcp-client-config` in `web.extraArgs` | Remove them. Copy the existing registered clients into `mcp.clients`; the chart renders and mounts their ConfigMap. |
 | `--mcp-disable-operation` | Move operation IDs into `mcp.disabledOperations`. Restrictions are preserved. |
 | Environment equivalents of the above chart-owned arguments | Remove them and use the corresponding explicit values. Conflicting overrides fail rendering. |
+| `rbac.brineLive`, `rbac.brineLiveServiceAccount` | Remove them. The render fails with "rbac.brineLive has been removed; the brine live tier's identity is not part of the chart" (and the same for `rbac.brineLiveServiceAccount`). The chart no longer renders the `<fullname>-brine-live` ClusterRole, its ClusterRoleBinding or the named ServiceAccount, and an upgrade prunes them. If you run the brine live tier, declare its ServiceAccount, ClusterRole and ClusterRoleBinding outside the chart, beside the cluster's other test identities, with the rules the old `templates/brine-live-rbac.yaml` granted, and map the brine job and `main/one-off` to that ServiceAccount with `kubernetes.stepPodGrants`. Create it before upgrading, so no brine build runs without it. |
 
 Keep `postgresql.enabled`, ingress/native TLS choices, monitoring resources,
 network policies, PDB, service-account ownership, and other infrastructure
