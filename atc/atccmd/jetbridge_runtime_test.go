@@ -135,7 +135,10 @@ func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 // Config fields no flag reaches, each with the reason. A field added to
 // jetbridge.Config without a flag mapping fails the completeness check below
 // until it is mapped or listed here.
-var jetbridgeConfigFieldsWithoutAFlag = map[string]string{}
+var jetbridgeConfigFieldsWithoutAFlag = map[string]string{
+	"StepTolerations": "web derives step tolerations from --kubernetes-preferred-step-node and " +
+		"--kubernetes-required-step-node; only the brine live fixture adds its own, to follow the taints of the node it pins",
+}
 
 // Every flag the runtime reads reaches the one assembled Config, and every
 // Config field is either set from a flag or listed as flagless.

@@ -34,8 +34,11 @@ type liveArtifactStore struct {
 	// a multi-node fixture -- the shared link that resolves to it (link).
 	root, dataRoot, ownerRoot string
 	// suffix tells this node's fixture pods apart in a shared namespace.
-	suffix        string
-	linker        *corev1.Pod
+	suffix string
+	linker *corev1.Pod
+	// tolerations admit pinned step pods past the node's reservations; see
+	// reservationTolerations.
+	tolerations   []corev1.Toleration
 	observerReady bool
 	cleaned       bool
 }
@@ -88,7 +91,11 @@ func newLiveArtifactStoreOn(ctx context.Context, rec *brine.Recorder, cluster li
 		defer cancel()
 		return s.close(clean)
 	})
-	var err error
+	node, err := cluster.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	s.tolerations = reservationTolerations(node)
 	anchor := s.pod("artifact-store-owner"+suffix, nodeName, nil, nil)
 	size := resource.MustParse("16Mi")
 	anchor.Spec.Volumes = []corev1.Volume{{Name: "artifacts", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &size}}}}
@@ -305,6 +312,27 @@ func (s *liveArtifactStore) runtimeConfig() jetbridge.Config {
 // pin requires a config's pods on the store's node; see runtimeConfig.
 func (s *liveArtifactStore) pin(cfg *jetbridge.Config) {
 	cfg.RequiredStepNode = &jetbridge.StepNodeLabel{Key: corev1.LabelHostname, Value: s.anchor.Spec.NodeName}
+	cfg.StepTolerations = s.tolerations
+}
+
+// reservationTolerations are the tolerations a pod needs to be scheduled onto
+// node past the NoSchedule taints that reserve it -- an approved node may be
+// one kept for builds, tainted so the cluster's services stay off it. The
+// fixture's own pods name their node and skip the scheduler, but the step pods
+// it requires there are scheduled. The node.kubernetes.io/ taints are the
+// node's condition (cordoned, NotReady, under pressure), not a reservation, and
+// are never tolerated: a cordoned node must still turn the fixture away.
+func reservationTolerations(node *corev1.Node) []corev1.Toleration {
+	var tolerations []corev1.Toleration
+	for _, taint := range node.Spec.Taints {
+		if taint.Effect != corev1.TaintEffectNoSchedule || strings.HasPrefix(taint.Key, "node.kubernetes.io/") {
+			continue
+		}
+		tolerations = append(tolerations, corev1.Toleration{
+			Key: taint.Key, Operator: corev1.TolerationOpEqual, Value: taint.Value, Effect: taint.Effect,
+		})
+	}
+	return tolerations
 }
 
 func (s *liveArtifactStore) pod(name, node string, volumes []corev1.Volume, mounts []corev1.VolumeMount) *corev1.Pod {

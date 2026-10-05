@@ -9,6 +9,7 @@ import (
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -144,6 +145,11 @@ type Config struct {
 	// storage backend's own. A pod with no such node schedulable waits
 	// Pending, up to PodSchedulingTimeout.
 	RequiredStepNode *StepNodeLabel
+
+	// StepTolerations are tolerations every step pod carries beyond the ones
+	// its step-node labels imply (see StepNodeLabel). The brine live fixture
+	// sets them to follow the taints of the node it pins steps to.
+	StepTolerations []corev1.Toleration
 
 	// ResourceTypeImages maps base resource type names (e.g. "time", "git")
 	// to Docker image references. When the ATC requests a container for a

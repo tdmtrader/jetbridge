@@ -231,7 +231,8 @@ kubernetes:
   defaultTaskCPURequest: 0
   # -- A node label, key=value, every step pod prefers but does not require,
   # e.g. a bigger node: kubernetes.io/hostname=ci-node. Pods that do not fit
-  # there, or find it gone, schedule anywhere else.
+  # there, or find it gone, schedule anywhere else. Step pods also tolerate the
+  # taint key=value:NoSchedule, so tainting that node reserves it for builds.
   preferredStepNode: ""
 
   # -- Image pull secrets for task pods.

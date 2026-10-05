@@ -57,6 +57,18 @@ jobs:
             labels:
               app: kind-runner-builder
           spec:
+            # Test infrastructure, so it may use the battle station, the node
+            # reserved for builds (a NoSchedule taint keeps services off it),
+            # and prefers it; it schedules on theborg when the node is away.
+            tolerations:
+            - {key: jetbridge.dev/battle-station, operator: Equal, value: "true", effect: NoSchedule}
+            affinity:
+              nodeAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                    - {key: jetbridge.dev/battle-station, operator: In, values: ["true"]}
             containers:
             - name: dind
               image: docker:26-dind

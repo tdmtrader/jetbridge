@@ -122,3 +122,55 @@ func TestBuildAffinity_RequiredStepNode(t *testing.T) {
 		}
 	})
 }
+
+// A node a step is steered to may be reserved for steps by a NoSchedule taint
+// of the same label; the step pod tolerates exactly that taint -- not another
+// value, not NoExecute, not a cordon -- and nothing when no node is named.
+func TestBuildTolerations(t *testing.T) {
+	battle := StepNodeLabel{Key: "jetbridge.dev/battle-station", Value: "true"}
+	want := corev1.Toleration{
+		Key: "jetbridge.dev/battle-station", Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule,
+	}
+
+	t.Run("none without step-node labels", func(t *testing.T) {
+		c := &Container{config: Config{Namespace: "ns"}}
+		if got := c.buildTolerations(); got != nil {
+			t.Errorf("tolerations = %+v, want none", got)
+		}
+	})
+
+	t.Run("the preferred node's taint", func(t *testing.T) {
+		c := &Container{config: Config{Namespace: "ns", PreferredStepNode: &battle}}
+		if got := c.buildTolerations(); len(got) != 1 || got[0] != want {
+			t.Fatalf("tolerations = %+v, want [%+v]", got, want)
+		}
+	})
+
+	t.Run("required, preferred and extra, without duplicates", func(t *testing.T) {
+		pool := StepNodeLabel{Key: "ci.example/pool", Value: "builds"}
+		extra := corev1.Toleration{Key: "example.com/gpu", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}
+		c := &Container{config: Config{
+			Namespace:         "ns",
+			PreferredStepNode: &battle,
+			RequiredStepNode:  &pool,
+			StepTolerations:   []corev1.Toleration{want, extra},
+		}}
+		got := c.buildTolerations()
+		if len(got) != 3 || got[0] != want || got[1] != pool.toleration() || got[2] != extra {
+			t.Errorf("tolerations = %+v", got)
+		}
+	})
+
+	t.Run("on the built pod", func(t *testing.T) {
+		cfg := capturePodConfig(false)
+		cfg.PreferredStepNode = &battle
+		pod, err := capturingContainer(t, cfg, false, nil).
+			buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pod.Spec.Tolerations; len(got) != 1 || got[0] != want {
+			t.Errorf("pod tolerations = %+v, want [%+v]", got, want)
+		}
+	})
+}

@@ -32,3 +32,33 @@ func TestArtifactNodeUnfit(t *testing.T) {
 		})
 	}
 }
+
+// A node reserved for builds by a NoSchedule taint admits the fixture's pinned
+// step pods; its condition taints -- a cordon above all -- never do.
+func TestReservationTolerations(t *testing.T) {
+	node := &corev1.Node{}
+	node.Spec.Taints = []corev1.Taint{
+		{Key: "jetbridge.dev/battle-station", Value: "true", Effect: corev1.TaintEffectNoSchedule},
+		{Key: "example.com/dedicated", Effect: corev1.TaintEffectNoSchedule},
+		{Key: corev1.TaintNodeUnschedulable, Effect: corev1.TaintEffectNoSchedule},
+		{Key: corev1.TaintNodeNotReady, Effect: corev1.TaintEffectNoExecute},
+		{Key: "example.com/evict", Value: "x", Effect: corev1.TaintEffectNoExecute},
+		{Key: "example.com/soft", Value: "x", Effect: corev1.TaintEffectPreferNoSchedule},
+	}
+	want := []corev1.Toleration{
+		{Key: "jetbridge.dev/battle-station", Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule},
+		{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Effect: corev1.TaintEffectNoSchedule},
+	}
+	got := reservationTolerations(node)
+	if len(got) != len(want) {
+		t.Fatalf("tolerations = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("toleration %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if got := reservationTolerations(&corev1.Node{}); got != nil {
+		t.Errorf("an untainted node: tolerations = %+v, want none", got)
+	}
+}

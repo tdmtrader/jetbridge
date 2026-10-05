@@ -671,6 +671,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			Volumes:                      volumes,
 			Containers:                   containers,
 			Affinity:                     affinity,
+			Tolerations:                  c.buildTolerations(),
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},

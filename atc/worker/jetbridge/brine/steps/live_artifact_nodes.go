@@ -88,7 +88,11 @@ func (f *liveArtifactNodes) runtimeConfig(node string) jetbridge.Config {
 	cfg := jetbridge.NewConfig(f.cluster.Namespace, "")
 	cfg.ArtifactDaemonService = liveArtifactDaemonService
 	cfg.ArtifactDaemonHostPath, cfg.ArtifactDaemonPort = f.root, f.port
-	cfg.RequiredStepNode = &jetbridge.StepNodeLabel{Key: corev1.LabelHostname, Value: node}
+	if s, err := f.store(node); err == nil {
+		s.pin(&cfg)
+	} else {
+		cfg.RequiredStepNode = &jetbridge.StepNodeLabel{Key: corev1.LabelHostname, Value: node}
+	}
 	return cfg
 }
 
