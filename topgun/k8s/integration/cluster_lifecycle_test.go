@@ -306,21 +306,21 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 
-	// Build the list of extra args for the web node.
-	extraArgs := []string{}
+	// Telemetry through the chart's typed values; it has no pass-through.
+	telemetry := []string{}
 
 	// When OTEL_EXPORTER_OTLP_ENDPOINT is set, enable server-side tracing.
 	if otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otlpEndpoint != "" {
 		otlpEndpoint = resolveEndpoint(otlpEndpoint)
-		log.Printf("Enabling OTel tracing: --tracing-otlp-address=%s", otlpEndpoint)
-		extraArgs = append(extraArgs,
-			"--tracing-otlp-address="+otlpEndpoint,
-			"--tracing-service-name=concourse-integration-test",
+		log.Printf("Enabling OTel tracing: tracing.otlpAddress=%s", otlpEndpoint)
+		telemetry = append(telemetry,
+			"--set", "tracing.otlpAddress="+otlpEndpoint,
+			"--set", "tracing.serviceName=concourse-integration-test",
 		)
 	}
 	if otlpMetrics := os.Getenv("OTEL_METRICS_OTLP_ENDPOINT"); otlpMetrics != "" {
-		log.Printf("Enabling OTel metrics: --otel-metrics-otlp-address=%s", otlpMetrics)
-		extraArgs = append(extraArgs, "--otel-metrics-otlp-address="+otlpMetrics)
+		log.Printf("Enabling OTel metrics: otelMetrics.otlpAddress=%s", otlpMetrics)
+		telemetry = append(telemetry, "--set", "otelMetrics.otlpAddress="+otlpMetrics)
 	}
 
 	helmArgs := []string{
@@ -352,9 +352,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "secrets.signingKeySecret=" + signingKeySecretName,
 		"--timeout", "5m",
 	}
-	for i, arg := range extraArgs {
-		helmArgs = append(helmArgs, "--set", fmt.Sprintf("web.extraArgs[%d]=%s", i, arg))
-	}
+	helmArgs = append(helmArgs, telemetry...)
 	cmd := exec.Command("helm", helmArgs...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

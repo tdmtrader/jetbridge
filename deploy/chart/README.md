@@ -178,7 +178,6 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.terminationGracePeriodSeconds` | `120` | Graceful shutdown timeout. |
 | `web.resources` | 100m/256Mi req, 2/2Gi limit | CPU/memory resources. |
 | `web.env` | `[]` | Extra env vars (supports `value` and `valueFrom`). |
-| `web.extraArgs` | `[]` | Additional CLI args for the web command. |
 | `web.extraVolumeMounts` | `[]` | Additional volume mounts (e.g. CA bundles). |
 | `web.extraVolumes` | `[]` | Additional volumes for the web pod. |
 | `web.nodeSelector` | `{}` | Node selector for the web pod. |
@@ -232,6 +231,9 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `kubernetes.namespace` | release namespace | Namespace where task/check pods are created. |
 | `kubernetes.serviceAccount` | `""` (web SA) | ServiceAccount for task pods. |
 | `kubernetes.podStartupTimeout` | `5m` | Max time to wait for pod Running. |
+| `kubernetes.podSchedulingTimeout` | `""` (15m) | Max time a step pod may wait Pending for cluster resources. Scheduling + startup + 36m must stay under the resolve-capability TTL. |
+| `kubernetes.defaultTaskCPURequest` | `0` | CPU request (millicores) for a task step that names none; 0 leaves such pods BestEffort. |
+| `kubernetes.preferredStepNode` | `""` | Node label `key=value` every step pod prefers but does not require. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
 | `kubernetes.artifactHelperImage` | `alpine:latest` | Image for init containers and sidecar. Must have `tar`. |
 | `kubernetes.imageRegistryPrefix` | `""` | Registry prefix for custom resource type images. |
@@ -477,7 +479,7 @@ The chart always deploys the artifact daemon and wires its host path into web.
 
 ## Production Notes
 
-- **Secrets:** Add OIDC/OAuth via `web.extraArgs`, and keep `web.localUsers` to a strong admin credential. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
+- **Secrets:** Add OIDC/OAuth through `web.env` (`CONCOURSE_OIDC_*` and the like) until the chart has typed auth values, and keep `web.localUsers` to a strong admin credential. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.

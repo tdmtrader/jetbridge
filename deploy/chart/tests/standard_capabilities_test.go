@@ -89,8 +89,7 @@ func TestStandardCapabilityConfigurationFailsClearly(t *testing.T) {
 		{"artifactDaemon.resolveCapability.existingSecret=", "resolveCapability.existingSecret is required"},
 		{"mcp.clients=[]", "mcp.clients"},
 		{"web.externalUrl=https://example.com/subpath", "origin URL"},
-		{"web.extraArgs[0]=--enable-mcp=false", "chart-owned --enable-mcp"},
-		{"web.extraArgs[0]=--mcp-client-config=/other", "chart-owned --mcp-client-config"},
+		{"web.extraArgs[0]=--cookie-secure", "web.extraArgs has been removed"},
 		{"web.env[0].name=CONCOURSE_ENABLE_MCP", "chart-owned CONCOURSE_ENABLE_MCP"},
 		{"web.env[0].name=CONCOURSE_KUBERNETES_ARTIFACT_DAEMON_TLS_KEY", "chart-owned CONCOURSE_KUBERNETES_ARTIFACT_DAEMON_TLS_KEY"},
 	} {

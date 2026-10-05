@@ -113,8 +113,6 @@ web:
   #         key: client-secret
   env: []
 
-  # -- Additional CLI args for the web command
-  extraArgs: []
 
   # -- The Run contract activation epoch every web node admits durable pipeline
   # runs under -- the v2 create route, the web UI and fly run-pipeline, and the
@@ -219,6 +217,22 @@ kubernetes:
 
   # -- Pod startup timeout
   podStartupTimeout: 5m
+  # -- How long a step pod may wait Pending for cluster resources before its
+  # step fails (Go duration; the binary's default is 15m). A pod that does not
+  # fit any node waits rather than failing at once, so raising this lets a
+  # busy cluster queue work. Pod scheduling plus startup, plus the init
+  # retry budget (31m) and a 5m margin, must stay under
+  # artifactDaemon.resolveCapability.ttl, or web refuses to start.
+  podSchedulingTimeout: ""
+  # -- CPU request, in millicores, given to a task step that names none in
+  # its own container_requests (0 = none, leaving such pods BestEffort).
+  # Without a request the scheduler cannot see a task's CPU and admits every
+  # pod onto the same node.
+  defaultTaskCPURequest: 0
+  # -- A node label, key=value, every step pod prefers but does not require,
+  # e.g. a bigger node: kubernetes.io/hostname=ci-node. Pods that do not fit
+  # there, or find it gone, schedule anywhere else.
+  preferredStepNode: ""
 
   # -- Image pull secrets for task pods.
   # In JetBridge's K8s-native runtime, these secrets are attached directly to

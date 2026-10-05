@@ -42,7 +42,13 @@ import (
 // brine live identity to the cluster that uses it took rbac.brineLive and
 // rbac.brineLiveServiceAccount, leaving 231. Requiring one signing-key Secret
 // instead of minting a key per pod took secrets.create, leaving 230.
-const maxValues = 230
+// Removing the web.extraArgs pass-through replaced its one value with the
+// three typed ones concourse.home was passing through it --
+// kubernetes.podSchedulingTimeout, defaultTaskCPURequest and
+// preferredStepNode (web now derives --cookie-secure from an https
+// external URL, and the OTLP flags already had tracing.* and
+// otelMetrics.*), leaving 232.
+const maxValues = 232
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -126,7 +132,6 @@ var bannedKeys = []string{
 // removes both.
 var grandfathered = []string{
 	"web.env",
-	"web.extraArgs",
 }
 
 // removedKeys stay in the schema as open types for one release, so the
@@ -145,6 +150,7 @@ var removedKeys = []string{
 	"rbac.brineLiveServiceAccount",
 	"secrets.create",
 	"web.enablePipelineRunCreation",
+	"web.extraArgs",
 }
 
 // bareRenderNames are the values a render with no values file must name when
@@ -377,6 +383,11 @@ func checkBannedKeys(dir string) []string {
 	banned := regexp.MustCompile(`(?i)^(` + strings.Join(bannedKeys, "|") + `)$`)
 	found := map[string]bool{}
 	check := func(path string) {
+		// A removed pass-through stays in the schema for one release only
+		// so its render fails naming the replacement; it is not a value.
+		if slices.Contains(removedKeys, path) {
+			return
+		}
 		if banned.MatchString(path[strings.LastIndex(path, ".")+1:]) {
 			found[path] = true
 		}

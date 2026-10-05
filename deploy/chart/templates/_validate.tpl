@@ -28,6 +28,7 @@ template first, so these rules run before anything else in the chart.
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "secrets.create" "name a Secret holding session_signing_key in secrets.signingKeySecret, which every web pod mounts. Remove the value.")
   (list "web.enablePipelineRunCreation" "Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch.")
+  (list "web.extraArgs" "pass-through flags are gone (ADR-0008). web derives --cookie-secure from an https web.externalUrl; set kubernetes.podSchedulingTimeout, kubernetes.defaultTaskCPURequest or kubernetes.preferredStepNode for those flags, and tracing.* or otelMetrics.* for OTLP. Remove the value.")
 -}}
 {{- $key := index $removed 0 -}}
 {{- $node := $.Values -}}
@@ -65,14 +66,6 @@ template first, so these rules run before anything else in the chart.
 {{- $_ := set $ids .client_id true -}}
 {{- end -}}
 {{- $owned := list "enable-mcp" "mcp-client-config" "mcp-disable-operation" "kubernetes-artifact-daemon-port" "kubernetes-artifact-daemon-host-path" "kubernetes-artifact-daemon-service" "kubernetes-artifact-daemon-resolve-capability-key" "kubernetes-artifact-daemon-resolve-capability-ttl" "kubernetes-artifact-daemon-tls-cert" "kubernetes-artifact-daemon-tls-key" "kubernetes-artifact-daemon-tls-ca-cert" -}}
-{{- range .Values.web.extraArgs -}}
-{{- $arg := . -}}
-{{- range $owned -}}
-{{- if regexMatch (printf "^--%s($|[=[:space:]])" .) $arg -}}
-{{- fail (printf "web.extraArgs must not override chart-owned --%s; use the explicit chart setting" .) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
 {{- range .Values.web.env -}}
 {{- $name := .name -}}
 {{- range $owned -}}

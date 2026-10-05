@@ -159,6 +159,15 @@ spec:
             {{- if .Values.kubernetes.podStartupTimeout }}
             - --kubernetes-pod-startup-timeout={{ .Values.kubernetes.podStartupTimeout }}
             {{- end }}
+            {{- with .Values.kubernetes.podSchedulingTimeout }}
+            - --kubernetes-pod-scheduling-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.kubernetes.defaultTaskCPURequest }}
+            - --default-task-cpu-request={{ . }}
+            {{- end }}
+            {{- with .Values.kubernetes.preferredStepNode }}
+            - --kubernetes-preferred-step-node={{ . }}
+            {{- end }}
             {{- if .Values.kubernetes.artifactHelperImage }}
             - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
             {{- end }}
@@ -298,9 +307,6 @@ spec:
             - --backend-max-conns={{ .Values.web.backendMaxConns }}
             {{- end }}
             # Extra args
-            {{- range .Values.web.extraArgs }}
-            - {{ . }}
-            {{- end }}
           env:
             - name: CONCOURSE_SESSION_SIGNING_KEY
               value: /keys/session_signing_key

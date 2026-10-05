@@ -186,7 +186,7 @@
           "$ref": "#/definitions/openList"
         },
         "extraArgs": {
-          "$ref": "#/definitions/strings"
+          "$ref": "#/definitions/removed"
         },
         "pipelineRunActivationEpoch": {
           "type": "integer"
@@ -268,6 +268,17 @@
         },
         "podStartupTimeout": {
           "$ref": "#/definitions/optionalGoDuration"
+        },
+        "podSchedulingTimeout": {
+          "$ref": "#/definitions/optionalGoDuration"
+        },
+        "defaultTaskCPURequest": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "preferredStepNode": {
+          "type": "string",
+          "pattern": "^$|^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?=([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$"
         },
         "imagePullSecrets": {
           "$ref": "#/definitions/strings"

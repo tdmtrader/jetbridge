@@ -88,8 +88,12 @@ is written beside the constant. A raise is a one-line diff a reviewer sees.
   a stale or misspelt key surfaces at the next sync instead of being
   ignored. A deployment's values file has to change in step with a chart
   that removes a key.
-- `web.extraArgs` and `web.env` remain, grandfathered, until their settings
-  become typed values or binary defaults.
+- `web.env` remains, grandfathered, until its settings become typed values
+  or binary defaults. `web.extraArgs` went first (2026-10-05): its settings
+  became `kubernetes.podSchedulingTimeout`, `kubernetes.defaultTaskCPURequest`
+  and `kubernetes.preferredStepNode`, web derives `--cookie-secure` from an
+  `https` external URL, and the OTLP flags use the existing `tracing.*` and
+  `otelMetrics.*` values.
 - ADR-0002's durable-tier consequences no longer apply to the chart. The
   chart does not configure the durable tier: `artifactDaemon.durable` is a
   removed key, the daemon is handed no `--durable-*` flag, and Hangar names

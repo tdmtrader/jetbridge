@@ -15,10 +15,6 @@ web:
   externalUrl: https://concourse.example
   strategy:
     type: Recreate
-  extraArgs:
-  - "--cookie-secure"
-  - "--default-task-cpu-request=placeholder"
-  - "--kubernetes-pod-scheduling-timeout=placeholder"
   extraVolumes:
   - name: home-ca
     configMap:
@@ -82,6 +78,9 @@ mcp:
     redirect_uris:
     - http://127.0.0.1:8964/callback
 kubernetes:
+  podSchedulingTimeout: 60m
+  defaultTaskCPURequest: 1000
+  preferredStepNode: jetbridge.dev/battle-station=true
   artifactHelperImage: index.docker.io/library/alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000
   credentialManager:
     enabled: true
