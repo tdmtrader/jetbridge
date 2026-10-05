@@ -544,19 +544,36 @@ var _ = Describe("queue command", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer closeFn()
 		d.Owner, d.Lander, d.Admissions = "runner", leakyLander{d.Lander, leak}, leakyAdmissions{leak}
-		Expect(d.Step(ctx)).To(Succeed())
+		stepErr := d.Step(ctx) // an unreadable main counts a failed landing, no pause
+		Expect(stepErr).To(HaveOccurred())
+		fmt.Fprintln(errw, stepErr)
+		Expect(errw.Flush()).To(Succeed())
+		counted, err := store.Load(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(counted.Paused).To(BeFalse())
+		Expect(counted.LandFails).To(Equal(1))
+		Expect(counted.LandErr).To(ContainSubstring("cannot tell whether main holds"))
+		l2, err := store.Acquire(ctx, "runner", time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		counted.Landing = nil
+		_, err = store.Save(ctx, l2.Token, counted)
+		Expect(err).NotTo(HaveOccurred())
+		d2, closeFn2, err := newDriver(c, &o, errw)
+		Expect(err).NotTo(HaveOccurred())
+		defer closeFn2()
+		d2.Owner, d2.Admissions = "runner", leakyAdmissions{leak}
+		Expect(d2.Step(ctx)).To(Succeed())
 		Expect(errw.Flush()).To(Succeed())
 		Expect(entry(ctx, []string{"status", "--config", file}, &o, &e)).To(Equal(0), e.String())
-		saved, err := store.Load(ctx)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(saved.Paused).To(BeTrue(), "the leak reached the saved state")
+		Expect(counted.LandErr).To(ContainSubstring("denied"), "the leak reached the saved state")
 		note := string(must(os.ReadFile(events)))
-		Expect(note).To(ContainSubstring(`"paused"`))
 		Expect(e.String()).To(ContainSubstring("admissions: denied"))
 		outputs := map[string]string{"stderr": e.String(), "stdout (status)": o.String(), "notify file": note,
 			"snapshot": gitIn(remote, "log", "-p", "refs/queue/state")}
 		for what, text := range outputs {
-			Expect(text).To(ContainSubstring("denied"), what)
+			if what != "notify file" { // a failed landing is no pause, so no event is due
+				Expect(text).To(ContainSubstring("denied"), what)
+			}
 			for _, part := range []string{"Xq7v", "Zk9r", "Lm4t", "Pw8s", "Yh2n"} {
 				Expect(text).NotTo(ContainSubstring(part), what)
 			}
