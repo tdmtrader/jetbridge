@@ -73,7 +73,10 @@ var typedModes = []struct {
 			"ingress.host=ci.example",
 			"pdb.enabled=true",
 			"postgresql.enabled=true",
-			"rbac.brineLive=true",
+			// Generated daemon TLS: once the signing-key placeholder goes,
+			// this is the only template that renders a Secret.
+			"artifactDaemon.tls.source=generated",
+			"artifactDaemon.tls.existingSecret=",
 		),
 		floor: 34,
 	},
