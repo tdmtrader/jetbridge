@@ -419,7 +419,7 @@ secrets:
   # mounts it at /keys, so all replicas sign and verify sessions with one key
   # and a restart logs no one out. Create it once:
   #   concourse generate-key -t rsa -f session_signing_key
-  #   kubectl create secret generic concourse-session-signing-key \
+  #   kubectl create secret generic jetbridge-session-signing-key \
   #     --from-file=session_signing_key
   # The chart never mints the key: Helm `lookup` returns nothing under
   # `helm template`, which is how Argo renders, so a generated key would be

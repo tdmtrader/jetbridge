@@ -103,8 +103,11 @@ does not render it: home-infra declares all three objects in
 `manifests/cicd/concourse-live-tests-rbac.yaml`, beside the cluster's other
 live-test identities, and the `brine-live` and `brine-live-one-off` step pod
 grants (`kubernetes.stepPodGrants`) map the brine job and main's one-off builds
-to it. A cluster without that identity or those grants runs the scenarios as
-the default step pod ServiceAccount, and every live scenario 403s.
+to it. If the grants name `jetbridge-brine-live` and the ServiceAccount is
+missing, the brine step pod fails admission (ServiceAccount not found), and a
+pod whose ServiceAccount is deleted under it gets 401s from the API server. A
+cluster without the grants runs the scenarios as the default step pod
+ServiceAccount, which lacks the ClusterRole, so every live scenario 403s.
 `hack/ci-check.sh` forwards each `((var))` from an environment
 variable of the same name upper-cased with `_` for `-`
 (`BRINE_ALLOW_HOSTPATH_TESTS`, `BRINE_ARTIFACT_NODE`, ...), and names any

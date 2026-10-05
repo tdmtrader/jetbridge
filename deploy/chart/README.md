@@ -134,7 +134,7 @@ spec:
         - name: web.mainTeamLocalUser
           value: admin
         - name: secrets.signingKeySecret
-          value: concourse-session-signing-key
+          value: jetbridge-session-signing-key
         - name: ingress.enabled
           value: "true"
         - name: ingress.host
