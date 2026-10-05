@@ -447,28 +447,6 @@ var _ = Describe("Driver", func() {
 			Expect(recs[0].Why).To(ContainSubstring("no verdict"))
 		})
 
-		It("a restart that finds the queue still paused for the same reason adds no second pause record", func() {
-			land.onLand = func() { store.crash = true }
-			d1 := clocked()
-			admit(d1, "a")
-			Expect(func() {
-				for range 2 {
-					_ = d1.Step(ctx)
-				}
-			}).To(PanicWith("killed"))
-			store.crash, land.onLand, land.blind = false, nil, errors.New("main unreadable")
-			steps(clocked(), 2)
-			expire()
-			steps(clocked(), 2)
-			var paused []core.SettleRecord
-			for _, r := range store.snap().Settled {
-				if r.Kind == core.PausedEvent {
-					paused = append(paused, r)
-				}
-			}
-			Expect(paused).To(HaveLen(1))
-		})
-
 		It("an ejected culprit has the cause culprit", func() {
 			run.verdict = failsWith("a")
 			d := clocked()
@@ -636,7 +614,9 @@ var _ = Describe("Driver", func() {
 		Expect(snap.Queued).To(BeEmpty())
 	})
 
-	It("pauses, ejecting nothing, when it cannot tell whether a saved landing reached main", func() {
+	// crashedAfterLand leaves a saved Landing for "a" whose land reached main, then
+	// makes main unreadable.
+	crashedAfterLand := func() {
 		land.onLand = func() { store.crash = true }
 		d1 := driver()
 		admit(d1, "a")
@@ -645,22 +625,64 @@ var _ = Describe("Driver", func() {
 				_ = d1.Step(ctx)
 			}
 		}).To(PanicWith("killed"))
-
 		store.crash, land.onLand, land.blind = false, nil, errors.New("main unreadable")
+	}
+
+	It("counts a failure, never pausing or ejecting, when it cannot tell whether a saved landing reached main, then settles it once main is readable", func() {
+		crashedAfterLand()
 		run.verdict = failsWith("a")
 		d2 := driver()
-		steps(d2, 3)
-		Expect(len(run.starts)).To(Equal(1), "nothing reruns while paused")
-		snap := store.snap()
-		Expect(snap.Paused).To(BeTrue())
-		Expect(snap.Why).To(ContainSubstring("main unreadable"))
-		Expect(snap.Ejected).To(BeEmpty())
+		for i := 1; i <= 2; i++ {
+			Expect(d2.Step(ctx)).To(MatchError(ContainSubstring("main unreadable")))
+			snap := store.snap()
+			Expect(snap.Paused).To(BeFalse())
+			Expect(snap.Landing).NotTo(BeNil(), "the landing stays saved")
+			Expect(snap.LandFails).To(Equal(i))
+			Expect(snap.LandErr).To(ContainSubstring("cannot tell whether main holds"))
+			Expect(snap.LandErr).To(ContainSubstring("main unreadable"))
+			Expect(snap.Ejected).To(BeEmpty())
+		}
+		Expect(len(run.starts)).To(Equal(1), "nothing reruns while the landing is unsettled")
+		Expect(note.of(core.PausedEvent)).To(BeEmpty())
+		for _, r := range store.snap().Settled {
+			Expect(r.Kind).NotTo(Equal(core.PausedEvent))
+		}
 
-		land.blind = nil
-		Expect(d2.Resume(ctx, store.snap().PauseSeq)).To(Succeed())
+		land.blind = nil // readable now, and main holds a
 		steps(d2, 2)
-		Expect(store.snap().Landed).To(Equal(map[string]bool{"a": true}))
-		Expect(store.snap().Ejected).To(BeEmpty())
+		snap := store.snap()
+		Expect(snap.Landed).To(Equal(map[string]bool{"a": true}))
+		Expect(snap.Landing).To(BeNil())
+		Expect(snap.LandFails).To(Equal(0))
+		Expect(snap.LandErr).To(BeEmpty())
+		Expect(snap.Ejected).To(BeEmpty())
+		Expect(land.landed).To(Equal([]string{"a"}), "landed once")
+	})
+
+	It("retries the batch once main is readable and does not hold the saved candidate", func() {
+		crashedAfterLand()
+		d2 := driver()
+		Expect(d2.Step(ctx)).To(MatchError(ContainSubstring("main unreadable")))
+		Expect(store.snap().LandFails).To(Equal(1))
+		land.blind, land.landed = nil, nil // readable, and main does not hold a
+		steps(d2, 4)
+		snap := store.snap()
+		Expect(snap.Paused).To(BeFalse())
+		Expect(snap.Ejected).To(BeEmpty())
+		Expect(snap.Landed).To(Equal(map[string]bool{"a": true}), "retried and landed")
+		Expect(snap.LandFails).To(Equal(0))
+	})
+
+	It("reaches the alarm count after max_failures unreadable-main reconciles in a row, still unpaused", func() {
+		crashedAfterLand()
+		d2 := driver()
+		for range 3 {
+			_ = d2.Step(ctx)
+		}
+		snap := store.snap()
+		Expect(snap.LandFails).To(Equal(3))
+		Expect(snap.Paused).To(BeFalse())
+		Expect(snap.Landing).NotTo(BeNil())
 	})
 
 	It("drops its plan when another writer saved first, and ejects nothing on the other's verdict", func() {

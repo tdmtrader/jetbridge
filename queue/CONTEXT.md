@@ -66,7 +66,8 @@ the outcome that lands them; nobody is ejected.
 which composes the batch again. It settles nothing and is tried again. The count
 in a row is kept in the queue state; at `lander.max_failures`, `queue health`
 raises the alarm (an ALARM line, exit 3) until a land clears it. The queue never
-pauses or ejects for it.
+pauses or ejects for it. This includes a saved landing whose settling cannot
+read main: it counts as a failed landing, stays saved, and is reconciled again.
 
 **Settle record**: one saved line of history in the queue state for each land,
 eject, pause, refusal or flake: id, commit, kind, time, admission time, reason,

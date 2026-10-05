@@ -472,7 +472,7 @@ func (d *Driver) hold(ctx context.Context) error {
 }
 
 // load rebuilds the Queue and a fresh Strategy from the Snapshot and settles a
-// saved Landing; if main cannot be read it pauses.
+// saved Landing; if main cannot be read it counts a failed landing, as a land error does, and keeps the Landing.
 func (d *Driver) load(ctx context.Context) error {
 	if d.s != nil {
 		return nil
@@ -513,24 +513,25 @@ func (d *Driver) load(ctx context.Context) error {
 	}
 	in = &Landing{in.Main, in.Candidate, slices.DeleteFunc(slices.Clone(in.Entries), q.superseded), in.Fence} // settled by commit
 	ev := Event{Kind: LandedEvent, Entries: in.Entries, Why: "landed before a restart", At: d.now()}
-	again := false // already paused for this reason: a restart is no new pause
 	landed, err := ReconcileLanding(ctx, d.Lander, d.q, *in, d.fence())
-	if err != nil {
-		ev = Event{Kind: PausedEvent, Entries: in.Entries, Why: fmt.Sprintf("cannot tell whether main holds %s: %v", in.Candidate, err)}
-		ev.At = d.now()
-		again = d.s.Paused && d.s.Why == Redact(ev.Why) // as saved
-		d.pause(ev.Why)
-	} else if d.s.Landing = nil; landed {
+	if err != nil { // cannot tell: no pause, the landing stays saved and the count rises toward the alarm
+		err = fmt.Errorf("cannot tell whether main holds %s: %w", in.Candidate, err)
+		d.s.LandFails, d.s.LandErr = d.s.LandFails+1, err.Error()
+		if serr := d.save(ctx); serr != nil {
+			err = errors.Join(err, serr)
+		}
+		d.reset()
+		return err
+	}
+	if d.s.Landing = nil; landed {
 		d.s.LandFails, d.s.LandErr = 0, ""
 		mark(d.s.Landed, in.Entries)
-	}
-	if (err != nil || landed) && !again {
 		d.settled(ev)
 	}
 	if err := d.save(ctx); err != nil {
 		return err
 	}
-	if err != nil || landed {
+	if landed {
 		d.notify(ctx, ev)
 	}
 	return nil

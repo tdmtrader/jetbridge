@@ -225,8 +225,13 @@ onto main. Never mix spellings; write both as short branch names.
   A land clears it. When it reaches `lander.max_failures`, `queue health` prints
   `ALARM: <N> consecutive failed landings (last: <error>)` and exits 3, until
   the next land.
-- **Auto-resume.** A pause for no verdict (not a land-error or unreadable-main
-  pause) ends by itself once `pause.cooldown` has passed since it began (default
+  A saved landing is settled against main on the next load. If main cannot be
+  read, or the fence or lease-ref push is refused, that is no pause either: it
+  counts as a failed landing (`LandErr` reads `cannot tell whether main holds
+  <sha>: <error>`), the landing stays saved, and the next step reconciles it
+  again. Once main is readable, a candidate it holds is marked landed and the
+  count clears; one it lacks is composed and tested again.
+- **Auto-resume.** A pause for no verdict ends by itself once `pause.cooldown` has passed since it began (default
   `5m`; `0s` turns it off). The queue announces `resumed` with the reason
   "auto-resume after cool-down" and saves it as a settle record, as it does a
   manual resume. If the next run again has no verdict the queue pauses anew, as

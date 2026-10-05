@@ -32,6 +32,12 @@ var _ = Describe("health", func() {
 		Expect(code).To(Equal(0))
 	})
 
+	It("An unreadable main after a failed land counts toward the alarm and is no pause", func() {
+		code, out := check(core.Snapshot{LandFails: 3, LandErr: "cannot tell whether main holds c1: main unreadable"}, nil)
+		Expect(code).To(Equal(3))
+		Expect(out).To(Equal("ALARM: 3 consecutive failed landings (last: cannot tell whether main holds c1: main unreadable)\n"))
+	})
+
 	It("Failed landings under max_failures raise no alarm", func() {
 		code, out := check(core.Snapshot{LandFails: 2, LandErr: "push refused"}, nil)
 		Expect(code).To(Equal(0))
