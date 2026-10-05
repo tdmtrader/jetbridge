@@ -44,7 +44,7 @@ func WireTeamConnectors(group *flags.Group) {
 }
 
 type AuthFlags struct {
-	SecureCookies               bool              `long:"cookie-secure" description:"Force sending secure flag on http cookies"`
+	SecureCookies               bool              `long:"cookie-secure" description:"Mark cookies Secure even when --external-url is http (a TLS-terminating proxy in front). An https --external-url always does."`
 	Expiration                  time.Duration     `long:"auth-duration" default:"24h" description:"Lifetime of an access token. Renewable logins refresh automatically after expiry."`
 	RefreshTokenIdleTimeout     time.Duration     `long:"auth-refresh-idle-timeout" default:"720h" description:"Maximum time a renewable login may remain unused (default 30 days)."`
 	RefreshTokenAbsoluteTimeout time.Duration     `long:"auth-refresh-absolute-timeout" default:"2160h" description:"Maximum renewable login lifetime before another login (default 90 days)."`

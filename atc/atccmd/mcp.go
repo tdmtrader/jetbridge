@@ -102,7 +102,7 @@ func (cmd *RunCommand) constructMCPHandler(logger lager.Logger, conn db.DbConn, 
 	store := mcpauth.NewSQLStore(conn)
 	auth, err := mcpauth.NewServer(mcpauth.Config{
 		Issuer: base + "/mcp/oauth", Resource: base + "/api/v1/mcp", Clients: clients,
-		Store: store, Provider: provider, SecureCookies: cmd.Auth.AuthFlags.SecureCookies,
+		Store: store, Provider: provider, SecureCookies: cmd.secureCookies(),
 		IdleLifetime: cmd.Auth.AuthFlags.RefreshTokenIdleTimeout, AbsoluteLifetime: cmd.Auth.AuthFlags.RefreshTokenAbsoluteTimeout,
 	})
 	if err != nil {

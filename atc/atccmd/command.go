@@ -1026,7 +1026,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		displayUserIdGenerator,
 	)
 
-	middleware := token.NewMiddleware(cmd.Auth.AuthFlags.SecureCookies)
+	middleware := token.NewMiddleware(cmd.secureCookies())
 
 	apiHandler, err := cmd.constructAPIHandler(
 		logger,
@@ -2217,6 +2217,16 @@ func (cmd *RunCommand) tlsConfig(logger lager.Logger, dbConn db.DbConn) (*tls.Co
 		}
 	}
 	return tlsConfig, nil
+}
+
+// secureCookies says whether web marks its cookies Secure: always when it is
+// reached over https, which is the one right answer for a cookie served over
+// TLS, and otherwise only when --cookie-secure forces it (a TLS-terminating
+// proxy in front of an http external URL). MCP's authorization cookies
+// already followed the issuer's scheme; session cookies now do too.
+func (cmd *RunCommand) secureCookies() bool {
+	return cmd.Auth.AuthFlags.SecureCookies ||
+		(cmd.ExternalURL.URL != nil && cmd.ExternalURL.URL.Scheme == "https")
 }
 
 func (cmd *RunCommand) parseDefaultLimits() (atc.ContainerLimits, error) {
