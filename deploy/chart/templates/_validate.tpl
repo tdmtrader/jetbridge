@@ -22,6 +22,8 @@ template first, so these rules run before anything else in the chart.
   (list "artifactDaemon.durable" "the durable tier is not configurable from the chart. Remove the value.")
   (list "artifactDaemon.enabled" "the artifact daemon is always deployed. Remove the value.")
   (list "artifactDaemon.tls.enabled" "mTLS is always required. Set tls.source and remove the old value.")
+  (list "hangarOutput.activation.job.facet" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
+  (list "hangarOutput.activation.job.mode" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
   (list "web.enablePipelineRunCreation" "Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch.")
 -}}
 {{- $key := index $removed 0 -}}

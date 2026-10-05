@@ -36,8 +36,10 @@ import (
 // values.yaml examples hold, so the count was 245: 131 values.yaml values,
 // the three template-only keys (fullnameOverride, nameOverride,
 // serviceAccount.name) and the 111 leaves of the deferred groups. Removing
-// artifactDaemon.durable took its 11 leaves, leaving 234.
-const maxValues = 234
+// artifactDaemon.durable took its 11 leaves, leaving 234. The activation walk
+// replaced hangarOutput.activation.job.mode and job.facet, two step values,
+// with one target, hangarOutput.activation.target, leaving 233.
+const maxValues = 233
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -128,11 +130,16 @@ var grandfathered = []string{
 
 // removedKeys stay in the schema as open types for one release, so the
 // removed-keys table in templates/_validate.tpl can name the replacement.
-// They are not values.
+// They are not values. One inside a deferred group may stand on its nearest
+// schema ancestor instead, when that ancestor is open: the group's schema is
+// not written out below its top level, and the open ancestor already accepts
+// the key for the release.
 var removedKeys = []string{
 	"artifactDaemon.durable",
 	"artifactDaemon.enabled",
 	"artifactDaemon.tls.enabled",
+	"hangarOutput.activation.job.facet",
+	"hangarOutput.activation.job.mode",
 	"web.enablePipelineRunCreation",
 }
 
@@ -224,6 +231,18 @@ var shapeGuards = []shapeGuard{
 		breakIt: func(t *testing.T, dir string) {
 			editValues(t, dir, func(values map[string]any) {
 				values["web"].(map[string]any)["unlisted"] = ""
+			})
+		},
+	},
+	{
+		name:  "a removed key in a deferred group stands only on an open ancestor",
+		names: "hangarOutput.activation.job.mode",
+		check: checkSchemaEntries,
+		breakIt: func(t *testing.T, dir string) {
+			editSchema(t, dir, func(schema map[string]any) {
+				schemaProperties(schema, "hangarOutput")["activation"] = map[string]any{
+					"type": "object", "additionalProperties": false,
+				}
 			})
 		},
 	},
@@ -396,12 +415,30 @@ func checkSchemaEntries(dir string) []string {
 	})
 	for _, list := range [][]string{openMaps, deferredGroups, removedKeys} {
 		for _, path := range list {
-			if _, ok := shape.schemaAt(path); !ok {
-				violations = append(violations, fmt.Sprintf("%s is listed in shape_test.go but has no schema entry", path))
+			if _, ok := shape.schemaAt(path); ok {
+				continue
 			}
+			if slices.Contains(removedKeys, path) && inDeferredGroup(path) && shape.openAncestor(path) {
+				continue
+			}
+			violations = append(violations, fmt.Sprintf("%s is listed in shape_test.go but has no schema entry", path))
 		}
 	}
 	return violations
+}
+
+// openAncestor reports whether the nearest schema entry above path accepts
+// keys it does not list, so a removed key under it still validates.
+func (shape chartShape) openAncestor(path string) bool {
+	segments := strings.Split(path, ".")
+	for end := len(segments) - 1; end > 0; end-- {
+		node, ok := shape.schemaAt(strings.Join(segments[:end], "."))
+		if !ok {
+			continue
+		}
+		return node["additionalProperties"] != false && (node["type"] == nil || isObjectSchema(node))
+	}
+	return false
 }
 
 // checkClosedObjects: every object in the schema refuses keys it does not
@@ -780,5 +817,26 @@ func TestARemovedGroupFailsWhenItsChildrenAreSet(t *testing.T) {
 	out := renderHangarError(t, "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=cache")
 	if !strings.Contains(out, "artifactDaemon.durable has been removed") {
 		t.Fatalf("setting artifactDaemon.durable's children did not name its removal:\n%s", out)
+	}
+}
+
+// The activation step values are removed for the target, and a values file
+// that still drives a step is told which value replaces it -- with execution
+// control off as well as on, so the operator meets it before anything else.
+func TestTheActivationStepValuesNameTheTarget(t *testing.T) {
+	for _, probe := range []struct {
+		sets []string
+		says string
+	}{
+		{[]string{"hangarOutput.activation.job.mode=begin"}, "hangarOutput.activation.job.mode"},
+		{append(append([]string{}, baseControlSets...), "hangarOutput.activation.job.mode=enable"), "hangarOutput.activation.job.mode"},
+		{[]string{"hangarOutput.activation.job.facet=output"}, "hangarOutput.activation.job.facet"},
+		// Both set: whichever the table names first, it names the target.
+		{[]string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=base"}, "hangarOutput.activation.job."},
+	} {
+		out := renderHangarError(t, probe.sets...)
+		if !strings.Contains(out, probe.says) || !strings.Contains(out, "has been removed; set hangarOutput.activation.target") {
+			t.Errorf("%v did not name %s's removal and the target:\n%s", probe.sets, probe.says, firstLines(out, 3))
+		}
 	}
 }

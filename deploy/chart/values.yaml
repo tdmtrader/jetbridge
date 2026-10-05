@@ -1028,30 +1028,34 @@ hangarOutput:
   # enforceable only while that command has a PostgreSQL role of its own.
   database:
     # -- Existing Secret with the activation role's connection string under the
-    # key `dsn`. Required when the output facet is on.
+    # key `dsn`. Required with execution control on, because the activation
+    # walk Job renders there and runs as this role.
     existingSecret: ""
   activation:
     serviceAccount:
       name: ""
       annotations: {}
-    # -- Render one activation Job. Empty renders none. One of
-    # begin|attest|enable|drain, with facet base|output. No single Helm boolean
-    # and no single Job invocation enables a capability: the CAS row's
-    # transition constraints are what do, and `enable` refuses without a fresh
-    # attestation.
+    # -- Where the activation walk takes hangarOutput.activationEpoch: off,
+    # base or output. With execution control on, the chart renders the walk
+    # as a PostSync hook on every sync; it makes only the transitions the
+    # epoch's row still needs, so a repeated walk writes nothing. base needs
+    # hangarOutput.executionControl.enabled, and output needs
+    # hangarOutput.enabled as well. A lower target drains the facets above
+    # it. A drained facet never comes back: raising activationEpoch is the
+    # re-enable after a drain, once the earlier epoch is finalized. No single
+    # value enables a capability: the walk attests the cohort and checks every
+    # enable precondition, and the epoch row's constraints do the rest.
+    target: "off"
     job:
-      mode: ""
-      facet: ""
-      # -- For mode: drain. Without it a drain stops new admission and reports
-      # what is still live; with it the facet may reach the terminal disabled
-      # state, and only if the live tables say it holds nothing.
+      # -- Let a walk to a lower target take a drained facet to the terminal
+      # disabled state. Without it a drain stops new admission and reports
+      # what is still live; with it the facet reaches disabled only if the
+      # live tables say it holds nothing.
       finalize: false
-      # -- How long a completed activation Job is kept before Kubernetes
-      # deletes it. The Job's name carries the mode AND the epoch, so a
-      # rotation renders a NEW Job rather than colliding with the previous
-      # epoch's immutable pod template -- which means they accumulate, one per
-      # mode per epoch, without this. A day is long enough to read the logs.
-      # Empty or 0 keeps them forever.
+      # -- How long a finished walk Job is kept before Kubernetes deletes it.
+      # The next sync deletes and recreates the hook anyway (one fixed name,
+      # BeforeHookCreation), so this only bounds how long a finished walk's
+      # logs stay readable between syncs. Empty or 0 keeps it until then.
       ttlSecondsAfterFinished: 86400
     # -- How long an attested output facet's publication receipt key is valid.
     # Receipts outside the window are refused, and there is no rotation path
