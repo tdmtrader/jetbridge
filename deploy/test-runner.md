@@ -82,7 +82,7 @@ The Brine task needs its existing `GITHUB_TOKEN` pipeline variable for the
 private Go adapter dependency; that credential is not baked into the runner.
 It also needs four pipeline variables that do not exist until someone creates
 them (the task errors on an undefined `((var))` before a scenario runs), and
-one chart value on the cluster it runs in:
+an identity on the cluster it runs in (below):
 
 | Pipeline variable | Task env | Value |
 |---|---|---|
@@ -97,11 +97,15 @@ has a ready artifact cache, so a cluster needs at least one labelled node and
 any of them may be asleep. `BRINE_LIVE_ARTIFACT_NODE` still names one node
 outright, for a local run that wants a specific node.
 
-The live tier runs under the task pod's ServiceAccount and creates its own
-namespaces, so the chart must be deployed with `rbac.brineLive=true`
-(`deploy/chart/templates/brine-live-rbac.yaml`); a cluster still rendering a
-chart revision without that template grants nothing and every live scenario
-403s. `hack/ci-check.sh` forwards each `((var))` from an environment
+The live tier creates its own namespaces, so it runs as `jetbridge-brine-live`,
+a ServiceAccount with a cluster-wide ClusterRole of the same name. The chart
+does not render it: home-infra declares all three objects in
+`manifests/cicd/concourse-live-tests-rbac.yaml`, beside the cluster's other
+live-test identities, and the `brine-live` and `brine-live-one-off` step pod
+grants (`kubernetes.stepPodGrants`) map the brine job and main's one-off builds
+to it. A cluster without that identity or those grants runs the scenarios as
+the default step pod ServiceAccount, and every live scenario 403s.
+`hack/ci-check.sh` forwards each `((var))` from an environment
 variable of the same name upper-cased with `_` for `-`
 (`BRINE_ALLOW_HOSTPATH_TESTS`, `BRINE_ARTIFACT_NODE`, ...), and names any
 that are missing before it runs the job.
