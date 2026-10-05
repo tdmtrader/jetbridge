@@ -252,10 +252,8 @@ func TestTheOutputDaemonsServerKeyIsMountedInTheDaemonPodAndNowhereElse(t *testi
 		name string
 		sets []string
 	}{
-		name: "the attest Job, which needs a client certificate",
-		sets: append(append([]string{}, outputSets...),
-			"hangarOutput.activation.job.mode=attest",
-			"hangarOutput.activation.job.facet=base"),
+		name: "the activation walk Job, which mounts a client certificate",
+		sets: append([]string{}, outputSets...),
 	})
 
 	for _, mode := range modes {
