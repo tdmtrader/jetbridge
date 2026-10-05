@@ -11,3 +11,5 @@ mcp:
       client_name: Test client
       redirect_uris:
         - http://127.0.0.1:8964/callback
+secrets:
+  signingKeySecret: test-signing-key
