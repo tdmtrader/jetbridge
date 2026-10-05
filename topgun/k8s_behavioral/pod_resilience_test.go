@@ -92,7 +92,7 @@ jobs:
 	// Triggers OOM using a static Go binary that allocates 10 MB slices
 	// in a tight loop. Shell-based approaches (awk, dd, /dev/shm) don't
 	// reliably count against the container memory cgroup in K3s.
-	// The oom-trigger image is built and loaded by buildAndLoadOOMTriggerImage
+	// The oom-trigger image is built by buildOOMTriggerImage and loaded by loadImagesIntoCluster
 	// in cluster_lifecycle_test.go.
 	It("detects OOM-killed containers", func() {
 		cfg := writePipelineFile("oom.yml", `

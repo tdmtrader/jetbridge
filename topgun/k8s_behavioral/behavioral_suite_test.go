@@ -11,7 +11,8 @@
 //
 //   go test ./topgun/k8s_behavioral/ -count=1 -v -timeout 60m
 //
-// Parallel run (4 KinD clusters, specs split across 4 processes):
+// Parallel run (one K3s cluster per process, brought up one at a time,
+// specs split across the processes):
 //
 //   ginkgo --procs=4 -v --timeout=60m ./topgun/k8s_behavioral/
 //
@@ -100,11 +101,14 @@ var (
 )
 
 var _ = SynchronizedBeforeSuite(
-	// Process 1 only: build shared artifacts (fly binary, Docker image).
-	// These are expensive one-time operations shared across all processes.
+	// Process 1 only: build shared artifacts (fly binary, Docker images).
+	// These are expensive one-time operations shared across all processes,
+	// and every image any cluster loads is put on the host here, before any
+	// proc creates a cluster, so no two procs pull at once.
 	func() []byte {
 		image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 		ensureConcourseImage(image)
+		prepareHostImages()
 
 		flyBin := os.Getenv("FLY_PATH")
 		if flyBin == "" {
@@ -135,8 +139,12 @@ var _ = SynchronizedBeforeSuite(
 		// the log before a death, not just a "gone" line at the end.
 		startResourceStamp()
 
-		kubeconfig := createK3sCluster()
-		loadImagesIntoCluster(image)
+		// Bring-up is serialized across procs; everything after it is not.
+		var kubeconfig string
+		withClusterSetupLock(func() {
+			kubeconfig = createK3sCluster()
+			loadImagesIntoCluster(image)
+		})
 
 		chartPath := filepath.Join(mustRepoRoot(), "deploy", "chart")
 		helmDeployConcourse(kubeconfig, namespace, chartPath, image)

@@ -14,8 +14,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/k3s"
 	corev1 "k8s.io/api/core/v1"
@@ -48,7 +50,7 @@ func splitImageRef(image string) (string, string) {
 func findFreePort() int {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Fatalf("failed to find free port: %v", err)
+		Fail(fmt.Sprintf("failed to find free port: %v", err))
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
@@ -69,11 +71,41 @@ func verifyPrerequisites() error {
 	return nil
 }
 
+// clusterSetupLockPath is the host-wide lock every Ginkgo proc takes around
+// its cluster bring-up. All procs share one Docker daemon (the task's DinD),
+// and creating clusters and saving images out of it concurrently contends on
+// its containerd's content locks ("ref ... locked" in build 209). Only the
+// bring-up is serialized; each proc deploys and runs specs on its own cluster
+// in parallel once its images are in.
+var clusterSetupLockPath = filepath.Join(os.TempDir(), "k3s-behavioral-cluster-setup.lock")
+
+// withClusterSetupLock runs fn holding clusterSetupLockPath. The lock is an
+// flock, so a proc that dies holding it releases it with its descriptors.
+func withClusterSetupLock(fn func()) {
+	f, err := os.OpenFile(clusterSetupLockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		Fail(fmt.Sprintf("failed to open cluster-setup lock %s: %v", clusterSetupLockPath, err))
+	}
+	defer f.Close()
+
+	waiting := time.Now()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		Fail(fmt.Sprintf("failed to take cluster-setup lock %s: %v", clusterSetupLockPath, err))
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	log.Printf("Proc %d took the cluster-setup lock after %s", GinkgoParallelProcess(), time.Since(waiting).Round(time.Second))
+
+	fn()
+}
+
 // createK3sCluster creates an ephemeral K3s cluster via testcontainers.
 // K3s replaces KinD — no kubeadm, no nested containerd, no timeout patches.
+// Each Ginkgo proc creates its own, so the kubeconfig is named by proc: a
+// shared path let the last proc to write it point every proc at its cluster.
 func createK3sCluster() string {
 	ctx := context.Background()
-	kubeconfigPath := filepath.Join(os.TempDir(), "k3s-kubeconfig-behavioral")
+	kubeconfigPath := filepath.Join(os.TempDir(),
+		fmt.Sprintf("k3s-kubeconfig-behavioral-%d", GinkgoParallelProcess()))
 
 	// No Ryuk. The reaper is the thing that has been killing the cluster:
 	// every unexplained K3s death in CI (integration 283/285, behavioral 188)
@@ -89,15 +121,15 @@ func createK3sCluster() string {
 	var err error
 	k3sContainer, err = k3s.Run(ctx, k3sImage)
 	if err != nil {
-		log.Fatalf("failed to create K3s cluster: %v", err)
+		Fail(fmt.Sprintf("failed to create K3s cluster: %v", err))
 	}
 
 	kubeconfig, err := k3sContainer.GetKubeConfig(ctx)
 	if err != nil {
-		log.Fatalf("failed to get kubeconfig from K3s: %v", err)
+		Fail(fmt.Sprintf("failed to get kubeconfig from K3s: %v", err))
 	}
 	if err := os.WriteFile(kubeconfigPath, kubeconfig, 0600); err != nil {
-		log.Fatalf("failed to write kubeconfig: %v", err)
+		Fail(fmt.Sprintf("failed to write kubeconfig: %v", err))
 	}
 
 	log.Printf("K3s cluster ready (kubeconfig: %s)", kubeconfigPath)
@@ -121,7 +153,7 @@ func ensureConcourseImage(image string) {
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			log.Fatalf("failed to build Concourse image: %v", err)
+			Fail(fmt.Sprintf("failed to build Concourse image: %v", err))
 		}
 	}
 
@@ -132,61 +164,71 @@ func ensureConcourseImage(image string) {
 	}
 }
 
-// loadImagesIntoCluster loads the locally-built Concourse image and test
-// dependency images into the K3s cluster via testcontainers' LoadImages API.
-func loadImagesIntoCluster(concourseImage string) {
-	ctx := context.Background()
+// testImages are the dependency images the specs run. They are pulled into
+// the host's Docker once, by prepareHostImages, and loaded into each proc's
+// cluster from there.
+var testImages = []string{
+	"docker.io/library/postgres:16",
+	"docker.io/concourse/mock-resource:latest",
+	"docker.io/library/busybox:latest",
+	"docker.io/library/alpine:3.19",
+	"docker.io/library/alpine:latest",
+	"docker.io/library/nginx:alpine",
+}
 
-	log.Printf("Loading %s into K3s cluster...", concourseImage)
-	if err := k3sContainer.LoadImages(ctx, concourseImage); err != nil {
-		log.Fatalf("failed to load image %s into K3s: %v", concourseImage, err)
-	}
-	log.Println("Concourse image loaded.")
+// oomTriggerImage is the image pod_resilience_test.go runs to trigger the OOM
+// killer: a tiny static Go binary allocating large heap slices, because
+// shell-based approaches (awk, dd) don't reliably count against the
+// container memory cgroup in K3s.
+const oomTriggerImage = "oom-trigger:latest"
 
-	images := []string{
-		"docker.io/library/postgres:16",
-		"docker.io/concourse/mock-resource:latest",
-		"docker.io/library/busybox:latest",
-		"docker.io/library/alpine:3.19",
-		"docker.io/library/alpine:latest",
-		"docker.io/library/nginx:alpine",
-	}
-
-	for _, img := range images {
+// prepareHostImages puts every image the clusters need into the host's
+// Docker. It runs once, on proc 1, before any proc creates a cluster: two
+// procs pulling the same image at once collide on the daemon's content locks.
+func prepareHostImages() {
+	for _, img := range testImages {
 		log.Printf("Pre-pulling %s on host...", img)
 		pullCmd := exec.Command("docker", "pull", "--quiet", img)
 		pullCmd.Stdout = os.Stderr
 		pullCmd.Stderr = os.Stderr
 		if err := pullCmd.Run(); err != nil {
 			log.Printf("warning: failed to pull %s on host: %v", img, err)
+		}
+	}
+	buildOOMTriggerImage()
+}
+
+// loadImagesIntoCluster loads the locally-built Concourse image and the
+// images prepareHostImages put on the host into this proc's K3s cluster via
+// testcontainers' LoadImages API.
+func loadImagesIntoCluster(concourseImage string) {
+	ctx := context.Background()
+
+	log.Printf("Loading %s into K3s cluster...", concourseImage)
+	if err := k3sContainer.LoadImages(ctx, concourseImage); err != nil {
+		Fail(fmt.Sprintf("failed to load image %s into K3s: %v", concourseImage, err))
+	}
+	log.Println("Concourse image loaded.")
+
+	for _, img := range append(testImages, oomTriggerImage) {
+		if err := exec.Command("docker", "image", "inspect", img).Run(); err != nil {
+			log.Printf("warning: %s is not on the host, not loading it into K3s", img)
 			continue
 		}
-
 		log.Printf("Loading %s into K3s cluster...", img)
 		if err := k3sContainer.LoadImages(ctx, img); err != nil {
 			log.Printf("warning: failed to load %s into K3s: %v", img, err)
 		}
 	}
 	log.Println("Image loading complete.")
-
-	// Build and load the oom-trigger image used by pod_resilience_test.go.
-	// This is a tiny static Go binary that reliably triggers the OOM killer
-	// by allocating large heap slices — shell-based approaches (awk, dd)
-	// don't reliably count against the container memory cgroup in K3s.
-	buildAndLoadOOMTriggerImage(ctx)
 }
 
-// buildAndLoadOOMTriggerImage compiles cmd/oom-trigger as a static binary,
-// packages it into a scratch Docker image, and loads it into the K3s cluster.
-func buildAndLoadOOMTriggerImage(ctx context.Context) {
-	const imageName = "oom-trigger:latest"
-
-	// Check if image already exists (e.g. built by CI pipeline).
-	if err := exec.Command("docker", "image", "inspect", imageName).Run(); err == nil {
-		log.Printf("oom-trigger image already exists, loading into K3s...")
-		if err := k3sContainer.LoadImages(ctx, imageName); err != nil {
-			log.Printf("warning: failed to load %s into K3s: %v", imageName, err)
-		}
+// buildOOMTriggerImage compiles cmd/oom-trigger as a static binary and
+// packages it into a scratch Docker image on the host, unless the image is
+// already there (CI builds it in the pipeline task).
+func buildOOMTriggerImage() {
+	if err := exec.Command("docker", "image", "inspect", oomTriggerImage).Run(); err == nil {
+		log.Printf("oom-trigger image already exists")
 		return
 	}
 
@@ -217,17 +259,11 @@ func buildAndLoadOOMTriggerImage(ctx context.Context) {
 	}
 
 	log.Println("Building oom-trigger Docker image...")
-	dockerBuild := exec.Command("docker", "build", "-t", imageName, tmpDir)
+	dockerBuild := exec.Command("docker", "build", "-t", oomTriggerImage, tmpDir)
 	dockerBuild.Stdout = os.Stderr
 	dockerBuild.Stderr = os.Stderr
 	if err := dockerBuild.Run(); err != nil {
 		log.Printf("warning: failed to build oom-trigger image: %v", err)
-		return
-	}
-
-	log.Println("Loading oom-trigger into K3s cluster...")
-	if err := k3sContainer.LoadImages(ctx, imageName); err != nil {
-		log.Printf("warning: failed to load %s into K3s: %v", imageName, err)
 	}
 }
 
@@ -255,7 +291,7 @@ func createResolveCapabilitySecret(kubeconfig, namespace string) {
 		// Fatal, not a warning: without the Secret the pods mount a volume
 		// that does not exist and the suite dies later as an unrelated
 		// pod-readiness timeout, naming the wrong cause.
-		log.Fatalf("could not render resolve-capability Secret: %v", err)
+		Fail(fmt.Sprintf("could not render resolve-capability Secret: %v", err))
 	}
 
 	// Apply rather than create: this runs on every install, including upgrades
@@ -265,7 +301,7 @@ func createResolveCapabilitySecret(kubeconfig, namespace string) {
 	apply.Stdout = os.Stderr
 	apply.Stderr = os.Stderr
 	if err := apply.Run(); err != nil {
-		log.Fatalf("could not apply resolve-capability Secret: %v", err)
+		Fail(fmt.Sprintf("could not apply resolve-capability Secret: %v", err))
 	}
 }
 
@@ -290,13 +326,13 @@ func createSigningKeySecret(kubeconfig, namespace string) {
 		log.Printf("Signing-key Secret %s already exists in %s; keeping it", signingKeySecretName, namespace)
 		return
 	case !strings.Contains(string(out), "(NotFound)"):
-		log.Fatalf("could not tell whether signing-key Secret %s exists: %v\n%s", signingKeySecretName, err, out)
+		Fail(fmt.Sprintf("could not tell whether signing-key Secret %s exists: %v\n%s", signingKeySecretName, err, out))
 	}
 	log.Printf("Creating signing-key Secret %s in %s...", signingKeySecretName, namespace)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		log.Fatalf("could not generate the session signing key: %v", err)
+		Fail(fmt.Sprintf("could not generate the session signing key: %v", err))
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	create := exec.Command("kubectl", "--kubeconfig", kubeconfig,
@@ -309,7 +345,7 @@ func createSigningKeySecret(kubeconfig, namespace string) {
 		// Fatal for the same reason as the resolve key: web cannot start
 		// without /keys/session_signing_key, and the suite would die later as
 		// a readiness timeout naming the wrong cause.
-		log.Fatalf("could not create signing-key Secret: %v", err)
+		Fail(fmt.Sprintf("could not create signing-key Secret: %v", err))
 	}
 }
 
@@ -398,7 +434,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("helm upgrade --install failed: %v", err)
+		Fail(fmt.Sprintf("helm upgrade --install failed: %v", err))
 	}
 
 	log.Println("Waiting for concourse-web pod to be ready...")
@@ -417,7 +453,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		descCmd.Stdout = os.Stderr
 		descCmd.Stderr = os.Stderr
 		descCmd.Run()
-		log.Fatalf("timed out waiting for concourse-web pod: %v", err)
+		Fail(fmt.Sprintf("timed out waiting for concourse-web pod: %v", err))
 	}
 }
 
@@ -435,12 +471,12 @@ func startPortForward(kubeconfig, namespace string) (string, *portForwardManager
 
 	rc, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		log.Fatalf("failed to build rest config for port-forward: %v", err)
+		Fail(fmt.Sprintf("failed to build rest config for port-forward: %v", err))
 	}
 
 	client, err := kubernetes.NewForConfig(rc)
 	if err != nil {
-		log.Fatalf("failed to create K8s client for port-forward: %v", err)
+		Fail(fmt.Sprintf("failed to create K8s client for port-forward: %v", err))
 	}
 
 	mgr := &portForwardManager{
@@ -610,7 +646,7 @@ func waitForAPI(url string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
-			log.Fatalf("timed out waiting for Concourse API at %s after %s", url, timeout)
+			Fail(fmt.Sprintf("timed out waiting for Concourse API at %s after %s", url, timeout))
 		}
 		resp, err := client.Get(url + "/api/v1/info")
 		if err == nil {
@@ -636,7 +672,7 @@ func mustRepoRoot() string {
 	}
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		log.Fatalf("repo root unknown: not a git checkout here and JETBRIDGE_REPO_ROOT is unset: %v", err)
+		Fail(fmt.Sprintf("repo root unknown: not a git checkout here and JETBRIDGE_REPO_ROOT is unset: %v", err))
 	}
 	return strings.TrimSpace(string(out))
 }
