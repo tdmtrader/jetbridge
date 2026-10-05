@@ -2,6 +2,10 @@ package behavioral_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
@@ -265,6 +269,51 @@ func createResolveCapabilitySecret(kubeconfig, namespace string) {
 	}
 }
 
+// signingKeySecretName is the Secret holding web's session signing key. The
+// chart requires one and never mints it: a key minted per pod breaks sessions
+// across pods and on every restart. So the key is created here, once, exactly
+// as an operator would.
+const signingKeySecretName = "concourse-session-signing-key"
+
+// createSigningKeySecret puts a 2048-bit RSA key, as a PKCS#1 PEM, under
+// session_signing_key. An RSA key cannot be a fixed string the way the
+// resolve key is, so a Secret that already exists is kept: replacing it on a
+// reinstall would sign new sessions with a key the running web does not hold.
+func createSigningKeySecret(kubeconfig, namespace string) {
+	if exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
+		"get", "secret", signingKeySecretName).Run() == nil {
+		log.Printf("Signing-key Secret %s already exists in %s; keeping it", signingKeySecretName, namespace)
+		return
+	}
+	log.Printf("Creating signing-key Secret %s in %s...", signingKeySecretName, namespace)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		log.Fatalf("could not generate the session signing key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+		"-n", namespace,
+		"create", "secret", "generic", signingKeySecretName,
+		"--from-literal=session_signing_key="+string(keyPEM),
+		"--dry-run=client", "-o", "yaml")
+	manifest, err := cmd.Output()
+	if err != nil {
+		// Fatal for the same reason as the resolve key: web cannot start
+		// without /keys/session_signing_key, and the suite would die later as
+		// a readiness timeout naming the wrong cause.
+		log.Fatalf("could not render signing-key Secret: %v", err)
+	}
+
+	apply := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "apply", "-f", "-")
+	apply.Stdin = strings.NewReader(string(manifest))
+	apply.Stdout = os.Stderr
+	apply.Stderr = os.Stderr
+	if err := apply.Run(); err != nil {
+		log.Fatalf("could not apply signing-key Secret: %v", err)
+	}
+}
+
 // labelNodesForArtifactCache labels all K3s nodes with the label that
 // the JetBridge artifact daemon node affinity requires.
 func labelNodesForArtifactCache(kubeconfig string) {
@@ -308,6 +357,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"create", "namespace", namespace).Run()
 
 	createResolveCapabilitySecret(kubeconfig, namespace)
+	createSigningKeySecret(kubeconfig, namespace)
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 	extraArgs := ""
@@ -333,6 +383,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "mcp.clients[0].redirect_uris[0]=http://127.0.0.1:8964/callback",
 		// Exercise the SIGNED resolve path; see createResolveCapabilitySecret.
 		"--set", "artifactDaemon.resolveCapability.existingSecret=" + resolveCapabilitySecretName,
+		"--set", "secrets.signingKeySecret=" + signingKeySecretName,
 		"--timeout", "5m",
 	}
 
