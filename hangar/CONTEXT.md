@@ -161,6 +161,17 @@ One of the two activation state machines on an epoch: base and output. Each
 moves through initial, attesting, attested, enabled, draining and disabled.
 Output may leave initial only once base is attested.
 
+**Activation walk**:
+The activation command's run that moves the configured activation epoch's
+row toward the activation target. It reads the row first, skips every step
+already done, and never advances a facet that is draining or disabled.
+_Avoid_: walk (alone), step Job
+
+**Activation target**:
+Where the activation walk takes the configured epoch: off, base or output.
+A lower target drains the facets above it. Raising the activation epoch is
+the re-enable after a drain.
+
 **At risk**:
 The durable integrity finding recorded after unexpected object absence or
 runtime authorization failure. It is not an activation state.
