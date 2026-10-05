@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -113,8 +115,7 @@ func TestTheRenderedInventoryReconciles(t *testing.T) {
 // Every consumer the inventory lists mounts that Secret, and every workload
 // mounting an inventory Secret is listed as its consumer.
 func TestEveryInventoryConsumerMountsItsSecretAndNoOtherDoes(t *testing.T) {
-	out := render(t, append(append([]string{}, bootstrapSets...),
-		"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=base")...)
+	out := render(t, bootstrapSets...)
 	inv := renderedInventory(t, out)
 
 	mounted := map[string]map[string]bool{} // component -> Secret names its pod mounts
@@ -412,6 +413,90 @@ func TestTheDatabaseStepIsAPostSyncHookReadingWebsSecret(t *testing.T) {
 		"hangarOutput.database.existingSecret=op-activation-db")
 	if !strings.Contains(msg, "requires postgresql.existingSecret") {
 		t.Errorf("the database step rendered without postgresql.existingSecret: %s", firstLines(msg, 3))
+	}
+}
+
+// The activation walk is one Job, a PostSync hook a wave after the database
+// step that creates the role and the Secret it runs as, and a Helm post-install
+// and post-upgrade hook for a plain `helm upgrade`. BeforeHookCreation is what
+// lets one fixed name survive an image bump or a new epoch: the previous run is
+// deleted before the next is created.
+func TestTheActivationWalkIsAPostSyncHookAfterTheDatabaseStep(t *testing.T) {
+	out := render(t, append(append([]string{}, bootstrapSets...),
+		"hangarOutput.activation.target=output")...)
+
+	var walks []string
+	for _, doc := range documentsIn(t, out) {
+		if doc.kind != "Job" {
+			continue
+		}
+		component, _ := podOf(t, doc)
+		if component == "hangar-output-activation" {
+			walks = append(walks, doc.name)
+		}
+	}
+	const walkName = "jb-concourse-jetbridge-hangar-output-walk"
+	if len(walks) != 1 || walks[0] != walkName {
+		t.Fatalf("the render holds activation Jobs %v, want exactly %s", walks, walkName)
+	}
+
+	var walk, database batchv1.Job
+	decodeNamed(t, out, "Job", walkName, &walk)
+	decodeNamed(t, out, "Job", bootstrapName+"-database", &database)
+	for annotation, want := range map[string]string{
+		"argocd.argoproj.io/hook":               "PostSync",
+		"argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation",
+		"helm.sh/hook":                          "post-install,post-upgrade",
+		"helm.sh/hook-delete-policy":            "before-hook-creation",
+	} {
+		if got := walk.Annotations[annotation]; got != want {
+			t.Errorf("the walk Job's %s is %q, want %q", annotation, got, want)
+		}
+	}
+	if database.Annotations["argocd.argoproj.io/hook"] != "PostSync" {
+		t.Fatalf("the database Job is hook %q; the walk's ordering is stated against a "+
+			"PostSync database step", database.Annotations["argocd.argoproj.io/hook"])
+	}
+	wave := func(job batchv1.Job) int {
+		value := job.Annotations["argocd.argoproj.io/sync-wave"]
+		if value == "" {
+			return 0
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			t.Fatalf("%s has sync-wave %q", job.Name, value)
+		}
+		return parsed
+	}
+	if wave(walk) <= wave(database) {
+		t.Errorf("the walk Job is at wave %d and the database Job at wave %d; the walk runs as "+
+			"the role the database step creates, so it needs a later wave", wave(walk), wave(database))
+	}
+
+	daemon := "jb-concourse-jetbridge-hangar-output-daemon"
+	args := strings.Join(walk.Spec.Template.Spec.Containers[0].Command, " ")
+	for _, want := range []string{"--mode=walk", "--target=output", "--daemonset-name=" + daemon,
+		"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--tls-server-name=", "--receipt-key-lifetime="} {
+		if !strings.Contains(args, want) {
+			t.Errorf("the walk Job's command lacks %s: %s", want, args)
+		}
+	}
+	if strings.Contains(args, "--facet") {
+		t.Errorf("the walk Job names a facet: %s", args)
+	}
+
+	var role rbacv1.Role
+	decodeNamed(t, out, "Role", "jb-concourse-jetbridge-hangar-output-activation", &role)
+	var daemonsets []rbacv1.PolicyRule
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "daemonsets") {
+			daemonsets = append(daemonsets, rule)
+		}
+	}
+	if len(daemonsets) != 1 || strings.Join(daemonsets[0].APIGroups, ",") != "apps" ||
+		strings.Join(daemonsets[0].Verbs, ",") != "get" ||
+		strings.Join(daemonsets[0].ResourceNames, ",") != daemon {
+		t.Errorf("the activation Role's DaemonSet rules are %+v, want get on %s alone", daemonsets, daemon)
 	}
 }
 
