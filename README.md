@@ -45,12 +45,21 @@ fly CLI → ATC (web) → Kubernetes API → Pods (one per step)
 # Build the Concourse image
 ./build.sh ghcr.io/your-org/concourse:latest
 
+# Create the session signing key Secret every web pod mounts
+kubectl create namespace concourse
+concourse generate-key -t rsa -f session_signing_key
+kubectl -n concourse create secret generic concourse-session-signing-key \
+  --from-file=session_signing_key
+
 # Install with Helm
 helm install concourse ./deploy/chart \
-  --namespace concourse --create-namespace \
+  --namespace concourse \
   --set image.repository=ghcr.io/your-org/concourse \
   --set image.tag=latest \
-  --set web.externalUrl=https://concourse.example.com
+  --set web.externalUrl=https://concourse.example.com \
+  --set web.localUsers=admin:change-me \
+  --set web.mainTeamLocalUser=admin \
+  --set secrets.signingKeySecret=concourse-session-signing-key
 
 # Log in with fly
 fly -t ci login -c https://concourse.example.com
