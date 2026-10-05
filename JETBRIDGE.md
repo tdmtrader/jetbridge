@@ -416,23 +416,26 @@ version injection, `--push` flag to push to registry.
 
 ### Install with Helm
 
-Create the Secret holding the session signing key, which every web pod
-mounts, then install:
+Create `deployment-values.yaml` as in the chart README's quickstart
+(`deploy/chart/README.md`): the artifact daemon TLS and resolve Secrets, the
+signing-key Secret and the MCP clients. Create the Secret holding the session
+signing key, which every web pod mounts, then install:
 
 ```bash
 kubectl create namespace concourse
-concourse generate-key -t rsa -f session_signing_key
-kubectl -n concourse create secret generic concourse-session-signing-key \
+concourse generate-key -t rsa -f session_signing_key  # or: openssl genrsa -out session_signing_key 4096
+kubectl -n concourse create secret generic jetbridge-session-signing-key \
   --from-file=session_signing_key
 
 helm install concourse ./deploy/chart \
+  -f deployment-values.yaml \
   --namespace concourse \
   --set image.repository=ghcr.io/your-org/concourse \
   --set image.tag=latest \
   --set web.externalUrl=https://concourse.example.com \
   --set web.localUsers=admin:change-me \
   --set web.mainTeamLocalUser=admin \
-  --set secrets.signingKeySecret=concourse-session-signing-key
+  --set secrets.signingKeySecret=jetbridge-session-signing-key
 ```
 
 See `deploy/chart/values.yaml` for all configurable parameters and
@@ -442,7 +445,8 @@ See `deploy/chart/values.yaml` for all configurable parameters and
 
 - **Database**: Use an external managed database (Cloud SQL, RDS).
   Set `postgresql.enabled=false` and provide `postgresql.host`/`postgresql.port`.
-- **Auth**: Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`.
+- **Auth**: Add OIDC/OAuth via `web.extraArgs`, and keep `web.localUsers` to a
+  strong admin credential.
 - **Secrets**: The signing-key Secret in `secrets.signingKeySecret` is
   required. Generate the key once, outside the chart; every web replica
   mounts the same Secret, so sessions work across replicas and restarts.

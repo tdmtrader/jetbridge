@@ -45,21 +45,24 @@ fly CLI → ATC (web) → Kubernetes API → Pods (one per step)
 # Build the Concourse image
 ./build.sh ghcr.io/your-org/concourse:latest
 
-# Create the session signing key Secret every web pod mounts
+# Create deployment-values.yaml as in deploy/chart/README.md's quickstart:
+# the artifact daemon TLS and resolve Secrets, the signing-key Secret and the
+# MCP clients. Then create the session signing key Secret every web pod mounts
 kubectl create namespace concourse
-concourse generate-key -t rsa -f session_signing_key
-kubectl -n concourse create secret generic concourse-session-signing-key \
+concourse generate-key -t rsa -f session_signing_key  # or: openssl genrsa -out session_signing_key 4096
+kubectl -n concourse create secret generic jetbridge-session-signing-key \
   --from-file=session_signing_key
 
 # Install with Helm
 helm install concourse ./deploy/chart \
+  -f deployment-values.yaml \
   --namespace concourse \
   --set image.repository=ghcr.io/your-org/concourse \
   --set image.tag=latest \
   --set web.externalUrl=https://concourse.example.com \
   --set web.localUsers=admin:change-me \
   --set web.mainTeamLocalUser=admin \
-  --set secrets.signingKeySecret=concourse-session-signing-key
+  --set secrets.signingKeySecret=jetbridge-session-signing-key
 
 # Log in with fly
 fly -t ci login -c https://concourse.example.com

@@ -67,7 +67,7 @@ restarts and work across replicas. Create it once:
 
 ```bash
 kubectl create namespace concourse
-concourse generate-key -t rsa -f session_signing_key
+concourse generate-key -t rsa -f session_signing_key  # or: openssl genrsa -out session_signing_key 4096
 kubectl -n concourse create secret generic jetbridge-session-signing-key \
   --from-file=session_signing_key
 ```
@@ -77,7 +77,7 @@ Then install:
 ```bash
 helm install concourse ./deploy/chart \
   -f deployment-values.yaml \
-  --namespace concourse --create-namespace \
+  --namespace concourse \
   --set image.tag=latest \
   --set image.pullPolicy=Never \
   --set service.type=ClusterIP
