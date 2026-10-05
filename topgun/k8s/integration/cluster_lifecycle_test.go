@@ -331,6 +331,11 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
+		// The URL and the test:test login the suite uses, named rather than
+		// left to chart defaults.
+		"--set", "web.externalUrl=http://localhost:8080",
+		"--set", "web.localUsers=test:test",
+		"--set", "web.mainTeamLocalUser=test",
 		// Use emptyDir for PostgreSQL — ephemeral test clusters don't need
 		// persistent storage, and PVC provisioning can stall in DinD.
 		"--set", "postgresql.persistence.enabled=false",
