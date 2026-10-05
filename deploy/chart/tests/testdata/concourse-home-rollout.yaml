@@ -118,7 +118,6 @@ tracing:
   serviceName: concourse-home
   otlpAddress: tempo.example:4317
 secrets:
-  create: false
   signingKeySecret: placeholder-signing-key
 cacheStore: hostpath
 cacheHostPath: "/var/cache/concourse"
