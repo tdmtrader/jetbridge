@@ -571,9 +571,7 @@ var _ = Describe("queue command", func() {
 		outputs := map[string]string{"stderr": e.String(), "stdout (status)": o.String(), "notify file": note,
 			"snapshot": gitIn(remote, "log", "-p", "refs/queue/state")}
 		for what, text := range outputs {
-			if what != "notify file" { // a failed landing is no pause, so no event is due
-				Expect(text).To(ContainSubstring("denied"), what)
-			}
+			Expect(text).To(ContainSubstring("denied"), what)
 			for _, part := range []string{"Xq7v", "Zk9r", "Lm4t", "Pw8s", "Yh2n"} {
 				Expect(text).NotTo(ContainSubstring(part), what)
 			}
@@ -708,7 +706,7 @@ func (l leakyLander) Contains(context.Context, string, string, uint64) (bool, er
 type leakyAdmissions struct{ err error }
 
 func (l leakyAdmissions) Pending(context.Context, []core.Entry) ([]core.Pending, error) {
-	return nil, l.err
+	return []core.Pending{{ID: "leaky", Commit: "0123456789abcdef", Why: l.err.Error()}}, l.err // a refusal is announced
 }
 func (leakyAdmissions) Done(context.Context, string, string) error { return nil }
 
