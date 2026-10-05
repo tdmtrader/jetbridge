@@ -151,8 +151,8 @@ func newLiveArtifactStoreOn(ctx context.Context, rec *brine.Recorder, cluster li
 // link sweeps one a killed run left behind. Afterwards root is linkRoot.
 func (s *liveArtifactStore) link(ctx context.Context, linkRoot string) error {
 	dir, name := filepath.Dir(linkRoot), filepath.Base(linkRoot)
-	if !filepath.IsAbs(linkRoot) || dir == "/" || name != s.cluster.Marker {
-		return fmt.Errorf("link root %q must be an absolute path named after the owned namespace UID", linkRoot)
+	if !filepath.IsAbs(linkRoot) || dir == "/" || name != linkName(s.cluster) {
+		return fmt.Errorf("link root %q must be an absolute path named after the owned namespace", linkRoot)
 	}
 	create := corev1.HostPathDirectoryOrCreate
 	linker := s.pod("artifact-store-linker"+s.suffix, s.anchor.Spec.NodeName,
@@ -178,25 +178,34 @@ func (s *liveArtifactStore) link(ctx context.Context, linkRoot string) error {
 	return nil
 }
 
-// sweepStaleLinks removes links named after a brine namespace that no longer
-// exists: a run killed before its close. Their targets were already reclaimed
-// with their anchors. Anything that is not a symlink is left alone.
+// linkName names a run's link after its owned namespace, by name and UID.
+// The sweep reads it back with a namespace get -- the live tier's identity
+// may get namespaces but not list them -- and a reused name with another UID
+// is still stale.
+func linkName(cluster liveKubernetes) string {
+	return cluster.Namespace + "." + cluster.Marker
+}
+
+// sweepStaleLinks removes links whose namespace is gone or is another
+// namespace by now: a run killed before its close. Their targets were already
+// reclaimed with their anchors. Anything that is not a symlink, or not named
+// the way linkName names one, is left alone.
 func (s *liveArtifactStore) sweepStaleLinks(ctx context.Context) error {
-	namespaces, err := s.cluster.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=brine-runtime-tests"})
-	if err != nil {
-		return err
-	}
-	live := map[string]bool{}
-	for _, ns := range namespaces.Items {
-		live[string(ns.UID)] = true
-	}
 	listing, err := s.exec(ctx, s.linker.Name, []string{"sh", "-c", `for l in /links/*; do [ -L "$l" ] && basename "$l"; done; true`}, nil)
 	if err != nil {
 		return err
 	}
 	for _, entry := range strings.Fields(listing) {
-		if live[entry] {
+		name, uid, ok := strings.Cut(entry, ".")
+		if !ok || !strings.HasPrefix(name, "brine-runtime-") || uid == "" {
 			continue
+		}
+		ns, err := s.cluster.Clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+		switch {
+		case err == nil && string(ns.UID) == uid:
+			continue
+		case err != nil && !apierrors.IsNotFound(err):
+			return err
 		}
 		if _, err := s.exec(ctx, s.linker.Name, []string{"rm", "-f", "/links/" + entry}, nil); err != nil {
 			return err

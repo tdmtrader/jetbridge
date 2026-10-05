@@ -66,7 +66,7 @@ variables; the live tier itself has never run in CI (see V5-MIGRATION.md).
 ### Cross-node tier
 
 `live-multinode/.brine` runs the same fixture on every approved node at once:
-a store and a daemon per node, one root path (`/var/lib/brine-artifacts/<namespace UID>`,
+a store and a daemon per node, one root path (`/var/lib/brine-artifacts/<namespace>.<namespace UID>`,
 a per-node symlink into that node's anchor emptyDir, so the kubelet still
 reclaims the data), and one service publishing every daemon. Its scenario
 produces an artifact on one node and reads it from a task on another. It needs

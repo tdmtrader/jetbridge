@@ -13,7 +13,7 @@ import (
 )
 
 // liveArtifactLinkDir holds one link per multi-node fixture run on each node,
-// named after the run's owned namespace UID.
+// named after the run's owned namespace (linkName).
 const liveArtifactLinkDir = "/var/lib/brine-artifacts"
 
 // liveArtifactNodes is the live artifact fixture on every approved node at
@@ -58,7 +58,7 @@ func newLiveArtifactNodes(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	if err != nil {
 		return nil, err
 	}
-	f := &liveArtifactNodes{cluster: cluster, root: filepath.Join(liveArtifactLinkDir, cluster.Marker), port: port}
+	f := &liveArtifactNodes{cluster: cluster, root: filepath.Join(liveArtifactLinkDir, linkName(cluster)), port: port}
 	for i, node := range nodes {
 		s, err := newLiveArtifactStoreOn(ctx, rec, cluster, node.Name, fmt.Sprintf("-%d", i))
 		if err != nil {
