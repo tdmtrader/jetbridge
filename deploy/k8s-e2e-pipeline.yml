@@ -833,17 +833,19 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      # Two ginkgo procs (was 1). Each proc creates its OWN K3s cluster in the
-      # task's DinD -- three filled the 8G tmpfs /var/lib/docker (builds 207,
-      # 208) -- so the tmpfs cap below scales with K8S_PROCS: 4G of shared
-      # images plus 4G per cluster, one proc keeping the old 8G. One proc
-      # peaked at 9 GB of memory, ~5.5 of it that tmpfs. The request is sized
-      # to fit theborg alone (32 GB, ~6.6 requested by its services) so the job
-      # still runs when the second node is off; web's preferred step node sends
-      # it to k3s-agent-y (47 GB) first.
-      container_requests: {cpu: 4000, memory: 18GB}
+      # One ginkgo proc. Each proc creates its OWN K3s cluster in the task's
+      # DinD, and the suite is not yet safe to run more than one: concurrent
+      # cluster creation contends on containerd's layer locks (see the note
+      # at the ginkgo line), and every proc writes the same kubeconfig file.
+      # Three procs filled the tmpfs (builds 207, 208); two lost proc 2
+      # without a report (209). The tmpfs cap below still scales with
+      # K8S_PROCS, 4G of shared images plus 4G per cluster. The request fits
+      # theborg alone (32 GB, ~6.6 requested by its services) so the job runs
+      # when the second node is off; web's preferred step node sends it to
+      # k3s-agent-y (47 GB) first.
+      container_requests: {cpu: 4000, memory: 14GB}
       params:
-        K8S_PROCS: "2"
+        K8S_PROCS: "1"
       inputs:
       - name: repo
       rootfs_uri: *kind_runner_image
