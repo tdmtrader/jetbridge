@@ -49,14 +49,6 @@ type Batch struct {
 	RetryNone int    `yaml:"retry_none"`
 	Strategy  string `yaml:"strategy"` // which core Strategy runs the queue
 	Order     string `yaml:"order"`    // proven-first or strict: who may land ahead of arrival order
-	// Adaptive, if set, sizes batches from Start by their results; nil keeps max fixed.
-	Adaptive *Adaptive `yaml:"adaptive"`
-}
-
-type Adaptive struct {
-	Start     int `yaml:"start"`
-	Min       int `yaml:"min"`
-	GrowAfter int `yaml:"grow_after"`
 }
 
 // Compose squashes: each change lands as one commit on main.
@@ -122,8 +114,7 @@ var known = map[string][]string{
 	"":                  {"apiVersion", "repository", "admission", "batch", "pause", "health", "compose", "runner", "lander", "notify", "store"},
 	"repository":        {"uri", "main", "candidate"},
 	"admission":         {"prefix", "control_prefix"},
-	"batch":             {"max", "retry_none", "strategy", "order", "adaptive"},
-	"batch.adaptive":    {"start", "min", "grow_after"},
+	"batch":             {"max", "retry_none", "strategy", "order"},
 	"compose":           {"committer", "hook", "hook_owned", "hook_timeout", "hook_script"},
 	"compose.committer": {"name", "email"},
 	"lander":            {"max_failures", "lease_ref", "scratch"},
@@ -167,9 +158,6 @@ func (c Config) validate() error {
 	}
 	if c.Batch.Max < 1 || c.Batch.RetryNone < 0 {
 		return errors.New("batch.max must be at least 1 and batch.retry_none at least 0")
-	}
-	if a := c.Batch.Adaptive; a != nil && (a.Min < 1 || a.Min > a.Start || a.Start > c.Batch.Max || a.GrowAfter < 1) {
-		return errors.New("batch.adaptive needs 1 <= min <= start <= batch.max and grow_after >= 1")
 	}
 	if r := c.Repository; r.Candidate == "" || r.Candidate == r.Main {
 		return errors.New("repository.candidate: must be set and differ from repository.main; the queue force-pushes it")

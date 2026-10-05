@@ -108,18 +108,6 @@ var _ = Describe("queue command", func() {
 		Expect(d.Notifier.Notify(context.Background(), core.Event{})).To(Succeed())
 	})
 
-	It("builds an adaptive strategy afresh on each call when configured", func() {
-		c, err := config.Parse(fmt.Appendf(nil, sample+"", "/r.git", GinkgoT().TempDir()))
-		Expect(err).NotTo(HaveOccurred())
-		c.Batch.Adaptive = &config.Adaptive{Start: 2, Min: 1, GrowAfter: 2}
-		d, closeFn, err := newDriver(c, io.Discard, io.Discard)
-		Expect(err).NotTo(HaveOccurred())
-		defer closeFn()
-		s := d.NewStrategy()
-		Expect(s).To(Equal(&core.Serial{Max: 3, Policy: core.Policy{RetryNone: 1, Order: core.ProvenFirst}, Adaptive: &core.Adaptive{Start: 2, Min: 1, GrowAfter: 2}}))
-		Expect(d.NewStrategy()).NotTo(BeIdenticalTo(s))
-	})
-
 	It("reads batch.order into the strategy", func() {
 		c, err := config.Parse(fmt.Appendf(nil, sample, "/r.git", GinkgoT().TempDir()))
 		Expect(err).NotTo(HaveOccurred())

@@ -35,11 +35,7 @@ func Driver(c config.Config, out io.Writer, logf func(string, ...any), runner co
 	return &core.Driver{
 			Store: git.NewStore(c), Composer: git.NewComposer(c), Runner: runner, Lander: lander, Notifier: notifier,
 			NewStrategy: func() core.Strategy {
-				s := &core.Serial{Max: b.Max, Policy: core.Policy{RetryNone: b.RetryNone, Order: core.Order(b.Order)}}
-				if a := b.Adaptive; a != nil {
-					s.Adaptive = &core.Adaptive{Start: a.Start, Min: a.Min, GrowAfter: a.GrowAfter}
-				}
-				return s
+				return &core.Serial{Max: b.Max, Policy: core.Policy{RetryNone: b.RetryNone, Order: core.Order(b.Order)}}
 			},
 			Main: c.Repository.Main, Log: logf, Slots: 1, TTL: time.Minute, Cooldown: c.Pause.Cooldown,
 			Admissions: &git.Admissions{Lander: lander, Prefix: c.Admission.Prefix},

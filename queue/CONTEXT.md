@@ -90,13 +90,5 @@ reason, and any flakes, which are surfaced, never hidden). It reads a snapshot o
 applies its settlements. `serial`, the only one so far and the default, tests
 one batch at a time and bisects a red batch with Bisect.
 
-**Adaptive batch size**: `batch.adaptive: {start, min, grow_after}`, off by
-default (the batch is always `batch.max`). When on, batches start at `start`,
-halve (floored at `min`) after a red batch, a confirmed red, flaky ones
-included, and double (capped at `batch.max`) after `grow_after` green landed
-batches in a row; no verdict changes nothing. Needs 1 <= min <= start <= max
-and grow_after >= 1. The size and streak are not persisted: the driver builds
-a fresh strategy on every reload, so the size resets to `start`.
-
 **Main**: the core does not model main. The caller composes each attempt on
 current main, which already holds every sub-batch landed so far.

@@ -179,23 +179,9 @@ var _ = Describe("Parse", func() {
 		}
 	})
 
-	It("adaptive batch size is off by default and read when set", func() {
-		c, err := config.Parse([]byte(minimal))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(c.Batch.Adaptive).To(BeNil())
-		c, err = config.Parse([]byte(minimal + "batch: {max: 8, adaptive: {start: 4, min: 2, grow_after: 3}}\n"))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(c.Batch.Adaptive).To(Equal(&config.Adaptive{Start: 4, Min: 2, GrowAfter: 3}))
-	})
-
-	It("refuses adaptive sizes out of order, or no growth streak, or an unknown key", func() {
-		for _, bad := range []string{"{start: 9, min: 1, grow_after: 1}", "{start: 4, min: 5, grow_after: 1}",
-			"{start: 4, min: 0, grow_after: 1}", "{start: 4, min: 1, grow_after: 0}", "{start: 4, min: 1}"} {
-			_, err := config.Parse([]byte(minimal + "batch: {max: 8, adaptive: " + bad + "}\n"))
-			Expect(err).To(MatchError("batch.adaptive needs 1 <= min <= start <= batch.max and grow_after >= 1"), bad)
-		}
-		_, err := config.Parse([]byte(minimal + "batch: {adaptive: {strat: 2}}\n"))
-		Expect(err).To(MatchError(`unknown key "batch.adaptive.strat"; did you mean "batch.adaptive.start"?`))
+	It("refuses batch.adaptive as an unknown key", func() {
+		_, err := config.Parse([]byte(minimal + "batch: {max: 8, adaptive: {start: 4, min: 2, grow_after: 3}}\n"))
+		Expect(err).To(MatchError(ContainSubstring(`unknown key "batch.adaptive"`)))
 	})
 
 	It("A URL holding a credential is refused naming the setting", func() {

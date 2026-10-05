@@ -65,16 +65,3 @@ Feature: A landing strategy decides what runs and how each result settles
     When the config file is loaded
     Then the strategy is serial
     And a config file naming an unknown strategy is refused, listing the allowed ones
-
-  Scenario: After a red batch the next batch is half the size
-    Given adaptive batch size starts at 4, with a floor of 2
-    And changes "a", "b", "c", "d", "e", "f", "g" and "h" are admitted
-    And only "d" is broken
-    When the first batch fails and is bisected
-    Then the next batch holds 2 changes
-
-  Scenario: After greens the batch size grows back
-    Given adaptive batch size starts at 1, grows after 2 green batches, and is capped at 4
-    And many changes are admitted and none is broken
-    When batches keep passing
-    Then batches hold 1, 1, 2, 2, then 4 changes
