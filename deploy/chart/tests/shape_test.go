@@ -150,8 +150,12 @@ var removedKeys = []string{
 // bareRenderNames are the values a render with no values file must name when
 // it fails, so an operator who forgot one is told which.
 var bareRenderNames = []string{
+	"image.repository",
 	"mcp.clients",
 	"secrets.signingKeySecret",
+	"web.externalUrl",
+	"web.localUsers",
+	"web.mainTeamLocalUser",
 }
 
 func TestTheChartHoldsItsShape(t *testing.T) {
