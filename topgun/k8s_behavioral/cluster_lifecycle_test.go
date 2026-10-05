@@ -375,6 +375,11 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
+		// The URL and the test:test login the suite uses, named rather than
+		// left to chart defaults.
+		"--set", "web.externalUrl=http://localhost:8080",
+		"--set", "web.localUsers=test:test",
+		"--set", "web.mainTeamLocalUser=test",
 		"--set", "postgresql.persistence.enabled=false",
 		// Disposable live Helm cluster: explicitly own generated certificates.
 		"--set", "artifactDaemon.tls.source=generated",
