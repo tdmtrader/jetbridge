@@ -821,15 +821,17 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      # Three ginkgo procs against the one K3s cluster (was 1). The suite is
-      # latency-bound -- ~0.5 busy cores at one proc -- and peaked at 9 GB, so
-      # memory is what more procs cost. The request is sized to fit theborg
-      # alone (32 GB, ~6.6 requested by its services) so the job still runs
-      # when the second node is off; web's preferred step node sends it to
-      # k3s-agent-y (47 GB) first.
-      container_requests: {cpu: 4000, memory: 14GB}
+      # Two ginkgo procs (was 1). Each proc creates its OWN K3s cluster in the
+      # task's DinD -- three filled the 8G tmpfs /var/lib/docker (builds 207,
+      # 208) -- so the tmpfs cap below scales with K8S_PROCS: 4G of shared
+      # images plus 4G per cluster, one proc keeping the old 8G. One proc
+      # peaked at 9 GB of memory, ~5.5 of it that tmpfs. The request is sized
+      # to fit theborg alone (32 GB, ~6.6 requested by its services) so the job
+      # still runs when the second node is off; web's preferred step node sends
+      # it to k3s-agent-y (47 GB) first.
+      container_requests: {cpu: 4000, memory: 18GB}
       params:
-        K8S_PROCS: "3"
+        K8S_PROCS: "2"
       inputs:
       - name: repo
       rootfs_uri: *kind_runner_image
@@ -855,7 +857,7 @@ jobs:
           sleep 1
           rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
           mkdir -p /var/lib/docker /run/containerd
-          mount -t tmpfs -o size=8G tmpfs /var/lib/docker 2>/dev/null || true
+          mount -t tmpfs -o size=$(( 4 + 4 * ${K8S_PROCS:-1} ))G tmpfs /var/lib/docker 2>/dev/null || true
           # --dns=8.8.8.8 ensures nested containers (K3s) can resolve
           # external hostnames for pulling system images (CoreDNS, etc.)
           /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
@@ -911,7 +913,7 @@ jobs:
           docker pull rancher/k3s:v1.31.6-k3s1
 
           echo ""
-          echo "=== Running K8s behavioral tests (pre-compiled, one K3s cluster, --procs=${K8S_PROCS:-1}) ==="
+          echo "=== Running K8s behavioral tests (pre-compiled, one K3s cluster per proc, --procs=${K8S_PROCS:-1}) ==="
           echo "A green run takes about 40 minutes."
           echo ""
           # Run with 1 process — concurrent K3s cluster creation overwhelms
