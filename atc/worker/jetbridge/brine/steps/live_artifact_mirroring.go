@@ -7,6 +7,7 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -15,16 +16,18 @@ import (
 func configureLivePeerDiscovery(ctx context.Context, s *liveArtifactStore, pod *corev1.Pod) error {
 	const name = "artifact-peer-reader"
 	no, yes := false, true
+	// Every daemon in the namespace shares the one reader identity, so a
+	// fixture spanning nodes creates it once and finds it after that.
 	_, err := s.cluster.Clientset.CoreV1().ServiceAccounts(s.cluster.Namespace).Create(ctx,
 		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name}, AutomountServiceAccountToken: &no}, metav1.CreateOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	_, err = s.cluster.Clientset.RbacV1().Roles(s.cluster.Namespace).Create(ctx, &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Rules:      []rbacv1.PolicyRule{{APIGroups: []string{"discovery.k8s.io"}, Resources: []string{"endpointslices"}, Verbs: []string{"list"}}},
 	}, metav1.CreateOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	_, err = s.cluster.Clientset.RbacV1().RoleBindings(s.cluster.Namespace).Create(ctx, &rbacv1.RoleBinding{
@@ -32,7 +35,7 @@ func configureLivePeerDiscovery(ctx context.Context, s *liveArtifactStore, pod *
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: s.cluster.Namespace}},
 	}, metav1.CreateOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	pod.Spec.ServiceAccountName, pod.Spec.AutomountServiceAccountToken = name, &yes

@@ -68,7 +68,7 @@ func newLiveArtifactNodes(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 		if err := s.link(ctx, f.root); err != nil {
 			return nil, fmt.Errorf("link on %s: %w", node.Name, err)
 		}
-		d, err := launchLiveDaemon(ctx, rec, s, bin, port, false)
+		d, err := launchLiveDaemon(ctx, rec, s, bin, port, false, true)
 		if err != nil {
 			return nil, fmt.Errorf("daemon on %s: %w", node.Name, err)
 		}

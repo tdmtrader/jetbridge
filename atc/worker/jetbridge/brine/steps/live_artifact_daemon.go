@@ -59,7 +59,7 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 		return nil, err
 	}
 	fmt.Printf("live daemon storage ready after %s\n", time.Since(started))
-	d, err := launchLiveDaemon(ctx, rec, s, bin, port, mirror)
+	d, err := launchLiveDaemon(ctx, rec, s, bin, port, mirror, false)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func prepareLiveDaemon() (int, liveDaemonBinary, error) {
 
 // launchLiveDaemon starts and verifies a daemon on s's node, serving s.root on
 // the approved host port. It does not publish it; see publishLiveDaemons.
-func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactStore, bin liveDaemonBinary, port int, mirror bool) (*liveArtifactDaemon, error) {
+func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactStore, bin liveDaemonBinary, port int, mirror, crossNode bool) (*liveArtifactDaemon, error) {
 	started := time.Now()
 	d := &liveArtifactDaemon{store: s, port: uint16(port), binarySHA: bin.sha}
 	TrackDisposer(rec, "the live artifact daemon"+s.suffix, func() error {
@@ -202,6 +202,18 @@ func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactS
 		}
 		args = []string{"--peer-discovery", "--namespace", s.cluster.Namespace,
 			"--service-name", livePeerService, "--mirror-replicas=2", "--mirror-timeout=5s"}
+	} else if crossNode {
+		// A step's own node daemon resolves its inputs, finding a key it
+		// lacks on its peers -- the fixture's other daemons, published as
+		// liveArtifactDaemonService. A daemon dials peers on its own --port
+		// at their endpoint addresses (node IPs), so it listens on the
+		// approved host port itself: never the production daemons' 7780.
+		internalPort = port
+		if err := configureLivePeerDiscovery(ctx, s, pod); err != nil {
+			return nil, err
+		}
+		args = []string{"--peer-discovery", "--namespace", s.cluster.Namespace,
+			"--service-name", liveArtifactDaemonService, "--mirror-replicas=0"}
 	}
 	main := &pod.Spec.Containers[0]
 	main.Ports = []corev1.ContainerPort{{Name: "artifact-http", ContainerPort: int32(internalPort), HostPort: int32(port), HostIP: d.nodeIP, Protocol: corev1.ProtocolTCP}}
