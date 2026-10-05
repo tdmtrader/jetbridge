@@ -12,10 +12,13 @@ an operator took down was the surprise to avoid. A walk re-run is a no-op
 instead, so it can run on every sync, and it has to run after the bootstrap
 database Job has created the activation role and its Secret. It is an Argo
 PostSync hook in a wave after that Job, and a Helm post-install/post-upgrade
-hook for a plain `helm upgrade`. BeforeHookCreation deletes the previous run
-before the next, which is what the per-mode, per-epoch Job name used to do: a
-Job's pod template is immutable, and an image bump or a new epoch would
-otherwise fail the apply.
+hook for a plain `helm upgrade`, weighted after the database Job's hook. Helm
+waits for each hook Job to finish within --timeout, and the walk can wait up
+to its readiness timeout (10m) for the output DaemonSet before each attest, so
+a plain Helm install or upgrade needs a --timeout above that; Helm's default
+is 5m. BeforeHookCreation deletes the previous run before the next, which is
+what the per-mode, per-epoch Job name used to do: a Job's pod template is
+immutable, and an image bump or a new epoch would otherwise fail the apply.
 
 No single Helm value enables a capability. The walk still attests through the
 cohort handshake, enables through the facet's preconditions, refuses a mixed
@@ -111,6 +114,7 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     argocd.argoproj.io/sync-wave: "1"
     helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "1"
     helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 2

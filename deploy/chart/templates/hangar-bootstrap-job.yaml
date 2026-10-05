@@ -190,6 +190,10 @@ spec:
 # connection-string Secret (hangar_activation_db_role). A PostSync hook, so it
 # runs after web is healthy -- web's init container has applied the migrations
 # and, on a fresh install with the chart's PostgreSQL, the database exists.
+# Under a plain Helm install or upgrade it is a post-install/post-upgrade hook
+# at a lower weight than the activation walk, so Helm runs it, and waits for
+# it, before the walk that reads the Secret it writes. Argo ignores the Helm
+# annotations while its own hook annotation is present.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -201,6 +205,9 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: PostSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 2
   template:

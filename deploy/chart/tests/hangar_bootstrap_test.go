@@ -453,9 +453,29 @@ func TestTheActivationWalkIsAPostSyncHookAfterTheDatabaseStep(t *testing.T) {
 			t.Errorf("the walk Job's %s is %q, want %q", annotation, got, want)
 		}
 	}
+	// Argo ignores Helm's hook annotations while its own is present, so the
+	// database Job's Argo hook is what keeps its Argo behaviour unchanged.
 	if database.Annotations["argocd.argoproj.io/hook"] != "PostSync" {
 		t.Fatalf("the database Job is hook %q; the walk's ordering is stated against a "+
 			"PostSync database step", database.Annotations["argocd.argoproj.io/hook"])
+	}
+	// Under a plain Helm upgrade the database Job is a hook as well, weighted
+	// before the walk, so Helm runs and waits for it first.
+	for _, job := range []batchv1.Job{walk, database} {
+		if got := job.Annotations["helm.sh/hook"]; got != "post-install,post-upgrade" {
+			t.Errorf("%s's helm.sh/hook is %q, want post-install,post-upgrade", job.Name, got)
+		}
+	}
+	weight := func(job batchv1.Job) int {
+		parsed, err := strconv.Atoi(job.Annotations["helm.sh/hook-weight"])
+		if err != nil {
+			t.Fatalf("%s has helm.sh/hook-weight %q", job.Name, job.Annotations["helm.sh/hook-weight"])
+		}
+		return parsed
+	}
+	if weight(walk) <= weight(database) {
+		t.Errorf("the walk Job's Helm hook weight is %d and the database Job's %d; Helm "+
+			"would not run the database step first", weight(walk), weight(database))
 	}
 	wave := func(job batchv1.Job) int {
 		value := job.Annotations["argocd.argoproj.io/sync-wave"]
@@ -483,6 +503,16 @@ func TestTheActivationWalkIsAPostSyncHookAfterTheDatabaseStep(t *testing.T) {
 	}
 	if strings.Contains(args, "--facet") {
 		t.Errorf("the walk Job names a facet: %s", args)
+	}
+	if strings.Contains(args, "--finalize") {
+		t.Errorf("the walk Job finalizes with hangarOutput.activation.job.finalize unset: %s", args)
+	}
+	finalizing := render(t, append(append([]string{}, bootstrapSets...),
+		"hangarOutput.activation.target=base", "hangarOutput.activation.job.finalize=true")...)
+	var finalized batchv1.Job
+	decodeNamed(t, finalizing, "Job", walkName, &finalized)
+	if command := finalized.Spec.Template.Spec.Containers[0].Command; !slices.Contains(command, "--finalize") {
+		t.Errorf("the walk Job does not pass --finalize with hangarOutput.activation.job.finalize=true: %v", command)
 	}
 
 	var role rbacv1.Role
