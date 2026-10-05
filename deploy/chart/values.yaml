@@ -3,8 +3,9 @@
 
 # -- Container image configuration
 image:
-  # -- Docker image repository
-  repository: concourse-local
+  # -- Required. Image repository, e.g. registry.example/concourse-jetbridge,
+  # or concourse-local for an image built and loaded into a local cluster.
+  repository: ""
   # -- Image tag (defaults to appVersion from Chart.yaml)
   tag: ""
   # -- Image pull policy. Use "Never" for locally built images on k3s/kind.
@@ -21,8 +22,9 @@ web:
   # database encryption so a keyless web pod cannot overlap the encrypted one.
   strategy: {}
 
-  # -- Concourse external URL (how users reach the UI)
-  externalUrl: http://localhost:8080
+  # -- Required. The URL users reach the UI and API at, e.g.
+  # https://ci.example.com (http://localhost:8080 behind a port-forward).
+  externalUrl: ""
 
   # -- Cluster name displayed in the UI
   clusterName: jetbridge
@@ -30,14 +32,14 @@ web:
   # -- Log level: debug, info, error
   logLevel: info
 
-  # -- Local user credentials. Comma-separated "user:password" pairs, e.g.
-  # "admin:s3cret,ci:token". The chart emits one --add-local-user flag per
-  # pair (Concourse's CLI flag does not itself split on commas).
-  localUsers: "test:test"
+  # -- Required. Local user credentials. Comma-separated "user:password"
+  # pairs, e.g. "admin:s3cret,ci:token". The chart emits one --add-local-user
+  # flag per pair (Concourse's CLI flag does not itself split on commas).
+  localUsers: ""
 
-  # -- Main team local user(s), granted admin on the main team. A
-  # comma-separated list renders one --main-team-local-user each.
-  mainTeamLocalUser: test
+  # -- Required. Main team local user(s), granted admin on the main team,
+  # e.g. admin. A comma-separated list renders one --main-team-local-user each.
+  mainTeamLocalUser: ""
 
   # -- Pod-level security context (applied to the pod spec)
   podSecurityContext:
