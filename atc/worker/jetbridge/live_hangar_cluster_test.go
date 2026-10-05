@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -218,7 +220,7 @@ type liveClusterNames struct {
 	warrant, storeTLS, storeCredentials, control, capability     string
 	outputTLS, outputClient, receipt, materialize, dsn, runInput string
 
-	daemonTLS, resolve, postgres, readControlCA string
+	daemonTLS, resolve, postgres, readControlCA, signingKey string
 }
 
 func newLiveClusterNames(release, namespace string) liveClusterNames {
@@ -237,11 +239,13 @@ func newLiveClusterNames(release, namespace string) liveClusterNames {
 		runInput:         release + "-run-input-signing-key",
 		// Operator-owned, outside the bootstrap inventory: the artifact
 		// daemon's pinned TLS Secret and resolve key, the database password
-		// the bundled PostgreSQL and web share, and the read-control CA.
+		// the bundled PostgreSQL and web share, the read-control CA, and
+		// web's session signing key.
 		daemonTLS:     release + "-artifact-daemon-tls",
 		resolve:       release + "-artifact-daemon-resolve",
 		postgres:      release + "-postgresql-connection",
 		readControlCA: release + "-read-control-ca",
+		signingKey:    release + "-session-signing-key",
 	}
 }
 
@@ -355,8 +359,8 @@ func newLiveCluster(t *testing.T, release string, budget time.Duration) *liveClu
 
 // createOperatorObjects makes what an operator provides outside the bootstrap
 // inventory, as concourse.home does: the artifact daemon's pinned TLS Secret
-// and resolve key, the database password Secret, and the CA the output
-// daemon trusts for its read-control URL.
+// and resolve key, the database password Secret, web's session signing key,
+// and the CA the output daemon trusts for its read-control URL.
 func (cluster *liveCluster) createOperatorObjects() {
 	t, names := cluster.t, cluster.names
 	cluster.ca = newLiveDiskCA(t)
@@ -365,12 +369,18 @@ func (cluster *liveCluster) createOperatorObjects() {
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth})
 	cluster.daemonClientCert, cluster.daemonClientKey = cluster.ca.issue(t, "concourse web", nil, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 	cluster.postgresPassword = liveDiskRandomHex(t, 16)
+	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate the session signing key: %v", err)
+	}
 
 	for name, data := range map[string]map[string][]byte{
 		names.daemonTLS: {"tls.crt": serverCert, "tls.key": serverKey, "ca.crt": cluster.ca.certPEM,
 			"client.crt": cluster.daemonClientCert, "client.key": cluster.daemonClientKey},
 		names.resolve:  {"resolve.key": liveDiskRandomBytes(t, 32)},
 		names.postgres: {"POSTGRES_PASSWORD": []byte(cluster.postgresPassword)},
+		names.signingKey: {"session_signing_key": pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(signingKey)})},
 	} {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.namespace}, Data: data}
 		if _, err := cluster.client.CoreV1().Secrets(names.namespace).Create(cluster.ctx, secret, metav1.CreateOptions{}); err != nil {
@@ -491,6 +501,7 @@ func (cluster *liveCluster) through(ids ...string) []string {
 		"image.repository=" + cluster.repository, "image.tag=" + cluster.tag, "image.pullPolicy=Never",
 		"artifactDaemon.tls.existingSecret=" + names.daemonTLS,
 		"artifactDaemon.resolveCapability.existingSecret=" + names.resolve,
+		"secrets.signingKeySecret=" + names.signingKey,
 		// Per release, so a second contract on this node never opens the
 		// first one's output control ledger.
 		"artifactDaemon.hostPath=" + cluster.hostPath,
