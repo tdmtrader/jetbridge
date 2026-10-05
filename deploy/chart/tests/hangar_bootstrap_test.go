@@ -43,6 +43,7 @@ var bootstrapSets = []string{
 	"hangarOutput.receipt.privateKeySecret=op-receipt-private",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
 	"hangarOutput.database.existingSecret=op-activation-db",
+	"hangarOutput.activation.target=off",
 	"hangarStorage.disk.enabled=true",
 	"hangarStorage.disk.storeID=store-1",
 	"hangarStorage.disk.tls.existingSecret=storage-tls",

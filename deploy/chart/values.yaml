@@ -1036,16 +1036,17 @@ hangarOutput:
       name: ""
       annotations: {}
     # -- Where the activation walk takes hangarOutput.activationEpoch: off,
-    # base or output. With execution control on, the chart renders the walk
-    # as a PostSync hook on every sync; it makes only the transitions the
-    # epoch's row still needs, so a repeated walk writes nothing. base needs
-    # hangarOutput.executionControl.enabled, and output needs
-    # hangarOutput.enabled as well. A lower target drains the facets above
-    # it. A drained facet never comes back: raising activationEpoch is the
-    # re-enable after a drain, once the earlier epoch is finalized. No single
-    # value enables a capability: the walk attests the cohort and checks every
-    # enable precondition, and the epoch row's constraints do the rest.
-    target: "off"
+    # base or output. Required with hangarOutput.executionControl.enabled, and
+    # deliberately without a default: set it to the plane's current live state
+    # before upgrading, because the walk runs as a PostSync hook on every sync,
+    # makes only the transitions the epoch's row still needs, and drains every
+    # facet above its target. base needs execution control, and output needs
+    # hangarOutput.enabled as well. A drained facet never comes back: raising
+    # activationEpoch is the re-enable after a drain, once the other epoch is
+    # finalized. No single value enables a capability: the walk attests the
+    # cohort and checks every enable precondition, and the epoch row's
+    # constraints do the rest. Quote "off": unquoted, YAML reads it as false.
+    target: ""
     job:
       # -- Let a walk to a lower target take a drained facet to the terminal
       # disabled state. Without it a drain stops new admission and reports

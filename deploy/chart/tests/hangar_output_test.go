@@ -56,6 +56,8 @@ var baseControlSets = []string{
 	// Required under the BASE switch too: the activation walk Job renders with
 	// execution control, and it runs as the activation database role.
 	"hangarOutput.database.existingSecret=op-activation-db",
+	// And so is the walk's target, which has no default: a fresh plane is off.
+	"hangarOutput.activation.target=off",
 }
 
 // outputSets add the OUTPUT capture facet on top of the base one.
@@ -281,9 +283,13 @@ func TestOutputEnablementRequiresBaseControl(t *testing.T) {
 // values. A target past what the chart renders would otherwise be a walk Job
 // that fails every sync, or no walk Job at all and a target silently ignored.
 func TestTheActivationTargetNeedsWhatItWalksTo(t *testing.T) {
-	// The controls: each target renders where what it walks to is on.
+	// The controls: each target renders where what it walks to is on, and
+	// without execution control the target may stay unset.
 	renderBaseControl(t, "hangarOutput.activation.target=base")
 	renderOutput(t, "hangarOutput.activation.target=output")
+	if strings.Contains(render(t, "hangarOutput.activation.target="), "hangar-output-walk") {
+		t.Error("an unset target without execution control rendered a walk Job")
+	}
 
 	for name, probe := range map[string]struct {
 		sets  []string
@@ -300,6 +306,15 @@ func TestTheActivationTargetNeedsWhatItWalksTo(t *testing.T) {
 		"output without execution control": {
 			sets:  []string{"hangarOutput.activation.target=output"},
 			names: []string{"hangarOutput.activation.target", "hangarOutput.executionControl.enabled"},
+		},
+		// No default: an upgrade must not walk a live plane down to one.
+		"execution control with the target unset": {
+			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target="),
+			names: []string{"hangarOutput.activation.target is required", "hangarOutput.executionControl.enabled", "live state"},
+		},
+		"an unquoted off, which YAML reads as false": {
+			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=false"),
+			names: []string{"hangarOutput.activation.target", "Quote it"},
 		},
 		"a target that is not one": {
 			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=all"),

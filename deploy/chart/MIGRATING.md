@@ -4,10 +4,14 @@ The artifact daemon, daemon mTLS, signed artifact resolution, and authenticated
 MCP are standard capabilities. Their deployment configuration is explicit; empty
 prerequisites cause rendering to fail instead of disabling a capability.
 
-Hangar strict inputs, the output plane, activation, and the dependent public Run
-creation gate are unchanged, except that Hangar names its own store and the
-durable resource-cache tier is no longer configurable from the chart. This
-upgrade does not require GCS unless the installation separately enables Hangar.
+Hangar strict inputs, the output plane and the dependent public Run creation
+gate are unchanged, except that Hangar names its own store and the durable
+resource-cache tier is no longer configurable from the chart. Hangar's
+activation is not: with execution control on, the chart walks the activation
+epoch to `hangarOutput.activation.target` on every sync instead of running one
+activation step per values change, so the target must be set to the plane's
+live state before upgrading (see the values migration below). This upgrade
+does not require GCS unless the installation separately enables Hangar.
 It does not change global resource sharing, rerun policy, credential providers,
 auditing, or optional infrastructure.
 
@@ -19,6 +23,9 @@ auditing, or optional infrastructure.
 | `artifactDaemon.tls.enabled` | Remove it. mTLS always renders. |
 | `artifactDaemon.durable` | Remove it. The render fails with "artifactDaemon.durable has been removed; the durable tier is not configurable from the chart". The daemon renders no `--durable-*` flag or credential mount, and the `ArtifactDaemonDurableStoreErrors` alert is gone. If you used the tier: its reclaim walk stops with it, so expire the objects already in the bucket with a lifecycle rule on the prefix (or delete the bucket), and an S3 credentials Secret the chart referenced is now unused. The chart offers no way to keep the tier. |
 | `artifactDaemon.hangar.enabled` without `hangar.store` | Set `artifactDaemon.hangar.store` (`gcs` or `disk`) and `hangar.bucket`, plus `hangar.prefix` and `hangar.endpoint`. To keep existing trees reachable, set them to the durable tier's old bucket, prefix and endpoint. Hangar no longer inherits the durable tier's store, bucket, endpoint or prefix; without a store the render fails naming `artifactDaemon.hangar.store`. Hangar's store timeout is now the daemon's fixed 5m default; a `durable.timeout` no longer reaches it. |
+| `hangarOutput.activation.job.mode`, `hangarOutput.activation.job.facet` | Remove them. The render fails with "hangarOutput.activation.job.mode has been removed; set hangarOutput.activation.target". With `hangarOutput.executionControl.enabled`, the chart renders the activation walk as a PostSync hook (and a Helm post-install/post-upgrade hook) that runs on every sync and drains every facet above its target, and `hangarOutput.activation.target` is required, with no default. Before upgrading, set it to the plane's live state, as `SELECT base_state, output_state FROM hangar_output_activation_epochs WHERE epoch_id = <activationEpoch>` reports it: `output` if both facets are `enabled`, `base` if only base is, `off` otherwise. A lower target would drain a live plane. Quote `"off"`; unquoted, YAML reads it as false. `job.finalize` stays and passes `--finalize`. |
+| `hangarOutput.database.existingSecret` with execution control | Now required whenever `hangarOutput.executionControl.enabled` is on, not only with capture: the walk Job runs on every sync as the activation database role. |
+| Plain `helm install` or `helm upgrade` with execution control | The walk waits up to 10m (its readiness timeout) for the output DaemonSet before each attestation, and Helm waits for hook Jobs only within `--timeout`, 5m by default. Pass a `--timeout` above 10m, and `--wait`, so web has applied the migrations before the database and walk hooks run. Argo is unaffected. |
 | `artifactDaemon.tls.existingSecret` | Preserve the existing reference and set `artifactDaemon.tls.source: existingSecret`. |
 | Implicit certificate generation | Select `artifactDaemon.tls.source: generated` explicitly and leave `existingSecret` empty. Live Helm only; offline/GitOps rendering cannot preserve generated material. |
 | `artifactDaemon.resolveCapability.existingSecret` | Now required. Preserve an existing key; otherwise provision a Secret with `resolve.key`, exactly 32 random bytes. |

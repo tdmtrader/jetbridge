@@ -33,11 +33,24 @@ mounts NO receipt private key either: the activation identity signs nothing,
 and a key in a Pod that cannot need it is a key an exploit of that Pod gets for
 free.
 */}}
-{{- $target := .Values.hangarOutput.activation.target | default "off" }}
-{{- if not (has $target (list "off" "base" "output")) }}
+{{- /*
+The target has no default. The walk runs on every sync and drains every facet
+above its target, so a default below a plane's live state would drain that
+plane on the upgrade that introduced it. With execution control on, the
+operator states the live state; with it off there is no walk and no target.
+*/}}
+{{- $target := .Values.hangarOutput.activation.target }}
+{{- if kindIs "bool" $target }}
+{{- fail "hangarOutput.activation.target is a boolean, which is what YAML makes of an unquoted off. Quote it: \"off\"." }}
+{{- end }}
+{{- $target = toString ($target | default "") }}
+{{- if and (not $target) .Values.hangarOutput.executionControl.enabled }}
+{{- fail "hangarOutput.activation.target is required with hangarOutput.executionControl.enabled. Set it to the plane's current live state -- off, base or output, as the activation epoch's row has it now. The walk runs on every sync and drains every facet above its target, so a target below the live state would take a live plane out of service; it has no default for that reason." }}
+{{- end }}
+{{- if and $target (not (has $target (list "off" "base" "output"))) }}
 {{- fail (printf "hangarOutput.activation.target is %q; it is off, base or output" $target) }}
 {{- end }}
-{{- if and (ne $target "off") (not .Values.hangarOutput.executionControl.enabled) }}
+{{- if and $target (ne $target "off") (not .Values.hangarOutput.executionControl.enabled) }}
 {{- fail (printf "hangarOutput.activation.target is %q, which needs hangarOutput.executionControl.enabled: the walk attests the base facet's cohort, and without execution control there is no cohort and no walk Job. Set hangarOutput.activation.target=off, or turn execution control on." $target) }}
 {{- end }}
 {{- if and (eq $target "output") (not .Values.hangarOutput.enabled) }}

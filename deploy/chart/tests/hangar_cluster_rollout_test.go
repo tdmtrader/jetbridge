@@ -38,7 +38,8 @@ var rolloutSteps = []struct {
 	{"S4 strict inputs on the daemon", []string{"artifactDaemon.hangar.enabled=true",
 		"artifactDaemon.hangar.store=disk", "artifactDaemon.hangar.bucket=inputs"}},
 	{"S5 strict inputs on web", []string{"artifactDaemon.hangar.webEnabled=true"}},
-	{"S6 base workloads", []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi"}},
+	{"S6 base workloads", []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi",
+		"hangarOutput.activation.target=off"}},
 	{"S7 walk to base", []string{"hangarOutput.activation.target=base"}},
 	{"S10 output workloads", []string{
 		"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=concourse-home",
@@ -69,9 +70,6 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 		// not before: every later step changes only its target.
 		walking := currentValue(sets, "hangarOutput.executionControl.enabled=") == "true"
 		target := currentValue(sets, "hangarOutput.activation.target=")
-		if target == "" {
-			target = "off"
-		}
 
 		jobs := 0
 		for _, doc := range documentsIn(t, out) {

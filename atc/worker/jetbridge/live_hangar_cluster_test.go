@@ -462,7 +462,9 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 	case "S5":
 		return []string{"artifactDaemon.hangar.webEnabled=true"}
 	case "S6":
-		return []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi"}
+		// The walk's target has no default; a plane not yet activated is off.
+		return []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi",
+			"hangarOutput.activation.target=off"}
 	case "S7":
 		return []string{"hangarOutput.activation.target=base"}
 	case "S10":
