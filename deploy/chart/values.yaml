@@ -412,15 +412,16 @@ otelMetrics:
 
 # -- Secrets configuration
 secrets:
-  # -- Auto-generate signing keys on install.
-  # Set to false and provide signingKeySecret for multi-replica deployments.
-  # Each replica MUST share the same signing keys — otherwise sessions will
-  # fail when requests hit a different replica.
-  create: true
-
-  # -- Name of a pre-existing Secret containing signing keys.
-  # Required when secrets.create is false. The Secret must contain:
-  #   session_signing_key
+  # -- Required. Name of a pre-existing Secret holding the session signing
+  # key, an RSA private key in PEM, under session_signing_key. Every web pod
+  # mounts it at /keys, so all replicas sign and verify sessions with one key
+  # and a restart logs no one out. Create it once:
+  #   concourse generate-key -t rsa -f session_signing_key
+  #   kubectl create secret generic concourse-session-signing-key \
+  #     --from-file=session_signing_key
+  # The chart never mints the key: Helm `lookup` returns nothing under
+  # `helm template`, which is how Argo renders, so a generated key would be
+  # re-minted on every sync and written into the manifest in cleartext.
   signingKeySecret: ""
 
 # -- Pod Security Admission (PSA) recommendations.
