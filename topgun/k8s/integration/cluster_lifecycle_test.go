@@ -214,13 +214,20 @@ const signingKeySecretName = "concourse-session-signing-key"
 
 // createSigningKeySecret puts a 2048-bit RSA key, as a PKCS#1 PEM, under
 // session_signing_key. An RSA key cannot be a fixed string the way the
-// resolve key is, so a Secret that already exists is kept: replacing it on a
+// resolve key is, so an existing Secret is never replaced: replacing it on a
 // reinstall would sign new sessions with a key the running web does not hold.
+// Only a NotFound leads to creation, and the Secret is created, not applied;
+// any other answer from the API server fails the suite here rather than as a
+// web that cannot start.
 func createSigningKeySecret(kubeconfig, namespace string) {
-	if exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
-		"get", "secret", signingKeySecretName).Run() == nil {
+	out, err := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
+		"get", "secret", signingKeySecretName, "-o", "name").CombinedOutput()
+	switch {
+	case err == nil:
 		log.Printf("Signing-key Secret %s already exists in %s; keeping it", signingKeySecretName, namespace)
 		return
+	case !strings.Contains(string(out), "(NotFound)"):
+		log.Fatalf("could not tell whether signing-key Secret %s exists: %v\n%s", signingKeySecretName, err, out)
 	}
 	log.Printf("Creating signing-key Secret %s in %s...", signingKeySecretName, namespace)
 
@@ -229,25 +236,17 @@ func createSigningKeySecret(kubeconfig, namespace string) {
 		log.Fatalf("could not generate the session signing key: %v", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+	create := exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"-n", namespace,
 		"create", "secret", "generic", signingKeySecretName,
-		"--from-literal=session_signing_key="+string(keyPEM),
-		"--dry-run=client", "-o", "yaml")
-	manifest, err := cmd.Output()
-	if err != nil {
+		"--from-literal=session_signing_key="+string(keyPEM))
+	create.Stdout = os.Stderr
+	create.Stderr = os.Stderr
+	if err := create.Run(); err != nil {
 		// Fatal for the same reason as the resolve key: web cannot start
 		// without /keys/session_signing_key, and the suite would die later as
 		// a readiness timeout naming the wrong cause.
-		log.Fatalf("could not render signing-key Secret: %v", err)
-	}
-
-	apply := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "apply", "-f", "-")
-	apply.Stdin = strings.NewReader(string(manifest))
-	apply.Stdout = os.Stderr
-	apply.Stderr = os.Stderr
-	if err := apply.Run(); err != nil {
-		log.Fatalf("could not apply signing-key Secret: %v", err)
+		log.Fatalf("could not create signing-key Secret: %v", err)
 	}
 }
 

@@ -83,3 +83,37 @@ func TestWebMountsTheNamedSigningKeySecretAtKeys(t *testing.T) {
 		})
 	}
 }
+
+// migrate-db is the web Deployment's first init container in every mode.
+// The self-upgrade job re-images every web container, migrate-db included,
+// and home-infra's Argo Application ignores differences at
+// /spec/template/spec/initContainers/0/image so selfHeal does not revert it.
+// An init container inserted ahead of migrate-db would move that pointer onto
+// the newcomer: selfHeal would revert migrate-db, the container that applies
+// schema migrations, to the chart's image after every release.
+func TestMigrateDBIsTheWebDeploymentsFirstInitContainer(t *testing.T) {
+	rollout := exec.Command("helm", "template", "concourse", "deploy/chart", "--namespace", "cicd",
+		"-f", "deploy/chart/tests/testdata/concourse-home-rollout.yaml")
+	rollout.Dir = repoRoot(t)
+	home, err := rollout.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the concourse.home rollout values do not render: %v\n%s", err, home)
+	}
+	for name, manifests := range map[string]string{
+		"default":        render(t),
+		"output facet":   renderOutput(t),
+		"concourse.home": string(home),
+		"web capture":    renderOutput(t, "hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=review-input-key"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			initContainers := strictWebDeployment(t, manifests).Spec.Template.Spec.InitContainers
+			if len(initContainers) == 0 || initContainers[0].Name != "migrate-db" {
+				var names []string
+				for _, container := range initContainers {
+					names = append(names, container.Name)
+				}
+				t.Fatalf("web's init containers are %v; migrate-db must be first, where home-infra's ignoreDifferences pointer initContainers/0/image expects it", names)
+			}
+		})
+	}
+}
