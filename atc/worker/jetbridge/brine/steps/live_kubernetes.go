@@ -38,8 +38,19 @@ func newLiveKubernetes(ctx context.Context, rec *brine.Recorder, podLimits ...in
 	if len(podLimits) == 1 {
 		podLimit = podLimits[0]
 	}
+	return newLiveKubernetesBounded(ctx, rec, podLimit, 1)
+}
+
+// newLiveKubernetesBounded is newLiveKubernetes for a fixture that spans
+// nodes: the namespace's CPU, memory and ephemeral-storage quota is the
+// single-node bound times nodes, so each node's share is what one node's
+// fixture has always had.
+func newLiveKubernetesBounded(ctx context.Context, rec *brine.Recorder, podLimit, nodes int64) (liveKubernetes, error) {
 	if podLimit < 1 {
 		return liveKubernetes{}, fmt.Errorf("pod limit must be positive")
+	}
+	if nodes < 1 {
+		return liveKubernetes{}, fmt.Errorf("node count must be positive")
 	}
 	cfg, err := liveKubernetesConfig()
 	if err != nil {
@@ -65,10 +76,13 @@ func newLiveKubernetes(ctx context.Context, rec *brine.Recorder, podLimits ...in
 	liveNamespaces.sweepStaleOnce(ctx, client)
 	fmt.Printf("created owned live namespace %s (%s)\n", ns.Name, ns.UID)
 	q := resource.MustParse
+	cpu := *resource.NewMilliQuantity(1000*nodes, resource.DecimalSI)
+	memory := *resource.NewQuantity(nodes*512<<20, resource.BinarySI)
+	scratch := *resource.NewQuantity(nodes*256<<20, resource.BinarySI)
 	_, err = client.CoreV1().ResourceQuotas(ns.Name).Create(ctx, &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "bounded-test"}, Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
-		corev1.ResourcePods: *resource.NewQuantity(podLimit, resource.DecimalSI), corev1.ResourceRequestsCPU: q("1"), corev1.ResourceLimitsCPU: q("1"),
-		corev1.ResourceRequestsMemory: q("512Mi"), corev1.ResourceLimitsMemory: q("512Mi"),
-		corev1.ResourceRequestsEphemeralStorage: q("256Mi"), corev1.ResourceLimitsEphemeralStorage: q("256Mi"),
+		corev1.ResourcePods: *resource.NewQuantity(podLimit, resource.DecimalSI), corev1.ResourceRequestsCPU: cpu, corev1.ResourceLimitsCPU: cpu,
+		corev1.ResourceRequestsMemory: memory, corev1.ResourceLimitsMemory: memory,
+		corev1.ResourceRequestsEphemeralStorage: scratch, corev1.ResourceLimitsEphemeralStorage: scratch,
 	}}}, metav1.CreateOptions{})
 	if err != nil {
 		return liveKubernetes{}, err

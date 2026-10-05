@@ -41,7 +41,7 @@ type liveArtifactStore struct {
 }
 
 func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifactStore, error) {
-	cluster, err := newLiveArtifactCluster(ctx, rec, 4)
+	cluster, err := newLiveArtifactCluster(ctx, rec, 4, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -54,11 +54,11 @@ func newLiveArtifactStore(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 
 // newLiveArtifactCluster is an owned namespace granted the hostPath exception
 // this fixture needs, with room for podLimit pods.
-func newLiveArtifactCluster(ctx context.Context, rec *brine.Recorder, podLimit int64) (liveKubernetes, error) {
+func newLiveArtifactCluster(ctx context.Context, rec *brine.Recorder, podLimit, nodes int64) (liveKubernetes, error) {
 	if os.Getenv("BRINE_ALLOW_HOSTPATH_TESTS") != "1" {
 		return liveKubernetes{}, fmt.Errorf("live artifact storage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 approval")
 	}
-	cluster, err := newLiveKubernetes(ctx, rec, podLimit)
+	cluster, err := newLiveKubernetesBounded(ctx, rec, podLimit, nodes)
 	if err != nil {
 		return liveKubernetes{}, err
 	}

@@ -54,7 +54,7 @@ func newLiveArtifactNodes(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	}
 	// Anchor, observer, linker and daemon on each node, plus a producer and a
 	// consumer task at a time.
-	cluster, err := newLiveArtifactCluster(ctx, rec, int64(4*len(nodes)+2))
+	cluster, err := newLiveArtifactCluster(ctx, rec, int64(4*len(nodes)+2), int64(len(nodes)))
 	if err != nil {
 		return nil, err
 	}
