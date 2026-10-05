@@ -833,19 +833,19 @@ jobs:
     timeout: 4h
     config:
       platform: linux
-      # One ginkgo proc. Each proc creates its OWN K3s cluster in the task's
-      # DinD, and the suite is not yet safe to run more than one: concurrent
-      # cluster creation contends on containerd's layer locks (see the note
-      # at the ginkgo line), and every proc writes the same kubeconfig file.
-      # Three procs filled the tmpfs (builds 207, 208); two lost proc 2
-      # without a report (209). The tmpfs cap below still scales with
-      # K8S_PROCS, 4G of shared images plus 4G per cluster. The request fits
-      # theborg alone (32 GB, ~6.6 requested by its services) so the job runs
-      # when the second node is off; web's preferred step node sends it to
+      # Two ginkgo procs. Each proc creates its OWN K3s cluster in the task's
+      # DinD; the suite serializes their bring-up behind a host file lock and
+      # pulls shared images once, so procs no longer collide on containerd's
+      # content locks, and each proc has its own kubeconfig. Three procs
+      # filled the tmpfs (builds 207, 208), so its cap below scales with
+      # K8S_PROCS: 4G of shared images plus 4G per cluster. One proc peaked
+      # at 9 GB, ~5.5 of it that tmpfs. The request fits theborg alone
+      # (32 GB, ~6.6 requested by its services) so the job runs when the
+      # second node is off; web's preferred step node sends it to
       # k3s-agent-y (47 GB) first.
-      container_requests: {cpu: 4000, memory: 14GB}
+      container_requests: {cpu: 4000, memory: 18GB}
       params:
-        K8S_PROCS: "1"
+        K8S_PROCS: "2"
       inputs:
       - name: repo
       rootfs_uri: *kind_runner_image
@@ -930,9 +930,10 @@ jobs:
           echo "=== Running K8s behavioral tests (pre-compiled, one K3s cluster per proc, --procs=${K8S_PROCS:-1}) ==="
           echo "A green run takes about 40 minutes."
           echo ""
-          # Run with 1 process — concurrent K3s cluster creation overwhelms
-          # Docker's containerd with image layer lock contention in DinD.
-          # Single-process mode is slower but reliable.
+          # Each proc brings up its own cluster. Concurrent bring-up contends
+          # on DinD's containerd layer locks, so the suite takes a host file
+          # lock around cluster creation and image loading; specs still run
+          # in parallel.
           # ginkgo runs a precompiled suite from /tmp, so the suite cannot find
           # the checkout by itself; name it explicitly or it deploys the runner
           # image's baked chart against these binaries.
