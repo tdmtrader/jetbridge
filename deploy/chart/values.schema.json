@@ -444,10 +444,10 @@
           "type": "boolean"
         },
         "brineLive": {
-          "type": "boolean"
+          "$ref": "#/definitions/removed"
         },
         "brineLiveServiceAccount": {
-          "type": "string"
+          "$ref": "#/definitions/removed"
         }
       }
     },

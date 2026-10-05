@@ -38,8 +38,10 @@ import (
 // serviceAccount.name) and the 111 leaves of the deferred groups. Removing
 // artifactDaemon.durable took its 11 leaves, leaving 234. The activation walk
 // replaced hangarOutput.activation.job.mode and job.facet, two step values,
-// with one target, hangarOutput.activation.target, leaving 233.
-const maxValues = 233
+// with one target, hangarOutput.activation.target, leaving 233. Moving the
+// brine live identity to the cluster that uses it took rbac.brineLive and
+// rbac.brineLiveServiceAccount, leaving 231.
+const maxValues = 231
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -57,7 +59,6 @@ var allowedSwitches = []string{
 	"pdb.enabled",
 	"postgresql.enabled",
 	"postgresql.persistence.enabled",
-	"rbac.brineLive",
 	"rbac.create",
 	"secrets.create",
 	"serviceAccount.create",
@@ -140,6 +141,8 @@ var removedKeys = []string{
 	"artifactDaemon.tls.enabled",
 	"hangarOutput.activation.job.facet",
 	"hangarOutput.activation.job.mode",
+	"rbac.brineLive",
+	"rbac.brineLiveServiceAccount",
 	"web.enablePipelineRunCreation",
 }
 
