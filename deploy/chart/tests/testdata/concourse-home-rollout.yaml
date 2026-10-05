@@ -107,16 +107,13 @@ kubernetes:
     serviceAccount: jetbridge-upgrader
   - name: brine-live
     owner: main/jetbridge/brine
-    serviceAccount: concourse-brine-live
+    serviceAccount: jetbridge-brine-live
   - name: brine-live-one-off
     owner: main/one-off
-    serviceAccount: concourse-brine-live
+    serviceAccount: jetbridge-brine-live
   - name: loupe-deployer
     owner: main/loupe/deploy
     serviceAccount: loupe-deployer
-rbac:
-  brineLive: true
-  brineLiveServiceAccount: concourse-brine-live
 tracing:
   serviceName: concourse-home
   otlpAddress: tempo.example:4317
