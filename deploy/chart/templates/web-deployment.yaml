@@ -34,22 +34,6 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
-        {{- if .Values.secrets.create }}
-        - name: generate-keys
-          image: {{ include "concourse.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command:
-            - sh
-            - -c
-            - |
-              # Only generate keys if they don't already exist
-              if [ ! -f /keys/session_signing_key ]; then
-                concourse generate-key -t rsa -f /keys/session_signing_key
-              fi
-          volumeMounts:
-            - name: keys
-              mountPath: /keys
-        {{- end }}
         - name: migrate-db
           image: {{ include "concourse.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -436,14 +420,9 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.web.runResults.scratchSizeLimit }}
         {{- end }}
-{{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
         - name: keys
           secret:
             secretName: {{ .Values.secrets.signingKeySecret }}
-        {{- else }}
-        - name: keys
-          emptyDir: {}
-        {{- end }}
         {{- if .Values.web.tls.enabled }}
         - name: web-tls
           secret:
