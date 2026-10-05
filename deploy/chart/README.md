@@ -29,10 +29,20 @@ default containerd runtime. For kind, load it with `kind load docker-image`.
 
 ### 2. Install
 
-Create `deployment-values.yaml` with your explicitly provisioned references
-and actual MCP client registrations (the names below are examples):
+Create `deployment-values.yaml` with the image, URL and users, your explicitly
+provisioned references and actual MCP client registrations (the names below
+are examples). The chart has no defaults for any of them; a render that leaves
+one out fails naming it:
 
 ```yaml
+image:
+  repository: concourse-local
+web:
+  externalUrl: http://localhost:8080
+  localUsers: "test:test"
+  mainTeamLocalUser: test
+secrets:
+  signingKeySecret: jetbridge-session-signing-key
 artifactDaemon:
   tls:
     source: existingSecret
@@ -51,11 +61,23 @@ The TLS Secret needs `ca.crt`, `tls.crt`, `tls.key`, `client.crt`, and
 For a live Helm installation, `tls.source: generated` with an empty
 `tls.existingSecret` explicitly selects chart-managed certificates instead.
 
+The signing-key Secret holds the session signing key, an RSA private key in
+PEM under `session_signing_key`. Every web pod mounts it, so sessions survive
+restarts and work across replicas. Create it once:
+
+```bash
+kubectl create namespace concourse
+concourse generate-key -t rsa -f session_signing_key
+kubectl -n concourse create secret generic jetbridge-session-signing-key \
+  --from-file=session_signing_key
+```
+
+Then install:
+
 ```bash
 helm install concourse ./deploy/chart \
   -f deployment-values.yaml \
   --namespace concourse --create-namespace \
-  --set image.repository=concourse-local \
   --set image.tag=latest \
   --set image.pullPolicy=Never \
   --set service.type=ClusterIP
@@ -95,7 +117,8 @@ spec:
     path: deploy/chart
     helm:
       # Merge the required certificate, resolve Secret, and mcp.clients settings
-      # from deployment-values.yaml above into this application's Helm values.
+      # from deployment-values.yaml above into this application's Helm values,
+      # and create the signing-key Secret as in the k3s quickstart.
       # Use source: existingSecret for Argo; never generated certificates.
       valueFiles:
         - values.yaml
@@ -106,6 +129,12 @@ spec:
           value: latest
         - name: web.externalUrl
           value: https://concourse.example.com
+        - name: web.localUsers
+          value: admin:change-me
+        - name: web.mainTeamLocalUser
+          value: admin
+        - name: secrets.signingKeySecret
+          value: concourse-session-signing-key
         - name: ingress.enabled
           value: "true"
         - name: ingress.host
@@ -129,7 +158,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `image.repository` | `concourse-local` | Docker image repository. |
+| `image.repository` | `""` | **Required.** Image repository, e.g. `concourse-local` for a locally loaded image. |
 | `image.tag` | `""` (appVersion) | Image tag. |
 | `image.pullPolicy` | `IfNotPresent` | Pull policy. Use `Never` for local images on k3s/kind. |
 | `image.pullSecrets` | `[]` | Image pull secrets for the web pod. |
@@ -139,11 +168,11 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `web.replicas` | `1` | Number of web node replicas. |
-| `web.externalUrl` | `http://localhost:8080` | URL users use to reach the UI. |
+| `web.externalUrl` | `""` | **Required.** URL users use to reach the UI. |
 | `web.clusterName` | `jetbridge` | Cluster name displayed in the UI. |
 | `web.logLevel` | `info` | Log level: `debug`, `info`, `error`. |
-| `web.localUsers` | `test:test` | Local user credentials (`user:password`). |
-| `web.mainTeamLocalUser` | `test` | User granted admin on the main team. |
+| `web.localUsers` | `""` | **Required.** Local user credentials (`user:password`, comma-separated). |
+| `web.mainTeamLocalUser` | `""` | **Required.** User granted admin on the main team. |
 | `web.apiMaxConns` | `10` | API connection pool max (per replica). |
 | `web.backendMaxConns` | `50` | Backend connection pool max (per replica). |
 | `web.terminationGracePeriodSeconds` | `120` | Graceful shutdown timeout. |
@@ -365,11 +394,10 @@ web:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `secrets.create` | `true` | Auto-generate signing keys. Set `false` for multi-replica. |
-| `secrets.signingKeySecret` | `""` | Pre-existing Secret with signing keys (required when `create=false`). |
+| `secrets.signingKeySecret` | `""` | **Required.** Pre-existing Secret holding `session_signing_key`, an RSA private key in PEM. Every web pod mounts it at `/keys`. |
 
-All web replicas MUST share the same signing keys — sessions fail when
-requests hit a replica with different keys.
+The chart never generates the key. Every web replica mounts the same Secret,
+so sessions survive restarts and work across replicas.
 
 ### Network Policy
 
@@ -449,7 +477,7 @@ The chart always deploys the artifact daemon and wires its host path into web.
 
 ## Production Notes
 
-- **Secrets:** Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`. Generate signing keys externally and set `secrets.create=false`.
+- **Secrets:** Add OIDC/OAuth via `web.extraArgs`, and keep `web.localUsers` to a strong admin credential. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.
