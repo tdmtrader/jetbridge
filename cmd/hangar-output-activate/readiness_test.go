@@ -49,6 +49,19 @@ func TestTheDaemonSetCountsAreTheDesiredUpdatedAndReadyOnes(t *testing.T) {
 	}
 }
 
+// The generation pair is carried as it is, so the walk can tell a status that
+// describes the current template from one left over from the previous.
+func TestTheDaemonSetGenerationAndItsObservedGenerationAreBothCarried(t *testing.T) {
+	set := daemonSet(2, 2, 2, 2)
+	set.Generation = 5
+	set.Status.ObservedGeneration = 4
+	readiness := daemonSetReadiness(set, nil)
+	if readiness.Generation != 5 || readiness.ObservedGeneration != 4 {
+		t.Errorf("read generation %d observed %d from metadata.generation=5 "+
+			"status.observedGeneration=4", readiness.Generation, readiness.ObservedGeneration)
+	}
+}
+
 func TestAMemberIsReadyOnlyByItsReadyConditionAndNotWhileTerminating(t *testing.T) {
 	terminating := pod("leaving", condition(corev1.PodReady, corev1.ConditionTrue))
 	now := metav1.Now()

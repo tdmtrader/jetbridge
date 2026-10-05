@@ -2,7 +2,6 @@ package activation
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -64,13 +63,20 @@ type MemberReadiness struct {
 }
 
 // DaemonSetReadiness is what the Kubernetes API says about the output
-// DaemonSet's rollout: its three counts and each member pod's Ready flag.
+// DaemonSet's rollout: the generation its status describes, its three counts
+// and each member pod's Ready flag.
 type DaemonSetReadiness struct {
 	Name    string
 	Desired int
 	Updated int
 	Ready   int
 	Members []MemberReadiness
+
+	// Generation is the DaemonSet's metadata.generation and
+	// ObservedGeneration its status.observedGeneration. Until they are equal
+	// the counts describe the previous template.
+	Generation         int64
+	ObservedGeneration int64
 }
 
 // settled is the condition an attestation waits for.
@@ -81,7 +87,14 @@ type DaemonSetReadiness struct {
 // what says the rollout is over. A desired count of zero is a DaemonSet whose
 // status the controller has not computed yet, or one scheduled nowhere; either
 // way there is no cohort to attest, and AttestBase would refuse it as empty.
+// And the counts mean any of that only once the controller has observed the
+// current template: right after an upgrade the status still reads settled for
+// the old one, and Argo's health check, which waits for that, is not in front
+// of a plain Helm post-upgrade hook.
 func (readiness DaemonSetReadiness) settled() bool {
+	if readiness.ObservedGeneration != readiness.Generation {
+		return false
+	}
 	if readiness.Desired == 0 || readiness.Updated != readiness.Desired ||
 		readiness.Ready != readiness.Desired {
 		return false
@@ -104,6 +117,10 @@ func (readiness DaemonSetReadiness) describe() string {
 	}
 	description := fmt.Sprintf("desired=%d updated=%d ready=%d",
 		readiness.Desired, readiness.Updated, readiness.Ready)
+	if readiness.ObservedGeneration != readiness.Generation {
+		description += fmt.Sprintf(", observed generation %d of %d",
+			readiness.ObservedGeneration, readiness.Generation)
+	}
 	if len(notReady) != 0 {
 		description += fmt.Sprintf(", pods not Ready: %s", strings.Join(notReady, ", "))
 	}
@@ -175,7 +192,7 @@ func (walker Walker) Walk(ctx context.Context, epoch executioncontrol.Activation
 
 			return nil
 		}
-		if err := walker.refuseWhileAnEarlierEpochIsEnabled(ctx, epoch); err != nil {
+		if err := walker.refuseWhileAnotherEpochIsEnabled(ctx, epoch); err != nil {
 			return err
 		}
 		if err := walker.Epochs.Begin(ctx, epoch); err != nil && !errors.Is(err, ErrAlreadyAtTarget) {
@@ -187,7 +204,9 @@ func (walker Walker) Walk(ctx context.Context, epoch executioncontrol.Activation
 	}
 	defer walker.printRow(ctx, epoch)
 
-	if err := walker.takeOut(ctx, epoch, target, finalize); err != nil {
+	if err := walker.againIfStale(func() error {
+		return walker.takeOut(ctx, epoch, target, finalize)
+	}); err != nil {
 		return err
 	}
 
@@ -195,12 +214,34 @@ func (walker Walker) Walk(ctx context.Context, epoch executioncontrol.Activation
 		if !target.covers(facet) {
 			continue
 		}
-		if err := walker.takeIn(ctx, epoch, facet); err != nil {
+		if err := walker.againIfStale(func() error {
+			return walker.takeIn(ctx, epoch, facet)
+		}); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// againIfStale runs a step and, when its compare-and-set found the row moved,
+// runs it once more. Every step reads the row first, so the second run goes on
+// from wherever the row now is.
+//
+// Two walks overlap in the ordinary course: Argo recreates the hook while an
+// older pod may still be running. When the other walk made the transition
+// first, this one's CAS is ErrStaleEpoch, and failing on it would fail the sync
+// over a row that is already where the walk was taking it. Once, because a row
+// still moving under a second read is not an overlap but a contest, and the
+// error says so.
+func (walker Walker) againIfStale(step func() error) error {
+	err := step()
+	if !errors.Is(err, ErrStaleEpoch) {
+		return err
+	}
+	walker.printf("the row moved under this walk (%v); reading it again\n", err)
+
+	return step()
 }
 
 // takeOut drains every facet above the target, output first.
@@ -294,7 +335,7 @@ func (walker Walker) takeIn(ctx context.Context, epoch executioncontrol.Activati
 
 	// Before the attest as well as the enable: an attestation the walk would
 	// then refuse to enable is a write made for nothing.
-	if err := walker.refuseWhileAnEarlierEpochIsEnabled(ctx, epoch); err != nil {
+	if err := walker.refuseWhileAnotherEpochIsEnabled(ctx, epoch); err != nil {
 		return err
 	}
 	if current == "initial" || current == "attesting" {
@@ -395,45 +436,35 @@ func (walker Walker) waitForTheCohort(ctx context.Context, epoch executioncontro
 	}
 }
 
-// refuseWhileAnEarlierEpochIsEnabled names the earlier epoch that still holds
-// an enabled facet.
+// refuseWhileAnotherEpochIsEnabled names the other epoch that still holds an
+// enabled facet.
 //
 // At most one base and one output facet may be enabled across all epochs, so
-// raising the epoch re-enables only after the earlier one is finalized. Without
-// this the enable would reach the partial unique index and surface as an
-// infrastructure error that names a constraint rather than the epoch and the
-// command. It runs before a begin and before every enable, whoever began the
-// row: a row that `--mode=begin` made is refused the same way.
-func (walker Walker) refuseWhileAnEarlierEpochIsEnabled(ctx context.Context,
+// raising the epoch re-enables only after the earlier one is finalized, and so
+// does lowering it. Without this the enable would reach the partial unique
+// index and surface as an infrastructure error that names a constraint rather
+// than the epoch and the command. It runs before a begin and before every
+// attest and enable, whoever began the row: a row that `--mode=begin` made is
+// refused the same way.
+func (walker Walker) refuseWhileAnotherEpochIsEnabled(ctx context.Context,
 	epoch executioncontrol.ActivationEpoch) error {
-	var earlier int64
-	var base, out string
-	err := walker.Epochs.DB.QueryRowContext(ctx, `
-		SELECT epoch_id, base_state, output_state
-		  FROM hangar_output_activation_epochs
-		 WHERE epoch_id < $1
-		   AND (base_state = 'enabled' OR output_state = 'enabled')
-		 ORDER BY epoch_id
-		 LIMIT 1`, int64(epoch)).Scan(&earlier, &base, &out)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("%w: reading the earlier epochs: %v", output.ErrInfrastructure, err)
+	other, found, err := walker.Epochs.EnabledOther(ctx, epoch)
+	if err != nil || !found {
+		return err
 	}
 
 	var facets []string
-	if base == "enabled" {
+	if other.Base == "enabled" {
 		facets = append(facets, "base")
 	}
-	if out == "enabled" {
+	if other.Output == "enabled" {
 		facets = append(facets, "output")
 	}
 
 	return fmt.Errorf("%w: epoch %d's %s facet is still enabled, and only one epoch's facet "+
 		"may be in service at a time. Finalize it first, with the activation command's "+
 		"--epoch=%d --target=off --finalize, and walk epoch %d again once it holds no enabled "+
-		"facet", output.ErrConflict, earlier, strings.Join(facets, " and "), earlier, epoch)
+		"facet", output.ErrConflict, other.Epoch, strings.Join(facets, " and "), other.Epoch, epoch)
 }
 
 func (walker Walker) printRow(ctx context.Context, epoch executioncontrol.ActivationEpoch) {

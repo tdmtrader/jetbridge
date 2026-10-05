@@ -394,12 +394,16 @@ func (cohort *daemonSetCohort) Readiness(ctx context.Context) (activation.Daemon
 // pods that still speak the previous epoch are gone from the count. A member
 // that is terminating is not Ready here whatever its condition says: it is
 // leaving, and it may still answer a handshake for the epoch being replaced.
+// The generation pair goes with the counts, because until the controller has
+// observed the current template the counts are the previous template's.
 func daemonSetReadiness(set appsv1.DaemonSet, pods []corev1.Pod) activation.DaemonSetReadiness {
 	readiness := activation.DaemonSetReadiness{
-		Name:    set.Name,
-		Desired: int(set.Status.DesiredNumberScheduled),
-		Updated: int(set.Status.UpdatedNumberScheduled),
-		Ready:   int(set.Status.NumberReady),
+		Name:               set.Name,
+		Desired:            int(set.Status.DesiredNumberScheduled),
+		Updated:            int(set.Status.UpdatedNumberScheduled),
+		Ready:              int(set.Status.NumberReady),
+		Generation:         set.Generation,
+		ObservedGeneration: set.Status.ObservedGeneration,
 	}
 	for _, pod := range pods {
 		ready := pod.DeletionTimestamp == nil

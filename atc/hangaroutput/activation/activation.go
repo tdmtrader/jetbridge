@@ -377,6 +377,35 @@ func (epochs Epochs) Read(ctx context.Context,
 	return state, nil
 }
 
+// EnabledOther returns the lowest epoch other than this one that holds an
+// enabled facet, and whether there is one.
+//
+// One base and one output facet may be enabled across all epochs, so an
+// enable on this epoch while another holds one would reach the partial unique
+// index. The activation walk reads this first and refuses by name instead.
+func (epochs Epochs) EnabledOther(ctx context.Context,
+	epoch executioncontrol.ActivationEpoch) (State, bool, error) {
+	var other int64
+	var state State
+	err := epochs.DB.QueryRowContext(ctx, `
+		SELECT epoch_id, base_state, output_state, revision
+		  FROM hangar_output_activation_epochs
+		 WHERE epoch_id <> $1
+		   AND (base_state = 'enabled' OR output_state = 'enabled')
+		 ORDER BY epoch_id
+		 LIMIT 1`, int64(epoch)).Scan(&other, &state.Base, &state.Output, &state.Revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("%w: reading the other epochs: %v",
+			output.ErrInfrastructure, err)
+	}
+	state.Epoch = executioncontrol.ActivationEpoch(other)
+
+	return state, true, nil
+}
+
 // apply runs one CAS and turns "no rows" into the typed refusal.
 //
 // The distinction it draws is the one an operator needs: a row that does not

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,7 +70,8 @@ func (readiness fixedReadiness) Readiness(context.Context) (activation.DaemonSet
 func settledDaemonSet() activation.DaemonSetReadiness {
 	return activation.DaemonSetReadiness{
 		Name: walkDaemonSet, Desired: 2, Updated: 2, Ready: 2,
-		Members: []activation.MemberReadiness{{Pod: "daemon-a", Ready: true}, {Pod: "daemon-b", Ready: true}},
+		Members:    []activation.MemberReadiness{{Pod: "daemon-a", Ready: true}, {Pod: "daemon-b", Ready: true}},
+		Generation: 3, ObservedGeneration: 3,
 	}
 }
 
@@ -198,6 +200,19 @@ func TestAWalkAttestsNothingUntilTheDaemonSetSettles(t *testing.T) {
 		"a member pod not Ready": {
 			spoil: func(state *activation.DaemonSetReadiness) { state.Members[1].Ready = false },
 			says:  "pods not Ready: daemon-b",
+		},
+		// All three counts agree and every listed pod is Ready, at zero: a
+		// status not yet computed, or a DaemonSet scheduled nowhere.
+		"desired zero": {
+			spoil: func(state *activation.DaemonSetReadiness) {
+				state.Desired, state.Updated, state.Ready = 0, 0, 0
+			},
+			says: "desired=0 updated=0 ready=0",
+		},
+		// Counts that read settled for the template before an upgrade.
+		"the status describes the previous generation": {
+			spoil: func(state *activation.DaemonSetReadiness) { state.Generation = 4 },
+			says:  "observed generation 3 of 4",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -399,6 +414,26 @@ func TestRaisingTheEpochReEnablesOnlyOnceTheEarlierOneIsFinalized(t *testing.T) 
 		}
 	})
 
+	// Lowering the epoch is refused the same way: the other epoch is named
+	// whichever side of the configured one it is on.
+	t.Run("refused when the epoch is lowered below an enabled one", func(t *testing.T) {
+		epochs, conn := activationFixture(t)
+		mustWalk(t, walkerFor(epochs, second, nil), second, activation.TargetBase, false)
+
+		err := walkerFor(epochs, first, nil).Walk(ctx, first, activation.TargetOutput, false)
+		if err == nil || !errors.Is(err, output.ErrConflict) {
+			t.Fatalf("the walk of a lowered epoch was not the typed refusal: %v", err)
+		}
+		for _, named := range []string{"epoch 2's base facet", "--epoch=2 --target=off --finalize"} {
+			if !strings.Contains(err.Error(), named) {
+				t.Errorf("the refusal does not name %q: %v", named, err)
+			}
+		}
+		if _, found := snapshotRow(t, conn, first); found {
+			t.Error("the refused walk began the lowered epoch")
+		}
+	})
+
 	t.Run("reaches the target once epoch 1 is finalized", func(t *testing.T) {
 		epochs, conn := activationFixture(t)
 		firstWalker := walkerFor(epochs, first, nil)
@@ -419,4 +454,47 @@ func TestRaisingTheEpochReEnablesOnlyOnceTheEarlierOneIsFinalized(t *testing.T) 
 			t.Errorf("the raised epoch ended at base=%s output=%s", row.base, row.output)
 		}
 	})
+}
+
+// advancingReadiness is a settled DaemonSet whose first read lets another walk
+// make this facet's transitions, the way an overlapping hook does: Argo
+// recreated it while the older pod was still running.
+type advancingReadiness struct {
+	once    *sync.Once
+	advance func()
+}
+
+func (readiness advancingReadiness) Readiness(context.Context) (activation.DaemonSetReadiness, error) {
+	readiness.once.Do(readiness.advance)
+
+	return settledDaemonSet(), nil
+}
+
+// A walk whose row moved under it -- another walk attested and enabled base
+// between this one's read and its attest -- reads the row again and goes on
+// from there, rather than failing the sync over a row already where it was
+// going.
+func TestAWalkGoesOnFromARowAnotherWalkAdvanced(t *testing.T) {
+	epochs, conn := activationFixture(t)
+	const epoch = executioncontrol.ActivationEpoch(108)
+
+	var out strings.Builder
+	walker := walkerFor(epochs, epoch, &out)
+	advanced := false
+	walker.Readiness = advancingReadiness{once: &sync.Once{}, advance: func() {
+		mustAttestAndEnableBase(t, epochs, epoch)
+		advanced = true
+	}}
+
+	mustWalk(t, walker, epoch, activation.TargetOutput, false)
+	if !advanced {
+		t.Fatal("nothing advanced the row, so this proves nothing")
+	}
+	if !strings.Contains(out.String(), "reading it again") {
+		t.Errorf("the walk did not meet the moved row:\n%s", out.String())
+	}
+	row := mustSnapshotRow(t, conn, epoch)
+	if row.base != "enabled" || row.output != "enabled" {
+		t.Errorf("the walk ended at base=%s output=%s", row.base, row.output)
+	}
 }
