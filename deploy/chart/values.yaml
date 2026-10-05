@@ -212,7 +212,7 @@ kubernetes:
   # Only this configuration selects a grant; nothing in a pipeline can.
   # privileged: true lets the owner's step pods run privileged; such a grant
   # may leave serviceAccount out and keep the default identity's account.
-  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: concourse-brine-live, privileged: true}]
+  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: jetbridge-brine-live, privileged: true}]
   stepPodGrants: []
 
   # -- Pod startup timeout
@@ -379,17 +379,6 @@ ingress:
 rbac:
   # -- Create RBAC resources (Role, RoleBinding) for the web pod
   create: true
-  # -- Grant the task pods' ServiceAccount what the brine live tier needs:
-  # cluster-wide namespace create/delete and pod/service/secret management in
-  # the namespaces it generates (templates/brine-live-rbac.yaml). Every task
-  # pod inherits it, so this is for a single-tenant cluster whose pipelines
-  # are its own tests.
-  brineLive: false
-  # -- When set, the chart renders this ServiceAccount and binds the brine
-  # live ClusterRole to it instead of the task ServiceAccount. Map the brine
-  # job and main/one-off to it with kubernetes.stepPodGrants, and no other
-  # step pod carries the role.
-  brineLiveServiceAccount: ""
 
 # -- ServiceAccount configuration
 serviceAccount:
