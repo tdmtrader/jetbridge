@@ -53,6 +53,9 @@ var baseControlSets = []string{
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
 	"hangarOutput.daemon.scratch.sizeLimit=32Gi",
+	// Required under the BASE switch too: the activation walk Job renders with
+	// execution control, and it runs as the activation database role.
+	"hangarOutput.database.existingSecret=op-activation-db",
 }
 
 // outputSets add the OUTPUT capture facet on top of the base one.
@@ -71,7 +74,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.receipt.publicKeys[0].epoch=7",
 	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
-	"hangarOutput.database.existingSecret=op-activation-db",
 	// The four Workload Identity annotations. The output facet requires them:
 	// the policy attestor compares the bucket's IAM policy against these four
 	// members, so a plane that does not declare them can attest nothing. See
@@ -275,6 +277,57 @@ func TestOutputEnablementRequiresBaseControl(t *testing.T) {
 	}
 }
 
+// The activation target needs what it walks to, and the refusal names both
+// values. A target past what the chart renders would otherwise be a walk Job
+// that fails every sync, or no walk Job at all and a target silently ignored.
+func TestTheActivationTargetNeedsWhatItWalksTo(t *testing.T) {
+	// The controls: each target renders where what it walks to is on.
+	renderBaseControl(t, "hangarOutput.activation.target=base")
+	renderOutput(t, "hangarOutput.activation.target=output")
+
+	for name, probe := range map[string]struct {
+		sets  []string
+		names []string
+	}{
+		"output without the output plane": {
+			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=output"),
+			names: []string{"hangarOutput.activation.target", "hangarOutput.enabled"},
+		},
+		"base without execution control": {
+			sets:  []string{"hangarOutput.activation.target=base"},
+			names: []string{"hangarOutput.activation.target", "hangarOutput.executionControl.enabled"},
+		},
+		"output without execution control": {
+			sets:  []string{"hangarOutput.activation.target=output"},
+			names: []string{"hangarOutput.activation.target", "hangarOutput.executionControl.enabled"},
+		},
+		"a target that is not one": {
+			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=all"),
+			names: []string{"hangarOutput.activation.target", "off, base or output"},
+		},
+	} {
+		message := renderHangarError(t, probe.sets...)
+		for _, named := range probe.names {
+			if !strings.Contains(message, named) {
+				t.Errorf("%s: the refusal does not name %s:\n%s", name, named, message)
+			}
+		}
+	}
+}
+
+// With execution control the walk Job always renders, and it runs as the
+// activation database role, so that role's Secret is required with the base
+// facet and not only with capture.
+func TestExecutionControlRequiresTheActivationDatabaseSecret(t *testing.T) {
+	sets := append(append([]string{}, baseControlSets...), "hangarOutput.database.existingSecret=")
+	message := renderHangarError(t, sets...)
+	for _, named := range []string{"hangarOutput.database.existingSecret", "hangarOutput.executionControl.enabled"} {
+		if !strings.Contains(message, named) {
+			t.Errorf("the refusal does not name %s:\n%s", named, message)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The dedicated bucket and the server-derived namespace
 // ---------------------------------------------------------------------------
@@ -469,10 +522,7 @@ func TestASharedKubernetesServiceAccountIsRefused(t *testing.T) {
 // Job present, still succeeds. Asserted FIRST, because a refusal assertion
 // passes on a chart that refuses everything.
 func TestTheOrdinaryRenderWithAnActivationJobIsAccepted(t *testing.T) {
-	out := renderOutput(t,
-		"hangarOutput.activation.job.mode=attest",
-		"hangarOutput.activation.job.facet=output",
-	)
+	out := renderOutput(t)
 
 	for _, suffix := range []string{
 		"-" + outputDaemonComponent, "-" + outputInventoryComponent,
@@ -490,8 +540,6 @@ func TestTheOrdinaryRenderWithAnActivationJobIsAccepted(t *testing.T) {
 // after the reclaimer's renders two objects with one name.
 func TestTheActivationAccountMayNotBeNamedAfterTheReclaimers(t *testing.T) {
 	message := renderOutputError(t,
-		"hangarOutput.activation.job.mode=attest",
-		"hangarOutput.activation.job.facet=output",
 		"hangarOutput.activation.serviceAccount.name=jb-concourse-jetbridge-hangar-output-reclaimer",
 	)
 	if !strings.Contains(message, "service account") {
@@ -505,8 +553,6 @@ func TestTheActivationAccountMayNotBeNamedAfterTheReclaimers(t *testing.T) {
 // The same union-of-grants defect the four-role check refuses, one account over.
 func TestTheActivationAccountMayNotCarryTheReclaimersPrincipal(t *testing.T) {
 	message := renderOutputError(t,
-		"hangarOutput.activation.job.mode=attest",
-		"hangarOutput.activation.job.facet=output",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
 		"hangarOutput.activation.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
 	)
@@ -1533,15 +1579,14 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	}
 
 	// And the rendered side: the annotation that binds a Pod to that principal
-	// is on one ServiceAccount, and one workload runs as it. Rendered with the
-	// activation Job on, because it is the fifth identity in this namespace and
-	// the easiest one to point at the wrong account by copy-paste.
+	// is on one ServiceAccount, and one workload runs as it. The render holds
+	// the activation walk Job, which execution control always renders, because
+	// it is the fifth identity in this namespace and the easiest one to point
+	// at the wrong account by copy-paste.
 	out := renderOutput(t,
 		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
 		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-		"hangarOutput.activation.job.mode=enable",
-		"hangarOutput.activation.job.facet=output",
 	)
 
 	const deletePrincipal = "reclaimer@p.iam.gserviceaccount.com"
@@ -1876,9 +1921,7 @@ func TestTheControllerIntervalsAreValidated(t *testing.T) {
 // /proc/<pid>/environ is readable only by the process's own uid. The commands
 // read the variable themselves instead.
 func TestTheDatabaseCredentialNeverReachesArgv(t *testing.T) {
-	out := renderOutput(t,
-		"hangarOutput.activation.job.mode=attest",
-		"hangarOutput.activation.job.facet=base")
+	out := renderOutput(t)
 
 	carriers := 0
 	for _, subject := range documentsIn(t, out) {

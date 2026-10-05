@@ -39,16 +39,13 @@ var rolloutSteps = []struct {
 		"artifactDaemon.hangar.store=disk", "artifactDaemon.hangar.bucket=inputs"}},
 	{"S5 strict inputs on web", []string{"artifactDaemon.hangar.webEnabled=true"}},
 	{"S6 base workloads", []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi"}},
-	{"S7 begin", []string{"hangarOutput.activation.job.mode=begin"}},
-	{"S8 attest base", []string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=base"}},
-	{"S9 enable base", []string{"hangarOutput.activation.job.mode=enable", "hangarOutput.activation.job.facet=base"}},
-	{"S10 output workloads", []string{"hangarOutput.activation.job.mode=", "hangarOutput.activation.job.facet=",
+	{"S7 walk to base", []string{"hangarOutput.activation.target=base"}},
+	{"S10 output workloads", []string{
 		"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=concourse-home",
 		"hangarOutput.readControlURL=https://concourse.home",
 		"hangarOutput.readControlCA.configMap=concourse-home-ca", "hangarOutput.readControlCA.key=concourse.home.crt"}},
-	{"S11 attest output", []string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=output"}},
-	{"S12 enable output", []string{"hangarOutput.activation.job.mode=enable", "hangarOutput.activation.job.facet=output"}},
-	{"S13 capture and Run results", []string{"hangarOutput.activation.job.mode=", "hangarOutput.activation.job.facet=",
+	{"S11 walk to output", []string{"hangarOutput.activation.target=output"}},
+	{"S13 capture and Run results", []string{
 		"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=concourse-run-input-signing-key"}},
 }
 
@@ -68,7 +65,13 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 			t.Fatalf("%s does not render: %v\n%s", step.name, err, firstLines(string(raw), 5))
 		}
 		out := string(raw)
-		mode := currentValue(sets, "hangarOutput.activation.job.mode=")
+		// The walk Job renders from S6, where execution control comes on, and
+		// not before: every later step changes only its target.
+		walking := currentValue(sets, "hangarOutput.executionControl.enabled=") == "true"
+		target := currentValue(sets, "hangarOutput.activation.target=")
+		if target == "" {
+			target = "off"
+		}
 
 		jobs := 0
 		for _, doc := range documentsIn(t, out) {
@@ -77,11 +80,14 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 			}
 			jobs++
 			if !strings.Contains(doc.body, "ttlSecondsAfterFinished: 86400") {
-				t.Errorf("%s: the activation Job renders without its TTL", step.name)
+				t.Errorf("%s: the activation walk Job renders without its TTL", step.name)
+			}
+			if !strings.Contains(doc.body, "--target="+target) {
+				t.Errorf("%s: the activation walk Job does not walk to %s", step.name, target)
 			}
 		}
-		if mode == "" && jobs != 0 || mode != "" && jobs != 1 {
-			t.Errorf("%s: %d activation Jobs rendered with mode %q, want %d", step.name, jobs, mode, map[bool]int{true: 0, false: 1}[mode == ""])
+		if want := map[bool]int{true: 1, false: 0}[walking]; jobs != want {
+			t.Errorf("%s: %d activation walk Jobs rendered, want %d", step.name, jobs, want)
 		}
 
 		if index >= 2 && (!strings.Contains(out, "kind: PersistentVolumeClaim") || !strings.Contains(out, "concourse-home-1")) {

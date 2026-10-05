@@ -63,9 +63,7 @@ func TestTheOutputPlaneRendersAtEveryReleaseNameHelmPermits(t *testing.T) {
 
 		t.Run(release[:1]+"…"+string(rune('0'+length/10))+string(rune('0'+length%10)), func(t *testing.T) {
 			out, err := renderRelease(t, release, append(append([]string{}, outputSets...),
-				"hangarOutput.networkPolicy.enabled=true",
-				"hangarOutput.activation.job.mode=attest",
-				"hangarOutput.activation.job.facet=base")...)
+				"hangarOutput.networkPolicy.enabled=true")...)
 			if err != nil {
 				t.Fatalf("the output facet does not render at a %d-character release name, "+
 					"which Helm permits (it permits 53):\n%s", length, out)
@@ -242,59 +240,45 @@ func selects(selector, labels map[string]string) bool {
 	return true
 }
 
-// The activation Job's name carries the epoch, so rotation is possible through
-// the chart at all.
+// The activation walk Job has one fixed name, whatever the epoch, target or
+// finalize flag.
 //
-// A Job's `spec.template` is immutable and the `--epoch=` argument lives inside
-// it. With the name built from the mode alone there were four possible Job
-// names for the life of the release, so running `attest` for epoch 8 after
-// `attest` ran for epoch 7 made `helm upgrade` fail with
-// `Job.batch … field is immutable`, and the only way past it was deleting the
-// Job by hand -- in the middle of the transition sequence decision F1 spent a
-// page getting right.
-func TestTheActivationJobNameCarriesTheEpochAndTheMode(t *testing.T) {
-	jobNameFor := func(epoch, mode string, extra ...string) string {
+// The step Jobs carried their mode and epoch in the name, because a Job's
+// `spec.template` is immutable and the `--epoch=` argument lives inside it: one
+// name for two epochs made the second `helm upgrade` fail with
+// `Job.batch … field is immutable`. The walk is a hook with BeforeHookCreation
+// instead, so the previous run is deleted before the next is created, and an
+// image bump, a new epoch or a finalize all reuse the one name. A name that
+// still varied would leave a finished walk behind for every value it ever had.
+func TestTheActivationWalkJobHasOneFixedName(t *testing.T) {
+	jobNameFor := func(epoch string, extra ...string) string {
 		sets := append(append([]string{}, outputSets...),
 			"hangarOutput.activationEpoch="+epoch,
 			"hangarOutput.receipt.publicKeys[0].epoch="+epoch,
-			"hangarOutput.executionControl.publicKeys[0].epoch="+epoch,
-			"hangarOutput.activation.job.mode="+mode,
-			"hangarOutput.activation.job.facet=base")
+			"hangarOutput.executionControl.publicKeys[0].epoch="+epoch)
 
 		return objectNamed(t, render(t, append(sets, extra...)...), "Job", "").name
 	}
 
-	seven := jobNameFor("7", "attest")
-	eight := jobNameFor("8", "attest")
-	if seven == eight {
-		t.Errorf("mode=attest renders the Job name %q for both epoch 7 and epoch 8. A Job's "+
-			"pod template is immutable and the epoch is an argument inside it, so the "+
-			"second `helm upgrade` fails with `field is immutable` and rotation cannot be "+
-			"driven through the chart.", seven)
-	}
-	if !strings.Contains(seven, "attest") || !strings.HasSuffix(seven, "-7") {
-		t.Errorf("the activation Job name %q does not carry its mode and epoch", seven)
-	}
-
-	// And the finalize flag, which is a different transition under one mode.
-	drain := jobNameFor("7", "drain", "hangarOutput.activation.job.facet=all")
-	finalize := jobNameFor("7", "drain",
-		"hangarOutput.activation.job.facet=all",
-		"hangarOutput.activation.job.finalize=true")
-	if drain == finalize {
-		t.Errorf("a drain and a finalizing drain render the same Job name %q, and they are "+
-			"different transitions with different pod templates", drain)
+	const want = "jb-concourse-jetbridge-hangar-output-walk"
+	for _, name := range []string{
+		jobNameFor("7"),
+		jobNameFor("8"),
+		jobNameFor("7", "hangarOutput.activation.job.finalize=true"),
+		jobNameFor("8", "hangarOutput.activation.target=output",
+			"hangarOutput.activation.job.finalize=true"),
+	} {
+		if name != want {
+			t.Errorf("the activation walk Job is named %q, not %q", name, want)
+		}
 	}
 }
 
-// A completed Job is not cleaned up by anything, and the name now varies per
-// epoch, so they accumulate one per mode per epoch.
+// A finished walk is deleted after its TTL, and the next sync recreates it.
 func TestCompletedActivationJobsExpire(t *testing.T) {
-	job := objectNamed(t, renderOutput(t,
-		"hangarOutput.activation.job.mode=attest",
-		"hangarOutput.activation.job.facet=base"), "Job", "")
+	job := objectNamed(t, renderOutput(t), "Job", "")
 	if !strings.Contains(job.body, "ttlSecondsAfterFinished:") {
-		t.Error("the activation Job sets no ttlSecondsAfterFinished; completed Jobs " +
-			"accumulate one per mode per epoch, forever")
+		t.Error("the activation walk Job sets no ttlSecondsAfterFinished; a finished walk " +
+			"stays until the next sync's BeforeHookCreation deletes it")
 	}
 }

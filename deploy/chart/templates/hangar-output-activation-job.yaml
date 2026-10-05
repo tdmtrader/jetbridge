@@ -1,61 +1,47 @@
 {{/*
-The activation Job, and the identity it runs under.
+The activation walk Job, and the identity it runs under.
 
-ONE Job at a time, named by hangarOutput.activation.job.mode, and none by
-default. There is deliberately no Helm hook here: a hook would re-run the
-transition on every upgrade, and "enable" running again on a plane an operator
-took down is exactly the surprise the CAS row exists to make impossible rather
-than merely unlikely.
+The Job runs `hangar-output-activate --mode=walk --target=<target>`, which moves
+the configured epoch's row toward hangarOutput.activation.target: it reads the
+row first, makes only the transitions still needed, and never advances a
+draining or disabled facet. A walk repeated at its target writes nothing.
 
-No single Helm boolean enables a capability. Rendering this Job with
-mode=enable does nothing unless the facet is already `attested`, `attest`
-refuses a mixed cohort, and output can never be enabled while base is not --
-all of which live in the CAS predicate and the schema, not in this template.
+Why it is now a hook. The step Jobs this replaces each made one one-way
+transition, so they were deliberately not hooks: re-running `enable` on a plane
+an operator took down was the surprise to avoid. A walk re-run is a no-op
+instead, so it can run on every sync, and it has to run after the bootstrap
+database Job has created the activation role and its Secret. It is an Argo
+PostSync hook in a wave after that Job, and a Helm post-install/post-upgrade
+hook for a plain `helm upgrade`. BeforeHookCreation deletes the previous run
+before the next, which is what the per-mode, per-epoch Job name used to do: a
+Job's pod template is immutable, and an image bump or a new epoch would
+otherwise fail the apply.
 
-The Job mounts the database Secret and, for `attest`, the output plane's CLIENT
-certificate -- hangarOutput.daemon.tls.clientSecret, and never the daemon's own
-server Secret, which holds the key the daemon SERVES with: an exploit of this
-Job would otherwise obtain the material to impersonate the output daemon to the
-ATC. It mounts NO receipt private key either: the activation identity signs
-nothing, and a key in a Pod that cannot need it is a key an exploit of that Pod
-gets for free.
+No single Helm value enables a capability. The walk still attests through the
+cohort handshake, enables through the facet's preconditions, refuses a mixed
+cohort, and output can never be enabled while base is not -- all of which live
+in the command and the schema, not in this template.
+
+The Job mounts the database Secret and the output plane's CLIENT certificate --
+hangarOutput.daemon.tls.clientSecret, and never the daemon's own server Secret,
+which holds the key the daemon SERVES with: an exploit of this Job would
+otherwise obtain the material to impersonate the output daemon to the ATC. It
+mounts NO receipt private key either: the activation identity signs nothing,
+and a key in a Pod that cannot need it is a key an exploit of that Pod gets for
+free.
 */}}
+{{- $target := .Values.hangarOutput.activation.target | default "off" }}
+{{- if not (has $target (list "off" "base" "output")) }}
+{{- fail (printf "hangarOutput.activation.target is %q; it is off, base or output" $target) }}
+{{- end }}
+{{- if and (ne $target "off") (not .Values.hangarOutput.executionControl.enabled) }}
+{{- fail (printf "hangarOutput.activation.target is %q, which needs hangarOutput.executionControl.enabled: the walk attests the base facet's cohort, and without execution control there is no cohort and no walk Job. Set hangarOutput.activation.target=off, or turn execution control on." $target) }}
+{{- end }}
+{{- if and (eq $target "output") (not .Values.hangarOutput.enabled) }}
+{{- fail "hangarOutput.activation.target is \"output\", which needs hangarOutput.enabled: the output facet attests the capture plane's cohort, and without hangarOutput.enabled nothing serves it. Set hangarOutput.activation.target=base, or turn the output plane on." }}
+{{- end }}
 {{- if .Values.hangarOutput.executionControl.enabled }}
-{{- $mode := .Values.hangarOutput.activation.job.mode }}
-{{- if $mode }}
-{{- if not (has $mode (list "begin" "attest" "enable" "drain")) }}
-{{- fail (printf "hangarOutput.activation.job.mode is %q; there are four: begin, attest, enable, drain" $mode) }}
-{{- end }}
-{{- $facet := .Values.hangarOutput.activation.job.facet }}
-{{- if and (ne $mode "begin") (not $facet) }}
-{{- fail (printf "hangarOutput.activation.job.facet is required for mode %q: base, output, or (for drain) all" $mode) }}
-{{- end }}
-{{- if and $facet (not (has $facet (list "base" "output" "all"))) }}
-{{- fail (printf "hangarOutput.activation.job.facet is %q; it is base, output, or (for drain) all" $facet) }}
-{{- end }}
-{{- if and (eq $facet "all") (ne $mode "drain") }}
-{{- fail "hangarOutput.activation.job.facet=all is only meaningful for mode=drain: attesting or enabling \"both facets\" in one step would hide the ordering the whole protocol is." }}
-{{- end }}
-{{/*
-The name carries the mode, the EPOCH and the finalize flag, and it is composed
-through the same name helper the workloads use so the 63-character bound holds
-at every release name.
-
-A Job's `spec.template` is immutable. With four possible names for the life of
-the release, running mode=attest for epoch 8 after mode=attest ran for epoch 7
-made `helm upgrade` fail with `Job.batch … field is immutable` -- the epoch is
-an argument inside the pod template -- and the way past it was deleting the Job
-by hand, an undocumented step in the middle of the sequence decision F1 spent a
-page getting right. Re-rendering the SAME mode and epoch is still a no-op,
-which is correct: a Complete Job is not re-run, and re-running a transition is
-exactly what the CAS row exists to make impossible rather than merely unlikely.
-*/}}
-{{- $epoch := int .Values.hangarOutput.activationEpoch }}
-{{- $suffix := printf "hangar-output-activation-%s-%d" $mode $epoch }}
-{{- if and (eq $mode "drain") .Values.hangarOutput.activation.job.finalize }}
-{{- $suffix = printf "%s-finalize" $suffix }}
-{{- end }}
-{{- $name := include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" $suffix) }}
+{{- $name := include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-walk") }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -85,6 +71,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # The walk waits on the output DaemonSet's rollout before each attestation.
+  # One verb on one name: the DaemonSet is read through a namespaced get, and
+  # this Role reads no other workload.
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    resourceNames: [{{ include "concourse.hangarOutput.daemonName" . | quote }}]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -111,10 +104,18 @@ metadata:
   labels:
     {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-activation
+  annotations:
+    # A wave after the bootstrap database Job (wave 0), which creates the
+    # activation role and the Secret this Job reads its DSN from.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 2
   {{- with .Values.hangarOutput.activation.job.ttlSecondsAfterFinished }}
-  # Completed Jobs otherwise accumulate one per mode per epoch, forever.
+  # A finished walk is deleted after this, and the next sync recreates it.
   ttlSecondsAfterFinished: {{ int . }}
   {{- end }}
   template:
@@ -134,24 +135,19 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /usr/local/concourse/bin/hangar-output-activate
-            - --mode={{ $mode }}
-            {{- if $facet }}
-            - --facet={{ $facet }}
-            {{- end }}
+            - --mode=walk
+            - --target={{ $target }}
             - --epoch={{ int .Values.hangarOutput.activationEpoch }}
             - --namespace={{ .Release.Namespace }}
             - --daemon-port={{ .Values.hangarOutput.daemon.port }}
-            {{- if eq $mode "attest" }}
+            - --daemonset-name={{ include "concourse.hangarOutput.daemonName" . }}
             - --tls-cert=/etc/concourse/hangar-output/tls/tls.crt
             - --tls-key=/etc/concourse/hangar-output/tls/tls.key
             - --tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
             # The cohort is dialed by pod IP; the certificate names the
             # daemon's DNS name, so verification is against that.
             - --tls-server-name={{ include "concourse.hangarOutput.daemonTLSServerName" . }}
-            {{- if eq $facet "output" }}
             - --receipt-key-lifetime={{ .Values.hangarOutput.activation.receiptKeyLifetime }}
-            {{- end }}
-            {{- end }}
             {{- if .Values.hangarOutput.activation.job.finalize }}
             - --finalize
             {{- end }}
@@ -163,20 +159,15 @@ spec:
                   # pod's is what the migrate-db init container uses; sharing it
                   # would make "only the activation command writes this table"
                   # a statement about code that any web process could contradict.
-                  name: {{ required "hangarOutput.database.existingSecret is required to run an activation Job" .Values.hangarOutput.database.existingSecret }}
+                  name: {{ required "hangarOutput.database.existingSecret is required with hangarOutput.executionControl.enabled: the activation walk Job runs on every sync as the activation database role, and this Secret holds its connection string" .Values.hangarOutput.database.existingSecret }}
                   key: dsn
-          {{- if eq $mode "attest" }}
           volumeMounts:
             - name: daemon-tls
               mountPath: /etc/concourse/hangar-output/tls
               readOnly: true
-          {{- end }}
           {{- include "concourse.hangarOutput.controllerSecurityContext" . | nindent 10 }}
-      {{- if eq $mode "attest" }}
       volumes:
         - name: daemon-tls
           secret:
             secretName: {{ .Values.hangarOutput.daemon.tls.clientSecret }}
-      {{- end }}
-{{- end }}
 {{- end }}
