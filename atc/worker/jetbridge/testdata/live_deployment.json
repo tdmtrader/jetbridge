@@ -80,11 +80,11 @@
     },
     "daemon.mirrorReplicas": {
       "expect": "2",
-      "uncovered": "Mirroring copies each output to a peer daemon, and this cluster has one node (daemon.nodes), so there is no peer: the default-on feature does nothing here. Cross-node mirroring is covered by cmd/artifact-daemon's behavioral_cross_node_test.go with two daemons on one host."
+      "uncovered": "Mirroring copies each output to a peer daemon. This cluster has two daemon nodes (daemon.nodes), but k3s-agent-y is a desktop VM that sleeps, so mirroring is live only while it is up and no live test can count on a peer. Cross-node mirroring is covered by cmd/artifact-daemon's behavioral_cross_node_test.go with two daemons on one host; cross-node artifact handoff on this cluster by brine's live-multinode tier, which runs only when both nodes are up."
     },
     "daemon.nodes": {
-      "expect": "1",
-      "uncovered": "Not a feature: asserted so a second node, which would make mirroring live, fails this test until it is covered."
+      "expect": "2",
+      "uncovered": "Not a feature: asserted so a change in how many nodes run a daemon -- which decides whether mirroring has a peer -- fails this test until daemon.mirrorReplicas says what covers it. Counted from the registered nodes the DaemonSet can place on, so a node that is asleep (NotReady) still counts."
     }
   }
 }

@@ -66,8 +66,14 @@ var clusterScopeGroups = map[string]bool{
 // the alternative -- failing deep inside a Pod create with a NotFound -- is
 // strictly worse diagnostics. Creating, deleting or listing namespaces is a
 // different act and stays banned.
+//
+// Listing nodes is the other: the deployed-feature check counts the nodes the
+// artifact daemon spans, which decides whether mirroring has a peer, and only
+// the registered Nodes give a count that holds while a node sleeps. It reads;
+// relabelling or tainting a node stays banned.
 var clusterScopeReadOnlyAllowed = map[string]map[string]bool{
 	"Namespaces": {"Get": true},
+	"Nodes":      {"List": true},
 }
 
 // liveGuardFileFloor is a non-vacuity floor, not a count. There are 15 files

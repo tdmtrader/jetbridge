@@ -48,6 +48,10 @@ type liveDeployment struct {
 	// namespace runs, and diskStorePods how many running disk store pods.
 	outputDaemons int
 	diskStorePods int
+
+	// daemonNodes is how many nodes the artifact daemon is deployed across;
+	// see countDaemonNodes.
+	daemonNodes int
 }
 
 // deployed is set by TestMain; every live test may rely on it.
@@ -112,6 +116,11 @@ func discoverDeployment(ctx context.Context, clientset kubernetes.Interface, nam
 	}
 	d.daemon = daemons.Items[0]
 	d.daemonContainer = d.daemon.Spec.Template.Spec.Containers[0]
+	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing nodes: %w", err)
+	}
+	d.daemonNodes = countDaemonNodes(d.daemon.Spec.Template.Spec, nodes.Items)
 
 	// The storage path decides whether the worker gets a DaemonSet backend at
 	// all -- empty means artifact passing is silently off, not broken -- and the
@@ -307,4 +316,47 @@ func flagIn(args []string, name string) (string, bool) {
 		}
 	}
 	return value, found
+}
+
+// countDaemonNodes counts the registered nodes a DaemonSet with this pod spec
+// is deployed across: the ones its nodeSelector matches and whose NoSchedule
+// and NoExecute taints it tolerates. It reads the Nodes rather than the
+// DaemonSet's status, which drops a node while it is NotReady -- a desktop node
+// that sleeps is still part of the deployment, and its daemon is a mirroring
+// peer whenever it is up. The node.kubernetes.io/ taints are a node's passing
+// condition, not its configuration, so they are ignored.
+func countDaemonNodes(spec corev1.PodSpec, nodes []corev1.Node) int {
+	count := 0
+	for _, node := range nodes {
+		if daemonPlaceable(spec, node) {
+			count++
+		}
+	}
+	return count
+}
+
+func daemonPlaceable(spec corev1.PodSpec, node corev1.Node) bool {
+	for key, value := range spec.NodeSelector {
+		if node.Labels[key] != value {
+			return false
+		}
+	}
+	for _, taint := range node.Spec.Taints {
+		if taint.Effect == corev1.TaintEffectPreferNoSchedule || strings.HasPrefix(taint.Key, "node.kubernetes.io/") {
+			continue
+		}
+		tolerated := false
+		for _, t := range spec.Tolerations {
+			keyMatches := t.Key == taint.Key || (t.Key == "" && t.Operator == corev1.TolerationOpExists)
+			valueMatches := t.Operator == corev1.TolerationOpExists || t.Value == taint.Value
+			if keyMatches && valueMatches && (t.Effect == "" || t.Effect == taint.Effect) {
+				tolerated = true
+				break
+			}
+		}
+		if !tolerated {
+			return false
+		}
+	}
+	return true
 }

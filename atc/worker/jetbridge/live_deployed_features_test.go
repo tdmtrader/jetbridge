@@ -133,9 +133,7 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 		}
 		return "2"
 	},
-	"daemon.nodes": func(d *liveDeployment) string {
-		return strconv.Itoa(int(d.daemon.Status.DesiredNumberScheduled))
-	},
+	"daemon.nodes": func(d *liveDeployment) string { return strconv.Itoa(d.daemonNodes) },
 }
 
 func onOff(_ string, on bool) string {
