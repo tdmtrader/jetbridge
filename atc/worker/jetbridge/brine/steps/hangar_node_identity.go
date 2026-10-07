@@ -43,7 +43,11 @@ func HangarNodeIdentityDefinitions() []brine.StepDefinition {
 				}
 				args = append(args, daemon.cmd.Args[i])
 			}
-			daemon.cmd.Args = append(args, "--node-name", in.Node.Name, "--kubeconfig", path)
+			// A daemon that reads its Node from Kubernetes reads Pod
+			// terminations from there too, so it needs the task namespace;
+			// the standalone --pod-terminations-dir is ignored in that mode.
+			daemon.cmd.Args = append(args, "--node-name", in.Node.Name, "--kubeconfig", path,
+				"--pod-terminations-namespace", in.Config.Namespace)
 			if mode == "mismatched" {
 				daemon.cmd.Args = append(daemon.cmd.Args, "--node-uid", freshUUID())
 			}

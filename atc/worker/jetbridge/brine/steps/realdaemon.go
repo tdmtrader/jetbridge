@@ -708,7 +708,7 @@ func (d *realDaemon) restart(ctx context.Context, client *http.Client) error {
 	for {
 		select {
 		case err := <-done:
-			return fmt.Errorf("restarted daemon exited: %w", err)
+			return fmt.Errorf("restarted daemon exited: %w%s", err, output.report())
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
