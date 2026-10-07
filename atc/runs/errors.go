@@ -105,7 +105,7 @@ var (
 	// privilege escalation dressed as a default. An empty principal is refused
 	// for the same reason from the other side: it authorizes nothing, and the
 	// port will not guess which nothing was meant.
-	ErrPrincipalAmbiguous = errors.New("principal must present exactly one of claims and a build")
+	ErrPrincipalAmbiguous = errors.New("principal must present exactly one of claims, a build and a landing queue")
 
 	// ErrRunNotFound means no run exists with the id LookupRun was given.
 	//
