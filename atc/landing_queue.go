@@ -21,10 +21,10 @@ type LandingQueueConfig struct {
 	Gates      []LandingQueueGate `json:"gates,omitempty"`
 }
 
-// LandingQueueGate is one gate a queue declares: a template and its params.
+// LandingQueueGate is one gate a queue declares: a template.
+// deferred: gates and their params, track landing_queue_unit_test_gate.
 type LandingQueueGate struct {
-	Template string    `json:"template"`
-	Params   RunParams `json:"params,omitempty"`
+	Template string `json:"template"`
 }
 
 // ParseLandingQueueConfig decodes a queue's YAML strictly: an unknown key is
@@ -50,8 +50,11 @@ func (config LandingQueueConfig) Validate() error {
 			return fmt.Errorf("landing queue config: %s is required", required.key)
 		}
 	}
-	if strings.HasPrefix(config.Trunk, "refs/") {
-		return errors.New("landing queue config: trunk is a branch name, not a ref")
+	if !validTrunk(config.Trunk) {
+		return errors.New("landing queue config: trunk is a branch name: letters, digits, '.', '_', '-' and '/', not starting with '-' or 'refs/'")
+	}
+	if !validRepository(config.Repository) {
+		return errors.New("landing queue config: repository is a URL starting with https://, ssh://, git@, file:// or /")
 	}
 	if len(config.Gates) != 0 {
 		return errors.New("landing queue config: gates are not supported yet; set an empty list")
@@ -129,4 +132,31 @@ func ValidCommitSHA(sha string) bool {
 		}
 	}
 	return true
+}
+
+// validTrunk is a branch name the templates can pass to git as a ref
+// component without it reading as an option or escaping the refs/heads
+// namespace.
+func validTrunk(trunk string) bool {
+	if trunk == "" || strings.HasPrefix(trunk, "-") || strings.HasPrefix(trunk, "refs/") || strings.Contains(trunk, "..") || strings.HasSuffix(trunk, "/") || strings.HasSuffix(trunk, ".lock") {
+		return false
+	}
+	for _, r := range trunk {
+		alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !alnum && r != '.' && r != '_' && r != '-' && r != '/' {
+			return false
+		}
+	}
+	return true
+}
+
+// validRepository is a remote the templates can pass to git without it
+// reading as an option.
+func validRepository(repository string) bool {
+	for _, prefix := range []string{"https://", "ssh://", "git@", "file:///", "/"} {
+		if strings.HasPrefix(repository, prefix) {
+			return !strings.ContainsAny(repository, " \t\n\"'")
+		}
+	}
+	return false
 }

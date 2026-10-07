@@ -85,7 +85,7 @@ func (s *Server) SubmitLanding(team db.Team) http.Handler {
 		case errors.Is(err, db.ErrLandingEntryExists):
 			http.Error(w, fmt.Sprintf("entry %q is already queued or settled for another commit", submission.ID), http.StatusConflict)
 			return
-		case err != nil && isSubmissionError(err):
+		case errors.Is(err, db.ErrInvalidLandingSubmission):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		case err != nil:
@@ -135,11 +135,4 @@ func (s *Server) queue(w http.ResponseWriter, r *http.Request, team db.Team) (db
 		return db.LandingQueue{}, false
 	}
 	return queue, true
-}
-
-// isSubmissionError tells a refused submission (a bad id or sha) from a
-// database failure: the factory validates before it writes.
-func isSubmissionError(err error) bool {
-	msg := err.Error()
-	return len(msg) > len("landing entry") && msg[:len("landing entry")] == "landing entry"
 }

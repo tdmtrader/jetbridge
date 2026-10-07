@@ -4,12 +4,13 @@
 # trunk>. The landing queue component admits a Run of it per candidate, with
 # the compose Run's manifest and candidate bound as run inputs.
 #
-# land rebuilds the commit from git by compose's recipe, refuses unless it
-# gets compose's sha, and pushes it to the trunk with --force-with-lease on
-# the base compose composed on. Its one result is the verdict: landed, moved
-# (the trunk is no longer at the base) or failed. The task succeeds on landed
-# and moved; the component composes again on moved. Core persists no
-# repository credential: the token reaches only this step, as a template var.
+# land rebuilds the commit from the manifest's facts by the recipe both
+# templates share, refuses unless it gets compose's sha, and pushes it to the
+# trunk with --force-with-lease on the base compose composed on. Its one
+# result is the verdict: landed, moved (the trunk is no longer at the base) or
+# failed. The task succeeds on landed and moved; the component composes again
+# on moved. Core persists no repository credential: the token reaches only
+# this step, as a template var.
 template: true
 params:
   - name: repository
@@ -52,39 +53,42 @@ jobs:
               - -c
               - |
                 # land: rebuild compose's commit and fast-forward the trunk to it.
-                # $1 repository, $2 trunk
+                # $1 repository, $2 trunk; inputs manifest/ (compose's facts) and candidate/ (the tested tree)
                 repo=$1 trunk=$2
-                verdict=$PWD/verdict/verdict.json
-                . "$PWD/manifest/manifest.env"
-                say() { printf '{"outcome":"%s","sha":"%s","reason":"%s"}\n' "$1" "$2" "$3" > "$verdict"; echo "land: $1 $2 $3"; }
+                manifest=$PWD/manifest verdict=$PWD/verdict/verdict.json
+                val() { grep "^$1=" "$manifest/manifest.env" | head -1 | cut -d= -f2-; }
+                esc() { printf '%s' "$1" | tr '\n' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+                say() { printf '{"outcome":"%s","sha":"%s","reason":"%s"}\n' "$1" "$2" "$(esc "$3")" > "$verdict"; echo "land: $1 $2 $3"; }
+                base=$(val base) expected=$(val head) entries=$(val entries)
+                say failed "$expected" "the rebuild did not finish"
                 export GIT_COMMITTER_NAME=landing-queue GIT_COMMITTER_EMAIL=landing-queue@jetbridge
                 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
                 if [ -n "${GITHUB_TOKEN:-}" ]; then
                   export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/"
                 fi
                 git init -q work && cd work
-                git fetch -q --no-tags "$repo" "refs/heads/$trunk"
+                git fetch -q --no-tags -- "$repo" "refs/heads/$trunk"
                 current=$(git rev-parse FETCH_HEAD)
-                if [ "$current" != "$base" ]; then say moved "$head" "the trunk is at $current, not $base"; exit 0; fi
+                if [ "$current" != "$base" ]; then say moved "$expected" "the trunk is at $current, not $base"; exit 0; fi
                 git checkout -q -b candidate "$base"
-                rebuilt=$base
+                head=$base
                 for entry in $(printf '%s' "$entries" | tr ',' ' '); do
                   id=${entry%%=*} sha=${entry#*=}
-                  git fetch -q --no-tags "$repo" "refs/queue/submit/$id"
-                  [ "$(git rev-parse FETCH_HEAD)" = "$sha" ] || { say failed "$head" "submit ref $id is not at $sha"; exit 1; }
-                  git merge -q --no-ff --no-commit --no-edit "$sha" || { say failed "$head" "$id no longer merges"; exit 1; }
+                  git fetch -q --no-tags -- "$repo" "refs/queue/submit/$id"
+                  [ "$(git rev-parse FETCH_HEAD)" = "$sha" ] || { say failed "$expected" "submit ref $id is not at $sha"; exit 1; }
+                  facts=$manifest/entries/$id
+                  # recipe-begin: one entry onto head, byte-identical in both templates
+                  git merge -q --no-ff --no-commit --no-edit "$sha" || { echo "rebuild: $id conflicts with the trunk" >&2; exit 1; }
                   tree=$(git write-tree)
-                  export GIT_AUTHOR_NAME="$(git log -1 --format=%an "$sha")" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$sha")"
-                  export GIT_AUTHOR_DATE="$(git log -1 --format=%aD "$sha")" GIT_COMMITTER_DATE="$(git log -1 --format=%aD "$sha")"
-                  { git log -1 --format=%B "$sha" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; printf '\noriginal: %s\n' "$sha"; } > ../message
-                  rebuilt=$(git commit-tree "$tree" -p "$rebuilt" -F ../message)
-                  git reset -q --hard "$rebuilt"
+                  head=$(GIT_AUTHOR_NAME="$(cat "$facts/author")" GIT_AUTHOR_EMAIL="$(cat "$facts/email")" GIT_AUTHOR_DATE="$(cat "$facts/date")" GIT_COMMITTER_DATE="$(cat "$facts/date")" git commit-tree "$tree" -p "$head" -F "$facts/message")
+                  git reset -q --hard "$head"
+                  # recipe-end
                 done
-                [ "$rebuilt" = "$head" ] || { say failed "$head" "rebuilt $rebuilt, compose produced $head"; exit 1; }
-                if ! result=$(git push --quiet --porcelain --no-follow-tags "--force-with-lease=refs/heads/$trunk:$base" "$repo" "$head:refs/heads/$trunk" 2>&1); then
+                [ "$head" = "$expected" ] || { say failed "$expected" "rebuilt $head, compose produced $expected"; exit 1; }
+                if ! result=$(git push --quiet --porcelain --no-follow-tags "--force-with-lease=refs/heads/$trunk:$base" -- "$repo" "$head:refs/heads/$trunk" 2>&1); then
                   case "$result" in
                     *"stale info"*) say moved "$head" "the trunk moved during the push"; exit 0 ;;
-                    *) say failed "$head" "push refused: $(printf '%s' "$result" | tr '\n' ' ' | tr -d '"')"; exit 1 ;;
+                    *) say failed "$head" "push refused: $result"; exit 1 ;;
                   esac
                 fi
                 say landed "$head" "fast-forwarded $trunk from $base"

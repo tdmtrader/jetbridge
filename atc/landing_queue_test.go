@@ -22,9 +22,20 @@ var _ = Describe("A landing queue's config", func() {
 	})
 
 	It("A landing queue's config without a trunk is refused naming trunk", func() {
-		_, err := atc.ParseLandingQueueConfig([]byte("repository: r\ncompose: c\nland: l\n"))
+		_, err := atc.ParseLandingQueueConfig([]byte("repository: https://r\ncompose: c\nland: l\n"))
 		Expect(err).To(MatchError(ContainSubstring("trunk is required")))
 	})
+
+	DescribeTable("A landing queue's config refuses a trunk or repository git could read as an option",
+		func(body string, key string) {
+			_, err := atc.ParseLandingQueueConfig([]byte(body))
+			Expect(err).To(MatchError(ContainSubstring(key)))
+		},
+		Entry("trunk as a ref", "repository: https://r\ntrunk: refs/heads/core\ncompose: c\nland: l\n", "trunk"),
+		Entry("trunk as an option", "repository: https://r\ntrunk: --upload-pack=x\ncompose: c\nland: l\n", "trunk"),
+		Entry("repository as an option", "repository: --upload-pack=x\ntrunk: core\ncompose: c\nland: l\n", "repository"),
+		Entry("repository with a space", "repository: 'https://r x'\ntrunk: core\ncompose: c\nland: l\n", "repository"),
+	)
 
 	It("A landing queue's config with a gate is refused naming gates until gates land", func() {
 		_, err := atc.ParseLandingQueueConfig([]byte(valid + "gates:\n- template: unit-tests\n"))
