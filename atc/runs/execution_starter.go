@@ -105,13 +105,17 @@ func (s *ExecutionStarter) RecordWitness(ctx context.Context, owner db.Container
 	if !isBuild {
 		return nil
 	}
-	return s.transaction(ctx, func(tx db.Tx) error {
+	err := s.transaction(ctx, func(tx db.Tx) error {
 		_, owned, err := s.Factory.RunExecutionOwner(ctx, tx, buildID)
 		if err != nil || !owned {
 			return err
 		}
 		return s.Factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, witness, s.Verifier)
 	})
+	if err == nil && witness.Kind == executioncontrol.AcknowledgementStart {
+		s.releaseInputReads(ctx, buildID, planID)
+	}
+	return err
 }
 
 func (s *ExecutionStarter) CheckStart(ctx context.Context, owner db.ContainerOwner, spec runtime.ContainerSpec) error {

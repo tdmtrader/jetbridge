@@ -211,5 +211,9 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 			return fmt.Errorf("engine task does not mount its one capture step directory")
 		}
 	}
-	return verifyRunInputPod(ctx, in, handle, pod, task)
+	leases, err := verifyRunInputPod(ctx, in, handle, pod, task)
+	if err != nil {
+		return err
+	}
+	return observeRunTaskStart(ctx, in, starter, db.NewBuildStepContainerOwner(buildID, plan.ID, build.TeamID()), pod, leases)
 }

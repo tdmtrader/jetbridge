@@ -139,10 +139,61 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	if err != nil {
 		return err
 	}
-	return verifyRunInputPod(ctx, in, container.DBContainer().Handle(), pod, task)
+	leases, err := verifyRunInputPod(ctx, in, container.DBContainer().Handle(), pod, task)
+	if err != nil {
+		return err
+	}
+	return observeRunTaskStart(ctx, in, starter, owner, pod, leases)
 }
 
-func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string, pod *corev1.Pod, task *atc.TaskStep) error {
+// observeRunTaskStart plays the one fact the web observes after the inputs are
+// materialized: the node's exact start of the task command, which the main
+// container can reach only after every materialize init container -- each
+// checking its input's receipt -- has exited 0. The node signs the start and
+// the production Run gate retains it; retaining it is what gives the task's
+// input read leases back. The node daemon never calls the web, so nothing
+// between the materialization and this start releases them.
+func observeRunTaskStart(ctx context.Context, in RunInputAdmission, starter *runs.ExecutionStarter,
+	owner db.ContainerOwner, pod *corev1.Pod, leases []output.ReadLeaseID) error {
+	buildID, planID, _, _ := db.BuildStepContainerIdentity(owner)
+	conn := in.Source.Start.DB.Conn
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	admission, found, err := db.NewPipelineRunFactory(conn, in.Source.Start.DB.LockFactory).RunExecution(ctx, tx, buildID, planID)
+	db.Rollback(tx)
+	if err != nil || !found {
+		return fmt.Errorf("the task has no admitted Run execution: %v", err)
+	}
+	daemon := in.Source.Start.Daemon
+	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter,
+		executioncontrol.ActivationEpoch(hangarEpoch))
+	start, err := node.RecordStart(ctx, admission.Identity, executioncontrol.PodUID(pod.UID),
+		executioncontrol.ProcessIdentity("run-input-task-"+freshUUID()))
+	if err != nil {
+		return fmt.Errorf("the node did not record the task's start: %w", err)
+	}
+	if err := starter.RecordWitness(ctx, owner, start); err != nil {
+		return fmt.Errorf("the Run did not retain the task's start: %w", err)
+	}
+	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
+	for _, id := range leases {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		_, loadErr := repository.LoadReadLease(ctx, tx, id)
+		db.Rollback(tx)
+		if !errors.Is(loadErr, output.ErrConflict) {
+			return fmt.Errorf("the task started and its materialized input kept a live read lease: %v", loadErr)
+		}
+	}
+	return nil
+}
+
+func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string, pod *corev1.Pod, task *atc.TaskStep) ([]output.ReadLeaseID, error) {
+	var leases []output.ReadLeaseID
 	volumes := map[string]corev1.Volume{}
 	for _, volume := range pod.Spec.Volumes {
 		volumes[volume.Name] = volume
@@ -150,13 +201,13 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 	for _, c := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		for _, mount := range c.VolumeMounts {
 			if _, found := volumes[mount.Name]; !found {
-				return fmt.Errorf("Pod mount %s has no volume", mount.Name)
+				return nil, fmt.Errorf("Pod mount %s has no volume", mount.Name)
 			}
 		}
 	}
 	verifier, err := output.NewReadWarrantVerifier(brineReadWarrantKey, output.ClockFunc(func() time.Time { return time.Now().UTC() }))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	count := 0
 	for _, init := range pod.Spec.InitContainers {
@@ -165,12 +216,12 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 		}
 		count++
 		if len(init.Command) != 3 || len(init.VolumeMounts) != 1 || !init.VolumeMounts[0].ReadOnly {
-			return fmt.Errorf("input initializer has no exact read-only verification mount")
+			return nil, fmt.Errorf("input initializer has no exact read-only verification mount")
 		}
 		mount := init.VolumeMounts[0]
 		volume := volumes[mount.Name]
 		if volume.HostPath == nil {
-			return fmt.Errorf("input volume is not node-local")
+			return nil, fmt.Errorf("input volume is not node-local")
 		}
 		mainMounts := 0
 		for _, main := range pod.Spec.Containers {
@@ -181,39 +232,39 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 				if m.Name == mount.Name {
 					mainMounts++
 					if !m.ReadOnly {
-						return fmt.Errorf("task input is writable")
+						return nil, fmt.Errorf("task input is writable")
 					}
 				}
 			}
 		}
 		if mainMounts != 1 {
-			return fmt.Errorf("input is not mounted exactly once in the task")
+			return nil, fmt.Errorf("input is not mounted exactly once in the task")
 		}
 		encoded, found := scriptAssignment(init.Command[2], "REQUEST_B64")
 		if !found {
-			return fmt.Errorf("initializer has no read request")
+			return nil, fmt.Errorf("initializer has no read request")
 		}
 		body, err := base64.StdEncoding.DecodeString(strings.Trim(encoded, "'"))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var request output.ManagedReadRequest
 		if err = json.Unmarshal(body, &request); err != nil {
-			return err
+			return nil, err
 		}
 		if request.Ref != in.Source.Candidate.Record.Ref || request.Destination.Handle != handle || request.Destination.Volume != mount.Name {
-			return fmt.Errorf("read warrant is not bound to the actual consumer volume")
+			return nil, fmt.Errorf("read warrant is not bound to the actual consumer volume")
 		}
 		claims, err := verifier.Verify(request.Warrant, request.Ref, request.Destination)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err = os.MkdirAll(volume.HostPath.Path, 0755); err != nil {
-			return err
+			return nil, err
 		}
 		assignment := "\nROOT=" + mount.MountPath + "\n"
 		if strings.Count(init.Command[2], assignment) != 1 {
-			return fmt.Errorf("initializer does not identify its verification mount")
+			return nil, fmt.Errorf("initializer does not identify its verification mount")
 		}
 		command := strings.Replace(init.Command[2], assignment, "\nROOT='"+strings.ReplaceAll(volume.HostPath.Path, "'", "'\\''")+"'\n", 1)
 		_, host, _, _ := splitDaemonAddress(in.Source.Start.Daemon.Output.URL)
@@ -221,28 +272,32 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOST_IP=" + host}
 		out, err := cmd.CombinedOutput()
 		if strings.Contains(string(out), request.Warrant) {
-			return fmt.Errorf("initializer disclosed its read warrant")
+			return nil, fmt.Errorf("initializer disclosed its read warrant")
 		}
 		if err != nil {
-			return fmt.Errorf("initializing actual input: %w (%s)", err, abbrev(string(out)))
+			return nil, fmt.Errorf("initializing actual input: %w (%s)", err, abbrev(string(out)))
 		}
 		data, err := os.ReadFile(filepath.Join(volume.HostPath.Path, ".hangar-materialized"))
 		var ref hangar.TreeRef
 		if err != nil || json.Unmarshal(data, &ref) != nil || ref != request.Ref {
-			return fmt.Errorf("actual task input has no exact sealed receipt: %v", err)
+			return nil, fmt.Errorf("actual task input has no exact sealed receipt: %v", err)
 		}
 		tx, err := in.Source.Start.DB.Conn.BeginTx(ctx, nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		_, loadErr := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()).LoadReadLease(ctx, tx, claims.ReadLeaseID)
 		db.Rollback(tx)
-		if !errors.Is(loadErr, output.ErrConflict) {
-			return fmt.Errorf("materialized input retained a live read lease: %v", loadErr)
+		// The node cannot give the lease back -- it has no client for the
+		// web -- and the web has not yet seen the task start, so the lease
+		// still protects the generation here. observeRunTaskStart releases it.
+		if loadErr != nil {
+			return nil, fmt.Errorf("the materialized input's read lease is not live before the task starts: %v", loadErr)
 		}
+		leases = append(leases, claims.ReadLeaseID)
 	}
 	if count == 0 || count != len(task.RunInputs) {
-		return fmt.Errorf("not every task input was initialized")
+		return nil, fmt.Errorf("not every task input was initialized")
 	}
-	return nil
+	return leases, nil
 }

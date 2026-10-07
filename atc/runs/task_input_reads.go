@@ -105,6 +105,67 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 	return prepared, s.CheckStart(ctx, owner, prepared)
 }
 
+// releaseInputReads gives back the read leases of a task's managed inputs once
+// the node has recorded the task's exact start. The inputs are materialized by
+// init containers, and the exact command starts only in the main container,
+// after every init container -- each of which checks its input's
+// materialization receipt -- has exited 0. So by the start witness every read
+// those leases protected is over, and the web that holds them releases them:
+// the node daemon has no client for the web and never releases a lease.
+//
+// Best effort, one transaction per lease: a failed release is not the start's
+// failure, and an unreleased lease still closes at its expiry.
+func (s *ExecutionStarter) releaseInputReads(ctx context.Context, buildID int, planID atc.PlanID) {
+	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if s.Conn == nil {
+		return
+	}
+	rows, err := s.Conn.QueryContext(release, `
+		SELECT r.read_lease_id
+		  FROM hangar_read_leases r
+		  JOIN containers c ON c.handle = r.destination_handle
+		 WHERE c.build_id = $1 AND c.plan_id = $2 AND r.released_at IS NULL`, buildID, string(planID))
+	if err != nil {
+		return
+	}
+	var ids []output.ReadLeaseID
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, output.ReadLeaseID(id))
+		}
+	}
+	_ = rows.Close()
+	if len(ids) == 0 {
+		return
+	}
+	prefix, err := db.HangarConsumerPrefixHeld("pipeline-run-input-read")
+	if err != nil {
+		return
+	}
+	leases := db.NewHangarOutputRepository(prefix)
+	for _, id := range ids {
+		releaseInputRead(release, s.Conn, leases, id)
+	}
+}
+
+func releaseInputRead(ctx context.Context, conn db.DbConn, leases *db.HangarOutputRepository, id output.ReadLeaseID) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer db.Rollback(tx)
+	record, err := leases.LoadReadLease(ctx, db.HangarOutputTx{Tx: tx}, id)
+	if err != nil {
+		return
+	}
+	if err := leases.ReleaseReadLease(ctx, db.HangarOutputTx{Tx: tx}, record.Lease); err != nil {
+		return
+	}
+	_ = tx.Commit()
+}
+
 type taskInputStat struct {
 	source    taskInputSource
 	name, uid string
