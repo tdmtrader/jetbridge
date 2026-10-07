@@ -2,6 +2,7 @@ package output
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -30,7 +31,8 @@ const (
 	// v2: the scope is H(domain, tenant, store). There is no epoch in it, so
 	// nothing a deployment does to its configuration moves published objects
 	// into a scope nothing reads.
-	scopeDomain = "hangar-output-scope-v2"
+	scopeDomain       = "hangar-output-scope-v2"
+	legacyScopeDomain = "hangar-output-scope-v1"
 
 	StoreGCS  = "gcs"
 	StoreDisk = "disk"
@@ -95,6 +97,12 @@ type OutputNamespace struct {
 	prefix  string
 	scope   hangar.Scope
 	epoch   executioncontrol.ActivationEpoch
+
+	// legacyScope is the scope-v1 derivation for the same tenant, store and
+	// epoch: H(v1 domain, tenant, epoch). Results published before scope v2
+	// live under it, and a registered ref naming it stays readable here. It
+	// is never published into.
+	legacyScope hangar.Scope
 }
 
 // DeriveNamespace is the only constructor.
@@ -154,8 +162,28 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 		prefix:  config.DeploymentPrefix,
 		epoch:   config.ActivationEpoch,
 	}
-	namespace.scope = deriveScope(config.TenantID, namespace.StoreIdentity())
+	namespace.scope = deriveScope(config.TenantID, namespace.BucketFingerprint())
+	legacyTenant := config.TenantID
+	if config.Store == StoreDisk {
+		legacyTenant = "disk\x00" + storeID + "\x00" + config.Bucket + "\x00" + legacyTenant
+	}
+	namespace.legacyScope = deriveLegacyScope(legacyTenant, config.ActivationEpoch)
 	return namespace, nil
+}
+
+// deriveLegacyScope is scope v1, H(v1 domain, tenant, epoch), kept only so a
+// ref published before v2 can still be read. Nothing publishes under it.
+func deriveLegacyScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.Scope {
+	digest := sha256.New()
+	digest.Write([]byte(legacyScopeDomain))
+	digest.Write([]byte{0})
+	digest.Write([]byte(tenant))
+	digest.Write([]byte{0})
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], uint64(epoch))
+	digest.Write(encoded[:])
+
+	return hangar.Scope("o" + hex.EncodeToString(digest.Sum(nil)[:scopeHexBytes]))
 }
 
 // deriveScope is the opaque half.
@@ -202,10 +230,34 @@ func (namespace OutputNamespace) BucketFingerprint() string {
 
 func (namespace OutputNamespace) Bucket() string { return namespace.bucket }
 
-// StoreIdentity names the store and namespace this output plane writes into:
-// the bucket fingerprint. It is stamped into every object's marker, and the
-// orphan sweep deletes only objects whose marker names it.
-func (namespace OutputNamespace) StoreIdentity() string { return namespace.BucketFingerprint() }
+// StoreIdentity names exactly what this output plane writes into: the bucket
+// fingerprint, the deployment prefix and the derived scope. It is stamped into
+// every object's marker, and the orphan sweep deletes only objects whose
+// marker names it -- so two installs sharing a bucket and prefix under
+// different tenants never name one store.
+func (namespace OutputNamespace) StoreIdentity() string {
+	return namespace.BucketFingerprint() + "/" + namespace.prefix + "/" + string(namespace.scope)
+}
+
+// OwnsRef reports whether a registered ref names this namespace: its derived
+// scope, or the scope-v1 derivation results published before v2 live under.
+// The lifecycle row and the read warrant remain the authority for the read;
+// this only says the key derives here.
+func (namespace OutputNamespace) OwnsRef(ref hangar.TreeRef) bool {
+	return ref.Scope == namespace.scope || (namespace.legacyScope != "" && ref.Scope == namespace.legacyScope)
+}
+
+// RefKey is the object key of a ref this namespace owns (OwnsRef).
+func (namespace OutputNamespace) RefKey(ref hangar.TreeRef) (string, error) {
+	if namespace.IsZero() {
+		return "", fmt.Errorf("%w: no output namespace has been derived", ErrIncomplete)
+	}
+	if !namespace.OwnsRef(ref) {
+		return "", fmt.Errorf("%w: ref scope %q is not this namespace's", ErrUnauthorized, ref.Scope)
+	}
+
+	return hangar.TreeKey(namespace.prefix, ref.Scope, ref.Digest)
+}
 
 // Prefix is the authenticated deployment prefix.
 func (namespace OutputNamespace) Prefix() string { return namespace.prefix }

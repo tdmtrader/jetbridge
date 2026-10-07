@@ -206,6 +206,27 @@ func TestA7TheOrphanSweepDeletesOnlyOldOrphansMarkedForThisStore(t *testing.T) {
 	unmarkedKey := keyOf(digestOf('d'))
 	plant(t, h, unmarkedKey, nil, old)
 
+	// Another install in the same bucket, under the same prefix, with another
+	// tenant: its own marker names its own store and scope, and it is foreign.
+	neighbour, err := output.DeriveNamespace(output.NamespaceConfig{
+		Store: output.StoreGCS, Bucket: h.Bucket, DeploymentPrefix: "harness/one",
+		TenantID: "another-tenant", ActivationEpoch: harnessEpoch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	neighbourKey, err := neighbour.ObjectKey(digestOf('e'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plant(t, h, neighbourKey, markerFor(neighbour.StoreIdentity(), neighbour.Scope(), digestOf('e'), old), old)
+	// And one that claims this store's identity under the neighbour's scope.
+	impostorKey, err := neighbour.ObjectKey(digestOf('f'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plant(t, h, impostorKey, markerFor(store, neighbour.Scope(), digestOf('f'), old), old)
+
 	counts, err := sweep.Once(context.Background())
 	if err != nil {
 		t.Fatalf("the sweep: %v", err)
@@ -216,7 +237,7 @@ func TestA7TheOrphanSweepDeletesOnlyOldOrphansMarkedForThisStore(t *testing.T) {
 	expectCounts(t, counts, map[string]int{
 		reclaim.SweepDeleted:  1,
 		reclaim.SweepYoung:    2,
-		reclaim.SweepForeign:  1,
+		reclaim.SweepForeign:  3,
 		reclaim.SweepUnmarked: 1,
 	})
 
@@ -254,7 +275,7 @@ func TestA7TheOrphanSweepDeletesOnlyOldOrphansMarkedForThisStore(t *testing.T) {
 	expectCounts(t, again, map[string]int{
 		reclaim.SweepDeleted:    1,
 		reclaim.SweepRegistered: 1,
-		reclaim.SweepForeign:    1,
+		reclaim.SweepForeign:    3,
 		reclaim.SweepUnmarked:   1,
 	})
 	if len(recorder.deletes) != 2 || recorder.deletes[1] != (deleted{youngKey, youngGeneration}) {
@@ -265,7 +286,8 @@ func TestA7TheOrphanSweepDeletesOnlyOldOrphansMarkedForThisStore(t *testing.T) {
 	for _, key := range h.bucketKeys(t) {
 		keys[key] = true
 	}
-	for name, key := range map[string]string{"foreign": foreignKey, "unmarked": unmarkedKey, "registered": registeredKey} {
+	for name, key := range map[string]string{"foreign": foreignKey, "unmarked": unmarkedKey, "registered": registeredKey,
+		"another tenant's": neighbourKey, "scope-mismatched": impostorKey} {
 		if !keys[key] {
 			t.Errorf("the %s object was deleted by the second sweep", name)
 		}

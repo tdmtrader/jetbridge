@@ -149,7 +149,7 @@ func (sweep *Sweep) classify(ctx context.Context, object objectstore.Attrs, stor
 	if err != nil {
 		return SweepUnmarked, nil
 	}
-	if marker.Store != store {
+	if marker.Store != store || marker.Scope != sweep.Namespace.Scope() {
 		return SweepForeign, nil
 	}
 	if object.Created.IsZero() || now.Sub(object.Created) <= threshold {

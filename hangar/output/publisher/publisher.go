@@ -232,10 +232,14 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 		return output.PublishedObject{}, fmt.Errorf("%w (object generation %d)", err, attrs.Generation)
 	}
 
-	if marker.Scope != publisher.namespace.Scope() {
+	expected := reservation.Scope
+	if expected == "" {
+		expected = publisher.namespace.Scope()
+	}
+	if marker.Scope != expected {
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d is marked "+
-			"for scope %q and this namespace is %q", output.ErrConflict,
-			attrs.Generation, marker.Scope, publisher.namespace.Scope())
+			"for scope %q and this read expects %q", output.ErrConflict,
+			attrs.Generation, marker.Scope, expected)
 	}
 	if marker.Digest != reservation.Digest {
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d is marked "+
@@ -276,7 +280,7 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 
 	object := output.PublishedObject{
 		Attributes: hangar.TreeAttributes{
-			Ref:          publisher.namespace.Ref(reservation.Digest, attrs.Generation),
+			Ref:          hangar.TreeRef{Scope: expected, Digest: reservation.Digest, Generation: attrs.Generation},
 			StoredBytes:  attrs.Size,
 			LogicalBytes: attrs.Size,
 			CreatedAt:    attrs.Created.UTC(),
@@ -296,12 +300,9 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	if err := ref.Validate(); err != nil {
 		return output.PublishedObject{}, err
 	}
-	if ref.Scope != publisher.namespace.Scope() {
-		return output.PublishedObject{}, fmt.Errorf("%w: ref scope %q is not this namespace's %q",
-			output.ErrUnauthorized, ref.Scope, publisher.namespace.Scope())
-	}
-
-	key, err := publisher.namespace.ObjectKey(ref.Digest)
+	// The derived scope, or the scope-v1 derivation of the same tenant and
+	// store: results published before scope v2 stay readable.
+	key, err := publisher.namespace.RefKey(ref)
 	if err != nil {
 		return output.PublishedObject{}, err
 	}
@@ -320,7 +321,7 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	// paths that DO hold one -- create, dedup and the ambiguous retry -- and
 	// inventing an expectation here would be asserting a fact this role does
 	// not have.
-	return publisher.classify(attrs, output.ObjectMarker{Digest: ref.Digest}, sizeUnknown)
+	return publisher.classify(attrs, output.ObjectMarker{Scope: ref.Scope, Digest: ref.Digest}, sizeUnknown)
 }
 
 // OpenExactObject reads the bytes, under a verified read warrant.
@@ -368,7 +369,7 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 		return nil, output.PublishedObject{}, err
 	}
 
-	key, err := publisher.namespace.ObjectKey(ref.Digest)
+	key, err := publisher.namespace.RefKey(ref)
 	if err != nil {
 		return nil, output.PublishedObject{}, err
 	}

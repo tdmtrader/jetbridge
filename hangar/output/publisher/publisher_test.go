@@ -9,6 +9,9 @@ package publisher_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -193,4 +196,45 @@ func TestOpenExactObjectRefusesAWarrantForAnotherRefBeforeTheStoreIsReached(t *t
 		t.Error("a warrant that does not validate authorized a read")
 	}
 	testsupport.ExpectNoRPC(t, recorder)
+}
+
+// A result published under scope v1 -- H(v1 domain, tenant, epoch) -- before
+// the scope dropped the epoch is still readable by exact generation: the
+// stat and the open derive its key from its own scope.
+func TestARefPublishedUnderScopeV1IsStillReadable(t *testing.T) {
+	ctx := context.Background()
+	namespace := namespaceFor(t, "tenant-a")
+	memory, recorder := testsupport.RecordedMemory(bucket)
+	built, err := publisher.New(namespace, publisher.Restrict(recorder), timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum := sha256.New()
+	sum.Write([]byte("hangar-output-scope-v1"))
+	sum.Write([]byte{0})
+	sum.Write([]byte("tenant-a"))
+	sum.Write([]byte{0})
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], uint64(epoch))
+	sum.Write(encoded[:])
+	legacy := hangar.Scope("o" + hex.EncodeToString(sum.Sum(nil)[:20]))
+
+	digest := testsupport.Digest("ab")
+	key, err := hangar.TreeKey(namespace.Prefix(), legacy, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := output.ObjectMarker{Version: output.MarkerVersion, Scope: legacy, Digest: digest,
+		ReservationID: reservation, ActivationEpoch: epoch, CreatedAt: output.NewTimestamp(testsupport.FixedInstant)}
+	attrs := memory.Seed(bucket, key, []byte("published before scope v2"), marker.Metadata())
+
+	ref := hangar.TreeRef{Scope: legacy, Digest: digest, Generation: attrs.Generation}
+	object, err := built.StatExactObject(ctx, ref)
+	if err != nil {
+		t.Fatalf("a scope-v1 ref of this tenant was refused: %v", err)
+	}
+	if object.Attributes.Ref != ref {
+		t.Errorf("the stat answered %v, want %v", object.Attributes.Ref, ref)
+	}
 }

@@ -54,10 +54,12 @@ type ObjectMarker struct {
 	ReservationID   ReservationID
 	ActivationEpoch executioncontrol.ActivationEpoch
 
-	// Store names the store and namespace the object was created in (the
-	// output namespace's StoreIdentity). The orphan sweep deletes only an
-	// object whose marker names its own store: an object another deployment
-	// sharing the bucket created is counted and never touched.
+	// Store names exactly where the object was created: the output
+	// namespace's StoreIdentity, which is the bucket fingerprint, deployment
+	// prefix and derived scope. The orphan sweep deletes only an object whose
+	// marker names its own store AND its own scope: an object another install
+	// sharing the bucket -- even under the same prefix with another tenant --
+	// created is counted as foreign and never touched.
 	Store     string
 	CreatedAt Timestamp
 }
