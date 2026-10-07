@@ -95,7 +95,7 @@ _Avoid_: detached client
 **Invocation receipt**:
 The local file that binds one submission to its Run, so an interrupted
 caller resumes that Run instead of admitting a second one.
-_Avoid_: receipt (alone; Hangar has two)
+_Avoid_: receipt (alone; Hangar has the materialization receipt)
 
 **Provider session**:
 One run of the pinned model provider inside a worker, in a private

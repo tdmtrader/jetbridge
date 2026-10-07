@@ -105,7 +105,7 @@ compare-and-set.
 _Avoid_: handoff, capture record
 
 **Pending**:
-A capture row whose step has not been sealed: the producer may still be
+A capture row whose digest is not yet written: the producer may still be
 running.
 _Avoid_: unresolved
 
@@ -125,13 +125,13 @@ build aborted, or its producer failed or was stopped.
 _Avoid_: cancelled, no capture
 
 **Failed**:
-A capture row that cannot publish: no marker on its node, a collision, or a
-deadline passed.
+A capture row that cannot publish: no marker on its node, a collision, a
+deadline passed, or its sealed step is gone from its node.
 _Avoid_: errored, lost
 
 **Coordinator**:
-The web's capture driver: six compare-and-set steps over one capture row,
-holding no lock across the network and nothing in memory between calls.
+The web's capture driver: it drives each capture row through six steps,
+each committed as an insert, a compare-and-set or a stamp.
 _Avoid_: controller, worker
 
 **Capture deadline**:
@@ -140,9 +140,7 @@ _Avoid_: seal deadline, timeout
 
 **Step marker**:
 The one file beside a step directory that is the only node-local capture
-state: held while a capture may need the directory, sealed once its
-producer has exited, released as a tombstone once the capture row is
-terminal. An unreadable marker refuses every destructive path.
+state: held, sealed, or released (a tombstone).
 _Avoid_: control record, source incarnation, writer ticket
 
 **Source hold**:
@@ -157,9 +155,8 @@ is exactly what the producer left.
 _Avoid_: freeze, drain
 
 **Release**:
-Clearing a terminal capture row's step marker on its node, then stamping
-the row released. Retried until the node acknowledges; a node that is gone
-is released without acknowledgement, and the row says so.
+Clearing a terminal capture row's step marker on its node and stamping the
+row released.
 _Avoid_: release intent, unhold
 
 **Announcement**:
@@ -168,11 +165,16 @@ its capture row's state and reason.
 _Avoid_: notification
 
 **Source ledger**:
-The artifact daemon's view of its step markers, consulted before
-destroying anything. It answers one of four ways: unmanaged (may destroy),
-held, sealed, or unavailable. Only unmanaged permits destruction;
-unavailable is never read as "probably fine".
+The artifact daemon's answer, from its step markers, to whether a step
+directory may be destroyed: unmanaged, held, sealed or unavailable. Only
+unmanaged permits destruction.
 _Avoid_: capture ledger
+
+**Input publication**:
+A strict input a Run uploads, staged on a node under a reservation id and
+then published as a tree ref. The reservation id is its correlation handle
+on the wire (`hangar-output-reservation-id`), not a capture reservation.
+_Avoid_: upload (alone), reservation (alone)
 
 **Object marker**:
 The ownership metadata written once at object creation and never updated:
@@ -207,22 +209,21 @@ record. Only the web reclaims.
 _Avoid_: garbage collection, purge
 
 **Orphan sweep**:
-The web's periodic listing of the output namespace that deletes, by exact
-generation, an old object marked for this store with no lifecycle and no
-capture about to register it, and counts every other object it cannot
-account for.
+The web's periodic pass that deletes an old object marked for this store
+that no lifecycle or capture accounts for, and counts every other object
+it cannot account for.
 _Avoid_: inventory, adoption, garbage collection
 
 **In service**:
-Whether the output plane admits new work: one row the web writes from its
-configuration and every admission reads. Out of service, nothing new is
+Whether the output plane admits new work. Out of service, nothing new is
 admitted and what is in flight finishes.
 _Avoid_: activation epoch, activation, enabled (alone)
 
 **Residue**:
-What a drain still waits on: pending or publishing capture rows, open
-claims, live read leases, unfinished reclaim jobs. A drain is finished when
-the plane is out of service and every count is zero at once.
+What a drain still waits on: pending or publishing capture rows, terminal
+capture rows not yet released, open claims, live read leases, unfinished
+reclaim jobs. Releases no node acknowledged are reported beside it, not
+counted in it.
 _Avoid_: debt, backlog
 
 **Integrity finding**:
@@ -239,15 +240,23 @@ _Avoid_: role, persona
 
 **Control-key generation**:
 The number a node's control keys and the capabilities signed with them are
-minted under. Rotating keys raises it; it gates nothing else and the output
-scope does not derive from it.
+minted under, recorded on every lifecycle, claim, read lease, reclaim job,
+input publication and Run input. Rotating it makes earlier Run results
+unbindable as inputs. It does not put the plane in service. Its frozen
+spellings -- the `activation_epoch` columns, `--activation-epoch`,
+`hangarOutput.activationEpoch`, the `hangar-output-activation-epoch` marker
+key and the Go type `executioncontrol.ActivationEpoch` -- are kept; the
+avoid-list applies to prose and new names.
 _Avoid_: activation epoch, epoch (alone)
 
+**Facet (signing)**:
+The signing domain of an execution-control capability: base or capture. A
+capability is admitted only by routes of its own facet.
+_Avoid_: facet (alone, for anything else)
+
 **Execution control**:
-The base protocol (classify, observe finish, request a source-preserving
-stop, may cleanup) that capture extends. A read of the node's stored,
-signed start sits beside it for a control plane that never retained one;
-it admits and signs nothing.
+The base protocol by which the web learns and settles one exact
+execution's fate on its node; capture extends it.
 _Avoid_: lease control
 
 ### Deployment

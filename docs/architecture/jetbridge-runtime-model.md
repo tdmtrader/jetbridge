@@ -45,7 +45,7 @@ the command again. Replacement of a dead pause pod happens at most once, and
 never when:
 
 - the command has already started (the step, not the pod phase, decides);
-- a capture holds the pod's source incarnation;
+- a capture's held step marker names the pod;
 - the pod's own init container failed (kept for diagnosis);
 - the one replacement was already spent, even by a failed attempt.
 

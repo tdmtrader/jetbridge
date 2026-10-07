@@ -199,7 +199,7 @@ payload: templates never build, payloads take no one-off builds, and a
 terminal run refuses everything.
 
 **Build closure**:
-An aborted run build's request to settle the output handoffs and close the
+An aborted run build's request to settle the captures and close the
 execution it left open, without cancelling its run. It is open until that
 work is settled and the build finishes aborted; the run then completes
 through ordinary run completion.
@@ -271,12 +271,12 @@ The Run contract's own durable marker (`pipeline_run_activation`): the epoch
 runs are born under and whether admission is on. Each web node writes it at
 startup from `--pipeline-run-activation-epoch` (chart
 `web.pipelineRunActivationEpoch`); it only moves forward. It is independent of
-the Hangar output epoch: a run's captures and bound inputs carry the Hangar
-epoch they were admitted under, and a Hangar rotation leaves running runs,
-their finalization and invocation-key replay alone. Admitting a template that
-declares results, or a run given inputs, still needs an enabled Hangar epoch.
-Executing any run needs the output plane's execution control, with the
-node's output capability key configured and its Hangar output epoch enabled;
+Hangar: a run's bound inputs carry the Hangar control-key generation they
+were admitted under, and rotating that leaves running runs, their
+finalization and invocation-key replay alone. Admitting a template that
+declares results, or a run given inputs, still needs the Hangar output plane
+in service (`hangar_enabled`). Executing any run needs the output plane's
+execution control, with the node's output capability key configured;
 admission checks none of these, so without them a run is admitted and its
 steps fail.
 _Avoid_: run creation gate, creation flag.

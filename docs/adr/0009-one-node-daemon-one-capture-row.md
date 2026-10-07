@@ -37,9 +37,12 @@ We collapsed it:
   row. The reader verifies the tree against the row's digest. A signed,
   challenge-bound receipt and its key ring proved nothing the mTLS channel
   and the reader's check do not.
-- **No activation epochs.** In service is one row the web writes from its
-  configuration and every admission reads FOR SHARE, plus node readiness
-  labels. There is no cohort to attest and so no frozen cohort.
+- **No activation epochs, cohort or attestation.** In service is one row
+  the web writes from its configuration and every admission reads FOR
+  SHARE, plus node readiness labels; there is no cohort to attest and so no
+  frozen cohort. A control-key generation is still recorded on every
+  lifecycle, claim, read lease, reclaim job, input publication and Run
+  input; its frozen spelling is `activation_epoch`.
 - **Reclaim and the orphan sweep run in the web**, under one advisory lock,
   admission excluding pending and publishing captures, claims and live
   read leases, and the sweep marker-gated to this store (bucket, prefix and
@@ -66,6 +69,11 @@ We collapsed it:
     its current state, reason and timestamps only.
   - Down migrations past this change are lossy: epochs, receipts, handoff
     history and dead cancellation-queue rows are not reconstructed.
+  - Rotating the control-key generation makes earlier Run results
+    unbindable as Run inputs.
+  - Nothing audits registered generations against the store: an object
+    lost out of band surfaces only when a read records an absence finding
+    or a reclaim delete finds it gone.
   - Output history from the handoff era is refused, not migrated:
     migration 1789793153 stops on a database that still holds any.
     Published refs under the old scope derivation stay readable; nothing

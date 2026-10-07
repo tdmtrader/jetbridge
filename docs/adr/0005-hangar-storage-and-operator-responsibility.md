@@ -37,9 +37,8 @@ replication layer or provider-specific implementation of the output protocol.
   storage and online provider migration are outside this backend.
 - Restores must preserve index/blob consistency and must never reuse issued
   generations. Changing provider or store identity does not retarget old refs.
-- Historical policy evidence is retained for audit. Wire/state-machine names
-  used by daemon cohort activation remain compatible; cohort attestation is
-  separate from the removed storage-policy process.
+- Historical policy evidence is retained for audit.
 - Superseded in part by [ADR-0009](0009-one-node-daemon-one-capture-row.md)
-  (2026-10-07): there is no cohort attestation, no publication receipt and
-  no fixed set of four storage roles. The storage contract above stands.
+  (2026-10-07): there is no cohort attestation (whose wire names this ADR
+  had kept compatible), no publication receipt and no fixed set of four
+  storage roles. The storage contract above stands.

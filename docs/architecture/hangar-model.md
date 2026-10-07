@@ -11,7 +11,8 @@ Output plane:  task output ──capture row + step marker──▶ publish ─�
 ```
 
 Both halves live in two processes: the artifact daemon on each node, and the
-web. `hangar-store` serves the disk store. Nothing else runs. Hangar is a
+web. `hangar-store` serves the disk store, and a bootstrap Job creates the
+Secrets the deployment needs. Nothing else runs. Hangar is a
 leaf: `hangar/` imports nothing from core, and the web composes with it
 through a caller-owned transaction and opaque identities.
 
@@ -55,7 +56,8 @@ anything else is a conflict. Identity and a written digest never change.
 The coordinator in the web drives each row in six steps, holding no
 database lock across a network call and nothing in memory between calls:
 
-1. **Step start.** The web inserts a pending row naming the node and Pod;
+1. **Step start.** The web inserts a pending row naming the node (the Pod
+   UID is written with the digest at publishing);
    the step's control init writes a held step marker before the first
    container starts.
 2. **Seal.** After the step exits the daemon flips the marker to sealed,
@@ -142,9 +144,10 @@ failure, or an unexpected absence -- a managed read that finds a registered
 generation missing records one, and the read fails closed.
 
 Drain: turn the plane out of service; in-flight captures finish; `fly
-hangar-status` reports the residue (pending and publishing captures, open
-claims, live read leases, unfinished reclaim jobs, and releases no node
-acknowledged). Remove the plane when every count is zero at once.
+hangar-status` reports the residue (pending and publishing captures,
+terminal captures not yet released, open claims, live read leases,
+unfinished reclaim jobs) and, beside it, releases no node acknowledged.
+Remove the plane when every residue count is zero at once.
 
 ## Trust
 
