@@ -153,7 +153,7 @@ func TestLiveHangarDiskStoreRoundTripSurvivesRestart(t *testing.T) {
 	})
 
 	// Render once to learn the names the chart composes. The certificates
-	// must carry the Service DNS names the artifact daemon and diskclient
+	// must carry the Service DNS names the artifact daemon and the disk client
 	// verify against, and those are the chart's to choose.
 	secrets := liveDiskSecretNames{
 		daemonTLS: "hl-daemon-tls", resolve: "hl-resolve",

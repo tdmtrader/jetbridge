@@ -22,5 +22,11 @@ either choice is wrong for the other kind.
   retention class.
 - Hangar never substitutes a newer generation or different content for a
   tree ref. The durable tier keys on content and may be empty at any time.
-- The two tiers share no code path for reads. A test bans the artifact
-  daemon's durable tier from importing Hangar.
+- The two tiers share no code path for reads. Amended 2026-10-06 (one storage
+  interface): both now sit on `hangar/objectstore` with the `hangar/gcs` and
+  `hangar/disk` backends, so the separation is a NAMESPACE, not an import ban
+  or a key depth. The cache is its own bucket or disk namespace with its own
+  client instance; the daemon and web refuse to start with it equal to the
+  input or output one. The tier may import only the object interface and its
+  two backends — never `hangar/output` — and nothing under `hangar/` imports
+  the tier. The daemon holds a delete only over the cache namespace.

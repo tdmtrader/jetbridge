@@ -8,9 +8,12 @@ generation or different content.
 
 Hangar supports native Google Cloud Storage and a dedicated persistent-disk
 service. Both implement the same immutable, exact-generation contract. The
-resource-cache S3-compatible and filesystem stores remain separate and are
-unsupported for Hangar. A GCS emulator is useful for tests; the disk service is
-the supported deployment option when no GCS is available.
+artifact daemon's fail-open resource cache uses the same object interface and
+the same two backends, but always against its own bucket or disk namespace:
+the cache, input and output namespaces are three different places, and the
+daemon and web refuse to start when any two coincide. A GCS emulator is useful
+for tests; the disk service is the supported deployment option when no GCS is
+available.
 
 ## Enablement
 
@@ -259,6 +262,13 @@ The storage link verifies the TLS server identity and the initialized store
 ID on every request. Its fixed roles have the permissions above, except disk
 inventory and reclaimer cannot read object bodies. There is no general IAM
 engine, overwrite API or unconditional delete API.
+
+Run outside the chart, `hangar-store --cache-namespace=<ns>` also serves the
+artifact daemon's fail-open resource cache (`--durable-store=disk`). It then
+needs a fifth distinct credential under `cache` in `server.json`; that role may
+create, stat, read, list and exact-delete inside the cache namespace and
+nothing outside it, and the store refuses a cache namespace equal to the input
+or output one.
 
 First provision the disk service, retaining your existing artifact-daemon
 TLS/key configuration and leaving client features disabled:

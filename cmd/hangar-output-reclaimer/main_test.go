@@ -5,10 +5,10 @@ package main
 // the two runners it wires.
 //
 // The delete BOUNDARY is not argued here. It is measured by
-// TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete against the real build
-// graph: this binary is the only main that links hangar/gcsdelete, which is the
-// only package that can construct a deleter over a real cloud client, and
-// objectstore.Handle carries no Delete at all. Lease algebra and the bounded
+// hangar/architecture_test.go: this binary is one of the two packages that may
+// name gcs.NewDeleteClient or disk.NewDeleteClient (the other is the artifact
+// daemon's cache tier, over its own cache namespace), and objectstore.Client
+// carries no delete at all. Lease algebra and the bounded
 // units are proved in atc/db against real PostgreSQL through the production
 // passes.
 

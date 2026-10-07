@@ -33,6 +33,13 @@ all durable artifacts. Core Hangar now provides a separate opt-in strict path
 for exact immutable tree references; see [Hangar exact tree
 storage](hangar.md). Its store is GCS or disk.
 
+The two share **one storage interface** and nothing else. This tier is a thin
+wrapper over the same `hangar/objectstore.Client` (create-if-absent, stat,
+exact open, list) with the same two backends, `hangar/gcs` and `hangar/disk`,
+but always against its **own** bucket or disk namespace and its own client
+instance. The cache, the strict inputs and the outputs are three namespaces,
+and the daemon and web refuse to start when any two are equal (ADR-0002).
+
 Every resource-cache artifact described here is re-derivable by re-running the
 step that produced it. Applying Hangar's strictness to these derivable bytes
 would convert a free cache miss into a broken build. This tier therefore
@@ -48,7 +55,8 @@ there is no error for a caller to accidentally propagate.
 ## Status: complete
 
 **Store, content key, ATC↔daemon wiring, retention and reclaim are all landed
-and tested. Nothing has run against a real bucket yet.**
+and tested. Nothing has run against a real bucket yet.** The store is a wrapper
+over the shared object interface (GCS or disk); see [Backends](#backends).
 
 `db.ResourceCache.DurableKey()` returns `rc-<sha256>` over the cache's identity,
 persisted as `resource_caches.durable_key`
@@ -181,11 +189,15 @@ argued it down:
 
 - **Nothing can check the rule is right.** The period lives as a string an
   operator types into a cloud console, and it has to match a prefix this code
-  composes — including the store's own `--durable-prefix`, which is easy to
-  forget. A rule with the wrong prefix matches nothing, deletes nothing and
+  composes. A rule with the wrong prefix matches nothing, deletes nothing and
   reports no error. The store simply grows.
-- **It does not exist for `store: filesystem`.** A shared NFS or RWX volume has
-  no lifecycle mechanism, so that backend had no reclaim path at all.
+- **It does not exist for the disk store.** A disk namespace has no lifecycle
+  mechanism, so that backend would have no reclaim path at all.
+
+The retention class stays a **key prefix**, not object metadata, because GCS
+lifecycle rules match prefixes: a bucket rule written against
+`resource-caches/` is the backstop, and it can only be written if the class is
+in the name.
 
 Note what this argument is *not*. The rejected design earlier in this document
 is reference-based deletion — driving `Delete` from
@@ -250,17 +262,19 @@ and the reason not to invent a new unswept directory.
 ```
 cmd/artifact-daemon/durable/     the store itself; no daemon imports
   durable.go                     Store interface, key validation, size limit
-  fs.go                          filesystem backend
-  s3.go                          S3-compatible backend
-  spool.go                       body spooling for the S3 signer
+  store.go                       the wrapper over hangar/objectstore.Client;
+                                 builds its own gcs or disk clients
 cmd/artifact-daemon/
   durable_tier.go                policy: timeouts, fail-open, upload collapsing
-  durable_config.go              flags → backend
+  durable_config.go              flags → store, and the namespace check
 ```
 
 The store package lives under `cmd/artifact-daemon/` because it belongs to the
 daemon, not the ATC. Nothing in `atc/` imports it, so a deployment with the tier
-off pays nothing for it.
+off pays nothing for it. It may import `hangar/objectstore`, `hangar/gcs` and
+`hangar/disk` and nothing else under `hangar/` — never `hangar/output` — and
+nothing under `hangar/` imports it (`architecture_test.go`,
+`TestDurableTierAndHangarAreSeparateStores`).
 
 ## Interface
 
@@ -268,7 +282,8 @@ off pays nothing for it.
 type Attributes struct {
     Key     string
     Size    int64
-    Version string // GCS generation, S3 versionId; empty on a filesystem
+    Updated time.Time // the object's creation time
+    Version string    // the object's generation, in decimal
 }
 
 type Store interface {
@@ -284,61 +299,58 @@ A miss is reported through the `bool`, never as an error. An error means the
 store itself failed. That distinction is what lets the tier above it fail open
 without swallowing real faults silently.
 
-`Stat` rather than a bare `Has` because a caller that needs the size or wants
-to pin one particular write should not have to download the body to get it.
-`Version` is the backend's own name for a write — a GCS generation, an S3
-versionId — and is empty where the backend has no such concept rather than
-invented.
+Over the object interface:
+
+- `Stat` is `StatCurrent`; not-found is a miss.
+- `Get` is `StatCurrent` then `OpenExact` of that generation, so an object
+  expired and recreated in between reads as a miss rather than a mixture.
+- `Put` is create-if-absent. Objects are immutable and keys are content-derived,
+  so a key already present — or a lost race to a concurrent writer of the same
+  key (`ErrPreconditionFailed`) — is **success**, and the upload is skipped when
+  a stat finds the key first.
+- `Delete` is `StatCurrent` then `DeleteExact` of that generation; absent, or
+  replaced in between, is success.
+- `List` pages the namespace by `(key, generation)`.
+
+Because objects are immutable, a truncated, corrupt or hostile object is not
+healed by the next producer's upload. A restore that fails to extract expires
+the object, so the next producer can put a good copy back.
 
 `List` is there for reclaim. Storage is the only authority on what storage
 holds: a database can be restored, rebuilt or diverge, so anything reconciling
-a bucket against one has to enumerate the bucket. A store without `List` can
-only delete what something already remembered, which is exactly the set that
-does not leak.
+a bucket against one has to enumerate the bucket.
 
-Keys are validated against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`. The fs backend
-joins the key onto a root directory, so `../` would escape it; S3 turns a slash
-into a prefix, which would hide the object from `Delete`.
+Keys are validated against `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$` per segment,
+with at most one class-prefix segment. The daemon also joins the local alias of
+a restore onto its `steps/` root with the same validator.
 
 ## Backends
 
-**gcs** — native Cloud Storage, and the default choice on GCP.
+**gcs** — native Cloud Storage, through `hangar/gcs`. The client uses
+Application Default Credentials, which on GKE is Workload Identity — no key
+exists to leak. `--durable-endpoint` points it at an emulator (tests and brine)
+and is empty in production.
 
-Cloud Storage does speak S3 through its XML API, but interop signs with SigV4,
-which needs an HMAC key: a long-lived secret tied to a service account that
-somebody has to mount and rotate. The native client uses Application Default
-Credentials, which on GKE is Workload Identity — no key exists to leak. That is
-the whole reason this backend exists rather than pointing the S3 one at
-`storage.googleapis.com`. There is deliberately no way to pass a credential to
-`NewGCS`.
+**disk** — the persistent-disk store (`cmd/hangar-store`) through
+`hangar/disk`, as its `cache` role. The store must be started with
+`--cache-namespace`, and its credentials file must name a `cache` credential;
+that role may create, stat, read, list and delete inside the cache namespace and
+nothing outside it.
 
-No spooling: Cloud Storage's writer is a plain `io.WriteCloser` that chunks as
-it goes. A truncated body cancels the context rather than closing the writer,
-because `Close` finalises whatever was written and would publish a short object.
+The S3-compatible and filesystem backends are gone. The S3 one needed an HMAC
+key or IRSA and a spool to disk for the signer; the filesystem one was only
+durable on shared storage and was unsafe on GCS Fuse. Neither had a deployment.
 
-**s3** — S3-compatible, so it covers AWS, MinIO, Ceph, R2 and Backblaze. It
-earns its place even with GCS as the primary: theborg is not GCP, and MinIO is
-a better on-prem object store than a filesystem over NFS. `aws-sdk-go-v2` was
-already a direct dependency (`atc/creds/ssm`, `atc/creds/secretsmanager`).
+### The delete the daemon holds
 
-Bodies are spooled to a temp file before upload. The SDK needs a seekable body
-to sign and to retry, and holding a multi-gigabyte cache in memory on every node
-of a DaemonSet is how a cluster OOMs. `MaxAttempts` is configuration rather than
-a property of the backend: for the daemon a miss is free so 2 is right, but a
-caller whose bytes have no upstream should ask for more.
-
-**filesystem** — the whole store for a single-node install on an NFS or RWX
-mount, and the backend every test in the package runs against. Writes go through
-a temp file and a rename, so a crashed or over-limit upload never leaves a short
-file that a later `Get` would serve as whole.
-
-> A `hostPath` for `--durable-path` is **not** durable — it is a second local
-> copy. Point it at shared storage, or use `gcs`/`s3`.
->
-> A **GCS Fuse** mount is also not a safe target for the `filesystem` backend:
-> both `FS.Put` and `DurableTier.Restore` get their atomicity from `os.Rename`,
-> and Fuse implements rename as copy-then-delete. Use the `gcs` backend, which
-> talks to the API directly.
+This tier is the only place on a node that constructs a delete client
+(`gcs.NewDeleteClient` / `disk.NewDeleteClient`), and only for the cache
+namespace: the cache is fail-open and the daemon expires its own objects by
+retention class. It never holds delete over the input or output namespaces —
+the startup check refuses a cache namespace equal to either, and the disk store
+confines the cache role to its namespace. `hangar/architecture_test.go` fixes
+the only callers of the delete constructors: this package and the output
+reclaimer.
 
 ## Configuration
 
@@ -347,27 +359,29 @@ values were removed (ADR-0008), and setting them fails the render. A
 deployment that wants the tier runs the daemon with its own flags:
 
 ```
---durable-store=""                     # "" | gcs | s3 | filesystem
---durable-bucket=""                    # gcs, s3
---durable-prefix=""                    # namespaces one bucket across clusters/consumers
---durable-endpoint=""                  # set for MinIO; empty for GCP and AWS
---durable-s3-region=us-east-1          # s3 only
---durable-path=""                      # filesystem
+--durable-store=""                     # "" | gcs | disk
+--durable-bucket=""                    # the cache's own bucket or disk namespace
+--durable-endpoint=""                  # gcs: emulator only; disk: the store's HTTPS origin
+--durable-store-id=""                  # disk only
+--durable-token-file=""                # disk only: the cache-role credential
+--durable-ca-cert=""                   # disk only
 --durable-timeout=5m
 --durable-max-bytes=5368709120         # 0 disables
 --durable-maintenance-interval=15m
 --durable-retention=CLASS=DURATION     # repeatable
 ```
 
-Credentials arrive as environment (`AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` for s3), never as flags — a flag lands in the process
-table and in `kubectl describe pod`. On a managed cluster, use IRSA or Workload
-Identity instead; nothing then holds a long-lived key. `gcs` always uses
-Application Default Credentials and needs no credential at all on GKE.
+`--durable-bucket` must differ from `--hangar-bucket` when strict inputs are
+enabled, and from the output bucket; the daemon exits at startup otherwise.
+Web takes the same three names (`--kubernetes-artifact-daemon-cache-bucket`,
+`--kubernetes-hangar-input-bucket`, `--kubernetes-hangar-output-bucket`) and
+refuses the same way.
 
 An incomplete config fails at daemon startup, which exits rather than serving:
 a daemon that starts, reports healthy and quietly caches nothing is a much
-worse failure.
+worse failure. A correct config whose store is unreachable at startup is
+different: the tier is left off, logged as `durable-store-unavailable`, and the
+daemon serves builds without it until it restarts.
 
 ## Failure modes
 
@@ -384,6 +398,8 @@ Every row degrades. None fails a build.
 | Two nodes restore the same key at once | `rename` onto a populated directory is treated as success — both copies are equally valid. |
 | Concurrent uploads of one key | Collapsed to a single transfer by an in-flight set. |
 | Daemon restarts mid-upload | The object is simply absent; the next request re-uploads. |
+| Key already stored | `Put` succeeds without writing; the first object stands. |
+| Object fails to restore (corrupt, truncated, hostile) | 404; the object is expired so the next producer recreates it. |
 
 ## Observability
 
@@ -434,27 +450,23 @@ waiting get step.
 
 ## Testing
 
-All three backends run the same conformance table — a store that only works on
-disk is not the feature. Each of GCS, S3 and filesystem passes the same ten
-behaviours.
-
-The cloud backends are tested against real `httptest` servers speaking the real
-wire protocols to the real SDKs, matching `atc/creds/ssm`. No mocks, no cloud
-account.
-
-One thing the GCS fake taught: the Go client uploads over the JSON API but
-fetches object bodies over the **XML** API at `/<bucket>/<object>`. A fake
-serving only the JSON routes accepted every write and missed every read.
+`cmd/artifact-daemon/durable/durable_test.go` runs one conformance table over
+three substrates: the in-memory object client (`hangar/gcstest`), the real GCS
+adapter against an in-process fake-gcs-server, and a real disk store behind its
+authenticated server as the cache role. No mocks, no cloud account.
 
 `cmd/artifact-daemon/durable_tier_test.go` covers the tier: a store/restore
 round trip through a real `Server`'s tar writer, a `brokenStore` that fails
-every operation, a nil tier, and upload collapsing under concurrency.
+every operation, a nil tier, upload collapsing under concurrency, and a hostile
+object that is refused and expired. `durable_config_test.go` covers the
+namespace check.
 
-Mutation-verified: making a miss an error and removing the S3 retry cap each
-fail the suite.
+`atc/worker/jetbridge/brine/features/daemon-durable.feature` drives the real
+daemon binary against its own cache bucket on an in-process GCS emulator,
+including the retention pass over objects backdated server-side.
 
-**Cannot be tested locally:** real S3/GCS credentials, IRSA and Workload
-Identity, and behaviour against a bucket under lifecycle policy.
+**Cannot be tested locally:** real GCS credentials, Workload Identity, and
+behaviour against a bucket under lifecycle policy.
 
 ## Rollout
 
