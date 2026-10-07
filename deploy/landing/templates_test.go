@@ -174,6 +174,29 @@ var _ = Describe("The landing templates", func() {
 		Expect(git(repo, "rev-parse", head+"^{tree}")).To(Equal(git(work, "rev-parse", sha+"^{tree}")))
 	})
 
+	It("The rebuild recipe is byte-identical in both templates, so land's sha equality can hold", func() {
+		recipe := func(body string) string {
+			start := strings.Index(body, "# recipe-begin")
+			end := strings.Index(body, "# recipe-end")
+			Expect(start).To(BeNumerically(">", 0))
+			Expect(end).To(BeNumerically(">", start))
+			return body[start:end]
+		}
+		Expect(recipe(land.body)).To(Equal(recipe(compose.body)))
+	})
+
+	It("compose records each entry's author, date and message in the manifest, which land rebuilds from", func() {
+		code, out, wd := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		Expect(code).To(Equal(0), out)
+		facts := filepath.Join(wd, "manifest", "entries", "fix-1")
+		Expect(filepath.Join(facts, "author")).To(BeAnExistingFile())
+		body, err := os.ReadFile(filepath.Join(facts, "message"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).To(HavePrefix("fix: the thing\n"))
+		Expect(string(body)).To(HaveSuffix("original: " + sha + "\n"))
+		Expect(readManifest(wd)).NotTo(HaveKey("trunk"), "the trunk comes from the land Run's params, never from the manifest")
+	})
+
 	It("compose fails when the entry conflicts with the trunk", func() {
 		git(work, "checkout", "-q", "core")
 		Expect(os.WriteFile(filepath.Join(work, "fix.txt"), []byte("conflict\n"), 0o644)).To(Succeed())
@@ -194,6 +217,7 @@ var _ = Describe("The landing templates", func() {
 		verdict := readVerdict(landed)
 		Expect(verdict["outcome"]).To(Equal("landed"))
 		Expect(verdict["sha"]).To(Equal(head))
+		Expect(verdict["reason"]).To(ContainSubstring("fast-forwarded core"))
 		Expect(git(remote, "rev-parse", "core")).To(Equal(head))
 		Expect(git(remote, "log", "-1", "--format=%an", "core")).To(Equal("Ada"))
 	})

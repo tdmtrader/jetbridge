@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
@@ -56,7 +55,6 @@ type Engine struct {
 	Results Results
 	Port    runs.Admitter
 	Epoch   int64
-	Now     func() time.Time
 }
 
 // Run is one pass over every queue. An error on one queue is logged and the
@@ -155,11 +153,13 @@ func (e *Engine) settleLand(ctx context.Context, queue db.LandingQueue, intent d
 	case status != atc.RunStatusSucceeded:
 		return e.failLand(ctx, intent, fmt.Sprintf("land Run %d %s", landRun, status))
 	}
-	// Before the settle transaction: the reader locks the Run row itself.
+	// Before the settle transaction: the reader locks the Run row itself. A
+	// verdict that cannot be read is a landing that cannot be proven: it counts
+	// as failed and the candidate gets another land Run, rather than the queue
+	// waiting on a result that may never come back.
 	verdict, err := e.verdict(ctx, landRun)
 	if err != nil {
-		e.Logger.Info("landing-verdict-unread", lager.Data{"run": landRun, "error": err.Error()})
-		return true, nil
+		return e.failLand(ctx, intent, fmt.Sprintf("land Run %d: verdict unread: %s", landRun, err.Error()))
 	}
 	switch verdict.Outcome {
 	case VerdictLanded:
@@ -183,7 +183,7 @@ func (e *Engine) settleLand(ctx context.Context, queue db.LandingQueue, intent d
 // composed again; an admission the port refuses outright leaves the intent for
 // the next pass, except a declaration mismatch, which is a defect to report.
 func (e *Engine) admitLand(ctx context.Context, queue db.LandingQueue, intent db.LandingIntent) (bool, error) {
-	entry, err := e.entry(ctx, intent)
+	entry, err := e.Queues.Entry(ctx, intent.EntryRowID)
 	if err != nil {
 		return true, err
 	}
@@ -198,7 +198,7 @@ func (e *Engine) admitLand(ctx context.Context, queue db.LandingQueue, intent db
 	}
 	run, _, err := e.Port.AdmitVersionedRun(ctx, tx, runs.Admission{
 		Template:  runs.TemplateRef{Team: queue.TeamName, Pipeline: atc.PipelineRef{Name: queue.Config.Land}},
-		Params:    landParams(queue, entry),
+		Params:    runParams(queue, entry),
 		Inputs:    map[string]atc.RunInputSource{"manifest": {RunID: intent.ComposeRunID, Result: "manifest"}, "candidate": {RunID: intent.ComposeRunID, Result: "candidate"}},
 		Principal: runs.Principal{Queue: &runs.QueuePrincipal{TeamName: queue.TeamName, QueueName: queue.Name}},
 
@@ -240,12 +240,16 @@ func (e *Engine) compose(ctx context.Context, queue db.LandingQueue) error {
 	if err != nil || !found {
 		return err
 	}
+	attempts, err := e.Queues.ComposeAttempts(ctx, dbTx, entry.ID)
+	if err != nil {
+		return err
+	}
 	run, _, err := e.Port.AdmitVersionedRun(ctx, tx, runs.Admission{
 		Template:  runs.TemplateRef{Team: queue.TeamName, Pipeline: atc.PipelineRef{Name: queue.Config.Compose}},
-		Params:    composeParams(queue, entry),
+		Params:    runParams(queue, entry),
 		Principal: runs.Principal{Queue: &runs.QueuePrincipal{TeamName: queue.TeamName, QueueName: queue.Name}},
 
-		ContractKey: contractKey("compose", entry.EntryID, int(e.now().UnixNano()), 0),
+		ContractKey: contractKey("compose", entry.EntryID, entry.ID, attempts),
 	}, e.Epoch)
 	if err != nil {
 		e.Logger.Info("landing-compose-admission-refused", lager.Data{"queue": queue.Name, "entry": entry.EntryID, "error": err.Error()})
@@ -314,13 +318,6 @@ func (e *Engine) status(runID int) (atc.RunStatus, bool, error) {
 	return run.Status(), true, nil
 }
 
-func (e *Engine) entry(ctx context.Context, intent db.LandingIntent) (db.LandingEntryRow, error) {
-	var entry db.LandingEntryRow
-	err := e.Conn.QueryRowContext(ctx, `SELECT entry_id, commit FROM landing_entries WHERE id = $1`, intent.EntryRowID).Scan(&entry.EntryID, &entry.Commit)
-	entry.ID = intent.EntryRowID
-	return entry, err
-}
-
 func (e *Engine) verdict(ctx context.Context, landRun int) (Verdict, error) {
 	tree, err := e.Results.Read(ctx, landRun, "verdict")
 	if err != nil {
@@ -338,22 +335,7 @@ func (e *Engine) verdict(ctx context.Context, landRun int) (Verdict, error) {
 	return verdict, nil
 }
 
-func (e *Engine) now() time.Time {
-	if e.Now != nil {
-		return e.Now()
-	}
-	return time.Now()
-}
-
-func composeParams(queue db.LandingQueue, entry db.LandingEntryRow) atc.RunParams {
-	return atc.RunParams{
-		"repository": queue.Config.Repository,
-		"trunk":      queue.Config.Trunk,
-		"entries":    entry.EntryID + "=" + entry.Commit,
-	}
-}
-
-func landParams(queue db.LandingQueue, entry db.LandingEntryRow) atc.RunParams {
+func runParams(queue db.LandingQueue, entry db.LandingEntryRow) atc.RunParams {
 	return atc.RunParams{
 		"repository": queue.Config.Repository,
 		"trunk":      queue.Config.Trunk,
@@ -362,7 +344,8 @@ func landParams(queue db.LandingQueue, entry db.LandingEntryRow) atc.RunParams {
 }
 
 // contractKey is the port's idempotency key for one admission: the kind, the
-// entry and the attempt. The alphabet is the port's.
+// entry, its row and the attempt, so a pass repeated after a crash replays the
+// Run it admitted and a new attempt admits a new one. The alphabet is the port's.
 func contractKey(kind, entryID string, run, attempt int) string {
 	key := fmt.Sprintf("landing-%s-%s-%d-%d", kind, entryID, run, attempt)
 	key = strings.Map(func(r rune) rune {

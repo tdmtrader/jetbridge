@@ -148,9 +148,11 @@ func activateAdmission() {
 }
 
 // finishRun settles a Run the way the finalizer would find it, then writes
-// its terminal header by fixture. For a succeeded Run each named result gets
-// the lifecycle and claim rows the output plane would have registered, so a
-// later admission can bind it.
+// its terminal header by fixture, with the publication trigger suspended for
+// that one statement. The finalizer itself is not run because publishing a
+// result needs the output plane's claim bookkeeping, and this suite has no
+// plane: the lifecycle and claim rows a succeeded Run's results get here are
+// the ones the plane would have registered, so a later admission can bind them.
 func finishRun(runID int, status atc.RunStatus, resultNames ...string) {
 	GinkgoHelper()
 	_, err := dbConn.Exec(`UPDATE builds SET status = $2, completed = true, end_time = now() WHERE pipeline_run_id = $1 AND NOT completed`, runID, string(status))

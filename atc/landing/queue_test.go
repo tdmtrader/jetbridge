@@ -3,10 +3,13 @@ package landing_test
 import (
 	"context"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/landing"
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
 )
 
 var _ = Describe("The landing queue with no gate", func() {
@@ -152,7 +155,7 @@ var _ = Describe("The landing queue with no gate", func() {
 		Expect(status.LastError).To(ContainSubstring("push refused"))
 	})
 
-	It("A verdict that cannot be read leaves the intent for the next pass", func() {
+	It("A verdict that cannot be read counts as a failed landing and the candidate gets another land Run", func() {
 		submit("fix-1", shaA)
 		pass()
 		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
@@ -160,10 +163,48 @@ var _ = Describe("The landing queue with no gate", func() {
 		landRun := runIDByNumber("landing-land", 1)
 		finishRun(landRun, atc.RunStatusSucceeded, "verdict")
 		pass()
+		status, err := queues.Status(ctx, queue)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(status.FailedLands).To(Equal(1))
+		Expect(status.LastError).To(ContainSubstring("verdict unread"))
 		Expect(entry("fix-1").State).To(Equal(atc.LandingEntryInFlight))
-		Expect(entry("fix-1").LandRun).To(Equal(1))
-		results.verdicts[landRun] = landing.Verdict{Outcome: landing.VerdictLanded}
 		pass()
-		Expect(entry("fix-1").State).To(Equal(atc.LandingEntryLanded))
+		Expect(entry("fix-1").LandRun).To(Equal(2), "another land Run for the same candidate")
+	})
+
+	It("A candidate whose compose results are no longer bindable is composed again", func() {
+		submit("fix-1", shaA)
+		pass()
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded)
+		pass()
+		view := entry("fix-1")
+		Expect(view.Reason).To(ContainSubstring("no longer bindable"))
+		Expect(view.ComposeRun).To(Equal(2), "composed again in the same pass")
+		Expect(runCount(creator)).To(Equal(2))
+		var landRuns int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_runs r JOIN pipelines p ON p.id = r.template_pipeline_id WHERE p.name = 'landing-land'`).Scan(&landRuns)).To(Succeed())
+		Expect(landRuns).To(BeZero())
+	})
+
+	It("A land template that does not declare the manifest and candidate inputs is a reported defect, and the entry waits", func() {
+		savePipeline("landing-land-short", atc.Config{Template: true,
+			Params: []atc.ParamSchema{{Name: "repository", Type: atc.ParamTypeString, Required: true}, {Name: "trunk", Type: atc.ParamTypeString, Required: true}, {Name: "entries", Type: atc.ParamTypeString, Required: true}},
+			Jobs: atc.JobConfigs{{Name: "land", PlanSequence: []atc.Step{
+				{Config: &atc.TaskStep{Name: "land", TaskID: uuid.NewString(),
+					RunInputs: []atc.RunInput{{Name: "manifest", Input: "manifest"}},
+					RunResult: &atc.RunResult{Name: "verdict", Output: "verdict"},
+					Config:    &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "manifest"}}, Outputs: []atc.TaskOutputConfig{{Name: "verdict"}}}}},
+			}}}})
+		Expect(queues.SetQueue(ctx, team.ID(), "trunk", atc.LandingQueueConfig{
+			Repository: "https://example.test/repo.git", Trunk: "core", Compose: "landing-compose", Land: "landing-land-short",
+		})).To(Succeed())
+		submit("fix-1", shaA)
+		pass()
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		pass()
+		Expect(engine.Logger.(*lagertest.TestLogger).Buffer()).To(gbytes.Say("does not declare the manifest and candidate run inputs"))
+		Expect(entry("fix-1").State).To(Equal(atc.LandingEntryInFlight))
+		Expect(entry("fix-1").LandRun).To(BeZero())
+		Expect(runCount(creator)).To(Equal(1))
 	})
 })

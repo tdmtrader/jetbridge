@@ -16,6 +16,10 @@ import (
 // another commit. The same commit submitted again is a no-op, not this.
 var ErrLandingEntryExists = errors.New("landing entry already exists for another commit")
 
+// ErrInvalidLandingSubmission means the submission's id or commit is not one
+// the queue accepts; it wraps the reason.
+var ErrInvalidLandingSubmission = errors.New("invalid landing submission")
+
 // LandingQueue is one row of landing_queues.
 type LandingQueue struct {
 	ID       int
@@ -71,6 +75,8 @@ type LandingQueueFactory interface {
 	Status(context.Context, LandingQueue) (atc.LandingQueueStatus, error)
 
 	NextQueued(context.Context, Tx, int) (LandingEntryRow, bool, error)
+	Entry(context.Context, int) (LandingEntryRow, error)
+	ComposeAttempts(context.Context, Tx, int) (int, error)
 	OpenIntents(context.Context, Tx, int) ([]LandingIntent, error)
 	RecordCompose(context.Context, Tx, LandingEntryRow, int) error
 	RecordLand(context.Context, Tx, LandingIntent, int) error
@@ -146,10 +152,10 @@ func (f *landingQueueFactory) Queues(ctx context.Context) ([]LandingQueue, error
 // queued or long settled.
 func (f *landingQueueFactory) Submit(ctx context.Context, queueID int, sub atc.LandingSubmission, by string) (bool, error) {
 	if !atc.ValidLandingEntryID(sub.ID) {
-		return false, fmt.Errorf("landing entry id %q is not a safe ref component", sub.ID)
+		return false, fmt.Errorf("%w: id %q is not a safe ref component", ErrInvalidLandingSubmission, sub.ID)
 	}
 	if !atc.ValidCommitSHA(sub.Commit) {
-		return false, fmt.Errorf("landing entry commit %q is not a full sha", sub.Commit)
+		return false, fmt.Errorf("%w: commit %q is not a full sha", ErrInvalidLandingSubmission, sub.Commit)
 	}
 	result, err := psql.Insert("landing_entries").
 		Columns("queue_id", "entry_id", "commit", "submitted_by").
@@ -216,6 +222,19 @@ func (f *landingQueueFactory) NextQueued(ctx context.Context, tx Tx, queueID int
 		return LandingEntryRow{}, false, nil
 	}
 	return entry, err == nil, err
+}
+
+// Entry is one entry row by id.
+func (f *landingQueueFactory) Entry(ctx context.Context, id int) (LandingEntryRow, error) {
+	return scanLandingEntry(landingEntriesQuery.Where(sq.Eq{"id": id}).RunWith(f.conn).QueryRowContext(ctx))
+}
+
+// ComposeAttempts counts the candidates composed for an entry so far, which
+// keys the next compose admission: the same attempt replays, a new one admits.
+func (f *landingQueueFactory) ComposeAttempts(ctx context.Context, tx Tx, entryRowID int) (int, error) {
+	var n int
+	err := psql.Select("count(*)").From("landing_intents").Where(sq.Eq{"entry_id": entryRowID}).RunWith(tx).QueryRowContext(ctx).Scan(&n)
+	return n, err
 }
 
 var landingIntentsQuery = psql.Select("id", "queue_id", "entry_id", "compose_run_id", "land_run_id", "state", "fails", "last_error").From("landing_intents")
