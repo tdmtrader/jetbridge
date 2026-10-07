@@ -45,7 +45,7 @@ var _ = Describe("the storage-integrity admission gate", func() {
 
 	recordFailure := func() {
 		in(func(tx db.HangarOutputTx) {
-			Expect(repository.RecordRuntimeAtRisk(ctx, tx, 1, output.PolicyFinding{
+			Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{
 				Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected loss",
 			})).To(Succeed())
 		})
@@ -135,20 +135,6 @@ var _ = Describe("the storage-integrity admission gate", func() {
 			Expect(err.Error()).To(ContainSubstring("storage integrity"))
 		})
 
-		It("refuses orphan adoption", func() {
-			orphan := hangar.TreeRef{
-				Scope: "team-a", Digest: hangarDigest(81), Generation: 1725830823000081,
-			}
-			err := commitOf(func(tx db.HangarOutputTx) {
-				outcome, err := repository.AdoptManagedOrphan(ctx, tx,
-					hangarAdoptionFor(orphan, time.Now().Add(-30*24*time.Hour)))
-				Expect(err).NotTo(HaveOccurred())
-				Expect(outcome).To(Equal(output.AdoptionAdopted))
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("storage integrity"))
-		})
-
 		It("refuses reclaim admission", func() {
 			hangarAgeCapture(capture, 48*time.Hour)
 			hangarAgePublication(ref, hangarGraceElapsed)
@@ -226,17 +212,22 @@ var _ = Describe("the storage-integrity admission gate", func() {
 
 	})
 
-	It("reopens admission only after explicit reconciliation, retaining the finding", func() {
+	It("reopens admission only after an explicit resolution by id, retaining the finding", func() {
 		recordFailure()
 		recordFailure()
 		in(func(tx db.HangarOutputTx) {
-			findings, err := repository.OpenPolicyViolations(ctx, tx, 1)
+			findings, err := repository.OpenIntegrityFindings(ctx, tx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(findings).To(HaveLen(1))
-			Expect(repository.ReconcilePolicyViolation(ctx, tx, 1, output.ViolationOutOfBandAbsence, "missing-generation")).To(Succeed())
+			Expect(findings[0].Violation).To(Equal(output.ViolationOutOfBandAbsence))
+			Expect(findings[0].Subject).To(Equal("missing-generation"))
+			Expect(findings[0].BlocksAdmission).To(BeTrue())
+			Expect(repository.ResolveIntegrityFinding(ctx, tx, findings[0].ID)).To(Succeed())
+			Expect(repository.ResolveIntegrityFinding(ctx, tx, findings[0].ID)).
+				To(MatchError(output.ErrNotFound), "a resolved finding is resolved once")
 		})
 		in(func(tx db.HangarOutputTx) {
-			findings, err := repository.OpenPolicyViolations(ctx, tx, 1)
+			findings, err := repository.OpenIntegrityFindings(ctx, tx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(findings).To(BeEmpty())
 		})

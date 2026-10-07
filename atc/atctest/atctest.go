@@ -5,7 +5,7 @@
 // The web node is the production API handler, wrapper chain, Run admission
 // port, result reader and Dex issuer over a migrated PostgreSQL. The output
 // node is the real artifact-daemon binary, its output plane mounted, over a GCS
-// emulator, brought into service through the real activation protocol. What a runtime does to a
+// emulator, brought into service by the in-service row the web sets. What a runtime does to a
 // Run -- start a result producer, publish what it wrote, finish its builds --
 // is driven through the database, daemon and coordinator calls the runtime
 // makes (see Producer).
@@ -200,9 +200,7 @@ func start(postmaster *postgresrunner.Runner) (p *Platform, stop func(), err err
 		return nil, stop, err
 	}
 
-	activator := postmaster.ActivationRoleDB()
-	defer activator.Close()
-	p.node, err = startNode(conn, activator)
+	p.node, err = startNode(conn)
 	if err != nil {
 		return nil, stop, err
 	}
@@ -294,7 +292,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 		concourse.Version, concourse.WorkerVersion, concourse.JetBridgeVersion, concourse.ConcourseVersion,
 		noop.Noop{}, creds.NewVarSourcePool(logger, creds.CredentialManagementConfig{}, time.Minute, time.Minute, clock.NewClock()), creds.Managers{},
 		containerserver.NewInterceptTimeoutFactory(time.Minute), time.Minute, db.NewWall(p.conn, &dbClock), clock.NewClock(),
-		db.NewSigningKeyFactory(p.conn), p.conn, services)
+		db.NewSigningKeyFactory(p.conn), p.conn, nil, services)
 }
 
 // runServices is atccmd's configureRunInputUploads, credentialHandoffConfig and

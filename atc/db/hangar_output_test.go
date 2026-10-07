@@ -74,28 +74,6 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		})
 	}
 
-	// A second generation of one correlation, recorded the way inventory
-	// records a marked orphan it found in the deployment's own bucket.
-	adopt := func(ref hangar.TreeRef) error {
-		GinkgoHelper()
-
-		tx, err := dbConn.Begin()
-		if err != nil {
-			return err
-		}
-		defer db.Rollback(tx)
-		outcome, err := repository.AdoptManagedOrphan(ctx, tx,
-			hangarAdoptionFor(ref, time.Now().Add(-30*24*time.Hour)))
-		if err != nil {
-			return err
-		}
-		if !outcome.Adopted() {
-			return fmt.Errorf("the orphan was not adopted: %s", outcome)
-		}
-
-		return tx.Commit()
-	}
-
 	countActiveClaims := func(ref hangar.TreeRef) int {
 		GinkgoHelper()
 		var count int
@@ -538,7 +516,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			Expect(repository.RecordRuntimeAtRisk(ctx, tx, 1, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+			Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 
 			// The refusal is DEFERRED: it fires at the commit, not at the
@@ -1149,12 +1127,12 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		})
 	})
 
-	Describe("adoption versus claimant", func() {
-		It("refuses to adopt a correlation an unresolved reservation still protects", func() {
+	Describe("a correlation an unresolved capture still protects", func() {
+		It("shows no consumer result in the gap before a generation is published", func() {
 			activate()
 
 			// A capture that has written its digest but not yet published a
-			// generation: exactly the gap inventory must not adopt into.
+			// generation.
 			hangarReserve(ctx, repository, hangarDigest(4), output.DefaultCaptureDeadline)
 
 			orphan := hangar.TreeRef{
@@ -1163,18 +1141,6 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Generation: 1725830823000004,
 			}
 
-			inventory, err := dbConn.Begin()
-			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(inventory)
-			outcome, err := repository.AdoptManagedOrphan(ctx, inventory,
-				hangarAdoptionFor(orphan, time.Now().Add(-30*24*time.Hour)))
-			Expect(err).To(MatchError(output.ErrConflict))
-			Expect(outcome).To(Equal(output.AdoptionProtectedByReservation))
-			Expect(err.Error()).To(ContainSubstring("unresolved reservation"))
-			Expect(inventory.Rollback()).To(Succeed())
-
-			// A claimant cannot see it either: no consumer result appears in
-			// the gap.
 			claimant, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(claimant)
@@ -1336,17 +1302,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// bytes, and a lock order that depends on how a number was spelled is
 			// not an order.
 			digest := hangarDigest(14)
-			// The first generation's capture is published under a deadline
-			// already past and its source released, because adoption of a
-			// SECOND generation at the same correlation waits for exactly that
-			// (Req 40): terminal disposition, source release, and the capture
-			// deadline plus the safety margin elapsed.
-			capture := hangarPublishAt(ctx, repository, digest, 9, output.DefaultCaptureDeadline)
-			hangarReleaseSource(ctx, repository, capture)
-			hangarAgeCapture(capture, 48*time.Hour)
-			a := capture.Ref
-			second := hangar.TreeRef{Scope: a.Scope, Digest: digest, Generation: 10}
-			Expect(adopt(second)).To(Succeed())
+			// Two captures of one tree that published two generations.
+			a := hangarPublishAt(ctx, repository, digest, 9, output.DefaultCaptureDeadline).Ref
+			second := hangarPublishAt(ctx, repository, digest, 10, output.DefaultCaptureDeadline).Ref
 
 			low, high := a, second
 

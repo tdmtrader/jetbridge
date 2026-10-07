@@ -63,13 +63,13 @@ type PrometheusEmitter struct {
 	// to ALERT when it goes fail-closed, and an alert is a rule over a series
 	// somebody is already scraping -- a status page nobody has open at three in
 	// the morning is the same as no status page.
+	hangarOutputEnabled        prometheus.Gauge
 	hangarOutputAtRisk         *prometheus.GaugeVec
 	hangarOutputViolations     *prometheus.GaugeVec
-	hangarOutputInventoryCycle *prometheus.GaugeVec
-	hangarOutputInventoryDebt  *prometheus.GaugeVec
-	hangarOutputDebtTruncated  prometheus.Gauge
-	hangarOutputLeaseRemaining *prometheus.GaugeVec
 	hangarOutputPlaneInventory *prometheus.GaugeVec
+	hangarOutputReclaimJobs    *prometheus.CounterVec
+	hangarOutputSweepObjects   *prometheus.GaugeVec
+	hangarOutputSweepPasses    prometheus.Counter
 	pipelineRunReclaimDuration prometheus.Histogram
 
 	checkBuildsAborted   prometheus.Counter
@@ -829,6 +829,15 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	prometheus.MustRegister(pipelineRunReclaimBacklog)
 
 	// Hangar output plane status.
+	hangarOutputEnabled := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   "concourse",
+		Subsystem:   "hangar_output",
+		Name:        "enabled",
+		Help:        "1 while the Hangar output plane is in service (hangar_enabled); admission refuses while it is 0",
+		ConstLabels: attributes,
+	})
+	prometheus.MustRegister(hangarOutputEnabled)
+
 	hangarOutputAtRisk := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "concourse",
 		Subsystem:   "hangar_output",
@@ -847,50 +856,41 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	}, []string{"violation"})
 	prometheus.MustRegister(hangarOutputViolations)
 
-	hangarOutputInventoryCycle := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace:   "concourse",
-		Subsystem:   "hangar_output",
-		Name:        "inventory_cycle",
-		Help:        "The output bucket sweep's cycle counter; a counter that stops moving is a sweep that stopped",
-		ConstLabels: attributes,
-	}, []string{"atCycleStart"})
-	prometheus.MustRegister(hangarOutputInventoryCycle)
-
-	hangarOutputInventoryDebt := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace:   "concourse",
-		Subsystem:   "hangar_output",
-		Name:        "inventory_debt",
-		Help:        "Unresolved inventory debt by reason: objects the sweep could not dispose of",
-		ConstLabels: attributes,
-	}, []string{"reason"})
-	prometheus.MustRegister(hangarOutputInventoryDebt)
-
-	hangarOutputDebtTruncated := prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   "concourse",
-		Subsystem:   "hangar_output",
-		Name:        "inventory_debt_truncated",
-		Help:        "1 when the debt backlog exceeded one status read's bound, which is itself the signal",
-		ConstLabels: attributes,
-	})
-	prometheus.MustRegister(hangarOutputDebtTruncated)
-
-	hangarOutputLeaseRemaining := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace:   "concourse",
-		Subsystem:   "hangar_output",
-		Name:        "operation_lease_remaining_seconds",
-		Help:        "Remaining term of each output-plane operation lease; -1 means no owner holds it at all",
-		ConstLabels: attributes,
-	}, []string{"kind"})
-	prometheus.MustRegister(hangarOutputLeaseRemaining)
-
 	hangarOutputPlaneInventory := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "concourse",
 		Subsystem:   "hangar_output",
 		Name:        "plane_inventory",
-		Help:        "What the Hangar output plane is holding: live generations, nonterminal captures, open claims, open read leases and unfinalized reclaim jobs",
+		Help:        "What the Hangar output plane is holding: live generations, captures by state, open claims, live read leases, unfinalized reclaim jobs, open integrity findings, and the residue a drain waits on",
 		ConstLabels: attributes,
 	}, []string{"kind"})
 	prometheus.MustRegister(hangarOutputPlaneInventory)
+
+	hangarOutputReclaimJobs := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "concourse",
+		Subsystem:   "hangar_output",
+		Name:        "reclaim_jobs_total",
+		Help:        "Reclaim jobs the web's reclaim pass admitted, finalized, or left open for its next pass",
+		ConstLabels: attributes,
+	}, []string{"outcome"})
+	prometheus.MustRegister(hangarOutputReclaimJobs)
+
+	hangarOutputSweepObjects := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   "concourse",
+		Subsystem:   "hangar_output",
+		Name:        "orphan_sweep_objects",
+		Help:        "Objects the last orphan sweep listed, by class: the orphans it deleted and every class it left alone",
+		ConstLabels: attributes,
+	}, []string{"class"})
+	prometheus.MustRegister(hangarOutputSweepObjects)
+
+	hangarOutputSweepPasses := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   "concourse",
+		Subsystem:   "hangar_output",
+		Name:        "orphan_sweep_passes_total",
+		Help:        "Completed orphan sweeps; a counter that stops moving is a sweep that stopped",
+		ConstLabels: attributes,
+	})
+	prometheus.MustRegister(hangarOutputSweepPasses)
 
 	// The reclaimer runs once a minute, so the buckets are tighter than the
 	// shared collector buckets: the question is whether a pass fits inside its
@@ -967,13 +967,13 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		gcVolumeCollectorDuration:                     gcVolumeCollectorDuration,
 		pipelineRunReclaimBacklog:                     pipelineRunReclaimBacklog,
 
+		hangarOutputEnabled:        hangarOutputEnabled,
 		hangarOutputAtRisk:         hangarOutputAtRisk,
 		hangarOutputViolations:     hangarOutputViolations,
-		hangarOutputInventoryCycle: hangarOutputInventoryCycle,
-		hangarOutputInventoryDebt:  hangarOutputInventoryDebt,
-		hangarOutputDebtTruncated:  hangarOutputDebtTruncated,
-		hangarOutputLeaseRemaining: hangarOutputLeaseRemaining,
 		hangarOutputPlaneInventory: hangarOutputPlaneInventory,
+		hangarOutputReclaimJobs:    hangarOutputReclaimJobs,
+		hangarOutputSweepObjects:   hangarOutputSweepObjects,
+		hangarOutputSweepPasses:    hangarOutputSweepPasses,
 		pipelineRunReclaimDuration: pipelineRunReclaimDuration,
 
 		buildDurationsVec: buildDurationsVec,
@@ -1155,17 +1155,16 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 	case "hangar output policy violations":
 		emitter.hangarOutputViolations.
 			WithLabelValues(event.Attributes["violation"]).Set(event.Value)
-	case "hangar output inventory cycle":
-		emitter.hangarOutputInventoryCycle.
-			WithLabelValues(event.Attributes["atCycleStart"]).Set(event.Value)
-	case "hangar output inventory debt":
-		emitter.hangarOutputInventoryDebt.
-			WithLabelValues(event.Attributes["reason"]).Set(event.Value)
-	case "hangar output inventory debt truncated":
-		emitter.hangarOutputDebtTruncated.Set(event.Value)
-	case "hangar output operation lease remaining":
-		emitter.hangarOutputLeaseRemaining.
-			WithLabelValues(event.Attributes["kind"]).Set(event.Value)
+	case "hangar output enabled":
+		emitter.hangarOutputEnabled.Set(event.Value)
+	case "hangar output reclaim jobs":
+		emitter.hangarOutputReclaimJobs.
+			WithLabelValues(event.Attributes["outcome"]).Add(event.Value)
+	case "hangar output orphan sweep objects":
+		emitter.hangarOutputSweepObjects.
+			WithLabelValues(event.Attributes["class"]).Set(event.Value)
+	case "hangar output orphan sweep passes":
+		emitter.hangarOutputSweepPasses.Add(event.Value)
 	case "hangar output plane inventory":
 		emitter.hangarOutputPlaneInventory.
 			WithLabelValues(event.Attributes["kind"]).Set(event.Value)

@@ -22,133 +22,6 @@ func hangarExecutionID(value string) executioncontrol.ExecutionID {
 	return executioncontrol.ExecutionID(value)
 }
 
-// AdoptManagedOrphan records the lifecycle of a marked, unregistered generation
-// that inventory found in the deployment's own bucket.
-//
-// It is the same lifecycle table registration writes, and it serializes on the
-// same exact-lifecycle lock, which is what makes adoption and a late receipt
-// registration one winner rather than two records of one generation -- the Req
-// 33 lifecycle boundary, stated once and taken here.
-//
-// The precondition is Req 40's, restated in code because a rule that lives only
-// in a test is a rule the next reader has to go looking for. EVERY correlated
-// logical reservation must be resolved or terminal; the capture deadline plus
-// the safety margin must have passed on the DATABASE clock; a terminal
-// disposition must be recorded; and the source must have been released. An
-// unresolved correlated reservation refuses adoption with a typed protected
-// outcome NO MATTER how much grace has passed -- grace reduces work and
-// provides recovery margin, and it is never the claim/reclaim mutex.
-//
-// What this writes is lifecycle state and nothing else. It never fabricates a
-// capture, a receipt or a binding: receipts are daemon-signed (Req 25) and
-// registration on retry belongs to the fenced capture owner (Req 40), while
-// the inventory principal that called this holds list and get and nothing more
-// (Req 54(b)).
-func (repository *HangarOutputRepository) AdoptManagedOrphan(ctx context.Context, tx output.Tx, request output.AdoptionRequest) (output.AdoptionOutcome, error) {
-	if err := request.Validate(); err != nil {
-		return "", err
-	}
-	ref := request.Ref
-
-	// An object marked by another epoch is not this epoch's to adopt. It is
-	// recorded and left completely alone: a lifecycle row under an epoch whose
-	// attestation does not cover the object would be this cohort claiming
-	// another's work, and relabelling it is what Req 45 forbids outright.
-	if request.Marker.ActivationEpoch != request.ActivationEpoch {
-		return output.AdoptionForeignEpoch, fmt.Errorf("%w: the object at generation %d is marked "+
-			"for activation epoch %d and this sweep runs under %d; it is recorded for diagnosis "+
-			"and never relabelled, adopted or deleted", output.ErrConflict, ref.Generation,
-			request.Marker.ActivationEpoch, request.ActivationEpoch)
-	}
-
-	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
-		Logical: []HangarLogicalKey{{Scope: ref.Scope, Digest: ref.Digest}},
-		Exact:   []hangar.TreeRef{ref},
-	}); err != nil {
-		return "", err
-	}
-
-	// Already ours. Adoption is for a generation with no lifecycle row, and an
-	// upsert here would quietly rewrite a REGISTERED row's origin.
-	var registered int
-	if err := hangarQueryRow(ctx, tx, `
-		SELECT count(*) FROM hangar_exact_lifecycles
-		WHERE scope = $1 AND digest = $2 AND generation = $3`,
-		[]any{string(ref.Scope), string(ref.Digest), ref.Generation}, &registered); err != nil {
-		return "", err
-	}
-	if registered > 0 {
-		return output.AdoptionAlreadyRegistered, nil
-	}
-
-	// The four correlated-capture counts, in one statement on the database's
-	// clock. They are counts and not a boolean because the refusal names which
-	// one stopped it, and an operator asking "why is this object still here"
-	// gets the answer rather than "not yet".
-	var unresolved, nonterminal, undeadlined, unsettled int
-	var graceElapsed bool
-	if err := hangarQueryRow(ctx, tx, `
-		SELECT
-			count(*) FILTER (WHERE c.state = 'publishing'),
-			count(*) FILTER (WHERE c.state IN ('pending', 'publishing')),
-			count(*) FILTER (WHERE c.capture_deadline_at + $3::interval > now()),
-			count(*) FILTER (WHERE c.released_at IS NULL),
-			$4::timestamptz <= now() - $5::interval
-		FROM hangar_captures c
-		WHERE c.scope = $1 AND c.digest = $2`,
-		[]any{
-			string(ref.Scope), string(ref.Digest),
-			hangarInterval(request.SafetyMargin),
-			request.CreatedAt.UTC(), hangarInterval(request.Grace),
-		},
-		&unresolved, &nonterminal, &undeadlined, &unsettled, &graceElapsed); err != nil {
-		return "", err
-	}
-
-	// The shield first, and unconditionally. Every other refusal below is a
-	// "not yet"; this one is "not while that capture is alive", and it holds
-	// however old the object is.
-	var pendingInputs int
-	if err := hangarQueryRow(ctx, tx, `SELECT count(*) FROM hangar_input_publications
-		WHERE scope=$1 AND digest=$2 AND lifecycle_id IS NULL AND expires_at > clock_timestamp()`,
-		[]any{string(ref.Scope), string(ref.Digest)}, &pendingInputs); err != nil {
-		return "", err
-	}
-	if pendingInputs > 0 {
-		return output.AdoptionProtectedByReservation, fmt.Errorf("%w: an input publication still correlates this object", output.ErrConflict)
-	}
-	if unresolved > 0 || nonterminal > 0 {
-		return output.AdoptionProtectedByReservation, fmt.Errorf("%w: %d unresolved reservation(s) "+
-			"and %d nonterminal capture(s) still correlate %s/%s; an unresolved reservation "+
-			"protects its correlation from adoption even before a generation is known, and "+
-			"however much grace has elapsed", output.ErrConflict, unresolved, nonterminal,
-			ref.Scope, ref.Digest)
-	}
-	if undeadlined > 0 {
-		return output.AdoptionBeforeCaptureDeadline, fmt.Errorf("%w: %d correlated capture(s) of "+
-			"%s/%s are within their capture deadline plus the %s safety margin on the database "+
-			"clock", output.ErrConflict, undeadlined, ref.Scope, ref.Digest, request.SafetyMargin)
-	}
-	if unsettled > 0 {
-		return output.AdoptionCaptureNotSettled, fmt.Errorf("%w: %d correlated capture(s) of "+
-			"%s/%s are decided and not settled; Req 40 wants the source released, not only the "+
-			"decision taken", output.ErrConflict, unsettled, ref.Scope, ref.Digest)
-	}
-	if !graceElapsed {
-		return output.AdoptionWithinPublicationGrace, fmt.Errorf("%w: the object at generation %d "+
-			"was created at %s and its %s publication grace has not elapsed on the database "+
-			"clock; adopting it would race the capture that created it", output.ErrConflict,
-			ref.Generation, request.CreatedAt.UTC().Format(time.RFC3339), request.Grace)
-	}
-
-	if _, err := repository.upsertLifecycle(ctx, tx, ref, request.Metageneration,
-		int64(request.ActivationEpoch), "adopted"); err != nil {
-		return "", err
-	}
-
-	return output.AdoptionAdopted, nil
-}
-
 func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, tx output.Tx, ref hangar.TreeRef, metageneration, epoch int64, origin string) (int64, error) {
 	if metageneration <= 0 {
 		return 0, fmt.Errorf("%w: no metageneration was observed for %s/%s/%d",
@@ -669,23 +542,10 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		return hangarConflict(err)
 	}
 
-	// The acceleration, and it is INSIDE the transaction on purpose.
-	//
-	// PostgreSQL delivers a NOTIFY issued in a transaction only when that
-	// transaction commits, so "after the transaction that created the work has
-	// committed" is what this already means -- a listener woken by an admission
-	// that rolled back would read a job that does not exist. Doing it out of
-	// band after the commit would be the same claim with a window in it.
-	//
-	// It is an acceleration and never the way work is found: the delete
-	// controller has a nonzero periodic wake, so a lost notification costs a
-	// minute rather than a job.
-	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_notify($1, '')`, output.NotifyChannel(output.OperationReclaimDelete),
-	); err != nil {
-		return hangarConflict(err)
-	}
-
+	// No notification: the web's reclaim pass admits and then deletes in one
+	// pass under one advisory lock, so the work it admits is the work it does
+	// next, and a job left over from a pass that stopped early is found by the
+	// next one.
 	return nil
 }
 

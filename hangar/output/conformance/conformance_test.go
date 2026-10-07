@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/inventory"
 	"github.com/concourse/concourse/hangar/output/publisher"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
@@ -421,39 +420,26 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 		seed(t, tier, "someone-elses-prefix/hangar/v1/scopes/x/trees/sha256/dead.tar.zst",
 			canonicalBytes("outside"), nil)
 
-		sweep, err := inventory.New(namespace, inventory.Restrict(gcstest.Record(tier.client)), output.ClockFunc(time.Now))
-		if err != nil {
-			t.Fatalf("building the inventory: %v", err)
-		}
-
-		cursor := output.InventoryCursor{
-			ProtocolVersion: output.ProtocolVersion,
-			ActivationEpoch: testEpoch,
-			CursorFence:     1,
-			UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
-		}
-		budget := output.DefaultPageBudget()
-		budget.MaxObjects = 2
-
 		var keys []string
 		passes := 0
+		request := objectstore.ListRequest{Prefix: namespace.ListPrefix(), PageSize: 2}
 		for pass := 0; pass < 5; pass++ {
 			passes++
-			page, err := sweep.ListPage(ctx, cursor, budget)
+			page, err := gcstest.Record(tier.client).List(ctx, tier.bucket, request)
 			if err != nil {
 				t.Fatalf("listing: %v", err)
 			}
 			for _, object := range page.Objects {
-				keys = append(keys, object.ObjectKey)
-				if !object.Managed {
-					t.Errorf("%s came back unmanaged; every object this sweep seeded is marked",
-						object.ObjectKey)
+				keys = append(keys, object.Key)
+				if _, err := output.ParseObjectMarker(object.Metadata); err != nil {
+					t.Errorf("%s came back unmarked (%v); every object this test seeded is marked",
+						object.Key, err)
 				}
 			}
-			if page.Next.AfterKey == "" {
+			if page.Done {
 				break
 			}
-			cursor = page.Next
+			request.After = page.LastKey
 		}
 
 		if len(keys) != 3 {
@@ -855,24 +841,6 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 		}
 		assertOnly(t, "publisher", publishRecorder,
 			objectstore.OpCreate, objectstore.OpStat, objectstore.OpRead)
-
-		inventoryRecorder := gcstest.Record(tier.client)
-		sweep, err := inventory.New(namespace, inventory.Restrict(inventoryRecorder), output.ClockFunc(time.Now))
-		if err != nil {
-			t.Fatalf("building the inventory: %v", err)
-		}
-		if _, err := sweep.ListPage(ctx, output.InventoryCursor{
-			ProtocolVersion: output.ProtocolVersion,
-			ActivationEpoch: testEpoch,
-			CursorFence:     1,
-			UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
-		}, output.DefaultPageBudget()); err != nil {
-			t.Fatalf("listing: %v", err)
-		}
-		if _, err := sweep.StatExactObject(ctx, object.Attributes.Ref); err != nil {
-			t.Fatalf("inventory stat: %v", err)
-		}
-		assertOnly(t, "inventory", inventoryRecorder, objectstore.OpList, objectstore.OpStat)
 
 		reclaimRecorder := gcstest.Record(tier.client)
 		sweeper, err := reclaimer.New(namespace,

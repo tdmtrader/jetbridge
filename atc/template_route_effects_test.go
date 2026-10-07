@@ -113,6 +113,8 @@ var templateRouteEffects = map[string][]string{
 		atc.HijackContainer,
 		atc.JobBadge,
 		atc.ListActiveUsersSince,
+		atc.GetHangarStatus,
+		atc.ResolveHangarFinding,
 		atc.ListAllJobs,
 		atc.ListAllPipelines,
 		atc.ListAllResources,

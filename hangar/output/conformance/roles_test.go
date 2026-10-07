@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/hangar/output/inventory"
 	"github.com/concourse/concourse/hangar/output/publisher"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 )
@@ -67,12 +66,6 @@ func TestEachRolesStoreInterfaceHasOnlyItsRolesMethods(t *testing.T) {
 			forbidden: []string{"DeleteExact", "List"},
 			because:   "publishers create and read without deletion or enumeration",
 		},
-		"inventory": {
-			prototype: (*inventory.Store)(nil),
-			want:      []string{"List", "StatExact"},
-			forbidden: []string{"CreateAbsent", "DeleteExact", "OpenExact"},
-			because:   "inventory inspects metadata without reading or changing bodies",
-		},
 		"reclaimer": {
 			prototype: (*reclaimer.Store)(nil),
 			want:      []string{"DeleteExact", "StatExact"},
@@ -96,13 +89,13 @@ func TestEachRolesStoreInterfaceHasOnlyItsRolesMethods(t *testing.T) {
 	}
 }
 
-// TestNoRolePackageIsImportedByTheOtherRoles keeps the three principals from
-// becoming one library with three entry points.
+// TestNoRolePackageIsImportedByTheOtherRoles keeps the two principals from
+// becoming one library with two entry points.
 func TestNoRolePackageIsImportedByTheOtherRoles(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..")
 
-	roles := []string{"publisher", "inventory", "reclaimer"}
+	roles := []string{"publisher", "reclaimer"}
 	fileSet := token.NewFileSet()
 
 	checked := 0
@@ -144,7 +137,7 @@ func TestNoRolePackageIsImportedByTheOtherRoles(t *testing.T) {
 			})
 		}
 	}
-	if checked < 4 {
+	if checked < 2 {
 		t.Fatalf("only %d role source files were scanned", checked)
 	}
 }

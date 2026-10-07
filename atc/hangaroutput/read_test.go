@@ -512,7 +512,7 @@ func recordAtRiskPolicy(t *testing.T, h *harness) {
 	}
 	defer db.Rollback(tx)
 
-	if err := h.Repository.RecordRuntimeAtRisk(context.Background(), tx, int64(harnessEpoch), output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"}); err != nil {
+	if err := h.Repository.RecordRuntimeAtRisk(context.Background(), tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"}); err != nil {
 		t.Fatalf("recording the runtime finding: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

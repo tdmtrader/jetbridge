@@ -251,6 +251,18 @@ type RunCommand struct {
 		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002); web never reaches the cache."`
 		InputBucket                        string        `long:"kubernetes-hangar-input-bucket"            description:"The strict-input bucket or disk namespace the artifact daemons publish trees into. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002)."`
 		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
+		OutputStore                        string        `long:"kubernetes-hangar-output-store" default:"gcs" choice:"gcs" choice:"disk" description:"The output namespace's store profile: gcs or disk. The web's reclaim pass and orphan sweep reach it; node daemons publish and never delete."`
+		OutputPrefix                       string        `long:"kubernetes-hangar-output-prefix"           description:"Deployment object-key prefix the output namespace hangs off. The orphan sweep lists under it; no caller chooses one."`
+		OutputEndpoint                     string        `long:"kubernetes-hangar-output-endpoint"         description:"Output store endpoint. Empty with the gcs store is real GCS with the web's ambient credential."`
+		OutputStoreID                      string        `long:"kubernetes-hangar-output-store-id"         description:"Expected disk store identity (disk store only)."`
+		OutputStoreCACert                  string        `long:"kubernetes-hangar-output-store-ca-cert"    description:"Disk store CA certificate (disk store only)."`
+		OutputListTokenFile                string        `long:"kubernetes-hangar-output-list-token-file"  description:"Disk store list-and-stat role credential the orphan sweep lists with (disk store only)."`
+		OutputDeleteTokenFile              string        `long:"kubernetes-hangar-output-delete-token-file" description:"Disk store stat-and-delete role credential the reclaim pass and orphan sweep delete with (disk store only). Only the web holds it."`
+		OutputPublicationGrace             time.Duration `long:"kubernetes-hangar-output-publication-grace" default:"192h" description:"Elapsed publication grace is one of reclaim admission's preconditions. Must exceed the maximum capture deadline by an hour."`
+		OutputReclaimInterval              time.Duration `long:"kubernetes-hangar-output-reclaim-interval" default:"1m" description:"How often the web's reclaim pass admits, deletes and finalizes."`
+		OutputReclaimBatch                 int           `long:"kubernetes-hangar-output-reclaim-batch" default:"10" description:"Generations one reclaim pass admits, and jobs it advances."`
+		OutputDeleteTimeout                time.Duration `long:"kubernetes-hangar-output-delete-timeout" default:"2m" description:"How long one conditional delete may take."`
+		OutputOrphanSweepInterval          time.Duration `long:"kubernetes-hangar-output-orphan-sweep-interval" default:"1h" description:"How often the orphan sweep lists the output namespace."`
 		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the output daemon output-timeout; read leases and transports cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
 		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
@@ -757,6 +769,13 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 	err = db.CacheWarmUp(backendConn)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.reconcileHangarEnabled(logger, backendConn); err != nil {
+		for _, conn := range []Closer{apiConn, backendConn, gcConn, workerConn} {
+			_ = conn.Close()
+		}
 		return nil, err
 	}
 
@@ -1364,6 +1383,11 @@ func (cmd *RunCommand) backendComponents(
 	components = append(components, k8sComponents...)
 
 	components = append(components, cmd.hangarOutputComponents(dbConn)...)
+	deletes, err := cmd.hangarOutputDeleteComponents(dbConn, lockFactory)
+	if err != nil {
+		return nil, err
+	}
+	components = append(components, deletes...)
 	components = append(components, cmd.runComponents(dbConn)...)
 
 	if syslogDrainConfigured {
@@ -2853,6 +2877,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		clock.NewClock(),
 		dbSigningKeyFactory,
 		dbConn,
+		cmd.hangarStatusSource(dbConn),
 		cmd.pipelineRunServices(dbConn, dbPipelineRunFactory, teamFactory),
 	)
 }
@@ -3066,45 +3091,23 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	return nil
 }
 
-// hangarOutputStatusComponent publishes the output plane's operational state.
+// hangarOutputStatusComponent publishes the output plane's operational state:
+// the in-service flag, the residue a drain waits on, and the open integrity
+// findings.
 //
-// Nil when the output facet is not configured, and that is the honest answer
-// rather than a component emitting zeroes: a deployment with no activation
-// epoch has no plane to describe, and a status surface reporting "0 live
-// generations, not at risk" about a plane that does not exist is worse than
-// silence -- it is an alert rule that will never fire looking exactly like
-// coverage.
-//
-// The interval is the plane's own one-minute fallback. Requirement 52 bounds
-// detection of a policy change at the 15-minute refresh, and a status pass a
-// minute behind that is fifteen times finer than the thing it reports on.
+// Nil when no output plane is configured, and that is the honest answer rather
+// than a component emitting zeroes: a status surface reporting "0 residue, not
+// at risk" about a plane that does not exist is an alert rule that will never
+// fire looking exactly like coverage.
 func (cmd *RunCommand) hangarOutputStatusComponent(dbConn db.DbConn) *RunnableComponent {
 	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
-		return nil
-	}
-
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
-		Store:           output.StoreGCS,
-		Bucket:          cmd.Kubernetes.OutputBucket,
-		TenantID:        cmd.Kubernetes.OutputTenant,
-		ActivationEpoch: executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
-	})
-	if err != nil {
-		// A misconfigured namespace is a startup problem this process reports
-		// elsewhere; a status component that guessed a bucket fingerprint would
-		// publish a cursor belonging to somebody else's sweep.
 		return nil
 	}
 
 	return &RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentHangarOutputStatus},
 		Runnable: &hangaroutput.StatusPublisher{
-			Reader: &hangaroutput.StatusReader{
-				Transactor: hangarOutputTransactor{conn: dbConn},
-				Repository: db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
-				Epoch:      cmd.Kubernetes.OutputActivationEpoch,
-				Bucket:     namespace.BucketFingerprint(),
-			},
+			Reader: cmd.hangarOutputStatusReader(dbConn),
 		},
 		Interval: time.Minute,
 	}

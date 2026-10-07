@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"context"
-	"github.com/concourse/concourse/atc/postgresrunner"
 	"strings"
 
 	"github.com/concourse/concourse/atc"
@@ -127,8 +126,8 @@ var _ = Describe("Run credential target worker image", func() {
 		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 1)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(load()).To(Succeed())
-		err = postgresrunner.ExecAsActivationRole(dbConn, `UPDATE hangar_output_activation_epochs SET output_state='disabled', base_state='disabled', revision=revision+1 WHERE epoch_id=1`)
+		_, err = db.SetHangarEnabled(ctx, dbConn, false)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(load()).To(MatchError(atc.ErrRunResultsUnavailable), "a disabled Hangar epoch stops new delivery")
+		Expect(load()).To(MatchError(atc.ErrRunResultsUnavailable), "an output plane out of service stops new delivery")
 	})
 })

@@ -26,6 +26,7 @@ const (
 	MarkerKeyDigest        = "hangar-output-digest"
 	MarkerKeyReservationID = "hangar-output-reservation-id"
 	MarkerKeyActivation    = "hangar-output-activation-epoch"
+	MarkerKeyStore         = "hangar-output-store"
 	MarkerKeyCreatedAt     = "hangar-output-created-at"
 )
 
@@ -52,12 +53,18 @@ type ObjectMarker struct {
 	Digest          hangar.Digest
 	ReservationID   ReservationID
 	ActivationEpoch executioncontrol.ActivationEpoch
-	CreatedAt       Timestamp
+
+	// Store names the store and namespace the object was created in (the
+	// output namespace's StoreIdentity). The orphan sweep deletes only an
+	// object whose marker names its own store: an object another deployment
+	// sharing the bucket created is counted and never touched.
+	Store     string
+	CreatedAt Timestamp
 }
 
 // Metadata renders the marker as object custom metadata.
 func (marker ObjectMarker) Metadata() map[string]string {
-	return map[string]string{
+	metadata := map[string]string{
 		MarkerKeyVersion:       marker.Version,
 		MarkerKeyScope:         string(marker.Scope),
 		MarkerKeyDigest:        string(marker.Digest),
@@ -65,6 +72,11 @@ func (marker ObjectMarker) Metadata() map[string]string {
 		MarkerKeyActivation:    strconv.FormatUint(uint64(marker.ActivationEpoch), 10),
 		MarkerKeyCreatedAt:     marker.CreatedAt.UTC().Format(markerCreatedAtLayout),
 	}
+	if marker.Store != "" {
+		metadata[MarkerKeyStore] = marker.Store
+	}
+
+	return metadata
 }
 
 // ParseObjectMarker reads ownership evidence off an object.
@@ -92,6 +104,7 @@ func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
 		Scope:         hangar.Scope(metadata[MarkerKeyScope]),
 		Digest:        hangar.Digest(metadata[MarkerKeyDigest]),
 		ReservationID: ReservationID(metadata[MarkerKeyReservationID]),
+		Store:         metadata[MarkerKeyStore],
 	}
 
 	epoch, err := strconv.ParseUint(metadata[MarkerKeyActivation], 10, 64)

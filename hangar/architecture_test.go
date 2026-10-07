@@ -125,8 +125,10 @@ func TestArchitectureHangarPackageIsALeaf(t *testing.T) {
 //
 // Two callers, each with the namespace it may delete in:
 //
-//   - the output reclaimer, over the output namespace, after the control plane
-//     admitted the exact generation;
+//   - the web's reclaim pass and orphan sweep (atc/hangaroutput/reclaim), over
+//     the output namespace: the reclaim pass after the control plane admitted
+//     the exact generation, the sweep only for an object marked for this store
+//     with no lifecycle row, both by exact generation;
 //   - the artifact daemon's fail-open cache tier (cmd/artifact-daemon/durable),
 //     over the cache namespace only. The cache is re-derivable and the daemon
 //     expires its own objects. It never holds delete over input or output:
@@ -149,8 +151,8 @@ var deleteConstructors = map[string][]string{
 // deleteConstructorCallers are the only production packages that may name a
 // delete constructor, and which ones each may name.
 var deleteConstructorCallers = map[string]allowedCaller{
-	"cmd/hangar-output-reclaimer": {
-		why: "the output reclaimer, over the output namespace",
+	"atc/hangaroutput/reclaim": {
+		why: "the web's reclaim pass and orphan sweep, over the output namespace",
 		may: []string{"hangar/gcs.NewDeleteClient", "hangar/disk.NewDeleteClient"},
 	},
 	"cmd/artifact-daemon/durable": {

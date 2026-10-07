@@ -53,13 +53,13 @@ func lockRunActivationMarker(ctx context.Context, tx Tx) (runActivationMarker, e
 	return marker, err
 }
 
-// lockEnabledHangarEpoch requires the Hangar epoch new capture or input work
-// speaks for to be enabled on both facets.
+// lockEnabledHangarEpoch requires an output plane to be configured (a nonzero
+// control-key epoch) and in service: hangar_enabled, taken FOR SHARE.
 func lockEnabledHangarEpoch(ctx context.Context, tx Tx, epoch int64) error {
 	if epoch <= 0 {
 		return atc.ErrRunResultsUnavailable
 	}
-	ready, err := hangarLockEnabledEpoch(ctx, tx, epoch)
+	ready, err := hangarLockEnabled(ctx, tx)
 	if err != nil {
 		return err
 	}

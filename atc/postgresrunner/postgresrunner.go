@@ -339,8 +339,8 @@ func (runner *Runner) Truncate() {
 // the spread has to be reapplied here as well as on the template.
 //
 // session_replication_role = replica skips ordinary triggers for this cleanup
-// session only, so the activation epochs' guard (only the activation database
-// role writes them) does not refuse a test resetting its own database.
+// session only, so the capture-row and Run-evidence guards (which refuse a
+// delete outside a team purge) do not refuse a test resetting its own database.
 const truncateSQL = `
 			SET client_min_messages TO WARNING;
 			SET session_replication_role = replica;

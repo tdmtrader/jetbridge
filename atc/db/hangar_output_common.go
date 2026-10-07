@@ -194,20 +194,6 @@ func (tx HangarOutputTx) Commit() error {
 	return HangarCommitError(tx.Tx.Commit())
 }
 
-// There are deliberately no channel-name constants and no notify helper here.
-//
-// There were four constants and a helper, none of them wired, and their names
-// were already a second spelling of the operation kinds they were about:
-// `hangar_output_reclaim` beside output.OperationReclaimDelete. Two spellings of
-// one thing is one of them drifting, and a producer notifying a channel nobody
-// listens on fails silently -- the work is still found by the periodic pass,
-// later, and nothing says the acceleration stopped working.
-//
-// The one spelling is output.NotifyChannel(kind), derived from the kind so it
-// cannot drift, and the notification is issued by the statement that creates
-// the work, inside its transaction: PostgreSQL delivers a NOTIFY only when the
-// transaction that issued it commits, which is exactly "after the work exists".
-
 // HangarOutputRepository is the PostgreSQL half of the Hangar output plane.
 //
 // Every method takes the caller's Tx and nothing that can commit. A consumer's

@@ -63,6 +63,26 @@ var _ = Describe("Hangar capture rows", func() {
 		ctx = context.Background()
 		repository = db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
 		key = output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Output: "result"}
+		hangarActivateEpoch(ctx, repository)
+	})
+
+	It("admits no new capture out of service, and still replays one admitted before", func() {
+		insert(key, time.Hour)
+		_, err := db.SetHangarEnabled(ctx, dbConn, false)
+		Expect(err).NotTo(HaveOccurred())
+
+		again := insert(key, time.Hour)
+		Expect(again.State).To(Equal(output.CapturePending), "a replay of an admitted insert is not new admission")
+
+		other := output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Output: "result"}
+		err = in(func(tx db.Tx) error {
+			_, err := repository.InsertPending(ctx, tx, output.PendingCapture{
+				Execution: executioncontrol.Identity{ExecutionID: other.ExecutionID, Fence: 1}, Output: other.Output,
+				Node: "node-a", NodeUID: "node-uid-a", Term: time.Hour,
+			})
+			return err
+		})
+		Expect(err).To(MatchError(output.ErrCaptureDisabled))
 	})
 
 	It("inserts a pending row once and replays the same facts", func() {

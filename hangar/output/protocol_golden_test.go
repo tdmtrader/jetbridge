@@ -157,8 +157,6 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"claim-release.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimRelease](t, raw) },
 	"read-lease.json":          func(t *testing.T, raw []byte) { roundTrip[ReadLease](t, raw) },
 	"delete-precondition.json": func(t *testing.T, raw []byte) { roundTrip[DeletePrecondition](t, raw) },
-	"inventory-cursor.json":    func(t *testing.T, raw []byte) { roundTrip[InventoryCursor](t, raw) },
-	"inventory-debt.json":      func(t *testing.T, raw []byte) { roundTrip[InventoryDebt](t, raw) },
 	"gcs-marker-metadata.json": roundTripMarker,
 
 	"capture-extension-handshake.json": func(t *testing.T, raw []byte) {
@@ -182,35 +180,8 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
 	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
 
-	"debt-reasons.json":                  assertClosedDebtReasons,
-
 	"refusal-unknown-marker-version.json":   refuseMarker,
 	"refusal-unmarked-object-metadata.json": refuseMarker,
-}
-
-func assertClosedEnum[T ~string](t *testing.T, raw []byte, got []T, name string) {
-	t.Helper()
-
-	want := decodeExact[[]T](t, raw)
-
-	if len(got) == 0 {
-		t.Fatalf("%s is empty; the closed vocabulary check would pass vacuously", name)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("%s has %d members, the frozen fixture has %d: %v vs %v", name, len(got), len(want), got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("%s member %d: have %q, frozen fixture says %q", name, i, got[i], want[i])
-		}
-	}
-	if !bytes.Equal(canonicalJSON(t, got), raw) {
-		t.Errorf("%s does not re-encode to the frozen fixture:\n%s", name, canonicalJSON(t, got))
-	}
-}
-
-func assertClosedDebtReasons(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, DebtReasons(), "DebtReasons()")
 }
 
 func TestProtocolGoldens(t *testing.T) {

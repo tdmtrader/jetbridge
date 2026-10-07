@@ -80,6 +80,8 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 	case atc.GetLogLevel,
 		atc.DestroyTeam,
 		atc.ListActiveUsersSince,
+		atc.GetHangarStatus,
+		atc.ResolveHangarFinding,
 		atc.SetLogLevel,
 		atc.GetInfoCreds,
 		atc.SetWall,

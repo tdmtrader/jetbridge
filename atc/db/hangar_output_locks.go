@@ -297,31 +297,27 @@ func sortedOpaque[T ~string](ids []T) []T {
 	return unique
 }
 
-// hangarLockEnabledEpoch belongs to the outer activation prefix, before any
-// consumer-domain or object-lifecycle lock. Keeping it beside the suffix locks
-// gives the guard one place to audit every Hangar row-lock acquisition.
-func hangarLockEnabledEpoch(ctx context.Context, tx output.Tx, epoch int64) (bool, error) {
-	base, capture, err := hangarLockEpochStates(ctx, tx, epoch)
-	return base == "enabled" && capture == "enabled", err
-}
-
-func hangarLockRecoverableEpoch(ctx context.Context, tx output.Tx, epoch int64) (bool, error) {
-	base, capture, err := hangarLockEpochStates(ctx, tx, epoch)
-	return (base == "enabled" || base == "draining") && (capture == "enabled" || capture == "draining"), err
-}
-
-func hangarLockEpochStates(ctx context.Context, tx output.Tx, epoch int64) (string, string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT base_state, output_state FROM hangar_output_activation_epochs WHERE epoch_id=$1 FOR SHARE`, epoch)
+// hangarLockEnabled is the in-service gate, taken FOR SHARE in the admitting
+// transaction. It belongs to the outer prefix, before any consumer-domain or
+// object-lifecycle lock; keeping it beside the suffix locks gives the guard one
+// place to audit every Hangar row-lock acquisition.
+//
+// FOR SHARE and not a plain read: the web's startup write that turns the
+// service off takes the row FOR UPDATE, so it waits for every admission already
+// holding the row and every admission after it sees the new value. Nothing is
+// admitted against a flag that moved underneath it.
+func hangarLockEnabled(ctx context.Context, tx output.Tx) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT enabled FROM hangar_enabled WHERE singleton FOR SHARE`)
 	if err != nil {
-		return "", "", err
+		return false, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return "", "", rows.Err()
+		return false, rows.Err()
 	}
-	var base, capture string
-	if err := rows.Scan(&base, &capture); err != nil {
-		return "", "", err
+	var enabled bool
+	if err := rows.Scan(&enabled); err != nil {
+		return false, err
 	}
-	return base, capture, rows.Err()
+	return enabled, rows.Err()
 }

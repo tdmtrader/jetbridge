@@ -78,18 +78,10 @@ import (
 var reachabilityTrees = []string{
 	"hangar/output",
 
-	// The controllers' composition. These packages exist BECAUSE four
+	// The web's deleting passes. Their predecessors existed BECAUSE four
 	// capabilities had no production caller, so they are the last place that
 	// should be allowed to grow a fifth.
-	// The activation surface. The enable step's ten typed preconditions
-	// shipped implemented, tested and called by nothing -- the third instance
-	// of this defect on this track -- because this tree was outside the rule
-	// while every other composition root was inside it.
-	"atc/hangaroutput/activation",
-
-	"atc/hangaroutput/inventorypass",
-	"atc/hangaroutput/reclaimpass",
-	"atc/hangaroutput/controller",
+	"atc/hangaroutput/reclaim",
 }
 
 // hangarSurfaceFiles are the atc/db files that make up the Hangar surface. The
@@ -126,14 +118,11 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// The consumer half: verifying a warrant, a receipt or a lease answer that
 	// this plane issued. This phase issues them and reads none of them back.
 
-	{name: "Rotate", pkg: "atc/hangaroutput/activation", why: rotationHasNoOperatorPath},
-
 	// The web-side answers to the deleted read-lease control protocol.
 	{name: "RenewReadLease", pkg: "atc/db", why: leaseControlDeleted},
 	{name: "ValidateReadLease", pkg: "atc/db", why: leaseControlDeleted},
 	{name: "ReadWarrantFor", pkg: "hangar/output", why: leaseControlDeleted},
 	{name: "ObserveExactAbsence", why: separateAbsenceStat},
-	{name: "Holds", why: runnerBeliefIsNotAuthority},
 
 	// The reclaim-admission violation gate is enforced by the schema, on the
 	// INSERT itself, so this read is not part of it: a Go copy of the rule
@@ -151,20 +140,9 @@ const (
 		"and this track ships no API that names one"
 	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
 		"does not return; Phase 8, with the activation verification"
-	rotationHasNoOperatorPath = "rotation is the only one of the five transitions with no " +
-		"operator path: the activation command has four modes and the chart's activation Job " +
-		"renders those four, so neither a receipt-key rotation nor an epoch handover can be " +
-		"asked for. Wiring it is a fifth mode, a second epoch flag and the Job name that " +
-		"carries both, and it belongs with the first rotation rather than ahead of the first " +
-		"activation: this plane ships dormant, and an epoch nobody has enabled has nothing to " +
-		"rotate off"
 	leaseControlDeleted = "the read-lease control protocol that asked this of the web is deleted: the node daemon verifies a read warrant against its own window and never calls the web. The row semantics this method pins stay specified until the read rows are rewritten with the capture row"
 	separateAbsenceStat = "the delete pass's own answer already reports absence; a separate " +
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
-	runnerBeliefIsNotAuthority = "Holds is read by the liveness specs and by the Phase 8 " +
-		"status surface; no running process decides anything from it, and a runner that " +
-		"decided from its own belief rather than from the lease would be the stale owner " +
-		"every fence in this plane exists to stop"
 )
 
 func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T) {
@@ -604,21 +582,15 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
 	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},
 
-	// The controller's lease port, which is how the three command roots reach
-	// the same implementation without linking atc/db's package name.
-	"ClaimOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
-	"RenewOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
+	// The web's deleting passes are components: the component runner calls
+	// Run through atc/component.Runnable.
+	"Run": {pkg: "atc/hangaroutput/reclaim", port: "atc/component.Runnable"},
 
 	// The operator status surface's read port. Its implementation is
 	// db.HangarOutputRepository, and atc/hangaroutput/status.go holds the port
 	// rather than the package -- which is the same shape every other entry here
 	// has, and the reason the reads below are reached without an atc/db import.
-	"CountOutputPlaneState":       {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
-	"ReadInventoryCursorProgress": {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
-	"HangarDatabaseNow":           {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
-	"ReadOperationLease":          {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
-	"ReadInventoryDebt":           {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
-	"OpenPolicyViolations":        {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"CountOutputPlaneState": {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
 
 	// A standard-library interface, and the one case where the port is not in
 	// this repository at all: encoding/json reaches these by reflection, so no

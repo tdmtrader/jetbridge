@@ -515,6 +515,46 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 	}, names(atccmd.HangarOutputComponentsForTest(activated, nil)))
 }
 
+// The web's two deleting passes -- reclaim and the orphan sweep -- register
+// wherever an output bucket is configured, in service or not: a drained plane
+// still finalizes its reclaim jobs. Nowhere else.
+func (s *CommandSuite) TestTheWebRunsTheReclaimPassAndTheOrphanSweepWhereAnOutputBucketIs() {
+	names := func(components []atccmd.RunnableComponent) []string {
+		var named []string
+		for _, component := range components {
+			named = append(named, component.Component.Name)
+		}
+		return named
+	}
+
+	off := &atccmd.RunCommand{}
+	none, err := atccmd.HangarOutputDeleteComponentsForTest(off)
+	s.NoError(err)
+	s.Empty(names(none))
+
+	configured := func(grace time.Duration) *atccmd.RunCommand {
+		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.OutputPlaneEnabled = true
+		cmd.Kubernetes.OutputActivationEpoch = 7
+		cmd.Kubernetes.OutputStore = "gcs"
+		cmd.Kubernetes.OutputEndpoint = "http://127.0.0.1:1"
+		cmd.Kubernetes.OutputBucket = "output-bucket"
+		cmd.Kubernetes.OutputPrefix = "deployment"
+		cmd.Kubernetes.OutputTenant = "tenant-a"
+		cmd.Kubernetes.OutputPublicationGrace = grace
+		cmd.Kubernetes.OutputCaptureDeadline = 24 * time.Hour
+		return cmd
+	}
+	components, err := atccmd.HangarOutputDeleteComponentsForTest(configured(192 * time.Hour))
+	s.Require().NoError(err)
+	s.ElementsMatch([]string{atc.ComponentHangarReclaim, atc.ComponentHangarOrphanSweep}, names(components))
+
+	// A publication grace that does not exceed the maximum capture deadline
+	// would let an object be reclaimed under a capture still retrying.
+	_, err = atccmd.HangarOutputDeleteComponentsForTest(configured(time.Hour))
+	s.ErrorContains(err, "publication-grace")
+}
+
 // A REQUIRED SECRET THAT NOTHING EVER OPENED.
 //
 // --kubernetes-hangar-output-warrant-key was refused when empty, compared

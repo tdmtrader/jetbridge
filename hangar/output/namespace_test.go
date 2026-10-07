@@ -131,7 +131,7 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 	}
 }
 
-func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantPerEpoch(t *testing.T) {
+func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantNotPerEpoch(t *testing.T) {
 	first, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("deriving: %v", err)
@@ -159,15 +159,18 @@ func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantPerEpoch(t *testing.T) {
 			"against another tenant's object")
 	}
 
+	// There is no rotation: the epoch is recorded in markers and never enters
+	// the scope, so a deployment that moves its control-key generation still
+	// publishes into, and reads from, the namespace it always had.
 	nextEpoch := validNamespaceConfig()
 	nextEpoch.ActivationEpoch = 8
-	rotated, err := DeriveNamespace(nextEpoch)
+	same, err := DeriveNamespace(nextEpoch)
 	if err != nil {
-		t.Fatalf("deriving for the next epoch: %v", err)
+		t.Fatalf("deriving under another epoch: %v", err)
 	}
-	if rotated.Scope() == first.Scope() {
-		t.Error("a rotation derived the same scope; the scope is derived from the active epoch " +
-			"as well as the tenant, so that a rotated key ring publishes into its own namespace")
+	if same.Scope() != first.Scope() {
+		t.Error("another epoch derived another scope; the scope is H(tenant, store) and " +
+			"nothing else, so published objects never strand in a scope nothing reads")
 	}
 
 	// Opaque means the tenant is not readable out of it. This is the property

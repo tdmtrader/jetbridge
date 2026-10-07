@@ -19,6 +19,7 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/containerserver"
+	"github.com/concourse/concourse/atc/api/hangarserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/creds"
@@ -187,6 +188,8 @@ type apiDBDeps struct {
 
 	wall              db.Wall
 	signingKeyFactory db.SigningKeyFactory
+
+	hangarStatus hangarserver.Source
 }
 
 // auditedAction is the action the accessor handler labels every request with.
@@ -295,6 +298,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		fakeClock,
 		deps.signingKeyFactory,
 		nil,
+		deps.hangarStatus,
 	)
 
 	Expect(err).NotTo(HaveOccurred())

@@ -122,6 +122,10 @@ func (publisher *Publisher) EnsurePublication(ctx context.Context, reservation o
 }
 
 func (publisher *Publisher) create(ctx context.Context, key string, reservation output.ObjectMarker, canonical io.Reader) (objectstore.Attrs, error) {
+	// The store is this publisher's, whatever the reservation said: it is the
+	// fact the orphan sweep deletes on, so it is stamped from the derived
+	// namespace and from nowhere else.
+	reservation.Store = publisher.namespace.StoreIdentity()
 	return publisher.store.CreateAbsent(ctx, publisher.namespace.Bucket(), key, reservation.Metadata(), canonical)
 }
 

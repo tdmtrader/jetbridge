@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/concourse/concourse/atc/postgresrunner"
 	"slices"
 	"strconv"
 	"time"
@@ -429,18 +428,18 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		Expect(closureClosed()).To(BeFalse())
 	})
 
-	It("closes, completes and reclaims a Run whose Hangar epoch was disabled by a rotation", func() {
+	It("closes, completes and reclaims a Run whose Hangar output plane was taken out of service", func() {
 		Expect(other.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		execution := abortOverOpenExecution()
 		finishExecution(build, execution)
-		err := postgresrunner.ExecAsActivationRole(dbConn, `UPDATE hangar_output_activation_epochs SET output_state='disabled', base_state='disabled', revision=revision+1 WHERE epoch_id=1`)
+		_, err := db.SetHangarEnabled(context.Background(), dbConn, false)
 		Expect(err).NotTo(HaveOccurred())
 
 		closurePass("worker")
 		closurePass("worker")
-		Expect(closureClosed()).To(BeTrue(), "a Hangar epoch rotation stranded the build closure")
+		Expect(closureClosed()).To(BeTrue(), "taking Hangar out of service stranded the build closure")
 		schedulerCaughtUp()
-		Expect(finalize()).To(BeTrue(), "a Hangar epoch rotation stranded ordinary completion")
+		Expect(finalize()).To(BeTrue(), "taking Hangar out of service stranded ordinary completion")
 		Expect(runStatus()).To(Equal(string(atc.RunStatusAborted)))
 
 		_, err = dbConn.Exec(`UPDATE pipelines SET run_retention_ttl_days=1 WHERE id=(SELECT template_pipeline_id FROM pipeline_runs WHERE id=$1)`, creation.Run.ID())

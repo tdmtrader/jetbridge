@@ -2,7 +2,6 @@ package runs_test
 
 import (
 	"context"
-	"github.com/concourse/concourse/atc/postgresrunner"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
@@ -14,21 +13,13 @@ import (
 const testEpoch int64 = 1
 
 // activateVersionedAdmission opens v2 admission on a fresh database the only
-// way it can be opened today: an enabled Hangar output epoch with a safe
-// bucket-policy attestation, and the durable Run activation marker admitting
+// way it can be opened today: the Hangar output plane in service, and the durable Run activation marker admitting
 // the same epoch. No supported route does this; it is the state an operator
 // would have to reach before any Run -- over HTTP or from run_pipeline -- can
 // be admitted, and nothing here fakes around it.
 func activateVersionedAdmission(conn db.DbConn) {
 	GinkgoHelper()
-	err := postgresrunner.ExecAsActivationRole(conn, `
-		INSERT INTO hangar_output_activation_epochs
-			(epoch_id, base_state, output_state, base_attestation, output_attestation,
-			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
-			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES ($1, 'enabled', 'enabled', '{}', '{}', 'receipt-key-1',
-			now() - interval '1 day', now() + interval '30 days',
-			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`, testEpoch)
+	_, err := db.SetHangarEnabled(context.Background(), conn, true)
 	Expect(err).NotTo(HaveOccurred())
 
 	_, err = conn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=true WHERE singleton`, testEpoch)

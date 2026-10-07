@@ -30,8 +30,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
-	"github.com/concourse/concourse/atc/hangaroutput/controller"
-	"github.com/concourse/concourse/atc/hangaroutput/reclaimpass"
+	"github.com/concourse/concourse/atc/hangaroutput/reclaim"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -474,13 +473,6 @@ func (source *injectingSource) Stat(ctx context.Context, request output.CaptureS
 	return result, source.dialer.after("stat", err)
 }
 
-// controllerTransactor adapts the connection to the reclaim pass's port.
-type controllerTransactor struct{ inner *connTransactor }
-
-func (transactor controllerTransactor) Begin() (controller.Transaction, error) {
-	return transactor.inner.Begin()
-}
-
 func assertPublishedAndReleased(t *testing.T, record output.Capture) hangar.TreeRef {
 	t.Helper()
 
@@ -650,21 +642,19 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 	h := newHarness(t)
 	ctx := context.Background()
 
-	pass := &reclaimpass.AdmissionPass{
+	pass := &reclaim.Pass{
 		Repository: h.Repository,
-		Transactor: controllerTransactor{inner: &connTransactor{conn: h.Conn}},
+		Transactor: &connTransactor{conn: h.Conn},
 		Grace:      time.Millisecond,
-		Term:       time.Minute,
 		OwnerID:    "harness-reclaimer",
 	}
-	lease := output.OperationLease{ActivationEpoch: harnessEpoch}
 	candidates := func() []db.HangarReclaimCandidate {
 		tx, err := h.Conn.Begin()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		found, err := h.Repository.ReclaimCandidates(ctx, tx, int64(harnessEpoch), time.Millisecond, 10)
+		found, err := h.Repository.ReclaimCandidates(ctx, tx, time.Millisecond, 10)
 		if err != nil {
 			t.Fatalf("reclaim candidates: %v", err)
 		}
@@ -709,7 +699,7 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 	if found := candidates(); len(found) != 0 {
 		t.Errorf("a generation a publishing capture is about to join is a reclaim candidate: %v", found)
 	}
-	if _, err := pass.Run(ctx, lease); err != nil {
+	if _, err := pass.Admit(ctx); err != nil {
 		t.Fatalf("the reclaim admission pass: %v", err)
 	}
 	if jobs := h.reclaimJobs(t); jobs != 0 {
@@ -724,7 +714,7 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 	if keys := h.bucketKeys(t); len(keys) != 1 {
 		t.Errorf("identical trees left %d objects: %v", len(keys), keys)
 	}
-	if _, err := pass.Run(ctx, lease); err != nil {
+	if _, err := pass.Admit(ctx); err != nil {
 		t.Fatalf("the reclaim admission pass: %v", err)
 	}
 	if jobs := h.reclaimJobs(t); jobs != 0 {

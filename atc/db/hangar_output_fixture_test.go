@@ -15,8 +15,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/concourse/concourse/atc/postgresrunner"
-
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,19 +25,12 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// One activation epoch. Storage policy configuration is operator-owned.
+// hangarActivateEpoch puts the output plane in service, as the web's startup
+// write does.
 func hangarActivateEpoch(ctx context.Context, repository *db.HangarOutputRepository) {
 	GinkgoHelper()
-	err := postgresrunner.ExecAsActivationRole(dbConn, `
-		INSERT INTO hangar_output_activation_epochs
-			(epoch_id, base_state, output_state, base_attestation, output_attestation,
-			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
-			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES (1, 'enabled', 'enabled', '{}', '{}', 'receipt-key-1',
-			now() - interval '1 day', now() + interval '30 days',
-			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`)
+	_, err := db.SetHangarEnabled(ctx, dbConn, true)
 	Expect(err).NotTo(HaveOccurred())
-
 }
 
 func hangarIdentity() executioncontrol.Identity {
@@ -225,29 +216,6 @@ func hangarAgeCapture(capture HangarCapture, by time.Duration) {
 		string(capture.Key.ExecutionID), string(capture.Key.Output), interval)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(result.RowsAffected()).To(BeEquivalentTo(1))
-}
-
-// hangarAdoptionFor is a well-formed adoption request for one found object: a
-// verified marker that describes it, the frozen grace and margin, and a
-// creation time the caller chooses so a spec can be on either side of grace.
-func hangarAdoptionFor(ref hangar.TreeRef, createdAt time.Time) output.AdoptionRequest {
-	return output.AdoptionRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		ActivationEpoch: 1,
-		Ref:             ref,
-		Metageneration:  1,
-		Marker: output.ObjectMarker{
-			Version:         output.MarkerVersion,
-			Scope:           ref.Scope,
-			Digest:          ref.Digest,
-			ReservationID:   output.ReservationID("77777777-7777-4777-8777-777777777777"),
-			ActivationEpoch: 1,
-			CreatedAt:       output.NewTimestamp(createdAt),
-		},
-		CreatedAt:    output.NewTimestamp(createdAt),
-		Grace:        output.DefaultPublicationGrace,
-		SafetyMargin: output.PublicationGraceMargin,
-	}
 }
 
 // hangarAgePublication moves a lifecycle row into the past on the database

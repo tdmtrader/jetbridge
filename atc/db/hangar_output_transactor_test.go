@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,7 +9,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -21,14 +19,14 @@ import (
 // arrive at COMMIT and nowhere earlier, as a bare driver error carrying a
 // SQLSTATE. A controller that read one of those as an ambiguous commit would
 // retry a DENIAL forever -- the policy gate is the obvious one: it does not
-// clear, so the retry does not end. controller.SQLTransactor exists to map
-// them, and the mapping lives in a struct field.
+// clear, so the retry does not end. db.HangarOutputTx exists to map them: it is
+// the transaction the web hands the capture coordinator and the reclaim pass.
 //
 // This is a real pool, a real deferred trigger and a real commit, because the
 // classifier is only interesting against the error a real driver actually
 // returns: a substring on the message could not tell a denial from a lost
 // answer, which is the whole reason the SQLSTATE is what gets read.
-var _ = Describe("the controller transactor", func() {
+var _ = Describe("the output-plane transaction", func() {
 	var (
 		ctx        context.Context
 		repository *db.HangarOutputRepository
@@ -51,7 +49,7 @@ var _ = Describe("the controller transactor", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		Expect(repository.RecordRuntimeAtRisk(ctx, tx, 1, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+		Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 	})
 
@@ -65,46 +63,10 @@ var _ = Describe("the controller transactor", func() {
 		})
 	}
 
-	// A real, reachable pool of its own, so that "it refused" cannot be
-	// confused with "it could not connect".
-	pool := func() *sql.DB {
-		GinkgoHelper()
-		conn := postgresRunner.OpenSingleton()
-		DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
-		Expect(conn.Ping()).To(Succeed())
-
-		return conn
-	}
-
-	// The field is nil-able and its absence used to be silent: Commit fell back
-	// to returning the raw error. A fourth controller is one forgotten field
-	// away from the exact bug Phase 6 found, and a wiring mistake is a
-	// programming error rather than a runtime condition, so it is refused where
-	// it is made rather than surfacing as untyped commits much later.
-	It("refuses to begin at all when it was wired without a commit classifier", func() {
-		transactor := controller.SQLTransactor{DB: pool()}
-
-		transaction, err := transactor.Begin()
-		Expect(transaction).To(BeNil())
-		Expect(err).To(MatchError(output.ErrIncomplete))
-		Expect(err.Error()).To(ContainSubstring("commit"))
-
-		// And the pool really was usable, so the refusal is the classifier's
-		// absence and not an unreachable database.
-		working := controller.SQLTransactor{DB: transactor.DB, CommitError: db.HangarCommitError}
-		usable, err := working.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(usable.Rollback()).To(Succeed())
-	})
-
 	It("types the deferred refusal a raw commit reports as a bare driver error", func() {
-		transactor := controller.SQLTransactor{
-			DB:          pool(),
-			CommitError: db.HangarCommitError,
-		}
-
-		transaction, err := transactor.Begin()
+		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
+		transaction := db.HangarOutputTx{Tx: tx}
 		defer func() { _ = transaction.Rollback() }()
 
 		Expect(claim(transaction)).To(Succeed(),

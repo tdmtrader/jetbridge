@@ -119,3 +119,17 @@ func (finding PolicyFinding) Validate() error {
 
 	return nil
 }
+
+// IntegrityFinding is one open finding as an operator reads it and resolves
+// it by id.
+type IntegrityFinding struct {
+	ID         int64
+	Violation  PolicyViolation
+	Subject    string
+	Detail     string
+	ObservedAt Timestamp
+
+	// BlocksAdmission is true for the runtime classes the admission trigger
+	// refuses on; the others are historical observations kept for the record.
+	BlocksAdmission bool
+}

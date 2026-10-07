@@ -701,39 +701,31 @@ func (event WorkersState) Emit(logger lager.Logger, m *Monitor) {
 //
 // Flat and closed-vocabulary: every map below carries EVERY member of its set
 // on every emission, including the zeroes. A gauge that appears only when it is
-// nonzero is one an alert cannot tell from a scrape that did not happen --
-// `... > 0` fires the same way on a missing series as on a healthy one, which
-// is to say not at all. That is the same defect the alert/metric drift guard
-// was written for, one layer down.
+// nonzero is one an alert cannot tell from a scrape that did not happen.
 type HangarOutputSnapshot struct {
-	// AtRisk is the fail-closed state, and Reasons is the comma-joined set of
-	// classes that put it there. The reasons are an ATTRIBUTE and not a series:
-	// they are for the operator reading the alert, and a label per class would
-	// make the at-risk gauge's cardinality the size of the violation
-	// vocabulary.
+	// Enabled is the in-service flag admission takes FOR SHARE.
+	Enabled bool
+
+	// AtRisk is true while an open integrity finding blocks admission, and
+	// Reasons is the comma-joined set of classes that put it there. The reasons
+	// are an ATTRIBUTE and not a series, so the gauge's cardinality is one.
 	AtRisk  bool
 	Reasons string
 
-	InventoryCycle        int64
-	InventoryAtCycleStart bool
-
 	Violations map[string]int
-	Debt       map[string]int
-
-	// DebtTruncated says the debt read hit its own limit, which is itself the
-	// signal: a backlog larger than the bound is one nothing is draining.
-	DebtTruncated bool
-
-	// LeaseRemainingSeconds is each operation kind's remaining lease term. A
-	// kind nobody holds is -1 rather than 0 or absent: zero reads as "expired
-	// right now" and absence reads as "not scraped".
-	LeaseRemainingSeconds map[string]float64
 
 	LiveGenerations        int
 	NonterminalCaptures    int
+	PendingCaptures        int
+	PublishingCaptures     int
+	UnreleasedCaptures     int
 	OpenClaims             int
 	OpenReadLeases         int
 	UnfinalizedReclaimJobs int
+	OpenIntegrityFindings  int
+
+	// Residue is what a drain waits on; zero with Enabled false is drained.
+	Residue int
 }
 
 // HangarOutputStatus is the event one status pass emits.
@@ -744,6 +736,10 @@ type HangarOutputStatus struct {
 func (event HangarOutputStatus) Emit(logger lager.Logger) {
 	session := logger.Session("hangar-output-status")
 
+	Metrics.emit(session, Event{
+		Name:  "hangar output enabled",
+		Value: boolValue(event.Status.Enabled),
+	})
 	Metrics.emit(session, Event{
 		Name:  "hangar output at risk",
 		Value: boolValue(event.Status.AtRisk),
@@ -758,37 +754,17 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 			Attributes: map[string]string{"violation": violation},
 		})
 	}
-	Metrics.emit(session, Event{
-		Name:  "hangar output inventory cycle",
-		Value: float64(event.Status.InventoryCycle),
-		Attributes: map[string]string{
-			"atCycleStart": boolAttribute(event.Status.InventoryAtCycleStart),
-		},
-	})
-	for reason, count := range event.Status.Debt {
-		Metrics.emit(session, Event{
-			Name:       "hangar output inventory debt",
-			Value:      float64(count),
-			Attributes: map[string]string{"reason": reason},
-		})
-	}
-	Metrics.emit(session, Event{
-		Name:  "hangar output inventory debt truncated",
-		Value: boolValue(event.Status.DebtTruncated),
-	})
-	for kind, remaining := range event.Status.LeaseRemainingSeconds {
-		Metrics.emit(session, Event{
-			Name:       "hangar output operation lease remaining",
-			Value:      remaining,
-			Attributes: map[string]string{"kind": kind},
-		})
-	}
 	for name, value := range map[string]int{
 		"live_generations":         event.Status.LiveGenerations,
 		"nonterminal_captures":     event.Status.NonterminalCaptures,
+		"pending_captures":         event.Status.PendingCaptures,
+		"publishing_captures":      event.Status.PublishingCaptures,
+		"unreleased_captures":      event.Status.UnreleasedCaptures,
 		"open_claims":              event.Status.OpenClaims,
 		"open_read_leases":         event.Status.OpenReadLeases,
 		"unfinalized_reclaim_jobs": event.Status.UnfinalizedReclaimJobs,
+		"open_integrity_findings":  event.Status.OpenIntegrityFindings,
+		"residue":                  event.Status.Residue,
 	} {
 		Metrics.emit(session, Event{
 			Name:       "hangar output plane inventory",
@@ -796,6 +772,52 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 			Attributes: map[string]string{"kind": name},
 		})
 	}
+}
+
+// HangarOutputReclaimPass is what one web reclaim pass did: generations it
+// admitted, jobs it finalized, and jobs it left open for the next pass.
+type HangarOutputReclaimPass struct {
+	Admitted  int
+	Finalized int
+	Open      int
+}
+
+func (event HangarOutputReclaimPass) Emit(logger lager.Logger) {
+	session := logger.Session("hangar-output-reclaim")
+
+	for outcome, value := range map[string]int{
+		"admitted":  event.Admitted,
+		"finalized": event.Finalized,
+		"open":      event.Open,
+	} {
+		Metrics.emit(session, Event{
+			Name:       "hangar output reclaim jobs",
+			Value:      float64(value),
+			Attributes: map[string]string{"outcome": outcome},
+		})
+	}
+}
+
+// HangarOutputOrphanSweep is one orphan sweep's count of listed objects per
+// class: the one it deleted and every class it left alone.
+type HangarOutputOrphanSweep struct {
+	Objects map[string]int
+}
+
+func (event HangarOutputOrphanSweep) Emit(logger lager.Logger) {
+	session := logger.Session("hangar-output-orphan-sweep")
+
+	for class, value := range event.Objects {
+		Metrics.emit(session, Event{
+			Name:       "hangar output orphan sweep objects",
+			Value:      float64(value),
+			Attributes: map[string]string{"class": class},
+		})
+	}
+	Metrics.emit(session, Event{
+		Name:  "hangar output orphan sweep passes",
+		Value: 1,
+	})
 }
 
 func boolValue(value bool) float64 {

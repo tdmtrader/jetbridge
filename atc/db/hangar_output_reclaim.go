@@ -455,20 +455,11 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 			"already terminal", output.ErrConflict, ref.Scope, ref.Digest, ref.Generation)
 	}
 
-	// And the epoch, because Req 52 says an unexpected exact absence enters
-	// durable at-risk state and blocks new admissions from detection onward.
-	// Moving one lifecycle row and stopping -- which is what this did -- says
-	// one object is gone while the plane carries on publishing into a bucket
-	// something else is deleting from.
-	var epoch int64
-	if err := hangarQueryRow(ctx, tx, `
-		SELECT activation_epoch FROM hangar_exact_lifecycles
-		 WHERE scope = $1 AND digest = $2 AND generation = $3`,
-		[]any{string(ref.Scope), string(ref.Digest), ref.Generation}, &epoch); err != nil {
-		return err
-	}
-
-	return repository.RecordRuntimeAtRisk(ctx, tx, epoch, output.PolicyFinding{
+	// And the plane, because an unexpected exact absence enters durable
+	// at-risk state and blocks new admissions from detection onward. Moving
+	// one lifecycle row and stopping says one object is gone while the plane
+	// carries on publishing into a bucket something else is deleting from.
+	return repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{
 		Violation: output.ViolationOutOfBandAbsence,
 		Subject:   fmt.Sprintf("%s/%s/%d", ref.Scope, ref.Digest, ref.Generation),
 		Detail: "the exact generation is absent from the output bucket and no admitted delete " +
@@ -485,12 +476,12 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 // principal that is not the one the deployment configured. Either way the plane
 // is not the plane that was attested, and carrying on admitting work under an
 // identity that has just been refused is exactly the state Req 52 stops.
-func (repository *HangarOutputRepository) RecordRuntimePrincipalDenial(ctx context.Context, tx output.Tx, epoch int64, role output.PrincipalRole, detail string) error {
+func (repository *HangarOutputRepository) RecordRuntimePrincipalDenial(ctx context.Context, tx output.Tx, role output.PrincipalRole, detail string) error {
 	if err := role.Validate(); err != nil {
 		return err
 	}
 
-	return repository.RecordRuntimeAtRisk(ctx, tx, epoch, output.PolicyFinding{
+	return repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{
 		Violation: output.ViolationRuntimePrincipalDenied,
 		Subject:   string(role),
 		Detail:    detail,
@@ -583,7 +574,7 @@ type HangarReclaimCandidate struct {
 // for an `adopted` row adoption itself already required grace to have elapsed
 // since the object was created. Both directions are therefore conservative: the
 // wait is never shorter than grace measured from creation.
-func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context, tx output.Tx, epoch int64, grace time.Duration, limit int) ([]HangarReclaimCandidate, error) {
+func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context, tx output.Tx, grace time.Duration, limit int) ([]HangarReclaimCandidate, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("%w: a reclaim admission pass is bounded; %d is not a batch",
 			output.ErrIncomplete, limit)
@@ -596,9 +587,8 @@ func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context,
 	rows, err := tx.QueryContext(ctx, `
 		SELECT l.scope, l.digest, l.generation, l.metageneration, l.registered_at
 		  FROM hangar_exact_lifecycles l
-		 WHERE l.activation_epoch = $1
-		   AND l.state IN ('registered', 'adopted')
-		   AND l.registered_at <= now() - $2::interval
+		 WHERE l.state IN ('registered', 'adopted')
+		   AND l.registered_at <= now() - $1::interval
 		   AND NOT EXISTS (
 		       SELECT 1 FROM hangar_claims c
 		        WHERE c.lifecycle_id = l.id AND c.released_at IS NULL)
@@ -612,8 +602,12 @@ func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context,
 		   AND NOT EXISTS (
 		       SELECT 1 FROM hangar_reclaim_jobs j
 		        WHERE j.lifecycle_id = l.id AND j.finalized_at IS NULL)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM hangar_input_publications i
+		        WHERE i.scope = l.scope AND i.digest = l.digest
+		          AND i.lifecycle_id IS NULL AND i.expires_at > clock_timestamp())
 		 ORDER BY l.registered_at, l.id
-		 LIMIT $3`, epoch, hangarInterval(grace), limit)
+		 LIMIT $2`, hangarInterval(grace), limit)
 	if err != nil {
 		return nil, hangarConflict(err)
 	}
@@ -638,77 +632,4 @@ func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context,
 	}
 
 	return candidates, nil
-}
-
-// LifetimeAuditCandidates is the absence reconciliation's bounded work query:
-// the generations this plane believes exist, least recently confirmed first.
-//
-// It is the other half of Req 52's "unexpected exact absence". The inventory
-// sweep classifies objects it SEES; nothing in a listing can report an object
-// that is not there, so a registered generation that somebody else's lifecycle
-// rule removed is invisible to it forever. This asks the opposite question --
-// of the objects this plane says exist, which ones does the store not have --
-// and it is the only question whose answer can be an out-of-band violation.
-func (repository *HangarOutputRepository) LifetimeAuditCandidates(ctx context.Context, tx output.Tx, epoch int64, limit int) ([]hangar.TreeRef, error) {
-	if limit <= 0 {
-		return nil, fmt.Errorf("%w: a lifetime audit is bounded; %d is not a batch",
-			output.ErrIncomplete, limit)
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT l.scope, l.digest, l.generation
-		  FROM hangar_exact_lifecycles l
-		 WHERE l.activation_epoch = $1
-		   AND l.state IN ('registered', 'adopted')
-		 ORDER BY coalesce(l.lifetime_audited_at, l.registered_at), l.id
-		 LIMIT $2`, epoch, limit)
-	if err != nil {
-		return nil, hangarConflict(err)
-	}
-	defer Close(rows)
-
-	var refs []hangar.TreeRef
-	for rows.Next() {
-		var ref hangar.TreeRef
-		var scope, digest string
-		if err := rows.Scan(&scope, &digest, &ref.Generation); err != nil {
-			return nil, err
-		}
-		ref.Scope = hangar.Scope(scope)
-		ref.Digest = hangar.Digest(digest)
-		refs = append(refs, ref)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, hangarConflict(err)
-	}
-
-	return refs, nil
-}
-
-// RecordLifetimePresence stamps a generation the audit statted and found.
-//
-// Presence is recorded and not only absence, because the audit has to make
-// progress: a pass that stamped nothing would re-stat the same oldest rows every
-// wake and never reach the rest of the bucket. It writes no state, because
-// finding an object where this plane said it was is not news.
-func (repository *HangarOutputRepository) RecordLifetimePresence(ctx context.Context, tx output.Tx, ref hangar.TreeRef) error {
-	if err := ref.Validate(); err != nil {
-		return err
-	}
-	// The exact class, named rather than taken by the UPDATE below: see
-	// RecordFirstObjectCreate for why an unnamed single-class lock is still a
-	// lock this order has to be able to see.
-	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
-		Exact: []hangar.TreeRef{ref},
-	}); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE hangar_exact_lifecycles SET lifetime_audited_at = now()
-		 WHERE scope = $1 AND digest = $2 AND generation = $3`,
-		string(ref.Scope), string(ref.Digest), ref.Generation); err != nil {
-		return hangarConflict(err)
-	}
-
-	return nil
 }

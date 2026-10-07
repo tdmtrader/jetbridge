@@ -33,6 +33,8 @@ type Client interface {
 	GetWall() (atc.Wall, error)
 	SetWall(atc.Wall) error
 	ClearWall() error
+	HangarStatus() (atc.HangarStatus, error)
+	ResolveHangarFinding(id int64) error
 }
 
 type client struct {

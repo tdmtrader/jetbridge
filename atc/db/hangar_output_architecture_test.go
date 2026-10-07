@@ -1200,21 +1200,21 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 // not, is the inversion. That is exactly the shape of the blocker this rule was
 // written for, and it reddens against it.
 
-// hangarTableClass includes the outer activation prefix (0), followed by the
+// hangarTableClass includes the outer in-service prefix (0), followed by the
 // three object-lifecycle suffix classes: the correlation (capture rows and input
 // publications), the exact lifecycle, and the rows subordinate to it (claims and
-// read leases). Activation must precede every suffix.
+// read leases). The in-service row must precede every suffix.
 //
 // It is checked against LockHangarSuffix's own statements below rather than
 // trusted, so a fifth class, or a table moving between classes, cannot leave
 // this list quietly stale.
 var hangarTableClass = map[string]int{
-	"hangar_output_activation_epochs": 0,
-	"hangar_input_publications":       1,
-	"hangar_captures":                 1,
-	"hangar_exact_lifecycles":         2,
-	"hangar_claims":                   3,
-	"hangar_read_leases":              3,
+	"hangar_enabled":            0,
+	"hangar_input_publications": 1,
+	"hangar_captures":           1,
+	"hangar_exact_lifecycles":   2,
+	"hangar_claims":             3,
+	"hangar_read_leases":        3,
 }
 
 // hangarRequestFieldClass maps a HangarLockRequest field to the class it names.
@@ -1391,7 +1391,7 @@ func hangarAcquisitionsByFunction(t *testing.T, roots ...string) map[string][]ha
 						return true
 					}
 					// Explicit locks inside the sole helper declare their own
-					// classes. This includes the activation prefix, which has
+					// classes. This includes the in-service prefix, which has
 					// no object-lifecycle HangarLockRequest field.
 					if file.Relative == hangarLockHelper && hangarLocksARow(value) {
 						for table, class := range hangarTableClass {

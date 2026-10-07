@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
 	"github.com/concourse/concourse/atc/metric"
@@ -55,59 +54,33 @@ func (publisher *StatusPublisher) Run(ctx context.Context) error {
 // statusEvent flattens one read into the shape the emitter publishes.
 //
 // The flattening is here rather than in atc/metric because the vocabulary is
-// this plane's: a violation class, a debt reason and an operation kind are
-// closed sets declared in hangar/output, and atc/metric having opinions about
-// them would be a second place they are enumerated.
+// this plane's: a violation class is a closed set declared in hangar/output,
+// and atc/metric having opinions about it would be a second place it is
+// enumerated.
 func statusEvent(status Status) metric.HangarOutputSnapshot {
 	snapshot := metric.HangarOutputSnapshot{
+		Enabled:                status.Enabled,
 		AtRisk:                 status.AtRisk,
 		Reasons:                strings.Join(status.Why, ","),
-		InventoryCycle:         status.Cycle,
-		InventoryAtCycleStart:  status.AtCycleStart,
-		DebtTruncated:          status.DebtTruncated,
 		LiveGenerations:        status.Counts.LiveGenerations,
 		NonterminalCaptures:    status.Counts.NonterminalCaptures,
+		PendingCaptures:        status.Counts.PendingCaptures,
+		PublishingCaptures:     status.Counts.PublishingCaptures,
+		UnreleasedCaptures:     status.Counts.UnreleasedCaptures,
 		OpenClaims:             status.Counts.OpenClaims,
 		OpenReadLeases:         status.Counts.OpenReadLeases,
 		UnfinalizedReclaimJobs: status.Counts.UnfinalizedReclaimJobs,
+		OpenIntegrityFindings:  status.Counts.OpenIntegrityFindings,
+		Residue:                status.Counts.Residue(),
 		Violations:             map[string]int{},
-		Debt:                   map[string]int{},
-		LeaseRemainingSeconds:  map[string]float64{},
 	}
 
-	// Every member of every closed vocabulary, including the zeroes. A gauge
+	// Every member of the closed vocabulary, including the zeroes. A gauge
 	// that only appears when it is nonzero is one an alert cannot distinguish
-	// from a scrape that did not happen: `hangar_output_policy_violations > 0`
-	// fires the same way on a missing series as on a healthy one, which is to
-	// say not at all.
+	// from a scrape that did not happen.
 	for _, violation := range output.PolicyViolations() {
 		snapshot.Violations[string(violation)] = status.Violations[violation]
-	}
-	for _, reason := range output.DebtReasons() {
-		snapshot.Debt[string(reason)] = status.Debt[reason]
-	}
-	// OwnedOperationKinds and NOT OperationKinds. The vocabulary is nine; the
-	// kinds a deployed workload takes a lease for are four. Emitting -1 for the
-	// other five made HangarOutputOperationLeaseUnheld fire five permanent
-	// warnings ten minutes after a clean install of a healthy plane, each
-	// saying "its controller is not running" about a controller that does not
-	// exist -- which is the shape of alert an operator silences, taking the
-	// four real ones with it. See leaseowners.go for the five and why.
-	for _, kind := range OwnedOperationKinds() {
-		remaining, held := status.Leases[kind]
-		if !held {
-			// A kind whose owner holds nothing is reported as a negative term
-			// rather than as zero or as an absent series: zero would read as
-			// "expired right now" and absence would read as "not scraped". -1
-			// is neither, and the alert rule that cares says so.
-			snapshot.LeaseRemainingSeconds[string(kind)] = -1
-
-			continue
-		}
-		snapshot.LeaseRemainingSeconds[string(kind)] = remaining.Seconds()
 	}
 
 	return snapshot
 }
-
-var _ = lager.Logger(nil)

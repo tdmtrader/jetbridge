@@ -6,21 +6,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/inventory"
 	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
-// A marked object with no lifecycle row is an orphan, and telling it apart from
-// the three things it is not is the whole content of Req 40's classification.
-//
-// This is Go rather than a scenario for the reason the plan gives: the
-// precondition is elapsed publication grace, and Req 39 forbids configuring
-// grace below the maximum capture deadline plus an hour -- so no runnable chain
-// can reach the state without waiting, and a suite that waited would be a suite
-// that hangs. Here the clock is a parameter.
+// A marked object is one this store created, and the orphan sweep's whole
+// decision rests on reading that off a listing: the marker comes back with
+// List, and it names the store the publisher wrote it into. An object with no
+// lifecycle row is an orphan only if that store is this one.
 
-func TestAMarkedUnregisteredObjectIsAnOrphanAndNotAMiss(t *testing.T) {
+func TestAListedObjectCarriesItsMarkerAndItsStore(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
 		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
@@ -34,32 +30,32 @@ func TestAMarkedUnregisteredObjectIsAnOrphanAndNotAMiss(t *testing.T) {
 			t.Fatalf("publishing: %v", err)
 		}
 
-		sweep, err := inventory.New(namespace, inventory.Restrict(tier.client), output.ClockFunc(time.Now))
-		if err != nil {
-			t.Fatalf("building the inventory: %v", err)
-		}
-
-		page, err := sweep.ListPage(ctx, output.InventoryCursor{
-			ProtocolVersion: output.ProtocolVersion,
-			ActivationEpoch: testEpoch,
-			CursorFence:     1,
-			UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
-		}, output.DefaultPageBudget())
+		page, err := tier.client.List(ctx, tier.bucket, objectstore.ListRequest{
+			Prefix: namespace.ListPrefix(), PageSize: 100,
+		})
 		if err != nil {
 			t.Fatalf("listing: %v", err)
 		}
 
-		var found output.InventoryObject
-		for _, candidate := range page.Objects {
+		var found *objectstore.Attrs
+		for i, candidate := range page.Objects {
 			if candidate.Generation == object.Attributes.Ref.Generation {
-				found = candidate
+				found = &page.Objects[i]
 			}
 		}
-		if found.ObjectKey == "" {
-			t.Fatalf("the sweep did not find the object it just published: %v", page.Objects)
+		if found == nil {
+			t.Fatalf("the listing did not return the object just published: %v", page.Objects)
 		}
-		if !found.Managed {
-			t.Fatal("a marked object came back unmanaged")
+		marker, err := output.ParseObjectMarker(found.Metadata)
+		if err != nil {
+			t.Fatalf("a published object listed without a readable marker: %v", err)
+		}
+		if marker.Store != namespace.StoreIdentity() {
+			t.Errorf("the marker names store %q, and the publisher wrote it into %q",
+				marker.Store, namespace.StoreIdentity())
+		}
+		if found.Created.IsZero() {
+			t.Error("a listed object has no creation time; the sweep's age threshold has nothing to compare")
 		}
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/api/configserver"
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/idtokenserver"
+	"github.com/concourse/concourse/atc/api/hangarserver"
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/loglevelserver"
@@ -83,6 +84,7 @@ func NewHandler(
 	clock clock.Clock,
 	dbSigningKeyFactory db.SigningKeyFactory,
 	dbPinger infoserver.DBPinger,
+	hangarStatus hangarserver.Source,
 	runServices ...pipelinerunserver.Services,
 ) (http.Handler, error) {
 
@@ -117,6 +119,7 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
+	hangarServer := hangarserver.NewServer(logger, hangarStatus)
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}
@@ -246,6 +249,9 @@ func NewHandler(
 		atc.GetWall:   http.HandlerFunc(wallServer.GetWall),
 		atc.SetWall:   http.HandlerFunc(wallServer.SetWall),
 		atc.ClearWall: http.HandlerFunc(wallServer.ClearWall),
+
+		atc.GetHangarStatus:      http.HandlerFunc(hangarServer.GetStatus),
+		atc.ResolveHangarFinding: http.HandlerFunc(hangarServer.ResolveFinding),
 
 		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
 		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),

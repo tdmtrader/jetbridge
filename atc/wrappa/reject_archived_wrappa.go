@@ -108,6 +108,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SetLogLevel,
 			atc.GetInfoCreds,
 			atc.ListActiveUsersSince,
+			atc.GetHangarStatus,
+			atc.ResolveHangarFinding,
 			atc.SetWall,
 			atc.ClearWall,
 			atc.DeletePipeline,

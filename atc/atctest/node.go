@@ -10,7 +10,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -31,7 +30,6 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
-	"github.com/concourse/concourse/atc/hangaroutput/activation"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -93,7 +91,7 @@ type node struct {
 	refused func(runID int) bool
 }
 
-func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
+func startNode(conn db.DbConn) (n *node, err error) {
 	dir, err := os.MkdirTemp("", "atctest-node-")
 	if err != nil {
 		return nil, err
@@ -184,7 +182,7 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 		return n, fmt.Errorf("%w\n%s", err, logged.String())
 	}
 	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.minter, Epoch).OnNode(n.uid)
-	if err = n.activate(activator); err != nil {
+	if err = n.activate(conn); err != nil {
 		return n, err
 	}
 	return n, nil
@@ -216,54 +214,13 @@ func (n *node) awaitReady(logs *lockedWriter) error {
 	return errors.New("the artifact daemon's output plane never became ready")
 }
 
-// activate brings the epoch into service through the activation protocol's
-// own transitions, attesting this node's real handshakes as the cohort. It
-// writes as the activation commands do: logged in as the activation
-// database role, the only role that may write the activation epochs.
-func (n *node) activate(conn *sql.DB) error {
+// activate puts the output plane in service: the hangar_enabled row admission
+// takes FOR SHARE, as the web's startup write does.
+func (n *node) activate(conn db.DbConn) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	epochs := activation.Epochs{DB: conn}
-	if err := epochs.Begin(ctx, Epoch); err != nil {
-		return err
-	}
-	cohort := cohort{n}
-	base, err := activation.AttestBase(ctx, cohort, cohort, Epoch)
-	if err != nil {
-		return err
-	}
-	if err := epochs.Attest(ctx, Epoch, activation.FacetBase, base); err != nil {
-		return err
-	}
-	if _, err := epochs.EnableStep(ctx, Epoch, activation.FacetBase, true); err != nil {
-		return err
-	}
-	out, err := activation.AttestOutput(ctx, cohort, cohort, Epoch)
-	if err != nil {
-		return err
-	}
-	if err := epochs.Attest(ctx, Epoch, activation.FacetOutput, out); err != nil {
-		return err
-	}
-	_, err = epochs.EnableStep(ctx, Epoch, activation.FacetOutput, true)
+	_, err := db.SetHangarEnabled(ctx, conn, true)
 	return err
-}
-
-// cohort is the one-node cohort, and asks the node's own handshake routes.
-type cohort struct{ n *node }
-
-func (c cohort) Members(context.Context) ([]activation.Member, error) {
-	return []activation.Member{{Node: nodeName, Address: strings.TrimPrefix(c.n.endpoint, "https://")}}, nil
-}
-
-func (c cohort) Base(ctx context.Context, _ activation.Member) (executioncontrol.Handshake, error) {
-	var handshake executioncontrol.Handshake
-	return handshake, c.n.get(ctx, "/handshake", &handshake)
-}
-
-func (c cohort) Extension(ctx context.Context, _ activation.Member) (output.ExtensionHandshake, error) {
-	var handshake output.ExtensionHandshake
-	return handshake, c.n.get(ctx, "/capture/v1/handshake", &handshake)
 }
 
 func (n *node) get(ctx context.Context, path string, into any) error {

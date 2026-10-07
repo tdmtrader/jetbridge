@@ -2,7 +2,6 @@ package output
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -15,7 +14,7 @@ import (
 //
 // Requirement 20 is a rule about *who decides*: the bucket, the object-key
 // prefix and the opaque scope come only from authenticated deployment and
-// tenant configuration plus the active activation epoch. A task, a domain
+// tenant configuration plus the store they live in. A task, a domain
 // consumer, a path parameter or a receipt cannot select or broaden any of
 // them. This file is that rule as a pure function, which is the only shape in
 // which it can be checked exhaustively -- the daemon's request handling is
@@ -27,7 +26,11 @@ const (
 	// scopeDomain separates the opaque scope derivation from every other hash
 	// in this system. Without it, two derivations over the same tenant string
 	// would agree by accident.
-	scopeDomain = "hangar-output-scope-v1"
+	//
+	// v2: the scope is H(domain, tenant, store). There is no epoch in it, so
+	// nothing a deployment does to its configuration moves published objects
+	// into a scope nothing reads.
+	scopeDomain = "hangar-output-scope-v2"
 
 	StoreGCS  = "gcs"
 	StoreDisk = "disk"
@@ -76,10 +79,10 @@ type NamespaceConfig struct {
 	// deployment that believes it has isolation must be told it does not.
 	SharedBucketPrefixOnlyIsolation bool
 
-	// ActivationEpoch is the active epoch. It participates in the scope
-	// derivation, so a rotation publishes into a new scope; the deployment
-	// prefix deliberately does not carry it, so one bucket-wide list under the
-	// prefix still finds every epoch's objects.
+	// ActivationEpoch is the control-key generation the deployment's
+	// capabilities are minted under. It is recorded in each object's marker
+	// and does NOT participate in the scope: the scope is a function of the
+	// tenant and the store alone.
 	ActivationEpoch executioncontrol.ActivationEpoch
 }
 
@@ -141,35 +144,36 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 		return OutputNamespace{}, fmt.Errorf("%w: no active activation epoch", ErrIncomplete)
 	}
 
-	tenant := config.TenantID
 	storeID := ""
 	if config.Store == StoreDisk {
 		storeID = config.StoreID
-		tenant = "disk\x00" + storeID + "\x00" + config.Bucket + "\x00" + tenant
 	}
-	return OutputNamespace{
+	namespace := OutputNamespace{
 		storeID: storeID,
 		bucket:  config.Bucket,
 		prefix:  config.DeploymentPrefix,
-		scope:   deriveScope(tenant, config.ActivationEpoch),
 		epoch:   config.ActivationEpoch,
-	}, nil
+	}
+	namespace.scope = deriveScope(config.TenantID, namespace.StoreIdentity())
+	return namespace, nil
 }
 
 // deriveScope is the opaque half.
 //
 // The scope is a name for a namespace, not a description of one: nothing about
 // the tenant is readable from it, which is what makes it safe to write into an
-// object key that inventory lists and a receipt carries.
-func deriveScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.Scope {
+// object key that a listing returns.
+//
+// H(domain, tenant, store): the store identity is the disk store id and
+// namespace, or the GCS bucket, so one tenant in two stores is two scopes and
+// a scope never names a store it was not derived for.
+func deriveScope(tenant, store string) hangar.Scope {
 	digest := sha256.New()
 	digest.Write([]byte(scopeDomain))
 	digest.Write([]byte{0})
 	digest.Write([]byte(tenant))
 	digest.Write([]byte{0})
-	var encoded [8]byte
-	binary.BigEndian.PutUint64(encoded[:], uint64(epoch))
-	digest.Write(encoded[:])
+	digest.Write([]byte(store))
 
 	// A leading letter, because hangar.Scope requires a lowercase alphanumeric
 	// first character and a hex string can start with a digit -- which would
@@ -198,13 +202,19 @@ func (namespace OutputNamespace) BucketFingerprint() string {
 
 func (namespace OutputNamespace) Bucket() string { return namespace.bucket }
 
+// StoreIdentity names the store and namespace this output plane writes into:
+// the bucket fingerprint. It is stamped into every object's marker, and the
+// orphan sweep deletes only objects whose marker names it.
+func (namespace OutputNamespace) StoreIdentity() string { return namespace.BucketFingerprint() }
+
 // Prefix is the authenticated deployment prefix.
 func (namespace OutputNamespace) Prefix() string { return namespace.prefix }
 
 // Scope is the derived opaque scope.
 func (namespace OutputNamespace) Scope() hangar.Scope { return namespace.scope }
 
-// ActivationEpoch is the epoch this namespace was derived under.
+// ActivationEpoch is the control-key generation this namespace records in
+// its markers.
 func (namespace OutputNamespace) ActivationEpoch() executioncontrol.ActivationEpoch {
 	return namespace.epoch
 }
@@ -229,9 +239,9 @@ func (namespace OutputNamespace) ObjectKey(digest hangar.Digest) (string, error)
 
 // ListPrefix is the bucket-wide prefix inventory sweeps under.
 //
-// It stops at the deployment prefix rather than descending into the scope,
-// because a rotation derives a new scope and an inventory that swept only the
-// current one would call every previous epoch's object an unmanaged stranger.
+// It stops at the deployment prefix rather than descending into the scope, so
+// the orphan sweep sees every object under the prefix -- including ones some
+// other scope or store wrote -- and can count what it leaves alone.
 func (namespace OutputNamespace) ListPrefix() string {
 	if namespace.prefix == "" {
 		return "hangar/v1/scopes/"
@@ -282,8 +292,8 @@ func (request CallerNamespaceRequest) Validate() error {
 		}
 
 		return fmt.Errorf("%w: the request names a %s (%q). The output bucket, prefix and opaque "+
-			"scope are server-derived from authenticated deployment configuration and the active "+
-			"epoch; a request that could name one could publish into another tenant's namespace "+
+			"scope are server-derived from authenticated deployment configuration and the "+
+			"store; a request that could name one could publish into another tenant's namespace "+
 			"or read one", ErrUnauthorized, chosen.field, chosen.value)
 	}
 
@@ -303,6 +313,7 @@ func (namespace OutputNamespace) MarkerFor(reservation ReservationID, digest han
 		Digest:          digest,
 		ReservationID:   reservation,
 		ActivationEpoch: namespace.epoch,
+		Store:           namespace.StoreIdentity(),
 		CreatedAt:       createdAt,
 	}
 }

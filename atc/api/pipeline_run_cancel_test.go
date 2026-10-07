@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/concourse/concourse/atc/postgresrunner"
 	"net/http"
 	"strconv"
 
@@ -110,14 +109,7 @@ func (displayName) DisplayUserId(_, _, username, _, _ string) string { return "d
 func createV2Run(database *realDB, template db.Pipeline) db.PipelineRun {
 	GinkgoHelper()
 	ctx := context.Background()
-	err := postgresrunner.ExecAsActivationRole(database.Conn, `
-		INSERT INTO hangar_output_activation_epochs
-			(epoch_id, base_state, output_state, base_attestation, output_attestation,
-			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
-			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES (1, 'enabled', 'enabled', '{}', '{}', 'receipt-key-1',
-			now() - interval '1 day', now() + interval '30 days',
-			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`)
+	_, err := db.SetHangarEnabled(ctx, database.Conn, true)
 	Expect(err).NotTo(HaveOccurred())
 	_, err = database.Conn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
 	Expect(err).NotTo(HaveOccurred())

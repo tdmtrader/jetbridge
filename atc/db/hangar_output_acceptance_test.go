@@ -20,8 +20,6 @@ package db_test
 //     uses a blocking holder and a NOWAIT probe because the obvious form --
 //     two goroutines and "neither deadlocked" -- passed with the sorting
 //     removed.
-//   - Cursor and debt recovery: hangar_output_inventory_test.go:206-310 and
-//     hangar_output_controller_pass_test.go:470.
 //   - Policy at-risk stopping each of the five admissions:
 //     hangar_output_policy_test.go:118-190 and hangar_output_test.go:544.
 //
@@ -38,19 +36,14 @@ package db_test
 //     staged between legs: whatever `CASPublishingToPublished` committed is what
 //     `AcquireClaim` is given, whatever that committed is what `AcquireReadLease`
 //     is given, and so on to `FinalizeReclaim`.
-//  2. The terminal downgrade refusal over state the PRODUCTION capture path
-//     produced. `atc/hangaroutput/downgrade_test.go` proves the predicate, and
-//     says plainly why it seeds `hangar_exact_lifecycles` directly rather than
-//     reconstructing the chain. That is the right call there and it leaves
-//     exactly one thing unasserted: that the rows a real capture writes are the
-//     rows the drain predicate counts. A predicate that missed a class would
-//     look identical in that suite and would silently permit a downgrade that
-//     strands live objects.
+//  2. The drain's residue count over state the PRODUCTION capture path
+//     produced: that the rows a real capture writes are the rows the count
+//     sees. A count that missed a class would silently permit removing a
+//     daemon that strands live objects.
 
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,7 +51,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput/activation"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -329,14 +321,21 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		Expect(tx.Rollback()).To(Succeed())
 	})
 
-	It("refuses a terminal downgrade on state the production capture path produced, and accepts it once nothing is left", func() {
-		// A second handle on the same test database, because `activation.Epochs`
-		// takes a *sql.DB and this suite's `dbConn` is a db.DbConn. It is the
-		// same database and the same rows; what differs is the API.
-		// The activation database role: only it may move the epoch.
-		conn := postgresRunner.ActivationRoleDB()
-		DeferCleanup(func() { Expect(conn.Close()).To(Succeed()) })
-		epochs := activation.Epochs{DB: conn}
+	It("counts the residue the production capture path leaves, and reaches zero once it is released and reclaimed", func() {
+		// The drain is: take the plane out of service, then wait for the
+		// residue count to reach zero. This asserts that the rows a real
+		// capture-and-claim writes are the rows that count sees: a class the
+		// count forgot would let a daemon be removed under live work.
+		residue := func() output.PlaneCounts {
+			GinkgoHelper()
+			var counts output.PlaneCounts
+			in(func(tx db.HangarOutputTx) {
+				var err error
+				counts, err = repository.CountOutputPlaneState(ctx, tx)
+				Expect(err).NotTo(HaveOccurred())
+			})
+			return counts
+		}
 
 		digest := hangarDigest(92)
 		capture := hangarPublishAt(ctx, repository, digest, 1725830823000092,
@@ -354,45 +353,13 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			})).To(Succeed())
 		})
 
-		// The whole step, not its pieces: emission stops first and the
-		// predicate then counts what is left. `--finalize` is what turns a
-		// report into a refusal, and it is asked for here because a report is
-		// not an assertion about whether a downgrade would be allowed.
-		outcome, err := epochs.DrainStep(ctx, acceptanceEpoch, activation.FacetOutput, true)
-		Expect(err).To(MatchError(activation.ErrDrainRefused))
-		Expect(errors.Is(err, output.ErrConflict)).To(BeTrue(),
-			"a drain refusal is a lifecycle conflict, not an infrastructure failure")
-		Expect(outcome.Drained).To(BeTrue(),
-			"emission must stop before the predicate counts, so the set it counts cannot grow")
-		Expect(outcome.Disabled).To(BeFalse())
+		counts := residue()
+		Expect(counts.LiveGenerations).To(Equal(1))
+		Expect(counts.OpenClaims).To(Equal(1))
+		Expect(counts.UnreleasedCaptures).To(Equal(1),
+			"a published capture whose step marker the node has not released is residue")
+		Expect(counts.Residue()).To(BeNumerically(">", 0))
 
-		residue := outcome.Residue
-
-		// The classes a real capture-and-claim produces. Named exactly rather
-		// than "at least one", because the whole point of this spec is that the
-		// predicate sees what the production path writes: a class the predicate
-		// forgot is invisible to a "len(residue) > 0" assertion.
-		classes := map[string]int{}
-		for _, one := range residue {
-			classes[one.Class] = one.Count
-		}
-		Expect(classes).To(HaveKeyWithValue("live exact generations", 1))
-		Expect(classes).To(HaveKeyWithValue("active claims", 1))
-
-		// The refusal names the classes rather than a count: an operator who
-		// cannot act on a refusal will work around it.
-		Expect(err.Error()).To(ContainSubstring("live exact generations"))
-		Expect(err.Error()).To(ContainSubstring("active claims"))
-
-		// And the facet is left DRAINING, not rolled back: stopping emission is
-		// unconditionally right, and it is what keeps the counted set stable.
-		state, err := epochs.Read(ctx, acceptanceEpoch)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(state.Output).To(Equal("draining"))
-
-		// Releases and settlement continue while draining -- that is the state
-		// a deployment may legitimately sit in -- so the plane can be brought
-		// down the supported way.
 		in(func(tx db.HangarOutputTx) {
 			Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
 				ProtocolVersion: output.ProtocolVersion,
@@ -405,10 +372,6 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		hangarAgeCapture(capture, 48*time.Hour)
 		hangarAgePublication(capture.Ref, hangarGraceElapsed)
 
-		// Already-admitted delete work may FINISH while draining. It is the one
-		// mutation a draining facet still performs, and a downgrade that could
-		// not finish it would strand the object it had already decided to
-		// delete.
 		var job db.HangarReclaimJob
 		in(func(tx db.HangarOutputTx) {
 			Expect(repository.AdmitReclaim(ctx, tx, capture.Ref, uuid.NewString(), 1,
@@ -420,16 +383,9 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		// Mid-reclaim the facet is MORE blocked, not less: the job is admitted
-		// and unfinalized, which is an object whose disposition is unknown.
-		outcome, err = epochs.DrainStep(ctx, acceptanceEpoch, activation.FacetOutput, false)
-		Expect(err).NotTo(HaveOccurred(),
-			"without --finalize a facet that still holds state is a report, not a failure")
-		classes = map[string]int{}
-		for _, one := range outcome.Residue {
-			classes[one.Class] = one.Count
-		}
-		Expect(classes).To(HaveKeyWithValue("unfinalized reclaim jobs", 1))
+		// Mid-reclaim the residue is an unfinalized job: an object whose
+		// disposition is unknown.
+		Expect(residue().UnfinalizedReclaimJobs).To(Equal(1))
 
 		var attempt int64
 		in(func(tx db.HangarOutputTx) {
@@ -444,31 +400,10 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 				To(Succeed())
 		})
 
-		outcome, err = epochs.DrainStep(ctx, acceptanceEpoch, activation.FacetOutput, true)
-		Expect(err).NotTo(HaveOccurred(),
-			"after the last generation reclaimed and the last claim released, the output "+
-				"facet still refused: %v", outcome.Residue)
-		Expect(outcome.Residue).To(BeEmpty())
-		Expect(outcome.Disabled).To(BeTrue(),
-			"the refusal above must be a refusal and not an inability")
-
-		state, err = epochs.Read(ctx, acceptanceEpoch)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(state.Output).To(Equal("disabled"))
-
-		// And the base facet follows only AFTERWARDS. This asserts the ordering
-		// by taking it: base could not be drained while output was in service
-		// (`TestTheBaseFacetCannotBeDrainedWhileOutputIsInService` pins the
-		// refusal), and now that output is terminal it can. A line that merely
-		// read `state.Base != "disabled"` here would have been unfalsifiable --
-		// nothing in this spec had touched the base facet at all.
-		Expect(state.Base).To(Equal("enabled"))
-		baseOutcome, err := epochs.DrainStep(ctx, acceptanceEpoch, activation.FacetBase, true)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(baseOutcome.Disabled).To(BeTrue())
-
-		state, err = epochs.Read(ctx, acceptanceEpoch)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(state.Base).To(Equal("disabled"))
+		counts = residue()
+		Expect(counts.Residue()).To(BeZero(),
+			"after the last generation reclaimed and the last claim released, residue remains: %+v",
+			counts)
+		Expect(counts.LiveGenerations).To(BeZero())
 	})
 })

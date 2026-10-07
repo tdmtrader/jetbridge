@@ -32,6 +32,7 @@ package hangaroutput_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -170,18 +171,12 @@ func newHarness(t *testing.T) *harness {
 	}
 }
 
-// activate opens the plane. Without an enabled epoch nothing admits anything,
-// which is the held state the migration leaves behind.
+// activate puts the plane in service, as the web's startup write does. Out of
+// service, InsertPending admits no new capture.
 func activate(t *testing.T, conn db.DbConn) {
 	t.Helper()
 
-	if err := postgresrunner.ExecAsActivationRole(conn, `
-		INSERT INTO hangar_output_activation_epochs
-			(epoch_id, base_state, output_state, base_attestation, output_attestation,
-			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES ($1, 'enabled', 'enabled', '{}', '{}',
-			'materialize-key-1', 'gs://harness-output', 'harness/one')`,
-		int64(harnessEpoch)); err != nil {
+	if _, err := db.SetHangarEnabled(context.Background(), conn, true); err != nil {
 		t.Fatalf("activating: %v", err)
 	}
 }

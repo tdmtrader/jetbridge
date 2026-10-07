@@ -61,13 +61,6 @@ const (
 	LeaseTermMargin  = 5 * time.Minute
 	LeaseStartMargin = 2 * time.Minute
 
-	// The bounds on one inventory pass. Every one of them is a stop condition,
-	// not a target: a pass that hits any of them commits its per-object
-	// dispositions and stops without advancing further.
-	MaxInventoryPageObjects       = 100
-	MaxInventoryPageMetadataBytes = 8 << 20
-	MaxInventoryPassDuration      = 30 * time.Second
-
 	// WorkerFallbackInterval is the slowest acceptable periodic wake for every
 	// worker in this plane. NOTIFY accelerates work; it is never the only way
 	// work is found, because component.Runner with a zero interval wakes only

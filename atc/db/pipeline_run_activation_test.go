@@ -40,10 +40,10 @@ var _ = Describe("Run activation reconciliation", func() {
 		Expect(enabled).To(BeFalse())
 	})
 
-	It("does not need any Hangar epoch to admit", func() {
-		var hangarEpochs int
-		Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_output_activation_epochs`).Scan(&hangarEpochs)).To(Succeed())
-		Expect(hangarEpochs).To(BeZero())
+	It("does not need the Hangar output plane in service to admit", func() {
+		var hangarEnabled bool
+		Expect(dbConn.QueryRow(`SELECT enabled FROM hangar_enabled`).Scan(&hangarEnabled)).To(Succeed())
+		Expect(hangarEnabled).To(BeFalse())
 
 		_, err := db.ReconcilePipelineRunActivation(ctx, dbConn, 1)
 		Expect(err).NotTo(HaveOccurred())

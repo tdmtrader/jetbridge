@@ -121,6 +121,8 @@ var auditCategories = map[string][]string{
 		atc.GetHealth,
 		atc.GetInfoCreds,
 		atc.ListActiveUsersSince,
+		atc.GetHangarStatus,
+		atc.ResolveHangarFinding,
 		atc.GetUser,
 		atc.GetWall,
 		atc.SetWall,

@@ -272,7 +272,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			// stops new admission from detection onward and lets
 			// already-admitted conditional delete work finish.
 			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordRuntimeAtRisk(ctx, tx, 1, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+				Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 			})
 
 			// New admission stops. The generation it would be admitted for is

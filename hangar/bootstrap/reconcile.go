@@ -46,9 +46,6 @@ const (
 	// KindRing is the public node-control verification ring composed from
 	// every KindEd25519 entry: control-keys.json.
 	KindRing Kind = "ring"
-	// KindDatabaseCredential is created by the database step, not here; the
-	// sync-start reconcile only checks its place in the inventory.
-	KindDatabaseCredential Kind = "dsn"
 )
 
 // RingName says which ring an Ed25519 key's public half joins.
@@ -141,9 +138,6 @@ func Reconcile(ctx context.Context, inventory Inventory, store SecretStore, log 
 
 	existing := map[string]Secret{}
 	for _, entry := range inventory.Entries {
-		if entry.Kind == KindDatabaseCredential {
-			continue
-		}
 		secret, found, err := store.Get(ctx, entry.Name)
 		if err != nil {
 			return fmt.Errorf("get Secret %q: %w", entry.Name, err)
@@ -207,7 +201,7 @@ func (inventory Inventory) validate() error {
 			if entry.CA == "" {
 				return fmt.Errorf("leaf %q names no CA", entry.Name)
 			}
-		case KindStoreTokens, KindCA, KindTLSBundle, KindDatabaseCredential:
+		case KindStoreTokens, KindCA, KindTLSBundle:
 		default:
 			return fmt.Errorf("%q has unknown kind %q", entry.Name, entry.Kind)
 		}
@@ -261,7 +255,7 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 	for _, entry := range inventory.Entries {
 		secret, found := existing[entry.Name]
 		switch {
-		case entry.Kind == KindDatabaseCredential || entry.Kind == KindCA:
+		case entry.Kind == KindCA:
 			continue
 		case !found && entry.Required:
 			refuse(entry, "is absent; an earlier activation epoch's key is never created again, because a new one would verify nothing that epoch signed")
@@ -351,7 +345,7 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 
 	rank := map[Kind]int{KindCA: 0, KindTLSBundle: 1, KindTLSServer: 1, KindTLSClient: 1, KindRandomKey: 2, KindEd25519: 2, KindStoreTokens: 2, KindRing: 3}
 	for _, entry := range inventory.Entries {
-		if _, found := existing[entry.Name]; found || entry.Kind == KindDatabaseCredential {
+		if _, found := existing[entry.Name]; found {
 			continue
 		}
 		plan.order = append(plan.order, entry)

@@ -70,7 +70,6 @@ func inventory() bootstrap.Inventory {
 			{Name: "output-ca", Kind: bootstrap.KindCA, CommonName: "output plane"},
 			{Name: "materialize-key", Kind: bootstrap.KindRandomKey, Key: "materialize.key"},
 			{Name: "rings", Kind: bootstrap.KindRing, ActiveEpoch: 1},
-			{Name: "activation-dsn", Kind: bootstrap.KindDatabaseCredential},
 		},
 	}
 }
@@ -90,9 +89,6 @@ func TestAFreshInventoryIsCreatedOnceInDependencyOrder(t *testing.T) {
 	store := newMemoryStore()
 	if _, err := reconcile(t, inventory(), store); err != nil {
 		t.Fatalf("first run: %v", err)
-	}
-	if store.secrets["activation-dsn"].Name != "" {
-		t.Error("the sync-start reconcile created the database credential, which is the database step's")
 	}
 	position := map[string]int{}
 	for i, name := range store.created {
@@ -139,8 +135,8 @@ func TestAnInterruptedRunIsCompletedWithoutReplacingAnything(t *testing.T) {
 	if _, err := reconcile(t, inventory(), store); err != nil {
 		t.Fatalf("the re-run: %v", err)
 	}
-	if len(store.secrets) != len(inventory().Entries)-1 {
-		t.Errorf("the re-run left %d Secrets, want the whole inventory but the database credential", len(store.secrets))
+	if len(store.secrets) != len(inventory().Entries) {
+		t.Errorf("the re-run left %d Secrets, want the whole inventory", len(store.secrets))
 	}
 	if !equalData(firstData, store.secrets[firstName].Data) {
 		t.Errorf("the re-run replaced %s", firstName)

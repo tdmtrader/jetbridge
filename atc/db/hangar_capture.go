@@ -92,6 +92,23 @@ func (repository *HangarOutputRepository) InsertPending(ctx context.Context, tx 
 	if pending.Term < time.Second {
 		return output.Capture{}, fmt.Errorf("%w: capture deadline term %s", output.ErrIncomplete, pending.Term)
 	}
+	// Admission: a new capture is admitted only while the plane is in
+	// service, read FOR SHARE in this transaction. A drain takes the row FOR
+	// UPDATE to turn it off, so no capture is admitted against a flag that
+	// moved underneath it; captures already pending carry on to completion.
+	enabled, err := hangarLockEnabled(ctx, tx)
+	if err != nil {
+		return output.Capture{}, hangarConflict(err)
+	}
+	if !enabled {
+		// A replay of an insert that committed before the drain is not new
+		// admission: the row is there, and it is answered as before.
+		if existing, err := repository.GetCapture(ctx, tx, key); err == nil && samePending(existing, pending) {
+			return existing, nil
+		}
+		return output.Capture{}, fmt.Errorf("%w: the output plane is out of service (hangar_enabled)",
+			output.ErrCaptureDisabled)
+	}
 	interval := hangarInterval(pending.Term)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_captures (execution_id, execution_fence, output_name, node, node_uid, pod_uid, capture_deadline_at)
@@ -105,13 +122,17 @@ func (repository *HangarOutputRepository) InsertPending(ctx context.Context, tx 
 	if err != nil {
 		return output.Capture{}, err
 	}
-	if capture.Execution != pending.Execution || capture.Node != pending.Node || capture.NodeUID != pending.NodeUID ||
-		(pending.PodUID != "" && capture.PodUID != "" && capture.PodUID != pending.PodUID) {
+	if !samePending(capture, pending) {
 		return output.Capture{}, fmt.Errorf("%w: capture %s already names node %s (%s)",
 			output.ErrConflict, key, capture.Node, capture.NodeUID)
 	}
 
 	return capture, nil
+}
+
+func samePending(capture output.Capture, pending output.PendingCapture) bool {
+	return capture.Execution == pending.Execution && capture.Node == pending.Node && capture.NodeUID == pending.NodeUID &&
+		(pending.PodUID == "" || capture.PodUID == "" || capture.PodUID == pending.PodUID)
 }
 
 // casCapture runs one guarded UPDATE and, when it touched nothing, decides

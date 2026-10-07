@@ -95,6 +95,8 @@ type FlyCommand struct {
 	SetWall   SetWallCommand   `command:"set-wall" alias:"sw" description:"Set a wall message"`
 	ClearWall ClearWallCommand `command:"clear-wall" alias:"cw" description:"Clear the wall message"`
 
+	HangarStatus HangarStatusCommand `command:"hangar-status" description:"Show whether the Hangar output plane is in service, the residue a drain waits on, and its open integrity findings (admin only)"`
+
 	Completion CompletionCommand `command:"completion" description:"generate shell completion code"`
 }
 

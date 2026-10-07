@@ -599,16 +599,15 @@ var hangarGCSImporters = map[string]string{
 	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher: it " +
 		"opens the output bucket's object client through hangar/gcs, which hands back an " +
 		"interface with no delete on it",
-	"cmd/hangar-output-inventory": "the inventory controller is the list/get principal, and the " +
-		"only workload in this system whose cloud identity holds bucket-wide list",
-	"cmd/hangar-output-reclaimer": "the reclaimer constructs the exact-delete client, " +
+	"atc/hangaroutput/reclaim": "the web's reclaim pass and orphan sweep are the reclaimer " +
+		"principal: they open the output namespace's list client and the exact-delete client, " +
 		"gcs.NewDeleteClient; who may name that constructor is fixed by " +
 		"hangar/architecture_test.go's TestOnlyTheReclaimerAndTheCacheTierConstructADeleteClient",
 	"hangar/output/conformance": "the tier-2 conformance suite drives the real adapter against " +
 		"fake-gcs-server, because a conformance claim proved through a hand-written fake is a " +
 		"claim about the fake. It is a test-only import: the package has no non-test file that " +
-		"names hangar/gcs, and TestTheConcourseBinaryLinksNoCloudStorageClient below is what " +
-		"makes the consequence -- ./cmd/concourse -- checkable rather than argued",
+		"names hangar/gcs, and TestTheConcourseBinaryLinksTheCloudStorageClientOnlyThroughTheReclaimer " +
+		"below is what makes the consequence -- ./cmd/concourse -- checkable rather than argued",
 	"atc/hangaroutput": "TEST-ONLY: the managed-read specs stat the published object through " +
 		"the real client against the emulator the daemon published into. The package's " +
 		"production code declares ExactStat as a port and names no cloud SDK; " +
@@ -623,7 +622,7 @@ var testOnlyGCSImporters = map[string]bool{
 	"atc/hangaroutput":          true,
 }
 
-// outputRolePackages are the three storage-facing roles of the Hangar output plane.
+// outputRolePackages are the two storage-facing roles of the Hangar output plane.
 //
 // Each is a separate binary with a separate Kubernetes service account, and the
 // isolation only means something while no other process links one. The
@@ -633,40 +632,26 @@ var testOnlyGCSImporters = map[string]bool{
 // could give back.
 var outputRolePackages = []string{
 	"hangar/output/publisher",
-	"hangar/output/inventory",
 	"hangar/output/reclaimer",
 }
 
 // outputRoleImporters are the packages allowed to link one, with the reason.
 var outputRoleImporters = map[string]string{
-	"hangar/diskserver":           "TEST-ONLY: real TLS integration tests exercise publication through the disk adapter; production server code links no output role",
+	"hangar/diskserver": "TEST-ONLY: real TLS integration tests exercise publication through the disk adapter; production server code links no output role",
 	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher " +
 		"principal: one node daemon, whose identity holds the publisher role beside the cache " +
 		"and strict-input ones, and never inventory or reclaim",
-	"cmd/hangar-output-inventory": "the inventory controller is the inventory principal",
-	"cmd/hangar-output-reclaimer": "the reclaimer is the reclaimer principal",
-	"hangar/output/conformance": "the shared conformance suite drives all three roles against " +
+	"atc/hangaroutput/reclaim": "the web's reclaim pass and orphan sweep: the web is the " +
+		"reclaimer principal, and the node daemon -- the publisher -- holds no delete",
+	"hangar/output/conformance": "the shared conformance suite drives both roles against " +
 		"both substrate tiers; it is a test-only package that links into no binary",
 	"atc/hangaroutput": "TEST-ONLY: the managed-read specs admit a read against the REAL " +
 		"publisher's exact-generation stat over the same bucket the daemon published into, " +
 		"because requirement 35 is about the object rather than about a fixture's opinion of " +
 		"it. The package's production code declares ExactStat as a port and links nothing",
 
-	// The three pass packages. Each is one principal's bounded unit of work,
-	// lifted out of `package main` so the composition can be driven -- which
-	// is what the Phase 7 review found nothing was doing. Each links EXACTLY
-	// ONE role and is linked by exactly one binary, so the principal boundary
-	// is unchanged: the guard below over cmd/ roots is what keeps that true,
-	// and it reads the real build graph rather than these words.
-	"atc/hangaroutput/inventorypass": "the inventory controller's bounded unit, lifted out of " +
-		"its main so it can be driven; it links the inventory role and no other, and only " +
-		"cmd/hangar-output-inventory links it",
-	"atc/hangaroutput/reclaimpass": "the reclaimer's two bounded units, lifted out of its " +
-		"main so they can be driven; they link the reclaimer role and no other, and only " +
-		"cmd/hangar-output-reclaimer links them",
-
-	"atc/db": "TEST-ONLY: the controller-pass specs drive the real inventory and reclaimer " +
-		"roles against real PostgreSQL and the tier-1 store, because the composition -- which " +
+	"atc/db": "TEST-ONLY: the reclaim-pass specs drive the real reclaimer role against real " +
+		"PostgreSQL and the tier-1 store, because the composition -- which " +
 		"record precedes which effect -- is what the phase shipped unwired. The package's " +
 		"production code links no role",
 
@@ -732,8 +717,7 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 
 				continue
 			}
-			t.Errorf("%s links %s.\n\nThe three output roles are three Kubernetes service "+
-				"accounts. A Pod's identity is Pod-wide, so a process that links a role has "+
+			t.Errorf("%s links %s.\n\nThe two output roles are two cloud principals. A Pod's identity is Pod-wide, so a process that links a role has "+
 				"that role's cloud permission for everything else it does -- which is exactly "+
 				"why cmd/artifact-daemon, the ATC and the web node link none of them. Depend "+
 				"on the hangar/output interface, or add %s above with the reason it must be a "+
@@ -778,15 +762,19 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 // ATC binary.
 const cloudStorageModule = "cloud.google.com/go/storage"
 
-// TestTheConcourseBinaryLinksNoCloudStorageClient measures the consequence.
+// TestTheConcourseBinaryLinksTheCloudStorageClientOnlyThroughTheReclaimer
+// measures the consequence.
 //
-// The import allowlist above is a rule about who may name a package, and every
-// entry added to it makes that rule weaker. This one is not a rule about names
-// at all: it asks the toolchain what ./cmd/concourse actually links, so an
-// allowlist entry that turned out to matter is caught by the fact it was
-// supposed to prevent rather than by a reviewer noticing.
-func TestTheConcourseBinaryLinksNoCloudStorageClient(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "./cmd/concourse").Output()
+// The import allowlist above is a rule about who may name a package. This one
+// asks the toolchain what ./cmd/concourse actually links. The web is the
+// reclaimer principal -- its reclaim pass and orphan sweep list and delete in
+// the output namespace -- so it links the GCS client, and that costs the binary
+// the client's packages (about 170 of them and 20 MB). What this keeps true is
+// that it arrives through exactly one first-party door: hangar/gcs, named only
+// by atc/hangaroutput/reclaim. A second door is the ATC growing cloud access for
+// some other reason, and it fails here by name.
+func TestTheConcourseBinaryLinksTheCloudStorageClientOnlyThroughTheReclaimer(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "./cmd/concourse").Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			t.Fatalf("go list -deps failed: %v\n%s", err, ee.Stderr)
@@ -794,20 +782,40 @@ func TestTheConcourseBinaryLinksNoCloudStorageClient(t *testing.T) {
 		t.Fatalf("go list -deps failed: %v", err)
 	}
 
-	deps := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(deps) < 500 {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 500 {
 		t.Fatalf("go list -deps reported %d packages for ./cmd/concourse, which is far too few "+
-			"to be the ATC; the listing failed and this check would pass vacuously", len(deps))
+			"to be the ATC; the listing failed and this check would pass vacuously", len(lines))
 	}
 
-	for _, dep := range deps {
-		if dep == cloudStorageModule || strings.HasPrefix(dep, cloudStorageModule+"/") {
-			t.Errorf("./cmd/concourse links %s.\n\nThe GCS client is a daemon-side detail. "+
-				"While it lived in package hangar it took this binary from 1347 to 1515 packages "+
-				"and from 126,836,146 to 146,976,274 bytes. Something in the ATC's dependency "+
-				"graph now names hangar/gcs, or a package that does: depend on the "+
-				"hangar.Store or hangar/objectstore interface instead.", dep)
+	const gcsAdapter = modulePrefix + hangarGCSPackage
+	const onlyDoor = modulePrefix + "atc/hangaroutput/reclaim"
+	reached := false
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		pkg, imports := fields[0], fields[1:]
+		if strings.HasPrefix(pkg, "cloud.google.com/") || strings.HasPrefix(pkg, "google.golang.org/") {
+			continue
 		}
+		for _, imported := range imports {
+			sdk := imported == cloudStorageModule || strings.HasPrefix(imported, cloudStorageModule+"/")
+			if sdk && pkg != gcsAdapter && !strings.HasPrefix(pkg, modulePrefix+"hangar/internal/") {
+				t.Errorf("./cmd/concourse links %s through %s. The web reaches cloud storage only "+
+					"through hangar/gcs, opened by its reclaim pass; depend on the hangar/objectstore "+
+					"interface instead.", imported, pkg)
+			}
+			if imported == gcsAdapter {
+				if pkg != onlyDoor {
+					t.Errorf("%s names %s inside ./cmd/concourse. The web's one door to the cloud "+
+						"client is %s, the reclaimer principal.", pkg, gcsAdapter, onlyDoor)
+				}
+				reached = true
+			}
+		}
+	}
+	if !reached {
+		t.Error("./cmd/concourse does not link hangar/gcs at all, so the web has no GCS reclaim " +
+			"pass and this rule is guarding nothing")
 	}
 }
 
@@ -1259,8 +1267,10 @@ const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer
 // only. This file keeps the role half: only the reclaimer links the reclaimer.
 const outputDeleteCapability = "gcs.NewDeleteClient and disk.NewDeleteClient"
 
-// outputDeleteRoot is the one binary allowed to link the reclaimer role.
-const outputDeleteRoot = "./cmd/hangar-output-reclaimer"
+// outputDeleteRoot is the one binary allowed to link the reclaimer role: the
+// web, whose reclaim pass and orphan sweep are the only deletes in the output
+// namespace.
+const outputDeleteRoot = "./cmd/concourse"
 
 func TestNoCommandRootReachesAnObjectDeleteThroughTheGoComposition(t *testing.T) {
 	roots := commandRoots(t)
@@ -1283,10 +1293,10 @@ func TestNoCommandRootReachesAnObjectDeleteThroughTheGoComposition(t *testing.T)
 		}
 		if linksPackage(t, root, outputDeleteRole) {
 			t.Errorf("%s reaches an object delete through the Go composition: it links %s.\n\n"+
-				"Only the isolated reclaimer workload may import or invoke the output delete "+
-				"client. A Kubernetes service account is Pod-wide, so a second binary that "+
-				"linked this would be a second Pod whose identity IAM would then have to be "+
-				"trusted to keep delete away from. Who may construct a delete client at all "+
+				"Only the web -- its reclaim pass and orphan sweep -- may import or invoke the "+
+				"output delete client. A Kubernetes service account is Pod-wide, so a second "+
+				"binary that linked this would be a second Pod whose identity IAM would then "+
+				"have to be trusted to keep delete away from. Who may construct a delete client at all "+
 				"(%s) is fixed by hangar/architecture_test.go.", root, outputDeleteRole,
 				outputDeleteCapability)
 		}
@@ -1405,8 +1415,8 @@ func linksPackage(t *testing.T, root, pkg string) bool {
 	return false
 }
 
-// TestEachOutputControllerLinksOnlyItsOwnRole is the same measurement for the
-// other three principals.
+// TestEachOutputControllerLinksOnlyItsOwnRole is the same measurement for
+// both principals.
 //
 // The isolation only means anything while each binary links ONE role. A
 // controller that linked two would be one Kubernetes service account holding
@@ -1415,12 +1425,11 @@ func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
 	const prefix = "github.com/concourse/concourse/hangar/output/"
 
 	expected := map[string]string{
-		"./cmd/artifact-daemon":         prefix + "publisher",
-		"./cmd/hangar-output-inventory": prefix + "inventory",
-		"./cmd/hangar-output-reclaimer": prefix + "reclaimer",
+		"./cmd/artifact-daemon": prefix + "publisher",
+		"./cmd/concourse":       prefix + "reclaimer",
 	}
 	all := []string{
-		prefix + "publisher", prefix + "inventory", prefix + "reclaimer",
+		prefix + "publisher", prefix + "reclaimer",
 	}
 
 	for root, own := range expected {
@@ -1440,33 +1449,22 @@ func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
 	}
 }
 
-// activationTableWriters are the packages allowed to write the activation epoch
-// row, and there is one.
+// inServiceWriters are the packages allowed to write the in-service row,
+// hangar_enabled, and there is one.
 //
-// The epoch row is the plane's single authority: a node label is a hint, a
-// daemon handshake is evidence, a Helm value is an intention, and none of them
-// authorizes a capture, a receipt registration, a claim acquisition or a
-// finalization. This row does. So the set of things that can move it is the set
-// of things that can turn the plane on, and it is one internal command run as a
-// one-shot Job under its own least-privilege PostgreSQL role.
-//
-// The rule is stated over SOURCE rather than over the build graph because what
-// it is about is a STATEMENT: any package that can open a database handle can
-// write any table, and no import rule can see that. What it can see is an
-// UPDATE, an INSERT or a DELETE naming the table.
-var activationTableWriters = map[string]string{
-	"atc/hangaroutput/activation": "the activation command's own package. Its four guarded " +
-		"transitions ARE the protocol, and the Jobs that run them hold a PostgreSQL role " +
-		"distinct from the web pod's -- which is what makes this rule enforceable at the " +
-		"credential as well as at the code",
-	"atc/worker/jetbridge/brine/steps": "TEST HARNESS: the brine adapter's step definitions, " +
-		"which arrange an activated plane so a scenario can start from one. They are ordinary " +
-		"Go files rather than _test.go files because a brine adapter is a BINARY, so the " +
-		"suffix rule cannot see them -- which is why the check below reads the nested go.mod " +
-		"rather than believing this sentence",
+// The row is what admission takes FOR SHARE: while it says false, no capture,
+// claim-backed result or Run input that needs the output plane is admitted. So
+// the set of things that can move it is the set of things that can put the
+// plane in service or take it out, and that is the web's startup write
+// (db.SetHangarEnabled, from hangarOutput.webEnabled). The rule is stated over
+// SOURCE because what it is about is a STATEMENT: any package that can open a
+// database handle can write any table, and no import rule can see that.
+var inServiceWriters = map[string]string{
+	"atc/db": "db.SetHangarEnabled, the web's startup write of its configured " +
+		"--kubernetes-hangar-output-capture-enabled",
 }
 
-// nestedTestModules are the exemptions above whose reason says TEST HARNESS,
+// nestedTestModules are the test harnesses that may write the in-service row,
 // with the nested go.mod that makes the claim checkable.
 //
 // A comment saying "this is only a harness" is a comment a later edit can
@@ -1476,24 +1474,23 @@ var nestedTestModules = map[string]string{
 	"atc/worker/jetbridge/brine/steps": "atc/worker/jetbridge/brine/go.mod",
 }
 
-const activationTable = "hangar_output_activation_epochs"
+const inServiceTable = "hangar_enabled"
 
-// TestOnlyTheActivationCommandWritesTheEpochRow reads every non-test Go file in
-// the repository for a write against the activation table.
-func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
+// TestOnlyTheWebStartupWritesTheInServiceRow reads every non-test Go file in
+// the repository for a write against the in-service row.
+func TestOnlyTheWebStartupWritesTheInServiceRow(t *testing.T) {
 	root := repositoryRoot()
 
 	// A write is an UPDATE, an INSERT or a DELETE naming the table. A SELECT is
-	// not: half this plane reads the epoch row, and reading an authority is
-	// what an authority is for.
-	writes := regexp.MustCompile(`(?is)\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+` + activationTable + `\b`)
+	// not: admission reads the row, and reading an authority is what an
+	// authority is for.
+	writes := regexp.MustCompile(`(?is)\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+` + inServiceTable + `\b`)
 
-	// And no production code changes who may write it: a GRANT, a SET ROLE or
-	// a DROP TRIGGER in SQL would be web granting itself the role's authority,
-	// borrowing its identity, or removing the guard. Case-sensitive and
+	// And no production code changes who may write anything: a GRANT, a SET
+	// ROLE or a DROP TRIGGER in SQL would be web granting itself an authority,
+	// borrowing an identity, or removing a guard. Case-sensitive and
 	// SQL-shaped, so prose about a step pod grant does not match.
 	authorityStatements := regexp.MustCompile(`\bGRANT\s+[A-Z][A-Z_, ()]*\bON\b|\bSET\s+(LOCAL\s+)?ROLE\b|\bDROP\s+TRIGGER\b`)
-	authorityExercised := false
 
 	scanned, readers, exercised := 0, 0, map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -1522,33 +1519,35 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 		pkg := filepath.ToSlash(filepath.Dir(relative))
 		if found := authorityStatements.FindString(string(body)); found != "" {
 			if testHelperPackage(t, root, pkg) {
-				authorityExercised = true
+				t.Logf("allowed: %s issues %q in a test helper package", filepath.ToSlash(relative), found)
 			} else if _, nested := nestedTestModules[pkg]; !nested {
 				t.Errorf("%s issues %q. No production code may grant privileges, borrow a role, or "+
-					"drop a trigger: the activation database role and its guard are the migrations' "+
-					"to define (hangar_activation_db_role R2).", filepath.ToSlash(relative), found)
+					"drop a trigger: roles and guards are the migrations' to define.",
+					filepath.ToSlash(relative), found)
 			}
 		}
-		if !strings.Contains(string(body), activationTable) {
+		if !strings.Contains(string(body), inServiceTable) {
 			return nil
 		}
 		readers++
 		if !writes.MatchString(string(body)) {
 			return nil
 		}
-		if reason, ok := activationTableWriters[pkg]; ok {
+		if reason, ok := inServiceWriters[pkg]; ok {
 			exercised[pkg] = true
-			t.Logf("allowed: %s writes %s — %s", filepath.ToSlash(relative), activationTable, reason)
+			t.Logf("allowed: %s writes %s — %s", filepath.ToSlash(relative), inServiceTable, reason)
 
 			return nil
 		}
-		t.Errorf("%s writes %s.\n\nThat row is the output plane's single authority: every "+
-			"capture records the epoch it was admitted under, and a stale label or handshake "+
-			"cannot authorize emission, receipt registration, claim acquisition or "+
-			"finalization. It moves only through the four guarded transitions in %s, which "+
-			"run as one-shot Jobs under a PostgreSQL role distinct from the web pod's. A "+
-			"second writer is a second way to turn the plane on.",
-			filepath.ToSlash(relative), activationTable, "atc/hangaroutput/activation")
+		if _, nested := nestedTestModules[pkg]; nested {
+			t.Logf("allowed: %s writes %s — a TEST HARNESS in a nested module", filepath.ToSlash(relative), inServiceTable)
+
+			return nil
+		}
+		t.Errorf("%s writes %s.\n\nThat row is what admission takes FOR SHARE: it puts the "+
+			"output plane in service or takes it out. It moves only through the web's startup "+
+			"write, db.SetHangarEnabled. A second writer is a second way to turn the plane on.",
+			filepath.ToSlash(relative), inServiceTable)
 
 		return nil
 	})
@@ -1560,19 +1559,15 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 		t.Fatalf("scanned only %d non-test Go files; the walk failed and this rule would pass "+
 			"vacuously", scanned)
 	}
-	if !authorityExercised {
-		t.Error("no test helper package issues a role or trigger statement; the exemption for " +
-			"them is stale, or the pattern no longer matches what they issue")
-	}
 	if readers < 2 {
-		t.Fatalf("only %d non-test files name %s at all. Half this plane reads the epoch row, "+
-			"so a repository where nothing does is one where the table was renamed and this "+
-			"rule is guarding a string", readers, activationTable)
+		t.Fatalf("only %d non-test files name %s at all. Admission reads the row, so a "+
+			"repository where nothing does is one where the table was renamed and this rule "+
+			"is guarding a string", readers, inServiceTable)
 	}
-	for pkg := range activationTableWriters {
+	for pkg := range inServiceWriters {
 		if !exercised[pkg] {
 			t.Errorf("%s is exempted to write %s and no file in it does; the exemption is stale",
-				pkg, activationTable)
+				pkg, inServiceTable)
 		}
 	}
 	for pkg, module := range nestedTestModules {
@@ -1605,8 +1600,8 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 // NAME and what a binary may LINK, repository-wide, rather than over where a
 // particular call could be written.
 //
-// None of this is the primary control. GCS IAM is: the daemon, inventory and
-// attestor principals hold no storage.objects.delete, and the call gets a 403.
+// None of this is the primary control. GCS IAM is: the daemon's principal holds
+// no storage.objects.delete, and the call gets a 403.
 // What these rules buy is that the isolation stays true in code somebody writes
 // next year, when the IAM binding is somebody else's memory of a Terraform file.
 
@@ -1671,9 +1666,8 @@ var cloudStorageSDKImporters = map[string]string{
 // TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK is the
 // repository-wide arm.
 //
-// It reads IMPORTS and not text: the output plane and
-// cmd/hangar-output-reclaimer both mention `cloud.google.com/go/storage` in a
-// comment explaining why they do not import it, and a textual rule would either
+// It reads IMPORTS and not text: the output plane mentions
+// `cloud.google.com/go/storage` in a comment explaining why it does not import it, and a textual rule would either
 // fail on those or be written to skip comments -- which is a parser with extra
 // steps.
 func TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK(t *testing.T) {
@@ -2275,8 +2269,7 @@ func TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
 	// And the roots, so a green says it was checked at the level that decides:
 	// no output root links it, however many intermediaries it went through.
 	for _, root := range []string{
-		"./cmd/hangar-output-inventory", "./cmd/hangar-output-reclaimer",
-		"./cmd/hangar-output-activate", "./cmd/concourse",
+		"./cmd/concourse", "./cmd/hangar-store",
 	} {
 		if linksPackage(t, root, modulePrefix+durableCacheTier) {
 			t.Errorf("%s links %s, whose Delete is a delete by key over any bucket its config "+

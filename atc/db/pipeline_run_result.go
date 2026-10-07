@@ -234,7 +234,7 @@ func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangar
 	hangarEnabled := false
 	if hangarEpoch > 0 {
 		var err error
-		if hangarEnabled, err = hangarLockEnabledEpoch(ctx, tx, hangarEpoch); err != nil {
+		if hangarEnabled, err = hangarLockEnabled(ctx, tx); err != nil {
 			return nil, false, err
 		}
 	}

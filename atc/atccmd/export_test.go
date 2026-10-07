@@ -40,6 +40,12 @@ func HangarOutputComponentsForTest(cmd *RunCommand, dbConn db.DbConn) []Runnable
 	return cmd.hangarOutputComponents(dbConn)
 }
 
+// HangarOutputDeleteComponentsForTest exports the constructor of the web's two
+// deleting passes. Building them opens the store clients, which make no call.
+func HangarOutputDeleteComponentsForTest(cmd *RunCommand) ([]RunnableComponent, error) {
+	return cmd.hangarOutputDeleteComponents(nil, nil)
+}
+
 // RunComponentsForTest exports the private runComponents method: the Run
 // components every web node registers, with or without an output plane. As
 // above, a nil connection is enough to build the list.

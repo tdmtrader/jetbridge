@@ -74,16 +74,6 @@ func Reservation(t *testing.T, namespace output.OutputNamespace, id output.Reser
 	return marker
 }
 
-// Cursor is a valid cursor at the start of a cycle under one epoch.
-func Cursor(epoch executioncontrol.ActivationEpoch) output.InventoryCursor {
-	return output.InventoryCursor{
-		ProtocolVersion: output.ProtocolVersion,
-		ActivationEpoch: epoch,
-		CursorFence:     1,
-		UpdatedAt:       output.NewTimestamp(FixedInstant),
-	}
-}
-
 // Lease is a valid, unexpired read lease over one tree ref.
 func Lease(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ReadLease {
 	t.Helper()

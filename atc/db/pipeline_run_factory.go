@@ -130,12 +130,12 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if err != nil {
 		return RunCreation{}, err
 	}
-	// The Hangar epoch is taken inside the activation prefix whenever an output
-	// plane is configured, and required below only when this Run needs one.
+	// Hangar's in-service row is taken inside the activation prefix whenever an
+	// output plane is configured, and required below only when this Run needs one.
 	hangarReady := false
 	if opts.HangarEpoch > 0 {
 		var err error
-		if hangarReady, err = hangarLockEnabledEpoch(ctx, tx, opts.HangarEpoch); err != nil {
+		if hangarReady, err = hangarLockEnabled(ctx, tx); err != nil {
 			return RunCreation{}, err
 		}
 	}
