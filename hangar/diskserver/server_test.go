@@ -247,32 +247,42 @@ func TestNoUnconditionalDeleteOrCredentialRedirect(t *testing.T) {
 	}
 }
 
-// The cache role is the artifact daemon's fail-open resource cache. It holds
-// the one delete a node daemon is given, and only inside its own namespace:
-// it can neither read nor delete an exact tree in the input or output
-// namespace, and the store refuses to start with the cache sharing either.
-func TestTheCacheRoleIsConfinedToItsOwnNamespace(t *testing.T) {
+// The cache is a dedicated store: the artifact daemon's fail-open resource
+// cache never shares a process, lock or concurrency slot with the strict input
+// and output namespaces. A cache store holds the one delete a node daemon is
+// given, and only inside its own namespace.
+func TestACacheStoreIsDedicatedAndConfinedToItsNamespace(t *testing.T) {
 	root := t.TempDir()
-	if err := disk.Initialize(root, "test-store"); err != nil {
+	if err := disk.Initialize(root, "cache-store"); err != nil {
 		t.Fatal(err)
 	}
-	store, err := disk.Open(root, "test-store", 1024)
+	store, err := disk.Open(root, "cache-store", 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	tokens := map[string]string{"input": strings.Repeat("i", 32), "publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32), "cache": strings.Repeat("c", 32)}
+	cacheOnly := map[string]string{"cache": strings.Repeat("c", 32)}
+	strict := map[string]string{"input": strings.Repeat("i", 32), "publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32)}
+	all := map[string]string{"cache": cacheOnly["cache"]}
+	for role, token := range strict {
+		all[role] = token
+	}
 
-	for _, shared := range []string{"inputs", "outputs"} {
-		if _, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", CacheNamespace: shared, Credentials: tokens, MaxConcurrent: 4}); err == nil {
-			t.Fatalf("a cache namespace equal to %q was accepted", shared)
+	// Never beside the strict namespaces, whatever the credentials say.
+	for name, config := range map[string]diskserver.Config{
+		"cache with input":         {StoreID: "cache-store", InputNamespace: "inputs", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
+		"cache with output":        {StoreID: "cache-store", OutputNamespace: "outputs", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
+		"cache with both":          {StoreID: "cache-store", InputNamespace: "inputs", OutputNamespace: "outputs", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
+		"cache with strict roles":  {StoreID: "cache-store", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
+		"strict with a cache role": {StoreID: "cache-store", InputNamespace: "inputs", OutputNamespace: "outputs", Credentials: all, MaxConcurrent: 4},
+		"cache with no cache role": {StoreID: "cache-store", CacheNamespace: "caches", Credentials: strict, MaxConcurrent: 4},
+	} {
+		if _, err := diskserver.New(store, config); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", Credentials: tokens, MaxConcurrent: 4}); err == nil {
-		t.Fatal("a cache credential without a cache namespace was accepted")
-	}
 
-	h, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", CacheNamespace: "caches", Credentials: tokens, MaxConcurrent: 4})
+	h, err := diskserver.New(store, diskserver.Config{StoreID: "cache-store", CacheNamespace: "caches", Credentials: cacheOnly, MaxConcurrent: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,11 +292,16 @@ func TestTheCacheRoleIsConfinedToItsOwnNamespace(t *testing.T) {
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	f := fixture{server: server, root: root, ca: ca, tokens: tokens}
+	f := fixture{server: server, root: root, ca: ca, tokens: cacheOnly}
+	config := f.config(t, "cache")
+	config.StoreID = "cache-store"
 	ctx := context.Background()
 
-	cache := f.client(t, "cache")
-	cacheDelete, err := disk.NewDeleteClient(f.config(t, "cache"))
+	cache, err := disk.NewClient(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDelete, err := disk.NewDeleteClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,20 +316,13 @@ func TestTheCacheRoleIsConfinedToItsOwnNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tree, err := f.client(t, "publisher").CreateAbsent(ctx, "outputs", "tree", nil, strings.NewReader("body"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cache.StatExact(ctx, "outputs", "tree", tree.Generation); !errors.Is(err, objectstore.ErrUnauthorized) {
-		t.Fatalf("cache role stat an output tree: %v", err)
-	}
-	if err := cacheDelete.DeleteExact(ctx, "outputs", "tree", tree.Generation); !errors.Is(err, objectstore.ErrUnauthorized) {
-		t.Fatalf("cache role deleted an output tree: %v", err)
-	}
-	if _, err := cache.CreateAbsent(ctx, "inputs", "tree", nil, strings.NewReader("body")); !errors.Is(err, objectstore.ErrUnauthorized) {
-		t.Fatalf("cache role wrote the input namespace: %v", err)
-	}
-	if _, err := f.client(t, "input").CreateAbsent(ctx, "caches", "x", nil, strings.NewReader("body")); !errors.Is(err, objectstore.ErrUnauthorized) {
-		t.Fatalf("input role wrote the cache namespace: %v", err)
+	// Nothing outside the cache namespace, including the empty name.
+	for _, bucket := range []string{"inputs", "outputs", ""} {
+		if _, err := cache.CreateAbsent(ctx, bucket, "tree", nil, strings.NewReader("body")); !errors.Is(err, objectstore.ErrUnauthorized) {
+			t.Errorf("cache role wrote %q: %v", bucket, err)
+		}
+		if err := cacheDelete.DeleteExact(ctx, bucket, "tree", 1); !errors.Is(err, objectstore.ErrUnauthorized) {
+			t.Errorf("cache role deleted in %q: %v", bucket, err)
+		}
 	}
 }

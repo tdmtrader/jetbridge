@@ -24,13 +24,16 @@ type Config struct {
 	StoreID         string
 	InputNamespace  string
 	OutputNamespace string
-	// CacheNamespace is the artifact daemon's fail-open resource cache. Empty
-	// means this store serves no cache; set, it requires a fifth, "cache"
-	// credential, which may create, stat, read, list and delete inside that
-	// namespace and nothing outside it.
+	// CacheNamespace makes this a CACHE-ONLY store: the artifact daemon's
+	// fail-open resource cache, on a dedicated store instance with its own
+	// disk, process, lock and concurrency slots. It is exclusive with the
+	// input and output namespaces -- the cache's churn must never queue behind,
+	// or hold the mutex of, the strict stores -- and it takes exactly one
+	// credential, "cache", which may create, stat, read, list and delete
+	// inside the cache namespace and nothing else.
 	CacheNamespace string
-	Credentials     map[string]string
-	MaxConcurrent   int
+	Credentials    map[string]string
+	MaxConcurrent  int
 }
 
 type credential struct {
@@ -54,8 +57,12 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 	names := []string{config.StoreID, config.InputNamespace, config.OutputNamespace}
 	roles := []string{"input", "publisher", "inventory", "reclaimer"}
 	if config.CacheNamespace != "" {
-		names = append(names, config.CacheNamespace)
-		roles = append(roles, "cache")
+		if config.InputNamespace != "" || config.OutputNamespace != "" {
+			return nil, errors.New("a cache store serves the cache namespace only: run the " +
+				"resource cache on its own store instance, never beside the input or output namespaces")
+		}
+		names = []string{config.StoreID, config.CacheNamespace}
+		roles = []string{"cache"}
 	}
 	for _, name := range names {
 		if err := hangar.Scope(name).Validate(); err != nil {
@@ -114,13 +121,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := query.Get("key")
 	operation := strings.TrimPrefix(r.URL.Path, "/v1/")
 	allowed := false
-	if role == "input" && bucket == s.config.InputNamespace {
+	if role == "input" && bucket != "" && bucket == s.config.InputNamespace {
 		allowed = operation == "create" || operation == "stat" || operation == "read"
 	}
 	if role == "cache" && s.config.CacheNamespace != "" && bucket == s.config.CacheNamespace {
 		allowed = operation == "create" || operation == "stat" || operation == "read" || operation == "list" || operation == "delete"
 	}
-	if bucket == s.config.OutputNamespace {
+	if bucket != "" && bucket == s.config.OutputNamespace {
 		switch role {
 		case "publisher":
 			allowed = operation == "create" || operation == "stat" || operation == "read"
