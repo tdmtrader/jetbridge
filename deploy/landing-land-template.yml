@@ -1,0 +1,93 @@
+# The landing queue's land template (ADR-0009). Install with
+# fly set-pipeline -p landing-land -c deploy/landing-land-template.yml
+# -v landing_image=<image with git> -v github-token=<token with push to the
+# trunk>. The landing queue component admits a Run of it per candidate, with
+# the compose Run's manifest and candidate bound as run inputs.
+#
+# land rebuilds the commit from git by compose's recipe, refuses unless it
+# gets compose's sha, and pushes it to the trunk with --force-with-lease on
+# the base compose composed on. Its one result is the verdict: landed, moved
+# (the trunk is no longer at the base) or failed. The task succeeds on landed
+# and moved; the component composes again on moved. Core persists no
+# repository credential: the token reaches only this step, as a template var.
+template: true
+params:
+  - name: repository
+    type: string
+    required: true
+  - name: trunk
+    type: string
+    required: true
+  - name: entries
+    type: string
+    required: true
+jobs:
+  - name: land
+    plan:
+      - task: land
+        timeout: 10m
+        task_id: 05cedfec-c786-4a73-aa18-433c8101d8d6
+        run_inputs:
+          - name: manifest
+            input: manifest
+          - name: candidate
+            input: candidate
+        run_result:
+          name: verdict
+          output: verdict
+        params:
+          GITHUB_TOKEN: ((github-token))
+        config:
+          platform: linux
+          rootfs_uri: docker:///((landing_image))
+          inputs:
+            - name: manifest
+            - name: candidate
+          outputs:
+            - name: verdict
+          run:
+            path: /bin/sh
+            args:
+              - -eu
+              - -c
+              - |
+                # land: rebuild compose's commit and fast-forward the trunk to it.
+                # $1 repository, $2 trunk
+                repo=$1 trunk=$2
+                verdict=$PWD/verdict/verdict.json
+                . "$PWD/manifest/manifest.env"
+                say() { printf '{"outcome":"%s","sha":"%s","reason":"%s"}\n' "$1" "$2" "$3" > "$verdict"; echo "land: $1 $2 $3"; }
+                export GIT_COMMITTER_NAME=landing-queue GIT_COMMITTER_EMAIL=landing-queue@jetbridge
+                export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+                if [ -n "${GITHUB_TOKEN:-}" ]; then
+                  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/"
+                fi
+                git init -q work && cd work
+                git fetch -q --no-tags "$repo" "refs/heads/$trunk"
+                current=$(git rev-parse FETCH_HEAD)
+                if [ "$current" != "$base" ]; then say moved "$head" "the trunk is at $current, not $base"; exit 0; fi
+                git checkout -q -b candidate "$base"
+                rebuilt=$base
+                for entry in $(printf '%s' "$entries" | tr ',' ' '); do
+                  id=${entry%%=*} sha=${entry#*=}
+                  git fetch -q --no-tags "$repo" "refs/queue/submit/$id"
+                  [ "$(git rev-parse FETCH_HEAD)" = "$sha" ] || { say failed "$head" "submit ref $id is not at $sha"; exit 1; }
+                  git merge -q --no-ff --no-commit --no-edit "$sha" || { say failed "$head" "$id no longer merges"; exit 1; }
+                  tree=$(git write-tree)
+                  export GIT_AUTHOR_NAME="$(git log -1 --format=%an "$sha")" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$sha")"
+                  export GIT_AUTHOR_DATE="$(git log -1 --format=%aD "$sha")" GIT_COMMITTER_DATE="$(git log -1 --format=%aD "$sha")"
+                  { git log -1 --format=%B "$sha" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; printf '\noriginal: %s\n' "$sha"; } > ../message
+                  rebuilt=$(git commit-tree "$tree" -p "$rebuilt" -F ../message)
+                  git reset -q --hard "$rebuilt"
+                done
+                [ "$rebuilt" = "$head" ] || { say failed "$head" "rebuilt $rebuilt, compose produced $head"; exit 1; }
+                if ! result=$(git push --quiet --porcelain --no-follow-tags "--force-with-lease=refs/heads/$trunk:$base" "$repo" "$head:refs/heads/$trunk" 2>&1); then
+                  case "$result" in
+                    *"stale info"*) say moved "$head" "the trunk moved during the push"; exit 0 ;;
+                    *) say failed "$head" "push refused: $(printf '%s' "$result" | tr '\n' ' ' | tr -d '"')"; exit 1 ;;
+                  esac
+                fi
+                say landed "$head" "fast-forwarded $trunk from $base"
+              - land
+              - ((repository))
+              - ((trunk))
