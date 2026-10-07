@@ -3048,3 +3048,44 @@ func testHelperPackage(t *testing.T, root, pkg string) bool {
 	}
 	return false
 }
+
+// A landing queue admits Runs as its team with nothing to verify against
+// (ADR-0009), so whoever can construct a queue principal can act as any team.
+// Only the landing queue's own component may, and this is the pin: every
+// non-test file that names runs.QueuePrincipal is atc/landing or atc/runs.
+func TestTheQueuePrincipalIsConstructedOnlyByTheLandingQueue(t *testing.T) {
+	root := repositoryRoot()
+	var offenders []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".claude" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(path, root+string(filepath.Separator)))
+		if strings.HasPrefix(rel, "atc/runs/") || strings.HasPrefix(rel, "atc/landing/") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(body), "QueuePrincipal") {
+			offenders = append(offenders, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offenders) != 0 {
+		t.Fatalf("runs.QueuePrincipal is constructed outside atc/landing: %v", offenders)
+	}
+}

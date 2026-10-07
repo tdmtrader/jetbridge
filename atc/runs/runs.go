@@ -132,6 +132,12 @@ type Principal struct {
 	// which is the rule set_pipeline already applies to a build mutating
 	// pipeline configs on its own team.
 	Build *BuildPrincipal
+
+	// Queue is a landing queue acting for its team: the third form, with
+	// the build form's rule (its own team and no other) and no row to verify,
+	// because the queue is core's own component and not a caller across a
+	// trust boundary. See QueuePrincipal.
+	Queue *QueuePrincipal
 }
 
 // BuildPrincipal identifies the build a run is admitted on behalf of.

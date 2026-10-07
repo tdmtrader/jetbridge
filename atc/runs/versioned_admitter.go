@@ -133,6 +133,11 @@ func principalDigest(principal Principal, auth authorization) string {
 	if auth.caller != nil {
 		return runinput.PrincipalDigest(fmt.Sprintf("\x00build/team/%d/pipeline/%d", auth.team.ID(), auth.caller.pipelineID))
 	}
+	// A landing queue is its team plus its name: every pass of the component
+	// presenting one entry's key finds the Run it already admitted for it.
+	if principal.Queue != nil {
+		return runinput.PrincipalDigest(fmt.Sprintf("\x00queue/team/%d/%s", auth.team.ID(), principal.Queue.QueueName))
+	}
 	subject, _ := principal.Claims["sub"].(string)
 	return runinput.PrincipalDigest(subject)
 }
