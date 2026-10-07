@@ -32,6 +32,10 @@ type Team interface {
 	SetPipelineConfigConditional(atc.PipelineRef, string, []byte, bool) (ConfigWriteReceipt, error)
 	CreatePipelineRun(pipelineName string, request atc.CreatePipelineRunV2Request) (atc.PipelineRun, error)
 	PipelineRuns(pipelineName string, page Page) ([]atc.PipelineRun, Pagination, error)
+
+	SetLandingQueue(queueName string, config []byte) (bool, error)
+	SubmitLanding(queueName string, submission atc.LandingSubmission) (bool, error)
+	LandingQueue(queueName string) (atc.LandingQueueStatus, bool, error)
 	PipelineRun(pipelineName string, number int) (atc.PipelineRun, bool, error)
 
 	CreatePipelineBuild(pipelineRef atc.PipelineRef, plan atc.Plan) (atc.Build, error)
