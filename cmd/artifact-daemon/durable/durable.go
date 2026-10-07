@@ -139,10 +139,6 @@ var ErrTooLarge = errors.New("durable: object exceeds size limit")
 var segmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
 
 // maxKeySegments: a key is one segment, or a retention class and one segment.
-//
-// hangar/output/durable_reach_test.go reads this constant: until the daemon
-// validates the cache bucket against the output bucket as well as the input
-// one, this bound is what keeps a cache key from spelling an output object key.
 const maxKeySegments = 2
 
 // ValidateKey rejects keys that are not a cache object name.

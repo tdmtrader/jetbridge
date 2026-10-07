@@ -234,9 +234,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The cache and the strict-input store are two namespaces, refused before
-	// either is dialled.
-	if err := validateStorageNamespaces(*durableBucket, hangarInputNamespace(*hangarEnabled, *hangarBucket), ""); err != nil {
+	// The cache, the strict-input store and the output plane's store are three
+	// namespaces, and no two may be one, refused before any is dialled.
+	if err := validateStorageNamespaces(*durableBucket, hangarInputNamespace(*hangarEnabled, *hangarBucket),
+		outputNamespace(planeConfig)); err != nil {
 		logger.Error("storage-namespaces-invalid", err)
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)

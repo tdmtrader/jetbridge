@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
+
 	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
@@ -141,6 +143,15 @@ func buildDurableTier(ctx context.Context, logger lager.Logger, m *metrics, opts
 
 // hangarInputNamespace is the strict-input namespace this daemon will use, or
 // empty when strict inputs are off and the flag is inert.
+// outputNamespace is the output plane's bucket or disk namespace, or "" when
+// this daemon mounts no output plane or the plane carries base control only.
+func outputNamespace(config outputplane.Config) string {
+	if config.ControlKeyFile == "" || !config.OutputFacetEnabled() {
+		return ""
+	}
+	return config.OutputBucket
+}
+
 func hangarInputNamespace(enabled bool, bucket string) string {
 	if !enabled {
 		return ""

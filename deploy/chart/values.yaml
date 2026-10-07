@@ -645,14 +645,16 @@ artifactDaemon:
     # maxContentBytes must fit inside sizeLimit; the chart refuses a product
     # that does not.
     concurrency: 1
-  # -- Resource requests and limits for the DaemonSet pods
+  # -- Resource requests and limits for the DaemonSet pods. The limits cover
+  # the output plane's canonicalization and read staging, which run in this
+  # daemon when hangarOutput.executionControl.enabled is on.
   resources:
     requests:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 200m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
   # -- Node selector to restrict DaemonSet to specific node pools.
   # Example for GKE: {cloud.google.com/gke-nodepool: "ci-workers"}
   nodeSelector: {}
