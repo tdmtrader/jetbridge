@@ -130,6 +130,23 @@ var _ = Describe("Hangar capture rows", func() {
 		})
 	})
 
+	It("reconciles the in-service row only when the configured value differs", func() {
+		previous, moved, err := db.ReconcileHangarEnabled(ctx, dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(previous).To(BeTrue())
+		Expect(moved).To(BeFalse(), "an unchanged value is not a write")
+
+		var updated time.Time
+		Expect(dbConn.QueryRow(`SELECT updated_at FROM hangar_enabled`).Scan(&updated)).To(Succeed())
+		previous, moved, err = db.ReconcileHangarEnabled(ctx, dbConn, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(previous).To(BeTrue())
+		Expect(moved).To(BeTrue())
+		var after time.Time
+		Expect(dbConn.QueryRow(`SELECT updated_at FROM hangar_enabled`).Scan(&after)).To(Succeed())
+		Expect(after).To(BeTemporally(">=", updated))
+	})
+
 	It("records a release no node acknowledged, and counts it apart from the residue", func() {
 		insert(key, time.Hour)
 		Expect(in(func(tx db.Tx) error {

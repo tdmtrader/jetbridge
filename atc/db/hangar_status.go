@@ -6,31 +6,51 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// SetHangarEnabled moves the in-service row to the web's configured value and
-// reports whether it moved.
-//
-// FOR UPDATE, so the move waits for every admission already holding the row
-// FOR SHARE, and every admission after it reads the new value. It is the web's
-// startup write: hangarOutput.webEnabled in the chart, rendered into the flag.
+// SetHangarEnabled moves the in-service row to the given value and reports
+// whether it moved.
 func SetHangarEnabled(ctx context.Context, conn DbConn, enabled bool) (bool, error) {
+	_, moved, err := ReconcileHangarEnabled(ctx, conn, enabled)
+	return moved, err
+}
+
+// ReconcileHangarEnabled is the web's startup write: hangarOutput.webEnabled,
+// rendered into the flag. It reads the row without a lock first and writes
+// only when the configured value differs, so a web restart that changes
+// nothing takes no lock admission would wait on. It returns the value it
+// found and whether it moved the row.
+//
+// A move takes the row FOR UPDATE, so it waits for every admission already
+// holding it FOR SHARE, and every admission after it reads the new value.
+func ReconcileHangarEnabled(ctx context.Context, conn DbConn, enabled bool) (bool, bool, error) {
+	var current bool
+	err := conn.QueryRowContext(ctx, `SELECT enabled FROM hangar_enabled WHERE singleton`).Scan(&current)
+	found := err == nil
+	if err != nil && err != sql.ErrNoRows {
+		return false, false, err
+	}
+	if found && current == enabled {
+		return current, false, nil
+	}
+
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return current, false, err
 	}
 	defer Rollback(tx)
 
 	moved, err := hangarSetEnabled(ctx, tx, enabled)
 	if err != nil {
-		return false, err
+		return current, false, err
 	}
 
-	return moved, tx.Commit()
+	return current, moved, tx.Commit()
 }
 
 // RecordRuntimeAtRisk preserves a storage failure until explicit operator

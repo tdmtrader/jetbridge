@@ -26,11 +26,19 @@ import (
 // remains.
 func (cmd *RunCommand) reconcileHangarEnabled(logger lager.Logger, conn db.DbConn) error {
 	enabled := cmd.Kubernetes.OutputPlaneEnabled && cmd.Kubernetes.OutputCaptureEnabled
-	moved, err := db.SetHangarEnabled(context.Background(), conn, enabled)
+	previous, moved, err := db.ReconcileHangarEnabled(context.Background(), conn, enabled)
 	if err != nil {
 		return fmt.Errorf("reconciling the Hangar output plane's in-service flag: %w", err)
 	}
-	logger.Info("hangar-output-enabled", lager.Data{"enabled": enabled, "moved": moved})
+	if moved {
+		// A flip is an operator act with fleet-wide effect: every admission
+		// that needs the output plane starts or stops with it.
+		logger.Error("hangar-output-in-service-flipped", fmt.Errorf(
+			"hangar_enabled moved from %t to %t at this web's startup", previous, enabled),
+			lager.Data{"from": previous, "to": enabled})
+		return nil
+	}
+	logger.Info("hangar-output-enabled", lager.Data{"enabled": enabled})
 	return nil
 }
 
