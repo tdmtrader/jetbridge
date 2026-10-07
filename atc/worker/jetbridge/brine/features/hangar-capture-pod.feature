@@ -167,7 +167,7 @@ Feature: What a capture-selected task's Pod says
     And its output "result" is captured when the step succeeds
     And the worker's nodes are ready for "concourse.dev/hangar-execution-control-v1"
     When the capture pod is built
-    Then the pod build is refused saying "output facet is not enabled"
+    Then the pod build is refused saying "output plane is not enabled"
     And no capture pod is built
     And the same worker still builds an ordinary pod for a step that captures nothing
 
@@ -193,7 +193,7 @@ Feature: What a capture-selected task's Pod says
     And the worker's nodes are ready for "concourse.dev/hangar-output-v1"
     And the step was admitted under another control epoch
     When the capture pod is built
-    Then the pod build is refused saying "speaks for epoch"
+    Then the pod build is refused saying "mints under generation"
     And no capture pod is built
     And the same worker admits a capture under its own control epoch
 
