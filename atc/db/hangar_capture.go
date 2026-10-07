@@ -180,6 +180,12 @@ func (repository *HangarOutputRepository) CASPendingToPublishing(ctx context.Con
 	if podUID == "" {
 		return output.Capture{}, fmt.Errorf("%w: a sealed capture names no Pod", output.ErrIncomplete)
 	}
+	// The tree lock, before the row: reclaim admission and the orphan sweep
+	// hold it while they decide about (scope, digest), so this move waits for
+	// their decision and their act, and they see this row once it commits.
+	if err := hangarLockTree(ctx, tx, scope, digest); err != nil {
+		return output.Capture{}, err
+	}
 
 	return repository.casCapture(ctx, tx, key, `
 		UPDATE hangar_captures SET state = 'publishing', pod_uid = $3, scope = $4, digest = $5

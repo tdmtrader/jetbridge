@@ -139,6 +139,13 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 	// taking the SAME key's rows in different orders, and both of them issue
 	// this same statement.
 	for _, key := range locks.Logical {
+		// The tree itself, first: a capture moving to publishing onto this
+		// (scope, digest) takes the same lock before its row has a digest to
+		// be found by, so reclaim admission and the orphan sweep never decide
+		// about a generation a capture is deduplicating onto.
+		if err := hangarLockTree(ctx, tx, key.Scope, key.Digest); err != nil {
+			return HangarLocks{}, err
+		}
 		// Every capture row resolved to this correlation: the publishing ones
 		// reclaim admission must see, and the published ones a claim joins.
 		if _, err := tx.ExecContext(ctx, `
@@ -351,4 +358,17 @@ func hangarSetEnabled(ctx context.Context, tx output.Tx, enabled bool) (bool, er
 	}
 
 	return err == nil, err
+}
+
+// hangarLockTree is the transaction-scoped advisory lock on one tree,
+// (scope, digest). It is taken before any row lock: by LockHangarSuffix for
+// every logical correlation, and by the move to publishing, whose row has no
+// digest yet for a row lock to find.
+func hangarLockTree(ctx context.Context, tx output.Tx, scope hangar.Scope, digest hangar.Digest) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('hangar-tree:' || $1 || '/' || $2))`,
+		string(scope), string(digest)); err != nil {
+		return hangarConflict(err)
+	}
+
+	return nil
 }

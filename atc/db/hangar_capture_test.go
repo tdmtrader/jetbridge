@@ -66,6 +66,70 @@ var _ = Describe("Hangar capture rows", func() {
 		hangarActivateEpoch(ctx, repository)
 	})
 
+	Describe("the tree lock between a capture's move to publishing and a decision to delete", func() {
+		BeforeEach(func() {
+			dbConn.SetMaxOpenConns(4)
+			DeferCleanup(func() { dbConn.SetMaxOpenConns(1) })
+		})
+
+		casToPublishing := func(digest hangar.Digest) <-chan error {
+			done := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				done <- in(func(tx db.Tx) error {
+					_, err := repository.CASPendingToPublishing(ctx, tx, key, "pod-1", scope, digest)
+					return err
+				})
+			}()
+			return done
+		}
+
+		It("makes the move to publishing wait for an orphan verdict on the same tree", func() {
+			digest := digestOf("bbbbbbbb")
+			insert(key, time.Hour)
+
+			judging, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(judging)
+			verdict, err := repository.JudgeOrphan(ctx, judging, hangar.TreeRef{Scope: scope, Digest: digest, Generation: 7})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(verdict).To(Equal(db.HangarOrphan))
+
+			done := casToPublishing(digest)
+			Consistently(done, 500*time.Millisecond).ShouldNot(Receive(),
+				"a capture moved onto a tree while the sweep was deciding to delete it")
+
+			Expect(judging.Commit()).To(Succeed())
+			Eventually(done, 10*time.Second).Should(Receive(BeNil()))
+		})
+
+		It("makes an orphan verdict wait for a move to publishing in flight, and then protects the tree", func() {
+			digest := digestOf("cccccccc")
+			insert(key, time.Hour)
+
+			moving, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(moving)
+			_, err = repository.CASPendingToPublishing(ctx, moving, key, "pod-1", scope, digest)
+			Expect(err).NotTo(HaveOccurred())
+
+			verdicts := make(chan db.HangarOrphanVerdict, 1)
+			go func() {
+				defer GinkgoRecover()
+				Expect(in(func(tx db.Tx) error {
+					verdict, err := repository.JudgeOrphan(ctx, tx, hangar.TreeRef{Scope: scope, Digest: digest, Generation: 7})
+					verdicts <- verdict
+					return err
+				})).To(Succeed())
+			}()
+			Consistently(verdicts, 500*time.Millisecond).ShouldNot(Receive(),
+				"the sweep decided about a tree a capture was moving onto")
+
+			Expect(moving.Commit()).To(Succeed())
+			Eventually(verdicts, 10*time.Second).Should(Receive(Equal(db.HangarOrphanProtected)))
+		})
+	})
+
 	It("records a release no node acknowledged, and counts it apart from the residue", func() {
 		insert(key, time.Hour)
 		Expect(in(func(tx db.Tx) error {
