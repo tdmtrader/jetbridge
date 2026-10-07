@@ -162,7 +162,10 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.RenameTeam,
 		atc.DestroyTeam,
 		atc.ListTeamBuilds,
-		atc.GetTeam:
+		atc.GetTeam,
+		atc.SetLandingQueue,
+		atc.SubmitLanding,
+		atc.GetLandingQueue:
 		return a.EnableTeamAuditLog
 	case atc.RegisterWorker,
 		atc.ListWorkers,

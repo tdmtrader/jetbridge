@@ -146,6 +146,11 @@ var templateRouteEffects = map[string][]string{
 		atc.SetLogLevel,
 		atc.SetTeam,
 		atc.SetWall,
+		// The landing queue is a team's and reaches templates only through
+		// the Runs its component admits, which the native routes cover.
+		atc.SetLandingQueue,
+		atc.SubmitLanding,
+		atc.GetLandingQueue,
 	},
 }
 

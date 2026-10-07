@@ -517,6 +517,7 @@ var _ = Describe("Pipeline run completion notifications", func() {
 		lifecycle := parseCompletionSource("pipeline_run_lifecycle.go")
 		Expect(channelsNotifiedBy(lifecycle, "announceRunCompletion")).To(ConsistOf(
 			"atc.ComponentReclaimerPipelineRuns",
+			"atc.ComponentLandingQueue",
 			"atc.PipelineRunCompletedChannel",
 		), "the helper must keep waking the reclaimer and announce the dedicated completion channel")
 	})
