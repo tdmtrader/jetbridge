@@ -83,7 +83,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 	reserve := func(tx db.Tx) error { return port.ReserveInputPublication(in.Ctx, tx, stage, nonce) }
 	if mode == "storage integrity at risk" {
 		if err := transact(false, func(tx db.Tx) error {
-			return repository.RecordRuntimeAtRisk(in.Ctx, tx, int64(stage.ActivationEpoch), output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "input-generation", Detail: "unexpected object loss"})
+			return repository.RecordRuntimeAtRisk(in.Ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "input-generation", Detail: "unexpected object loss"})
 		}); err != nil {
 			return err
 		}
@@ -140,19 +140,17 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 	if err != nil {
 		return fmt.Errorf("publish real upload: %w", err)
 	}
-	if mode == "pending adoption shield" {
-		marker, err := output.ParseObjectMarker(publication.Marker)
-		if err != nil {
-			return err
-		}
-		var outcome output.AdoptionOutcome
+	if mode == "pending orphan-sweep shield" {
+		// The orphan sweep's verdict on the published object while its
+		// upload is reserved and unregistered: protected, however old.
+		var verdict db.HangarOrphanVerdict
 		err = transact(false, func(tx db.Tx) error {
-			var adoptErr error
-			outcome, adoptErr = repository.AdoptManagedOrphan(in.Ctx, tx, output.AdoptionRequest{ProtocolVersion: output.ProtocolVersion, ActivationEpoch: stage.ActivationEpoch, Ref: publication.Attributes.Ref, Metageneration: publication.Metageneration, Marker: marker, CreatedAt: publication.Attributes.CreatedAt, Grace: output.MaxCaptureDeadline + output.PublicationGraceMargin, SafetyMargin: output.PublicationGraceMargin})
-			return adoptErr
+			var judgeErr error
+			verdict, judgeErr = repository.JudgeOrphan(in.Ctx, tx, publication.Attributes.Ref)
+			return judgeErr
 		})
-		if err == nil || outcome != output.AdoptionProtectedByReservation {
-			return fmt.Errorf("pending upload did not protect adoption: %s, %v", outcome, err)
+		if err != nil || verdict != db.HangarOrphanProtected {
+			return fmt.Errorf("pending upload did not protect the object from the orphan sweep: %s, %v", verdict, err)
 		}
 	}
 	register := func(tx db.Tx) error { return port.RegisterInputPublication(in.Ctx, tx, publication) }

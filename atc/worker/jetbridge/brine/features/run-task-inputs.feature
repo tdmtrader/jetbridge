@@ -27,6 +27,6 @@ Feature: A Run task receives its retained named inputs
       | a valid source               | wrong build             |
       | a valid source               | aborted build           |
       | a valid source               | a Run admission hold    |
-      | a valid source               | a disabled Hangar epoch |
+      | a valid source               | Hangar out of service   |
       | a valid source               | edited template         |
       | a valid source               | repeated preparation    |

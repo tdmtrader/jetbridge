@@ -20,7 +20,7 @@ Feature: Registering an uploaded input before granting ownership
       | "changed nonce"              |
       | "changed node"               |
       | "expired reservation"        |
-      | "pending adoption shield"    |
+      | "pending orphan-sweep shield" |
       | "pending reclaim shield"     |
       | "reclaim first"              |
       | "commit after deadline"      |

@@ -18,7 +18,6 @@ package steps
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -26,7 +25,6 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
-	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutputleaf "github.com/concourse/concourse/hangar/output"
@@ -202,35 +200,19 @@ func jetbridgeDBFrom(res brine.Resources) (JetbridgeDB, error) {
 	return jdb, nil
 }
 
-// openActivationEpoch puts the plane in the state a deployment is in after
-// activation: one enabled epoch and one fresh, safe policy attestation.
+// openActivationEpoch puts the output plane in service, as the web's startup
+// write does: the hangar_enabled row admission takes FOR SHARE.
 //
-// Without both, nothing admits anything -- which is the held state the
-// migration deliberately leaves behind, and is why this is a fixture step
-// rather than a default.
-func openActivationEpoch(jdb JetbridgeDB, cohort ...string) error {
-	attestation := "{}"
-	if len(cohort) > 0 {
-		body, err := json.Marshal(map[string]any{"members": []map[string]any{{"node": cohort[0], "control_key_id": hangarControlKeyID, "activation_epoch": hangarEpoch}}})
-		if err != nil {
-			return err
-		}
-		attestation = string(body)
-	}
-
-	if err := postgresrunner.ExecAsActivationRole(jdb.Conn, `
-		INSERT INTO hangar_output_activation_epochs
-			(epoch_id, base_state, output_state, base_attestation, output_attestation,
-			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES ($1, 'enabled', 'enabled', $2::jsonb, '{}',
-			'brine-materialize-key-1', 'gs://brine-output', 'brine/one')
-		ON CONFLICT (epoch_id) DO NOTHING`,
-		int64(hangarEpoch), attestation); err != nil {
-		return fmt.Errorf("opening the activation epoch: %w", err)
+// Without it, nothing admits anything -- which is the held state a fresh
+// database starts in, and is why this is a fixture step rather than a default.
+// The cohort argument is accepted and ignored: there is no cohort attestation
+// any more.
+func openActivationEpoch(jdb JetbridgeDB, _ ...string) error {
+	if _, err := db.SetHangarEnabled(context.Background(), jdb.Conn, true); err != nil {
+		return fmt.Errorf("putting the output plane in service: %w", err)
 	}
 
 	return nil
-
 }
 
 // jetbridgeClientFor is the production client bound to this fixture's output
