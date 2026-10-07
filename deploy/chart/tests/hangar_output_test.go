@@ -919,7 +919,7 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 // -- an explicit null, which is to say unbounded, under a comment asserting a
 // bound that is not there. Nothing in that mode writes the volume today
 // (PrepareScratch and the canonicalizer are inside the output-facet branch of
-// cmd/hangar-output-daemon), so the live exposure was nil; what was wrong was
+// cmd/artifact-daemon/outputplane), so the live exposure was nil; what was wrong was
 // the claim, and a render that documents a limit it does not set is the kind of
 // thing an operator reads once.
 func TestTheOutputScratchVolumeIsBoundedInBaseControlOnlyModeToo(t *testing.T) {
@@ -1752,7 +1752,7 @@ func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadWarrantKeys(t *testing.
 }
 
 // The base facet cannot render without one. A daemon started with no id
-// refuses at startup (cmd/hangar-output-daemon/config.go), and the refusal an
+// refuses at startup (cmd/artifact-daemon/outputplane/config.go), and the refusal an
 // operator most needs is the one at render time.
 func TestTheControlKeyIdIsRequiredWithTheBaseFacet(t *testing.T) {
 	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
