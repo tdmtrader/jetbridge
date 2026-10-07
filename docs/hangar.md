@@ -198,9 +198,17 @@ permissions. Provision the bucket and permissions outside the chart:
 | Identity | Object operations |
 | --- | --- |
 | Strict-input daemon | create, get in the strict-input bucket |
+| Artifact daemon, resource cache (`--durable-store=gcs`) | create, get, list, delete in the cache bucket **only** |
 | Output publisher/materializer | create, get in the output bucket |
 | Inventory | list, get in the output bucket |
 | Reclaimer | get, delete in the output bucket |
+
+The artifact daemon's strict-input and resource-cache roles are one Pod and so
+one workload identity. Grant each as a binding on its own bucket. The daemon's
+delete must be granted on the cache bucket alone: never a project-wide role
+such as `roles/storage.objectAdmin`, which would give the node daemon delete
+over the strict-input and output buckets too. The node daemon holds no delete
+on any exact tree.
 
 Keep output objects in a dedicated bucket, separate from strict inputs and
 resource caches. Do not configure lifecycle deletion, external cleanup or
@@ -263,12 +271,15 @@ ID on every request. Its fixed roles have the permissions above, except disk
 inventory and reclaimer cannot read object bodies. There is no general IAM
 engine, overwrite API or unconditional delete API.
 
-Run outside the chart, `hangar-store --cache-namespace=<ns>` also serves the
-artifact daemon's fail-open resource cache (`--durable-store=disk`). It then
-needs a fifth distinct credential under `cache` in `server.json`; that role may
-create, stat, read, list and exact-delete inside the cache namespace and
-nothing outside it, and the store refuses a cache namespace equal to the input
-or output one.
+The artifact daemon's fail-open resource cache (`--durable-store=disk`) runs on
+a **dedicated** `hangar-store` instance with its own PVC, outside the chart:
+`hangar-store --cache-namespace=<ns>` on a disk of its own, initialized with
+its own store ID. That instance serves the cache namespace only: it refuses
+`--input-namespace` or `--output-namespace` beside it, and its `server.json`
+names exactly one credential, `cache`, which may create, stat, read, list and
+exact-delete inside the cache namespace and nothing else. The cache never
+shares a process, index lock or concurrency slot with the strict input and
+output store, so cache churn cannot stall a strict read or publish.
 
 First provision the disk service, retaining your existing artifact-daemon
 TLS/key configuration and leaving client features disabled:

@@ -288,9 +288,10 @@ type Attributes struct {
 
 type Store interface {
     Stat(ctx context.Context, key string) (Attributes, bool, error)
-    Get(ctx context.Context, key string) (io.ReadCloser, bool, error)
+    Get(ctx context.Context, key string) (io.ReadCloser, Attributes, bool, error)
     Put(ctx context.Context, key string, body io.Reader) error
     Delete(ctx context.Context, key string) error
+    DeleteVersion(ctx context.Context, key, version string) error
     List(ctx context.Context, fn func(Attributes) error) error
 }
 ```
@@ -303,7 +304,10 @@ Over the object interface:
 
 - `Stat` is `StatCurrent`; not-found is a miss.
 - `Get` is `StatCurrent` then `OpenExact` of that generation, so an object
-  expired and recreated in between reads as a miss rather than a mixture.
+  expired and recreated in between reads as a miss rather than a mixture; it
+  reports the generation it opened.
+- `DeleteVersion` is `DeleteExact` of a generation the caller read, never a
+  re-stat; a newer object at the key is kept.
 - `Put` is create-if-absent. Objects are immutable and keys are content-derived,
   so a key already present — or a lost race to a concurrent writer of the same
   key (`ErrPreconditionFailed`) — is **success**, and the upload is skipped when
@@ -313,8 +317,9 @@ Over the object interface:
 - `List` pages the namespace by `(key, generation)`.
 
 Because objects are immutable, a truncated, corrupt or hostile object is not
-healed by the next producer's upload. A restore that fails to extract expires
-the object, so the next producer can put a good copy back.
+healed by the next producer's upload. A restore that fails because of the
+object deletes exactly the generation it read (`DeleteVersion`, never a re-stat
+of the current one), so the next producer can put a good copy back.
 
 `List` is there for reclaim. Storage is the only authority on what storage
 holds: a database can be restored, rebuilt or diverge, so anything reconciling
@@ -331,11 +336,16 @@ Application Default Credentials, which on GKE is Workload Identity — no key
 exists to leak. `--durable-endpoint` points it at an emulator (tests and brine)
 and is empty in production.
 
-**disk** — the persistent-disk store (`cmd/hangar-store`) through
-`hangar/disk`, as its `cache` role. The store must be started with
-`--cache-namespace`, and its credentials file must name a `cache` credential;
-that role may create, stat, read, list and delete inside the cache namespace and
-nothing outside it.
+**disk** — a **dedicated** persistent-disk store (`cmd/hangar-store`, its own
+PVC and store ID) through `hangar/disk`, as its `cache` role. That instance is
+started with `--cache-namespace` and nothing else: it refuses the input and
+output namespaces beside the cache, and its credentials file names only a
+`cache` credential, which may create, stat, read, list and delete inside the
+cache namespace. The cache never shares the strict store's process, index lock
+or concurrency slots.
+
+At startup the disk identity probe is bounded to seconds
+(`durable.DefaultProbeTimeout`), not the transfer timeout.
 
 The S3-compatible and filesystem backends are gone. The S3 one needed an HMAC
 key or IRSA and a spool to disk for the signer; the filesystem one was only
@@ -379,9 +389,12 @@ refuses the same way.
 
 An incomplete config fails at daemon startup, which exits rather than serving:
 a daemon that starts, reports healthy and quietly caches nothing is a much
-worse failure. A correct config whose store is unreachable at startup is
-different: the tier is left off, logged as `durable-store-unavailable`, and the
-daemon serves builds without it until it restarts.
+worse failure. So does a store that answers and refuses — a rejected
+credential, or a disk store reporting another identity. A correct config whose
+store cannot be reached at startup is different: the tier starts unconnected
+(every operation a miss, and the daemon does not advertise the tier to the
+ATC), logs `durable-store-unavailable`, and keeps connecting in the background
+with backoff up to 5m; the retention pass starts once it connects.
 
 ## Failure modes
 
@@ -399,7 +412,7 @@ Every row degrades. None fails a build.
 | Concurrent uploads of one key | Collapsed to a single transfer by an in-flight set. |
 | Daemon restarts mid-upload | The object is simply absent; the next request re-uploads. |
 | Key already stored | `Put` succeeds without writing; the first object stands. |
-| Object fails to restore (corrupt, truncated, hostile) | 404; the object is expired so the next producer recreates it. |
+| Object fails to restore because of the object (refused/hostile entry, truncated body, malformed tar, store-reported corruption) | 404; exactly the generation that was read is expired, so the next producer recreates it. A local failure (disk full, permissions, descriptors) or a store/network failure while reading expires nothing. |
 
 ## Observability
 

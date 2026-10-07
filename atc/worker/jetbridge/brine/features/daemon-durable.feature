@@ -180,6 +180,9 @@ Feature: The durable tier, against the daemon that implements it
   # one as fatal — so the two lines that follow it are the "why". The file
   # outside is unchanged, and steps/ holds only the copy that was accepted,
   # which is also how a leftover ".restore-" working directory would show up.
+  # The last line is the expiry: objects are immutable, so an unusable one is
+  # deleted (exactly the generation that was read) rather than left to block
+  # every later upload of its key, and the benign object is untouched.
   Scenario: A hostile object in the shared store cannot write outside the copy it is restoring
     Given a real artifact daemon with a durable store
     And the durable store holds the cache "resource-caches/rc-benign" whose file "payload" reads "ordinary bytes"
@@ -190,6 +193,7 @@ Feature: The durable tier, against the daemon that implements it
     Then the daemon's answer is 404
     And the file it tried to escape to still reads "original"
     And the node's steps directory holds only "rc-benign"
+    And the durable store holds exactly "resource-caches/rc-benign"
 
   # A cold cache — nothing on the node, nothing in the store — has to read as
   # an ordinary miss, because the ATC's recovery is to re-run the get step and
