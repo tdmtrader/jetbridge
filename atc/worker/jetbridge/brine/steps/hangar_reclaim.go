@@ -168,7 +168,7 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 				// The registered metageneration is 1: nothing in this chain
 				// touches the object's metadata after it is published.
 				in.AdmitErr = plane.Repository.AdmitReclaim(ctx, brineHangarTx(tx),
-					in.Bound.Tree.Ref, "brine-web", 1, time.Minute, time.Millisecond)
+					in.Bound.Tree.Ref, "brine-web", 1, hangaroutputleaf.MinLeaseTerm, time.Millisecond)
 
 				return in, nil
 			},
