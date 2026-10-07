@@ -2,16 +2,16 @@ package jetbridge
 
 // The capture-selected pod's control init container.
 //
-// Requirement 3 puts one ordering ahead of everything else: after the exact
-// source incarnation exists but BEFORE the producer main process may start, the
-// daemon durably acknowledges a provisional source hold. In a Pod that means an
+// Requirement 3 puts one ordering ahead of everything else: after the exact Pod
+// exists but BEFORE the producer main process may start, the daemon durably
+// writes a held step marker (the source hold). In a Pod that means an
 // init container, because an init container is the only thing Kubernetes runs
 // before the containers -- and it must be the FIRST init container, because
 // every other one this pod builds writes into the very tree the hold protects:
 // `cleanup-stale` removes it, `artifact-fetch` stages inputs into it.
 //
 // Requirement 24 decides where the credential goes. The task and sidecar
-// containers receive no GCS credential, no receipt key, no materialization key
+// containers receive no GCS credential, no materialization key
 // and no publication capability, and the source-control grant is the capture
 // extension's own attenuated capability -- so it is carried by THIS container
 // and by nothing else in the pod. `buildPod` never copies it into the main
@@ -136,8 +136,8 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 
 // downwardAPIPodAndNodeFields are the exact field refs the hold binds itself
 // to. They are exact rather than "whatever the pod knows": `metadata.uid` is
-// the Pod incarnation a writer ticket is bound to, and a recreated Pod is a new
-// UID that may not write; `spec.nodeName` and `status.hostIP` are how the
+// the Pod the step marker names and seal waits on, and a recreated Pod is a
+// new UID that may not write; `spec.nodeName` and `status.hostIP` are how the
 // container reaches the daemon that owns this node's ledger.
 func downwardAPIPodAndNodeFields() []corev1.EnvVar {
 	fieldRef := func(name, path string) corev1.EnvVar {
@@ -217,7 +217,7 @@ exit 1
 	)
 }
 
-// CapabilityHeaderName is the header the output daemon reads an attenuated
+// CapabilityHeaderName is the header the output plane reads an attenuated
 // control capability from. It is restated here rather than imported because
 // the ATC does not import cmd/artifact-daemon; capture_control_test.go pins the
 // two spellings against each other so they cannot drift.

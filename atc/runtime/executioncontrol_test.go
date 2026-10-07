@@ -125,15 +125,15 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 		mutate func(*runtime.ExecutionControl, *runtime.ContainerSpec)
 		says   string
 	}{
-		"an envelope from another cohort": {
+		"an envelope from another protocol version": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) { c.Version = "v0" },
-			says:   "this cohort speaks",
+			says:   "this daemon speaks",
 		},
-		"an extension from another cohort": {
+		"an extension from another protocol version": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
 				c.Capture.Version = "v0"
 			},
-			says: "this cohort speaks",
+			says: "this daemon speaks",
 		},
 		// The extension with no base: a zero envelope carrying a capture. It
 		// is representable precisely so it can be refused.
@@ -142,7 +142,7 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 				capture := c.Capture
 				*c = runtime.ExecutionControl{Capture: capture}
 			},
-			says: "this cohort speaks",
+			says: "this daemon speaks",
 		},
 		"an unknown phase": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) { c.Phase = "running" },
@@ -182,7 +182,7 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
 				c.Capture.ActivationEpoch = testEpoch + 1
 			},
-			says: "one epoch attests both facets",
+			says: "one generation covers both facets",
 		},
 		// A capture that cannot say which node holds its step directory. The
 		// Pod is pinned to that node because the directory is on its disk.

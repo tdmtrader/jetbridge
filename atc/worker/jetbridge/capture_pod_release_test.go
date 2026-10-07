@@ -2,7 +2,7 @@ package jetbridge
 
 // A capture-selected pause Pod is given back once its outcome is the node's.
 //
-// The seal on the output daemon waits until every container of the producing
+// The seal on the output plane waits until every container of the producing
 // Pod has terminated, or the Pod is gone. In exec mode the pause container
 // sleeps for a day; the reaper keeps the Pods of a running build; and the build
 // does not finish until its capture does. So nothing ended the pause container,
@@ -10,7 +10,7 @@ package jetbridge
 //
 // What ends it now is Wait, once the node has acknowledged the outcome: a
 // GRACEFUL Pod delete. These specs run the exec-mode path for real -- the pause
-// Pod the Container itself builds, an executor, a real output daemon that
+// Pod the Container itself builds, an executor, a real artifact daemon output plane that
 // admits, holds, records and seals -- and then let the seal complete only on
 // the evidence production's seal reads.
 //
@@ -94,7 +94,7 @@ func podGoneFromNode(ctx context.Context, clientset *fake.Clientset, node string
 	return true, nil
 }
 
-// exactPausePodFixture is one exec-mode step on a real output daemon: its
+// exactPausePodFixture is one exec-mode step on a real artifact daemon output plane: its
 // container, the pause Pod that container built (bound and running, as the
 // scheduler and the kubelet would leave it), and the control it runs under.
 type exactPausePodFixture struct {
@@ -111,7 +111,7 @@ func newExactPausePodFixture(t *testing.T, capture bool) *exactPausePodFixture {
 
 	harness, err := startOutputDaemon()
 	if err != nil {
-		t.Fatalf("starting the output daemon: %v", err)
+		t.Fatalf("starting the output plane: %v", err)
 	}
 	t.Cleanup(harness.Stop)
 

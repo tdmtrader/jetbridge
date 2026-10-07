@@ -13,19 +13,20 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// FacetLabeler advertises this node's facets to the scheduler.
+// FacetLabeler advertises to the scheduler which capability facets this
+// node's daemon serves.
 //
-// Two labels, not one, and they go on in order. The base label attests that
-// this node's daemon, runtime and control key are a homogeneous attested cohort
-// for the exact-execution protocol; the output label attests the capture
-// extension ON TOP of it. A node advertising output without base would be
-// claiming a capture cohort with no exact-execution protocol underneath, and a
-// capture pod's affinity requires both, so a pod placed on that node would have
-// its hold refused on arrival.
+// Two labels, not one, and they go on in order. The base label says this
+// node's daemon serves the exact-execution protocol; the output label says it
+// serves the capture extension ON TOP of it. A node advertising output without
+// base would be offering capture with no exact-execution protocol underneath,
+// and a capture pod's affinity requires both, so a pod placed on that node would
+// have its hold refused on arrival.
 //
-// Neither label is authority. The authenticated handshake is, and the activation
-// epoch row is the authority above that. What the label buys is that the pod
-// does not land somewhere the hold could never be acknowledged.
+// Neither label is authority: the capability the daemon verifies is, and
+// hangar_enabled decides whether the plane admits anything at all. What the
+// label buys is that the pod does not land somewhere the hold could never be
+// acknowledged.
 type FacetLabeler struct {
 	nodes kubernetes.Interface
 	node  string
@@ -50,8 +51,7 @@ func NewFacetLabeler(client kubernetes.Interface, node string) *FacetLabeler {
 // TWO patches and not one. They are two claims made at two different moments:
 // the base facet is ready when the execution ledger, the control key, the
 // protocol and the runtime handshake pass, and the output facet only once the
-// source ledger, the publisher, the receipt key ring and the active output epoch
-// pass as well. One patch would make the second claim true at the instant the
+// source ledger, the publisher and the read-warrant key pass as well. One patch would make the second claim true at the instant the
 // first one became true, which is the thing the two labels exist to keep apart.
 func (labeler *FacetLabeler) Advertise(ctx context.Context, output bool) error {
 	if labeler == nil {

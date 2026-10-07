@@ -64,8 +64,8 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 	switch finding.Violation {
 	case output.ViolationOutOfBandAbsence, output.ViolationRuntimePrincipalDenied:
 	default:
-		return fmt.Errorf("%w: %q is an attestation's finding and this is a runtime "+
-			"observation", output.ErrConflict, finding.Violation)
+		return fmt.Errorf("%w: %q is not a runtime "+
+			"integrity finding", output.ErrConflict, finding.Violation)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -102,8 +102,8 @@ func (repository *HangarOutputRepository) OpenIntegrityFindings(ctx context.Cont
 			&observed, &finding.BlocksAdmission); err != nil {
 			return nil, err
 		}
-		// Not parsed against the runtime vocabulary: a historical finding of
-		// an attestation class is still an open row an operator resolves.
+		// Not parsed against the runtime vocabulary: a historical finding of a
+		// class that no longer exists is still an open row an operator resolves.
 		finding.Violation = output.PolicyViolation(violation)
 		finding.ObservedAt = output.NewTimestamp(observed.UTC())
 		findings = append(findings, finding)

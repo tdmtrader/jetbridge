@@ -1,6 +1,6 @@
 package outputplane
 
-// The output daemon's private control directory.
+// The output plane's private control directory.
 //
 // Both ledgers -- the base execution ledger and the capture source ledger --
 // keep versioned records here. It is a directory inside the shared managed

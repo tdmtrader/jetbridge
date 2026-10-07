@@ -1,5 +1,5 @@
-// Package conformance exercises the output plane's publisher, inventory and
-// reclaimer roles against shared immutable-object semantics.
+// Package conformance exercises the output plane's publisher, list and
+// delete roles against shared immutable-object semantics.
 //
 // The in-memory substrate supports deterministic fault injection. The GCS API
 // substrate runs the real adapter against fake-gcs-server, and the disk

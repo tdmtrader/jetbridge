@@ -345,8 +345,8 @@ func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
 }
 
 // The pod's readiness is the artifact daemon's, so a plane whose ledger is
-// quarantined says so on its handshakes: the activation walk attests through
-// them, and a node that cannot answer for its ledger must not attest.
+// quarantined says so on its handshakes: a node that cannot answer for its
+// ledger must not claim to speak the protocol.
 func TestAnUnreadyPlaneRefusesItsHandshakes(t *testing.T) {
 	fixture := newRoutes(t, "")
 	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)

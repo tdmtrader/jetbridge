@@ -7,14 +7,14 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
-// ExtensionHandshake is what an authenticated output daemon returns.
+// ExtensionHandshake is what a node's output plane reports about its capture
+// extension.
 //
-// It embeds the base handshake rather than restating it, so a base-only cohort
-// is attestable while output_state is still initial -- which is exactly what
-// lets the base facet be enabled before an output bucket exists at all.
+// It embeds the base handshake rather than restating it, so the base facet
+// can be served before an output bucket exists at all.
 //
-// None of this is authority by itself; it is evidence. The activation epoch row
-// is the authority, and a node label is only a scheduling hint.
+// None of this is authority; it is a description. The capability the daemon
+// verifies is the authority, and a node label is only a scheduling hint.
 type ExtensionHandshake struct {
 	Base                    executioncontrol.Handshake `json:"base"`
 	CaptureExtensionVersion string                     `json:"capture_extension_version"`
@@ -29,11 +29,11 @@ func (handshake ExtensionHandshake) Validate() error {
 		return err
 	}
 	if handshake.CaptureExtensionVersion != ProtocolVersion {
-		return fmt.Errorf("%w: capture extension version %q, this cohort speaks %q",
+		return fmt.Errorf("%w: capture extension version %q, this daemon speaks %q",
 			ErrUnsupportedProtocol, handshake.CaptureExtensionVersion, ProtocolVersion)
 	}
 	if handshake.SourceLedgerVersion != SourceLedgerVersion {
-		return fmt.Errorf("%w: source ledger version %q, this cohort speaks %q",
+		return fmt.Errorf("%w: source ledger version %q, this daemon speaks %q",
 			ErrUnsupportedProtocol, handshake.SourceLedgerVersion, SourceLedgerVersion)
 	}
 	if handshake.MaterializationKeyID == "" {

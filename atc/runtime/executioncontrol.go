@@ -31,7 +31,7 @@ import (
 // ExecutionControlVersion and DurableOutputCaptureVersion are SEPARATE
 // versions, and that is the extension design stated as a constant: the base
 // protocol can move without every capture-selected pod in flight becoming
-// unreadable, and a capture extension can move without the base cohort caring.
+// unreadable, and a capture extension can move without the base protocol caring.
 const (
 	ExecutionControlVersion     = "atc-execution-control-v1"
 	DurableOutputCaptureVersion = "atc-durable-output-capture-v1"
@@ -68,9 +68,9 @@ var ErrInvalidExecutionControl = fmt.Errorf("runtime: invalid execution control"
 
 // ExecutionControl is the base envelope.
 //
-// It contains an opaque exact identity, its fence, the activation epoch it was
-// admitted under, the node-local control endpoint and an attenuated control
-// capability. It contains no output, no handoff, no source hold, no bucket and
+// It contains an opaque exact identity, its fence, the control-key generation
+// (activation epoch) it was admitted under, the node-local control endpoint and an attenuated control
+// capability. It contains no output, no capture, no source hold, no bucket and
 // no product-domain field of any kind -- there is a test that walks this
 // struct's fields and fails if one appears.
 type ExecutionControl struct {
@@ -183,7 +183,7 @@ func (control *ExecutionControl) Validate(spec ContainerSpec) error {
 		return nil
 	}
 	if control.Version != ExecutionControlVersion {
-		return fmt.Errorf("%w: envelope version %q, this cohort speaks %q",
+		return fmt.Errorf("%w: envelope version %q, this daemon speaks %q",
 			ErrInvalidExecutionControl, control.Version, ExecutionControlVersion)
 	}
 	if err := control.Phase.Validate(); err != nil {
@@ -193,8 +193,8 @@ func (control *ExecutionControl) Validate(spec ContainerSpec) error {
 		return fmt.Errorf("%w: %v", ErrInvalidExecutionControl, err)
 	}
 	if control.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero; an execution is admitted under an "+
-			"attested epoch or not at all", ErrInvalidExecutionControl)
+		return fmt.Errorf("%w: activation epoch is zero; an execution is admitted under a "+
+			"control-key generation or not at all", ErrInvalidExecutionControl)
 	}
 	if strings.TrimSpace(control.Endpoint) == "" {
 		return fmt.Errorf("%w: no control endpoint; an envelope nobody can ask about is not "+
@@ -224,7 +224,7 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 	capture := control.Capture
 
 	if capture.Version != DurableOutputCaptureVersion {
-		return fmt.Errorf("%w: capture extension version %q, this cohort speaks %q",
+		return fmt.Errorf("%w: capture extension version %q, this daemon speaks %q",
 			ErrInvalidExecutionControl, capture.Version, DurableOutputCaptureVersion)
 	}
 	if control.Phase != ControlPhaseAdmitted {
@@ -239,7 +239,7 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 	}
 	if capture.ActivationEpoch != control.ActivationEpoch {
 		return fmt.Errorf("%w: the capture extension was admitted under epoch %d and the envelope "+
-			"under %d; one epoch attests both facets", ErrInvalidExecutionControl,
+			"under %d; one generation covers both facets", ErrInvalidExecutionControl,
 			capture.ActivationEpoch, control.ActivationEpoch)
 	}
 	if capture.CaptureDeadline.IsZero() {

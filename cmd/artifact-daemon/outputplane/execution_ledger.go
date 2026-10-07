@@ -10,7 +10,7 @@ package outputplane
 // is that those three can all be wrong at once and none of them can say so.
 //
 // What it does NOT contain is as deliberate as what it does. There is no Run,
-// build kind, job, check, cancellation reason, output, hold, capture or receipt
+// build kind, job, check, cancellation reason, output, hold or capture
 // anywhere in this file. An optional capture extension references an execution
 // by identity and may open a named cleanup gate on it; it cannot replace the
 // outcome and it cannot start a second state machine. That is decision F13's
@@ -219,7 +219,7 @@ func (ledger *ExecutionLedger) Admit(envelope executioncontrol.Envelope) error {
 		return err
 	}
 	if envelope.ActivationEpoch != ledger.epoch {
-		return fmt.Errorf("%w: the envelope names epoch %d and this node is attested for %d",
+		return fmt.Errorf("%w: the envelope names control-key generation %d and this node is configured for %d",
 			output.ErrConflict, envelope.ActivationEpoch, ledger.epoch)
 	}
 	if envelope.NodeUID != ledger.node {

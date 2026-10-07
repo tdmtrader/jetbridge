@@ -173,13 +173,13 @@ jobs:
 #
 # Phase 9 added a SECOND contract to this job rather than a second job: the
 # capture-selected producer's hold, identity and placement
-# (live_capture_flow_test.go). It relabels the same node into the OUTPUT-plane
-# cohort (concourse.dev/hangar-execution-control-v1,
+# (live_capture_flow_test.go). It labels the same node ready for the OUTPUT
+# plane (concourse.dev/hangar-execution-control-v1,
 # concourse.dev/hangar-output-v1), plants the same kind of BusyBox stand-in on
 # 31781 answering POST /capture/v1/hold, and asserts the three things only a
 # kubelet can say: that the control init ran before every writer, that the Pod
 # UID the API server assigned is the one that reached the daemon, and that the
-# Pod landed on the node holding its reservation. One cluster stand-up serves
+# Pod landed on the node holding its capture. One cluster stand-up serves
 # both; `go test -run` reports them separately.
 - name: hangar-generated-pod-contract
   serial: true
@@ -681,8 +681,8 @@ jobs:
 
 # Durable Run cancellation on a real kubelet (the brine disposable-kubelet
 # tier, atc/worker/jetbridge/brine/kubelet/.brine). Like the Hangar contracts
-# above it relabels a node into the output-plane cohort and runs a node-local
-# output daemon, so it owns its cluster: hack/test-run-kubelet starts a
+# above it labels a node ready for the output plane and runs a node-local
+# artifact daemon output plane, so it owns its cluster: hack/test-run-kubelet starts a
 # single-node K3s inside this task and destroys it with the task.
 - name: run-cancellation-kubelet
   serial: true

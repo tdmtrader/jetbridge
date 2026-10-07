@@ -250,7 +250,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		root:        root,
 
 		// The classifier is always attached, and it is attached here rather
-		// than behind a flag on purpose: a node that gained an output daemon
+		// than behind a flag on purpose: a node that gained an output plane
 		// after this one started would otherwise keep destroying held sources
 		// until somebody restarted it. New() does not touch the filesystem;
 		// the absence of a control directory is a real answer meaning "no
@@ -683,9 +683,8 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 	absPath := filepath.Join(s.storagePath, key)
 
 	// The output plane's hold, before anything is created or replaced. A PUT
-	// under a held source replaces the producer's bytes with no writer ticket
-	// and no record that it happened (Req 12: a daemon replacement exercises
-	// write capability, and write capability needs a ticket).
+	// under a held source would replace the producer's bytes with no record
+	// that it happened (Req 12).
 	if class, err := s.refuseIfCaptureHeld(RelKey(key)); err != nil {
 		s.captureRefusal(w, r, RelKey(key), class, err)
 		return
@@ -1024,7 +1023,7 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 		// to ask about its own step directory -- so its audience is every pod
 		// on the node, task pods included, and the ledger's `unavailable` text
 		// carries the node's control-directory path and the raw OS error.
-		// Those are exactly the values the output daemon's own redaction rule
+		// Those are exactly the values the output plane's own redaction rule
 		// forbids any route to emit, and this route was never held to it.
 		s.logger.Info("capture-class", lager.Data{
 			"class": string(class), "handle": handle, "detail": reason.Error(),
@@ -1040,7 +1039,7 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 // path rather than a key: a resolve destination and a register's local_path are
 // both client-supplied absolute paths inside the store.
 //
-// A path that will not relativize into the store is not a source incarnation
+// A path that will not relativize into the store is not a step directory
 // and cannot be held. This must not become a second, weaker containment check:
 // the callers that take one validate containment separately, and this returns
 // "unmanaged" rather than an error for anything it cannot place.

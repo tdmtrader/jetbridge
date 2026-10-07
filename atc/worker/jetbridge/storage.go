@@ -22,8 +22,9 @@ type StorageBackend interface {
 
 	// CaptureStepVolume is the volume for a capture-selected output.
 	//
-	// reservedDir is the output daemon's OWN name for the location, relative to
-	// the managed steps root, taken verbatim from the reservation. It is a
+	// reservedDir is the capture's step directory, relative to the managed
+	// steps root, derived from the capture key exactly as the daemon derives
+	// it. It is a
 	// separate method from StepVolume because it takes a different key: a step
 	// volume is derived from a handle this runtime chose, and this one is
 	// derived from nothing -- it repeats an answer. A backend that composed it

@@ -16,7 +16,7 @@ import (
 // Requirement 20 is a rule about *who decides*: the bucket, the object-key
 // prefix and the opaque scope come only from authenticated deployment and
 // tenant configuration plus the store they live in. A task, a domain
-// consumer, a path parameter or a receipt cannot select or broaden any of
+// consumer, a path parameter or a request body cannot select or broaden any of
 // them. This file is that rule as a pure function, which is the only shape in
 // which it can be checked exhaustively -- the daemon's request handling is
 // where a caller-supplied field would arrive, and there is exactly one place
@@ -137,7 +137,7 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 	if config.StrictInputBucket != "" && config.Bucket == config.StrictInputBucket {
 		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the caller-published "+
 			"strict-input bucket %q. Strict inputs are published by callers; output objects are "+
-			"published only by the output daemon, and sharing the bucket gives one principal "+
+			"published only by the artifact daemon's output plane, and sharing the bucket gives one principal "+
 			"both roles", ErrConflict, config.Bucket)
 	}
 	if err := hangar.ValidateDeploymentPrefix(config.DeploymentPrefix); err != nil {
@@ -289,7 +289,7 @@ func (namespace OutputNamespace) ObjectKey(digest hangar.Digest) (string, error)
 	return hangar.TreeKey(namespace.prefix, namespace.scope, digest)
 }
 
-// ListPrefix is the bucket-wide prefix inventory sweeps under.
+// ListPrefix is the bucket-wide prefix the orphan sweep lists under.
 //
 // It stops at the deployment prefix rather than descending into the scope, so
 // the orphan sweep sees every object under the prefix -- including ones some

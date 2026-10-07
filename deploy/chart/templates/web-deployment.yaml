@@ -214,7 +214,7 @@ spec:
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node mints control
-            # capabilities and verifies node control statements; it holds no
+            # capabilities and verifies node execution statements; it holds no
             # daemon private key. A capture is one database row: the daemon's
             # word reaches web over mTLS and nothing signs it. With the capture
             # facet on (below) the web is also the plane's reclaimer, the one
@@ -228,8 +228,8 @@ spec:
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
             - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}
-            # THE EPOCH BELONGS TO THE BASE FACET. It is the control-key
-            # generation: every capability this node mints -- base or capture
+            # THE GENERATION BELONGS TO THE BASE FACET. The activation epoch is
+            # the control-key generation: every capability this node mints -- base or capture
             # -- is minted under it, and a capability claiming generation zero
             # is refused before it is signed, so a base-only deployment needs
             # it as much as a capturing one.
@@ -494,7 +494,7 @@ spec:
           {{- else }}
           configMap:
             # PUBLIC verification material only. The private half is mounted in
-            # the output daemon Pod and nowhere else; a public key cannot sign,
+            # the artifact daemon Pod and nowhere else; a public key cannot sign,
             # which is what makes this a ConfigMap rather than a Secret.
             name: {{ include "concourse.hangarOutput.controlKeysName" . }}
           {{- end }}

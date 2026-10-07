@@ -70,8 +70,8 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Epoch is both the Run activation epoch and the Hangar output epoch the
-// platform speaks for.
+// Epoch is both the Run activation epoch and the Hangar control-key generation
+// the platform speaks for.
 const Epoch = 7
 
 // Pin is the one credential worker image the platform delivers credentials

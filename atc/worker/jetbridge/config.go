@@ -247,7 +247,7 @@ type Config struct {
 
 	// OutputPlaneEnabled turns on the durable output-capture extension: the
 	// capture control init, the ledger-checked cleanup probe, the output
-	// cohort's ready labels and the ATC's control calls. Off, every one of
+	// plane's node ready label and the ATC's control calls. Off, every one of
 	// those is absent and an ordinary pod is byte-identical to the one this
 	// runtime built before the output plane existed (Req 59).
 	OutputPlaneEnabled bool
@@ -256,20 +256,14 @@ type Config struct {
 	// leases and their callers must cover that same operation.
 	OutputOperationTimeout time.Duration
 
-	// OutputActivationEpoch is the epoch this control plane speaks for.
+	// OutputActivationEpoch is the control-key generation this control plane
+	// mints capabilities under. A spec admitted under another generation was
+	// admitted by a control plane whose capabilities this worker's daemons
+	// would not verify, so no capture pod is built for it. It does not put the
+	// plane in service; hangar_enabled does.
 	//
-	// It is what makes Req 57 enforceable at the worker: a node label is a
-	// scheduling HINT, and a cohort can carry a ready label while its daemons
-	// speak for a different epoch -- a rolling upgrade, a half-finished
-	// rotation, a node that came back from a long drain. Every capture records
-	// the epoch it was admitted under, so a spec whose epoch is not this one
-	// was admitted by a control plane this worker is not part of, and a stale
-	// label or handshake authorizes nothing.
-	//
-	// Zero means unconfigured, and an unconfigured epoch checks nothing: the
-	// conformance tier and this package's own specs run with no activation row
-	// at all, and refusing there would be the chart's rule enforced in the
-	// wrong process.
+	// Zero means unconfigured, and an unconfigured generation checks nothing:
+	// the conformance tier and this package's own specs run without one.
 	OutputActivationEpoch int64
 
 	// HangarEnabled permits exact immutable Hangar tree inputs.

@@ -337,8 +337,8 @@ func (result DestructiveCleanupEligibleResult) Validate() error {
 // what it speaks. Node labels are hints; this is the authority.
 //
 // It carries the base facet only. The capture extension's handshake, in
-// hangar/output, embeds this one and adds its own facts, so a base-only cohort
-// is attestable without an output bucket existing at all.
+// hangar/output, embeds this one and adds its own facts, so a base-only
+// daemon answers for exact control without an output bucket existing at all.
 type Handshake struct {
 	ProtocolVersion string          `json:"protocol_version"`
 	LedgerVersion   string          `json:"ledger_version"`

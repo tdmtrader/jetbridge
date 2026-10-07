@@ -131,7 +131,7 @@ func TestACapabilityMintedUnderAnotherSecretIsRefused(t *testing.T) {
 		t.Fatalf("minting: %v", err)
 	}
 	if err := verifier.Verify(token, baseClaims()); !errors.Is(err, ErrUnauthorized) {
-		t.Errorf("a capability from another cohort was admitted: %v", err)
+		t.Errorf("a capability from another control plane was admitted: %v", err)
 	}
 
 	// Malformed shapes fail closed rather than panicking.

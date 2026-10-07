@@ -14,7 +14,7 @@ import (
 
 // What the mTLS-EXEMPT routes may say.
 //
-// The output daemon holds itself to this rule already: redaction_test.go drives
+// The output plane holds itself to this rule already: redaction_test.go drives
 // its real routes and greps every response body for the control directory, the
 // managed steps root, the bucket, the prefix and the key paths. The artifact
 // daemon's exempt routes were never held to it, and they are the ones an

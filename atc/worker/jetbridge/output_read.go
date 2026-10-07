@@ -20,7 +20,7 @@ func (client *OutputControlClient) ManagedReadTimeout() time.Duration {
 }
 
 // StatExactObject implements managed-read admission's metadata port over the
-// existing node transport. Bucket access stays on the output daemon; no
+// existing node transport. Bucket access stays on the node's artifact daemon; no
 // producer Pod or source directory must survive for a retained result to read.
 func (client *OutputControlClient) StatExactObject(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error) {
 	var object output.PublishedObject

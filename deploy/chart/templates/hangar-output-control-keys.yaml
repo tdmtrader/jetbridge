@@ -4,11 +4,11 @@ The control plane's public node-control verification ring.
 A ConfigMap and not a Secret, deliberately: everything in it is public
 verification material, and putting it in a Secret would suggest the private half
 is somewhere nearby. The private half is an operator-provided Secret mounted in
-the output daemon Pod alone.
+the artifact daemon Pod alone.
 
 Entries are keyed by control-key generation (hangarOutput.activationEpoch) and
-retained while any durable state references their generation -- a source hold,
-a recovery row -- because dropping one makes those node statements
+retained while an execution started under their generation may still be
+recovered, because dropping one makes those node statements
 unverifiable forever rather than merely unusable. A new generation ADDS an
 entry; it never replaces a key in place.
 */}}

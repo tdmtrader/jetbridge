@@ -114,10 +114,9 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"no epoch":                                   func(c *Config) { c.ActivationEpoch = 0 },
 		"no control key id":                          func(c *Config) { c.ControlKeyID = "" },
 		"no control key file":                        func(c *Config) { c.ControlKeyFile = "" },
-		// One key for both would mean rotating either rotates both, and an
-		// activation epoch pins them separately.
+		// One key for both would mean rotating either rotates both.
 		"one key for read warrants and control": func(c *Config) { c.ControlKeyFile = c.MaterializationKeyFile },
-		"a non-positive timeout":           func(c *Config) { c.OperationTimeout = 0 },
+		"a non-positive timeout":                func(c *Config) { c.OperationTimeout = 0 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -133,7 +132,7 @@ func TestTheDaemonSignsWithAnEd25519KeyAndNothingElse(t *testing.T) {
 
 	// An RSA key is the interesting refusal: it parses as a PKCS#8 private key
 	// and would sign perfectly well, producing statements no verifier in this
-	// cohort can check.
+	// deployment can check.
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generating an RSA key: %v", err)
@@ -227,7 +226,7 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 		"storage-path", "hangar-enabled", "hangar-capability-key",
 	} {
 		if flags.Lookup(forbidden) != nil {
-			t.Errorf("the output daemon declares --%s. It has no cache client and no "+
+			t.Errorf("the output plane declares --%s. It has no cache client and no "+
 				"strict-input client; a flag that lets an operator give it one is the isolation "+
 				"undone by configuration", forbidden)
 		}

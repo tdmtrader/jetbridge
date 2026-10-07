@@ -1,7 +1,7 @@
 // hangar_live only, never live: like the generated-Pod contract beside it, this
-// one needs a disposable cluster. It labels a node into the output-plane ready
-// cohort (concourse.dev/hangar-execution-control-v1, concourse.dev/hangar-output-v1),
-// runs a node-local output daemon, and pins a Pod to that node -- all
+// one needs a disposable cluster. It labels a node ready for the output plane
+// (concourse.dev/hangar-execution-control-v1, concourse.dev/hangar-output-v1),
+// runs a node-local artifact daemon output plane, and pins a Pod to that node -- all
 // cluster-scoped work a namespaced live-tier account cannot do and must not do
 // against the deployed cluster. Its CI home is a job in
 // deploy/k8s-e2e-pipeline.yml beside hangar-generated-pod-contract;
@@ -56,7 +56,7 @@ package jetbridge
 // this box also includes cancellation before hold / after hold / during
 // execution / after Stage 2, sidecar and hijack termination, seal timeout, web and daemon restart, pod
 // disappearance, node loss, and the materialization read lease. Every one of
-// those needs a real output daemon binary and a real control plane on the
+// those needs a real artifact daemon binary and a real control plane on the
 // cluster, not the BusyBox stand-in below, and they are the sibling of the
 // Phase 9 activation/downgrade cluster tests rather than of this contract.
 // phase-9-demonstrations.md records them as written-up-but-unwritten with this
@@ -118,7 +118,7 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// The node this execution's reservation belongs to. A reservation is a
+	// The node this execution's capture belongs to. A capture's step is a
 	// directory on ONE node's disk, so the Pod has to land on that node and
 	// nowhere else -- which is contract 3, and which one node cannot disprove.
 	// The job that runs this stands up ONE K3s container, so the placement
@@ -131,13 +131,13 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	}
 	node := nodes.Items[0]
 	// The runtime pins by kubernetes.io/hostname, not by object name, so the
-	// reservation names the value of that label rather than the node's name.
+	// capture names the value of that label rather than the node's name.
 	// They are the same string on K3s and the test would be asserting a
 	// coincidence if it did not say which one it means.
 	reservingNode := node.Labels[corev1.LabelHostname]
 	if reservingNode == "" {
 		t.Fatalf("node %s carries no %s label; the capture pod is pinned by that label and "+
-			"a node without one can hold no reservation this runtime can schedule to",
+			"a node without one can hold no capture this runtime can schedule to",
 			node.Name, corev1.LabelHostname)
 	}
 	// THREE labels, not two. `BuildAffinity` seeds the required expressions with
@@ -318,7 +318,7 @@ cat /hold/.hold-request
 	// (`storage_daemonset.go:110`).
 	//
 	// The claim this comment used to make -- that creating it here is what the
-	// daemon does at reservation time, so the test is not asserting the
+	// daemon does at capture time, so the test is not asserting the
 	// kubelet's mkdir -- was false twice over: the path was missing its
 	// `steps/` segment, and the handler runs when `nc` accepts a connection,
 	// which is inside the control init, long after the kubelet did its
@@ -387,7 +387,7 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 		t.Fatalf("get the scheduled capture Pod: %v", err)
 	}
 	if scheduled.Spec.NodeName != node.Name {
-		t.Errorf("the capture Pod ran on %q and its reservation is on %q; the directory the "+
+		t.Errorf("the capture Pod ran on %q and its capture is on %q; the directory the "+
 			"hold protects is on one node's disk and DirectoryOrCreate would have made an "+
 			"empty unheld one here", scheduled.Spec.NodeName, node.Name)
 	}
@@ -449,7 +449,7 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 
 func int64Ptr(value int64) *int64 { return &value }
 
-// labelLiveNode puts a node into a ready cohort and puts its labels back.
+// labelLiveNode labels a node ready for the output plane and puts its labels back.
 func labelLiveNode(t *testing.T, ctx context.Context, client kubernetes.Interface,
 	name string, keys ...string) {
 	t.Helper()
@@ -492,7 +492,7 @@ func labelLiveNode(t *testing.T, ctx context.Context, client kubernetes.Interfac
 	})
 }
 
-// assertLiveCaptureAffinity is the output plane's cohort, both labels, plus the
+// assertLiveCaptureAffinity is the output plane's two ready labels plus the
 // reserving node.
 func assertLiveCaptureAffinity(t *testing.T, pod *corev1.Pod, reservingNode string) {
 	t.Helper()
@@ -503,7 +503,7 @@ func assertLiveCaptureAffinity(t *testing.T, pod *corev1.Pod, reservingNode stri
 	required := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 	if required == nil || len(required.NodeSelectorTerms) == 0 {
 		t.Fatal("the capture-selected Pod has no REQUIRED node affinity; a preference would let " +
-			"it schedule away from the node holding its reservation")
+			"it schedule away from the node holding its capture")
 	}
 
 	// Every label the scheduler will actually demand, including the
@@ -537,7 +537,7 @@ func assertLiveCaptureAffinity(t *testing.T, pod *corev1.Pod, reservingNode stri
 		}
 	}
 	if !pinned {
-		t.Errorf("the capture Pod is not pinned to the reserving node %q. A reservation is a "+
+		t.Errorf("the capture Pod is not pinned to the capture's node %q. A capture's step is a "+
 			"directory on ONE node's disk: a Pod that schedules elsewhere gets an empty unheld "+
 			"directory from DirectoryOrCreate and its hold is refused", reservingNode)
 	}
@@ -552,7 +552,7 @@ func liveHostPathForVolume(t *testing.T, pod *corev1.Pod, name string) string {
 		}
 	}
 	t.Fatalf("volume %q has no host path; the captured output must live on the node the "+
-		"reservation was issued by", name)
+		"capture was admitted on", name)
 
 	return ""
 }

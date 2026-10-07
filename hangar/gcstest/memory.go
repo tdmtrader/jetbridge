@@ -1,6 +1,6 @@
 // Package gcstest is tier 1 of the output plane's storage substrate: one
-// in-memory objectstore.Client, shared by the publisher, inventory, reclaimer
-// and policy roles, plus the recording wrapper the role-honesty assertions
+// in-memory objectstore.Client, shared by the publisher, the web's list and
+// delete roles and the policy checks, plus the recording wrapper the role-honesty assertions
 // read.
 //
 // It is the fault-injection tier and only that. Timeouts, an upload whose
@@ -182,7 +182,7 @@ func (memory *Memory) putLocked(bucket, key string, body []byte, metadata map[st
 // reports 1 forever even after a full rewrite -- and it is the state a real
 // bucket reaches on any metadata change: a SetStorageClass lifecycle
 // transition, Autoclass, an ACL or metadata edit, a hold. None of those is a
-// Delete rule, so the bucket still attests safe, and a delete conditioned on a
+// Delete rule, and a delete conditioned on a
 // stale metageneration 412s against every object in it.
 //
 // It is not a production seam. Nothing in this plane updates object metadata;

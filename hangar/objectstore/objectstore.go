@@ -75,12 +75,12 @@ type Attrs struct {
 // Prefix is here because GCS list permission is bucket-wide and cannot be
 // narrowed by IAM: the caller applies the server-derived prefix itself, and
 // the honest way to say that is that the request carries one. Nothing outside
-// the inventory role ever builds one of these.
+// the web's list role ever builds one of these.
 //
 // After is a KEY, not a page token, and the distinction is the whole reason
 // this field is spelled the way it is. A page token is opaque, provider-owned
-// and short-lived; the inventory cursor it would have to be stored in is a
-// database column that outlives a sweep, a process restart and a leader
+// and short-lived; a cursor it would have to be stored in
+// outlives a sweep, a process restart and a leader
 // takeover. Resuming from the last key seen is stable across all three, and it
 // is what the cursor's own column name already promised.
 type ListRequest struct {
@@ -114,7 +114,7 @@ type Page struct {
 }
 
 // Client exposes immutable creation, inspection and reading. Deletion is a
-// separate capability so publisher and inventory clients cannot remove data.
+// separate capability so publisher and list clients cannot remove data.
 type Client interface {
 	CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (Attrs, error)
 	StatCurrent(ctx context.Context, bucket, key string) (Attrs, error)

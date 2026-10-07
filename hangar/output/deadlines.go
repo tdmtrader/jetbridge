@@ -16,7 +16,7 @@ import (
 // together, so a deployment cannot be configured into a state where a
 // reclaimer's lease can expire mid-delete.
 const (
-	// DefaultOperationTimeout is shared by the output daemon and its callers.
+	// DefaultOperationTimeout is shared by the output plane and its callers.
 	DefaultOperationTimeout = time.Minute
 
 	// DefaultCaptureDeadline is how long a capture may remain unresolved before
@@ -26,7 +26,7 @@ const (
 	MaxCaptureDeadline     = 7 * 24 * time.Hour
 
 	// DefaultPublicationGrace is how long a marked, unregistered object is left
-	// alone before inventory may treat it as an orphan. Grace reduces work and
+	// alone before the orphan sweep may treat it as an orphan. Grace reduces work and
 	// provides recovery margin; it is never the claim/reclaim mutex.
 	DefaultPublicationGrace = 8 * 24 * time.Hour
 	MaxPublicationGrace     = 30 * 24 * time.Hour

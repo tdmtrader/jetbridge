@@ -47,19 +47,15 @@ type Config struct {
 	SharedBucketPrefixOnlyIsolation bool
 
 	// The output read-warrant key: a THIRD key, an exact 32-byte HMAC secret
-	// under the hangar-output-materialize-v1 domain. It is neither the receipt
-	// key (a read warrant must not be signable by anything that can mint a
-	// publication receipt) nor the foundation's strict-input materialization
-	// key (which attests inputs and belongs to the other daemon).
+	// under the hangar-output-materialize-v1 domain. It is neither the control
+	// capability key nor the foundation's strict-input materialization key.
 	MaterializationKeyID   string
 	MaterializationKeyFile string
 
 	// The node's control key: a SECOND Ed25519 key, for the statements the
-	// execution and source ledgers make. It is separate from the receipt key
-	// because the two say different things -- a receipt says an object exists
-	// in a bucket, a control statement says a process on this node did
-	// something -- and an activation epoch pins them separately, so rotating
-	// one does not rotate the other.
+	// execution ledger makes: a process on this node did something. It is
+	// separate from the symmetric keys so that rotating one does not rotate
+	// the other.
 	ControlKeyID   string
 	ControlKeyFile string
 
@@ -121,7 +117,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.OutputBucket, "output-bucket", "",
 		"The dedicated output bucket. It contains only Hangar output-plane objects and is never the durable cache bucket or the caller-published strict-input bucket.")
 	flags.StringVar(&config.OutputPrefix, "output-prefix", "",
-		"Authenticated deployment key prefix inside the output bucket, so one bucket can serve several deployments. It is server configuration; no task, consumer or receipt can select or broaden it.")
+		"Authenticated deployment key prefix inside the output bucket, so one bucket can serve several deployments. It is server configuration; no task or consumer can select or broaden it.")
 	flags.StringVar(&config.OutputTenant, "output-tenant", "",
 		"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key.")
 	flags.StringVar(&config.CacheBucket, "cache-bucket", "",
@@ -129,15 +125,15 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.StrictInputBucket, "strict-input-bucket", "",
 		"The caller-published strict-input Hangar bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
 	flags.BoolVar(&config.SharedBucketPrefixOnlyIsolation, "shared-bucket-prefix-only-isolation", false,
-		"Declare that trust domains are separated by key prefix inside one shared bucket. This is refused: object-level permission is not expressible in a bucket policy, so prefix-only IAM is not an activation-compatible substitute for a dedicated bucket.")
+		"Declare that trust domains are separated by key prefix inside one shared bucket. This is refused: object-level permission is not expressible in a bucket policy, so prefix-only IAM is not a substitute for a dedicated bucket.")
 	flags.StringVar(&config.MaterializationKeyID, "materialization-key-id", "",
-		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which activation-pinned key can check it.")
+		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which key can check it.")
 	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
-		"Path to the raw 32-byte key output read warrants are signed with, under the hangar-output-materialize-v1 domain. It is never the receipt key and never the foundation's strict-input materialization key.")
+		"Path to the raw 32-byte key output read warrants are signed with, under the hangar-output-materialize-v1 domain. It is never the control capability key and never the foundation's strict-input materialization key.")
 	flags.StringVar(&config.ControlKeyID, "control-key-id", "",
-		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. A control plane pins its public half per activation epoch.")
+		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. The web pins its public half per control-key generation.")
 	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
-		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
+		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from every symmetric key: rotating one must not rotate the other.")
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
 		"How long one background capture job may run: a seal (the wait for every container of the producing Pod to terminate, and the canonicalization after it) or a publish (the upload). Both are asynchronous -- the control plane polls them -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
 	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
@@ -155,7 +151,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.DurationVar(&config.CapabilityTTL, "capability-ttl", 15*time.Minute,
 		"Maximum accepted lifetime of a control capability. A capability is presented once, within one operation; an hour-long one is a credential.")
 	flags.Uint64Var(&config.ActivationEpoch, "activation-epoch", 0,
-		"The active activation epoch this daemon publishes under. Rotation creates a new epoch rather than replacing a key in place.")
+		"The control-key generation this daemon verifies capabilities and signs statements under. Rotation creates a new generation rather than replacing a key in place. It does not put the plane in service; the web's hangar_enabled row does.")
 	flags.DurationVar(&config.OperationTimeout, "output-timeout", output.DefaultOperationTimeout,
 		"Per-operation timeout against the output bucket.")
 }
@@ -165,7 +161,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 //
 // The bucket is the discriminator and not a separate boolean, because a boolean
 // and a bucket can disagree: "output enabled, no bucket" has no honest reading,
-// and a daemon that took both would have to pick one. A base-only cohort is a
+// and a daemon that took both would have to pick one. A base-only daemon is a
 // real deployment -- the sibling `exact_execution_control` track schedules onto
 // exactly it, and Req 58's output-only downgrade has to be able to REACH it
 // from a running plane without taking exact process control away.
@@ -195,8 +191,8 @@ func (config Config) Validate() error {
 			"capture at all", output.ErrIncomplete)
 	}
 	if config.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: --activation-epoch is required; a stale or absent epoch "+
-			"authorizes nothing, and zero is the absence", output.ErrIncomplete)
+		return fmt.Errorf("%w: --activation-epoch is required; every capability names its "+
+			"control-key generation, and zero is the absence of one", output.ErrIncomplete)
 	}
 
 	if err := config.validateOutputFacet(); err != nil {
@@ -258,17 +254,15 @@ func (config Config) validateOutputFacet() error {
 		}
 	}
 
-	// Three key roles, three files. They say different things, an activation
-	// epoch pins them separately, and one file for two of them means rotating
-	// either rotates both.
+	// Three key roles, three files. They say different things, and one file
+	// for two of them means rotating either rotates both.
 	for _, pair := range []struct{ left, right, leftFlag, rightFlag string }{
 		{config.ControlKeyFile, config.MaterializationKeyFile, "--control-key-file", "--materialization-key-file"},
 		{config.MaterializationKeyFile, config.CapabilityKeyFile, "--materialization-key-file", "--capability-key"},
 	} {
 		if pair.left != "" && pair.left == pair.right {
-			return fmt.Errorf("%w: %s and %s name the same key. They say different things and "+
-				"an activation epoch pins them separately, so one key would mean rotating "+
-				"either rotates both", output.ErrIncomplete, pair.leftFlag, pair.rightFlag)
+			return fmt.Errorf("%w: %s and %s name the same key. They say different things, "+
+				"so one key would mean rotating either rotates both", output.ErrIncomplete, pair.leftFlag, pair.rightFlag)
 		}
 	}
 	return nil
@@ -280,7 +274,7 @@ func (config Config) validateOutputFacet() error {
 // of those comparisons is over NAMES: two flags pointing at symlinks to one
 // file pass all of them, and so do two Secrets holding identical material. The
 // separation the plan promises is a separation of authority -- a read warrant
-// must not be signable by anything that can mint a publication receipt -- and
+// must not be signable by anything that can mint a control capability -- and
 // authority follows the bytes.
 //
 // The comparison is constant-time. It compares secrets, and a comparison that
@@ -313,8 +307,8 @@ func (config Config) RefuseCollidingKeyMaterial() error {
 		for j := i + 1; j < len(flags); j++ {
 			if subtle.ConstantTimeCompare(loaded[flags[i]], loaded[flags[j]]) == 1 {
 				return fmt.Errorf("%w: %s and %s name different files holding the SAME key "+
-					"material. They say different things and an activation epoch pins them "+
-					"separately, so one key would mean rotating either rotates both", output.ErrIncomplete, flags[i], flags[j])
+					"material. They say different things, so one key would "+
+					"mean rotating either rotates both", output.ErrIncomplete, flags[i], flags[j])
 			}
 		}
 	}
@@ -358,7 +352,7 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 //
 // It is safe by the plane's own rules: a restarted daemon owns no in-flight
 // canonicalization, every capture is retried under its capture fence, and
-// SealedIncarnation re-derives the tree from the held source rather than from
+// a seal re-canonicalizes the held step directory rather than reading
 // scratch. Only `hangar-tree-*` entries are removed, and deliberately so: a
 // misconfigured --output-scratch-dir pointing at something shared must not turn a
 // restart into a deletion of somebody else's data.

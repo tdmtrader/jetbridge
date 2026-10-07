@@ -10,15 +10,14 @@ package executioncontrol
 //     for base execution control cannot hold, seal or publish, however valid it
 //     is;
 //   - it binds the immutable facts of the operation -- the execution, the
-//     fence, the activation epoch, the operation name -- so a token minted for
+//     fence, the control-key generation, the operation name -- so a token minted for
 //     one execution cannot act on another; and
 //   - it carries a nonce and an expiry, so a captured token is refused after
 //     its window and a replayed one is refused inside it.
 //
 // The word "facet" is deliberately opaque here. This package knows there is
 // more than one and that they do not cross; it does not know that the second
-// one is a durable output capture, and the vocabulary guard would fail the
-// suite if it learned.
+// one is a durable output capture.
 
 import (
 	"crypto/hmac"
@@ -284,7 +283,7 @@ func (verifier *CapabilityVerifier) Verify(capability ControlCapability, expecte
 		// what an attacker would like to learn, and the route's own log line
 		// carries what an operator needs.
 		return fmt.Errorf("%w: the capability presented for %s/%s on execution %s is not one this "+
-			"cohort issued for that operation", ErrUnauthorized,
+			"control plane issued for that operation", ErrUnauthorized,
 			expected.Facet, expected.Operation, expected.Identity.ExecutionID)
 	}
 

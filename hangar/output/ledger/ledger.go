@@ -1,4 +1,5 @@
-// Package ledger reads the output daemon's source ledger, and only reads it.
+// Package ledger reads the output plane's source ledger (the step markers),
+// and only reads it.
 //
 // The existing artifact daemon has no output-bucket credential and no business
 // changing a capture's state, but its sweep, cleanup, delete, replacement,
@@ -6,7 +7,7 @@
 // a source some capture is about to seal. So it needs one question answered
 // before it destroys anything: is this path held?
 //
-// This package answers it, from the same durable records the output daemon
+// This package answers it, from the same step markers the output plane
 // writes, WITHOUT a way to change them. There is no writer here, no exported
 // mutator and no field an existing caller could use to become one; the
 // architecture guard in hangar/output asserts that stays true. A read-only
@@ -40,7 +41,7 @@ import (
 	"sync"
 )
 
-// ControlDirName must match the output daemon's. It is stated here rather than
+// ControlDirName must match the output plane's. It is stated here rather than
 // imported because this package is the READER: a reader that depended on the
 // writer's package would be one import away from being able to write.
 const ControlDirName = ".hangar-output-control"
@@ -221,7 +222,7 @@ func (classifier *Classifier) Reason(stepsRelative string, class Class) error {
 // name. Reason above is the operator's text, and the Unavailable arm of it
 // carries the classifier's own directory and the underlying OS error -- which
 // is the node's control-directory path and the raw errno, both of which the
-// output daemon's redaction rule forbids any route to emit. The route that
+// output plane's redaction rule forbids any route to emit. The route that
 // serves this question is deliberately mTLS-exempt, because a pod on the node
 // has to be able to ask it, so its audience is every pod on the node including
 // a task pod.

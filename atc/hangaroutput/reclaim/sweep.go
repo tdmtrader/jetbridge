@@ -28,7 +28,7 @@ type Lister interface {
 // SweepDeleted is an object the sweep left alone, and each is counted.
 const (
 	SweepDeleted    = "deleted"
-	SweepUnmarked   = "unmarked"   // no marker, or one this cohort cannot read
+	SweepUnmarked   = "unmarked"   // no marker, or one this store cannot read
 	SweepForeign    = "foreign"    // a marker naming another store
 	SweepYoung      = "young"      // not yet older than twice the capture deadline
 	SweepRegistered = "registered" // a lifecycle row exists; reclamation owns it

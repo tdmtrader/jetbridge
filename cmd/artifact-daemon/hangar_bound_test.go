@@ -150,8 +150,9 @@ func TestHangarMaterializationBoundsConcurrentWorkAndCountsTheRefusal(t *testing
 
 // The output plane's hold, seen from THIS daemon.
 //
-// Two daemons, two authorities over one node's disk: the output daemon owns
-// which sources a capture holds, and this one owns everything else. What is
+// Two authorities over one node's disk, in one daemon: the output plane owns
+// which sources a capture holds, and the rest of the daemon owns everything
+// else. What is
 // under test is that the second respects the first -- and that it fails closed
 // when it cannot read what the first said, because a delete on a guess is how a
 // build's declared output disappears with no record it existed.

@@ -32,7 +32,7 @@ const readWarrantRecordName = "read-warrants-spent.json"
 // mid-read: a read this process may already have completed is not one a
 // restarted process can tell from one it did not, so the record fails closed
 // and the warrant counts as used. (The managed-input init checks its own sealed
-// receipt before it asks again, so a materialization that finished before the
+// materialization receipt before it asks again, so a materialization that finished before the
 // crash still completes.)
 //
 // The set is keyed by read lease id and pruned at each warrant's own expiry: a

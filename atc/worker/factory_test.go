@@ -80,7 +80,7 @@ var _ = Describe("DefaultFactory", func() {
 		// run without it, compared it with two other keys for distinctness --
 		// and never opened it, because the resolver it exists to build was
 		// constructed by no production line. Every jetbridge worker's resolver
-		// was nil, so every control call on the output daemon was unreachable.
+		// was nil, so every control call on the output plane was unreachable.
 		// Its sibling hazard: setting the locator rebuilt the storage backend
 		// and silently dropped a daemon client set before it.
 		It("hands every collaborator it carries through the worker to a created container", func() {
@@ -118,7 +118,7 @@ var _ = Describe("DefaultFactory", func() {
 			Expect(wiring.DaemonClient).To(BeIdenticalTo(daemonClient),
 				"the storage backend cannot probe, warm or alias through any artifact daemon")
 			Expect(wiring.OutputControls).To(BeIdenticalTo(jetbridge.OutputControlResolver(controls)),
-				"the container cannot reach the output daemon on any node, so the capability key "+
+				"the container cannot reach the output plane on any node, so the capability key "+
 					"the ATC refuses to start without is a secret nothing spends")
 			Expect(wiring.StartChecked).To(BeTrue(),
 				"an exact command would start with no admission check")

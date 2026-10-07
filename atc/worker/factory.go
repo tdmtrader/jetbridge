@@ -35,7 +35,7 @@ type DefaultFactory struct {
 	// cached resources. Shared across all workers.
 	K8sDaemonClient *jetbridge.DaemonClient
 
-	// K8sOutputControls resolves the output daemon's control API for the node
+	// K8sOutputControls resolves the output plane's control API for the node
 	// an execution landed on. Nil unless the output plane is configured, and
 	// nil is the ordinary path: a worker with no resolver hands every
 	// container a nil one, and nothing in the exact-execution path is

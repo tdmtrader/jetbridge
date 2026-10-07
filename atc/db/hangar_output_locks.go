@@ -120,7 +120,8 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 		Lifecycles: map[hangar.TreeRef]int64{},
 	}
 
-	// 1. Logical reservation rows, by scope bytes then digest bytes.
+	// 1. Logical correlation rows (capture rows and input publications), by
+	// scope bytes then digest bytes.
 	//
 	// One statement per key rather than one IN list. ACROSS keys the order is
 	// the CLIENT's, and it has to be: a single IN list would let the planner
@@ -131,9 +132,9 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 	// that an ORDER BY beside FOR NO KEY UPDATE is a hint about output only --
 	// contradicted the statement three lines below it, which has always had
 	// one. The statement is what is meant. A correlation can carry several
-	// reservation rows (one per capture attempt at the same scope and digest),
-	// PostgreSQL plans LockRows above Sort, and the rows are therefore locked
-	// in reservation_id order. It is a weaker guarantee than the loop above --
+	// rows (one per capture or input publication at the same scope and
+	// digest), PostgreSQL plans LockRows above Sort, and the rows are therefore
+	// locked in the ORDER BY's order. It is a weaker guarantee than the loop above --
 	// it rests on the plan shape rather than on the client -- and it is
 	// sufficient, because the alternative it guards against is two transactions
 	// taking the SAME key's rows in different orders, and both of them issue

@@ -1,5 +1,5 @@
 // Package output_testsupport holds the fixtures the output plane's tests share:
-// a derived namespace, a resolved reservation, a cursor, a lease, and a tier-1
+// a derived namespace, an object marker, a lease, and a tier-1
 // store behind a recorder.
 //
 // It exists because four test packages -- the three object roles' own tests and

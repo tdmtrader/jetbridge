@@ -1,5 +1,5 @@
 // Package outputplane is the artifact daemon's output-plane half: the
-// node-local publisher, receipt signer and exact execution-control authority.
+// node-local publisher, capture routes and exact execution-control authority.
 //
 // It used to be its own binary and its own DaemonSet. It is now a part of
 // cmd/artifact-daemon, served on that daemon's one listener under that
@@ -119,8 +119,8 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	if err != nil {
 		return nil, err
 	}
-	// The source ledger belongs to the OUTPUT facet: it holds capture
-	// incarnations, and a daemon that captures nothing opens none. The route
+	// The source ledger belongs to the OUTPUT facet: it reads step markers,
+	// and a daemon that captures nothing opens none. The route
 	// table refuses every capture route on such a daemon before a handler could
 	// reach this, so a nil here is unreachable rather than tolerated.
 	if daemon.OutputEnabled() {
@@ -160,7 +160,7 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	plane.server.RefuseDaemonCertificate(daemonCertificate)
 
 	fmt.Fprintf(out, "output plane mounted\n")
-	fmt.Fprintf(out, "  activation epoch: %d\n", daemon.ActivationEpoch())
+	fmt.Fprintf(out, "  control-key gen:  %d\n", daemon.ActivationEpoch())
 	fmt.Fprintf(out, "  node uid:         %s\n", config.NodeUID)
 	fmt.Fprintf(out, "  control ledger:   %s\n", store.Path())
 	fmt.Fprintf(out, "  control key:      %s (public key %x)\n",

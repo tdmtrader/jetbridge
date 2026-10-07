@@ -190,7 +190,7 @@ func (r *Registry) SetSourceLedger(classifier *ledger.Classifier) {
 // refuseIfCaptureHeld asks the output plane's ledger about one stored location.
 //
 // The classifier speaks in incarnations relative to steps/, so the prefix is
-// stripped here. A location outside steps/ is not a source incarnation and
+// stripped here. A location outside steps/ is not a step directory and
 // cannot be held.
 func (r *Registry) refuseIfCaptureHeld(rel RelKey) error {
 	if r.sourceLedger == nil {

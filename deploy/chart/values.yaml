@@ -118,19 +118,18 @@ web:
   # runs under -- the v2 create route, the web UI and fly run-pipeline, and the
   # run_pipeline step. At startup each web node writes it into the durable Run
   # activation marker, so every deploy turns the Run contract on. It is the Run
-  # contract's own epoch, independent of hangarOutput.activationEpoch: rotating
-  # the Hangar epoch leaves running Runs, their finalization and invocation-key
-  # replay alone. The marker only moves forward, so raise this value, never
+  # contract's own epoch, independent of hangarOutput.activationEpoch (the
+  # Hangar control-key generation): changing that leaves running Runs, their
+  # finalization and invocation-key replay alone. The marker only moves forward, so raise this value, never
   # lower it; a web node configured below the recorded epoch refuses to start.
   # Zero renders no flag and stops admission on the next web start, keeping the
   # recorded epoch. A template that declares results (or a Run given inputs)
-  # is still admitted only while hangarOutput.webEnabled and its epoch's base
-  # and output facets are enabled. Admission checks nothing more, but
-  # EXECUTING any Run, with or without results, needs the output plane's
-  # execution control (hangarOutput.executionControl), with the output
-  # capability key configured and the node's Hangar output epoch enabled by
-  # the activation Job: every step of a Run build starts through the
-  # exact-execution check. Without all three, Runs are
+  # is still admitted only while hangarOutput.webEnabled puts the output plane
+  # in service. Admission checks nothing more, but EXECUTING any Run, with or
+  # without results, needs the output plane's execution control
+  # (hangarOutput.executionControl), with the output capability key and a
+  # positive hangarOutput.activationEpoch configured: every step of a Run
+  # build starts through the exact-execution check. Without them, Runs are
   # admitted and every step fails with "Run result execution is not
   # activated" -- set this to 0 on such a deploy to keep admission closed.
   pipelineRunActivationEpoch: 1
@@ -806,21 +805,18 @@ hangarOutput:
   store: gcs
   # -- The BASE facet: exact execution control.
   #
-  # A node whose daemon, runtime and control key are a homogeneous attested
-  # cohort advertises concourse.dev/hangar-execution-control-v1. This is a real
-  # deployment on its own -- durable output capture is an extension of it, never
-  # a synonym for it.
-  # A node whose daemon, runtime and control key are a homogeneous attested
-  # cohort advertises `concourse.dev/hangar-execution-control-v1`. Once the
-  # output facet passes as well, the same daemon adds
+  # A node whose artifact daemon serves the exact-execution protocol advertises
+  # `concourse.dev/hangar-execution-control-v1`. This is a real deployment on
+  # its own -- durable output capture is an extension of it, never a synonym
+  # for it. Once the output facet passes as well, the same daemon adds
   # `concourse.dev/hangar-output-v1`. A capture-selected pod's affinity requires
-  # BOTH, and neither alone admits it. Neither is authority -- the authenticated
-  # daemon handshake and the web's hangar_enabled row are -- so a label buys
+  # BOTH, and neither alone admits it. Neither is authority -- the capability
+  # the daemon verifies and the web's hangar_enabled row are -- so a label buys
   # only that the pod does not land somewhere its hold could never be
   # acknowledged.
   #
   # `concourse.dev/hangar-v1` is a THIRD label and is not this plane's: it
-  # attests strict INPUTS and belongs to the existing artifact daemon.
+  # advertises strict INPUTS.
   executionControl:
     enabled: false
     # -- Existing Secret holding control.key: a PKCS#8 PEM Ed25519 private key
@@ -828,19 +824,18 @@ hangarOutput:
     # It is NOT the read-warrant key and NOT the capability key; they are
     # separate Secrets so replacing one does not replace the others.
     keySecret: ""
-    # -- Key id of the control key above, and the id every node in the cohort
-    # reports over the attestation handshake. Required whenever enabled.
+    # -- Key id of the control key above, which every node reports over its
+    # handshake. Required whenever enabled.
     #
-    # It names KEY MATERIAL and not the Secret. This used to render the Secret
-    # NAME, so two nodes holding different private keys under one Secret name
-    # reported one id and a cohort half-way through a control-key rollout
-    # attested as homogeneous on the base facet's only key material. Move this
+    # It names KEY MATERIAL and not the Secret: two nodes holding different
+    # private keys under one Secret name must not report one id. Move this
     # value when you move the key.
     keyID: ""
 
     # -- Public node-control verification keys, required for output capture.
-    # One base64 Ed25519 public key per epoch. Retain old epochs while their
-    # handoffs remain unsettled. The private key stays on the artifact daemon.
+    # One base64 Ed25519 public key per control-key generation. Retain an old
+    # generation while an execution it signed may still be recovered. The
+    # private key stays on the artifact daemon.
     # Example: [{epoch: 7, key: "<base64-public-key>"}]
     publicKeys: []
 
@@ -958,8 +953,9 @@ hangarStorage:
       # tls.crt/tls.key for the storage Service DNS name; ca.crt for clients.
       existingSecret: ""
     credentials:
-      # input and publisher (artifact daemon), inventory and reclaimer (web:
-      # orphan-sweep listing, and reclaim deletes), server.json (role-to-token
+      # input and publisher (artifact daemon), inventory and reclaimer (the
+      # web's list and delete tokens: orphan-sweep listing, and reclaim
+      # deletes), server.json (role-to-token
       # JSON, the store's).
       existingSecret: ""
     maxObjectBytes: 17179869184

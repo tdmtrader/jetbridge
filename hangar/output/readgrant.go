@@ -27,7 +27,7 @@ import (
 //     signs for the other. A deployment that shared them would let a strict
 //     input warrant name a managed output.
 //   - A DIFFERENT DOMAIN. MaterializeDomain is inside the signed bytes, first,
-//     so bytes canonicalized for a receipt or for a strict input can never be a
+//     so bytes canonicalized for a capability or for a strict input can never be a
 //     prefix of these. A signer that could be persuaded to produce one while
 //     believing it produced the other is a signer with one authority.
 //   - A DIFFERENT SHAPE. A strict input warrant binds a ref and a destination. A
@@ -68,9 +68,8 @@ const (
 	// ReadWarrantNonceBytes is the length of the durable per-lease nonce.
 	ReadWarrantNonceBytes = 16
 
-	// MaxCanonicalReadWarrantBytes bounds the canonical form, for the same reason
-	// MaxCanonicalReceiptBytes does: the encoding is length-prefixed and a
-	// verifier reads those lengths.
+	// MaxCanonicalReadWarrantBytes bounds the canonical form: the encoding is
+	// length-prefixed and a verifier reads those lengths.
 	MaxCanonicalReadWarrantBytes = 4096
 
 	// MaxReadWarrantBytes bounds the token on the wire.
@@ -220,8 +219,7 @@ func NewReadWarrantNonce(random io.Reader) (string, error) {
 
 // CanonicalReadWarrantBytes is the exact byte string a read warrant's MAC covers.
 //
-// Length-prefixed, fixed order, domain first: the same rule as
-// CanonicalReceiptBytes, and for the same reason. A signature over an encoder's
+// Length-prefixed, fixed order, domain first. A signature over an encoder's
 // output would be a signature over that encoder's field ordering.
 func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 	if err := claims.Validate(); err != nil {
@@ -277,7 +275,7 @@ type ReadWarrantVerifier struct {
 func NewReadWarrantSigner(material []byte) (*ReadWarrantSigner, error) {
 	if len(material) != ReadWarrantKeyBytes {
 		return nil, fmt.Errorf("%w: an output read warrant key is exactly %d raw bytes, this one "+
-			"is %d; it is never the receipt key and never the strict-input materialization key",
+			"is %d; it is never the control capability key and never the strict-input materialization key",
 			ErrIncomplete, ReadWarrantKeyBytes, len(material))
 	}
 	signer := &ReadWarrantSigner{}

@@ -14,7 +14,7 @@ import (
 
 // The two facets, and what a daemon that has only the base one may say.
 //
-// A base-only cohort is a real deployment: it is the one the sibling
+// A base-only daemon is a real deployment: it is the one the sibling
 // `exact_execution_control` track schedules onto, and Req 58's downgrade
 // requires reaching it from a running output plane without taking exact process
 // control away. So the output facet is OPTIONAL configuration in this binary
@@ -73,9 +73,9 @@ func TestABaseControlDaemonBuildsWithNoOutputFacetAtAll(t *testing.T) {
 // by deleting one value would be a deployment that believes it is publishing.
 func TestAHalfConfiguredOutputFacetIsRefused(t *testing.T) {
 	for name, mutate := range map[string]func(*Config){
-		"a prefix with no bucket":         func(c *Config) { c.OutputPrefix = "deployments/blue" },
-		"a tenant with no bucket":         func(c *Config) { c.OutputTenant = "tenant-a" },
-		"an endpoint with no bucket":      func(c *Config) { c.OutputEndpoint = "http://gcs.test" },
+		"a prefix with no bucket":    func(c *Config) { c.OutputPrefix = "deployments/blue" },
+		"a tenant with no bucket":    func(c *Config) { c.OutputTenant = "tenant-a" },
+		"an endpoint with no bucket": func(c *Config) { c.OutputEndpoint = "http://gcs.test" },
 		"a materialization key id with no bucket": func(c *Config) {
 			c.MaterializationKeyID = "materialize-1"
 		},
@@ -167,8 +167,8 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 	}
 }
 
-// Req 56. The extension handshake is what proves a cohort speaks capture, and
-// it is only truthful where the facet exists.
+// Req 56. The extension handshake says a daemon speaks capture, and it is only
+// truthful where the facet exists.
 func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 	full := newRoutes(t, "")
 
@@ -193,7 +193,7 @@ func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 	}
 	if handshake.BucketFingerprint == full.bucket {
 		t.Error("the handshake reports the bucket NAME as its fingerprint; a fingerprint is " +
-			"what lets a control plane compare two cohorts without the name being the secret")
+			"what lets a control plane compare two daemons without the name being the secret")
 	}
 
 	// And the base-only daemon, which must not answer it at all.
@@ -207,8 +207,8 @@ func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 		t.Errorf("a base-only daemon answered the extension handshake with %d", response.StatusCode)
 	}
 
-	// Its BASE handshake still answers: the cohort is attestable for exact
-	// control while output_state is still initial, which is the whole reason
+	// Its BASE handshake still answers: the daemon serves exact control
+	// without an output bucket, which is the whole reason
 	// ExtensionHandshake embeds the base one rather than restating it.
 	response, err = http.Get(baseOnly.server.URL + "/handshake")
 	if err != nil {

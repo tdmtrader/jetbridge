@@ -3,7 +3,7 @@ package jetbridge
 // One protocol owner, and every path that can run a command or replace a Pod.
 //
 // The Phase 4 refactor box asks for two things this file provides. First, that
-// the base adapter stays singular: there is one client for the output daemon's
+// the base adapter stays singular: there is one client for the output plane's
 // control API, and the sibling `exact_execution_control` track EXTENDS it
 // rather than adding a second. Second, that every retry path capable of
 // recreating a command or a Pod is enumerated, so a new one is a visible edit

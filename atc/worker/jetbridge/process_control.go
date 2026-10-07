@@ -161,7 +161,7 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 
 	client, err := p.outputControls.ForNode(ctx, pod.Spec.NodeName)
 	if err != nil {
-		return fmt.Errorf("reaching the output daemon on node %s: %w", pod.Spec.NodeName, err)
+		return fmt.Errorf("reaching the output plane on node %s: %w", pod.Spec.NodeName, err)
 	}
 
 	// The node UID, not the node NAME. A name can be reused for new hardware,
@@ -475,9 +475,8 @@ func (p *execProcess) recordRunWitness(ctx context.Context, witness executioncon
 //
 // A capture-selected step LOSES post-completion hijack (Req 18) and a
 // capture-held source may not receive a new write-capable mount or a new Pod
-// UID (Req 16). The ATC cannot mint a writer ticket for a looked-up container
-// -- it has no execution identity for one -- so the honest answer is a typed
-// refusal rather than a ticket taken on nobody's behalf.
+// UID (Req 16). The ATC has no execution identity for a looked-up container,
+// so the honest answer is a typed refusal.
 func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 	if !c.config.OutputPlaneEnabled {
 		return nil

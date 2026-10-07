@@ -17,15 +17,15 @@ import (
 
 // The two node labels, and the order they go on and come off in.
 //
-// A ready label is a scheduling HINT and never authority -- the authenticated
-// handshake is that -- but the hint decides where the scheduler PUTS a pod, so
+// A ready label is a scheduling HINT and never authority -- the capability
+// the daemon verifies is that -- but the hint decides where the scheduler PUTS a pod, so
 // a label that outlives the facet it advertises is a pod pending forever on a
 // node that cannot admit it, and a label that appears before the facet is a pod
 // whose hold is refused on arrival.
 //
 // So the order is asserted rather than assumed: base goes on first and comes
 // off last, because the output facet is an extension of it and a node
-// advertising output without base would be claiming a capture cohort with no
+// advertising output without base would be offering capture with no
 // exact-execution protocol underneath.
 
 func nodeLabels(t *testing.T, client *fake.Clientset, name string) map[string]string {
@@ -61,10 +61,10 @@ func TestTheDaemonAdvertisesTheBaseFacetAloneWhenThatIsAllItHas(t *testing.T) {
 		t.Error("a base-control-only daemon advertised the output facet; a capture pod " +
 			"scheduled onto it would find no publisher")
 	}
-	// And it never claims the strict-input capability, which attests inputs and
-	// belongs to the other daemon entirely.
+	// And it never claims the strict-input label, which advertises strict
+	// inputs, a different capability of the artifact daemon.
 	if _, found := labels["concourse.dev/hangar-v1"]; found {
-		t.Error("the output daemon advertised the strict-input capability")
+		t.Error("the output plane advertised the strict-input capability")
 	}
 }
 
@@ -174,7 +174,7 @@ func TestWithdrawalTakesTheOutputLabelOffFirstAndTheBaseLabelOffLast(t *testing.
 	}
 }
 
-// A daemon that cannot advertise says so rather than serving a cohort nothing
+// A daemon that cannot advertise says so rather than serving a node nothing
 // can be scheduled onto while believing it is ready.
 func TestAFailedLabelPatchIsAnError(t *testing.T) {
 	client := freshNode("node-a")

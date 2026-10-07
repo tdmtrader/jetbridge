@@ -2,7 +2,7 @@ package hangaroutput_test
 
 // The harness these specs run against, and why every part of it is real.
 //
-// A REAL output daemon, one process per spec, with its own control ledger and
+// A REAL artifact daemon with its output plane, one process per spec, with its own control ledger and
 // its own steps root. What a capture does is half a change to a node's
 // filesystem that no response shows -- a sealed directory, a released one --
 // and a double cannot tell you the answer was right.

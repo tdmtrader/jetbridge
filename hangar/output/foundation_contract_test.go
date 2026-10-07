@@ -313,7 +313,7 @@ func TestFoundationCompositionIsPresent(t *testing.T) {
 			name:     "daemon handlers",
 			path:     "cmd/artifact-daemon/hangar_handlers.go",
 			contains: []string{"hangar."},
-			why:      "the daemon HTTP surface this track's output daemon is modelled on and must not reuse",
+			why:      "the daemon HTTP surface this track's output plane is modelled on and must not reuse",
 		},
 		{
 			name:     "runtime input seam",

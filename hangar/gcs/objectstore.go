@@ -121,7 +121,7 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 		// it would live in does not.
 		query.StartOffset = request.After
 	}
-	// Only the fields the inventory classifies on. A projection that fetched
+	// Only the fields the orphan sweep classifies on. A projection that fetched
 	// everything would make one page's metadata budget unpredictable.
 	if err := query.SetAttrSelection([]string{"Name", "Generation", "Metageneration", "Size", "Created", "Metadata"}); err != nil {
 		return objectstore.Page{}, translate(err)

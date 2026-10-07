@@ -4,7 +4,7 @@ package executioncontrol
 //
 // An acknowledgement is the only thing in this protocol that constitutes proof,
 // and a statement anybody can write is not proof. The node's daemon signs each
-// one with the control key its activation epoch pins; a control plane verifies
+// one with its control key for the control-key generation; a control plane verifies
 // with the public half it already holds, and never with a key the message
 // carried.
 //
@@ -26,9 +26,8 @@ import (
 )
 
 // acknowledgementDomain separates these bytes from every other signature in the
-// system. A receipt and an acknowledgement are signed by different keys for
-// different purposes; a domain string means neither can ever be presented as
-// the other even if a key were reused by mistake.
+// system: a domain string means no other signed statement can ever be
+// presented as an acknowledgement, even if a key were reused by mistake.
 const acknowledgementDomain = "hangar-execution-acknowledgement-v1"
 
 // ErrUnsigned is an acknowledgement whose signature is absent, malformed, or
@@ -87,7 +86,7 @@ func NewAcknowledgementSigner(private ed25519.PrivateKey) (*AcknowledgementSigne
 	return &AcknowledgementSigner{private: private}, nil
 }
 
-// PublicKey is the half an activation epoch pins.
+// PublicKey is the half the web's control key ring pins.
 func (signer *AcknowledgementSigner) PublicKey() ed25519.PublicKey {
 	return signer.private.Public().(ed25519.PublicKey)
 }

@@ -1,6 +1,6 @@
 package outputplane
 
-// The output daemon's protected, versioned control API.
+// The output plane's protected, versioned control API.
 //
 // Two disjoint surfaces, and the disjointness is enforced rather than
 // documented. /execution/v1/* is the base protocol's four closed operations;
@@ -20,7 +20,7 @@ package outputplane
 //
 // Base requests never require or synthesize an output or source field. A base
 // caller sends an identity and gets a classification; nothing on that path
-// mentions a hold, a bucket or a receipt, which is decision F13's contract
+// mentions a hold, a bucket or a capture, which is decision F13's contract
 // obligation expressed as a route table.
 
 import (
@@ -175,8 +175,8 @@ type route struct {
 //
 // The base protocol's frozen types EMBED Identity, so an Envelope or a
 // ClassifyRequest carries execution_id and fence at the top level. The
-// extension's types carry it under `execution`, because they also carry a
-// handoff and an incarnation and a flattened identity beside those would be
+// extension's types carry it under `execution`, because they also carry an
+// output and a step, and a flattened identity beside those would be
 // ambiguous. Both are frozen, so the middleware accommodates both rather than
 // either being changed to suit it.
 //
@@ -231,9 +231,8 @@ func (server *Server) Handler() http.Handler {
 			return
 		}
 		// The pod's readiness is the artifact daemon's, not this plane's, so a
-		// plane that could not read its own ledger says so HERE: the
-		// activation walk attests through this handshake, and a node that
-		// cannot answer for its ledger must not attest.
+		// plane that could not read its own ledger says so HERE: a node that
+		// cannot answer for its ledger must not claim to speak the protocol.
 		if server.unreadyBecause != "" {
 			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
 
@@ -244,7 +243,7 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /capture/v1/handshake", func(w http.ResponseWriter, request *http.Request) {
 		// Req 56's extension handshake. It is the capture facet's, so a daemon
 		// without the facet refuses it with the same typed result every other
-		// capture route gives -- an empty handshake would be a cohort claiming
+		// capture route gives -- an empty handshake would be a daemon claiming
 		// to speak a protocol it does not.
 		if !server.daemon.OutputEnabled() {
 			writeError(w, fmt.Errorf("%w: this daemon carries the base "+
@@ -327,7 +326,7 @@ func (server *Server) protect(declared route) http.Handler {
 		// component without the capture facet refuses durable output capture
 		// with a typed result and no cache-tier fallback. Answering "forbidden"
 		// or "bad request" would tell a caller to fix the call; answering 501
-		// tells it the cohort does not do this, which is the one answer that
+		// tells it this daemon does not do this, which is the one answer that
 		// does not produce a retry.
 		if declared.facet == output.CaptureFacet && !server.daemon.OutputEnabled() {
 			writeError(w, fmt.Errorf("%w: the %s operation needs the durable-capture "+
@@ -578,7 +577,7 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusNotAcceptable
 	case errors.Is(err, output.ErrCaptureDisabled):
 		// 501 and not 403 or 404. "This component does not implement the
-		// capture extension" is a statement about the cohort; a caller that
+		// capture extension" is a statement about the daemon; a caller that
 		// read it as "not permitted" or "no such route" would retry, and the
 		// retry Req 58 forbids is the cache tier.
 		status = http.StatusNotImplemented

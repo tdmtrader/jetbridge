@@ -41,16 +41,15 @@ import (
 
 // ProtocolVersion is the only version of this protocol that exists. It is
 // carried on every message rather than negotiated once, so a message that
-// outlived its cohort is refused where it is read.
+// outlived its protocol is refused where it is read.
 const ProtocolVersion = "hangar-execution-control-v1"
 
-// ReadyLabel attests that a node's daemon, runtime and control key are a
-// homogeneous, attested cohort for this protocol. It is a scheduling hint and
-// never an authority: the authenticated Handshake is.
+// ReadyLabel says a node's daemon serves this protocol. It is a scheduling
+// hint and never an authority: the capability the daemon verifies is.
 //
-// It is deliberately distinct from concourse.dev/hangar-v1, which attests
-// strict inputs only, and from concourse.dev/hangar-output-v1, which attests
-// the durable capture extension on top of this one.
+// It is deliberately distinct from concourse.dev/hangar-v1, which advertises
+// strict inputs only, and from concourse.dev/hangar-output-v1, which
+// advertises the durable capture extension on top of this one.
 const ReadyLabel = "concourse.dev/hangar-execution-control-v1"
 
 // LedgerVersion is the on-node record format the acknowledgements below are
@@ -59,7 +58,7 @@ const ReadyLabel = "concourse.dev/hangar-execution-control-v1"
 const LedgerVersion = "hangar-execution-ledger-v1"
 
 var (
-	// ErrUnsupportedProtocol is a message from outside this cohort.
+	// ErrUnsupportedProtocol is a message in a protocol version this daemon does not speak.
 	ErrUnsupportedProtocol = errors.New("hangar/executioncontrol: unsupported protocol version")
 	// ErrUnknownMember is a closed vocabulary asked to accept a member it does
 	// not have. It is deliberately not "unknown, treat as zero".
@@ -101,9 +100,11 @@ func (id ExecutionID) Validate() error { return validateUUID("execution id", str
 // advances it; a holder of an older fence may observe but never act.
 type Fence uint64
 
-// ActivationEpoch is the durable cluster attestation an execution was admitted
-// under. One epoch attests both the base facet and, when enabled, the capture
-// extension; there is never a second epoch for the same execution.
+// ActivationEpoch is the control-key generation an execution was admitted
+// under: which capability key and node control key speak for it. One
+// generation covers both the base facet and, when enabled, the capture facet;
+// there is never a second one for the same execution. It does not decide
+// whether the output plane is in service; the web's hangar_enabled row does.
 type ActivationEpoch uint64
 
 // LedgerSequence orders the records on one node's control ledger. It is
@@ -147,9 +148,9 @@ func (identity Identity) Validate() error {
 // to be controllable, and not one field about what the execution is for.
 //
 // It names NO Pod, and the omission is the protocol's, not an oversight. An
-// admission is what a location may be reserved against, and a reservation has
-// to precede the Pod: `buildPod` mounts the reserved incarnation, so the
-// reservation cannot wait for a UID the API server has not assigned yet. What
+// admission has to precede the Pod: `buildPod` mounts the capture's step
+// directory, so admission cannot wait for a UID the API server has not
+// assigned yet. What
 // admission binds is therefore the execution identity, its fence and the node
 // -- the three facts that exist before the Pod does. The Pod UID is bound once,
 // later and elsewhere: the capture control init presents its own Downward API
@@ -185,7 +186,7 @@ func (envelope Envelope) Validate() error {
 
 func validateProtocol(version string) error {
 	if version != ProtocolVersion {
-		return fmt.Errorf("%w: %q, this cohort speaks %q", ErrUnsupportedProtocol, version, ProtocolVersion)
+		return fmt.Errorf("%w: %q, this daemon speaks %q", ErrUnsupportedProtocol, version, ProtocolVersion)
 	}
 
 	return nil

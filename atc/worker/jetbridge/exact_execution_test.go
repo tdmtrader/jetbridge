@@ -1,6 +1,6 @@
 package jetbridge
 
-// execProcess under exact control, against a real output daemon.
+// execProcess under exact control, against a real artifact daemon output plane.
 //
 // The ordering is the subject and every spec here is a crash half around it:
 //
@@ -1049,7 +1049,7 @@ func (controls staticOutputControls) ForNode(context.Context, string) (OutputCon
 // The real one goes to the artifact daemon's classification route, and what it
 // answers is pinned by cmd/artifact-daemon's own suite against a real ledger.
 // What these specs are about is the two operations that ASK it: hijack and pause
-// pod replacement have no execution identity to take a writer ticket with, so
+// pod replacement have no execution identity of their own, so
 // asking and refusing is all they can do, and whether they ask is the assertion.
 type heldClassifier struct {
 	class string

@@ -17,8 +17,7 @@ import (
 // reading and is refused: this used to require all three and otherwise serve
 // plaintext without a word, so an operator who dropped one flag got a daemon
 // listening in the clear for an ATC and peers that dial https — the same rule
-// the ATC (jetbridge.ValidateDaemonTLSFlags) and the Hangar output daemon
-// enforce on their halves.
+// the ATC (jetbridge.ValidateDaemonTLSFlags) enforces on its half.
 func daemonTLSMode(cert, key, ca string) (bool, error) {
 	var missing []string
 	for _, f := range []struct{ name, value string }{

@@ -595,7 +595,7 @@ case "${CLASS}" in
     mkdir -p "${TARGET}"
     ;;
   *'"class":"held"'*)
-    echo "[cleanup-stale] REFUSED: a durable output capture still holds ${HANDLE}. This step's stale workspace is somebody else's unsettled source, and removing it would destroy bytes no receipt has been written for yet." >&2
+    echo "[cleanup-stale] REFUSED: a durable output capture still holds ${HANDLE}. This step's stale workspace is somebody else's unsettled source, and removing it would destroy bytes no capture has published yet." >&2
     exit 1
     ;;
   *)
@@ -609,15 +609,13 @@ esac
 // BuildAffinity places the pod on a node that can serve every facet it needs.
 //
 // A capture-selected execution needs TWO ready labels and not one. The base
-// control facet attests that this node's daemon, runtime and control key are a
-// homogeneous attested cohort for the exact-execution protocol; the output
-// facet attests the capture extension on top of it. They are separate labels
-// because a base-only cohort is a real deployment -- it is the one the sibling
-// `exact_execution_control` track schedules onto -- and a single label would
-// make "attested for exact control" and "has an output bucket" the same claim.
+// label says this node's daemon serves the exact-execution protocol; the output
+// label says it serves the capture extension on top of it. They are separate
+// labels because a base-only node is a real deployment, and a single label
+// would make "serves exact control" and "has an output bucket" the same claim.
 //
-// A ready label is a scheduling HINT and never authority: the authenticated
-// handshake is. What the label buys is that the pod does not land somewhere the
+// A ready label is a scheduling HINT and never authority: the capability the
+// daemon verifies is. What the label buys is that the pod does not land somewhere the
 // hold could never be acknowledged.
 // CaptureClass reads what the output ledger says about one step directory,
 // through the daemon that owns the node it is on.
@@ -682,10 +680,10 @@ func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input, control *runtim
 		}
 		// And the capture's node itself, by name.
 		//
-		// The two labels above pick a COHORT: nodes whose daemons are up and
-		// attested, which is where a hold could be acknowledged at all. The
+		// The two labels above pick a SET of nodes whose daemons are up and
+		// serve capture, which is where a hold could be acknowledged at all. The
 		// capture is narrower than that -- its execution was admitted on one
-		// node -- so a cohort-wide placement lets the scheduler land the
+		// node -- so a set-wide placement lets the scheduler land the
 		// producer on a node that admitted nothing, where the control init's
 		// hold is refused and no marker is ever written. Requiring the node is
 		// what turns that outage into a pending Pod.

@@ -266,7 +266,7 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 		t.Fatalf("the derived marker does not validate: %v", err)
 	}
 	if marker.Version != MarkerVersion {
-		t.Errorf("the marker version is %q, this cohort writes %q", marker.Version, MarkerVersion)
+		t.Errorf("the marker version is %q, this store writes %q", marker.Version, MarkerVersion)
 	}
 	if marker.Scope != namespace.Scope() {
 		t.Errorf("the marker says scope %q, the namespace derives %q. An object whose marker "+
@@ -283,7 +283,7 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 	// marker nothing could verify.
 	parsed, err := ParseObjectMarker(marker.Metadata())
 	if err != nil {
-		t.Fatalf("the marker this cohort writes does not parse: %v", err)
+		t.Fatalf("the marker this store writes does not parse: %v", err)
 	}
 	if parsed != marker {
 		t.Errorf("the marker did not round-trip: wrote %+v, read %+v", marker, parsed)
@@ -293,7 +293,7 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 	}
 
 	// A wrong version is a typed collision, not a parse failure: it is a
-	// deliberate statement by some other cohort and must never be overwritten.
+	// deliberate statement by some other system and must never be overwritten.
 	wrongVersion := marker.Metadata()
 	wrongVersion[MarkerKeyVersion] = "hangar-output-v2"
 	if _, err := ParseObjectMarker(wrongVersion); !errors.Is(err, ErrConflict) {

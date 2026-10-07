@@ -159,7 +159,7 @@ type RunCommand struct {
 	hangarOutputStoreClose  func() error
 
 	// hangarOutputCapabilityMinter mints the capability every control call on
-	// the output daemon presents. Built once during startup validation, from
+	// the artifact daemon's output plane presents. Built once during startup validation, from
 	// the key the flag names, and handed to the worker factory.
 	hangarOutputCapabilityMinter *executioncontrol.CapabilityMinter
 	runOutputStarter             *runs.OutputStarter
@@ -242,12 +242,12 @@ type RunCommand struct {
 		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
 		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
-		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
-		OutputWarrantKey                   string        `long:"kubernetes-hangar-output-warrant-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
+		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker without capture enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
+		OutputWarrantKey                   string        `long:"kubernetes-hangar-output-warrant-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The artifact daemon's output plane verifies with the same key; nothing else holds it."`
 		OutputWarrantKeyLegacy             string        `long:"kubernetes-hangar-output-capability-key" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-output-warrant-key."`
-		OutputControlKeys                  string        `long:"kubernetes-hangar-output-control-keys" description:"Path to the epoch-pinned node CONTROL public keys used to verify source hold recovery. Retain old epochs while their handoffs remain unsettled."`
-		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a warrant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
-		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
+		OutputControlKeys                  string        `long:"kubernetes-hangar-output-control-keys" description:"Path to the node CONTROL public keys, one per control-key generation, used to verify a node's signed execution start. Retain an old generation while an execution it signed may still be recovered."`
+		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the control capability key and never the foundation's strict-input materialization key."`
+		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The control-key generation this control plane mints capabilities under and expects node acknowledgements to name. It does not put the plane in service: hangar_enabled does."`
 		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
 		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002); web never reaches the cache."`
 		InputBucket                        string        `long:"kubernetes-hangar-input-bucket"            description:"The strict-input bucket or disk namespace the artifact daemons publish trees into. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002)."`
@@ -264,7 +264,7 @@ type RunCommand struct {
 		OutputReclaimBatch                 int           `long:"kubernetes-hangar-output-reclaim-batch" default:"10" description:"Generations one reclaim pass admits, and jobs it advances."`
 		OutputDeleteTimeout                time.Duration `long:"kubernetes-hangar-output-delete-timeout" default:"2m" description:"How long one conditional delete may take."`
 		OutputOrphanSweepInterval          time.Duration `long:"kubernetes-hangar-output-orphan-sweep-interval" default:"1h" description:"How often the orphan sweep lists the output namespace."`
-		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the output daemon output-timeout; read leases and transports cover this budget."`
+		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the artifact daemon's output-plane operation timeout; read leases and transports cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
 		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
 		OutputLeaseRenewInterval           time.Duration `long:"kubernetes-hangar-output-lease-renew-interval" default:"1m" description:"How often a held lease is renewed. At most one minute: a longer interval is a lease that expires under its own owner."`
@@ -389,7 +389,7 @@ type RunCommand struct {
 	// this server admits durable runs is not an anonymous fact.
 	// DisableRedactSecrets is the existing precedent for a process-wide
 	// setting that is deliberately outside the group and outside the map.
-	PipelineRunActivationEpoch int64    `long:"pipeline-run-activation-epoch" description:"The Run contract activation epoch this web node admits pipeline runs under (the v2 create route and the run_pipeline step). Zero admits none. At startup it is written into the durable Run activation marker, which only moves forward. It is independent of the Hangar output epoch: rotating that epoch leaves running Runs, their finalization and invocation-key replay alone."`
+	PipelineRunActivationEpoch int64    `long:"pipeline-run-activation-epoch" description:"The Run contract activation epoch this web node admits pipeline runs under (the v2 create route and the run_pipeline step). Zero admits none. At startup it is written into the durable Run activation marker, which only moves forward. It is independent of the Hangar control-key generation: rotating that leaves running Runs, their finalization and invocation-key replay alone."`
 	RunInputSigningKey         string   `long:"run-input-signing-key" description:"Path to a distinct raw 32-byte web-only key for temporary Run input grants. Never mount this service key in workers or node daemons."`
 	RunResultScratchDir        string   `long:"run-result-scratch-dir" description:"Absolute, existing directory for spooling Run result downloads. Each read holds about twice the archive size until its response is written. A private child is created in it at startup. Empty uses the process temporary directory."`
 	RunResultReadConcurrency   int      `long:"run-result-read-concurrency" default:"2" description:"Run result downloads in flight at once. Readers beyond this are refused with 503 and Retry-After rather than queued."`
@@ -1776,10 +1776,10 @@ func (cmd *RunCommand) gcComponents(
 //
 // The status component keeps its own additional condition, and it is a
 // different question: the flag says this deployment HAS an output plane, and
-// the activation epoch says there is one to describe. A status surface
-// reporting "0 live generations, not at risk" about a plane nobody has
-// activated is an alert rule that will never fire looking exactly like
-// coverage.
+// a nonzero control-key generation says it is configured enough to describe.
+// A status surface reporting "0 live generations, not at risk" about a plane
+// nobody has configured is an alert rule that will never fire looking exactly
+// like coverage.
 func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableComponent {
 	if !cmd.Kubernetes.OutputPlaneEnabled {
 		return nil
@@ -1842,17 +1842,17 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 // output plane and whatever its Run activation epoch.
 //
 // The cancellation worker is here and not among the output plane's components
-// because the cancel route answers on every node, and activation zero stops
-// admission while leaving running Runs running: a fence accepted where the
-// worker is absent would never converge. Its own operations (scheduler debt,
-// build abort, candidate settlement, terminalization) need no output plane.
-// Without one the node admits no execution, so no source operation arises.
+// because the cancel route answers on every node, and a Run activation epoch
+// of zero stops admission while leaving running Runs running: a fence accepted
+// where the worker is absent would never converge. Its own operations (build
+// abort, candidate settlement, terminalization) need no output plane. Without
+// one the node admits no exact execution, so no capture is ever discarded.
 //
 // The web fleet must agree on the output plane. The worker's lease is one
 // row that a live owner renews on every pass, so a node without the plane
-// that holds it keeps it; a source operation admitted by a node with the
-// plane is then retried as typed Unavailable debt, its Run staying running,
-// until the lease holder stops. The chart renders every web node alike.
+// that holds it keeps it; an execution admitted by a node with the plane is
+// then retried, its Run staying running, until the lease holder stops. The
+// chart renders every web node alike.
 func (cmd *RunCommand) runComponents(dbConn db.DbConn) []RunnableComponent {
 	return []RunnableComponent{
 		cmd.runResultsComponent(),
@@ -1893,9 +1893,10 @@ func (cmd *RunCommand) runCancellationComponent(dbConn db.DbConn) RunnableCompon
 	}
 }
 
-// hangarOutputTransactor adapts the connection to the coordinator's port.
+// hangarOutputTransactor adapts the connection to the coordinator's
+// Transactor.
 //
-// It lives here rather than in atc/db because the port belongs to the
+// It lives here rather than in atc/db because the interface belongs to the
 // coordinator and atc/db has no business importing it: an interface is a
 // statement of what a consumer uses, and the package that satisfies one should
 // not have to know it exists.
@@ -2956,11 +2957,12 @@ func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
 
 // validateHangarOutputPlane refuses a half-configured control plane.
 //
-// Two facets, checked in the order they depend on each other. The BASE facet
-// wires this node's exact-execution control calls and needs the capability key
-// the daemon verifies with; the CAPTURE facet needs the receipt ring it
-// verifies receipts against, the read-warrant key it mints warrants with, and an
-// activation epoch, and it can never be on while the base facet is off.
+// Two switches, checked in the order they depend on each other. The BASE
+// switch wires this node's exact-execution control calls and needs the
+// capability key the daemon verifies with and a control-key generation; the
+// CAPTURE switch needs the node control keys it verifies signed starts with
+// and the read-warrant key it mints warrants with, and it can never be on
+// while the base switch is off.
 //
 // Every refusal here is one the chart also refuses at render time. Both, and
 // deliberately: the chart is what an operator reviews, and this is what catches
@@ -2984,9 +2986,9 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 			"daemon presents a capability minted with it, and a control plane that cannot mint " +
 			"one can make no call at all")
 	}
-	// THE EPOCH BELONGS TO THE BASE FACET TOO, and this gate asked for it only
-	// under capture. Every capability -- base or capture -- carries the
-	// activation epoch in its claims and CapabilityClaims.Validate refuses a
+	// THE GENERATION BELONGS TO THE BASE SWITCH TOO, and this gate asked for it
+	// only under capture. Every capability -- base or capture -- carries the
+	// control-key generation in its claims and CapabilityClaims.Validate refuses a
 	// zero, so a base-only deployment with no epoch is one whose every control
 	// call fails at mint time. The chart has always refused it in the same
 	// block that requires the capability key; this is the half that catches a
@@ -2996,8 +2998,8 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 			"--kubernetes-hangar-output-enabled is set: every capability this control plane " +
 			"mints names the epoch it was minted under, and zero is the absence of one")
 	}
-	// READ HERE rather than at the first call, for the reason the receipt ring
-	// is read here: a control plane that cannot mint is one that will make no
+	// READ HERE rather than at the first call, for the reason the control key
+	// ring is read here: a control plane that cannot mint is one that will make no
 	// call at all, and "minted nothing" and "minted successfully" are the same
 	// observable outcome on any path that discovers the problem late. Until
 	// this, the flag was required, compared with two other flags for
@@ -3057,7 +3059,7 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 			return fmt.Errorf("--kubernetes-hangar-output-control-keys: %w", err)
 		}
 		if int64(ring.ActivationEpoch) != cmd.Kubernetes.OutputActivationEpoch {
-			return errors.New("--kubernetes-hangar-output-control-keys names a different activation epoch")
+			return errors.New("--kubernetes-hangar-output-control-keys names a different control-key generation")
 		}
 		cmd.hangarOutputControlKeys = ring
 	}
@@ -3065,7 +3067,7 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 		return nil
 	}
 	if cmd.Kubernetes.OutputControlKeys == "" {
-		return errors.New("--kubernetes-hangar-output-control-keys is required when capture is enabled: source hold recovery requires the node's public verification key")
+		return errors.New("--kubernetes-hangar-output-control-keys is required when capture is enabled: a node's signed execution start is verified with its public key")
 	}
 	if cmd.Kubernetes.OutputMaterializationKey == "" {
 		return errors.New("--kubernetes-hangar-output-materialization-key is required when " +

@@ -78,13 +78,13 @@ type Container struct {
 	// hostPath directory may contain stale data and needs cleanup.
 	reused bool
 
-	// outputControls reaches the output daemon on whichever node this
+	// outputControls reaches the output plane on whichever node this
 	// container's Pod lands on. Nil on every deployment with no output plane,
 	// and nil is the ordinary path rather than a degraded one.
 	outputControls OutputControlResolver
 
-	// captureClass reads what the output ledger says about this container's
-	// step directory, for the two operations that cannot take a writer ticket:
+	// captureClass reads what the source ledger says about this container's
+	// step directory, for the two operations a held marker refuses:
 	// hijacking a looked-up container and replacing a terminal pause Pod.
 	captureClass captureClassifier
 
@@ -518,39 +518,35 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := c.containerSpec.ExecutionControl.Validate(c.containerSpec); err != nil {
 		return nil, err
 	}
-	// And the FACET, which the envelope cannot carry: a spec may be admitted
-	// with a capture by a control plane that believes the plane is on, and land
-	// on a worker whose output facet is not enabled.
+	// And the worker's own switch, which the envelope cannot carry: a spec may
+	// be admitted with a capture by a control plane that believes the plane is
+	// on, and land on a worker whose output plane is not enabled.
 	//
 	// This is a refusal at ADMISSION rather than an omission in the Pod. The
 	// difference is the whole of Req 58: a worker that quietly built the
 	// ordinary pod would produce a step that ran, succeeded and captured
-	// nothing, and the handoff the control plane predeclared would sit
-	// unresolved until its deadline. There is no cache-tier fallback to
+	// nothing, and its pending capture row would sit until its capture
+	// deadline. There is no cache-tier fallback to
 	// degrade into, so the honest answer is that no capture pod is built.
 	if c.containerSpec.ExecutionControl.HasDurableOutputCapture() {
 		if !c.config.OutputPlaneEnabled {
 			return nil, fmt.Errorf("%w: this step selected durable output capture and this "+
-				"worker's output facet is not enabled, so no capture pod is built. Durable "+
+				"worker's output plane is not enabled, so no capture pod is built. Durable "+
 				"output capture never degrades into an ordinary step: a pod that ran and "+
-				"captured nothing would leave the predeclared handoff unresolved until its "+
-				"deadline", runtime.ErrInvalidExecutionControl)
+				"captured nothing would leave its capture row pending until its "+
+				"capture deadline", runtime.ErrInvalidExecutionControl)
 		}
-		// And the EPOCH, which is the part a ready label cannot attest.
+		// And the control-key generation, which a ready label cannot carry.
 		//
-		// A label says a node's daemon was up and attested at some point; it
-		// does not say which cohort it belongs to. A node can carry the label
-		// while its daemons speak for a different activation epoch -- a
-		// rolling upgrade, a half-finished rotation, a node back from a long
-		// drain -- and a capture admitted against that cohort would be signed
-		// by a key this control plane does not pin. Req 57: a stale label or
-		// handshake authorizes nothing.
+		// A label says a node's daemon is up; it does not say which control
+		// keys it verifies. A step admitted under another generation carries
+		// capabilities this worker's daemons would not verify, so it is
+		// refused here rather than at its first control call.
 		if epoch := c.config.OutputActivationEpoch; epoch != 0 &&
 			int64(c.containerSpec.ExecutionControl.ActivationEpoch) != epoch {
-			return nil, fmt.Errorf("%w: this step was admitted under activation epoch %d and "+
-				"this worker speaks for epoch %d, so no capture pod is built. A ready label "+
-				"is a scheduling hint and never authority; the authenticated handshake and "+
-				"the activation epoch row are",
+			return nil, fmt.Errorf("%w: this step was admitted under control-key generation %d and "+
+				"this worker mints under generation %d, so no capture pod is built. A ready "+
+				"label is a scheduling hint and never authority",
 				runtime.ErrInvalidExecutionControl,
 				c.containerSpec.ExecutionControl.ActivationEpoch, epoch)
 		}
@@ -605,10 +601,10 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	//
 	// OutputPlaneEnabled deliberately does NOT gate this, and Phase 8 is where
 	// that changes. The flag gates the cleanup probe and the ATC's own control
-	// calls -- the places where a worker with no output daemon would otherwise
+	// calls -- the places where a worker with no output plane would otherwise
 	// dial one -- but the capture init is emitted whenever the spec carries a
 	// capture, because a spec only carries one if the control plane put it
-	// there. Phase 8's scenario `A worker whose output facet is not enabled
+	// there. Phase 8's scenario `A worker whose output plane is not enabled
 	// builds no capture pod` needs the SELECTION gated rather than the init,
 	// which is a refusal at admission and not an omission here; that is where
 	// this flag becomes load-bearing on this path.

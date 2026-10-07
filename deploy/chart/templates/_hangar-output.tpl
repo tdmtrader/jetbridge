@@ -84,7 +84,7 @@
 {{- fail "hangarOutput.executionControl.keySecret is required: the node signs every execution and source ledger statement with it, and an unsigned acknowledgement is not proof." -}}
 {{- end -}}
 {{- if not $output.executionControl.keyID -}}
-{{- fail "hangarOutput.executionControl.keyID is required: it is the id every node reports over the attestation handshake, and base attestation is a homogeneity check over exactly those ids. It names KEY MATERIAL and not the Secret -- it used to render the Secret NAME, so two nodes holding different private keys under one Secret name reported one id and a cohort half-way through a rollout attested as homogeneous." -}}
+{{- fail "hangarOutput.executionControl.keyID is required: it is the id every node reports over its handshake. It names KEY MATERIAL and not the Secret, so two nodes holding different private keys must not report one id." -}}
 {{- end -}}
 {{- if not $output.capabilityKeySecret -}}
 {{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key." -}}
@@ -122,7 +122,7 @@
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.cacheBucket. The output plane needs a DEDICATED bucket: the cache tier is fail-open, name-keyed and re-derivable, and mixing the two puts objects with no ownership marker in the namespace the orphan sweep lists." $output.bucket) -}}
 {{- end -}}
 {{- if and $output.strictInputBucket (eq $output.bucket $output.strictInputBucket) -}}
-{{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published and attests inputs." $output.bucket) -}}
+{{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published." $output.bucket) -}}
 {{- end -}}
 {{- end }}
 
@@ -160,7 +160,7 @@
 {{- fail "hangarBootstrap composes the verification ring: leave hangarOutput.executionControl.publicKeys empty, and list earlier control-key epochs in hangarBootstrap.referencedKeys" -}}
 {{- end -}}
 {{- if not $output.executionControl.keyID -}}
-{{- fail "hangarOutput.executionControl.keyID is required: the cohort reports it over the attestation handshake." -}}
+{{- fail "hangarOutput.executionControl.keyID is required: every node reports it over its handshake." -}}
 {{- end -}}
 {{- else -}}
 {{- $controlEpochs := dict -}}
@@ -172,7 +172,7 @@
 {{- $_ := set $controlEpochs $epoch true -}}
 {{- end -}}
 {{- if not (hasKey $controlEpochs (toString $output.activationEpoch)) -}}
-{{- fail "hangarOutput.executionControl.publicKeys has no key for the active epoch; source hold recovery cannot verify node statements" -}}
+{{- fail "hangarOutput.executionControl.publicKeys has no key for the active epoch; the web cannot verify node execution statements" -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

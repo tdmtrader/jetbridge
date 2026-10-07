@@ -40,7 +40,7 @@ const markerCreatedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // It deliberately carries the logical identity of the tree -- scope and digest
 // -- and not its generation. The generation is assigned by the store at
 // creation and is therefore not knowable at the moment the metadata is written;
-// registration adds it, and inventory reads it from the object itself. Putting
+// registration adds it, and the orphan sweep reads it from the object itself. Putting
 // it here would have meant a marker that is a self-report of the very fact it
 // is supposed to help verify.
 //
@@ -88,8 +88,8 @@ func (marker ObjectMarker) Metadata() map[string]string {
 // relabelled, adopted or deleted, and treating "no marker" as "not ours to
 // worry about" is the only safe reading. A different marker version is
 // ErrConflict rather than a parse failure, because a wrong version is a
-// deliberate statement by some other cohort and must not be overwritten.
-// Anything else malformed is ErrCorrupt, which becomes inventory debt.
+// deliberate statement by some other system and must not be overwritten.
+// Anything else malformed is ErrCorrupt, which the orphan sweep counts.
 func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
 	version, ok := metadata[MarkerKeyVersion]
 	if !ok || version == "" {
@@ -97,7 +97,7 @@ func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
 			"it is never relabelled, adopted or deleted", ErrNotFound, MarkerKeyVersion)
 	}
 	if version != MarkerVersion {
-		return ObjectMarker{}, fmt.Errorf("%w: object carries marker version %q, this cohort "+
+		return ObjectMarker{}, fmt.Errorf("%w: object carries marker version %q, this store "+
 			"accepts %q", ErrConflict, version, MarkerVersion)
 	}
 
@@ -135,7 +135,7 @@ func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
 
 func (marker ObjectMarker) Validate() error {
 	if marker.Version != MarkerVersion {
-		return fmt.Errorf("%w: marker version %q, this cohort accepts %q",
+		return fmt.Errorf("%w: marker version %q, this store accepts %q",
 			ErrConflict, marker.Version, MarkerVersion)
 	}
 	if err := marker.Scope.Validate(); err != nil {

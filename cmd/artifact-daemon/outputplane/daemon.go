@@ -40,8 +40,8 @@ type Daemon struct {
 	namespace output.OutputNamespace
 	publisher *publisher.Publisher
 
-	// epoch is the base facet's activation epoch, which exists whether or not
-	// the output facet does. It is read from configuration rather than from the
+	// epoch is the control-key generation, which exists whether or not the
+	// output facet does. It is read from configuration rather than from the
 	// namespace for exactly that reason.
 	epoch executioncontrol.ActivationEpoch
 
@@ -57,9 +57,9 @@ type Daemon struct {
 	operationTimeout time.Duration
 
 	// controlKeyID names the Ed25519 key this node signs execution and source
-	// ledger statements with. A control statement says a
-	// process on this node did something, and an epoch pins both separately so
-	// that rotating one does not rotate the other.
+	// ledger statements with. A control statement says a process on this node
+	// did something; it is a separate key from the capability and read-warrant
+	// keys so that rotating one does not rotate the others.
 	controlKeyID  string
 	controlSigner *executioncontrol.AcknowledgementSigner
 }
@@ -82,8 +82,7 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 
 	// The output facet, or nothing. Everything between here and the control key
 	// is the capture extension, and a base-only daemon builds none of it -- no
-	// namespace, no object client, no publisher, and above all no receipt
-	// signing key. A key mounted into a process that cannot need it is a key an
+	// namespace, no object client, no publisher, and no read-warrant key. A key mounted into a process that cannot need it is a key an
 	// exploit of that process gets for free.
 	var (
 		namespace     output.OutputNamespace
@@ -151,7 +150,7 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 // OutputEnabled reports whether this daemon carries the capture extension.
 func (daemon *Daemon) OutputEnabled() bool { return !daemon.namespace.IsZero() }
 
-// ActivationEpoch is the BASE facet's epoch, which exists on every daemon.
+// ActivationEpoch is the control-key generation, which exists on every daemon.
 //
 // The capability verifier and the base handshake read it from here rather than
 // from the namespace, because a base-only daemon has an epoch and no namespace,
@@ -161,13 +160,12 @@ func (daemon *Daemon) ActivationEpoch() executioncontrol.ActivationEpoch { retur
 
 func (daemon *Daemon) Publisher() *publisher.Publisher { return daemon.publisher }
 
-// ExtensionHandshake is the authenticated evidence Req 56 requires before a
-// checkpoint or a capture: what this cohort speaks, which keys check its
-// statements, and which bucket and namespace it publishes into.
+// ExtensionHandshake is what this daemon reports about its capture
+// extension: which protocol it speaks, which keys check its statements, and
+// which bucket and namespace it publishes into.
 //
-// It embeds the base handshake rather than restating it, so a base-only cohort
-// is attestable for exact control while output_state is still initial. None of
-// it is authority; the activation epoch row is.
+// It embeds the base handshake rather than restating it, so a base-only daemon
+// answers for exact control alone. None of it is authority.
 func (daemon *Daemon) ExtensionHandshake() output.ExtensionHandshake {
 	return output.ExtensionHandshake{
 		Base:                    daemon.BaseHandshake(),
@@ -199,8 +197,8 @@ func (daemon *Daemon) ControlSigner() *executioncontrol.AcknowledgementSigner {
 	return daemon.controlSigner
 }
 
-// ControlPublicKey is the half an activation epoch pins for this node's
-// execution and source statements.
+// ControlPublicKey is the half the web's control key ring pins, per
+// control-key generation, for this node's execution statements.
 func (daemon *Daemon) ControlPublicKey() ed25519.PublicKey { return daemon.controlSigner.PublicKey() }
 
 // Namespace is what this daemon publishes into.
@@ -227,7 +225,7 @@ func parsePKCS8Ed25519(der []byte) (ed25519.PrivateKey, error) {
 	}
 	private, ok := parsed.(ed25519.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("%w: the signing key is a %T; this cohort signs with Ed25519 "+
+		return nil, fmt.Errorf("%w: the signing key is a %T; this daemon signs with Ed25519 "+
 			"and nothing else", output.ErrUnsupportedProtocol, parsed)
 	}
 

@@ -157,8 +157,7 @@ spec:
             # The output plane: exact execution control, and with the output
             # facet the durable-capture extension.
             # The key's id, not its Secret's name. Two nodes holding
-            # different material under one Secret name reported one id, and
-            # base attestation compares ids.
+            # different material under one Secret name must not report one id.
             - --control-key-id={{ $output.executionControl.keyID }}
             - --control-key-file=/etc/concourse/hangar-output/control/control.key
             - --capability-key=/etc/concourse/hangar-output/capability/capability.key
@@ -359,9 +358,9 @@ metadata:
     {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-daemon
 spec:
-  # A node's source incarnations live on that node's disk and nowhere else, so
-  # evicting a daemon that serves the output plane is taking the only
-  # authority for its holds away. One at a time.
+  # A node's held step directories and their step markers live on that node's
+  # disk and nowhere else, so evicting a daemon that serves the output plane is
+  # taking the only authority for its holds away. One at a time.
   maxUnavailable: 1
   selector:
     matchLabels:

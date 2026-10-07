@@ -44,28 +44,22 @@ const (
 	// different version is a typed collision.
 	MarkerVersion = "hangar-output-v1"
 
-	// SourceLedgerVersion is the on-node record format for source holds and
-	// writer tickets. It is reported by the handshake beside the base ledger
+	// SourceLedgerVersion is the on-node record format for step markers. It is reported by the handshake beside the base ledger
 	// version, because a node can gain one without the other.
 	SourceLedgerVersion = "hangar-output-source-ledger-v1"
 
-	// ReadyLabel attests that the capture extension is usable on a node. A
-	// capture Pod requires it *and* executioncontrol.ReadyLabel; neither is
-	// authority, because the authenticated ExtensionHandshake is.
+	// ReadyLabel says the capture extension is served on a node. A capture
+	// Pod requires it *and* executioncontrol.ReadyLabel; neither is authority,
+	// because the capability the daemon verifies is.
 	//
-	// It is deliberately not concourse.dev/hangar-v1, which attests strict
+	// It is deliberately not concourse.dev/hangar-v1, which advertises strict
 	// inputs only. Reusing that label would let a strict-input daemon schedule
 	// a capture it cannot perform.
 	ReadyLabel = "concourse.dev/hangar-output-v1"
 
-	// ReceiptDomain is the Ed25519 signing domain for per-capture receipts. Its
-	// private key is mounted only in the output daemon.
-	ReceiptDomain = "hangar-output-receipt-v1"
-
 	// MaterializeDomain is the HMAC domain for managed-output read warrants. It
-	// is a separate key from ReceiptDomain and from the foundation's
-	// strict-input materialization key: a read warrant is not a publication
-	// authority and must not be signable by anything that can mint one.
+	// is a separate key from the control capability key and from the
+	// foundation's strict-input materialization key.
 	MaterializeDomain = "hangar-output-materialize-v1"
 )
 
@@ -138,8 +132,8 @@ var (
 	// and give up on the second, both backwards.
 	ErrSealed = errors.New("hangar/output: the source is sealed")
 
-	// ErrSealUnconfirmed is a writer drain or container boundary that could not
-	// be proved before the seal deadline. It publishes no receipt, and it never
+	// ErrSealUnconfirmed is a container boundary that could not be proved
+	// before the capture deadline. It publishes nothing, and it never
 	// re-executes the producer.
 	ErrSealUnconfirmed = errors.New("hangar/output: seal unconfirmed")
 
@@ -155,12 +149,12 @@ var (
 	ErrPublishInProgress = fmt.Errorf("%w: publish", ErrInProgress)
 
 	// ErrGenerationConflict is a conditional operation refused because the
-	// exact generation is not the one at the key. It becomes debt; it never
+	// exact generation is not the one at the key. It is counted; it never
 	// broadens into an unconditional delete.
 	ErrGenerationConflict = errors.New("hangar/output: generation conflict")
 
 	// ErrAtRisk indicates an unresolved failure observed during storage operations.
-	// It blocks new captures, claims, warrants, adoption and reclaim admission
+	// It blocks new captures, claims, warrants and reclaim admission
 	// while leaving releases and
 	// diagnosis possible.
 	ErrAtRisk = errors.New("hangar/output: storage integrity is at risk")
@@ -176,7 +170,7 @@ var (
 	// other.
 	ErrIncomplete = errors.New("hangar/output: incomplete value")
 
-	// ErrUnsupportedProtocol is a message from outside this cohort.
+	// ErrUnsupportedProtocol is a message in a protocol version this daemon does not speak.
 	ErrUnsupportedProtocol = errors.New("hangar/output: unsupported protocol version")
 
 	// ErrCaptureDisabled is a durable-output-capture operation asked of a
@@ -192,13 +186,13 @@ var (
 )
 
 // BucketFingerprintScheme identifies GCS buckets in stored namespace identities.
-// The daemon handshake, activation epoch and inventory cursor must agree on
+// The daemon handshake, the object marker and the orphan sweep must agree on
 // that identity. Disk namespaces use a separately pinned storage identity.
 const BucketFingerprintScheme = "gs://"
 
 func validateProtocol(version string) error {
 	if version != ProtocolVersion {
-		return fmt.Errorf("%w: %q, this cohort speaks %q", ErrUnsupportedProtocol, version, ProtocolVersion)
+		return fmt.Errorf("%w: %q, this daemon speaks %q", ErrUnsupportedProtocol, version, ProtocolVersion)
 	}
 
 	return nil
@@ -219,12 +213,12 @@ func validateUUID(what, value string) error {
 
 // The opaque identities. Every one of them is caller- or server-generated, has
 // no readable structure, and is a distinct Go type so that passing a claim id
-// where a handoff id belongs does not compile.
+// where a capture id belongs does not compile.
 
-// ReservationID names the reservation created with the producer-completion
-// checkpoint. It exists before the first object create precisely so recovery
-// and inventory can correlate a possibly-created object without trusting a
-// task-supplied key.
+// ReservationID is the correlation handle an object marker carries: an input
+// stage's id, or the id a capture derives from its key (CaptureKey.MarkerID).
+// It exists before the first object create so a possibly-created object can be
+// correlated without trusting a task-supplied key.
 type ReservationID string
 
 func (id ReservationID) Validate() error { return validateUUID("reservation id", string(id)) }
@@ -295,10 +289,6 @@ func (name OutputName) Validate() error {
 
 // LeaseFence is the monotonic fencing epoch of a read or reclaim lease.
 type LeaseFence uint64
-
-// CursorFence is the monotonic fencing epoch of the single inventory cursor
-// owner for one output bucket and activation epoch.
-type CursorFence uint64
 
 // Timestamp is re-exported from the base protocol so that a value written here
 // and a value written there have the same single spelling on the wire.

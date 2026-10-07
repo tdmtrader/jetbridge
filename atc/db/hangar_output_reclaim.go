@@ -474,7 +474,7 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 // saying otherwise: a controller was refused while doing work its own role is
 // supposed to authorize, which is either a warrant that was removed or a
 // principal that is not the one the deployment configured. Either way the plane
-// is not the plane that was attested, and carrying on admitting work under an
+// is not the plane that was configured, and carrying on admitting work under an
 // identity that has just been refused is exactly the state Req 52 stops.
 func (repository *HangarOutputRepository) RecordRuntimePrincipalDenial(ctx context.Context, tx output.Tx, role output.PrincipalRole, detail string) error {
 	if err := role.Validate(); err != nil {
@@ -570,10 +570,9 @@ type HangarReclaimCandidate struct {
 //
 // registered_at is the instant this plane learned the generation exists, and it
 // is deliberately used rather than the object's creation time, which this table
-// does not carry. For a `registered` row the create precedes the receipt, and
-// for an `adopted` row adoption itself already required grace to have elapsed
-// since the object was created. Both directions are therefore conservative: the
-// wait is never shorter than grace measured from creation.
+// does not carry. For a `registered` row the create precedes the capture row's
+// publishing -> published move that registers it, so the wait is never shorter
+// than grace measured from creation.
 func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context, tx output.Tx, grace time.Duration, limit int) ([]HangarReclaimCandidate, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("%w: a reclaim admission pass is bounded; %d is not a batch",

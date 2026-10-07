@@ -11,7 +11,7 @@ package jetbridge
 // runs one of the 260 plain `Test*` functions beside the Ginkgo suite, and
 // under `-run` the suite does not execute, so nothing ever removed the root --
 // deterministically, every invocation, and 47 MB of it whenever the test
-// started a real output daemon. A guard that only runs when the whole suite
+// started a real artifact daemon output plane. A guard that only runs when the whole suite
 // runs cannot say "this process takes its directory with it"; only TestMain
 // can, because only TestMain is the process.
 //

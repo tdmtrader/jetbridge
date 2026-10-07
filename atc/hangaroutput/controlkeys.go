@@ -13,9 +13,10 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// ControlKeyRing pins one node-control signing identity per activation epoch.
-// Old entries remain available while handoffs from their epoch need recovery.
-// These are public keys; receipt signing uses a separate ring and key role.
+// ControlKeyRing pins one node-control signing identity per control-key
+// generation (activation epoch). Old entries remain available while an
+// execution started under them may still be recovered. These are public keys
+// that verify a node's signed execution acknowledgements.
 type ControlKeyRing struct {
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	Keys            []ControlKeyEntry                `json:"keys"`

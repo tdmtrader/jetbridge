@@ -199,8 +199,8 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 
 	// The exact lifecycle, under the lock, before anything is written. Req 35
 	// admits a managed-output warrant only for a REGISTERED MARKED generation
-	// whose lifecycle state is readable: a caller-supplied ref, a stale receipt
-	// or the ordinary strict-input path cannot reach this, and neither can a
+	// whose lifecycle state is readable: a caller-supplied ref, a capture row
+	// that never published or the ordinary strict-input path cannot reach this, and neither can a
 	// generation that reclamation has already admitted.
 	//
 	// The marker version is not read here: hangar_exact_lifecycles constrains
@@ -451,7 +451,8 @@ func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, 
 //
 // Every exclusion is rechecked here under the exact-lifecycle lock, and the
 // schema rechecks them again at commit: elapsed publication grace, no active
-// claim, no active read lease, no unresolved reservation for the same content,
+// claim, no active read lease, no pending or publishing capture (or unregistered
+// input publication) naming the same content,
 // and no unresolved runtime integrity findings. A reclaimer that arrives second
 // recognises the claimant and skips.
 //
@@ -463,10 +464,9 @@ func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, 
 // which is the same rule the reclaim job's own generation precondition follows.
 //
 // registered_at rather than the object's creation time, which this table does
-// not carry: for a `registered` row the object create precedes the receipt, and
-// for an `adopted` row adoption itself already required grace to elapse since
-// creation. Both are conservative -- the wait is never shorter than grace
-// measured from the object.
+// not carry: for a `registered` row the object create precedes the capture
+// row's publishing -> published move that registers it, so the wait is never
+// shorter than grace measured from the object.
 func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx output.Tx, ref hangar.TreeRef, owner string, metageneration int64, term, grace time.Duration) error {
 	if err := ref.Validate(); err != nil {
 		return err
@@ -519,13 +519,14 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 	if withinGrace {
 		return fmt.Errorf("%w: %s/%s/%d is still inside its %s publication grace on the "+
 			"database clock; reclamation requires elapsed grace, and a generation admissible "+
-			"the instant its receipt landed would be one this plane deleted while the capture "+
+			"the instant its capture published would be one this plane deleted while the capture "+
 			"that made it could still legitimately be retrying",
 			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, grace)
 	}
 	if claims > 0 || leases > 0 || pending > 0 {
 		return fmt.Errorf("%w: %s/%s/%d is protected by %d claim(s), %d read lease(s) and %d "+
-			"unresolved reservation(s); reclaim admission is refused while any of them exists",
+			"pending or publishing capture(s) naming the same tree; reclaim admission is refused "+
+			"while any of them exists",
 			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, claims, leases, pending)
 	}
 

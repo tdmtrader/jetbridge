@@ -1,6 +1,6 @@
 package jetbridge
 
-// The ATC's client for the output daemon's control API.
+// The ATC's client for the artifact daemon's output-plane control API.
 //
 // This is the first OFF-NODE caller of that API. Phase 3's daemon listened on
 // 127.0.0.1 with no TLS, which was the right shape while every caller was a pod
@@ -12,8 +12,8 @@ package jetbridge
 // exactly as the artifact daemon exempts /resolve.
 //
 // It is ONE adapter. The base protocol's four closed operations and the two
-// supervisor writes go through the same client as the capture extension's hold
-// and writer tickets, because there must be exactly one owner of an execution's
+// supervisor writes go through the same client as the capture extension's seal,
+// publish, release and stat, because there must be exactly one owner of an execution's
 // control state and a second http.Client would be a second owner in waiting.
 // The sibling `exact_execution_control` track extends this adapter; it does not
 // replace it, which is why nothing here is capture-shaped: every capture
@@ -38,7 +38,7 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// OutputControl is what the runtime needs from the output daemon.
+// OutputControl is what the runtime needs from a node's output plane.
 //
 // The four base operations are Classify, Observe, RequestStop and
 // CleanupEligible -- the protocol's closed set. Admit, RecordStart and
@@ -201,7 +201,7 @@ type OutputControlRefusal struct {
 }
 
 func (refusal *OutputControlRefusal) Error() string {
-	return fmt.Sprintf("the output daemon refused %s with %d: %s",
+	return fmt.Sprintf("the output plane refused %s with %d: %s",
 		refusal.Operation, refusal.Status, refusal.Body)
 }
 
@@ -341,12 +341,10 @@ func (client *OutputControlClient) CleanupEligible(ctx context.Context,
 	return result, err
 }
 
-// nodeOutputControls resolves the output daemon for the node an execution
-// landed on, and dials it the way the ATC dials the artifact daemon: same
-// client certificate, same CA, same scheme predicate. The two daemons are
-// separate Pods with separate service accounts and separate buckets -- Req 20
-// forbids sharing one -- but the ATC's identity to both is one identity, and a
-// second certificate would be a second thing to rotate for no gain.
+// nodeOutputControls resolves the output plane for the node an execution
+// landed on. It is served by that node's artifact daemon, so it is dialled
+// with the same client certificate, CA and scheme predicate as every other
+// artifact daemon call.
 type nodeOutputControls struct {
 	config   Config
 	resolver *NodeIPResolver
@@ -367,7 +365,7 @@ func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string
 
 func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName string) (*OutputControlClient, error) {
 	if controls.resolver == nil || nodeName == "" {
-		return nil, fmt.Errorf("no node to reach the output daemon on")
+		return nil, fmt.Errorf("no node to reach the output plane on")
 	}
 	nodeIP, err := controls.resolver.Resolve(ctx, nodeName)
 	if err != nil {

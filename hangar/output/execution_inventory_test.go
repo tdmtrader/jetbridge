@@ -325,14 +325,10 @@ func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
 					"is a second execution.", field.Owner, field.Type)
 			}
 		case "ExecutionID", "Fence":
-			// SourceIncarnation is the one place an execution id appears
-			// outside an Identity, because a server-issued source incarnation
-			// is defined as (execution, node, handle generation, output) and
-			// carries no fence at all.
-			// CaptureKey and StepMarker name a step directory, which is an
-			// execution and an output and no fence, for the same reason.
-			if field.Owner != "SourceIncarnation" && field.Owner != "CaptureKey" &&
-				field.Owner != "StepMarker" {
+			// CaptureKey and StepMarker are the one place an execution id
+			// appears outside an Identity: they name a step directory, which
+			// is an execution and an output and carries no fence at all.
+			if field.Owner != "CaptureKey" && field.Owner != "StepMarker" {
 				t.Errorf("hangar/output: %s.%s redeclares part of the base identity. Reference "+
 					"executioncontrol.Identity instead; splitting the identity is how the "+
 					"extension quietly becomes a second state machine.", field.Owner, field.Name)
@@ -348,7 +344,7 @@ func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
 			carriers++
 			if field.Type != "executioncontrol.ActivationEpoch" {
 				t.Errorf("hangar/output: %s.ActivationEpoch is a %s, not an "+
-					"executioncontrol.ActivationEpoch. One activation epoch attests both facets; "+
+					"executioncontrol.ActivationEpoch. One control-key generation covers both facets; "+
 					"a second type is a second epoch.", field.Owner, field.Type)
 			}
 		}

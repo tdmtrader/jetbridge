@@ -62,7 +62,7 @@ var webDiskFlags = []string{
 
 // baseControlSets turn on the BASE exact-execution-control facet and nothing
 // else. It is a real deployment on its own: the sibling `exact_execution_control`
-// track schedules onto exactly this cohort.
+// track schedules onto exactly these nodes.
 var baseControlSets = []string{
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
@@ -205,14 +205,14 @@ func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
 }
 
 // The two facets are distinct switches, and the base one is a deployment on its
-// own. A single switch would make "attested for exact control" and "has an
+// own. A single switch would make "serves exact control" and "has an
 // output bucket" the same claim, which is the thing the two node labels exist
 // to keep apart.
 func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 	out := renderBaseControl(t)
 
 	if !hasObject(t, out, "DaemonSet", "-"+outputDaemonComponent) {
-		t.Fatal("the base execution-control facet rendered no output daemon; it is the " +
+		t.Fatal("the base execution-control facet rendered no artifact daemon output plane; it is the " +
 			"process that owns the execution ledger")
 	}
 	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
@@ -669,8 +669,8 @@ func TestTheControlPlaneGetsOnlyTheVersionedPublicRing(t *testing.T) {
 	}
 }
 
-// A values ring with no key for the active epoch is refused: source hold
-// recovery verifies node statements against it.
+// A values ring with no key for the active epoch is refused: the web verifies
+// node execution statements against it.
 func TestTheControlRingMustCarryTheActiveEpoch(t *testing.T) {
 	message := renderOutputError(t, "hangarOutput.executionControl.publicKeys[0].epoch=6")
 	if !strings.Contains(message, "no key for the active epoch") {
@@ -750,7 +750,7 @@ func TestTheDeadlineGraceAndLeaseRelationshipsAreEnforced(t *testing.T) {
 // Scratch, concurrency and the node-eviction bound
 // ---------------------------------------------------------------------------
 
-// Branch-review follow-up F9. The output daemon canonicalizes and spools whole
+// Branch-review follow-up F9. The output plane canonicalizes and spools whole
 // trees to an emptyDir; an emptyDir with no sizeLimit is bounded by the node's
 // disk, and filling it evicts every pod on the node, not only this one.
 func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
@@ -971,7 +971,7 @@ func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
 	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
 	for _, probe := range []string{"livenessProbe", "readinessProbe"} {
 		if !strings.Contains(daemon.body, probe) {
-			t.Errorf("the output daemon has no %s", probe)
+			t.Errorf("the artifact daemon has no %s", probe)
 		}
 	}
 
@@ -980,7 +980,7 @@ func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
 	}
 
 	if !hasObject(t, out, "PodDisruptionBudget", "-"+outputDaemonComponent) {
-		t.Error("the output daemon has no PodDisruptionBudget")
+		t.Error("the artifact daemon has no PodDisruptionBudget")
 	}
 }
 
@@ -992,7 +992,7 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 
 	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
 	if !strings.Contains(daemon.body, "hostPath") {
-		t.Fatal("the output daemon mounts no hostPath; it owns the source ledger and the " +
+		t.Fatal("the artifact daemon mounts no hostPath; it owns the source ledger and the " +
 			"step incarnations")
 	}
 	if web := objectNamed(t, out, "Deployment", "-"+webComponent); strings.Contains(web.body, "hostPath") {
@@ -1076,7 +1076,7 @@ func TestTheCaptureSealCanObserveItsNodesPods(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Req 56/58. The two ready labels are scheduling HINTS, and they are two
-// because a base-only cohort is a real deployment.
+// because a base-only node is a real deployment.
 //
 // What the CHART decides is not the label STRINGS -- those are protocol
 // constants in hangar/executioncontrol and hangar/output, and rendering them
@@ -1148,7 +1148,7 @@ func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
 	full := objectNamed(t, renderOutput(t), "DaemonSet", "-"+outputDaemonComponent)
 	for _, present := range []string{"--output-bucket", "--materialization-key-file"} {
 		if !strings.Contains(full.body, present) {
-			t.Errorf("the output daemon does not carry %s", present)
+			t.Errorf("the artifact daemon does not carry %s", present)
 		}
 	}
 
@@ -1595,11 +1595,9 @@ func TestOnlyTheWebPrincipalIsGrantedObjectDelete(t *testing.T) {
 // name of its Secret.
 //
 // `--control-key-id={{ .executionControl.keySecret }}` means two nodes holding
-// different private keys under one Secret name report one id. Base attestation
-// collects `control_key_id` into the evidence bundle and the digest, so a
-// cohort half-way through a control-key rollout attests as homogeneous on the
-// base facet's ONLY key material -- and an in-place key replacement was
-// unguarded for the control key precisely because the id could not move.
+// different private keys under one Secret name report one id, and an in-place
+// key replacement was unguarded for the control key precisely because the id
+// could not move.
 //
 // The control key id is a value of its own, with the rule that a key id is
 // never reused for different material and rotation creates a new epoch.
@@ -1613,13 +1611,12 @@ func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
 		}
 	}
 	if id == "" {
-		t.Fatal("the output daemon renders no --control-key-id; this rule would pass vacuously")
+		t.Fatal("the artifact daemon renders no --control-key-id; this rule would pass vacuously")
 	}
 	if id == "op-control-key" {
 		t.Error("--control-key-id carries hangarOutput.executionControl.keySecret, the SECRET " +
 			"NAME. Two nodes holding different key material under one Secret name then report " +
-			"one id, and base attestation compares ids: a cohort half-way through a " +
-			"control-key rollout attests as homogeneous.")
+			"one id, and a control-key rollout could not be told apart from no rollout.")
 	}
 
 	// The id moves independently of the Secret. Same Secret name, different

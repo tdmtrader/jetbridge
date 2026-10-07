@@ -69,7 +69,7 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 	}, nil
 }
 
-// The local sealed receipt is the success authority, including after the
+// The local sealed materialization receipt is the success authority, including after the
 // daemon committed but its response was lost. Nothing writable is mounted in
 // this init. HTTP error bodies and the lease token never enter task logs.
 const managedInputScript = `set -u

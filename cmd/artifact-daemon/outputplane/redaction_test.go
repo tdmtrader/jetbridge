@@ -66,7 +66,7 @@ func (fixture *routeFixture) forbiddenValues(t *testing.T, extra ...forbidden) [
 // capturedStderr redirects the process's stderr and the standard logger for the
 // duration of the test, and returns everything written.
 //
-// The output daemon writes no log lines today -- there is a source-derived
+// The output plane writes no log lines today -- there is a source-derived
 // assertion below that says so and fails when that stops being true -- so this
 // exists to catch the FIRST one somebody adds, on the day they add it, rather
 // than to walk a stream that is currently empty.

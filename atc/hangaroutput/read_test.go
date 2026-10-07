@@ -3,7 +3,7 @@ package hangaroutput_test
 // Admitting a managed read, over a capture that really published.
 //
 // Everything here starts from the harness's own uninterrupted capture: a real
-// output daemon sealed a real directory, published to a real GCS emulator and
+// output plane sealed a real directory, published to a real GCS emulator and
 // registered a real receipt in real PostgreSQL. So the ref a read is admitted
 // against is one the plane actually produced, and the stat that admits it is a
 // stat of an object that is actually there.

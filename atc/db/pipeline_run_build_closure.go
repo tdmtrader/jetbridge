@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// A build closure is an aborted Run build's request to settle the output
-// handoffs and close the execution it left open, without cancelling its Run.
+// A build closure is an aborted Run build's request to settle its capture
+// rows and close the execution it left open, without cancelling its Run.
 // The cancellation worker converges it with Run cancellation's own operations,
 // scoped to that build: it never discovers scheduler debt, candidates or
 // terminal publication, and it never fences the Run. Candidates need no

@@ -247,11 +247,11 @@ var _ = Describe("reclaiming an exact generation", func() {
 			Expect(lifecycleStateOf(ref)).To(Equal("registered"))
 		})
 
-		It("is refused while an unresolved reservation still correlates the ref", func() {
+		It("is refused while a pending capture names the same tree", func() {
 			digest := hangarDigest(53)
 			ref := reclaimable(digest, 1725830823000053)
 
-			// A second capture of the same content opens and does not resolve.
+			// A second capture of the same content opens and does not publish.
 			hangarReserve(ctx, repository, digest,
 				output.DefaultCaptureDeadline)
 
@@ -260,7 +260,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
 				output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
-			Expect(err.Error()).To(ContainSubstring("unresolved reservation"))
+			Expect(err.Error()).To(ContainSubstring("pending or publishing capture"))
 		})
 
 		It("is refused while the policy is at risk, and already-admitted work still finishes", func() {

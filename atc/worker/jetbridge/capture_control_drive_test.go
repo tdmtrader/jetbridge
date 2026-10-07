@@ -229,7 +229,7 @@ func hostAndPortOf(endpoint string) (string, int, error) {
 func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T) {
 	harness, err := startOutputDaemon()
 	if err != nil {
-		t.Fatalf("starting the output daemon: %v", err)
+		t.Fatalf("starting the output plane: %v", err)
 	}
 	t.Cleanup(harness.Stop)
 
@@ -259,14 +259,14 @@ func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T
 func TestTheGeneratedControlInitScriptEstablishesAHoldOverTLS(t *testing.T) {
 	harness, err := startTLSOutputDaemon()
 	if err != nil {
-		t.Fatalf("starting the TLS output daemon: %v", err)
+		t.Fatalf("starting the TLS output plane: %v", err)
 	}
 	t.Cleanup(harness.Stop)
 
 	// ArtifactDaemonTLSEnabled is deliberately left FALSE. It used to be what
 	// decided this script's scheme, which is exactly the defect: it is a switch
 	// on a different daemon, serving a different bucket under a different
-	// identity, and false is its default. The output daemon is TLS-only
+	// identity, and false is its default. The output plane is TLS-only
 	// whatever it says.
 	cfg := capturePodConfig(true)
 

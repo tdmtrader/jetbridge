@@ -4,7 +4,7 @@ package jetbridge
 // to take it away.
 //
 // The same rule and the same reason as atc/hangaroutput's: a harness that
-// starts a real output daemon needs a built binary, a control ledger, a steps
+// starts a real artifact daemon output plane needs a built binary, a control ledger, a steps
 // root, a scratch root and key material, and none of it was ever removed. A
 // suite run repeatedly over a week leaves a copy of a 150 MB binary each time.
 // A full root volume does not fail one suite -- it reddens every suite, and

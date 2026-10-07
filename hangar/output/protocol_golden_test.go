@@ -150,7 +150,7 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	// would freeze the merged shape this contract exists not to have.
 
 	// The node-local control API's request bodies. They are wire in exactly the
-	// sense this file means it: another implementation of the output daemon
+	// sense this file means it: another implementation of the output plane
 	// reads them, so their shape is a promise and not an internal detail.
 
 	"claim-acquire.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimAcquisition](t, raw) },

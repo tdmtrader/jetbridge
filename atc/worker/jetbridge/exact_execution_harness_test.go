@@ -1,6 +1,6 @@
 package jetbridge
 
-// A REAL output daemon, as a process, for the ATC-side control specs.
+// A REAL artifact daemon with its output plane, as a process, for the ATC-side control specs.
 //
 // A double could be made to refuse. What it cannot do is say the answer is
 // RIGHT: half of what these operations do is a durable record on a node's
@@ -389,7 +389,7 @@ func waitForReady(client *http.Client, endpoint string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	return fmt.Errorf("the output daemon never became ready: %w", last)
+	return fmt.Errorf("the output plane never became ready: %w", last)
 }
 
 func writeHarnessEd25519(dir, name string) (string, error) {

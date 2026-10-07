@@ -6,7 +6,7 @@ import (
 )
 
 // ManagedReadRequest carries authority for one exact tree and one consumer
-// destination. The warrant stays between the control plane and the output daemon.
+// destination. The warrant stays between the control plane and the node's output plane.
 type ManagedReadRequest struct {
 	Ref         hangar.TreeRef  `json:"ref"`
 	Destination ReadDestination `json:"destination"`

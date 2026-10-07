@@ -147,7 +147,7 @@ var destructiveInventory = map[string]struct {
 			"source waiting to be sealed is most likely to meet.",
 	}},
 	"artifact-daemon/sweeper.go | Sweeper.sweep | os.Remove(filePath)": {1, admission{
-		why: "legacy flat files directly under artifacts/. A source incarnation is a directory " +
+		why: "legacy flat files directly under artifacts/. A capture's step directory is a directory " +
 			"under steps/ and can never appear here; the loop skips every subdirectory.",
 	}},
 	"artifact-daemon/durable_tier.go | DurableTier.Restore | parent.RemoveAll(tmpDir)": {1, admission{
@@ -178,14 +178,11 @@ var destructiveInventory = map[string]struct {
 			"serving a location that was never populated.",
 	}},
 
-	// ---- the output daemon's own authority ----
+	// ---- the output plane's own authority ----
 	//
-	// The output daemon destroys NOTHING. finishRelease used to remove the
-	// released incarnation and was pinned here; a release releases the HOLD
-	// now, and the incarnation is the step's own output, aliased read-only at
-	// the ordinary path and subject to the artifact daemon's ordinary
-	// lifecycle. Deleting a settled incarnation is reclamation by policy, and
-	// when that lands it is a new entry here rather than this one returning.
+	// The output plane destroys no source. A release clears the step marker,
+	// and the step directory becomes the artifact daemon's ordinary business,
+	// subject to its ordinary lifecycle.
 	//
 	// The two entries left are record management: neither touches a source.
 
@@ -215,8 +212,8 @@ var destructiveInventory = map[string]struct {
 			"canonicalizer's own temporary parent, it holds assembled canonical.tar copies and " +
 			"nothing a capture can hold, and only hangar-tree-* entries are removed. A " +
 			"restarted daemon owns no in-flight canonicalization, every capture is retried " +
-			"under its capture fence, and SealedIncarnation re-derives the tree from the held " +
-			"source rather than from scratch. Leaving the residue is the finding: output " +
+			"under its capture fence, and a seal re-canonicalizes the held " +
+			"step directory rather than reading scratch. Leaving the residue is the finding: output " +
 			"plaintext outliving its capture on the node, and a scratch volume that does not " +
 			"start empty under a crash-loop, which is what the chart's sizeLimit arithmetic " +
 			"assumes.",

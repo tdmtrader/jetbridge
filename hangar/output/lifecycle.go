@@ -288,9 +288,8 @@ func ReadWarrantFor(claims ReadWarrantClaims, remaining time.Duration) ReadLease
 // deliberately not sent as a delete precondition, which it used to be. A real
 // object's generation is stable while its metageneration moves on any metadata
 // change -- a SetStorageClass lifecycle transition, Autoclass, an ACL or
-// metadata edit, a retention hold -- and none of those is a Delete rule, so the
-// bucket keeps attesting safe. Conditioned on the metageneration recorded at
-// receipt registration, every delete in such a bucket 412s;
+// metadata edit, a retention hold -- and none of those is a Delete rule.
+// Conditioned on the metageneration recorded at registration, every delete in such a bucket 412s;
 // DeleteGenerationConflict is TERMINAL and there is no re-stat-and-re-register
 // path anywhere, so the whole registered set became permanently unreclaimable,
 // silently, forever. Req 47 asks for generation-exact deletion, not

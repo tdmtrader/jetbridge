@@ -41,7 +41,7 @@ const capturePredicate = "HasDurableOutputCapture"
 // would let a new capture path pass by being written next to an existing one,
 // which is exactly the edit this inventory exists to catch.
 var captureSites = map[string]string{
-	"container.go:buildPod": "the ADMISSION refusal. A worker whose output facet is not " +
+	"container.go:buildPod": "the ADMISSION refusal. A worker whose output plane is not " +
 		"enabled builds no capture pod at all, and says so: durable output capture never " +
 		"degrades into an ordinary step, because a pod that ran and captured nothing would " +
 		"leave its pending capture row unresolved until its deadline",
@@ -54,7 +54,7 @@ var captureSites = map[string]string{
 	"capture_control.go:captureSelectedOutputName": "which declared output was selected",
 	"capture_control.go:captureSelectedOutputPath": "where that output lives in the container",
 	"storage_daemonset.go:BuildAffinity": "the two ready labels and the capture's node. A " +
-		"capture pod requires BOTH labels and the node by name; the labels pick a cohort whose " +
+		"capture pod requires BOTH labels and the node by name; the labels pick nodes whose " +
 		"daemons could acknowledge a hold, and the node is where the capture's step directory " +
 		"actually is",
 	"process_control.go:releasesCapturedPod": "a capture-selected task's pause Pod is " +

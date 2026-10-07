@@ -294,13 +294,13 @@ func TestTheControlInitPresentsTheHeaderTheOutputDaemonReads(t *testing.T) {
 	}
 }
 
-// A capture-selected pod is scheduled onto a node attested for BOTH facets.
+// A capture-selected pod is scheduled onto a node advertising BOTH facets.
 //
 // The scenarios that read this off a Pod are Phase 8's scheduling block, which
 // is where a worker can be told its facet is off; the affinity itself lands
 // here because the Phase 4 checkpoint asks that every capture-selected
-// execution reach a fresh ready cohort, and a pod that landed on a node with no
-// output daemon could never have its hold acknowledged.
+// execution reach a node that serves capture, and a pod that landed on a node
+// with no output plane could never have its hold acknowledged.
 func TestACaptureSelectedPodRequiresBothReadyLabelsAndAnOrdinaryOneRequiresNeither(t *testing.T) {
 	labels := func(pod *corev1.Pod) map[string]bool {
 		found := map[string]bool{}
@@ -339,7 +339,7 @@ func TestACaptureSelectedPodRequiresBothReadyLabelsAndAnOrdinaryOneRequiresNeith
 	}
 	for _, label := range []string{executioncontrol.ReadyLabel, hangaroutput.ReadyLabel} {
 		if ordinaryLabels[label] {
-			t.Errorf("an ordinary pod requires %s; a base-only cohort is a real deployment and "+
+			t.Errorf("an ordinary pod requires %s; a base-only node is a real deployment and "+
 				"an ordinary pipeline must schedule on it", label)
 		}
 	}
@@ -348,7 +348,7 @@ func TestACaptureSelectedPodRequiresBothReadyLabelsAndAnOrdinaryOneRequiresNeith
 	for _, label := range []string{executioncontrol.ReadyLabel, hangaroutput.ReadyLabel} {
 		if !captureLabels[label] {
 			t.Errorf("a capture-selected pod does not require %s. The two labels are separate "+
-				"because a base-only cohort is attested for exact control without having an "+
+				"because a base-only node serves exact control without having an "+
 				"output bucket, and one label would make those the same claim", label)
 		}
 	}
@@ -630,10 +630,10 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 
 // The capture pod is pinned to the capture's node.
 //
-// The two ready labels above pick a COHORT -- nodes where a hold could be
+// The two ready labels above pick a SET of nodes -- where a hold could be
 // acknowledged at all -- and the Phase 4 round-1 review's point is that a
-// cohort is not a node. The capture row names one node, admitted before this
-// Pod existed; a producer the scheduler placed anywhere else in the cohort
+// set is not a node. The capture row names one node, admitted before this
+// Pod existed; a producer the scheduler placed anywhere else in the set
 // would write a step directory on a disk the capture never reads, and its
 // control init's hold would be refused by a daemon that admitted nothing.
 // Requiring the node turns that outage into a Pod that stays Pending.
@@ -734,7 +734,7 @@ func TestTheLedgerClassifierIsAssignedInExactlyOnePlace(t *testing.T) {
 // It used to. Both output-plane call sites asked `daemonURLScheme`, a predicate
 // over `ArtifactDaemonTLSEnabled`, which the chart derives from
 // `artifactDaemon.tls.enabled` -- a different daemon, a different bucket, a
-// different identity, and false by default. The output daemon's control API has
+// different identity, and false by default. The output plane's control API has
 // no plaintext branch at all, so under the chart's own documented values the
 // generated hold dialed `http://` at an HTTPS listener, was answered "Client
 // sent an HTTP request to an HTTPS server", and the producer never started.
@@ -752,13 +752,13 @@ func TestTheControlInitDialsHTTPSWhateverTheArtifactDaemonsTLSSwitchSays(t *test
 		fallback := "https://${" + captureEnvHostIP + "}:${" + captureEnvOutputPort + "}"
 		if !strings.Contains(script, fallback) {
 			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init composes no %q; the "+
-				"output daemon is TLS-only and a plaintext dial is refused at the transport, "+
+				"output plane is TLS-only and a plaintext dial is refused at the transport, "+
 				"before any capability is read",
 				artifactTLS, fallback)
 		}
 		if strings.Contains(script, "http://${"+captureEnvHostIP+"}") {
 			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init composes a plaintext "+
-				"dial at the output daemon", artifactTLS)
+				"dial at the output plane", artifactTLS)
 		}
 		if !strings.Contains(script, `WGET_OPTS="--no-check-certificate"`) {
 			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init passes no "+

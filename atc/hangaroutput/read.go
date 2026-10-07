@@ -66,7 +66,7 @@ type WarrantMinter interface {
 // ReadLeaseID and WarrantNonce are the CALLER's, generated before the attempt, so
 // that a retry after an ambiguous commit asks about the same lease rather than
 // creating a second one. That is the same rule the capture side follows for its
-// handoff identity, and for the same reason.
+// capture key, and for the same reason.
 type ReadRequest struct {
 	ReadLeaseID            output.ReadLeaseID
 	WarrantNonce           string
