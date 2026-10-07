@@ -323,3 +323,55 @@ func (r *recordingDeleter) DeleteExact(ctx context.Context, bucket, key string, 
 	r.deletes = append(r.deletes, deleted{key, generation})
 	return r.inner.DeleteExact(ctx, bucket, key, generation)
 }
+
+// failingLister answers its first pages and fails from failAt on.
+type failingLister struct {
+	inner  reclaim.Lister
+	calls  int
+	failAt int
+}
+
+func (lister *failingLister) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
+	lister.calls++
+	if lister.failAt > 0 && lister.calls >= lister.failAt {
+		return objectstore.Page{}, errors.New("the store did not answer the list")
+	}
+	return lister.inner.List(ctx, bucket, request)
+}
+
+// A list that fails mid-pass fails the pass and keeps its progress: the next
+// pass resumes after the last page it judged instead of silently starting
+// over.
+func TestAnOrphanSweepThatCannotListFailsAndResumesWhereItStopped(t *testing.T) {
+	h := newHarness(t)
+	sweep, _ := sweepFor(t, h, time.Hour)
+	namespace := sweep.Namespace
+	old := time.Now().Add(-3 * time.Hour)
+	for _, fill := range []byte{'1', '2', '3', '4', '5'} {
+		key, err := namespace.ObjectKey(digestOf(fill))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plant(t, h, key, nil, old)
+	}
+
+	lister := &failingLister{inner: sweep.Lister, failAt: 2}
+	sweep.Lister = lister
+	counts, err := sweep.Once(context.Background())
+	if err == nil {
+		t.Fatal("a pass whose list failed reported success")
+	}
+	if counts[reclaim.SweepUnmarked] != 2 {
+		t.Errorf("the first page was not counted before the failure: %v", counts)
+	}
+
+	lister.failAt = 0
+	counts, err = sweep.Once(context.Background())
+	if err != nil {
+		t.Fatalf("the resumed pass: %v", err)
+	}
+	if counts[reclaim.SweepUnmarked] != 3 {
+		t.Errorf("the resumed pass judged %d objects, want the 3 after the first page: %v",
+			counts[reclaim.SweepUnmarked], counts)
+	}
+}

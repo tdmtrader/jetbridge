@@ -70,3 +70,55 @@ func (repository *HangarOutputRepository) JudgeOrphan(ctx context.Context, tx ou
 		return HangarOrphan, nil
 	}
 }
+
+// JudgeOrphans is one page's verdicts in ONE statement, without locks: the
+// sweep's first cut. Every ref it calls HangarOrphan is judged again, under
+// the tree and row locks, by JudgeOrphan in the transaction that deletes it.
+func (repository *HangarOutputRepository) JudgeOrphans(ctx context.Context, tx output.Tx, refs []hangar.TreeRef) (map[hangar.TreeRef]HangarOrphanVerdict, error) {
+	verdicts := map[hangar.TreeRef]HangarOrphanVerdict{}
+	if len(refs) == 0 {
+		return verdicts, nil
+	}
+	scopes := make([]string, len(refs))
+	digests := make([]string, len(refs))
+	generations := make([]int64, len(refs))
+	for i, ref := range refs {
+		scopes[i], digests[i], generations[i] = string(ref.Scope), string(ref.Digest), ref.Generation
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT r.scope, r.digest, r.generation,
+			EXISTS (SELECT 1 FROM hangar_exact_lifecycles l
+			         WHERE l.scope = r.scope AND l.digest = r.digest AND l.generation = r.generation),
+			EXISTS (SELECT 1 FROM hangar_captures c
+			         WHERE c.scope = r.scope AND c.digest = r.digest AND c.state IN ('pending', 'publishing'))
+			OR EXISTS (SELECT 1 FROM hangar_input_publications i
+			         WHERE i.scope = r.scope AND i.digest = r.digest AND i.lifecycle_id IS NULL
+			           AND i.expires_at > clock_timestamp())
+		FROM unnest($1::text[], $2::text[], $3::bigint[]) AS r(scope, digest, generation)`,
+		scopes, digests, generations)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	for rows.Next() {
+		var scope, digest string
+		var generation int64
+		var registered, protected bool
+		if err := rows.Scan(&scope, &digest, &generation, &registered, &protected); err != nil {
+			return nil, err
+		}
+		ref := hangar.TreeRef{Scope: hangar.Scope(scope), Digest: hangar.Digest(digest), Generation: generation}
+		switch {
+		case registered:
+			verdicts[ref] = HangarOrphanRegistered
+		case protected:
+			verdicts[ref] = HangarOrphanProtected
+		default:
+			verdicts[ref] = HangarOrphan
+		}
+	}
+
+	return verdicts, rows.Err()
+}

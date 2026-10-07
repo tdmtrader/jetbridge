@@ -156,10 +156,11 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
             summary: "Hangar output reclaim jobs are not finalizing"
             description: "{{ `{{ $value }}` }} admitted conditional delete(s) have no outcome after an hour. Every one of them is an object whose disposition is unknown: the delete may have happened and the answer may have been lost. The web runs the reclaim pass; look at its logs."
         - alert: HangarOutputOrphanSweepStalled
-          # The web's orphan sweep counts every pass it completes. A counter
-          # that has not moved in three hours -- three times the default
-          # interval -- while the plane is in service is a sweep that is not
-          # running or cannot list the output namespace.
+          # The web's orphan sweep counts every pass that judged a page and did
+          # not fail; a failed pass and one that found the lock held elsewhere
+          # are not counted. A counter that has not moved in three hours --
+          # three times the default interval -- while the plane is in service
+          # is a sweep that is not running or not succeeding.
           expr: changes(concourse_hangar_output_orphan_sweep_passes_total[3h]) == 0 and on() concourse_hangar_output_enabled == 1
           for: 15m
           labels:
@@ -167,6 +168,18 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
           annotations:
             summary: "The Hangar output orphan sweep has stopped completing passes"
             description: "No orphan sweep pass has completed in three hours while the output plane is in service. Objects no capture registered are not being removed from the output namespace."
+        - alert: HangarOutputOrphanSweepFailing
+          # A pass that stopped on an error -- the list, a judgement or a
+          # delete -- is counted here and NOT as a completed pass, so a sweep
+          # that fails every time also trips the stalled alert above; this one
+          # says why, sooner.
+          expr: increase(concourse_hangar_output_orphan_sweep_failures_total[1h]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar output orphan sweep passes are failing"
+            description: "{{ `{{ $value }}` }} orphan sweep pass(es) failed in the last hour. The web's log line hangar-output-orphan-sweep-failed names the error; until it stops, orphans in the output namespace are not removed."
         - alert: HangarOutputDrainResidue
           # Drain is: set hangarOutput.webEnabled false, wait for residue to
           # reach zero (`fly hangar-status`), then remove the daemon. Residue

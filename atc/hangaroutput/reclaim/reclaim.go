@@ -92,20 +92,25 @@ func openClients(ctx context.Context, config StoreConfig) (objectstore.Client, o
 	return lister, deleter, func() error { return errors.Join(closeLister(), closeDeleter()) }, nil
 }
 
-// exclusively runs fn under LockID, or not at all when another web holds it.
-func exclusively(ctx context.Context, locker lock.LockFactory, fn func() error) error {
+// exclusively runs fn under LockID, or not at all when another web holds it,
+// and reports whether it ran. A nil locker runs fn unlocked: the specs drive
+// the passes without a lock factory.
+func exclusively(ctx context.Context, locker lock.LockFactory, fn func() error) (bool, error) {
+	if locker == nil {
+		return true, fn()
+	}
 	logger := lagerctx.FromContext(ctx)
 	held, acquired, err := locker.Acquire(logger, LockID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !acquired {
 		logger.Debug("hangar-output-deletes-held-elsewhere")
-		return nil
+		return false, nil
 	}
 	defer func() { _ = held.Release() }()
 
-	return fn()
+	return true, fn()
 }
 
 // Pass is the reclaim component: admission, then delete, then finalization.
@@ -157,7 +162,7 @@ func deleteTimeout(configured time.Duration) time.Duration {
 // Run is one pass: admit what is eligible, then advance every due job by one
 // conditional delete and finalize what that delete settled.
 func (pass *Pass) Run(ctx context.Context) error {
-	return exclusively(ctx, pass.Locker, func() error {
+	_, err := exclusively(ctx, pass.Locker, func() error {
 		admitted, admitErr := pass.Admit(ctx)
 		finalized, open, deleteErr := pass.DeleteDue(ctx)
 
@@ -166,6 +171,7 @@ func (pass *Pass) Run(ctx context.Context) error {
 
 		return errors.Join(admitErr, deleteErr)
 	})
+	return err
 }
 
 // Admit turns grace-elapsed, unprotected generations into reclaim jobs.

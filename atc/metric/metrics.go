@@ -804,6 +804,14 @@ func (event HangarOutputReclaimPass) Emit(logger lager.Logger) {
 // class: the one it deleted and every class it left alone.
 type HangarOutputOrphanSweep struct {
 	Objects map[string]int
+
+	// Failed is a pass that stopped on an error -- a list, a judgement or a
+	// delete. It counts as a failure and not as a completed pass.
+	Failed bool
+
+	// Skipped is a pass that judged nothing because the shared deletion lock
+	// was held elsewhere. It is neither a completed pass nor a failure.
+	Skipped bool
 }
 
 func (event HangarOutputOrphanSweep) Emit(logger lager.Logger) {
@@ -816,10 +824,14 @@ func (event HangarOutputOrphanSweep) Emit(logger lager.Logger) {
 			Attributes: map[string]string{"class": class},
 		})
 	}
-	Metrics.emit(session, Event{
-		Name:  "hangar output orphan sweep passes",
-		Value: 1,
-	})
+	if event.Skipped {
+		return
+	}
+	name := "hangar output orphan sweep passes"
+	if event.Failed {
+		name = "hangar output orphan sweep failures"
+	}
+	Metrics.emit(session, Event{Name: name, Value: 1})
 }
 
 func boolValue(value bool) float64 {

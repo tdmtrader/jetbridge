@@ -70,6 +70,7 @@ type PrometheusEmitter struct {
 	hangarOutputReclaimJobs    *prometheus.CounterVec
 	hangarOutputSweepObjects   *prometheus.GaugeVec
 	hangarOutputSweepPasses    prometheus.Counter
+	hangarOutputSweepFailures  prometheus.Counter
 	pipelineRunReclaimDuration prometheus.Histogram
 
 	checkBuildsAborted   prometheus.Counter
@@ -892,6 +893,15 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	})
 	prometheus.MustRegister(hangarOutputSweepPasses)
 
+	hangarOutputSweepFailures := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   "concourse",
+		Subsystem:   "hangar_output",
+		Name:        "orphan_sweep_failures_total",
+		Help:        "Orphan sweeps that stopped on an error: a list, a judgement or a delete",
+		ConstLabels: attributes,
+	})
+	prometheus.MustRegister(hangarOutputSweepFailures)
+
 	// The reclaimer runs once a minute, so the buckets are tighter than the
 	// shared collector buckets: the question is whether a pass fits inside its
 	// own interval, which the coarse buckets could not answer.
@@ -974,6 +984,7 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		hangarOutputReclaimJobs:    hangarOutputReclaimJobs,
 		hangarOutputSweepObjects:   hangarOutputSweepObjects,
 		hangarOutputSweepPasses:    hangarOutputSweepPasses,
+		hangarOutputSweepFailures:  hangarOutputSweepFailures,
 		pipelineRunReclaimDuration: pipelineRunReclaimDuration,
 
 		buildDurationsVec: buildDurationsVec,
@@ -1165,6 +1176,8 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 			WithLabelValues(event.Attributes["class"]).Set(event.Value)
 	case "hangar output orphan sweep passes":
 		emitter.hangarOutputSweepPasses.Add(event.Value)
+	case "hangar output orphan sweep failures":
+		emitter.hangarOutputSweepFailures.Add(event.Value)
 	case "hangar output plane inventory":
 		emitter.hangarOutputPlaneInventory.
 			WithLabelValues(event.Attributes["kind"]).Set(event.Value)
