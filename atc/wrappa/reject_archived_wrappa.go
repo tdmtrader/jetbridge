@@ -92,6 +92,11 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.RenameTeam,
 			atc.DestroyTeam,
 			atc.GetUser,
+			// The landing queue is a team's, not a pipeline's; its Runs
+			// come from templates, which archiving already refuses.
+			atc.SetLandingQueue,
+			atc.SubmitLanding,
+			atc.GetLandingQueue,
 			atc.GetInfo,
 			atc.GetHealth,
 			atc.DownloadCLI,
