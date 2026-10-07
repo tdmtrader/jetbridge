@@ -69,7 +69,8 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	admission := hangaroutput.ReadAdmission{
 		Transactor: resultReadTransaction{ctx: ctx, conn: r.Conn, runID: runID, name: name, selected: selected},
 		Leases:     leases, Stat: source, Minter: r.Minter,
-		Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
+		Clock:    output.ClockFunc(func() time.Time { return time.Now().UTC() }),
+		Absences: db.HangarAbsences{Conn: r.Conn},
 	}
 	destination := output.ReadDestination{Handle: id.String(), Volume: "result"}
 	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{

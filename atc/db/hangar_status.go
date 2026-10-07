@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -195,4 +196,57 @@ func (repository *HangarOutputRepository) HangarEnabled(ctx context.Context, tx 
 	}
 
 	return enabled, nil
+}
+
+// HangarAbsences records a registered generation found missing by a reader,
+// in a transaction of its own.
+type HangarAbsences struct {
+	Conn DbConn
+}
+
+// RecordUnexpectedAbsence moves a REGISTERED or ADOPTED generation to
+// missing_out_of_band and records the blocking finding. A generation being
+// reclaimed, already reclaimed or already missing is not news and is left
+// alone: its absence is explained by this plane's own delete.
+func (absences HangarAbsences) RecordUnexpectedAbsence(ctx context.Context, ref hangar.TreeRef) error {
+	tx, err := absences.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	repository := NewHangarOutputRepository(HangarConsumerPrefixForComponent())
+	recorded, err := repository.recordUnexpectedAbsence(ctx, tx, ref)
+	if err != nil || !recorded {
+		return err
+	}
+
+	return HangarCommitError(tx.Commit())
+}
+
+func (repository *HangarOutputRepository) recordUnexpectedAbsence(ctx context.Context, tx output.Tx, ref hangar.TreeRef) (bool, error) {
+	if err := ref.Validate(); err != nil {
+		return false, err
+	}
+	locks, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical: []HangarLogicalKey{{Scope: ref.Scope, Digest: ref.Digest}},
+		Exact:   []hangar.TreeRef{ref},
+	})
+	if err != nil {
+		return false, err
+	}
+	id, registered := locks.Lifecycles[ref]
+	if !registered {
+		return false, nil
+	}
+	var live bool
+	if err := hangarQueryRow(ctx, tx, `SELECT state IN ('registered', 'adopted') FROM hangar_exact_lifecycles WHERE id = $1`,
+		[]any{id}, &live); err != nil {
+		return false, err
+	}
+	if !live {
+		return false, nil
+	}
+
+	return true, repository.RecordOutOfBandAbsence(ctx, tx, ref)
 }

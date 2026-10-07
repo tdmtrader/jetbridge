@@ -567,3 +567,47 @@ func (tx *refusingTransaction) Commit() error {
 
 	return tx.failure
 }
+
+// A registered generation the read finds missing fails closed, as before, and
+// is now recorded: the lifecycle goes missing_out_of_band and a blocking
+// integrity finding opens.
+func TestAManagedReadOfAMissingRegisteredGenerationRecordsTheAbsence(t *testing.T) {
+	h := newHarness(t)
+	ref := registeredRef(t, h)
+	claimID := claimOn(t, h, ref)
+
+	keys := h.bucketKeys(t)
+	if len(keys) != 1 {
+		t.Fatalf("want one object, have %v", keys)
+	}
+	deleter, closeDeleter, err := hangargcs.NewDeleteClient(context.Background(), h.Store.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeDeleter() }()
+	if err := deleter.DeleteExact(context.Background(), h.Bucket, keys[0], ref.Generation); err != nil {
+		t.Fatalf("removing the object behind the plane's back: %v", err)
+	}
+
+	admission, minter := readAdmission(t, h)
+	admission.Absences = db.HangarAbsences{Conn: h.Conn}
+	if _, err := admission.Admit(context.Background(), readRequest(t, claimID, ref)); !errors.Is(err, output.ErrNotFound) {
+		t.Fatalf("a read of a missing generation answered %v, want not found", err)
+	}
+	if minter.calls != 0 {
+		t.Error("a warrant was minted for a missing generation")
+	}
+
+	var state string
+	if err := h.Conn.QueryRow(`SELECT state FROM hangar_exact_lifecycles WHERE scope=$1 AND digest=$2 AND generation=$3`,
+		string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "missing_out_of_band" {
+		t.Errorf("the lifecycle is %s, want missing_out_of_band", state)
+	}
+	status := readStatus(t, h)
+	if !status.AtRisk || status.Violations[output.ViolationOutOfBandAbsence] != 1 {
+		t.Errorf("no blocking finding was recorded: %+v", status.Findings)
+	}
+}

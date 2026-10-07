@@ -53,6 +53,14 @@ type ExactStat interface {
 	StatExactObject(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error)
 }
 
+// UnexpectedAbsences records that a registered exact generation is missing
+// from the store: an integrity finding that blocks new admission. It opens
+// its own transaction; a read that found the object gone fails closed either
+// way, and this is what makes that visible.
+type UnexpectedAbsences interface {
+	RecordUnexpectedAbsence(ctx context.Context, ref hangar.TreeRef) error
+}
+
 // WarrantMinter turns a committed lease into a usable token.
 type WarrantMinter interface {
 	Sign(lease output.ReadLease, destination output.ReadDestination, node executioncontrol.NodeUID, nonce string) (string, error)
@@ -115,6 +123,10 @@ type ReadAdmission struct {
 	Stat       ExactStat
 	Minter     WarrantMinter
 	Clock      output.Clock
+
+	// Absences, when set, is told about a registered generation the stat
+	// found missing.
+	Absences UnexpectedAbsences
 }
 
 // Admit performs the whole boundary: stat, one transaction, then mint.
@@ -130,6 +142,11 @@ func (admission *ReadAdmission) Admit(ctx context.Context, request ReadRequest) 
 	observed := output.NewTimestamp(admission.Clock.Now().UTC())
 	object, err := admission.Stat.StatExactObject(ctx, request.Ref)
 	if err != nil {
+		if errors.Is(err, output.ErrNotFound) && admission.Absences != nil {
+			if recordErr := admission.Absences.RecordUnexpectedAbsence(ctx, request.Ref); recordErr != nil {
+				err = errors.Join(err, fmt.Errorf("recording the absence: %w", recordErr))
+			}
+		}
 		return ReadWarrant{}, fmt.Errorf("the exact-generation stat a managed read is admitted on: %w",
 			err)
 	}

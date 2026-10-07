@@ -91,6 +91,7 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 			Leases:     db.NewHangarOutputRepository(prefix),
 			Stat:       taskInputStat{source: source, name: node.Name, uid: string(node.UID), epoch: s.Epoch},
 			Minter:     s.inputReadMinter, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
+			Absences: db.HangarAbsences{Conn: s.Conn},
 		}
 		destination := output.ReadDestination{Handle: handle, Volume: volumeNames[i]}
 		warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(uuid.NewString()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: s.Epoch, MaterializationTimeout: source.ManagedInputTimeout(len(bindings)), NodeUID: node.UID})
