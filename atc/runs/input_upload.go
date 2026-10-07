@@ -114,6 +114,12 @@ func (a *admitter) withInputUpload(ctx context.Context, ref TemplateRef, princip
 	if err != nil {
 		return refusal(err)
 	}
+	// The generation is this control plane's own, and is checked here, before
+	// the first byte is read: the node's stage answer would say the same, but
+	// only after the whole archive had been streamed to it.
+	if a.outputEpoch <= 0 || epoch != a.outputEpoch {
+		return atc.ErrRunResultsUnavailable
+	}
 	if err := operation(tx, audience); err != nil {
 		return err
 	}
