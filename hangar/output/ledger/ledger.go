@@ -27,6 +27,8 @@
 package ledger
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,11 +46,11 @@ import (
 const ControlDirName = ".hangar-output-control"
 
 const (
-	// quarantineDirName must match the writer's: where records it could not
-	// read at startup are moved.
-	quarantineDirName  = "quarantine"
-	sourceRecordPrefix = "source-"
-	recordVersion      = "hangar-output-control-record-v1"
+	// stepMarkerPrefix and the record envelope are the writer's; this reader
+	// restates them rather than importing them.
+	stepMarkerPrefix  = "capture-"
+	recordVersion     = "hangar-output-control-record-v1"
+	quarantineDirName = "quarantine"
 )
 
 // Class is the closed set of answers.
@@ -68,24 +70,28 @@ func (class Class) Destructive() bool { return class == Unmanaged }
 // ErrRefused is what a caller returns when this classifier says no.
 var ErrRefused = errors.New("hangar/output/ledger: the source is held by a durable output capture")
 
-// record is the subset of the daemon's source record this reader needs.
+// marker is the subset of the daemon's step marker this reader needs.
 //
-// It is deliberately a SUBSET and decoded leniently: the writer may add fields,
-// and a reader that refused an unknown one would turn every daemon upgrade into
-// an outage of the ordinary path. What it must never do is silently read a
-// record whose FORMAT it does not know, which is why the version is checked.
-type record struct {
-	State       string `json:"state"`
-	Incarnation struct {
-		ExecutionID      string `json:"execution_id"`
-		HandleGeneration uint64 `json:"handle_generation"`
-		Output           string `json:"output"`
-	} `json:"incarnation"`
+// It is deliberately a SUBSET and decoded leniently: the writer may add fields.
+// What it must never do is read a record whose FORMAT it does not know, or one
+// whose bytes do not match their checksum, as anything but unavailable.
+type marker struct {
+	State     string `json:"state"`
+	Execution string `json:"execution"`
+	Output    string `json:"output"`
 }
 
 type envelope struct {
 	RecordVersion string          `json:"record_version"`
+	Checksum      string          `json:"checksum"`
 	Body          json.RawMessage `json:"body"`
+}
+
+// StepDirectory is the ONE derivation of a capture's step directory from its
+// execution and output, restated from output.CaptureKey.Directory; a test in
+// hangar/output pins the two spellings together.
+func StepDirectory(execution, output string) string {
+	return execution + ".capture/" + output
 }
 
 // Classifier answers one question about one path.
@@ -129,8 +135,8 @@ func New(storageRoot string) *Classifier {
 }
 
 // Classify answers for one path relative to the managed steps directory --
-// "<execution>.<generation>/<output>", or anything beneath it, or anything it
-// is beneath.
+// "<execution>.capture/<output>", or anything beneath it, or anything it is
+// beneath.
 //
 // It answers in BOTH directions, and the second one is the one a first reading
 // misses.
@@ -141,7 +147,7 @@ func New(storageRoot string) *Classifier {
 // notice.
 //
 // Upward is the direction the callers actually use. A hold names
-// "<execution>.<generation>/<output>"; the Reaper deletes
+// "<execution>.capture/<output>"; the Reaper deletes
 // "steps/<handle>" and the sweeper removes an expired "steps/<handle>"
 // directory, both of which are the PARENT of that. A classifier that answered
 // only downward told them the directory containing a held source was
@@ -270,7 +276,7 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 			}
 			continue
 		}
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), sourceRecordPrefix) ||
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), stepMarkerPrefix) ||
 			!strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
@@ -281,6 +287,11 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 	for _, name := range names {
 		raw, err := os.ReadFile(path.Join(classifier.dir, name))
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// Released between the listing and the read.
+				continue
+			}
+
 			return nil, fmt.Errorf("reading %s: %w", name, err)
 		}
 		var wrapper envelope
@@ -291,18 +302,19 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 			return nil, fmt.Errorf("%s is record version %q and this reader knows %q; a record "+
 				"it cannot read is a hold it would miss", name, wrapper.RecordVersion, recordVersion)
 		}
-		var body record
+		sum := sha256.Sum256(wrapper.Body)
+		if hex.EncodeToString(sum[:]) != wrapper.Checksum {
+			return nil, fmt.Errorf("%s does not match its checksum", name)
+		}
+		var body marker
 		if err := json.Unmarshal(wrapper.Body, &body); err != nil {
 			return nil, fmt.Errorf("decoding the body of %s: %w", name, err)
 		}
-
-		class := classFor(body.State)
-		if class == Unmanaged {
-			continue
+		if body.Execution == "" || body.Output == "" {
+			return nil, fmt.Errorf("%s names no step directory", name)
 		}
-		held[fmt.Sprintf("%s.%d/%s",
-			body.Incarnation.ExecutionID, body.Incarnation.HandleGeneration,
-			body.Incarnation.Output)] = class
+
+		held[StepDirectory(body.Execution, body.Output)] = classFor(body.State)
 	}
 
 	return held, nil
@@ -314,14 +326,9 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 // reader does not, and the safe reading of "I do not know what this means" over
 // a record that exists at all is that something holds it.
 func classFor(state string) Class {
-	switch state {
-	case "released":
-		return Unmanaged
-	case "sealing", "sealed":
+	if state == "sealed" {
 		return Sealed
-	case "":
-		return Unmanaged
-	default:
-		return Held
 	}
+
+	return Held
 }

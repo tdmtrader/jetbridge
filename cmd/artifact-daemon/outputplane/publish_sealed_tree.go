@@ -1,19 +1,11 @@
 package outputplane
 
-// Publishing a sealed source.
+// Canonicalizing a sealed step directory.
 //
-// The route hands over no bytes. That is the strongest form of "no caller
-// chooses where an object goes": the daemon reads the sealed incarnation it is
-// already holding, canonicalizes it with the foundation's own canonicalizer,
-// and stores it at a key derived from the namespace it resolved from
-// authenticated configuration and the active epoch. There is nothing in the
-// request a caller could point somewhere else, and the one field that could
-// name a location -- PublicationRequest.Namespace -- is refused with a message
-// rather than ignored.
-//
-// The seal is a precondition and not a convention. SealedIncarnation refuses
-// anything that is not `sealed`, so a canonical read cannot begin over bytes a
-// writer may still be changing.
+// The publish route hands over no bytes. That is the strongest form of "no
+// caller chooses where an object goes": the daemon reads the sealed step
+// directory it is already holding, canonicalizes it with the foundation's own
+// canonicalizer, and stores it at a key derived from its own namespace.
 
 import (
 	"archive/tar"
@@ -30,134 +22,6 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
-
-// PublishSealedTree is the publish route's whole body.
-func (server *Server) PublishSealedTree(ctx context.Context,
-	request output.PublicationRequest) (output.PublicationResult, error) {
-	if err := request.Validate(); err != nil {
-		return output.PublicationResult{}, err
-	}
-	if request.ActivationEpoch != server.daemon.Namespace().ActivationEpoch() {
-		return output.PublicationResult{}, fmt.Errorf(
-			"%w: the publication names epoch %d and this daemon publishes under %d",
-			output.ErrConflict, request.ActivationEpoch,
-			server.daemon.Namespace().ActivationEpoch())
-	}
-
-	root, record, err := server.source.SealedIncarnation(
-		request.HandoffID, request.Execution, request.ActivationEpoch, request.CaptureFence)
-	if err != nil {
-		return output.PublicationResult{}, err
-	}
-
-	captured, err := server.daemon.CanonicalizeDirectory(ctx, root)
-	if err != nil {
-		return output.PublicationResult{}, err
-	}
-	defer captured.Close()
-
-	archive, err := os.Open(captured.ArchivePath)
-	if err != nil {
-		return output.PublicationResult{}, fmt.Errorf(
-			"%w: opening the canonical archive: %v", output.ErrInfrastructure, err)
-	}
-	defer archive.Close()
-
-	namespace := server.daemon.Namespace()
-	reservation := output.ResolvedReservation{
-		ReservationID:   request.ReservationID,
-		Execution:       request.Execution,
-		ActivationEpoch: request.ActivationEpoch,
-		HandoffID:       request.HandoffID,
-		CaptureFence:    request.CaptureFence,
-		// Server-derived, both of them. The scope comes from the namespace and
-		// the digest from the bytes; neither is anywhere in the request.
-		Scope:  namespace.Scope(),
-		Digest: captured.Digest,
-		Marker: namespace.MarkerFor(request.ReservationID, captured.Digest,
-			output.NewTimestamp(nowUTC())),
-	}
-
-	object, err := server.daemon.Publish(ctx, PublishRequest{
-		Namespace:   request.Namespace,
-		Reservation: reservation,
-	}, archive, captured.ByteSize)
-	if err != nil {
-		return output.PublicationResult{}, err
-	}
-	_ = record
-
-	result := output.PublicationResult{
-		ProtocolVersion: output.ProtocolVersion,
-		Ref:             object.Attributes.Ref,
-		Attributes:      output.AttributesFromFoundation(object.Attributes),
-		MarkerVersion:   object.Marker.Version,
-		ReservationID:   object.Marker.ReservationID,
-		Deduplicated:    object.Deduplicated,
-		Metageneration:  object.Metageneration,
-	}
-
-	return result, result.Validate()
-}
-
-// CanonicalizeSealedTree answers the logical identity of the sealed tree
-// without creating anything.
-//
-// This is the first half of an ordering requirement 21 states and the publish
-// route alone cannot express: the capture owner must durably resolve its
-// reservation to the server-derived scope and logical digest AFTER
-// canonicalization and BEFORE the first object create, so that every
-// possibly-created object has a pre-existing reservation recovery and
-// inventory can correlate. A control plane driving only `publish` learns the
-// digest at the same moment the object exists.
-//
-// The seal is a precondition here for the same reason it is one for publish:
-// `SealedIncarnation` refuses anything that is not `sealed`, so a canonical
-// read cannot begin over bytes a writer may still be changing (Req 15).
-//
-// The tree is canonicalized twice across the pair, and deliberately. The
-// canonical form is deterministic -- that is the property the whole plane is
-// built on -- so the publish re-deriving it is a re-derivation and not a
-// second opinion, and the control plane compares the two answers rather than
-// carrying a digest between calls. Handing the publish a caller-supplied
-// digest would be exactly the caller-chosen key Req 7 forbids.
-func (server *Server) CanonicalizeSealedTree(ctx context.Context,
-	request output.PublicationRequest) (output.CanonicalizationResult, error) {
-	if err := request.Validate(); err != nil {
-		return output.CanonicalizationResult{}, err
-	}
-	if request.ActivationEpoch != server.daemon.Namespace().ActivationEpoch() {
-		return output.CanonicalizationResult{}, fmt.Errorf(
-			"%w: the canonicalization names epoch %d and this daemon publishes under %d",
-			output.ErrConflict, request.ActivationEpoch,
-			server.daemon.Namespace().ActivationEpoch())
-	}
-
-	root, _, err := server.source.SealedIncarnation(
-		request.HandoffID, request.Execution, request.ActivationEpoch, request.CaptureFence)
-	if err != nil {
-		return output.CanonicalizationResult{}, err
-	}
-
-	captured, err := server.daemon.CanonicalizeDirectory(ctx, root)
-	if err != nil {
-		return output.CanonicalizationResult{}, err
-	}
-	defer captured.Close()
-
-	result := output.CanonicalizationResult{
-		ProtocolVersion: output.ProtocolVersion,
-		HandoffID:       request.HandoffID,
-		ReservationID:   request.ReservationID,
-		CaptureFence:    request.CaptureFence,
-		Scope:           server.daemon.Namespace().Scope(),
-		Digest:          captured.Digest,
-		LogicalBytes:    captured.ByteSize,
-		ObservedAt:      output.NewTimestamp(nowUTC()),
-	}
-
-	return result, result.Validate()
-}
 
 // CanonicalizeDirectory turns a sealed incarnation into canonical bytes.
 //

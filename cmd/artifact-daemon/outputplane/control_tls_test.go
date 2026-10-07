@@ -34,10 +34,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 	"reflect"
 	"sort"
+
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 )
 
 func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *testing.T) {
@@ -50,7 +51,7 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.source, verifier, "")
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "")
 	server.RequireClientCertificates()
 
 	secured := httptest.NewUnstartedServer(server.Handler())
@@ -128,13 +129,11 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		{"/execution/v1/classify", executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))},
 		{"/execution/v1/cleanup-eligible", executioncontrol.BaseFacet, "cleanup-eligible",
 			identifiedBy(identity(1))},
-		// The reservation is a CAPTURE-facet route and it is still the control
-		// plane's: the ATC asks for the location before it builds the Pod, so
-		// there is no Pod on this node to be the caller and no reason to exempt
-		// it. Its presence here is what stops the node-local exemption below
-		// from being read as "capture routes are exempt".
-		{"/capture/v1/reserve-incarnation", output.CaptureFacet, "reserve-incarnation",
-			admission()},
+		// The release is a CAPTURE-facet route and it is still the control
+		// plane's. Its presence here is what stops the node-local exemption
+		// below from being read as "capture routes are exempt".
+		{"/capture/v1/release", output.CaptureFacet, "release", output.CaptureReleaseRequest{
+			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}},
 	} {
 		if code := call(withCert, row.path, row.facet, row.operation, row.body); code != http.StatusOK {
 			t.Fatalf("%s answered %d to the control plane's own certificate", row.path, code)
@@ -158,22 +157,8 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	}
 
 	// And the node-local hold, from a caller with no certificate at all: this
-	// is the capture control init, and it must still work. It presents the
-	// incarnation the control plane reserved over mTLS a moment ago, which is
-	// the whole handoff: the authenticated caller chose nothing and the
-	// unauthenticated one names what it was given.
-	reservedCode, reservedBody := answer(withCert, "/capture/v1/reserve-incarnation",
-		output.CaptureFacet, "reserve-incarnation", admission())
-	if reservedCode != http.StatusOK {
-		t.Fatalf("the reservation was refused: %d %s", reservedCode, reservedBody)
-	}
-	var reserved output.ReservedIncarnation
-	if err := json.Unmarshal(reservedBody, &reserved); err != nil {
-		t.Fatalf("decoding the reservation: %v", err)
-	}
-	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold",
-		holdRequest{CaptureAdmission: admission(), Incarnation: reserved.Incarnation,
-			PodUID: testPod})
+	// is the capture control init, and it must still work.
+	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest())
 	if code != http.StatusOK {
 		t.Errorf("the node-local capture hold answered %d without a client certificate; the "+
 			"control init holds none and cannot be given one, so this refusal would stop every "+
@@ -324,7 +309,7 @@ func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.source, verifier, "")
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "")
 	server.RequireClientCertificates()
 	daemonDER := []byte("the daemons' serving certificate")
 	server.RefuseDaemonCertificate(daemonDER)
@@ -364,7 +349,7 @@ func TestAnUnreadyPlaneRefusesItsHandshakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(fixture.daemon, fixture.ledger, fixture.source, verifier, "a record was quarantined").Handler()
+	handler := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "a record was quarantined").Handler()
 	for _, path := range []string{"/handshake", "/capture/v1/handshake", "/readyz"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))

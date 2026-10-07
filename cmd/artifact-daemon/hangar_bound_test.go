@@ -17,6 +17,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,7 +165,7 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 		t.Fatalf("creating the control directory: %v", err)
 	}
 
-	const incarnation = "33333333-3333-4333-8333-333333333333.4/result"
+	const incarnation = "33333333-3333-4333-8333-333333333333.capture/result"
 	if err := os.MkdirAll(filepath.Join(storage, "steps", incarnation), 0o700); err != nil {
 		t.Fatalf("creating the held source: %v", err)
 	}
@@ -193,22 +195,23 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 	}
 
 	// Now the hold.
-	record, err := json.Marshal(map[string]any{
-		"record_version": "hangar-output-control-record-v1",
-		"checksum":       "not-read-by-the-classifier",
-		"body": map[string]any{
-			"state": "held",
-			"incarnation": map[string]any{
-				"execution_id":      "33333333-3333-4333-8333-333333333333",
-				"handle_generation": 4,
-				"output":            "result",
-			},
-		},
+	markerBody, err := json.Marshal(map[string]any{
+		"state": "held", "execution": "33333333-3333-4333-8333-333333333333", "output": "result",
+		"node": "node-1", "pod_uid": "pod-1",
 	})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(control, "source-11111111-1111-4111-8111-111111111111.json"),
+	sum := sha256.Sum256(markerBody)
+	record, err := json.Marshal(map[string]any{
+		"record_version": "hangar-output-control-record-v1",
+		"checksum":       hex.EncodeToString(sum[:]),
+		"body":           json.RawMessage(markerBody),
+	})
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "capture-33333333-3333-4333-8333-333333333333.result.json"),
 		record, 0o600); err != nil {
 		t.Fatalf("writing the hold: %v", err)
 	}
@@ -232,7 +235,7 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 	// And the fail-closed half: a ledger this daemon cannot read refuses
 	// EVERY delete, because the ledger is the only thing that could have said
 	// which paths are held.
-	if err := os.WriteFile(filepath.Join(control, "source-11111111-1111-4111-8111-111111111111.json"),
+	if err := os.WriteFile(filepath.Join(control, "capture-33333333-3333-4333-8333-333333333333.result.json"),
 		[]byte("{not json"), 0o600); err != nil {
 		t.Fatalf("corrupting: %v", err)
 	}

@@ -19,7 +19,7 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 	if !server.readPlaneReady(w) {
 		return
 	}
-	if server.reads == nil || server.source == nil || server.source.steps == nil {
+	if server.reads == nil || server.capture == nil || server.capture.steps == nil {
 		readRefusal(w, output.ErrCaptureDisabled)
 		return
 	}
@@ -73,7 +73,7 @@ func (server *Server) materialize(ctx context.Context, input output.ManagedReadR
 		return err
 	}
 	defer tree.Close()
-	if err := tree.Materialize(ctx, server.source.steps, input.Ref, input.Destination.Handle, input.Destination.Volume); err != nil {
+	if err := tree.Materialize(ctx, server.capture.steps, input.Ref, input.Destination.Handle, input.Destination.Volume); err != nil {
 		if errors.Is(err, hangar.ErrConflict) || errors.Is(err, hangar.ErrCorrupt) || errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
 			err = output.ErrConflict
 		}

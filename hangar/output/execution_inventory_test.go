@@ -329,7 +329,10 @@ func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
 			// outside an Identity, because a server-issued source incarnation
 			// is defined as (execution, node, handle generation, output) and
 			// carries no fence at all.
-			if field.Owner != "SourceIncarnation" {
+			// CaptureKey and StepMarker name a step directory, which is an
+			// execution and an output and no fence, for the same reason.
+			if field.Owner != "SourceIncarnation" && field.Owner != "CaptureKey" &&
+				field.Owner != "StepMarker" {
 				t.Errorf("hangar/output: %s.%s redeclares part of the base identity. Reference "+
 					"executioncontrol.Identity instead; splitting the identity is how the "+
 					"extension quietly becomes a second state machine.", field.Owner, field.Name)
@@ -338,8 +341,8 @@ func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
 			}
 			carriers++
 			if field.Name == "ExecutionID" && field.Type != "executioncontrol.ExecutionID" {
-				t.Errorf("hangar/output: SourceIncarnation.ExecutionID is a %s, not an "+
-					"executioncontrol.ExecutionID.", field.Type)
+				t.Errorf("hangar/output: %s.ExecutionID is a %s, not an "+
+					"executioncontrol.ExecutionID.", field.Owner, field.Type)
 			}
 		case "ActivationEpoch":
 			carriers++

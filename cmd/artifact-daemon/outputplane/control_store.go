@@ -312,6 +312,18 @@ func (store *controlStore) get(name string, into any) (bool, error) {
 	return true, nil
 }
 
+// remove deletes a record durably. A record already gone is not an error.
+func (store *controlStore) remove(name string) error {
+	if err := validRecordName(name); err != nil {
+		return err
+	}
+	if err := store.root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: removing the control record %q: %v", output.ErrInfrastructure, name, err)
+	}
+
+	return store.syncDir()
+}
+
 func (store *controlStore) crash(stage faultStage) error {
 	if store.fault == nil {
 		return nil

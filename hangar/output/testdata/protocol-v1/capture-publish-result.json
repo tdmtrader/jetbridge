@@ -1,0 +1,11 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "ref": {
+    "scope": "o3c9a1f0d2b4e6c8a0b1c2d3e4f5a6b7c8d9e0f1a",
+    "digest": "sha256:9c1185a5c5e9fc54612808977ee8f548b2258d31a4c5b8e5a5d1f0e9b2a3c4d5",
+    "generation": 1712345678901234
+  },
+  "metageneration": 1,
+  "marker_version": "hangar-output-v1",
+  "deduplicated": false
+}

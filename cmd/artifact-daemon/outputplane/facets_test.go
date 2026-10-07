@@ -134,21 +134,13 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 		path      string
 		operation string
 	}{
-		{"/capture/v1/reserve-incarnation", "reserve-incarnation"},
 		{"/capture/v1/hold", "hold"},
-		{"/capture/v1/hold/inspect", "inspect-hold"},
-		{"/capture/v1/writer-ticket", "issue-writer-ticket"},
-		{"/capture/v1/writer-ticket/close", "close-writer-ticket"},
-		{"/capture/v1/writer-ticket/inspect", "inspect-writer-ticket"},
-		{"/capture/v1/seal", "begin-seal"},
-		{"/capture/v1/seal/confirm", "confirm-seal"},
-		{"/capture/v1/seal/inspect", "inspect-seal"},
-		{"/capture/v1/release", "release-hold"},
-		{"/capture/v1/canonicalize", "canonicalize"},
+		{"/capture/v1/seal", "seal"},
 		{"/capture/v1/publish", "publish"},
+		{"/capture/v1/release", "release"},
 		{"/capture/v1/stat", "stat"},
 	}
-	if len(captureRoutes) < 12 {
+	if len(captureRoutes) < 5 {
 		t.Fatalf("only %d capture routes are listed; the table drifted and this rule would "+
 			"prove less than it says", len(captureRoutes))
 	}
@@ -245,7 +237,7 @@ func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 func newBaseOnlyRoutes(t *testing.T) *routeFixture {
 	t.Helper()
 
-	source := newSourceLedger(t)
+	source := &captureFixture{ledgerFixture: *newLedger(t)}
 
 	config := baseOnlyConfig(t)
 	config.ControlKeyFile = writePrivateKey(t, source.private)
@@ -260,20 +252,20 @@ func newBaseOnlyRoutes(t *testing.T) *routeFixture {
 	}
 
 	fixture := &routeFixture{
-		sourceFixture: source,
-		daemon:        daemon,
-		minter:        minter,
-		epoch:         daemon.ActivationEpoch(),
-		config:        config,
+		captureFixture: source,
+		daemon:         daemon,
+		minter:         minter,
+		epoch:          daemon.ActivationEpoch(),
+		config:         config,
 	}
 	fixture.serveBaseOnly(t)
 
 	return fixture
 }
 
-// serveBaseOnly is serve with a nil source ledger, which is what main.go builds
-// when the output facet is off: the source ledger holds capture incarnations,
-// and a daemon that captures nothing opens none.
+// serveBaseOnly is serve with a nil capture ledger, which is what main.go builds
+// when the output facet is off: a daemon that captures nothing opens no
+// capture ledger.
 func (fixture *routeFixture) serveBaseOnly(t *testing.T) {
 	t.Helper()
 
@@ -285,7 +277,7 @@ func (fixture *routeFixture) serveBaseOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
 	}
-	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.sourceFixture.store}); err != nil {
+	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.captureFixture.store}); err != nil {
 		t.Fatalf("opening the spent-capability record: %v", err)
 	}
 	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,

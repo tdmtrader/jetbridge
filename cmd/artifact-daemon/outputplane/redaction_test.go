@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"net/http/httptest"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
-	"net/http/httptest"
 )
 
 // Nothing this daemon emits may name where anything is.
@@ -115,113 +115,50 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
 
-	// ---- reserve, then hold ----
-	//
-	// The reservation is on the scan too: it is the one route whose ANSWER is a
-	// directory, so a daemon that leaked its own storage root would leak it
-	// here first.
-	held := fixture.reserveOverHTTP(t, identity(1), admission())
-
+	// ---- hold ----
+	held := holdRequest()
 	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", held)
 	if status != http.StatusOK {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
-	var hold output.CaptureAcknowledgement
-	if err := json.Unmarshal(body, &hold); err != nil {
-		t.Fatalf("decoding the hold: %v", err)
-	}
 
-	// A hold repeated with a different fence: a typed conflict, and the first
-	// refusal on the list.
+	// A hold from another Pod: a typed conflict naming the capture.
 	conflicting := held
-	conflicting.SourceHoldID = "99999999-9999-4999-8999-999999999999"
+	conflicting.PodUID = "pod-recreated"
 	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", conflicting)
-
-	// And a hold naming an incarnation the daemon never reserved: the refusal
-	// names two directories, and neither may carry the daemon's storage root.
-	foreign := held
-	foreign.Incarnation.HandleGeneration += 100
-	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", foreign)
 
 	// A hold naming a PATH. The refusal for this one is the most tempting place
 	// in the whole surface to echo what the caller sent.
 	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", map[string]any{
 		"protocol_version": output.ProtocolVersion,
 		"execution":        identity(1),
-		"activation_epoch": fixture.epoch,
-		"handoff_id":       testHandoff,
-		"source_hold_id":   testLease,
 		"output":           testOutput,
+		"pod_uid":          testPod,
 		"source_path":      filepath.Join(fixture.dir, "steps", "somewhere-i-chose"),
 	})
 
-	root, err := fixture.source.ResolveIncarnation(hold.Incarnation)
-	if err != nil {
-		t.Fatalf("resolving: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "artifact.txt"), []byte("the bytes"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
-	}
+	writeFile(t, filepath.Join(fixture.stepDir(), "artifact.txt"), "the bytes")
 
-	// ---- writer ticket ----
-	ticket := output.WriterAdmission{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		Incarnation:     hold.Incarnation,
-		WriterTicketID:  "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-		WriterFence:     1,
-		PodUID:          testPod,
-	}
-	fixture.call(t, "/capture/v1/writer-ticket", output.CaptureFacet, "issue-writer-ticket", ticket)
-	fixture.call(t, "/capture/v1/writer-ticket/close", output.CaptureFacet,
-		"close-writer-ticket", ticket)
-
-	// ---- seal ----
-	if status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "begin-seal",
-		output.SealRequest{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       identity(1),
-			ActivationEpoch: fixture.epoch,
-			HandoffID:       testHandoff,
-			Incarnation:     hold.Incarnation,
-			CaptureFence:    captureFence,
-			DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
-		}); status != http.StatusOK {
+	// ---- seal: first while the Pod still runs, then after it stops ----
+	fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	fixture.pods.stop(testPod)
+	status, body = fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	if status != http.StatusOK {
 		t.Fatalf("sealing: %d %s", status, body)
 	}
-
-	// A ticket issued AFTER the seal: the refusal that names the incarnation.
-	fixture.call(t, "/capture/v1/writer-ticket", output.CaptureFacet, "issue-writer-ticket", ticket)
-
-	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
-	if err != nil {
-		t.Fatalf("inspecting the seal: %v", err)
-	}
-	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
-		Started: started, CaptureFence: captureFence, ObservedAt: output.NewTimestamp(fixedNow()),
-	}); err != nil {
-		t.Fatalf("confirming: %v", err)
+	var sealed output.CaptureSealResult
+	if err := json.Unmarshal(body, &sealed); err != nil {
+		t.Fatalf("decoding the seal: %v", err)
 	}
 
 	// ---- publish ----
-	publication := output.PublicationRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		ReservationID:   "44444444-4444-4444-8444-444444444444",
-		CaptureFence:    captureFence,
+	publication := output.CapturePublishRequest{
+		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
+		Digest: sealed.Digest, Staged: sealed.Staged,
 	}
-	status, body = fixture.call(t, "/capture/v1/publish",
-		output.CaptureFacet, "publish", publication)
+	status, body = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
 	if status != http.StatusOK {
 		t.Fatalf("publishing: %d %s", status, body)
-	}
-	var published output.PublicationResult
-	if err := json.Unmarshal(body, &published); err != nil {
-		t.Fatalf("decoding the publication: %v", err)
 	}
 
 	// The same publication again: the dedup path, which reads the object back
@@ -241,73 +178,36 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 		fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", carrying)
 	}
 
-	// A publication for a reservation the store has never heard of, so the
-	// object-store read misses and the miss is translated.
-	missing := publication
-	missing.ReservationID = "55555555-5555-4555-8555-555555555555"
-	fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", missing)
+	// A publication for a digest the sealed tree is not: the refusal compares
+	// two digests and must name no location.
+	wrong := publication
+	wrong.Digest, wrong.Staged = hangar.Digest("sha256:"+strings.Repeat("ab", 32)), ""
+	fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", wrong)
 
-	// ---- stat ----
+	// ---- stat: one present, one absent ----
 	//
-	// Two challenges. The first names the object that was just published, so
-	// the daemon reads the store BY KEY and answers. The second names a digest
-	// nothing was ever stored under, so the read MISSES -- and a miss is where
-	// an object-store error is translated, which is the single most likely
-	// place in this daemon for a key to escape into a message.
-	challenge := func(digest hangar.Digest) map[string]any {
-		return map[string]any{
-			"execution": identity(1),
-			"challenge": output.StatChallenge{
-				Nonce:           "a-stat-challenge-nonce",
-				HandoffID:       testHandoff,
-				ActivationEpoch: fixture.epoch,
-				ReservationID:   "44444444-4444-4444-8444-444444444444",
-				Ref: hangar.TreeRef{
-					Scope:      fixture.daemon.Namespace().Scope(),
-					Digest:     digest,
-					Generation: published.Ref.Generation,
-				},
-				CaptureFence: captureFence,
-				IssuedAt:     output.NewTimestamp(fixedNow()),
-				NotAfter:     output.NewTimestamp(fixedNow().Add(time.Minute)),
-			},
-			"claims": output.ReceiptClaims{
-				Execution:            identity(1),
-				ProducerCheckpointID: "opaque-checkpoint",
-				Incarnation:          hold.Incarnation,
-				Output:               testOutput,
-				WriterFence:          1,
-			},
-		}
+	// The absent one MISSES in the store, and a miss is where an object-store
+	// error is translated -- the single most likely place in this daemon for a
+	// key to escape into a message.
+	for _, digest := range []hangar.Digest{sealed.Digest, hangar.Digest("sha256:" + strings.Repeat("de", 32))} {
+		fixture.call(t, "/capture/v1/stat", output.CaptureFacet, "stat", output.CaptureStatRequest{
+			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Digest: digest,
+		})
 	}
-	fixture.call(t, "/capture/v1/stat", output.CaptureFacet, "stat",
-		challenge(published.Ref.Digest))
-	fixture.call(t, "/capture/v1/stat", output.CaptureFacet, "stat",
-		challenge(hangar.Digest("sha256:"+strings.Repeat("de", 32))))
 
-	// ---- release ----
-	intent := output.ReleaseIntent{
-		ProtocolVersion: output.ProtocolVersion,
-		Disposition:     output.DispositionCapture,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		SourceHoldID:    testLease,
-		ReleaseIntentID: "66666666-6666-4666-8666-666666666666",
-		Incarnation:     hold.Incarnation,
-	}
-	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release-hold", intent)
+	// ---- release, twice ----
+	release := output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}
+	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release", release)
+	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release", release)
 
-	// A second, DIFFERENT release intent: the conflict that names both.
-	second := intent
-	second.ReleaseIntentID = "77777777-7777-4777-8777-777777777777"
-	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release-hold", second)
+	// A seal of the released capture: the refusal names the missing marker.
+	fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
 
 	// ---- the authorization refusals, where a token could be echoed ----
 	fixture.call(t, "/capture/v1/hold", executioncontrol.BaseFacet, "hold", held)
 	fixture.callWith(t, "/capture/v1/hold", "a-forged-capability", held)
 	if len(fixture.minted) > 0 {
-		fixture.callWith(t, "/capture/v1/seal", fixture.minted[0], admission())
+		fixture.callWith(t, "/capture/v1/seal", fixture.minted[0], sealRequest())
 	}
 
 	// ---- the scan ----

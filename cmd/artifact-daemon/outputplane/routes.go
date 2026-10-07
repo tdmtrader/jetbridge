@@ -44,7 +44,7 @@ type Server struct {
 	inputs     inputStages
 	daemon     *Daemon
 	base       *ExecutionLedger
-	source     *SourceLedger
+	capture    *CaptureLedger
 	capability *executioncontrol.CapabilityVerifier
 
 	// unreadyBecause is non-empty when live control state could not be
@@ -108,13 +108,13 @@ func (server *Server) controlPlaneCaller(request *http.Request) bool {
 		!bytes.Equal(request.TLS.PeerCertificates[0].Raw, server.daemonCertificate)
 }
 
-func NewServer(daemon *Daemon, base *ExecutionLedger, source *SourceLedger,
+func NewServer(daemon *Daemon, base *ExecutionLedger, capture *CaptureLedger,
 	capability *executioncontrol.CapabilityVerifier, unreadyBecause string) *Server {
-	return NewServerWithSpool(daemon, base, source, capability, unreadyBecause, 1)
+	return NewServerWithSpool(daemon, base, capture, capability, unreadyBecause, 1)
 }
 
 // NewServerWithSpool is NewServer with the scratch concurrency bound named.
-func NewServerWithSpool(daemon *Daemon, base *ExecutionLedger, source *SourceLedger,
+func NewServerWithSpool(daemon *Daemon, base *ExecutionLedger, capture *CaptureLedger,
 	capability *executioncontrol.CapabilityVerifier, unreadyBecause string,
 	concurrency int) *Server {
 	if concurrency < 1 {
@@ -122,7 +122,7 @@ func NewServerWithSpool(daemon *Daemon, base *ExecutionLedger, source *SourceLed
 	}
 
 	return &Server{
-		daemon: daemon, base: base, source: source,
+		daemon: daemon, base: base, capture: capture,
 		capability: capability, unreadyBecause: unreadyBecause,
 		spool: make(chan struct{}, concurrency),
 	}
@@ -300,27 +300,14 @@ func (server *Server) routes() map[string]route {
 		"POST /execution/v1/cleanup-eligible": {executioncontrol.BaseFacet, "cleanup-eligible", (*Server).cleanupEligible, false},
 
 		// The optional capture extension. Disjoint surface, disjoint facet.
-		//
-		// reserve-incarnation is the ATC's, and it is NOT node-local: the
-		// control plane asks for the location before it builds the Pod, so
-		// there is no Pod on this node to be the caller. It is the one capture
-		// operation whose answer the ATC then repeats into a Pod spec, which is
-		// exactly why it must be authenticated like every other off-node call.
-		"POST /capture/v1/reserve-incarnation": {output.CaptureFacet, "reserve-incarnation",
-			(*Server).reserveIncarnation, false},
-
-		"POST /capture/v1/hold":                  {output.CaptureFacet, "hold", (*Server).hold, true},
-		"POST /capture/v1/hold/inspect":          {output.CaptureFacet, "inspect-hold", (*Server).inspectHold, false},
-		"POST /capture/v1/writer-ticket":         {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket, false},
-		"POST /capture/v1/writer-ticket/close":   {output.CaptureFacet, "close-writer-ticket", (*Server).closeTicket, false},
-		"POST /capture/v1/writer-ticket/inspect": {output.CaptureFacet, "inspect-writer-ticket", (*Server).inspectTicket, false},
-		"POST /capture/v1/seal":                  {output.CaptureFacet, "begin-seal", (*Server).beginSeal, false},
-		"POST /capture/v1/seal/confirm":          {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal, false},
-		"POST /capture/v1/seal/inspect":          {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal, false},
-		"POST /capture/v1/release":               {output.CaptureFacet, "release-hold", (*Server).release, false},
-		"POST /capture/v1/canonicalize":          {output.CaptureFacet, "canonicalize", (*Server).canonicalize, false},
-		"POST /capture/v1/publish":               {output.CaptureFacet, "publish", (*Server).publish, false},
-		"POST /capture/v1/stat":                  {output.CaptureFacet, "stat", (*Server).statExact, false},
+		// Hold is the one node-local route: its caller is the capture control
+		// init in the producing Pod, which holds no client certificate. Every
+		// other one is the control plane's, off-node.
+		"POST /capture/v1/hold":    {output.CaptureFacet, "hold", (*Server).hold, true},
+		"POST /capture/v1/seal":    {output.CaptureFacet, "seal", (*Server).seal, false},
+		"POST /capture/v1/publish": {output.CaptureFacet, "publish", (*Server).publish, false},
+		"POST /capture/v1/release": {output.CaptureFacet, "release", (*Server).release, false},
+		"POST /capture/v1/stat":    {output.CaptureFacet, "stat", (*Server).stat, false},
 	}
 }
 
@@ -489,247 +476,76 @@ func (server *Server) cleanupEligible(_ http.ResponseWriter, _ *http.Request,
 	return server.base.CleanupEligible(identity)
 }
 
-func (server *Server) reserveIncarnation(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var admission output.CaptureAdmission
-	if err := decode(request, &admission); err != nil {
-		return nil, err
-	}
-
-	return server.source.ReserveIncarnation(request.Context(), admission)
-}
-
-// holdRequest is the capture control init's body: the same admission the
-// reservation carried, plus the incarnation the daemon answered with.
-//
-// The incarnation is on this request and NOT on CaptureAdmission because the
-// two operations are not symmetric. A reservation asks for a location, so it
-// cannot carry one; a hold PRESENTS the one it was given, and presenting it is
-// the proof that this init container is running in the Pod the reservation was
-// made for. It is embedded rather than restated so the two bodies cannot drift.
-//
-// This is still not a caller-chosen path. It is four server-issued identity
-// fields, checked against the record, and the daemon derives every location it
-// touches from its own copy.
-type holdRequest struct {
-	output.CaptureAdmission
-	Incarnation output.SourceIncarnation `json:"incarnation"`
-
-	// PodUID is the Downward API's `metadata.uid`, read by the init container
-	// inside the Pod it is running in. It is on the HOLD and not on
-	// CaptureAdmission for the same asymmetry the incarnation is: a
-	// reservation is made before the Pod exists and cannot name one, and a
-	// hold is made from inside the Pod and is the first message that can.
-	//
-	// It is the one honest source of this value. The ATC learns the UID from
-	// the API server, which is a second-hand reading of the same fact; the
-	// container reads it from the kubelet that is running it.
-	PodUID executioncontrol.PodUID `json:"pod_uid"`
-}
-
 func (server *Server) hold(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var held holdRequest
+	identity executioncontrol.Identity) (any, error) {
+	var held output.CaptureHoldRequest
 	if err := decode(request, &held); err != nil {
 		return nil, err
 	}
+	if held.Execution != identity {
+		return nil, fmt.Errorf("%w: the hold is authorized for another execution", output.ErrUnauthorized)
+	}
 
-	return server.source.AcknowledgeHold(request.Context(), held.CaptureAdmission, held.Incarnation,
-		held.PodUID)
+	return server.capture.Hold(request.Context(), held)
 }
 
-// holdQuery is the inspect routes' body. It names ids and nothing else, which
-// is the rule this whole file exists to make true.
-type holdQuery struct {
-	Execution executioncontrol.Identity `json:"execution"`
-	HandoffID output.HandoffID          `json:"handoff_id"`
-}
-
-func (server *Server) inspectHold(_ http.ResponseWriter, request *http.Request,
+// seal holds a scratch slot for its canonicalization. Its wait for the Pod's
+// containers to stop happens first, outside the slot, so a long-running
+// sidecar does not starve every other capture of scratch.
+func (server *Server) seal(_ http.ResponseWriter, request *http.Request,
 	identity executioncontrol.Identity) (any, error) {
-	var query holdQuery
-	if err := decode(request, &query); err != nil {
+	var sealed output.CaptureSealRequest
+	if err := decode(request, &sealed); err != nil {
 		return nil, err
 	}
-
-	// The identity is the MIDDLEWARE's -- the one the capability was verified
-	// against -- and not the one this handler re-reads out of the body. They
-	// are the same field today; passing the checked one is what keeps them the
-	// same when the body grows another way to name an execution.
-	return server.source.InspectHold(query.HandoffID, identity)
-}
-
-func (server *Server) issueTicket(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var admission output.WriterAdmission
-	if err := decode(request, &admission); err != nil {
-		return nil, err
+	if sealed.Execution != identity {
+		return nil, fmt.Errorf("%w: the seal is authorized for another execution", output.ErrUnauthorized)
 	}
-
-	return server.source.AdmitWriter(request.Context(), admission)
-}
-
-func (server *Server) closeTicket(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var admission output.WriterAdmission
-	if err := decode(request, &admission); err != nil {
-		return nil, err
-	}
-
-	return server.source.RetireWriter(request.Context(), admission)
-}
-
-func (server *Server) inspectTicket(_ http.ResponseWriter, request *http.Request,
-	identity executioncontrol.Identity) (any, error) {
-	var query struct {
-		holdQuery
-		TicketID output.WriterTicketID `json:"writer_ticket_id"`
-	}
-	if err := decode(request, &query); err != nil {
-		return nil, err
-	}
-	return server.source.InspectWriter(query.HandoffID, identity, query.TicketID)
-}
-
-func (server *Server) beginSeal(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var sealRequest output.SealRequest
-	if err := decode(request, &sealRequest); err != nil {
-		return nil, err
-	}
-
-	return server.source.BeginSeal(request.Context(), sealRequest)
-}
-
-// sealConfirmation is the ATC's half on the wire: the drain and
-// container-termination evidence for the set BeginSeal captured.
-//
-// The execution is named separately because the capability is bound to it, and
-// the middleware must be able to read it out of the body before any of this is
-// decoded.
-type sealConfirmation struct {
-	Execution executioncontrol.Identity `json:"execution"`
-	Started   output.SealStarted        `json:"started"`
-	Drained   []output.DrainedWriter    `json:"drained"`
-
-	CaptureFence output.CaptureFence `json:"capture_fence"`
-	ObservedAt   output.Timestamp    `json:"observed_at"`
-}
-
-func (server *Server) confirmSeal(_ http.ResponseWriter, request *http.Request,
-	identity executioncontrol.Identity) (any, error) {
-	var confirmation sealConfirmation
-	if err := decode(request, &confirmation); err != nil {
-		return nil, err
-	}
-
-	// ConfirmSeal reads its execution out of the SealStarted the CALLER
-	// supplied, which is the statement this confirmation acts on. The
-	// capability was minted for the identity the middleware checked. Binding
-	// them here is what stops a capability for one execution from confirming
-	// another's seal -- the statement's signature is checked further down, so
-	// the attacker is not a stranger, but "somebody who has seen A's seal
-	// statement" is not "A".
-	if confirmation.Started.Acknowledgement.Execution != identity {
-		return nil, fmt.Errorf("%w: this confirmation is authorized for execution %s at fence "+
-			"%d and the seal statement it carries is execution %s's at fence %d",
-			output.ErrUnauthorized, identity.ExecutionID, identity.Fence,
-			confirmation.Started.Acknowledgement.Execution.ExecutionID,
-			confirmation.Started.Acknowledgement.Execution.Fence)
-	}
-
-	return server.source.ConfirmSeal(request.Context(), output.SealConfirmation{
-		Started:      confirmation.Started,
-		Drained:      confirmation.Drained,
-		CaptureFence: confirmation.CaptureFence,
-		ObservedAt:   confirmation.ObservedAt,
-	})
-}
-
-func (server *Server) inspectSeal(_ http.ResponseWriter, request *http.Request,
-	identity executioncontrol.Identity) (any, error) {
-	var query holdQuery
-	if err := decode(request, &query); err != nil {
-		return nil, err
-	}
-
-	return server.source.InspectSeal(query.HandoffID, identity)
-}
-
-func (server *Server) release(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var intent output.ReleaseIntent
-	if err := decode(request, &intent); err != nil {
-		return nil, err
-	}
-
-	return server.source.AcknowledgeRelease(request.Context(), intent)
+	return server.capture.Seal(request.Context(), sealed, server.spooling)
 }
 
 func (server *Server) publish(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var publication output.PublicationRequest
+	identity executioncontrol.Identity) (any, error) {
+	var publication output.CapturePublishRequest
 	if err := decode(request, &publication); err != nil {
 		return nil, err
 	}
-
+	if publication.Execution != identity {
+		return nil, fmt.Errorf("%w: the publish is authorized for another execution", output.ErrUnauthorized)
+	}
 	release, err := server.spooling(request.Context())
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 
-	return server.PublishSealedTree(request.Context(), publication)
+	return server.capture.Publish(request.Context(), publication)
 }
 
-// canonicalize answers what the sealed tree IS, and creates nothing.
-//
-// It takes the publish route's own request type because a canonicalization and
-// a publication are admitted for exactly the same facts -- the same argument
-// `reserve-incarnation` makes for taking a hold's admission. A second request
-// type carrying the same seven fields is how the two come to disagree, with a
-// logical resolution already committed against the first answer.
-func (server *Server) canonicalize(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var publication output.PublicationRequest
-	if err := decode(request, &publication); err != nil {
+func (server *Server) release(_ http.ResponseWriter, request *http.Request,
+	identity executioncontrol.Identity) (any, error) {
+	var released output.CaptureReleaseRequest
+	if err := decode(request, &released); err != nil {
 		return nil, err
 	}
-
-	release, err := server.spooling(request.Context())
-	if err != nil {
-		return nil, err
+	if released.Execution != identity {
+		return nil, fmt.Errorf("%w: the release is authorized for another execution", output.ErrUnauthorized)
 	}
-	defer release()
 
-	return server.CanonicalizeSealedTree(request.Context(), publication)
+	return server.capture.Release(request.Context(), released)
 }
 
-func (server *Server) statExact(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
-	var attestation struct {
-		Execution executioncontrol.Identity `json:"execution"`
-		Challenge output.StatChallenge      `json:"challenge"`
-		Claims    output.ReceiptClaims      `json:"claims"`
-	}
-	if err := decode(request, &attestation); err != nil {
+func (server *Server) stat(_ http.ResponseWriter, request *http.Request,
+	identity executioncontrol.Identity) (any, error) {
+	var stat output.CaptureStatRequest
+	if err := decode(request, &stat); err != nil {
 		return nil, err
 	}
-	// Req 10 lists SIGNING among the things a stale owner may not do, and an
-	// attestation is the one capture-facet operation with no other reason to
-	// reach the source ledger -- it stats an object, it reads no bytes. So the
-	// fence is checked explicitly rather than implied by a call that happens to
-	// touch the source.
-	writerFence, err := server.source.AdmitCaptureFence(attestation.Challenge.HandoffID,
-		attestation.Execution, attestation.Challenge.ActivationEpoch,
-		attestation.Challenge.CaptureFence)
-	if err != nil {
-		return nil, err
+	if stat.Execution != identity {
+		return nil, fmt.Errorf("%w: the stat is authorized for another execution", output.ErrUnauthorized)
 	}
-	receipt, _, err := server.daemon.StatExact(request.Context(), attestation.Challenge,
-		attestation.Claims, writerFence)
 
-	return receipt, err
+	return server.capture.Stat(request.Context(), stat)
 }
 
 // writeError maps a typed refusal onto a status and a body that NAMES it.

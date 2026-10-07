@@ -1,6 +1,8 @@
 package ledger
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,29 +14,34 @@ import (
 // destructive paths and a source some capture is about to seal. Every case here
 // is a fact about a file, so the tests are against real directories.
 
-func writeRecord(t *testing.T, dir, handoff, state, execution string, generation int, output string) {
+const (
+	execA = "33333333-3333-4333-8333-333333333333"
+	heldA = execA + ".capture/result"
+)
+
+// writeMarker writes a step marker the way the daemon's control store does:
+// an envelope whose checksum covers the body bytes.
+func writeMarker(t *testing.T, dir, state, execution, output string) {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
-		"state": state,
-		"incarnation": map[string]any{
-			"execution_id":      execution,
-			"handle_generation": generation,
-			"output":            output,
-		},
+		"state": state, "execution": execution, "output": output,
+		"node": "node-1", "pod_uid": "pod-1",
 	})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
+	sum := sha256.Sum256(body)
 	wrapper, err := json.Marshal(map[string]any{
 		"record_version": recordVersion,
-		"checksum":       "not-read-by-this-package",
+		"checksum":       hex.EncodeToString(sum[:]),
 		"body":           json.RawMessage(body),
 	})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, sourceRecordPrefix+handoff+".json"), wrapper, 0o600); err != nil {
+	name := stepMarkerPrefix + execution + "." + output + ".json"
+	if err := os.WriteFile(filepath.Join(dir, name), wrapper, 0o600); err != nil {
 		t.Fatalf("writing: %v", err)
 	}
 }
@@ -53,8 +60,7 @@ func controlDir(t *testing.T) (root, dir string) {
 
 func TestAHeldSourceIsRefusedAndAnUnmanagedOneIsNot(t *testing.T) {
 	root, dir := controlDir(t)
-	writeRecord(t, dir, "11111111-1111-4111-8111-111111111111", "held",
-		"33333333-3333-4333-8333-333333333333", 4, "result")
+	writeMarker(t, dir, "held", execA, "result")
 
 	classifier := New(root)
 
@@ -65,10 +71,7 @@ func TestAHeldSourceIsRefusedAndAnUnmanagedOneIsNot(t *testing.T) {
 		t.Fatalf("an ordinary path classified %s", class)
 	}
 
-	for _, path := range []string{
-		"33333333-3333-4333-8333-333333333333.4/result",
-		"33333333-3333-4333-8333-333333333333.4/result/nested/file.txt",
-	} {
+	for _, path := range []string{heldA, heldA + "/nested/file.txt"} {
 		class := classifier.Classify(path)
 		if class != Held {
 			t.Errorf("%s classified %s", path, class)
@@ -81,13 +84,9 @@ func TestAHeldSourceIsRefusedAndAnUnmanagedOneIsNot(t *testing.T) {
 		}
 	}
 
-	// A DIFFERENT handle generation is a different incarnation. Req 7's whole
-	// point: a reused handle at a stale generation is not the held one.
-	if class := classifier.Classify("33333333-3333-4333-8333-333333333333.3/result"); !class.Destructive() {
-		t.Errorf("a stale handle generation classified %s; it is a different incarnation", class)
-	}
-	// And a different output under the same execution.
-	if class := classifier.Classify("33333333-3333-4333-8333-333333333333.4/other"); !class.Destructive() {
+	// A different output under the same execution is a different step
+	// directory.
+	if class := classifier.Classify(execA + ".capture/other"); !class.Destructive() {
 		t.Errorf("another output classified %s", class)
 	}
 }
@@ -96,29 +95,33 @@ func TestAReleasedSourceBecomesDestructibleAndASealedOneDoesNot(t *testing.T) {
 	root, dir := controlDir(t)
 
 	for state, expected := range map[string]Class{
-		"held":     Held,
-		"sealing":  Sealed,
-		"sealed":   Sealed,
-		"released": Unmanaged,
+		"held":   Held,
+		"sealed": Sealed,
 		// A state this reader does not know is HELD. The writer may learn one,
-		// and the safe reading of "I do not know what this means" over a record
-		// that exists is that something holds it.
+		// and the safe reading of "I do not know what this means" over a
+		// marker that exists is that something holds it.
 		"quiesced": Held,
 	} {
-		writeRecord(t, dir, "11111111-1111-4111-8111-111111111111", state,
-			"33333333-3333-4333-8333-333333333333", 4, "result")
+		writeMarker(t, dir, state, execA, "result")
 
 		classifier := New(root)
-		if class := classifier.Classify("33333333-3333-4333-8333-333333333333.4/result"); class != expected {
+		if class := classifier.Classify(heldA); class != expected {
 			t.Errorf("state %q classified %s, expected %s", state, class, expected)
 		}
+	}
+
+	// Released is the marker being gone.
+	if err := os.Remove(filepath.Join(dir, stepMarkerPrefix+execA+".result.json")); err != nil {
+		t.Fatal(err)
+	}
+	if class := New(root).Classify(heldA); class != Unmanaged {
+		t.Errorf("a released step directory classified %s", class)
 	}
 }
 
 func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 	root, dir := controlDir(t)
-	writeRecord(t, dir, "11111111-1111-4111-8111-111111111111", "held",
-		"33333333-3333-4333-8333-333333333333", 4, "result")
+	writeMarker(t, dir, "held", execA, "result")
 
 	// The control: readable, and an ordinary path proceeds.
 	if class := New(root).Classify("ordinary/output"); !class.Destructive() {
@@ -128,23 +131,20 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 	for _, name := range []string{
 		"a record that is not JSON",
 		"a record from a newer daemon",
+		"a torn record",
 		"a quarantined record",
 		"a directory that cannot be listed",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, dir := controlDir(t)
-			writeRecord(t, dir, "11111111-1111-4111-8111-111111111111", "held",
-				"33333333-3333-4333-8333-333333333333", 4, "result")
+			writeMarker(t, dir, "held", execA, "result")
 			corruptIn(t, dir, name)
 
 			classifier := New(root)
 			// EVERY path, not just the held one. The ledger is the only thing
 			// that could have said which paths are held, so with it unreadable
 			// nothing is known to be safe.
-			for _, path := range []string{
-				"33333333-3333-4333-8333-333333333333.4/result",
-				"an-entirely-unrelated-step/output",
-			} {
+			for _, path := range []string{heldA, "an-entirely-unrelated-step/output", ""} {
 				class := classifier.Classify(path)
 				if class != Unavailable {
 					t.Errorf("%s classified %s with an unreadable ledger", path, class)
@@ -164,7 +164,7 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 func corruptIn(t *testing.T, dir, how string) {
 	t.Helper()
 
-	path := filepath.Join(dir, sourceRecordPrefix+"11111111-1111-4111-8111-111111111111.json")
+	path := filepath.Join(dir, stepMarkerPrefix+execA+".result.json")
 	switch how {
 	case "a record that is not JSON":
 		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
@@ -175,16 +175,23 @@ func corruptIn(t *testing.T, dir, how string) {
 			[]byte(`{"record_version":"hangar-output-control-record-v2","body":{}}`), 0o600); err != nil {
 			t.Fatalf("writing: %v", err)
 		}
-	case "a quarantined record":
-		// The writer moves a record it could not read at startup aside. The
-		// hold it may have described is no longer where this reader looks, so
-		// its presence must refuse rather than read as "nothing is held".
-		quarantine := filepath.Join(dir, quarantineDirName)
-		if err := os.MkdirAll(quarantine, 0o700); err != nil {
-			t.Fatalf("mkdir: %v", err)
+	case "a torn record":
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading: %v", err)
 		}
-		if err := os.Rename(path, filepath.Join(quarantine, filepath.Base(path))); err != nil {
-			t.Fatalf("quarantining: %v", err)
+		// The same envelope with its body changed under the checksum: what a
+		// crash, a truncated restore or a flipped bit leaves.
+		torn := strings.Replace(string(raw), `"held"`, `"sealed"`, 1)
+		if err := os.WriteFile(path, []byte(torn), 0o600); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	case "a quarantined record":
+		if err := os.MkdirAll(filepath.Join(dir, quarantineDirName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path, filepath.Join(dir, quarantineDirName, filepath.Base(path))); err != nil {
+			t.Fatal(err)
 		}
 	case "a directory that cannot be listed":
 		// Mode bits do not apply to uid 0, and CI runs as root: chmod 000 there
@@ -250,14 +257,13 @@ func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 	root, dir := controlDir(t)
 	classifier := New(root)
 
-	if class := classifier.Classify("33333333-3333-4333-8333-333333333333.4/result"); !class.Destructive() {
+	if class := classifier.Classify(heldA); !class.Destructive() {
 		t.Fatalf("an empty ledger classified %s", class)
 	}
 
-	writeRecord(t, dir, "11111111-1111-4111-8111-111111111111", "held",
-		"33333333-3333-4333-8333-333333333333", 4, "result")
+	writeMarker(t, dir, "held", execA, "result")
 
-	if class := classifier.Classify("33333333-3333-4333-8333-333333333333.4/result"); class != Held {
+	if class := classifier.Classify(heldA); class != Held {
 		t.Errorf("a hold established after the previous read classified %s. The cache is keyed "+
 			"on the control directory's modification time for exactly this case", class)
 	}
@@ -268,7 +274,7 @@ func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 // This is the direction the first version of this package did not answer, and
 // the caller that asks it is the one that matters most: the Reaper deletes
 // `steps/<handle>` -- the step directory -- while a hold names
-// `<execution>.<generation>/<output>` BENEATH it. A classifier that only
+// `<execution>.capture/<output>` BENEATH it. A classifier that only
 // answered "is this path at or under a held incarnation" told the Reaper that
 // the directory containing a held source was unmanaged, and the source went
 // with it.
@@ -277,35 +283,35 @@ func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 // nobody watching.
 func TestDestroyingAnAncestorOfAHeldIncarnationIsRefused(t *testing.T) {
 	root, dir := controlDir(t)
-	writeRecord(t, dir, "handoff-a", "held", "exec-1", 3, "result")
+	writeMarker(t, dir, "held", "exec-1", "result")
 
 	classifier := New(root)
 
 	// The incarnation itself, and everything beneath it: the rows that already
 	// held. They are the control -- if these stop working the ancestor rule was
 	// bought with the descendant one.
-	for _, held := range []string{"exec-1.3/result", "exec-1.3/result/inner/file"} {
+	for _, held := range []string{"exec-1.capture/result", "exec-1.capture/result/inner/file"} {
 		if class := classifier.Classify(held); class != Held {
 			t.Errorf("%s classified %s, expected held", held, class)
 		}
 	}
 
 	// The step directory the Reaper and the sweeper name.
-	if class := classifier.Classify("exec-1.3"); class != Held {
+	if class := classifier.Classify("exec-1.capture"); class != Held {
 		t.Errorf("the step directory containing a held source classified %s; deleting it "+
 			"destroys the held source just as surely as deleting the source", class)
 	}
 
 	// And the refusal has to say something, because a caller that cannot
 	// explain why it did not delete is a stuck sweep nobody can diagnose.
-	if err := classifier.Reason("exec-1.3", Held); err == nil {
+	if err := classifier.Reason("exec-1.capture", Held); err == nil {
 		t.Error("an ancestor refusal carried no reason")
 	}
 
 	// A SIBLING that merely shares a prefix is not held. This is the row that
 	// keeps the ancestor rule from becoming "anything that looks similar":
-	// exec-1.3 and exec-1.30 are different handle generations.
-	for _, free := range []string{"exec-1.30", "exec-1.3x", "exec-2.3", "exec-1"} {
+	// exec-1.capture and exec-1.captured are different directories.
+	for _, free := range []string{"exec-1.captured", "exec-1.capturex", "exec-2.capture", "exec-1"} {
 		if class := classifier.Classify(free); class != Unmanaged {
 			t.Errorf("%s classified %s, expected unmanaged: an unrelated step that shares "+
 				"characters with a held one is not held", free, class)

@@ -197,6 +197,18 @@ var destructiveInventory = map[string]struct {
 		why: "moves a torn or unsupported record aside so an operator can read it. It touches " +
 			"no source, and the daemon stays unready until it is resolved.",
 	}},
+	"outputplane/control_store.go | controlStore.remove | store.root.Remove(name)": {1, admission{
+		why: "removes one step marker on release, after the control plane recorded a terminal " +
+			"capture. It touches no source: the step directory becomes the artifact daemon's " +
+			"ordinary business, which is what a release is.",
+	}},
+	"outputplane/capture_ledger.go | CaptureLedger.Seal | os.Rename(captured.ArchivePath)": {1, admission{
+		why: "moves the seal's canonical archive from the canonicalizer's private scratch into " +
+			"the capture's staging file in the same scratch volume. It touches no source.",
+	}},
+	"outputplane/capture_ledger.go | CaptureLedger.Release | os.Remove(file)": {1, admission{
+		why: "deletes a released capture's staged archive in scratch. It touches no source.",
+	}},
 	"outputplane/config.go | Config.PrepareScratch | os.RemoveAll(filepath.Join())": {1, admission{
 		why: "sweeps what a KILLED canonicalization left in the scratch volume, at startup, " +
 			"before the listener exists. It touches no source: the scratch directory is the " +
@@ -315,7 +327,7 @@ func TestArchitecture_EveryDestructiveCallIsAdmittedByANamedGuardOrPinnedAsExemp
 	// scan silently matched nothing passes, and a scan that stops finding
 	// calls -- a renamed directory, a parse that quietly failed -- looks
 	// exactly like a daemon that stopped destroying things.
-	const pinnedTotal = 32
+	const pinnedTotal = 35
 	if total != pinnedTotal {
 		t.Errorf("found %d destructive calls across both daemons and %d are pinned. "+
 			"Every Remove/RemoveAll/Rename must be listed in destructiveInventory with the "+

@@ -158,11 +158,23 @@ func roundTripWriterInspection(t *testing.T, raw []byte) {
 }
 
 var protocolFixtures = map[string]func(*testing.T, []byte){
-	"input-stage.json":           func(t *testing.T, raw []byte) { roundTrip[InputStage](t, raw) },
-	"input-publish-request.json": func(t *testing.T, raw []byte) { roundTrip[InputPublishRequest](t, raw) },
-	"input-publication.json":     func(t *testing.T, raw []byte) { roundTrip[InputPublication](t, raw) },
-	"source-incarnation.json":    func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
-	"capture-admission.json":     func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
+	// The capture routes and the node marker.
+	"capture-key.json":                     func(t *testing.T, raw []byte) { roundTrip[CaptureKey](t, raw) },
+	"step-marker.json":                     func(t *testing.T, raw []byte) { roundTrip[StepMarker](t, raw) },
+	"capture-hold-request.json":            func(t *testing.T, raw []byte) { roundTrip[CaptureHoldRequest](t, raw) },
+	"capture-hold-acknowledgement.json":    func(t *testing.T, raw []byte) { roundTrip[CaptureHoldAcknowledgement](t, raw) },
+	"capture-seal-request.json":            func(t *testing.T, raw []byte) { roundTrip[CaptureSealRequest](t, raw) },
+	"capture-seal-result.json":             func(t *testing.T, raw []byte) { roundTrip[CaptureSealResult](t, raw) },
+	"capture-publish-request.json":         func(t *testing.T, raw []byte) { roundTrip[CapturePublishRequest](t, raw) },
+	"capture-publish-result.json":          func(t *testing.T, raw []byte) { roundTrip[CapturePublishResult](t, raw) },
+	"capture-release-request.json":         func(t *testing.T, raw []byte) { roundTrip[CaptureReleaseRequest](t, raw) },
+	"capture-release-acknowledgement.json": func(t *testing.T, raw []byte) { roundTrip[CaptureReleaseAcknowledgement](t, raw) },
+	"capture-stat-request.json":            func(t *testing.T, raw []byte) { roundTrip[CaptureStatRequest](t, raw) },
+	"input-stage.json":                     func(t *testing.T, raw []byte) { roundTrip[InputStage](t, raw) },
+	"input-publish-request.json":           func(t *testing.T, raw []byte) { roundTrip[InputPublishRequest](t, raw) },
+	"input-publication.json":               func(t *testing.T, raw []byte) { roundTrip[InputPublication](t, raw) },
+	"source-incarnation.json":              func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
+	"capture-admission.json":               func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
 
 	// The reservation the ATC repeats into the producing Pod's volume. Its
 	// refusal twin is a reservation whose directory does not derive from the

@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/concourse/concourse/artifactwire"
@@ -32,19 +34,45 @@ import (
 // and it passes exactly the half of this test that a real guard passes.
 
 const (
-	heldExecution  = "77777777-7777-4777-8777-777777777777"
-	heldGeneration = 9
-	heldOutput     = "result"
+	heldExecution = "77777777-7777-4777-8777-777777777777"
+	heldOutput    = "result"
 )
 
-// heldIncarnation is what the ledger names.
+// heldMarkerName is the marker's file in the control directory.
+var heldMarkerName = "capture-" + heldExecution + "." + heldOutput + ".json"
+
+// heldIncarnation is the step directory the marker protects.
 func heldIncarnation() string {
-	return fmt.Sprintf("%s.%d/%s", heldExecution, heldGeneration, heldOutput)
+	return ledger.StepDirectory(heldExecution, heldOutput)
 }
 
 // heldStepDir is what the Reaper and the sweeper name: the PARENT.
 func heldStepDir() string {
-	return fmt.Sprintf("%s.%d", heldExecution, heldGeneration)
+	return fmt.Sprintf("%s.capture", heldExecution)
+}
+
+// heldMarker is the marker the daemon writes, envelope and checksum included.
+func heldMarker(t *testing.T) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"state": "held", "execution": heldExecution, "output": heldOutput,
+		"node": "node-1", "pod_uid": "pod-1",
+	})
+	if err != nil {
+		t.Fatalf("encoding the marker: %v", err)
+	}
+	sum := sha256.Sum256(body)
+	record, err := json.Marshal(map[string]any{
+		"record_version": "hangar-output-control-record-v1",
+		"checksum":       hex.EncodeToString(sum[:]),
+		"body":           json.RawMessage(body),
+	})
+	if err != nil {
+		t.Fatalf("encoding the marker: %v", err)
+	}
+
+	return record
 }
 
 // capturedNode builds a storage root holding one capture-held source, one
@@ -76,23 +104,7 @@ func capturedNode(t *testing.T) string {
 	if err := os.MkdirAll(control, 0o700); err != nil {
 		t.Fatalf("creating the control directory: %v", err)
 	}
-	record, err := json.Marshal(map[string]any{
-		"record_version": "hangar-output-control-record-v1",
-		"checksum":       "not-read-by-the-classifier",
-		"body": map[string]any{
-			"state": "held",
-			"incarnation": map[string]any{
-				"execution_id":      heldExecution,
-				"handle_generation": heldGeneration,
-				"output":            heldOutput,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("encoding the hold: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(control, "source-88888888-8888-4888-8888-888888888888.json"),
-		record, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(control, heldMarkerName), heldMarker(t), 0o600); err != nil {
 		t.Fatalf("writing the hold: %v", err)
 	}
 
@@ -342,8 +354,7 @@ func TestAnAliasIsNeitherReusedForNorRemappedOffACaptureHeldSource(t *testing.T)
 	// made, so the alias is placed while the hold is momentarily off the disk
 	// -- which is the real sequence: the ATC registers the volume, and the
 	// capture holds it afterwards.
-	record := filepath.Join(storage, ledger.ControlDirName,
-		"source-88888888-8888-4888-8888-888888888888.json")
+	record := filepath.Join(storage, ledger.ControlDirName, heldMarkerName)
 	held0, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatalf("reading the hold: %v", err)
@@ -385,7 +396,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	server, storage := capturedServer(t)
 	handler := server.Handler()
 
-	recordKey := ledger.ControlDirName + "/source-88888888-8888-4888-8888-888888888888.json"
+	recordKey := ledger.ControlDirName + "/" + heldMarkerName
 	recordPath := filepath.Join(storage, filepath.FromSlash(recordKey))
 	before, err := os.ReadFile(recordPath)
 	if err != nil {
@@ -456,7 +467,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 		t.Fatalf("planting the within-root symlink: %v", err)
 	}
 	throughLink := "/artifacts/steps/unheld-handle/out/link/" +
-		"source-88888888-8888-4888-8888-888888888888.json"
+		heldMarkerName
 	for _, method := range []string{
 		http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete,
 	} {
@@ -646,6 +657,84 @@ func TestAReadOnlyAliasOntoACaptureHeldSourceIsAdmittedAndAWriteCapableOneIsNot(
 	}
 }
 
+// A torn marker -- the body changed under its checksum, as a crash or a
+// truncated restore leaves it -- makes every destructive path refuse, the
+// held directory's and an unrelated one's alike: whatever it held is unknown,
+// and unknown is never unmanaged.
+func TestATornMarkerRefusesTheSweeperDeleteStreamInAndRemap(t *testing.T) {
+	server, storage := capturedServer(t)
+	handler := server.Handler()
+	record := filepath.Join(storage, ledger.ControlDirName, heldMarkerName)
+	raw, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(record, []byte(strings.Replace(string(raw), `"held"`, `"sealed"`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sweeper.
+	stale := time.Now().Add(-2 * time.Hour)
+	for _, dir := range []string{heldStepDir(), "unheld-handle"} {
+		if err := os.Chtimes(filepath.Join(storage, "steps", dir), stale, stale); err != nil {
+			t.Fatalf("ageing %s: %v", dir, err)
+		}
+	}
+	sweeper := NewSweeper(lagertest.NewTestLogger("sweep"), storage, time.Hour, time.Hour, server.registry)
+	sweeper.SetGuard(server.guard)
+	sweeper.SetSourceLedger(server.sourceLedger)
+	sweeper.SweepOnce()
+	if _, err := os.Stat(filepath.Join(storage, "steps", "unheld-handle")); err != nil {
+		t.Errorf("the sweeper destroyed an unrelated step directory while the ledger was unreadable: %v", err)
+	}
+	stillThere(t, storage, heldIncarnation())
+
+	// DELETE.
+	for _, key := range []string{"steps/" + heldStepDir(), "steps/unheld-handle"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/artifacts/"+key, nil))
+		if recorder.Code == http.StatusNoContent {
+			t.Errorf("DELETE %s succeeded over a torn marker", key)
+		}
+	}
+
+	// Stream-in.
+	for _, key := range []string{heldIncarnation(), "unheld-handle/out"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/stream-in/"+key,
+			bytes.NewReader(oneEntryTar(t, "artifact.txt", "somebody else's bytes"))))
+		if recorder.Code == http.StatusCreated {
+			t.Errorf("a stream-in over %s succeeded over a torn marker", key)
+		}
+	}
+	stillThere(t, storage, heldIncarnation())
+
+	// Remap: an alias already pointing at the held directory may not move.
+	held := filepath.Join(storage, "steps", heldIncarnation())
+	if err := os.Rename(record, record+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.registry.RegisterAlias("the-captures-name", held); err != nil {
+		t.Fatalf("seeding the mapping: %v", err)
+	}
+	if err := os.Rename(record+".aside", record); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(artifactwire.RegisterRequest{Key: "the-captures-name",
+		LocalPath: filepath.Join(storage, "steps", "unheld-handle", "out")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body)))
+	if recorder.Code == http.StatusCreated {
+		t.Error("an alias onto the held directory was remapped over a torn marker")
+	}
+	if rel, ok := server.registry.Lookup("the-captures-name"); !ok || !strings.HasSuffix(string(rel), heldIncarnation()) {
+		t.Errorf("the capture's alias now points at %q", rel)
+	}
+}
+
 // A torn record is quarantined by the output plane at startup, and from then on
 // nobody can say whether it described a hold. Every destructive path must
 // refuse -- the sweeper, DELETE, stream-in and an alias remap -- for the held
@@ -661,7 +750,7 @@ func TestAQuarantinedControlRecordRefusesEveryDestructivePath(t *testing.T) {
 	}
 
 	control := filepath.Join(storage, ledger.ControlDirName)
-	record := filepath.Join(control, "source-88888888-8888-4888-8888-888888888888.json")
+	record := filepath.Join(control, heldMarkerName)
 	if err := os.MkdirAll(filepath.Join(control, "quarantine"), 0o700); err != nil {
 		t.Fatalf("creating the quarantine: %v", err)
 	}
@@ -716,4 +805,3 @@ func TestAQuarantinedControlRecordRefusesEveryDestructivePath(t *testing.T) {
 	stillThere(t, storage, heldIncarnation())
 	stillThere(t, storage, filepath.Join("unheld-handle", "out"))
 }
-

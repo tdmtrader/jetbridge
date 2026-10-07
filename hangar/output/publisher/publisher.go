@@ -341,6 +341,29 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 // and was verified by the caller (output.ReadWarrantVerifier.Verify). What is
 // checked again here is that it is a whole set of claims and that it names the
 // ref being opened, so a warrant for one object never opens another.
+// StatCurrentObject reports the live generation at the key a digest derives,
+// classified exactly as a create conflict is: an object this plane did not
+// mark with this digest is a conflict and never adopted. Absent is ErrNotFound.
+func (publisher *Publisher) StatCurrentObject(ctx context.Context, digest hangar.Digest) (output.PublishedObject, error) {
+	if err := digest.Validate(); err != nil {
+		return output.PublishedObject{}, err
+	}
+	key, err := publisher.namespace.ObjectKey(digest)
+	if err != nil {
+		return output.PublishedObject{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, publisher.timeout)
+	defer cancel()
+
+	attrs, err := publisher.store.StatCurrent(ctx, publisher.namespace.Bucket(), key)
+	if err != nil {
+		return output.PublishedObject{}, translate(err, key)
+	}
+
+	return publisher.classify(attrs, output.ObjectMarker{Digest: digest}, sizeUnknown)
+}
+
 func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, warrant output.ReadWarrantClaims) (io.ReadCloser, output.PublishedObject, error) {
 	if err := warrant.Validate(); err != nil {
 		return nil, output.PublishedObject{}, err

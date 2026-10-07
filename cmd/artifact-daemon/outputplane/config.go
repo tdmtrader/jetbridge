@@ -90,6 +90,14 @@ type Config struct {
 
 	ActivationEpoch  uint64
 	OperationTimeout time.Duration
+
+	// SealWait bounds how long one seal call waits for the producing Pod's
+	// containers to terminate before answering "not yet".
+	SealWait time.Duration
+
+	// Terminations answers whether a Pod's containers have all stopped. Nil
+	// means the Kubernetes API, read for this node's own Pods; a test sets it.
+	Terminations PodTerminations
 }
 
 // BindFlags declares the output plane's flags on the artifact daemon's set.
@@ -128,6 +136,8 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. A control plane pins its public half per activation epoch.")
 	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
+	flags.DurationVar(&config.SealWait, "capture-seal-wait", 30*time.Second,
+		"How long one capture seal waits for every container of the producing Pod to terminate before answering that it has not yet; the control plane asks again. The seal never deletes a Pod to get there.")
 	flags.IntVar(&config.PublishConcurrency, "publish-concurrency", 1,
 		"How many trees may be canonicalized and spooled to scratch at once. The scratch volume's size limit must cover this many maximum-sized trees; the chart renders both from one pair of values and refuses a product that does not fit.")
 	flags.StringVar(&config.NodeUID, "node-uid", "",

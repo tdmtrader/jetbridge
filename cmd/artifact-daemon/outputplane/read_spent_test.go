@@ -121,7 +121,7 @@ func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.source, verifier, "")
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "")
 	store, err := openControlStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

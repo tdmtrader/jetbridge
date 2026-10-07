@@ -1,0 +1,8 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "execution": {
+    "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+    "fence": 7
+  },
+  "digest": "sha256:9c1185a5c5e9fc54612808977ee8f548b2258d31a4c5b8e5a5d1f0e9b2a3c4d5"
+}

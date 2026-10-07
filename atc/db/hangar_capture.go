@@ -49,7 +49,7 @@ func scanHangarCapture(scan func(...any) error) (output.Capture, error) {
 		&finished, &released); err != nil {
 		return output.Capture{}, err
 	}
-	capture.Key = output.CaptureKey{Execution: executioncontrol.ExecutionID(execution), Output: output.OutputName(outputName)}
+	capture.Key = output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(execution), Output: output.OutputName(outputName)}
 	capture.State = output.CaptureState(state)
 	capture.Node, capture.NodeUID, capture.PodUID = node, executioncontrol.NodeUID(nodeUID), executioncontrol.PodUID(podUID)
 	capture.Scope, capture.Digest = hangar.Scope(scope), hangar.Digest(digest)
@@ -74,7 +74,7 @@ func (repository *HangarOutputRepository) GetCapture(ctx context.Context, tx out
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT `+hangarCaptureColumns+`
 		FROM hangar_captures WHERE execution_id = $1 AND output_name = $2`,
-		string(key.Execution), string(key.Output))
+		string(key.ExecutionID), string(key.Output))
 	if err != nil {
 		return output.Capture{}, hangarConflict(err)
 	}
@@ -107,7 +107,7 @@ func (repository *HangarOutputRepository) InsertPending(ctx context.Context, tx 
 		INSERT INTO hangar_captures (execution_id, output_name, node, node_uid, pod_uid, capture_deadline_at)
 		VALUES ($1, $2, $3, $4, nullif($5, ''), now() + $6::interval)
 		ON CONFLICT (execution_id, output_name) DO NOTHING`,
-		string(pending.Key.Execution), string(pending.Key.Output), pending.Node,
+		string(pending.Key.ExecutionID), string(pending.Key.Output), pending.Node,
 		string(pending.NodeUID), string(pending.PodUID), interval); err != nil {
 		return output.Capture{}, hangarConflict(err)
 	}
@@ -136,7 +136,7 @@ func (repository *HangarOutputRepository) casCapture(ctx context.Context, tx out
 	}); err != nil {
 		return output.Capture{}, err
 	}
-	result, err := tx.ExecContext(ctx, update, append([]any{string(key.Execution), string(key.Output)}, args...)...)
+	result, err := tx.ExecContext(ctx, update, append([]any{string(key.ExecutionID), string(key.Output)}, args...)...)
 	if err != nil {
 		return output.Capture{}, hangarConflict(err)
 	}
@@ -349,4 +349,3 @@ func (repository *HangarOutputRepository) ListUnreleased(ctx context.Context, tx
 		`released_at IS NULL AND state IN ('published', 'discarded', 'failed')`,
 		`finished_at, execution_id, output_name`, limit)
 }
-

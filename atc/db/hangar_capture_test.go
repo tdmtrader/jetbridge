@@ -61,7 +61,7 @@ var _ = Describe("Hangar capture rows", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		repository = db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
-		key = output.CaptureKey{Execution: executioncontrol.ExecutionID(uuid.NewString()), Output: "result"}
+		key = output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Output: "result"}
 	})
 
 	It("inserts a pending row once and replays the same facts", func() {
@@ -160,14 +160,14 @@ var _ = Describe("Hangar capture rows", func() {
 	It("refuses a transition the schema does not have, whoever writes it", func() {
 		insert(key, time.Hour)
 		_, err := dbConn.Exec(`UPDATE hangar_captures SET state='published', scope=$3, digest=$4, generation=1, finished_at=now()
-			WHERE execution_id=$1 AND output_name=$2`, string(key.Execution), string(key.Output), string(scope), string(digestOf("eeeeeeee")))
+			WHERE execution_id=$1 AND output_name=$2`, string(key.ExecutionID), string(key.Output), string(scope), string(digestOf("eeeeeeee")))
 		Expect(err).To(MatchError(ContainSubstring("cannot move from pending to published")))
-		_, err = dbConn.Exec(`DELETE FROM hangar_captures WHERE execution_id=$1`, string(key.Execution))
+		_, err = dbConn.Exec(`DELETE FROM hangar_captures WHERE execution_id=$1`, string(key.ExecutionID))
 		Expect(err).To(MatchError(ContainSubstring("deleted only by its team's purge")))
 	})
 
 	It("lists recovery, deadline and release work and releases once", func() {
-		expired := output.CaptureKey{Execution: executioncontrol.ExecutionID(uuid.NewString()), Output: "result"}
+		expired := output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Output: "result"}
 		insert(expired, time.Second)
 		insert(key, time.Hour)
 		Expect(in(func(tx db.Tx) error {

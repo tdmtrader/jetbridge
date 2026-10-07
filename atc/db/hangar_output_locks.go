@@ -179,7 +179,7 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 		if _, err := tx.ExecContext(ctx, `
 			SELECT 1 FROM hangar_captures
 			WHERE execution_id = $1 AND output_name = $2
-			FOR NO KEY UPDATE`, string(key.Execution), string(key.Output)); err != nil {
+			FOR NO KEY UPDATE`, string(key.ExecutionID), string(key.Output)); err != nil {
 			return HangarLocks{}, hangarConflict(err)
 		}
 	}

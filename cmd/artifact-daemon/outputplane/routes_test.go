@@ -3,10 +3,10 @@ package outputplane
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,8 +15,10 @@ import (
 
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // The route table, driven over real HTTP against the real ledgers.
@@ -26,7 +28,7 @@ import (
 // answers, and whether a base request can be made to mention an output.
 
 type routeFixture struct {
-	*sourceFixture
+	*captureFixture
 
 	server  *httptest.Server
 	unready string
@@ -53,34 +55,21 @@ type routeFixture struct {
 func newRoutes(t *testing.T, unready string) *routeFixture {
 	t.Helper()
 
-	source := newSourceLedger(t)
-
-	emulatorServer, bucket := emulator(t)
-	config := validConfig(t, emulatorServer.URL(), bucket)
-	// The daemon signs with the SAME control key the fixture's ledgers hold, so
-	// a statement a route returns verifies under the key the test pinned. Two
-	// keys here would make the assertions test the fixture's plumbing rather
-	// than the daemon's.
-	config.ControlKeyFile = writePrivateKey(t, source.private)
-	daemon, err := Build(t.Context(), config)
-	if err != nil {
-		t.Fatalf("building the daemon: %v", err)
-	}
-
-	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret(), time.Minute, source.clock)
+	capture := newCaptureLedger(t)
+	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret(), time.Minute, capture.clock)
 	if err != nil {
 		t.Fatalf("building the minter: %v", err)
 	}
 
 	fixture := &routeFixture{
-		sourceFixture: source,
-		daemon:        daemon,
-		minter:        minter,
-		epoch:         daemon.Namespace().ActivationEpoch(),
-		store:         emulatorServer,
-		bucket:        bucket,
-		config:        config,
-		unready:       unready,
+		captureFixture: capture,
+		daemon:         capture.daemon,
+		minter:         minter,
+		epoch:          capture.daemon.ActivationEpoch(),
+		store:          capture.objects,
+		bucket:         capture.bucket,
+		config:         capture.config,
+		unready:        unready,
 	}
 	fixture.serve(t)
 
@@ -113,11 +102,11 @@ func (fixture *routeFixture) serve(t *testing.T) {
 	}
 	// The same wiring main.go does: the spent nonces belong in the control
 	// directory, not in one process's memory.
-	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.sourceFixture.store}); err != nil {
+	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.captureFixture.store}); err != nil {
 		t.Fatalf("opening the spent-capability record: %v", err)
 	}
 	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,
-		fixture.source, verifier, fixture.unready).Handler())
+		fixture.capture, verifier, fixture.unready).Handler())
 	t.Cleanup(fixture.server.Close)
 }
 
@@ -135,33 +124,6 @@ func (fixture *routeFixture) call(t *testing.T, path string, facet executioncont
 	t.Helper()
 
 	return fixture.callAs(t, identity(1), path, facet, operation, body)
-}
-
-// reserveOverHTTP takes the reservation the way the ATC takes it, and returns
-// the hold body a capture control init would then present.
-//
-// Every hold in this file goes through it, because every hold in PRODUCTION
-// goes through it: the incarnation is issued before the Pod is built, and a
-// hold that could not name one would be a control init in a Pod whose output
-// volume is somewhere else.
-func (fixture *routeFixture) reserveOverHTTP(t *testing.T,
-	as executioncontrol.Identity, admitted output.CaptureAdmission) holdRequest {
-	t.Helper()
-
-	status, body := fixture.callAs(t, as, "/capture/v1/reserve-incarnation",
-		output.CaptureFacet, "reserve-incarnation", admitted)
-	if status != http.StatusOK {
-		t.Fatalf("the reservation was refused: %d %s", status, body)
-	}
-	var reserved output.ReservedIncarnation
-	if err := json.Unmarshal(body, &reserved); err != nil {
-		t.Fatalf("decoding the reservation: %v", err)
-	}
-
-	// The Pod UID is the init container's, presented at the hold and nowhere
-	// earlier: the reservation above was made before any Pod existed.
-	return holdRequest{CaptureAdmission: admitted, Incarnation: reserved.Incarnation,
-		PodUID: testPod}
 }
 
 // callAs is call for a capability minted for an execution the test names.
@@ -231,9 +193,8 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 //     and nothing else in the tree exercises the flat one.
 //   - the MIRROR: a capture capability at a base route. The fixture speaks the
 //     capture facet; it has no phrase for presenting one at /execution/v1.
-//   - the two capture routes the scenario does not name -- the writer ticket
-//     and the release -- because a facet check that was data per route could
-//     be true of three routes and not of five.
+//   - every capture route, because a facet check that was data per route
+//     could be true of three routes and not of five.
 func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
@@ -257,15 +218,13 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 		t.Fatalf("the admit route refused an envelope with a flat identity: %d %s", status, body)
 	}
 
-	// The capture routes no scenario names -- including the reservation, which
-	// is the ATC's own operation and therefore the one a base control
-	// capability is most plausibly already holding when it reaches for it.
+	// Every capture route.
 	for path, operation := range map[string]string{
-		"/capture/v1/writer-ticket":         "issue-writer-ticket",
-		"/capture/v1/writer-ticket/inspect": "inspect-writer-ticket",
-		"/capture/v1/release":               "release-hold",
-		"/capture/v1/reserve-incarnation":   "reserve-incarnation",
-		"/capture/v1/canonicalize":          "canonicalize",
+		"/capture/v1/hold":    "hold",
+		"/capture/v1/seal":    "seal",
+		"/capture/v1/publish": "publish",
+		"/capture/v1/release": "release",
+		"/capture/v1/stat":    "stat",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
 			identifiedBy(identity(1)))
@@ -371,11 +330,11 @@ func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 	admitted(t, &fixture.ledgerFixture)
 
 	for path, operation := range map[string]string{
-		"/execution/v1/classify":          "classify",
-		"/execution/v1/cleanup-eligible":  "cleanup-eligible",
-		"/capture/v1/hold":                "hold",
-		"/capture/v1/reserve-incarnation": "reserve-incarnation",
-		"/capture/v1/canonicalize":        "canonicalize",
+		"/execution/v1/classify":         "classify",
+		"/execution/v1/cleanup-eligible": "cleanup-eligible",
+		"/capture/v1/hold":               "hold",
+		"/capture/v1/seal":               "seal",
+		"/capture/v1/publish":            "publish",
 	} {
 		facet := executioncontrol.BaseFacet
 		if strings.HasPrefix(path, "/capture/") {
@@ -410,95 +369,66 @@ func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 	}
 }
 
-// The whole capture chain over HTTP, ending in a marked object and a receipt.
-func TestTheCaptureRoutesHoldSealAndPublishASealedTree(t *testing.T) {
+// The whole capture chain over HTTP: hold, seal, publish, stat, release.
+func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
 
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
-		fixture.reserveOverHTTP(t, identity(1), admission()))
-	if status != http.StatusOK {
+	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest())
+	if status != http.StatusOK || !strings.Contains(string(body), `"kind":"hold_acknowledged"`) {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
-	var hold output.CaptureAcknowledgement
-	if err := json.Unmarshal(body, &hold); err != nil {
-		t.Fatalf("decoding the hold: %v", err)
-	}
-	if err := output.VerifyCaptureAcknowledgement(hold, fixture.public); err != nil {
-		t.Errorf("the hold the route returned does not verify: %v", err)
-	}
-
-	// A producer writes into the source the daemon issued.
-	root, err := fixture.source.ResolveIncarnation(hold.Incarnation)
-	if err != nil {
-		t.Fatalf("resolving: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "artifact.txt"), []byte("the bytes"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
-	}
+	writeFile(t, filepath.Join(fixture.stepDir(), "artifact.txt"), "the bytes")
 
 	// Publishing before the seal is refused: no canonical read begins before
-	// both halves of the seal hold.
-	publication := output.PublicationRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		ReservationID:   "44444444-4444-4444-8444-444444444444",
-		CaptureFence:    captureFence,
+	// the producer has stopped.
+	publication := output.CapturePublishRequest{
+		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
+		Digest: hangar.Digest("sha256:" + string(make64('b'))),
 	}
 	if status, body := fixture.call(t, "/capture/v1/publish",
 		output.CaptureFacet, "publish", publication); status != http.StatusPreconditionFailed {
-		t.Errorf("an unsealed source was published: %d %s", status, body)
+		t.Errorf("an unsealed step directory was published: %d %s", status, body)
 	}
 
-	sealed := output.SealRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		Incarnation:     hold.Incarnation,
-		CaptureFence:    captureFence,
-		DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
-	}
-	if status, body := fixture.call(t, "/capture/v1/seal",
-		output.CaptureFacet, "begin-seal", sealed); status != http.StatusOK {
+	fixture.pods.stop(testPod)
+	status, body = fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	if status != http.StatusOK {
 		t.Fatalf("the seal was refused: %d %s", status, body)
 	}
-	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
-	if err != nil {
-		t.Fatalf("inspecting the seal: %v", err)
+	var sealed output.CaptureSealResult
+	if err := json.Unmarshal(body, &sealed); err != nil {
+		t.Fatalf("decoding the seal: %v", err)
 	}
-	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
-		Started:      started,
-		CaptureFence: captureFence,
-		ObservedAt:   output.NewTimestamp(fixedNow()),
-	}); err != nil {
-		t.Fatalf("confirming: %v", err)
+	// The scope is the DERIVED one; the request has no field that could say it.
+	if sealed.Scope != fixture.daemon.Namespace().Scope() {
+		t.Errorf("the seal answered scope %q", sealed.Scope)
 	}
 
-	status, body = fixture.call(t, "/capture/v1/publish",
-		output.CaptureFacet, "publish", publication)
+	publication.Digest, publication.Staged = sealed.Digest, sealed.Staged
+	status, body = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
 	if status != http.StatusOK {
 		t.Fatalf("the sealed tree was not published: %d %s", status, body)
 	}
-	var result output.PublicationResult
+	var result output.CapturePublishResult
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
-	if result.MarkerVersion != output.MarkerVersion {
-		t.Errorf("the object is marked %q", result.MarkerVersion)
+	if result.MarkerVersion != output.MarkerVersion || result.Ref.Generation <= 0 ||
+		result.Deduplicated || result.Ref.Digest != sealed.Digest {
+		t.Errorf("the publish answered %+v", result)
 	}
-	if result.Ref.Generation <= 0 {
-		t.Error("the published object has no store-assigned generation")
+
+	status, body = fixture.call(t, "/capture/v1/stat", output.CaptureFacet, "stat",
+		output.CaptureStatRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Digest: sealed.Digest})
+	if status != http.StatusOK || !strings.Contains(string(body), fmt.Sprint(result.Ref.Generation)) {
+		t.Errorf("stat answered %d %s", status, body)
 	}
-	if result.Deduplicated {
-		t.Error("the first publication reported deduplication")
-	}
-	// The scope is the DERIVED one, not anything the request said -- the
-	// request has no field that could have said it.
-	if result.Ref.Scope != fixture.daemon.Namespace().Scope() {
-		t.Errorf("the object landed in scope %q", result.Ref.Scope)
+
+	status, body = fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release",
+		output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput})
+	if status != http.StatusOK || !strings.Contains(string(body), output.ReleaseAcknowledged) {
+		t.Errorf("release answered %d %s", status, body)
 	}
 }
 
@@ -555,91 +485,43 @@ func TestTheHandshakeNamesTheProtocolLedgerKeyAndEpoch(t *testing.T) {
 //
 // The control is asserted first, and it is the same three routes answering for
 // the execution they belong to.
-func TestACapabilityForOneExecutionCannotActOnAnothersHandoff(t *testing.T) {
+func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
 
-	// A holds and seals.
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
-		fixture.reserveOverHTTP(t, identity(1), admission()))
-	if status != http.StatusOK {
+	// A holds.
+	if status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
+		holdRequest()); status != http.StatusOK {
 		t.Fatalf("A's hold was refused: %d %s", status, body)
 	}
-	var hold output.CaptureAcknowledgement
-	if err := json.Unmarshal(body, &hold); err != nil {
-		t.Fatalf("decoding: %v", err)
-	}
-	if status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "begin-seal",
-		output.SealRequest{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       identity(1),
-			ActivationEpoch: fixture.epoch,
-			HandoffID:       testHandoff,
-			Incarnation:     hold.Incarnation,
-			CaptureFence:    captureFence,
-			DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
-		}); status != http.StatusOK {
-		t.Fatalf("A's seal was refused: %d %s", status, body)
-	}
-	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
-	if err != nil {
-		t.Fatalf("inspecting A's seal: %v", err)
-	}
 
-	query := map[string]any{"execution": identity(1), "handoff_id": testHandoff}
-	// The controls: A's own capability, at A's own handoff.
-	for path, operation := range map[string]string{
-		"/capture/v1/hold/inspect": "inspect-hold",
-		"/capture/v1/seal/inspect": "inspect-seal",
-	} {
-		if status, body := fixture.call(t, path, output.CaptureFacet, operation,
-			query); status != http.StatusOK {
-			t.Fatalf("%s refused the execution it belongs to: %d %s", path, status, body)
-		}
-	}
-
-	// B is a real, admitted execution on this node. It holds no source.
-	b := executioncontrol.Identity{
-		ExecutionID: "55555555-5555-4555-8555-555555555555", Fence: 1,
-	}
+	// B is a real, admitted execution on this node. It holds nothing.
+	b := executioncontrol.Identity{ExecutionID: "55555555-5555-4555-8555-555555555555", Fence: 1}
 	if err := fixture.ledger.Admit(executioncontrol.Envelope{
-		ProtocolVersion: executioncontrol.ProtocolVersion,
-		Identity:        b,
-		ActivationEpoch: testEpoch,
-		NodeUID:         testNode,
-		Capability:      "opaque-capability",
+		ProtocolVersion: executioncontrol.ProtocolVersion, Identity: b, ActivationEpoch: testEpoch,
+		NodeUID: testNode, Capability: "opaque-capability",
 	}); err != nil {
 		t.Fatalf("admitting B: %v", err)
 	}
 
-	crossQuery := map[string]any{"execution": b, "handoff_id": testHandoff}
-	crossConfirmation := map[string]any{
-		"execution":     b,
-		"started":       started,
-		"capture_fence": captureFence,
-		"observed_at":   output.NewTimestamp(fixedNow()),
-	}
-
+	// B's capabilities, presented with bodies naming A's capture.
 	for _, row := range []struct {
 		path, operation string
 		body            any
 	}{
-		{"/capture/v1/hold/inspect", "inspect-hold", crossQuery},
-		{"/capture/v1/seal/inspect", "inspect-seal", crossQuery},
-		{"/capture/v1/seal/confirm", "confirm-seal", crossConfirmation},
+		{"/capture/v1/seal", "seal", sealRequest()},
+		{"/capture/v1/release", "release", output.CaptureReleaseRequest{
+			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}},
 	} {
 		status, body := fixture.callAs(t, b, row.path, output.CaptureFacet, row.operation, row.body)
 		if status != http.StatusForbidden {
-			t.Errorf("%s served execution B a fact about A's handoff: %d %s",
-				row.path, status, body)
+			t.Errorf("%s let execution B act on A's capture: %d %s", row.path, status, body)
 		}
 	}
 
-	// And A's source is still A's: not sealed by B, and A can still confirm.
-	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
-		Started: started, CaptureFence: captureFence, ObservedAt: output.NewTimestamp(fixedNow()),
-	}); err != nil {
-		t.Errorf("A could not confirm its own seal afterwards: %v", err)
+	// And A's capture is still held.
+	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Held {
+		t.Errorf("A's step directory is %s after B's attempts", class)
 	}
 }
 
@@ -675,7 +557,7 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 	// A nonce that has already expired, planted in the record. It cannot
 	// authorize anything, and a record that kept them would grow with every
 	// capability this node ever saw.
-	spent := capabilityReplayStore{store: fixture.sourceFixture.store}
+	spent := capabilityReplayStore{store: fixture.captureFixture.store}
 	nonces, err := spent.LoadSpentCapabilities()
 	if err != nil {
 		t.Fatalf("reading the spent record: %v", err)
@@ -709,136 +591,6 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 	}
 	if _, recorded := kept["nonce-spent-across-a-restart"]; !recorded {
 		t.Error("the spent nonce was pruned along with the expired one")
-	}
-}
-
-// Canonicalization is its own operation, and it creates nothing.
-//
-// Requirement 21 puts a durable logical resolution BETWEEN canonicalization and
-// the first object create: "after canonicalization and before the first GCS
-// create, the current capture owner durably resolves its reservation to the
-// server-derived scope and logical digest", so that every possibly-created
-// object has a pre-existing reservation recovery and inventory can correlate.
-// The publish route canonicalizes and creates in one call, so a control plane
-// driving only that route can commit the resolution only AFTER the object
-// exists -- which is the ordering the requirement exists to forbid.
-//
-// So the daemon answers the question separately. The route derives the scope
-// from the same namespace the publish derives it from and the digest from the
-// same canonicalizer, and it stores nothing: the bucket is still empty when it
-// returns. The seal is still a precondition, for the same reason it is one for
-// publish -- a canonical read may not begin over bytes a writer may still be
-// changing (Req 15).
-func TestCanonicalizationAnswersTheDigestThePublishThenUsesAndCreatesNothing(t *testing.T) {
-	fixture := newRoutes(t, "")
-	admitted(t, &fixture.ledgerFixture)
-
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
-		fixture.reserveOverHTTP(t, identity(1), admission()))
-	if status != http.StatusOK {
-		t.Fatalf("the hold was refused: %d %s", status, body)
-	}
-	var hold output.CaptureAcknowledgement
-	if err := json.Unmarshal(body, &hold); err != nil {
-		t.Fatalf("decoding the hold: %v", err)
-	}
-
-	root, err := fixture.source.ResolveIncarnation(hold.Incarnation)
-	if err != nil {
-		t.Fatalf("resolving: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "artifact.txt"), []byte("the bytes"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
-	}
-
-	request := output.PublicationRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		ReservationID:   "44444444-4444-4444-8444-444444444444",
-		CaptureFence:    captureFence,
-	}
-
-	// Before the seal, the same refusal publish gets. Asserted first, so that
-	// "canonicalization answers" below cannot pass on a route that answers
-	// whatever it is asked.
-	if status, body := fixture.call(t, "/capture/v1/canonicalize",
-		output.CaptureFacet, "canonicalize", request); status != http.StatusPreconditionFailed {
-		t.Errorf("an unsealed source was canonicalized: %d %s", status, body)
-	}
-
-	sealed := output.SealRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		Incarnation:     hold.Incarnation,
-		CaptureFence:    captureFence,
-		DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
-	}
-	if status, body := fixture.call(t, "/capture/v1/seal",
-		output.CaptureFacet, "begin-seal", sealed); status != http.StatusOK {
-		t.Fatalf("the seal was refused: %d %s", status, body)
-	}
-	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
-	if err != nil {
-		t.Fatalf("inspecting the seal: %v", err)
-	}
-	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
-		Started:      started,
-		CaptureFence: captureFence,
-		ObservedAt:   output.NewTimestamp(fixedNow()),
-	}); err != nil {
-		t.Fatalf("confirming: %v", err)
-	}
-
-	status, body = fixture.call(t, "/capture/v1/canonicalize",
-		output.CaptureFacet, "canonicalize", request)
-	if status != http.StatusOK {
-		t.Fatalf("the sealed source was not canonicalized: %d %s", status, body)
-	}
-	var canonical output.CanonicalizationResult
-	if err := json.Unmarshal(body, &canonical); err != nil {
-		t.Fatalf("decoding: %v", err)
-	}
-	if err := canonical.Validate(); err != nil {
-		t.Fatalf("the canonicalization does not validate: %v", err)
-	}
-	if canonical.Scope != fixture.daemon.Namespace().Scope() {
-		t.Errorf("the canonicalization named scope %q and this daemon publishes into %q",
-			canonical.Scope, fixture.daemon.Namespace().Scope())
-	}
-	if canonical.LogicalBytes <= 0 {
-		t.Errorf("the canonicalization reported %d logical bytes", canonical.LogicalBytes)
-	}
-
-	// It created nothing. This is the half that makes the resolution genuinely
-	// pre-create rather than a second name for the publish.
-	if keys := listKeys(t, fixture.store, fixture.bucket); len(keys) != 0 {
-		t.Fatalf("canonicalizing left %d object(s) in the bucket: %v", len(keys), keys)
-	}
-
-	// And the publish that follows lands on exactly the identity the
-	// canonicalization named. Without this the resolution could be over bytes
-	// nobody publishes, which is a correlation handle for nothing.
-	status, body = fixture.call(t, "/capture/v1/publish",
-		output.CaptureFacet, "publish", request)
-	if status != http.StatusOK {
-		t.Fatalf("the sealed tree was not published: %d %s", status, body)
-	}
-	var result output.PublicationResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("decoding: %v", err)
-	}
-	if result.Ref.Digest != canonical.Digest {
-		t.Errorf("the object is %s and the resolution committed before it was over %s; a "+
-			"reservation resolved to a digest nobody publishes correlates nothing",
-			result.Ref.Digest, canonical.Digest)
-	}
-	if result.Ref.Scope != canonical.Scope {
-		t.Errorf("the object landed in scope %q and the resolution named %q",
-			result.Ref.Scope, canonical.Scope)
 	}
 }
 

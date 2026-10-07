@@ -66,19 +66,19 @@ const (
 
 // CaptureKey names one capture: which execution, which declared output.
 type CaptureKey struct {
-	Execution executioncontrol.ExecutionID `json:"execution_id"`
-	Output    OutputName                   `json:"output"`
+	ExecutionID executioncontrol.ExecutionID `json:"execution_id"`
+	Output      OutputName                   `json:"output"`
 }
 
 func (key CaptureKey) Validate() error {
-	if err := key.Execution.Validate(); err != nil {
+	if err := key.ExecutionID.Validate(); err != nil {
 		return err
 	}
 
 	return key.Output.Validate()
 }
 
-func (key CaptureKey) String() string { return string(key.Execution) + "/" + string(key.Output) }
+func (key CaptureKey) String() string { return string(key.ExecutionID) + "/" + string(key.Output) }
 
 // CaptureDirectory is the ONE derivation of a step directory from a capture,
 // relative to the node daemon's managed steps directory. The pod's hostPath,
@@ -86,7 +86,7 @@ func (key CaptureKey) String() string { return string(key.Execution) + "/" + str
 // hangar/output/ledger restates it (a reader must not import its writer) and a
 // test pins the two spellings together.
 func (key CaptureKey) Directory() string {
-	return fmt.Sprintf("%s.capture/%s", key.Execution, key.Output)
+	return fmt.Sprintf("%s.capture/%s", key.ExecutionID, key.Output)
 }
 
 // captureNamespace is the fixed UUID namespace capture-derived identities are

@@ -33,7 +33,7 @@ func nowUTC() time.Time { return time.Now().UTC() }
 type Plane struct {
 	server  *Server
 	store   *controlStore
-	source  *SourceLedger
+	capture *CaptureLedger
 	labeler *FacetLabeler
 	unready string
 }
@@ -124,8 +124,14 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	// table refuses every capture route on such a daemon before a handler could
 	// reach this, so a nil here is unreachable rather than tolerated.
 	if daemon.OutputEnabled() {
-		plane.source, err = OpenSourceLedger(store, base, executioncontrol.NodeUID(config.NodeUID),
-			daemon.ActivationEpoch(), daemon.CaptureSigner(), nowUTC, config.StepsDir)
+		terminations := config.Terminations
+		if terminations == nil && nodes != nil {
+			terminations = NewNodePodTerminations(nodes, config.NodeName)
+		}
+		plane.capture, err = OpenCaptureLedger(store, base, daemon, CaptureLedgerConfig{
+			Node: executioncontrol.NodeUID(config.NodeUID), StepsDir: config.StepsDir,
+			ScratchDir: config.ScratchDir, Terminations: terminations, SealWait: config.SealWait,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +142,7 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		return nil, err
 	}
 
-	plane.server = NewServerWithSpool(daemon, base, plane.source, capability, plane.unready,
+	plane.server = NewServerWithSpool(daemon, base, plane.capture, capability, plane.unready,
 		config.PublishConcurrency)
 	if err := plane.server.configureReads(config, store); err != nil {
 		return nil, err
@@ -221,8 +227,8 @@ func (plane *Plane) Withdraw(ctx context.Context) error { return plane.labeler.W
 // Close releases the ledgers and the control store.
 func (plane *Plane) Close() error {
 	var err error
-	if plane.source != nil {
-		err = errors.Join(err, plane.source.Close())
+	if plane.capture != nil {
+		err = errors.Join(err, plane.capture.Close())
 	}
 	if plane.store != nil {
 		err = errors.Join(err, plane.store.Close())

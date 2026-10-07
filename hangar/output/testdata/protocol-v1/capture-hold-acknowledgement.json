@@ -1,0 +1,11 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "kind": "hold_acknowledged",
+  "marker": {
+    "state": "held",
+    "execution": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+    "output": "built-image",
+    "node": "node-9f2b1d4c",
+    "pod_uid": "3f1b2c4d-5e6f-4708-9a1b-2c3d4e5f6071"
+  }
+}
