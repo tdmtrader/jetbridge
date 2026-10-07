@@ -316,7 +316,7 @@ func (p *Platform) runServices(displayUserID atc.DisplayUserIdGenerator) (pipeli
 		Lifetime: 32 * time.Minute, WorkerImages: []string{Pin},
 	})
 	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(context.Context, int64) (runs.InputUploadNode, error) {
-		return runs.InputUploadNode{UID: p.node.uid, Publisher: p.node.client, Verifier: p.node.receipts}, nil
+		return runs.InputUploadNode{UID: p.node.uid, Publisher: p.node.client}, nil
 	}})
 	reader := &runs.ResultReader{Conn: p.conn, Minter: p.node.warrants, Scratch: p.node.resultScratch,
 		Source: func(context.Context, executioncontrol.ActivationEpoch) (runs.ResultSource, error) {

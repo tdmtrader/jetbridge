@@ -33,8 +33,6 @@ func baseOnlyConfig(t *testing.T) Config {
 	config.OutputEndpoint = ""
 	config.CacheBucket = ""
 	config.StrictInputBucket = ""
-	config.ReceiptKeyID = ""
-	config.ReceiptKeyFile = ""
 	config.MaterializationKeyID = ""
 	config.MaterializationKeyFile = ""
 
@@ -78,11 +76,6 @@ func TestAHalfConfiguredOutputFacetIsRefused(t *testing.T) {
 		"a prefix with no bucket":         func(c *Config) { c.OutputPrefix = "deployments/blue" },
 		"a tenant with no bucket":         func(c *Config) { c.OutputTenant = "tenant-a" },
 		"an endpoint with no bucket":      func(c *Config) { c.OutputEndpoint = "http://gcs.test" },
-		"a receipt key id with no bucket": func(c *Config) { c.ReceiptKeyID = "receipt-1" },
-		"a receipt key with no bucket": func(c *Config) {
-			path, _ := writeReceiptKey(t)
-			c.ReceiptKeyFile = path
-		},
 		"a materialization key id with no bucket": func(c *Config) {
 			c.MaterializationKeyID = "materialize-1"
 		},
@@ -99,18 +92,15 @@ func TestAHalfConfiguredOutputFacetIsRefused(t *testing.T) {
 	}
 }
 
-// Req 24 again, from the other side: a daemon that signs no receipt is given no
-// private key to sign one with. A key mounted into a process that cannot need
-// it is a key an exploit of that process gets for free.
-func TestABaseOnlyDaemonHoldsNoReceiptPrivateKey(t *testing.T) {
+// Req 24 again, from the other side: a daemon that publishes nothing is given no
+// publisher. A capability built into a process that cannot need it is one an
+// exploit of that process gets for free.
+func TestABaseOnlyDaemonHoldsNoPublisher(t *testing.T) {
 	daemon, err := Build(t.Context(), baseOnlyConfig(t))
 	if err != nil {
 		t.Fatalf("building: %v", err)
 	}
 
-	if daemon.ReceiptSigner() != nil {
-		t.Error("a base-control-only daemon holds a receipt signer")
-	}
 	if daemon.Publisher() != nil {
 		t.Error("a base-control-only daemon holds a publisher; it has no bucket to publish into")
 	}

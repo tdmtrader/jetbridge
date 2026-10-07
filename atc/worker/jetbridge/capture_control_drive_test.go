@@ -6,7 +6,7 @@ package jetbridge
 // This file exists because `sh -n` is not evidence. The Phase 4 round-1 review
 // took the script the pod builder emits, cut it after `BODY=` and posted those
 // exact bytes at a real daemon: `400 ... json: unknown field "pod_uid"`, and
-// then `InspectHold` said the handoff held nothing. A script that parses and is
+// the daemon held nothing. A script that parses and is
 // refused is a capture-selected producer that never starts, and every hold in
 // every other suite is posted by Go rather than by the script, so nothing could
 // see it.
@@ -31,6 +31,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 const drivePodUID = executioncontrol.PodUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
@@ -84,26 +85,18 @@ exec curl -s --fail $INSECURE "$@" --data-binary "@$BODY" "$URL"
 	return dir
 }
 
-// driveCaptureHold runs the generated script for a capture whose incarnation
-// the daemon has really reserved, and returns what the script printed.
+// driveCaptureHold runs the generated script for a capture whose execution
+// the daemon has really admitted, and returns what the script printed.
 func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, endpoint string) (string, error) {
 	t.Helper()
 
 	identity := executioncontrol.Identity{
 		ExecutionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Fence: 1,
 	}
-	admission := hangaroutput.CaptureAdmission{
-		ProtocolVersion: hangaroutput.ProtocolVersion,
-		Execution:       identity,
-		ActivationEpoch: harnessEpoch,
-		HandoffID:       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-		SourceHoldID:    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-		Output:          "result",
-		CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
-	}
+	key := hangaroutput.CaptureKey{ExecutionID: identity.ExecutionID, Output: "result"}
 
-	// Admitted and reserved through the real client, in the real order: no Pod
-	// exists yet and neither call names one.
+	// Admitted through the real client, in the real order: no Pod exists yet
+	// and the admission names none.
 	if _, err := harness.Client.Admit(t.Context(), executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        identity,
@@ -113,17 +106,12 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	}); err != nil {
 		return "", fmt.Errorf("admitting: %w", err)
 	}
-	reserved, err := harness.Client.ReserveIncarnation(t.Context(), admission)
-	if err != nil {
-		return "", fmt.Errorf("reserving: %w", err)
-	}
 	grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
 	if err != nil {
 		return "", fmt.Errorf("minting the grant: %w", err)
 	}
 
-	// The control envelope the pod builder reads, carrying the daemon's own
-	// answers.
+	// The control envelope the pod builder reads.
 	//
 	// An EMPTY endpoint makes the script compose its own from the Downward API
 	// host IP and the port, which is the line F2 is about -- and that fallback
@@ -140,17 +128,14 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 		Endpoint:        endpoint,
 	}
 	if err := control.SelectCapture(runtime.DurableOutputCapture{
-		Version:             runtime.DurableOutputCaptureVersion,
-		Identity:            identity,
-		ActivationEpoch:     harnessEpoch,
-		HandoffID:           admission.HandoffID,
-		SourceHoldID:        admission.SourceHoldID,
-		Output:              string(admission.Output),
-		SourceControlGrant:  executioncontrol.ControlCapability(grant),
-		CaptureDeadline:     admission.CaptureDeadline.Time,
-		ReservedIncarnation: reserved.Incarnation,
-		ReservedDirectory:   reserved.Directory,
-		ReservingNode:       testReservingNode,
+		Version:            runtime.DurableOutputCaptureVersion,
+		Identity:           identity,
+		ActivationEpoch:    harnessEpoch,
+		Output:             string(key.Output),
+		SourceControlGrant: executioncontrol.ControlCapability(grant),
+		CaptureDeadline:    time.Now().UTC().Add(time.Hour),
+		Node:               testCaptureNode,
+		NodeUID:            harnessNodeUID,
 	}); err != nil {
 		return "", fmt.Errorf("selecting the capture: %w", err)
 	}
@@ -171,7 +156,7 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	env := []string{
 		"PATH=" + wgetOnPath(t) + string(os.PathListSeparator) + os.Getenv("PATH"),
 		captureEnvPodUID + "=" + string(drivePodUID),
-		captureEnvNodeName + "=" + testReservingNode,
+		captureEnvNodeName + "=" + testCaptureNode,
 		captureEnvHostIP + "=" + host,
 	}
 	for _, variable := range init.Env {
@@ -201,10 +186,15 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	out, runErr := command.CombinedOutput()
 
 	// The hold really landed, or it did not. The script's own exit status is
-	// the producer's gate; the daemon's record is the truth behind it.
-	if _, err := harness.Client.InspectHold(t.Context(), identity, admission.HandoffID); err != nil {
-		return string(out), fmt.Errorf("the daemon holds no source after the script ran "+
-			"(script: %v): %w", runErr, err)
+	// the producer's gate; the daemon's marker is the truth behind it, read
+	// the way every destructive path on the node reads it.
+	if class := ledger.New(harness.StorageRoot).Classify(key.Directory()); class != ledger.Held {
+		return string(out), fmt.Errorf("the node classifies %s as %s after the script ran "+
+			"(script: %v); the daemon holds no step directory", key.Directory(), class, runErr)
+	}
+	if info, err := os.Stat(filepath.Join(harness.StepsDir, key.Directory())); err != nil || !info.IsDir() {
+		return string(out), fmt.Errorf("the held step directory %s does not exist after the "+
+			"hold (script: %v): %v", key.Directory(), runErr, err)
 	}
 
 	return string(out), runErr

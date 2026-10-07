@@ -1,8 +1,6 @@
 package output
 
 import (
-	"crypto/ed25519"
-	"encoding/base64"
 	"fmt"
 	"reflect"
 	"time"
@@ -60,32 +58,31 @@ func (p InputPublishRequest) Validate() error {
 	return nil
 }
 
-// InputPublication is a fresh node-signed observation of an exact publication.
-// The marker may belong to an earlier publication of identical bytes. There is
-// no execution, Pod or quiescence witness because an upload has none.
+// InputPublication is the publishing node's fresh observation of an exact
+// publication, answered over the control plane's mutually authenticated
+// connection to that node. The marker may belong to an earlier publication of
+// identical bytes. There is no execution, Pod or quiescence witness because an
+// upload has none.
 type InputPublication struct {
 	Stage          InputStage        `json:"stage"`
 	Nonce          string            `json:"nonce"`
 	Attributes     TreeAttributes    `json:"attributes"`
 	Metageneration int64             `json:"metageneration"`
 	Marker         map[string]string `json:"marker"`
-	SignedAt       Timestamp         `json:"signed_at"`
-	KeyID          string            `json:"key_id"`
-	Signature      string            `json:"signature"`
+}
+
+// For checks a publication against the consumer's retained stage and nonce.
+// The consumer must also consume that nonce and register its claim in one
+// database transaction; this check alone grants no ownership.
+func (p InputPublication) For(stage InputStage, nonce string) error {
+	if p.Stage != stage || p.Nonce != nonce {
+		return fmt.Errorf("%w: the publication answers another stage or nonce", ErrUnauthorized)
+	}
+
+	return p.Validate()
 }
 
 func (p InputPublication) Validate() error {
-	if err := p.validateClaims(); err != nil {
-		return err
-	}
-	signature, err := base64.StdEncoding.DecodeString(p.Signature)
-	if err != nil || len(signature) != ed25519.SignatureSize {
-		return ErrCorrupt
-	}
-	return nil
-}
-
-func (p InputPublication) validateClaims() error {
 	if err := p.Stage.Validate(); err != nil {
 		return err
 	}
@@ -93,7 +90,7 @@ func (p InputPublication) validateClaims() error {
 		return err
 	}
 	m, err := ParseObjectMarker(p.Marker)
-	if err != nil || !reflect.DeepEqual(m.Metadata(), p.Marker) || m.ActivationEpoch != p.Stage.ActivationEpoch || p.Attributes.Validate() != nil || p.Attributes.Ref.Scope != p.Stage.Scope || p.Attributes.Ref.Digest != p.Stage.Digest || p.Attributes.LogicalBytes != p.Stage.Bytes || p.Attributes.StoredBytes != p.Stage.Bytes || !m.Matches(p.Attributes.Ref) || p.Metageneration <= 0 || p.KeyID == "" || len(p.KeyID) > MaxKeyIDBytes || p.SignedAt.Validate() != nil || p.SignedAt.Before(p.Stage.CreatedAt.Time) || !p.SignedAt.Before(p.Stage.ExpiresAt.Time) {
+	if err != nil || !reflect.DeepEqual(m.Metadata(), p.Marker) || m.ActivationEpoch != p.Stage.ActivationEpoch || p.Attributes.Validate() != nil || p.Attributes.Ref.Scope != p.Stage.Scope || p.Attributes.Ref.Digest != p.Stage.Digest || p.Attributes.LogicalBytes != p.Stage.Bytes || p.Attributes.StoredBytes != p.Stage.Bytes || !m.Matches(p.Attributes.Ref) || p.Metageneration <= 0 {
 		return fmt.Errorf("%w: invalid input publication", ErrConflict)
 	}
 	return nil

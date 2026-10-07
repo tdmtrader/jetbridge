@@ -8,10 +8,8 @@ package db_test
 // honestly that removes most of what this box originally named, because those
 // contracts are pinned and the citations are exact:
 //
-//   - Stage 2 atomicity, the no_capture halves and both pre_reservation_cancel
-//     paths, and the three-way disposition exclusion:
-//     `atc/worker/jetbridge/brine/features/hangar-disposition.feature`, and
-//     hangar_output_test.go's own disposition Describes.
+//   - The capture row's own transitions -- pending, publishing, published,
+//     discarded, failed, released: hangar_capture_test.go.
 //   - Claim acquire/release in a caller transaction, forced rollback leaving
 //     neither half visible, and the same claim ID surviving a hidden-to-
 //     published transition: `features/hangar-binding.feature`, plus
@@ -26,8 +24,6 @@ package db_test
 //     hangar_output_controller_pass_test.go:470.
 //   - Policy at-risk stopping each of the five admissions:
 //     hangar_output_policy_test.go:118-190 and hangar_output_test.go:544.
-//   - Unknown-ref read-then-lock-then-revalidate:
-//     hangar_output_test.go:1298-1400.
 //
 // What is left is the composition, and the survey of this package found it
 // genuinely unwritten: every leg of the plane is proved, and nothing proves that
@@ -38,8 +34,8 @@ package db_test
 //
 // Two specs, therefore, and both of them span seams no other spec spans:
 //
-//  1. One capture from predeclaration to a confirmed reclamation, with nothing
-//     staged between legs: whatever `RegisterReceipt` committed is what
+//  1. One capture from its pending row to a confirmed reclamation, with nothing
+//     staged between legs: whatever `CASPublishingToPublished` committed is what
 //     `AcquireClaim` is given, whatever that committed is what `AcquireReadLease`
 //     is given, and so on to `FinalizeReclaim`.
 //  2. The terminal downgrade refusal over state the PRODUCTION capture path
@@ -125,43 +121,48 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		return state
 	}
 
-	It("carries one capture from predeclaration to a confirmed reclamation, each leg reading what the last one committed", func() {
+	It("carries one capture from its pending row to a confirmed reclamation, each leg reading what the last one committed", func() {
 		digest := hangarDigest(91)
 		generation := int64(1725830823000091)
 
 		// --- capture -------------------------------------------------------
 		//
-		// hangarPublishAt drives predeclaration, reservation, hold, Stage 2,
-		// the capture lease, the logical resolution, the first object create
-		// and the receipt registration through the repository. Nothing here
-		// writes a row itself: a fixture that did would be proving the schema
-		// twice and the composition not at all.
+		// hangarPublishAt drives the capture row from pending through
+		// publishing to published through the repository. Nothing here writes
+		// a row itself: a fixture that did would be proving the schema twice
+		// and the composition not at all.
 		capture := hangarPublishAt(ctx, repository, digest, generation,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
 
 		Expect(lifecycleStateOf(capture.Ref)).To(Equal("registered"))
 
-		// The receipt's registration is what makes the exact generation
-		// readable. Before the source is released the capture is not settled,
-		// and that is a state the plane sits in on purpose.
+		// Publication is what makes the exact generation readable. Before the
+		// source is released the capture is not settled, and that is a state
+		// the plane sits in on purpose.
 		var (
-			reservationState string
-			releasedAt       sql.NullTime
+			captureState string
+			releasedAt   sql.NullTime
 		)
 		// Two columns, scanned separately. Collapsing them into one boolean and
 		// asserting it false would also pass if `state` had drifted to anything
-		// other than `registered` -- i.e. a regression in the receipt path
+		// other than `published` -- i.e. a regression in the publish path
 		// would satisfy the assertion that is supposed to be about the release.
 		Expect(dbConn.QueryRow(`
-			SELECT state, release_acknowledged_at
-			  FROM hangar_capture_reservations WHERE reservation_id = $1`,
-			string(capture.ReservationID)).Scan(&reservationState, &releasedAt)).To(Succeed())
-		Expect(reservationState).To(Equal("registered"))
+			SELECT state, released_at
+			  FROM hangar_captures WHERE execution_id = $1 AND output_name = $2`,
+			string(capture.Key.ExecutionID), string(capture.Key.Output)).
+			Scan(&captureState, &releasedAt)).To(Succeed())
+		Expect(captureState).To(Equal("published"))
 		Expect(releasedAt.Valid).To(BeFalse(),
 			"the capture reported its source released before it was; Req 40 wants the source "+
 				"released and not only the decision taken")
 
 		hangarReleaseSource(ctx, repository, capture)
+
+		// The publication took the capture's own claim; the consumer below
+		// takes its own, and the capture's is given back the way a Run that
+		// did not select this output gives it back.
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 
 		// --- the consumer binds and claims, in ONE transaction --------------
 		//
@@ -304,12 +305,16 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			claims, err = repository.ReadClaims(ctx, tx, capture.Ref)
 			Expect(err).NotTo(HaveOccurred())
 		})
-		Expect(claims).To(HaveLen(1),
-			"the released claim identity must remain tombstoned; a purged tombstone is a "+
-				"claim id that can silently reactivate")
-		Expect(claims[0].ClaimID).To(Equal(claimID))
-		Expect(claims[0].Active()).To(BeFalse(),
-			"the claim is still active after the consumer released it")
+		Expect(claims).To(HaveLen(2),
+			"the released claim identities -- the capture's and the consumer's -- must remain "+
+				"tombstoned; a purged tombstone is a claim id that can silently reactivate")
+		ids := []output.ClaimID{}
+		for _, claim := range claims {
+			ids = append(ids, claim.ClaimID)
+			Expect(claim.Active()).To(BeFalse(),
+				"claim %s is still active after it was released", claim.ClaimID)
+		}
+		Expect(ids).To(ConsistOf(claimID, capture.Key.ClaimID()))
 
 		tx := begin()
 		defer db.Rollback(tx)
@@ -335,7 +340,8 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 
 		digest := hangarDigest(92)
 		capture := hangarPublishAt(ctx, repository, digest, 1725830823000092,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 
 		claimID := output.ClaimID(uuid.NewString())
 		in(func(tx db.HangarOutputTx) {

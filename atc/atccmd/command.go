@@ -154,13 +154,8 @@ type RunCommand struct {
 	// carried by the assembled JetBridge Config.
 	k8sHangarWarrantSigner *hangar.WarrantSigner
 
-	// hangarOutputReceiptKeys is the versioned receipt VERIFICATION ring, loaded
-	// once at startup rather than at the first receipt.
-	hangarOutputReceiptKeys     hangaroutput.ReceiptKeyRing
-	hangarOutputReceiptVerifier *output.ReceiptSignatureVerifier
-	hangarOutputControlKeys     hangaroutput.ControlKeyRing
-	hangarOutputControls        jetbridge.OutputControlResolver
-	hangarOutputDrain           *jetbridge.OutputDrain
+	hangarOutputControlKeys hangaroutput.ControlKeyRing
+	hangarOutputSource      *jetbridge.OutputSource
 
 	// hangarOutputCapabilityMinter mints the capability every control call on
 	// the output daemon presents. Built once during startup validation, from
@@ -249,7 +244,6 @@ type RunCommand struct {
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputWarrantKey                   string        `long:"kubernetes-hangar-output-warrant-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
 		OutputWarrantKeyLegacy             string        `long:"kubernetes-hangar-output-capability-key" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-output-warrant-key."`
-		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
 		OutputControlKeys                  string        `long:"kubernetes-hangar-output-control-keys" description:"Path to the epoch-pinned node CONTROL public keys used to verify source hold recovery. Retain old epochs while their handoffs remain unsettled."`
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a warrant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
 		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
@@ -1665,10 +1659,7 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 			executionStarter.Output = cmd.runOutputStarter
 			executionStarter.SetInputReadMinter(cmd.outputReadSigner)
 			cmd.runTaskStarter = executionStarter
-			cmd.hangarOutputControls = factory.K8sOutputControls
-			cmd.hangarOutputDrain = &jetbridge.OutputDrain{
-				Client: k8sClientset, Controls: factory.K8sOutputControls, Namespace: k8sCfg.Namespace,
-			}
+			cmd.hangarOutputSource = source
 		}
 
 		if k8sCfg.ArtifactDaemonService != "" {
@@ -1778,87 +1769,45 @@ func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableCompon
 	return components
 }
 
-// hangarOutputCoordinator shares the capture policy and source plane between
-// ordinary recovery and the bounded Run cancellation worker.
-func (cmd *RunCommand) hangarOutputCoordinator(dbConn db.DbConn) (*db.RunOutputRepository, *hangaroutput.Coordinator) {
-	prefix := db.HangarConsumerPrefixForComponent()
-	repository := db.NewHangarOutputRepository(prefix)
-	transactor := hangarOutputTransactor{conn: dbConn}
+// hangarOutputCoordinator is the capture coordinator: the capture rows in
+// PostgreSQL and the node daemons the rows name.
+func (cmd *RunCommand) hangarOutputCoordinator(dbConn db.DbConn) *hangaroutput.Coordinator {
 	var dialer hangaroutput.SourceDialer = hangaroutput.NoSourcePlane()
-	var drain hangaroutput.DrainConfirmer = hangaroutput.NoDrainProof()
-	if cmd.hangarOutputControls != nil && cmd.hangarOutputDrain != nil {
-		dialer = hangaroutput.SourceDialerFunc(func(node string) (hangaroutput.SourceControl, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if source := cmd.hangarOutputSource; source != nil {
+		dialer = hangaroutput.SourceDialerFunc(func(ctx context.Context, node string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+			dial, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			return cmd.hangarOutputControls.ForNode(ctx, node)
+			return source.CaptureControl(dial, node, uid)
 		})
-		drain = cmd.hangarOutputDrain
 	}
 
-	runRepository := db.NewRunOutputRepository(repository, cmd.hangarOutputControlKeys, cmd.hangarOutputReceiptVerifier)
-	coordinator := &hangaroutput.Coordinator{
-		Transactor:   transactor,
-		Repository:   runRepository,
-		Dialer:       dialer,
-		Drain:        drain,
-		Verifier:     cmd.hangarOutputReceiptVerifier,
-		HoldVerifier: cmd.hangarOutputControlKeys,
-		Announcer:    hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
-		OwnerID:      uuid.NewString(),
-
-		// The configured terms, rather than the package defaults.
-		// Leaving these zero meant the deployment's own bounds -- the
-		// ones the chart validates against the publication grace --
-		// were not the ones the coordinator used, so a deployment could
-		// render a 1h capture deadline and still offer 24h.
-		ReceiptKeyID: cmd.hangarOutputReceiptKeys.ActiveKeyID,
-		LeaseTerm:    cmd.Kubernetes.OutputLeaseTerm,
-		SealDeadline: cmd.Kubernetes.OutputSealDeadline,
+	return &hangaroutput.Coordinator{
+		Transactor:      hangarOutputTransactor{conn: dbConn},
+		Rows:            db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
+		Dialer:          dialer,
+		ActivationEpoch: executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
 	}
-	return runRepository, coordinator
 }
 
-// hangarOutputCaptureComponent advances every incomplete durable output
-// capture by one bounded transition.
+// hangarOutputCaptureComponent runs the capture sequence and its recovery:
+// every pending capture through its seal and publish, every publishing one
+// through recovery, every pending one past its deadline to failed, and every
+// terminal one's marker released.
 //
 // It is a component and not a goroutine beside the step because the process
-// that started a capture is exactly the process that may be gone: a capture
-// crosses two systems and an ATC restart, and what has to survive is the
-// ability to read what is durably true and take the next step. The DB lease the
-// component runner already provides makes one ATC own one pass; the capture's
-// own fence makes a takeover safe.
+// that started a capture is exactly the process that may be gone: what has to
+// survive is the row, and the ability to read it and take the next step. The
+// component runner's lease makes one ATC own one pass; the CAS on the row
+// makes a second one benign.
 //
-// A ONE-MINUTE fallback, rather than the ten-second default, because every pass
-// costs a query and most passes will find nothing: a capture's own progress is
-// driven by the notification the runner already listens for, and this interval
-// is the safety net under a lost one.
-//
-// The worker factory supplies the node resolver and Kubernetes drain observer.
-// A persisted source locator is the reserving node's name; the daemon checks the
-// exact execution and incarnation behind it. Receipt verification uses the
-// activation-pinned public ring loaded at startup. Without a configured runtime,
-// recovery refuses to act rather than interpreting absence as a safe drain.
+// A ten-second interval: a seal waits for its node's Pod to stop, and the
+// pass is what asks again.
 func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableComponent {
-	repository, coordinator := cmd.hangarOutputCoordinator(dbConn)
-	result := RunnableComponent{
+	return RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentHangarOutputCapture},
-		Runnable: &hangaroutput.Recoverer{
-			Transactor:  coordinator.Transactor,
-			Incomplete:  repository,
-			Coordinator: coordinator,
-		},
-		Interval: time.Minute,
+		Runnable:  cmd.hangarOutputCoordinator(dbConn),
+		Interval:  10 * time.Second,
 	}
-	if cmd.runOutputStarter != nil {
-		capture := result.Runnable
-		result.Runnable = component.RunFunc(func(ctx context.Context) error {
-			// Recover the dispatch answer before capture/cancellation inspects
-			// its source. A failed dispatch must not starve unrelated captures.
-			dispatchErr := cmd.runOutputStarter.Run(ctx)
-			return errors.Join(dispatchErr, capture.Run(ctx))
-		})
-	}
-	return result
 }
 
 // runComponents is what every web node registers for Runs, with or without an
@@ -1903,18 +1852,16 @@ func (cmd *RunCommand) runResultsComponent() RunnableComponent {
 // Cancellation has its own bounded pass and nonzero fallback. It shares the
 // source coordinator and the Run's immutable identities with normal completion.
 func (cmd *RunCommand) runCancellationComponent(dbConn db.DbConn) RunnableComponent {
-	repository, coordinator := cmd.hangarOutputCoordinator(dbConn)
 	factory := db.NewPipelineRunFactory(dbConn, nil)
 	if cmd.runResultFinalizer != nil {
 		factory = cmd.runResultFinalizer.Factory
 	}
-	sources := &runs.CancellationSources{Conn: dbConn, Factory: factory, Repository: repository, Source: cmd.runCancellationSource, Coordinator: coordinator, Verifier: cmd.hangarOutputControlKeys}
 	executions := &runs.CancellationExecutions{Conn: dbConn, Factory: factory, Source: cmd.runCancellationSource, Verifier: cmd.hangarOutputControlKeys}
 	return RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentRunCancellation},
 		Interval:  runs.CancellationPollInterval,
-		Runnable: &runs.CancellationWorker{Conn: dbConn, Factory: factory, OwnerID: coordinator.OwnerID,
-			Actions: runs.CancellationActionSet{factory, sources, executions, runs.CancellationActionFunc(factory.ExecuteCancellationFinality)}},
+		Runnable: &runs.CancellationWorker{Conn: dbConn, Factory: factory, OwnerID: uuid.NewString(),
+			Actions: runs.CancellationActionSet{factory, executions, runs.CancellationActionFunc(factory.ExecuteCancellationFinality)}},
 	}
 }
 
@@ -3093,32 +3040,6 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	}
 	if cmd.Kubernetes.OutputControlKeys == "" {
 		return errors.New("--kubernetes-hangar-output-control-keys is required when capture is enabled: source hold recovery requires the node's public verification key")
-	}
-	if cmd.Kubernetes.OutputReceiptKeys == "" {
-		return errors.New("--kubernetes-hangar-output-receipt-keys is required when " +
-			"--kubernetes-hangar-output-capture-enabled is set: a caller-provided TreeRef is " +
-			"not enough, and a control plane with no verification ring cannot check the " +
-			"receipt it is about to register")
-	}
-	// Read it HERE rather than at the first receipt. A ring that cannot be
-	// loaded is a control plane that will verify nothing, and "verified
-	// nothing" and "verified successfully" are the same observable outcome on
-	// any path that discovers the problem late.
-	ring, err := hangaroutput.LoadReceiptKeyRing(cmd.Kubernetes.OutputReceiptKeys)
-	if err != nil {
-		return fmt.Errorf("--kubernetes-hangar-output-receipt-keys: %w", err)
-	}
-	if cmd.Kubernetes.OutputActivationEpoch > 0 &&
-		int64(ring.ActivationEpoch) != cmd.Kubernetes.OutputActivationEpoch {
-		return fmt.Errorf("--kubernetes-hangar-output-receipt-keys is for activation epoch %d "+
-			"and --kubernetes-hangar-output-activation-epoch is %d. A stale ring cannot "+
-			"authorize emission, receipt registration or finalization",
-			ring.ActivationEpoch, cmd.Kubernetes.OutputActivationEpoch)
-	}
-	cmd.hangarOutputReceiptKeys = ring
-	cmd.hangarOutputReceiptVerifier, err = ring.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		return fmt.Errorf("--kubernetes-hangar-output-receipt-keys: %w", err)
 	}
 	if cmd.Kubernetes.OutputMaterializationKey == "" {
 		return errors.New("--kubernetes-hangar-output-materialization-key is required when " +

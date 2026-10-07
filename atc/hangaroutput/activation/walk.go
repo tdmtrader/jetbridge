@@ -149,9 +149,6 @@ type Walker struct {
 	Handshakes Handshaker
 	Readiness  CohortReadiness
 
-	// ReceiptKeyLifetime is how long the output attestation's receipt key is
-	// valid for, from the moment of the attestation.
-	ReceiptKeyLifetime time.Duration
 	// ReadinessTimeout bounds the wait for the DaemonSet before each attest.
 	ReadinessTimeout time.Duration
 	// Poll is how often the DaemonSet is read while waiting. Zero is 2s.
@@ -401,13 +398,7 @@ func (walker Walker) attest(ctx context.Context, epoch executioncontrol.Activati
 	if facet == FacetBase {
 		evidence, err = AttestBase(ctx, walker.Cohort, walker.Handshakes, epoch)
 	} else {
-		if walker.ReceiptKeyLifetime <= 0 {
-			return fmt.Errorf("%w: the walk has no positive receipt key lifetime for the "+
-				"output attestation", output.ErrIncomplete)
-		}
 		evidence, err = AttestOutput(ctx, walker.Cohort, walker.Handshakes, epoch)
-		evidence.ReceiptKeyValidFrom = time.Now().UTC()
-		evidence.ReceiptKeyValidUntil = evidence.ReceiptKeyValidFrom.Add(walker.ReceiptKeyLifetime)
 	}
 	if err != nil {
 		return err

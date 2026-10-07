@@ -11,6 +11,9 @@
 -- output facet is enabled today.
 CREATE TABLE hangar_captures (
     execution_id        uuid NOT NULL,
+    -- The fence the execution was admitted at: a node answers a capture
+    -- route only for the exact identity its base ledger holds.
+    execution_fence     bigint NOT NULL CHECK (execution_fence > 0),
     output_name         text NOT NULL CHECK (output_name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$'),
     state               text NOT NULL DEFAULT 'pending'
         CHECK (state IN ('pending', 'publishing', 'published', 'discarded', 'failed')),
@@ -58,8 +61,8 @@ BEGIN
         RAISE EXCEPTION 'hangar: a capture row is deleted only by its team''s purge'
             USING ERRCODE = 'JB001';
     END IF;
-    IF (NEW.execution_id, NEW.output_name, NEW.node, NEW.node_uid, NEW.capture_deadline_at, NEW.created_at)
-       IS DISTINCT FROM (OLD.execution_id, OLD.output_name, OLD.node, OLD.node_uid, OLD.capture_deadline_at, OLD.created_at) THEN
+    IF (NEW.execution_id, NEW.execution_fence, NEW.output_name, NEW.node, NEW.node_uid, NEW.capture_deadline_at, NEW.created_at)
+       IS DISTINCT FROM (OLD.execution_id, OLD.execution_fence, OLD.output_name, OLD.node, OLD.node_uid, OLD.capture_deadline_at, OLD.created_at) THEN
         RAISE EXCEPTION 'hangar: capture %/% identity is immutable', OLD.execution_id, OLD.output_name
             USING ERRCODE = 'JB001';
     END IF;
@@ -95,6 +98,13 @@ END $$;
 CREATE TRIGGER hangar_capture_transition_guard
     BEFORE UPDATE OR DELETE ON hangar_captures
     FOR EACH ROW EXECUTE FUNCTION hangar_capture_transition();
+
+-- A new capture is new protection: refused at commit while an unresolved
+-- storage integrity finding is open, as the predeclaration it replaces was.
+CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
+    AFTER INSERT ON hangar_captures
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION hangar_check_policy_admission();
 
 -- In service: one row, taken FOR SHARE by admission once the activation epoch
 -- is gone. Seeded from today's authority so the switch changes nothing.

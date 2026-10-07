@@ -213,29 +213,6 @@ func validateUUID(what, value string) error {
 // no readable structure, and is a distinct Go type so that passing a claim id
 // where a handoff id belongs does not compile.
 
-// HandoffID is the idempotency key for one capture handoff. It is predeclared
-// before the producing process may start, and repeating it with the same
-// immutable facts returns the same durable outcome; reuse for different facts
-// conflicts. A new build gets a new one.
-type HandoffID string
-
-func (id HandoffID) Validate() error { return validateUUID("handoff id", string(id)) }
-
-// SourceHoldID is the provisional, non-authorizing hold on the source
-// incarnation. It prevents cleanup, replacement, remap, reuse and loss; it
-// authorizes no sealing, termination, deletion, publication or binding.
-type SourceHoldID string
-
-func (id SourceHoldID) Validate() error { return validateUUID("source hold id", string(id)) }
-
-// ReleaseIntentID names one exact fenced release of a source hold. The two
-// halves of a release -- the caller's recorded intent and the daemon's
-// acknowledgement -- carry the same one, which is what makes the pair
-// crash-recoverable rather than a claimed atomic commit.
-type ReleaseIntentID string
-
-func (id ReleaseIntentID) Validate() error { return validateUUID("release intent id", string(id)) }
-
 // ReservationID names the reservation created with the producer-completion
 // checkpoint. It exists before the first object create precisely so recovery
 // and inventory can correlate a possibly-created object without trusting a
@@ -243,13 +220,6 @@ func (id ReleaseIntentID) Validate() error { return validateUUID("release intent
 type ReservationID string
 
 func (id ReservationID) Validate() error { return validateUUID("reservation id", string(id)) }
-
-// WriterTicketID names one admitted write capability over a source
-// incarnation. Every operation that can obtain or exercise write capability
-// holds one; sealing captures the exact set outstanding and waits for it.
-type WriterTicketID string
-
-func (id WriterTicketID) Validate() error { return validateUUID("writer ticket id", string(id)) }
 
 // ClaimID is a caller-generated UUID with no domain meaning. Acquiring the same
 // id for the same tree ref is idempotent; reusing it for another ref is a
@@ -314,32 +284,6 @@ func (name OutputName) Validate() error {
 
 	return nil
 }
-
-// HandleGeneration is the daemon-assigned generation of a source handle. A
-// handle string alone is never an identity: handles are reused, and a reused
-// handle with a stale generation is exactly the confusion the source
-// incarnation exists to make impossible.
-type HandleGeneration uint64
-
-// CaptureFence is the monotonic fencing epoch of capture *ownership*. It is a
-// different fence from the execution's: takeover of a capture lease advances
-// this one and leaves the execution's alone.
-type CaptureFence uint64
-
-// WriterFence is the monotonic fencing epoch of *writer admission* over one
-// source incarnation. Ticket issuance and the open-to-sealing transition
-// serialize on it.
-type WriterFence uint64
-
-// FirstWriterFence is the writer-admission epoch of a source incarnation no
-// writer has ever been fenced out of.
-//
-// It is the floor rather than a default: a source with no ticket still HAS a
-// writer-admission epoch -- nobody has been superseded -- and a receipt has to
-// be able to claim it, because ReceiptClaims.Validate refuses a zero fence. The
-// ATC spells the same value for its first admission; this is the one the node's
-// own ledger answers with when it is asked what it admitted.
-const FirstWriterFence = WriterFence(1)
 
 // LeaseFence is the monotonic fencing epoch of a read or reclaim lease.
 type LeaseFence uint64

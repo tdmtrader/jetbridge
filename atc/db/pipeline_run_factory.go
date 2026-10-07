@@ -56,7 +56,7 @@ type RunCreation struct {
 type PipelineRunFactory interface {
 	InputUploadAudience(context.Context, Tx, Pipeline, string, int64, string) (runinput.Audience, error)
 	ReserveRunInputUpload(context.Context, Tx, runinput.Audience, output.InputStage, string, time.Duration) error
-	RegisterRunInputUpload(context.Context, Tx, runinput.Audience, output.InputPublication, *output.ReceiptSignatureVerifier) (RunInputUploadClaim, error)
+	RegisterRunInputUpload(context.Context, Tx, runinput.Audience, output.InputPublication) (RunInputUploadClaim, error)
 	CaptureProgress(context.Context, int) ([]atc.RunCaptureProgress, error)
 	ExecuteCancellationFinality(context.Context, RunCancellationLease, RunCancellationOperation) (RunCancellationDebt, error)
 	CancellationRunExecution(context.Context, Tx, RunCancellationLease, RunCancellationOperation) (RunCancellationExecution, error)
@@ -66,7 +66,6 @@ type PipelineRunFactory interface {
 	RunExecutionOwner(context.Context, Tx, int) (int, bool, error)
 	RunExecution(context.Context, Tx, int, atc.PlanID) (RunExecutionAdmission, bool, error)
 	AdmitRunExecution(context.Context, Tx, RunExecutionRequest) (RunExecutionAdmission, bool, error)
-	CancellationOutputTask(context.Context, Tx, RunCancellationLease, RunCancellationOperation) (RunCancellationSource, error)
 	CheckCancellationOperation(context.Context, Tx, RunCancellationLease, RunCancellationOperation) error
 	ExecuteCancellationOperation(context.Context, RunCancellationLease, RunCancellationOperation) (RunCancellationDebt, error)
 	PendingRunCancellations(context.Context, Tx, RunCancellationLease, int) ([]int, error)
@@ -81,11 +80,8 @@ type PipelineRunFactory interface {
 	TerminalResult(context.Context, int) (RunTerminalResult, bool, error)
 	AfterRunCompleted()
 
-	OutputTask(context.Context, Tx, int, string) (RunOutputTask, bool, error)
-	PendingOutputSources(context.Context, Tx, int) ([]RunOutputTask, error)
-	PredeclareOutputTask(context.Context, Tx, int, atc.TaskPlan, int64, time.Duration, string, string) (output.HandoffRecord, error)
-	RequestOutputSource(context.Context, Tx, int, atc.TaskPlan, int64) error
-	RecordOutputSource(context.Context, Tx, int, atc.TaskPlan, output.ReservedIncarnation, string) error
+	RunCaptureTask(context.Context, Tx, int, string) (RunCapture, bool, error)
+	StartRunCapture(context.Context, Tx, int, atc.TaskPlan, int64, time.Duration, string, string) (RunCapture, error)
 	Definition(int) (atc.RunDefinition, bool, error)
 	CreateRunInTx(context.Context, Tx, Pipeline, RunParams, string, RunCreationOpts) (RunCreation, error)
 	AfterRunCreated(context.Context, RunCreation) error

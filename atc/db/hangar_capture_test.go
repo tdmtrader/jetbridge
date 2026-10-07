@@ -41,8 +41,9 @@ var _ = Describe("Hangar capture rows", func() {
 	insert := func(k output.CaptureKey, term time.Duration) output.Capture {
 		var capture output.Capture
 		Expect(in(func(tx db.Tx) (err error) {
-			capture, err = repository.InsertPending(ctx, tx, db.PendingCapture{
-				Key: k, Node: "node-a", NodeUID: "node-uid-a", Term: term,
+			capture, err = repository.InsertPending(ctx, tx, output.PendingCapture{
+				Execution: executioncontrol.Identity{ExecutionID: k.ExecutionID, Fence: 1}, Output: k.Output,
+				Node: "node-a", NodeUID: "node-uid-a", Term: term,
 			})
 			return err
 		})).To(Succeed())
@@ -74,8 +75,9 @@ var _ = Describe("Hangar capture rows", func() {
 		Expect(again.CaptureDeadline).To(Equal(first.CaptureDeadline))
 
 		err := in(func(tx db.Tx) error {
-			_, err := repository.InsertPending(ctx, tx, db.PendingCapture{
-				Key: key, Node: "node-b", NodeUID: "node-uid-b", Term: time.Hour,
+			_, err := repository.InsertPending(ctx, tx, output.PendingCapture{
+				Execution: executioncontrol.Identity{ExecutionID: key.ExecutionID, Fence: 1}, Output: key.Output,
+				Node: "node-b", NodeUID: "node-uid-b", Term: time.Hour,
 			})
 			return err
 		})
@@ -105,7 +107,7 @@ var _ = Describe("Hangar capture rows", func() {
 		Expect(publishing.State).To(Equal(output.CapturePublishing))
 		Expect(publishing.PodUID).To(Equal(executioncontrol.PodUID("pod-1")))
 
-		published := db.PublishedCapture{Key: key, Generation: 7, Metageneration: 1, ActivationEpoch: 1}
+		published := output.PublishedCapture{Key: key, Generation: 7, Metageneration: 1, ActivationEpoch: 1}
 		Expect(in(func(tx db.Tx) error {
 			_, err := repository.CASPublishingToPublished(ctx, tx, published)
 			return err

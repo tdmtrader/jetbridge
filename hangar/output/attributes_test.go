@@ -2,15 +2,11 @@ package output
 
 import (
 	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 // The receipt is the one artefact that travels from the node that sealed the
@@ -92,7 +88,7 @@ func TestTheFoundationsAttributeTimeHasMoreThanOneSpelling(t *testing.T) {
 	}
 }
 
-func TestTheReceiptHasOneWireSpellingPerInstant(t *testing.T) {
+func TestTheAttributesHaveOneWireSpellingPerInstant(t *testing.T) {
 	for _, at := range theSameInstantThreeWays {
 		projected := AttributesFromFoundation(foundationAttributes(t, at))
 		spelling := createdAtIn(t, projected)
@@ -102,8 +98,8 @@ func TestTheReceiptHasOneWireSpellingPerInstant(t *testing.T) {
 		}
 	}
 
-	t.Run("and it is the spelling the signed claims carry", func(t *testing.T) {
-		claims := ReceiptClaims{Attributes: AttributesFromFoundation(
+	t.Run("and it is the spelling an input publication carries", func(t *testing.T) {
+		claims := InputPublication{Attributes: AttributesFromFoundation(
 			foundationAttributes(t, "2026-09-08T21:50:23.400000000Z"))}
 		encoded, err := json.Marshal(claims)
 		if err != nil {
@@ -151,74 +147,13 @@ func TestTheAttributeProjectionIsLossless(t *testing.T) {
 		}
 	}
 }
+func mustParse(t *testing.T, text string) time.Time {
+	t.Helper()
 
-// TestTheSignedClaimsValidateTheirOwnAttributes is the other half of the
-// projection's reason for existing.
-//
-// The projection gave TreeAttributes a Validate; ReceiptClaims.Validate
-// compared only the ref and never called it, so a receipt whose signed
-// attributes reported a zero creation instant or a negative size validated
-// cleanly. Req 25 says the signed claims bind "strict tree attributes" and Req
-// 26 says every signed claim is matched against the durable checkpoint,
-// reservation and fence -- a claims value that validates with attributes that
-// do not is a hole in both.
-func TestTheSignedClaimsValidateTheirOwnAttributes(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "protocol-v1", "receipt.json"))
+	parsed, err := time.Parse(time.RFC3339, text)
 	if err != nil {
-		t.Fatalf("reading the frozen receipt: %v", err)
-	}
-	var frozen Receipt
-	if err := json.Unmarshal(raw, &frozen); err != nil {
-		t.Fatalf("decoding the frozen receipt: %v", err)
-	}
-	if err := frozen.Claims.Validate(); err != nil {
-		t.Fatalf("the frozen receipt's claims do not validate, so nothing below means anything: %v", err)
+		t.Fatalf("parsing %q: %v", text, err)
 	}
 
-	for _, corruption := range []struct {
-		name    string
-		breakIt func(*ReceiptClaims)
-		want    error
-	}{
-		{
-			name:    "a zero creation instant",
-			breakIt: func(claims *ReceiptClaims) { claims.Attributes.CreatedAt = Timestamp{} },
-			// The base protocol's sentinel, not this package's: Timestamp is
-			// re-exported from hangar/executioncontrol so that one instant has
-			// one spelling everywhere, and it refuses a zero on its own terms.
-			want: executioncontrol.ErrIncomplete,
-		},
-		{
-			name:    "a negative stored size",
-			breakIt: func(claims *ReceiptClaims) { claims.Attributes.StoredBytes = -1 },
-			want:    ErrCorrupt,
-		},
-		{
-			name:    "a negative logical size",
-			breakIt: func(claims *ReceiptClaims) { claims.Attributes.LogicalBytes = -1 },
-			want:    ErrCorrupt,
-		},
-	} {
-		t.Run(corruption.name, func(t *testing.T) {
-			claims := frozen.Claims
-			corruption.breakIt(&claims)
-
-			err := claims.Validate()
-			if err == nil {
-				t.Fatalf("ReceiptClaims.Validate accepted %s. The attributes are signed; a "+
-					"verifier that matches them against durable state must not be handed a "+
-					"value the claims themselves never checked.", corruption.name)
-			}
-			if !errors.Is(err, corruption.want) {
-				t.Errorf("refused %s with %v; expected %v", corruption.name, err, corruption.want)
-			}
-			// And the whole receipt refuses it too, since Receipt.Validate is
-			// what a verifier actually calls.
-			receipt := frozen
-			receipt.Claims = claims
-			if receipt.Validate() == nil {
-				t.Errorf("Receipt.Validate accepted %s", corruption.name)
-			}
-		})
-	}
+	return parsed
 }

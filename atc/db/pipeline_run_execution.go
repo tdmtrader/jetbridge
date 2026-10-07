@@ -16,11 +16,15 @@ import (
 // readable after cancellation; only AdmitRunExecution grants start admission.
 func (f *pipelineRunFactory) RunExecution(ctx context.Context, tx Tx, buildID int, planID atc.PlanID) (RunExecutionAdmission, bool, error) {
 	var a RunExecutionAdmission
-	err := tx.QueryRowContext(ctx, `SELECT run_id,build_id,plan_id,kind,activation_epoch,node_name,node_uid,execution_id,execution_fence,coalesce(handoff_id::text,'')
+	var captured string
+	err := tx.QueryRowContext(ctx, `SELECT run_id,build_id,plan_id,kind,activation_epoch,node_name,node_uid,execution_id,execution_fence,coalesce(capture_output,'')
  FROM pipeline_run_executions WHERE build_id=$1 AND plan_id=$2`, buildID, planID).
-		Scan(&a.RunID, &a.BuildID, &a.PlanID, &a.Kind, &a.Epoch, &a.NodeName, &a.NodeUID, &a.Identity.ExecutionID, &a.Identity.Fence, &a.HandoffID)
+		Scan(&a.RunID, &a.BuildID, &a.PlanID, &a.Kind, &a.Epoch, &a.NodeName, &a.NodeUID, &a.Identity.ExecutionID, &a.Identity.Fence, &captured)
 	if err == sql.ErrNoRows {
 		return a, false, nil
+	}
+	if captured != "" {
+		a.Capture = output.CaptureKey{ExecutionID: a.Identity.ExecutionID, Output: output.OutputName(captured)}
 	}
 	return a, err == nil, err
 }
@@ -74,16 +78,17 @@ func (f *pipelineRunFactory) AdmitRunExecution(ctx context.Context, tx Tx, req R
 		return a, true, nil
 	}
 	a = RunExecutionAdmission{RunExecutionRequest: req, RunID: runID, Identity: executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Fence: 1}}
-	if req.HandoffID != "" {
+	if req.Capture != (output.CaptureKey{}) {
 		if req.Kind != ContainerTypeTask {
 			return a, true, output.ErrInvalidIdentity
 		}
-		// A selected-output execution already has its exact identity. Linking it
-		// must never create a competing identity for the same producer.
-		err = tx.QueryRowContext(ctx, `SELECT h.execution_id,h.execution_fence FROM pipeline_run_output_starts s
- JOIN hangar_handoff_predeclarations h USING(handoff_id)
- WHERE s.handoff_id=$1 AND s.run_id=$2 AND s.build_id=$3 AND s.node_name=$4 AND s.node_uid=$5
- AND h.activation_epoch=$6 AND NOT run_output_closed(s.handoff_id)`, string(req.HandoffID), runID, req.BuildID, req.NodeName, req.NodeUID, req.Epoch).Scan(&a.Identity.ExecutionID, &a.Identity.Fence)
+		// A capturing execution already has its exact identity: the capture
+		// row's. Linking it must never create a competing identity for the
+		// same producer.
+		err = tx.QueryRowContext(ctx, `SELECT h.execution_id,h.execution_fence FROM pipeline_run_captures s
+ JOIN hangar_captures h USING(execution_id, output_name)
+ WHERE s.execution_id=$1 AND s.output_name=$2 AND s.run_id=$3 AND s.build_id=$4 AND h.node=$5 AND h.node_uid=$6
+ AND h.state='pending'`, string(req.Capture.ExecutionID), string(req.Capture.Output), runID, req.BuildID, req.NodeName, req.NodeUID).Scan(&a.Identity.ExecutionID, &a.Identity.Fence)
 		if err == sql.ErrNoRows {
 			return a, true, output.ErrInvalidIdentity
 		}
@@ -92,8 +97,8 @@ func (f *pipelineRunFactory) AdmitRunExecution(ctx context.Context, tx Tx, req R
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO pipeline_run_executions
- (run_id,build_id,plan_id,kind,activation_epoch,node_name,node_uid,execution_id,execution_fence,handoff_id)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,nullif($10,'')::uuid)`, a.RunID, a.BuildID, a.PlanID, a.Kind, a.Epoch, a.NodeName, a.NodeUID, string(a.Identity.ExecutionID), int64(a.Identity.Fence), string(a.HandoffID))
+ (run_id,build_id,plan_id,kind,activation_epoch,node_name,node_uid,execution_id,execution_fence,capture_output)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,nullif($10,''))`, a.RunID, a.BuildID, a.PlanID, a.Kind, a.Epoch, a.NodeName, a.NodeUID, string(a.Identity.ExecutionID), int64(a.Identity.Fence), string(a.Capture.Output))
 	return a, true, err
 }
 

@@ -43,23 +43,18 @@ import (
 // lets it be either.
 var readWarrantKey = []byte("0123456789abcdef0123456789abcdef")
 
-// registeredRef drives one whole capture to a registered receipt and returns
-// the tree ref it published.
+// registeredRef drives one whole capture to published and returns the tree
+// ref it published.
 func registeredRef(t *testing.T, h *harness) hangar.TreeRef {
 	t.Helper()
 
-	c := h.admit(t).hold(t).finish(t, true)
-	c.advance(t)
-
-	record := c.record(t)
-	if record.State != output.CaptureStateRegistered {
-		t.Fatalf("the capture is %s, so there is no registered ref to read", record.State)
-	}
-	if record.Ref.Validate() != nil {
-		t.Fatalf("the registered capture has no tree ref: %+v", record.Ref)
+	record := h.admit(t).produce(t, "the bytes a producer wrote\n").advance(t)
+	ref, err := record.Ref()
+	if err != nil {
+		t.Fatalf("the capture is %s, so there is no published ref to read: %v", record.State, err)
 	}
 
-	return record.Ref
+	return ref
 }
 
 // harnessStat is the real publisher's exact-generation stat, over the same

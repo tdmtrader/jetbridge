@@ -53,7 +53,6 @@ func (cohort walkCohort) Extension(ctx context.Context, member activation.Member
 		Base:                    base,
 		CaptureExtensionVersion: output.ProtocolVersion,
 		SourceLedgerVersion:     output.SourceLedgerVersion,
-		ReceiptPublicKeyID:      "receipt-key-1",
 		MaterializationKeyID:    "materialize-key-1",
 		BucketFingerprint:       "gs://walk-output",
 		DerivedNamespace:        "deployments/blue/walk",
@@ -80,13 +79,12 @@ func walkerFor(epochs activation.Epochs, epoch executioncontrol.ActivationEpoch,
 	cohort := walkCohort{epoch: epoch}
 
 	walker := activation.Walker{
-		Epochs:             epochs,
-		Cohort:             cohort,
-		Handshakes:         cohort,
-		Readiness:          fixedReadiness{state: settledDaemonSet()},
-		ReceiptKeyLifetime: 90 * 24 * time.Hour,
-		ReadinessTimeout:   5 * time.Second,
-		Poll:               10 * time.Millisecond,
+		Epochs:           epochs,
+		Cohort:           cohort,
+		Handshakes:       cohort,
+		Readiness:        fixedReadiness{state: settledDaemonSet()},
+		ReadinessTimeout: 5 * time.Second,
+		Poll:             10 * time.Millisecond,
 	}
 	if out != nil {
 		walker.Out = out
@@ -307,8 +305,8 @@ func TestALowerTargetDrainsAndFinalizesOnlyWhenAsked(t *testing.T) {
 		var out strings.Builder
 		walker := walkerFor(epochs, epoch, &out)
 		mustWalk(t, walker, epoch, activation.TargetOutput, false)
-		mustExec(t, conn, `INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
-			VALUES ($1, 'out_of_band_absence', 'missing-object', 'observed loss')`, int64(epoch))
+		mustExec(t, conn, `INSERT INTO hangar_integrity_findings (violation, subject, detail)
+			VALUES ('out_of_band_absence', 'missing-object', 'observed loss')`)
 
 		out.Reset()
 		// Unlike --mode=drain --finalize, which exits non-zero on the same
@@ -320,7 +318,7 @@ func TestALowerTargetDrainsAndFinalizesOnlyWhenAsked(t *testing.T) {
 		if row.output != "draining" {
 			t.Errorf("a finalize refused for residue left output %q", row.output)
 		}
-		if !strings.Contains(out.String(), "open policy violations: 1") {
+		if !strings.Contains(out.String(), "open integrity findings: 1") {
 			t.Errorf("the walk did not print the residue:\n%s", out.String())
 		}
 	})

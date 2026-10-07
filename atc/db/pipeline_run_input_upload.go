@@ -117,14 +117,14 @@ func lockRunInputUpload(ctx context.Context, tx Tx, a runinput.Audience, id outp
 	return claim, expires, err
 }
 
-func (f *pipelineRunFactory) RegisterRunInputUpload(ctx context.Context, tx Tx, audience runinput.Audience, publication output.InputPublication, verifier *output.ReceiptSignatureVerifier) (RunInputUploadClaim, error) {
+func (f *pipelineRunFactory) RegisterRunInputUpload(ctx context.Context, tx Tx, audience runinput.Audience, publication output.InputPublication) (RunInputUploadClaim, error) {
 	var result RunInputUploadClaim
 	claim, expires, err := lockRunInputUpload(ctx, tx, audience, publication.Stage.ReservationID)
 	if err != nil {
 		return result, err
 	}
 	repository := inputUploadRepository()
-	if err := repository.RegisterInputPublication(ctx, tx, publication, verifier); err != nil {
+	if err := repository.RegisterInputPublication(ctx, tx, publication); err != nil {
 		return result, err
 	}
 	if err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{ProtocolVersion: output.ProtocolVersion, ClaimID: claim, Ref: publication.Attributes.Ref, ConsumerBindingID: output.OpaqueID(claim), RequestedAt: output.NewTimestamp(time.Now())}); err != nil {

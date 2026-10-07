@@ -38,7 +38,6 @@ func purgeTeamRunEvidence(ctx context.Context, tx Tx, teamID int) error {
 		return err
 	}
 	executions := `SELECT execution_id, execution_fence FROM pipeline_run_executions WHERE run_id IN (` + teamRunIDs + `)`
-	handoffs := `SELECT handoff_id FROM pipeline_run_output_starts WHERE run_id IN (` + teamRunIDs + `)`
 	for _, statement := range []string{
 		`DELETE FROM pipeline_run_input_uploads
 		 WHERE team_id = $1 OR template_pipeline_id IN (SELECT id FROM pipelines WHERE team_id = $1)`,
@@ -49,14 +48,10 @@ func purgeTeamRunEvidence(ctx context.Context, tx Tx, teamID int) error {
 		`DELETE FROM pipeline_run_execution_starts WHERE (execution_id, execution_fence) IN (` + executions + `)`,
 		`DELETE FROM pipeline_run_execution_closures WHERE (execution_id, execution_fence) IN (` + executions + `)`,
 		`DELETE FROM pipeline_run_executions WHERE run_id IN (` + teamRunIDs + `)`,
-		`DELETE FROM pipeline_run_output_candidates WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_discards WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_releases WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_finishes WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_holds WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_cancellation_evidence WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_cancellation_classifications WHERE handoff_id IN (` + handoffs + `)`,
-		`DELETE FROM pipeline_run_output_starts WHERE run_id IN (` + teamRunIDs + `)`,
+		// The Run's link only. The capture row is Hangar's: its node marker
+		// is released by the capture coordinator whether or not a Run still
+		// names it.
+		`DELETE FROM pipeline_run_captures WHERE run_id IN (` + teamRunIDs + `)`,
 		`DELETE FROM pipeline_run_inputs WHERE run_id IN (` + teamRunIDs + `)`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement, teamID); err != nil {
@@ -75,8 +70,9 @@ func releaseTeamRunClaims(ctx context.Context, tx Tx, teamID int) error {
 		FROM hangar_claims c
 		JOIN hangar_exact_lifecycles l ON l.id = c.lifecycle_id
 		WHERE c.released_at IS NULL AND c.claim_id IN (
-			SELECT candidate.claim_id FROM pipeline_run_output_candidates candidate
-			JOIN pipeline_run_output_starts s USING (handoff_id)
+			SELECT capture_claim.claim_id FROM pipeline_run_captures s
+			JOIN hangar_claims capture_claim
+			  ON capture_claim.consumer_binding_id = 'capture:' || s.execution_id::text || '/' || s.output_name
 			WHERE s.run_id IN (`+teamRunIDs+`)
 			UNION
 			SELECT claim_id FROM pipeline_run_inputs WHERE run_id IN (`+teamRunIDs+`)

@@ -117,7 +117,7 @@ func (a *admitter) HandoffCredentials(ctx context.Context, ref TemplateRef, prin
 		return target.RunCredentialSession, ErrCredentialDelivery
 	}
 	defer db.Rollback(tx)
-	if err = db.RecordRunCredentialReady(recordCtx, tx, target.RunID, target.HandoffID); err != nil {
+	if err = db.RecordRunCredentialReady(recordCtx, tx, target.RunID, target.Capture); err != nil {
 		return target.RunCredentialSession, ErrCredentialDelivery
 	}
 	if err = tx.Commit(); err != nil {

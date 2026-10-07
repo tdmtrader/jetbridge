@@ -1078,7 +1078,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 				Params: []declaredParam{{Name: "key", Type: "string"}}},
 			// A list on the publisher, and a create on the inventory.
 			{File: "publisher/publisher.go", Owner: "Publisher", Name: "ListPage"},
-			{File: "inventory/inventory.go", Owner: "Inventory", Name: "EnsureObject"},
+			{File: "inventory/inventory.go", Owner: "Inventory", Name: "EnsurePublication"},
 			// A bucket handed to the leaf's source ledger seam.
 			{File: "output.go", Owner: "SourceControl", Name: "BeginSeal",
 				Params: []declaredParam{{Name: "bucket", Type: "string"}, {Name: "scope", Type: "hangar.Scope"}}},
@@ -1192,7 +1192,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 					Params: []declaredParam{{Name: "at", Type: "*string"}}},
 				{File: "reclaimer/reclaimer.go", Name: "New",
 					Params: []declaredParam{{Name: "labels", Type: "map[string]string"}}},
-				{File: "publisher/publisher.go", Owner: "Publisher", Name: "EnsureObject",
+				{File: "publisher/publisher.go", Owner: "Publisher", Name: "EnsurePublication",
 					Params: []declaredParam{{Name: "where", Type: "hangar.Scope"}}},
 				// The seam, which hands the derived key over and is exempt.
 				{File: "publisher/publisher.go", Owner: "Store", Name: "Object",
@@ -1206,7 +1206,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			"inventory.Inventory.ListPage takes a bare string parameter only (...string)",
 			"reclaimer.Reclaimer.ObserveExactAbsence takes a bare string parameter at (*string)",
 			"reclaimer.New takes a bare string parameter labels (map[string]string)",
-			"publisher.Publisher.EnsureObject accepts a hangar.Scope parameter",
+			"publisher.Publisher.EnsurePublication accepts a hangar.Scope parameter",
 		} {
 			if !strings.Contains(joined, expected) {
 				t.Errorf("the rule did not object to %q. It reported:\n%s", expected, joined)

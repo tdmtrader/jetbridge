@@ -44,17 +44,18 @@ var captureSites = map[string]string{
 	"container.go:buildPod": "the ADMISSION refusal. A worker whose output facet is not " +
 		"enabled builds no capture pod at all, and says so: durable output capture never " +
 		"degrades into an ordinary step, because a pod that ran and captured nothing would " +
-		"leave the predeclared handoff unresolved until its deadline",
+		"leave its pending capture row unresolved until its deadline",
 	"capture_control.go:buildCaptureControlInitContainer": "the control init that establishes " +
-		"the provisional source hold. It is index 0 of the init slice, before every writer",
-	"capture_control.go:captureReservedDirectory": "a READ of the daemon-issued directory the " +
-		"selected output's volume must resolve to. There is deliberately no function that " +
-		"BUILDS one: Req 7 says no API accepts a caller-chosen path",
+		"the node's held marker over the step directory. It is index 0 of the init slice, " +
+		"before every writer",
+	"capture_control.go:captureStepDirectory": "the step directory the selected output's " +
+		"volume must resolve to, through output.CaptureKey.Directory -- the one derivation " +
+		"the node's daemon shares. Req 7 says no API accepts a caller-chosen path",
 	"capture_control.go:captureSelectedOutputName": "which declared output was selected",
 	"capture_control.go:captureSelectedOutputPath": "where that output lives in the container",
-	"storage_daemonset.go:BuildAffinity": "the two ready labels and the reserving node. A " +
+	"storage_daemonset.go:BuildAffinity": "the two ready labels and the capture's node. A " +
 		"capture pod requires BOTH labels and the node by name; the labels pick a cohort whose " +
-		"daemons could acknowledge a hold, and the node is where the reservation's directory " +
+		"daemons could acknowledge a hold, and the node is where the capture's step directory " +
 		"actually is",
 	"process_control.go:capturing": "the supervisor's own question, which is what makes " +
 		"an exact finish or stop acknowledgement required rather than optional",
@@ -128,7 +129,7 @@ func TestEveryCaptureAwarePathIsInventoried(t *testing.T) {
 	for _, site := range unlisted {
 		t.Errorf("%s asks whether this execution selected a capture and is not in "+
 			"captureSites.\n\nA capture changes a Pod in specific ways -- the control init, "+
-			"the reserved volume, two affinity labels, the reserving node, an admission "+
+			"the step-directory volume, two affinity labels, the capture's node, an admission "+
 			"refusal -- and a new way that nobody wrote down is one no behavioural test "+
 			"covers by accident. Add it with the reason, or route it through an existing "+
 			"site.", site)

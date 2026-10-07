@@ -110,25 +110,24 @@ func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume
 	}
 }
 
-// ReservedIncarnationVolume mounts the location the output daemon reserved.
+// CaptureStepVolume mounts a capture's step directory.
 //
 // It joins the node's artifact root, the managed steps directory and the
-// daemon's own answer, and it derives nothing else: `reservedDir` is
-// `ReservedIncarnation.Directory` verbatim, which the ATC validated against the
-// incarnation beside it before it ever reached here.
+// capture's step directory, and it derives nothing else: `stepDir` is
+// `CaptureKey.Directory`, the one derivation the node's daemon also uses.
 //
-// The type is DirectoryOrCreate for the same reason StepVolume's is, and it is
-// very nearly moot: the reservation already created the directory under the
-// daemon's own root, with the daemon's ownership, before this Pod was built.
-// That ordering is the point of reserving at all.
-func (b *DaemonSetBackend) ReservedIncarnationVolume(name, reservedDir string) corev1.Volume {
+// The type is DirectoryOrCreate for the same reason StepVolume's is. A
+// directory the kubelet creates here is unprotected until the capture control
+// init's hold writes its marker, which happens before any other container of
+// the Pod may start.
+func (b *DaemonSetBackend) CaptureStepVolume(name, stepDir string) corev1.Volume {
 	dirType := corev1.HostPathDirectoryOrCreate
 
 	return corev1.Volume{
 		Name: name,
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
-				Path: filepath.Join(b.config.ArtifactDaemonHostPath, "steps", reservedDir),
+				Path: filepath.Join(b.config.ArtifactDaemonHostPath, "steps", stepDir),
 				Type: &dirType,
 			},
 		},
@@ -681,20 +680,19 @@ func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input, control *runtim
 				Values:   []string{"ready"},
 			})
 		}
-		// And the reserving node itself, by name.
+		// And the capture's node itself, by name.
 		//
 		// The two labels above pick a COHORT: nodes whose daemons are up and
 		// attested, which is where a hold could be acknowledged at all. The
-		// reservation is narrower than that -- it is a directory on one node's
-		// disk, made before this Pod existed -- so a cohort-wide placement lets
-		// the scheduler land the producer on a node that reserved nothing,
-		// where the hostPath's DirectoryOrCreate makes an empty unheld
-		// directory and the control init's hold is refused. Requiring the node
-		// is what turns that outage into a pending Pod.
+		// capture is narrower than that -- its execution was admitted on one
+		// node -- so a cohort-wide placement lets the scheduler land the
+		// producer on a node that admitted nothing, where the control init's
+		// hold is refused and no marker is ever written. Requiring the node is
+		// what turns that outage into a pending Pod.
 		requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
 			Key:      corev1.LabelHostname,
 			Operator: corev1.NodeSelectorOpIn,
-			Values:   []string{control.Capture.ReservingNode},
+			Values:   []string{control.Capture.Node},
 		})
 	}
 	affinity := &corev1.Affinity{
@@ -813,18 +811,15 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 		// The ONE selected output lives somewhere else, and capture is
 		// ADDITIVE: it is still an ordinary output and downstream steps still
 		// resolve it in the ordinary way. `Container.buildPod` mounts the
-		// reserved incarnation as its volume, so `steps/<handle>/<output>` is
-		// a sibling directory nothing wrote into -- recording that one would
+		// capture's step directory as its volume, so `steps/<handle>/<output>`
+		// is a sibling directory nothing wrote into -- recording that one would
 		// hand a consumer an empty tree with nothing to say it was empty.
-		//
-		// The ATC composes nothing here either: ReservedDirectory came off the
-		// wire from `reserve-incarnation` and is repeated.
 		readOnly := false
-		if reserved := captureReservedDirectory(spec); reserved != "" &&
+		if reserved := captureStepDirectory(spec); reserved != "" &&
 			subdir == captureSelectedOutputName(spec) {
 			daemonKey = reserved
-			// And the alias onto it is read-only, because the incarnation is
-			// held: a write-capable second name is what the register guard
+			// And the alias onto it is read-only, because the step directory
+			// is held: a write-capable second name is what the register guard
 			// exists to refuse.
 			readOnly = true
 		}

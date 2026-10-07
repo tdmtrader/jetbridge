@@ -57,9 +57,9 @@ func (s *ExecutionStarter) PrepareContainer(ctx context.Context, owner db.Contai
 	}
 	if spec.ExecutionControl.HasDurableOutputCapture() {
 		capture := spec.ExecutionControl.Capture
-		req.HandoffID = capture.HandoffID
+		req.Capture = capture.Key()
 		if !found {
-			req.NodeName, req.NodeUID = capture.ReservingNode, string(capture.ReservedIncarnation.NodeUID)
+			req.NodeName, req.NodeUID = capture.Node, string(capture.NodeUID)
 		}
 	} else if !found {
 		req.NodeName, req.NodeUID, err = s.Source.SelectNode(ctx, spec)
@@ -130,7 +130,7 @@ func (s *ExecutionStarter) CheckStart(ctx context.Context, owner db.ContainerOwn
 		}
 		req := db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: spec.Type, Epoch: int64(control.ActivationEpoch), NodeName: control.Node.Name, NodeUID: string(control.Node.UID)}
 		if control.HasDurableOutputCapture() {
-			req.HandoffID = control.Capture.HandoffID
+			req.Capture = control.Capture.Key()
 		}
 		admission, _, err := s.Factory.AdmitRunExecution(ctx, tx, req)
 		if err != nil {

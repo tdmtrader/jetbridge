@@ -112,7 +112,10 @@ func (key CaptureKey) MarkerID() ReservationID {
 
 // Capture is one row.
 type Capture struct {
-	Key        CaptureKey
+	Key CaptureKey
+	// Execution is the exact identity the capture's execution was admitted
+	// at; Key carries its id.
+	Execution  executioncontrol.Identity
 	State      CaptureState
 	Node       string
 	NodeUID    executioncontrol.NodeUID
@@ -142,3 +145,34 @@ func (capture Capture) Ref() (hangar.TreeRef, error) {
 
 // Released reports whether the node's marker has been cleared.
 func (capture Capture) Released() bool { return capture.ReleasedAt != nil }
+
+// PendingCapture is step 1's database half: what the control plane knows when
+// the producing step is admitted, before its Pod exists.
+type PendingCapture struct {
+	Execution executioncontrol.Identity
+	Output    OutputName
+	Node      string
+	NodeUID   executioncontrol.NodeUID
+	// PodUID is empty until the node names the Pod; the move to publishing
+	// writes it from the node's own finish statement.
+	PodUID executioncontrol.PodUID
+	// Term is the capture deadline, measured from now() on the database clock.
+	Term time.Duration
+}
+
+// Key names the capture.
+func (pending PendingCapture) Key() CaptureKey {
+	return CaptureKey{ExecutionID: pending.Execution.ExecutionID, Output: pending.Output}
+}
+
+// PublishedCapture is what step 5 commits: the generation the store holds for
+// the row's digest and the facts the lifecycle row and the capture's claim
+// need.
+type PublishedCapture struct {
+	Key            CaptureKey
+	Generation     int64
+	Metageneration int64
+	// ActivationEpoch is the epoch the lifecycle and claim rows are recorded
+	// under while epochs exist.
+	ActivationEpoch executioncontrol.ActivationEpoch
+}

@@ -69,18 +69,18 @@ func capturingContainer(t *testing.T, cfg Config, reused bool, control *runtime.
 	}
 }
 
-// testReservingNode is the Kubernetes node whose daemon issued the reservation
-// below. It is the node NAME; testReservedIncarnation carries that node's UID.
-const testReservingNode = "kube-node-a"
+// testCaptureNode is the Kubernetes node the capture's step directory lives on.
+// It is the node NAME; testCaptureNodeUID is that node's identity.
+const testCaptureNode = "kube-node-a"
 
-// testReservedIncarnation is what `reserve-incarnation` answered for this
-// execution, as it would come off the wire.
-func testReservedIncarnation() hangaroutput.SourceIncarnation {
-	return hangaroutput.SourceIncarnation{
-		ExecutionID:      "11111111-1111-4111-8111-111111111111",
-		NodeUID:          "node-1",
-		HandleGeneration: 4,
-		Output:           "result",
+const testCaptureNodeUID = "node-1"
+
+// testCaptureKey names the capture admittedCapture selects. Its Directory is
+// the one derivation the node's daemon uses for the same capture.
+func testCaptureKey() hangaroutput.CaptureKey {
+	return hangaroutput.CaptureKey{
+		ExecutionID: "11111111-1111-4111-8111-111111111111",
+		Output:      "result",
 	}
 }
 
@@ -97,21 +97,14 @@ func admittedCapture() *runtime.ExecutionControl {
 		Version:            runtime.DurableOutputCaptureVersion,
 		Identity:           control.Identity,
 		ActivationEpoch:    control.ActivationEpoch,
-		HandoffID:          hangaroutput.HandoffID("22222222-2222-4222-8222-222222222222"),
-		SourceHoldID:       hangaroutput.SourceHoldID("33333333-3333-4333-8333-333333333333"),
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
 
-		// The daemon's answer, repeated. Nothing here composes it: the
-		// generation is that node's monotonic ledger sequence and no caller can
-		// choose one.
-		ReservedIncarnation: testReservedIncarnation(),
-		ReservedDirectory:   testReservedIncarnation().Directory(),
-
-		// The node whose daemon answered. A reservation is a directory on that
-		// node's disk, so the producing Pod is pinned to it.
-		ReservingNode: testReservingNode,
+		// The node whose disk holds the capture's step directory. The
+		// producing Pod is pinned to it.
+		Node:    testCaptureNode,
+		NodeUID: testCaptureNodeUID,
 	})
 	// The envelope needs an endpoint to validate; the control init falls back
 	// to the Downward API host IP when it is empty, which is the deployed
@@ -361,18 +354,18 @@ func TestACaptureSelectedPodRequiresBothReadyLabelsAndAnOrdinaryOneRequiresNeith
 	}
 }
 
-// The captured output's volume IS the reserved incarnation.
+// The captured output's volume IS the capture's step directory.
 //
-// This is the pass's whole point stated where it can fail. Before it, the
-// selected output mounted `steps/<handle>/result` -- the ordinary step volume
-// -- while the daemon's hold protected `steps/<execution>.<generation>/result`,
-// a sibling directory. The producer wrote into one and the capture sealed the
-// other, so every path-keyed guard was answering about bytes nobody wrote.
+// This is the pass's whole point stated where it can fail. The selected output
+// must not mount `steps/<handle>/result` -- the ordinary step volume -- while
+// the daemon's hold protects `steps/<execution>.capture/<output>`, a sibling
+// directory: the producer would write into one and the capture seal the other,
+// so every path-keyed guard would be answering about bytes nobody wrote.
 //
 // The controls are in the same test and asserted first: the step's OTHER
 // volumes are unchanged, so this cannot pass on a builder that has started
-// pointing everything at the incarnation.
-func TestTheCaptureSelectedOutputMountsTheReservedIncarnation(t *testing.T) {
+// pointing everything at the step directory.
+func TestTheCaptureSelectedOutputMountsTheCaptureStepDirectory(t *testing.T) {
 	control := admittedCapture()
 	control.Capture.Output = "result"
 
@@ -421,19 +414,23 @@ func TestTheCaptureSelectedOutputMountsTheReservedIncarnation(t *testing.T) {
 		}
 	}
 
-	// And the selected output, which is the reservation.
+	// And the selected output, which is the capture's step directory.
 	name, mounted := byMountPath["/tmp/build/result"]
 	if !mounted {
 		t.Fatal("the pod mounts nothing at the captured output's path")
 	}
-	want := "/var/concourse/artifacts/steps/" + testReservedIncarnation().Directory()
+	want := "/var/concourse/artifacts/steps/" + testCaptureKey().Directory()
 	if got := hostPathOf(name); got != want {
-		t.Errorf("the captured output resolves to %s; the daemon reserved %s, and a producer "+
+		t.Errorf("the captured output resolves to %s; the daemon holds %s, and a producer "+
 			"writing anywhere else is a hold over bytes nobody wrote", got, want)
 	}
+	if want != "/var/concourse/artifacts/steps/11111111-1111-4111-8111-111111111111.capture/result" {
+		t.Errorf("the capture step directory is %s; the layout is <execution>.capture/<output>", want)
+	}
 
-	// The control init's hold names the same location, because a hold over an
-	// incarnation the Pod did not mount protects nothing.
+	// The control init's hold names the same capture, because a hold over a
+	// step directory the Pod did not mount protects nothing. The daemon derives
+	// the directory from exactly these two values.
 	var initEnv map[string]string
 	for _, container := range pod.Spec.InitContainers {
 		if container.Name != controlInitName {
@@ -447,44 +444,49 @@ func TestTheCaptureSelectedOutputMountsTheReservedIncarnation(t *testing.T) {
 	if initEnv == nil {
 		t.Fatal("the capture pod has no control init")
 	}
-	if initEnv[captureEnvIncarnationGeneration] != "4" ||
-		initEnv[captureEnvIncarnationNode] != "node-1" {
-		t.Errorf("the control init would hold generation %q on node %q; the reservation is "+
-			"generation 4 on node-1", initEnv[captureEnvIncarnationGeneration],
-			initEnv[captureEnvIncarnationNode])
+	if initEnv[captureEnvExecution] != string(testCaptureKey().ExecutionID) ||
+		initEnv[captureEnvOutput] != string(testCaptureKey().Output) {
+		t.Errorf("the control init would hold execution %q output %q; the mounted step "+
+			"directory is %s", initEnv[captureEnvExecution], initEnv[captureEnvOutput],
+			testCaptureKey())
 	}
 }
 
-// No file under atc/ composes a source incarnation's name.
+// No file under atc/ composes a capture's step directory.
 //
-// The ATC repeats `ReservedIncarnation.Directory`, which came off the wire. It
-// must not derive one, because the handle generation is the daemon's monotonic
-// ledger sequence: a control plane that could spell the directory could spell a
-// STALE one, and a stale generation pointing at a live source is the exact
-// confusion SourceIncarnation exists to prevent -- Req 7 as a scan rather than
-// as a comment.
+// There is exactly one derivation of a step directory from a capture:
+// output.CaptureKey.Directory, which the node's daemon, its marker and the
+// sweeper's classifier all key on. The ATC reaches it through
+// runtime.DurableOutputCapture.Directory and nowhere else. A second spelling of
+// the layout is a second answer to "which directory is held", and the first one
+// to drift points a producer -- or a destructive guard -- at a sibling directory
+// nobody holds. Req 7 as a scan rather than as a comment.
 //
-// Two things make it non-vacuous. The exemptions are PINNED with a reason and
-// the pin fails if the reason's file stops containing the pattern, so a rename
-// cannot quietly empty the guard; and the counter-check asserts the derivation
-// exists in the contract package, so the scan is looking for a spelling
+// Two things make it non-vacuous. The callers of the derivation are PINNED with
+// a reason and the pin fails if the file stops calling it, so a rename cannot
+// quietly empty the guard; and the counter-check asserts the layout really is
+// spelled in the contract package, so the scan is looking for a spelling
 // something still uses.
-func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
-	// The two shapes that DERIVE one: the daemon's format string, and a call
-	// to the contract package's derivation. Reading a field of a reservation --
-	// its generation, its node -- is repeating, not composing, and is not here.
+func TestNoATCCodeComposesACaptureStepDirectory(t *testing.T) {
+	// The shapes that SPELL the layout: the contract's format string, and any
+	// code-level literal naming the ".capture" directory component. Comments
+	// may describe the layout and are skipped.
 	composers := map[string]*regexp.Regexp{
-		"the daemon's own format string":    regexp.MustCompile(`%s\s*\.\s*%d`),
-		"the contract package's derivation": regexp.MustCompile(`\.Directory\(\)`),
+		"the contract's own format string":     regexp.MustCompile(`%s\s*\.capture`),
+		"a literal of the step layout":         regexp.MustCompile("\\.capture[/\"`]"),
+		"a join onto a \".capture\" component": regexp.MustCompile(`"\.capture`),
 	}
+	derivation := regexp.MustCompile(`\.Directory\(\)`)
 
-	// Pinned, with the reason. Each entry is a file that may derive a
-	// directory, and why -- and each one is checked to still contain what it
-	// was pinned for.
+	// The callers of the one derivation, with the reason each needs it. Each is
+	// checked to still call it.
 	pinned := map[string]string{
-		"atc/runtime/executioncontrol.go": "it derives the directory only to REFUSE one that " +
-			"does not match: a ReservedDirectory that does not derive from the incarnation " +
-			"beside it is the ATC having composed a path, and this is where that is caught",
+		"atc/runtime/executioncontrol.go": "DurableOutputCapture.Directory is the ATC's one " +
+			"door to output.CaptureKey.Directory",
+		"atc/worker/jetbridge/capture_control.go": "captureStepDirectory is the hostPath the " +
+			"selected output mounts and the annotation a lookup reads",
+		"atc/atctest/runtime.go": "the in-process node stands in for the daemon and keys its " +
+			"step directory exactly as the daemon does",
 	}
 
 	// The brine module is the behavioural harness, not the ATC. Its fixture
@@ -492,9 +494,21 @@ func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
 	// which is the one thing a request contract cannot say.
 	const harness = "atc/worker/jetbridge/brine/"
 
+	stripComments := func(body []byte) []byte {
+		var kept []string
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			kept = append(kept, line)
+		}
+
+		return []byte(strings.Join(kept, "\n"))
+	}
+
 	root := filepath.Join("..", "..", "..", "atc")
 	scanned := 0
-	found := map[string]bool{}
+	derives := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -504,7 +518,7 @@ func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
 		}
 		relative := filepath.ToSlash(strings.TrimPrefix(filepath.ToSlash(path), "../../../"))
 		// Tests may name the directory: they are the things asserting what
-		// production repeated, and a test that could not spell the expected
+		// production derived, and a test that could not spell the expected
 		// value could not assert on it.
 		if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(relative, harness) {
 			return nil
@@ -513,19 +527,23 @@ func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		body = stripComments(body)
 		scanned++
 		for why, composer := range composers {
-			if !composer.Match(body) {
-				continue
+			if composer.Match(body) {
+				t.Errorf("%s spells a capture's step directory itself (%s). The ATC derives it "+
+					"through runtime.DurableOutputCapture.Directory -- output.CaptureKey.Directory, "+
+					"the one derivation the node's daemon shares -- and a second spelling is a "+
+					"second answer to which directory is held.", relative, why)
 			}
-			found[relative] = true
-			if _, allowed := pinned[relative]; allowed {
-				continue
+		}
+		if derivation.Match(body) {
+			derives[relative] = true
+			if _, allowed := pinned[relative]; !allowed {
+				t.Errorf("%s calls a Directory() derivation and is not pinned. If it is the "+
+					"capture step directory, pin it here with the reason; the set of places "+
+					"that resolve one is deliberately short.", relative)
 			}
-			t.Errorf("%s composes a source incarnation's name (%s). The ATC repeats the daemon's "+
-				"answer -- ReservedIncarnation.Directory -- and never derives one; the handle "+
-				"generation is that node's ledger sequence, and a stale one points at somebody "+
-				"else's live source.", relative, why)
 		}
 
 		return nil
@@ -538,26 +556,32 @@ func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
 			"vacuously", scanned, root)
 	}
 
-	// Every pin must still be earning its exemption. A pin on a file that no
-	// longer derives anything is an exemption nobody is watching.
+	// Every pin must still be earning its exemption.
 	for file, reason := range pinned {
-		if !found[file] {
-			t.Errorf("%s is pinned as allowed to derive an incarnation directory (%s) and no "+
-				"longer does. Drop the pin, or the scan has stopped seeing the shape.",
+		if !derives[file] {
+			t.Errorf("%s is pinned as a caller of the step-directory derivation (%s) and no "+
+				"longer calls it. Drop the pin, or the scan has stopped seeing the shape.",
 				file, reason)
 		}
 	}
 
-	// The counter-check: the derivation exists in the contract package, so the
+	// The counter-check: the layout is spelled in the contract package, so the
 	// patterns above are not looking for a spelling that was renamed away.
 	contract, err := os.ReadFile(filepath.Join("..", "..", "..", "hangar", "output",
-		"reservation.go"))
+		"capture_row.go"))
 	if err != nil {
 		t.Fatalf("reading the contract package's derivation: %v", err)
 	}
-	if !composers["the daemon's own format string"].Match(contract) {
-		t.Error("hangar/output/reservation.go does not compose an incarnation directory either, " +
-			"so this scan is looking for a spelling that no longer exists")
+	if !composers["the contract's own format string"].Match(contract) {
+		t.Error("hangar/output/capture_row.go does not spell the step directory either, so " +
+			"this scan is looking for a spelling that no longer exists")
+	}
+
+	// And the derivation is the one the pod builder uses: the same key, the same
+	// string.
+	control := admittedCapture()
+	if got, want := captureStepDirectory(capturingSpec(control)), testCaptureKey().Directory(); got != want {
+		t.Errorf("captureStepDirectory is %q and output.CaptureKey.Directory is %q", got, want)
 	}
 }
 
@@ -604,19 +628,19 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 	}
 }
 
-// The capture pod is pinned to the node whose daemon reserved its incarnation.
+// The capture pod is pinned to the capture's node.
 //
 // The two ready labels above pick a COHORT -- nodes where a hold could be
 // acknowledged at all -- and the Phase 4 round-1 review's point is that a
-// cohort is not a node. The reservation is a directory on one node's disk, made
-// before this Pod existed; a producer the scheduler placed anywhere else in the
-// cohort would mount an empty unheld directory (`DirectoryOrCreate` makes one)
-// and its control init's hold would be refused by a daemon that reserved
-// nothing. Requiring the node turns that outage into a Pod that stays Pending.
+// cohort is not a node. The capture row names one node, admitted before this
+// Pod existed; a producer the scheduler placed anywhere else in the cohort
+// would write a step directory on a disk the capture never reads, and its
+// control init's hold would be refused by a daemon that admitted nothing.
+// Requiring the node turns that outage into a Pod that stays Pending.
 //
 // The ordinary pod is the control and it is asserted first: it is pinned to
 // nothing, because an ordinary step may run anywhere its inputs allow.
-func TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot(t *testing.T) {
+func TestACaptureSelectedPodIsPinnedToTheCaptureNodeAndAnOrdinaryOneIsNot(t *testing.T) {
 	hostnameValues := func(pod *corev1.Pod) []string {
 		affinity := pod.Spec.Affinity
 		if affinity == nil || affinity.NodeAffinity == nil ||
@@ -642,7 +666,7 @@ func TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot(t *t
 		t.Fatalf("building the ordinary pod: %v", err)
 	}
 	if pinned := hostnameValues(ordinary); len(pinned) != 0 {
-		t.Errorf("an ordinary pod was pinned to %v; a step with no reservation may run anywhere",
+		t.Errorf("an ordinary pod was pinned to %v; a step with no capture may run anywhere",
 			pinned)
 	}
 
@@ -652,9 +676,9 @@ func TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot(t *t
 		t.Fatalf("building the capture pod: %v", err)
 	}
 	pinned := hostnameValues(capture)
-	if len(pinned) != 1 || pinned[0] != testReservingNode {
-		t.Errorf("the capture pod is pinned to %v and its reservation was issued by %s",
-			pinned, testReservingNode)
+	if len(pinned) != 1 || pinned[0] != testCaptureNode {
+		t.Errorf("the capture pod is pinned to %v and its capture names node %s",
+			pinned, testCaptureNode)
 	}
 }
 

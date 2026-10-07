@@ -37,8 +37,8 @@ func TestTheActivationDatabaseRoleRunsEveryActivationCommand(t *testing.T) {
 	}
 
 	// A real finding, recorded by web's side, reconciled by the role.
-	if _, err := owner.Exec(`INSERT INTO hangar_policy_violations (activation_epoch, violation, subject)
-		VALUES ($1, 'out_of_band_absence', 'objects/lost')`, int64(epoch)); err != nil {
+	if _, err := owner.Exec(`INSERT INTO hangar_integrity_findings (violation, subject)
+		VALUES ('out_of_band_absence', 'objects/lost')`); err != nil {
 		t.Fatalf("recording a finding as web: %v", err)
 	}
 	tx, err := epochs.DB.BeginTx(ctx, nil)
@@ -54,7 +54,7 @@ func TestTheActivationDatabaseRoleRunsEveryActivationCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	var resolved bool
-	if err := owner.QueryRow(`SELECT resolved_at IS NOT NULL FROM hangar_policy_violations WHERE subject = 'objects/lost'`).
+	if err := owner.QueryRow(`SELECT resolved_at IS NOT NULL FROM hangar_integrity_findings WHERE subject = 'objects/lost'`).
 		Scan(&resolved); err != nil || !resolved {
 		t.Fatalf("the finding is not resolved (%v, %v)", resolved, err)
 	}
@@ -69,8 +69,8 @@ func TestTheActivationDatabaseRoleMayDoNothingElse(t *testing.T) {
 	role := epochs.DB
 
 	selectable := map[string]bool{
-		"hangar_output_activation_epochs": true, "migrations_history": true, "hangar_policy_violations": true,
-		"hangar_handoff_predeclarations": true, "hangar_handoff_dispositions": true, "hangar_capture_reservations": true,
+		"hangar_output_activation_epochs": true, "migrations_history": true, "hangar_integrity_findings": true,
+		"hangar_captures":         true,
 		"hangar_exact_lifecycles": true, "hangar_claims": true, "hangar_read_leases": true,
 		"hangar_reclaim_jobs": true, "hangar_inventory_debt": true,
 	}
@@ -80,7 +80,7 @@ func TestTheActivationDatabaseRoleMayDoNothingElse(t *testing.T) {
 			"cohort_digest", "output_state", "output_attestation", "receipt_public_key_id", "receipt_key_valid_from",
 			"receipt_key_valid_until", "materialization_key_id", "bucket_fingerprint", "derived_namespace",
 			"revision", "updated_at"),
-		"hangar_policy_violations": set("resolved_at"),
+		"hangar_integrity_findings": set("resolved_at"),
 	}
 
 	rows, err := owner.Query(`

@@ -51,7 +51,6 @@ func (fixture *routeFixture) forbiddenValues(t *testing.T, extra ...forbidden) [
 		{fixture.bucket, "the output bucket"},
 		{fixture.config.OutputPrefix, "the output bucket's prefix"},
 		{fixture.config.ScratchDir, "the daemon's scratch directory"},
-		{fixture.config.ReceiptKeyFile, "the receipt signing key's location"},
 		{fixture.config.ControlKeyFile, "the control signing key's location"},
 	}
 	for _, key := range listKeys(t, fixture.store, fixture.bucket) {

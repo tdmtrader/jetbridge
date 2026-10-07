@@ -23,33 +23,22 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// PendingCapture is step 1's database half: what the control plane knows when
-// the producing step is admitted, before its Pod exists.
-type PendingCapture struct {
-	Key     output.CaptureKey
-	Node    string
-	NodeUID executioncontrol.NodeUID
-	// PodUID is empty until the node names the Pod; the move to publishing
-	// writes it from the node's own finish statement.
-	PodUID executioncontrol.PodUID
-	// Term is the capture deadline, measured from now() on the database clock.
-	Term time.Duration
-}
-
-const hangarCaptureColumns = `execution_id, output_name, state, node, node_uid, coalesce(pod_uid, ''),
+const hangarCaptureColumns = `execution_id, execution_fence, output_name, state, node, node_uid, coalesce(pod_uid, ''),
 	coalesce(scope, ''), coalesce(digest, ''), coalesce(generation, 0), coalesce(error, ''),
 	capture_deadline_at, created_at, finished_at, released_at`
 
 func scanHangarCapture(scan func(...any) error) (output.Capture, error) {
 	var capture output.Capture
 	var execution, outputName, state, node, nodeUID, podUID, scope, digest string
+	var fence int64
 	var finished, released sql.NullTime
-	if err := scan(&execution, &outputName, &state, &node, &nodeUID, &podUID, &scope, &digest,
+	if err := scan(&execution, &fence, &outputName, &state, &node, &nodeUID, &podUID, &scope, &digest,
 		&capture.Generation, &capture.Error, &capture.CaptureDeadline, &capture.CreatedAt,
 		&finished, &released); err != nil {
 		return output.Capture{}, err
 	}
 	capture.Key = output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(execution), Output: output.OutputName(outputName)}
+	capture.Execution = executioncontrol.Identity{ExecutionID: capture.Key.ExecutionID, Fence: executioncontrol.Fence(fence)}
 	capture.State = output.CaptureState(state)
 	capture.Node, capture.NodeUID, capture.PodUID = node, executioncontrol.NodeUID(nodeUID), executioncontrol.PodUID(podUID)
 	capture.Scope, capture.Digest = hangar.Scope(scope), hangar.Digest(digest)
@@ -92,8 +81,9 @@ func (repository *HangarOutputRepository) GetCapture(ctx context.Context, tx out
 
 // InsertPending is step 1. A repeat with the same facts returns the existing
 // row; the same key with different facts is a conflict.
-func (repository *HangarOutputRepository) InsertPending(ctx context.Context, tx output.Tx, pending PendingCapture) (output.Capture, error) {
-	if err := pending.Key.Validate(); err != nil {
+func (repository *HangarOutputRepository) InsertPending(ctx context.Context, tx output.Tx, pending output.PendingCapture) (output.Capture, error) {
+	key := pending.Key()
+	if err := key.Validate(); err != nil {
 		return output.Capture{}, err
 	}
 	if pending.Node == "" || pending.NodeUID == "" {
@@ -104,21 +94,21 @@ func (repository *HangarOutputRepository) InsertPending(ctx context.Context, tx 
 	}
 	interval := hangarInterval(pending.Term)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hangar_captures (execution_id, output_name, node, node_uid, pod_uid, capture_deadline_at)
-		VALUES ($1, $2, $3, $4, nullif($5, ''), now() + $6::interval)
+		INSERT INTO hangar_captures (execution_id, execution_fence, output_name, node, node_uid, pod_uid, capture_deadline_at)
+		VALUES ($1, $2, $3, $4, $5, nullif($6, ''), now() + $7::interval)
 		ON CONFLICT (execution_id, output_name) DO NOTHING`,
-		string(pending.Key.ExecutionID), string(pending.Key.Output), pending.Node,
+		string(key.ExecutionID), int64(pending.Execution.Fence), string(key.Output), pending.Node,
 		string(pending.NodeUID), string(pending.PodUID), interval); err != nil {
 		return output.Capture{}, hangarConflict(err)
 	}
-	capture, err := repository.GetCapture(ctx, tx, pending.Key)
+	capture, err := repository.GetCapture(ctx, tx, key)
 	if err != nil {
 		return output.Capture{}, err
 	}
-	if capture.Node != pending.Node || capture.NodeUID != pending.NodeUID ||
+	if capture.Execution != pending.Execution || capture.Node != pending.Node || capture.NodeUID != pending.NodeUID ||
 		(pending.PodUID != "" && capture.PodUID != "" && capture.PodUID != pending.PodUID) {
 		return output.Capture{}, fmt.Errorf("%w: capture %s already names node %s (%s)",
-			output.ErrConflict, pending.Key, capture.Node, capture.NodeUID)
+			output.ErrConflict, key, capture.Node, capture.NodeUID)
 	}
 
 	return capture, nil
@@ -212,17 +202,6 @@ func (repository *HangarOutputRepository) MarkFailed(ctx context.Context, tx out
 		func(current output.Capture) bool { return current.State == output.CaptureFailed })
 }
 
-// PublishedCapture is what step 5 commits: the generation the store assigned
-// and the facts the lifecycle row and the capture's claim need.
-type PublishedCapture struct {
-	Key            output.CaptureKey
-	Generation     int64
-	Metageneration int64
-	// ActivationEpoch is the epoch the lifecycle and claim rows are recorded
-	// under while epochs exist.
-	ActivationEpoch int64
-}
-
 // CASPublishingToPublished is step 5. In one transaction it moves the row,
 // registers the generation's lifecycle and takes the capture's own claim on it
 // (output.CaptureKey.ClaimID), so a published tree is protected from reclaim
@@ -231,8 +210,8 @@ type PublishedCapture struct {
 // Lock order is the suffix's: the logical class (every capture row of this
 // scope and digest, this one included), then the exact lifecycle, then the
 // claim.
-func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.Context, tx output.Tx, published PublishedCapture) (output.Capture, error) {
-	if published.Generation <= 0 || published.Metageneration <= 0 || published.ActivationEpoch <= 0 {
+func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.Context, tx output.Tx, published output.PublishedCapture) (output.Capture, error) {
+	if published.Generation <= 0 || published.Metageneration <= 0 || published.ActivationEpoch == 0 {
 		return output.Capture{}, fmt.Errorf("%w: a publication names no generation, metageneration or epoch",
 			output.ErrIncomplete)
 	}
@@ -265,7 +244,7 @@ func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.C
 		return output.Capture{}, err
 	}
 	if _, err := repository.upsertLifecycle(ctx, tx, ref, published.Metageneration,
-		published.ActivationEpoch, "registered"); err != nil {
+		int64(published.ActivationEpoch), "registered"); err != nil {
 		return output.Capture{}, err
 	}
 	var now time.Time

@@ -40,7 +40,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -84,7 +83,6 @@ const (
 	liveClusterStoreID      = "contract-store-1"
 	liveClusterTenant       = "contract-tenant"
 	liveClusterEpoch        = 1
-	liveClusterReceiptKeyID = "receipt-1"
 	liveClusterControlKeyID = "control-1"
 	liveClusterBootstrapTag = "concourse-hangar-bootstrap"
 )
@@ -132,10 +130,8 @@ const (
 //  2. across six syncs, each recreating the bootstrap Job, every inventory
 //     Secret keeps its UID and is byte-identical, and the policy and its
 //     binding keep their UIDs;
-//  3. a publication receipt signed with the receipt key after the first
-//     bootstrap run verifies, through web's own ring loader, after every later
-//     one; each ring holds exactly the public halves of its purpose's keys and
-//     no symmetric key;
+//  3. the control ring holds exactly the public half of the control key, through
+//     web's own ring loader, and no ring holds a symmetric key;
 //  4. every consumer completes its first use of the generated Secrets: web
 //     starts with capture on (its startup refuses a ring it cannot load); the
 //     output daemon accepts web's control-plane client certificate over mTLS
@@ -179,7 +175,6 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 		jobs[uid] = label
 	}
 	recordJob("S1-S2", first)
-	receipt := cluster.signReceipt(names.receipt)
 
 	resync := func(label string, sets []string) liveSyncResult {
 		t.Helper()
@@ -187,7 +182,6 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 		recordJob(label, result)
 		cluster.assertSecretsUnchanged(label, snapshot)
 		cluster.assertPolicyUIDs(label, policies)
-		cluster.assertReceiptVerifies(label, inventory, receipt)
 		return result
 	}
 
@@ -217,8 +211,8 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 type liveClusterNames struct {
 	release, namespace string
 
-	warrant, storeTLS, storeCredentials, control, capability     string
-	receipt, materialize, dsn, runInput string
+	warrant, storeTLS, storeCredentials, control, capability string
+	materialize, dsn, runInput                               string
 
 	daemonTLS, resolve, postgres, signingKey string
 }
@@ -231,17 +225,16 @@ func newLiveClusterNames(release, namespace string) liveClusterNames {
 		storeCredentials: release + "-hangar-store-credentials",
 		control:          release + "-hangar-control-key-e1",
 		capability:       release + "-hangar-capability-key",
-		receipt:          release + "-hangar-receipt-key-e1",
 		materialize:      release + "-hangar-materialize-key",
 		dsn:              release + "-hangar-activation-dsn",
 		runInput:         release + "-run-input-signing-key",
 		// Operator-owned, outside the bootstrap inventory: the artifact
 		// daemon's pinned TLS Secret and resolve key, the database password
 		// the bundled PostgreSQL and web share, and web's session signing key.
-		daemonTLS:     release + "-artifact-daemon-tls",
-		resolve:       release + "-artifact-daemon-resolve",
-		postgres:      release + "-postgresql-connection",
-		signingKey:    release + "-session-signing-key",
+		daemonTLS:  release + "-artifact-daemon-tls",
+		resolve:    release + "-artifact-daemon-resolve",
+		postgres:   release + "-postgresql-connection",
+		signingKey: release + "-session-signing-key",
 	}
 }
 
@@ -249,6 +242,7 @@ func (names liveClusterNames) storeService() string { return names.release + "-h
 func (names liveClusterNames) storeDNS() string {
 	return names.storeService() + "." + names.namespace + ".svc"
 }
+
 // outputPlaneServerName is the artifact daemon's server name: it serves the
 // output plane.
 func (names liveClusterNames) outputPlaneServerName() string {
@@ -444,8 +438,6 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 			"hangarOutput.executionControl.keySecret=" + names.control,
 			"hangarOutput.executionControl.keyID=" + liveClusterControlKeyID,
 			"hangarOutput.capabilityKeySecret=" + names.capability,
-			"hangarOutput.receipt.keyID=" + liveClusterReceiptKeyID,
-			"hangarOutput.receipt.privateKeySecret=" + names.receipt,
 			"hangarOutput.materializationKeySecret=" + names.materialize,
 			"hangarOutput.database.existingSecret=" + names.dsn,
 			"hangarStorage.disk.tls.existingSecret=" + names.storeTLS,
@@ -1168,50 +1160,6 @@ func (cluster *liveCluster) assertPolicyRefusesTokenSecret(name string) {
 	}
 }
 
-// signReceipt signs a publication receipt with the generated receipt key, as
-// the output daemon does, and returns it.
-func (cluster *liveCluster) signReceipt(secretName string) output.Receipt {
-	t := cluster.t
-	t.Helper()
-	private := liveEd25519Private(t, secretName, cluster.secret(secretName).Data["receipt.key"])
-	signer, err := output.NewReceiptSigner(liveClusterReceiptKeyID, liveClusterEpoch, private, output.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := signer.Sign(liveReceiptClaims(t))
-	if err != nil {
-		t.Fatalf("sign a publication receipt with the generated receipt key: %v", err)
-	}
-	return receipt
-}
-
-func liveReceiptClaims(t *testing.T) output.ReceiptClaims {
-	t.Helper()
-	execution := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Fence: 1}
-	name := output.OutputName("result")
-	ref := hangar.TreeRef{Scope: "contract", Digest: hangar.Digest("sha256:" + strings.Repeat("ab", 32)), Generation: 1}
-	return output.ReceiptClaims{
-		ProtocolVersion:      output.ProtocolVersion,
-		ReceiptVersion:       output.ReceiptDomain,
-		Execution:            execution,
-		ActivationEpoch:      liveClusterEpoch,
-		HandoffID:            output.HandoffID(uuid.NewString()),
-		ProducerCheckpointID: output.OpaqueID("checkpoint-" + uuid.NewString()),
-		ReservationID:        output.ReservationID(uuid.NewString()),
-		ChallengeNonce:       "nonce-" + uuid.NewString(),
-		ChallengeIssuedAt:    output.NewTimestamp(time.Now().UTC()),
-		Incarnation: output.SourceIncarnation{
-			ExecutionID: execution.ExecutionID, NodeUID: "node-uid", HandleGeneration: 1, Output: name,
-		},
-		Output:        name,
-		CaptureFence:  1,
-		WriterFence:   1,
-		Ref:           ref,
-		Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
-		MarkerVersion: output.MarkerVersion,
-	}
-}
-
 func liveEd25519Private(t *testing.T, name string, raw []byte) ed25519.PrivateKey {
 	t.Helper()
 	block, _ := pem.Decode(raw)
@@ -1230,43 +1178,28 @@ func liveEd25519Private(t *testing.T, name string, raw []byte) ed25519.PrivateKe
 }
 
 // ringFiles writes the ring Secret web mounts to disk, the way the kubelet
-// projects it, and returns the directory.
-func (cluster *liveCluster) ringFiles(inventory []liveInventoryEntry) string {
+// projects it, and returns the directory and the keys it held. The control
+// ring is the only ring there is.
+func (cluster *liveCluster) ringFiles(inventory []liveInventoryEntry) (string, []string) {
 	t := cluster.t
 	t.Helper()
 	ring := cluster.secret(liveInventoryNamed(t, inventory, "ring").Name)
-	if len(ring.Data) != 2 {
+	if _, found := ring.Data["control-keys.json"]; !found {
 		keys := make([]string, 0, len(ring.Data))
 		for key := range ring.Data {
 			keys = append(keys, key)
 		}
-		t.Fatalf("the ring Secret holds %v; want exactly receipt-keys.json and control-keys.json", keys)
+		t.Fatalf("the ring Secret holds %v and no control-keys.json", keys)
 	}
 	dir := t.TempDir()
-	for _, key := range []string{"receipt-keys.json", "control-keys.json"} {
-		if err := os.WriteFile(filepath.Join(dir, key), ring.Data[key], 0o600); err != nil {
+	keys := make([]string, 0, len(ring.Data))
+	for key, value := range ring.Data {
+		if err := os.WriteFile(filepath.Join(dir, key), value, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		keys = append(keys, key)
 	}
-	return dir
-}
-
-// assertReceiptVerifies loads the ring Secret through web's own loader and
-// verifies the receipt with web's verifier.
-func (cluster *liveCluster) assertReceiptVerifies(label string, inventory []liveInventoryEntry, receipt output.Receipt) {
-	t := cluster.t
-	t.Helper()
-	ring, err := hangaroutput.LoadReceiptKeyRing(filepath.Join(cluster.ringFiles(inventory), "receipt-keys.json"))
-	if err != nil {
-		t.Fatalf("%s: web's loader refuses the ring Secret: %v", label, err)
-	}
-	verifier, err := ring.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		t.Fatalf("%s: %v", label, err)
-	}
-	if err := verifier.VerifySignature(receipt); err != nil {
-		t.Errorf("%s: a publication receipt signed after the first bootstrap run does not verify against the ring: %v", label, err)
-	}
+	return dir, keys
 }
 
 // assertRingsArePublicHalves: each ring holds exactly the public half of its
@@ -1275,11 +1208,7 @@ func (cluster *liveCluster) assertReceiptVerifies(label string, inventory []live
 func (cluster *liveCluster) assertRingsArePublicHalves(inventory []liveInventoryEntry) {
 	t := cluster.t
 	t.Helper()
-	dir := cluster.ringFiles(inventory)
-	receipts, err := hangaroutput.LoadReceiptKeyRing(filepath.Join(dir, "receipt-keys.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir, ringKeys := cluster.ringFiles(inventory)
 	controls, err := hangaroutput.LoadControlKeyRing(filepath.Join(dir, "control-keys.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -1290,10 +1219,6 @@ func (cluster *liveCluster) assertRingsArePublicHalves(inventory []liveInventory
 		}
 		public := base64.StdEncoding.EncodeToString(liveEd25519Private(t, entry.Name, cluster.secret(entry.Name).Data[entry.Key]).Public().(ed25519.PublicKey))
 		switch entry.Ring {
-		case "receipt":
-			if len(receipts.Keys) != 1 || receipts.Keys[0].ID != entry.KeyID || int64(receipts.Keys[0].Epoch) != entry.Epoch || receipts.Keys[0].PublicKey != public || receipts.ActiveKeyID != entry.KeyID {
-				t.Errorf("the receipt ring %+v is not exactly the public half of %s (key id %s, epoch %d)", receipts, entry.Name, entry.KeyID, entry.Epoch)
-			}
 		case "control":
 			if len(controls.Keys) != 1 || int64(controls.Keys[0].Epoch) != entry.Epoch || controls.Keys[0].PublicKey != public {
 				t.Errorf("the control ring %+v is not exactly the public half of %s (epoch %d)", controls, entry.Name, entry.Epoch)
@@ -1302,15 +1227,14 @@ func (cluster *liveCluster) assertRingsArePublicHalves(inventory []liveInventory
 			t.Errorf("Ed25519 entry %s names ring %q", entry.Name, entry.Ring)
 		}
 	}
-	rings, err := os.ReadFile(filepath.Join(dir, "receipt-keys.json"))
-	if err != nil {
-		t.Fatal(err)
+	var rings []byte
+	for _, key := range ringKeys {
+		ring, err := os.ReadFile(filepath.Join(dir, key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rings = append(rings, ring...)
 	}
-	controlRing, err := os.ReadFile(filepath.Join(dir, "control-keys.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rings = append(rings, controlRing...)
 	for _, entry := range inventory {
 		if entry.Kind != "random32" {
 			continue
@@ -1340,7 +1264,7 @@ func (cluster *liveCluster) assertWebLoadedRings(inventory []liveInventoryEntry)
 		t.Fatal(err)
 	}
 	args := strings.Join(deployment.Spec.Template.Spec.Containers[0].Args, " ")
-	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-output-receipt-keys=", "--kubernetes-hangar-output-control-keys=", "--kubernetes-hangar-warrant-key=", "--run-input-signing-key="} {
+	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-output-control-keys=", "--kubernetes-hangar-warrant-key=", "--run-input-signing-key="} {
 		if !strings.Contains(args, flag) {
 			t.Fatalf("web runs without %s", flag)
 		}
@@ -1405,8 +1329,8 @@ func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
 	if err := handshake.Validate(); err != nil {
 		t.Fatalf("the capture handshake does not validate: %v", err)
 	}
-	if handshake.ReceiptPublicKeyID != liveClusterReceiptKeyID || handshake.Base.ControlKeyID != liveClusterControlKeyID || handshake.Base.ActivationEpoch != liveClusterEpoch {
-		t.Fatalf("the output daemon reports %+v, want receipt key %s, control key %s, epoch %d", handshake, liveClusterReceiptKeyID, liveClusterControlKeyID, liveClusterEpoch)
+	if handshake.Base.ControlKeyID != liveClusterControlKeyID || handshake.Base.ActivationEpoch != liveClusterEpoch {
+		t.Fatalf("the output daemon reports %+v, want control key %s, epoch %d", handshake, liveClusterControlKeyID, liveClusterEpoch)
 	}
 	if body, status := liveGet(t, cluster.ctx, cluster.outputDaemonClient(false), handshakeURL); status != http.StatusUnauthorized {
 		t.Fatalf("without a client certificate the capture handshake answered %d %s; it requires one, so the 200 above proves nothing about web's", status, body)

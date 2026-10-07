@@ -119,44 +119,28 @@ func (epochs Epochs) EnablePreconditions(ctx context.Context,
 			"and would refuse the write")
 
 	// 3. THE IDENTITY FACTS THE EPOCH ATTESTS. These are what every later
-	// refusal is measured against -- the receipt trigger compares a receipt's
-	// key id to this row -- so an epoch missing one of them is an epoch whose
-	// first receipt is refused.
-	var (
-		receiptKey, materializeKey, bucket, namespace *string
-		keyWindowCovers                               *bool
-	)
+	// refusal is measured against: the read warrant's key, and the bucket and
+	// namespace every marker and key is scoped by.
+	var materializeKey, bucket, namespace *string
 	if err := epochs.DB.QueryRowContext(ctx, `
-		SELECT receipt_public_key_id, materialization_key_id, bucket_fingerprint,
-		       derived_namespace,
-		       CASE WHEN receipt_key_valid_from IS NULL OR receipt_key_valid_until IS NULL
-		            THEN NULL
-		            ELSE now() >= receipt_key_valid_from AND now() < receipt_key_valid_until
-		       END
+		SELECT materialization_key_id, bucket_fingerprint, derived_namespace
 		  FROM hangar_output_activation_epochs WHERE epoch_id = $1`,
-		int64(epoch)).Scan(&receiptKey, &materializeKey, &bucket, &namespace,
-		&keyWindowCovers); err != nil {
+		int64(epoch)).Scan(&materializeKey, &bucket, &namespace); err != nil {
 		return nil, fmt.Errorf("%w: reading epoch %d: %v", output.ErrInfrastructure, epoch, err)
 	}
 
-	identity := present(receiptKey) && present(materializeKey) && present(bucket) &&
-		present(namespace)
+	identity := present(materializeKey) && present(bucket) && present(namespace)
 	add("storage identity attested", identity,
-		fmt.Sprintf("receipt key %s, materialization key %s, bucket %s, namespace %s",
-			quoted(receiptKey), quoted(materializeKey), quoted(bucket), quoted(namespace)),
-		"these four facts are what every later refusal is measured against: the receipt "+
-			"trigger compares a receipt's key id to this row, and the marker, the warrant and the "+
-			"inventory cursor are all scoped by the bucket and namespace")
-
-	add("receipt key is currently valid", keyWindowCovers != nil && *keyWindowCovers,
-		describeKeyWindow(keyWindowCovers),
-		"a facet enabled outside its receipt key's validity window can sign nothing, so every "+
-			"capture under it reaches the publish point and then fails to register")
+		fmt.Sprintf("materialization key %s, bucket %s, namespace %s",
+			quoted(materializeKey), quoted(bucket), quoted(namespace)),
+		"these facts are what every later refusal is measured against: the read warrant "+
+			"names the key, and the marker, the object key and the inventory cursor are all "+
+			"scoped by the bucket and namespace")
 
 	var unresolved int
-	if err := epochs.DB.QueryRowContext(ctx, `SELECT count(*) FROM hangar_policy_violations
-        WHERE activation_epoch = $1 AND resolved_at IS NULL
-          AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`, int64(epoch)).Scan(&unresolved); err != nil {
+	if err := epochs.DB.QueryRowContext(ctx, `SELECT count(*) FROM hangar_integrity_findings
+        WHERE resolved_at IS NULL
+          AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`).Scan(&unresolved); err != nil {
 		return nil, fmt.Errorf("%w: reading storage integrity findings: %v", output.ErrInfrastructure, err)
 	}
 	add("storage integrity", unresolved == 0, fmt.Sprintf("%d unresolved runtime findings", unresolved),
@@ -266,15 +250,4 @@ func metOrNot(met bool, yes, no string) string {
 
 func describeVersions(protocol, ledger *string) string {
 	return fmt.Sprintf("protocol %s, ledger %s", quoted(protocol), quoted(ledger))
-}
-
-func describeKeyWindow(covers *bool) string {
-	if covers == nil {
-		return "the epoch attests no receipt key validity window"
-	}
-	if *covers {
-		return "the current instant is inside the attested receipt key's validity window"
-	}
-
-	return "the current instant is OUTSIDE the attested receipt key's validity window"
 }

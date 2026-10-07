@@ -80,8 +80,6 @@ type Config struct {
 	// TLSServerName is the DNS name the daemon's server certificate carries.
 	// The cohort is dialed by pod IP, which no certificate can name.
 	TLSServerName string
-
-	ReceiptKeyLifetime time.Duration
 }
 
 func BindFlags(flags *flag.FlagSet, config *Config) {
@@ -148,8 +146,6 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"CA certificate the daemon's server certificate is verified against.")
 	flags.StringVar(&config.TLSServerName, "tls-server-name", "",
 		"DNS name the daemon's server certificate is verified against. The cohort is dialed by pod IP, which a certificate issued before the pod existed cannot name.")
-	flags.DurationVar(&config.ReceiptKeyLifetime, "receipt-key-lifetime", 90*24*time.Hour,
-		"How long this epoch's receipt key is valid for. It bounds the window in which a receipt signed under this epoch verifies; the key material itself is retained for as long as any durable state references the epoch.")
 }
 
 // TLSEnabled is all three or none.
@@ -233,16 +229,12 @@ func (config Config) validateWalk() error {
 }
 
 // validateCohortAccess is what attesting needs, whether one step attests or
-// the walk does: the namespace the cohort is enumerated in, a receipt key
-// lifetime, and the client TLS whole or not at all.
+// the walk does: the namespace the cohort is enumerated in and the client TLS
+// whole or not at all.
 func (config Config) validateCohortAccess() error {
 	if strings.TrimSpace(config.Namespace) == "" {
 		return fmt.Errorf("%w: --namespace is required for --mode=%s; the cohort is "+
 			"enumerated from the Kubernetes API", output.ErrIncomplete, config.Mode)
-	}
-	if config.ReceiptKeyLifetime <= 0 {
-		return fmt.Errorf("%w: --receipt-key-lifetime must be positive",
-			output.ErrIncomplete)
 	}
 	var missing []string
 	for _, one := range []struct{ name, value string }{

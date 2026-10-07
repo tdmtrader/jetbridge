@@ -389,11 +389,11 @@ func TestTheHangarLockRuleIsNotVacuous(t *testing.T) {
 		for _, statement := range []string{
 			"SELECT 1 FROM hangar_claims WHERE claim_id = $1 FOR UPDATE",
 			"SELECT 1 FROM hangar_exact_lifecycles WHERE id = $1 FOR NO KEY UPDATE",
-			"select id from hangar_logical_reservations for share",
+			"select id from hangar_input_publications for share",
 			"SELECT 1 FROM hangar_read_leases FOR KEY SHARE",
 			// Case and line breaks are how a second lock site would actually
 			// be written, not how a rule author imagines it.
-			"\n\t\tSELECT 1\n\t\tFROM hangar_capture_reservations\n\t\tWHERE reservation_id = $1\n\t\tfor update\n",
+			"\n\t\tSELECT 1\n\t\tFROM hangar_captures\n\t\tWHERE execution_id = $1\n\t\tfor update\n",
 		} {
 			if !hangarLocksARow(statement) {
 				t.Errorf("the rule did not recognise %q as locking a Hangar row", statement)
@@ -406,7 +406,7 @@ func TestTheHangarLockRuleIsNotVacuous(t *testing.T) {
 			"SELECT 1 FROM builds WHERE id = $1 FOR UPDATE",
 			"SELECT state FROM hangar_exact_lifecycles WHERE id = $1",
 			"UPDATE hangar_claims SET released_at = now() WHERE claim_id = $1",
-			"INSERT INTO hangar_output_receipts (reservation_id) VALUES ($1)",
+			"INSERT INTO hangar_captures (execution_id) VALUES ($1)",
 		} {
 			if hangarLocksARow(statement) {
 				t.Errorf("the rule objected to %q, which locks no Hangar row", statement)
@@ -788,8 +788,8 @@ func TestTheTableRuleIsNotVacuous(t *testing.T) {
 		"UPDATE %s SET release_acknowledged_at = now()":                           {"%s"},
 		"SELECT now()": nil,
 		"INSERT INTO hangar_claims (claim_id) VALUES ($1) ON CONFLICT (claim_id) DO UPDATE SET x = 1": {"hangar_claims"},
-		"SELECT 1 FROM hangar_capture_reservations r LEFT JOIN hangar_capture_attempt_leases l ON l.id = r.id FOR NO KEY UPDATE": {
-			"hangar_capture_reservations", "hangar_capture_attempt_leases",
+		"SELECT 1 FROM hangar_captures c LEFT JOIN hangar_exact_lifecycles l ON l.scope = c.scope FOR NO KEY UPDATE": {
+			"hangar_captures", "hangar_exact_lifecycles",
 		},
 	} {
 		found := hangarTablesNamedBy(statement)
@@ -1185,7 +1185,7 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 // hangarLocksARow above recognises a statement that ASKS for a row lock. That
 // is not the same set as the statements that TAKE one: PostgreSQL acquires FOR
 // NO KEY UPDATE on every row an UPDATE touches and FOR UPDATE on every row a
-// DELETE removes, so a bare `UPDATE hangar_logical_reservations` is a class-1
+// DELETE removes, so a bare `UPDATE hangar_captures` is a class-1
 // acquisition with no lock clause anywhere in it. That is why two writers took
 // the capture class before the logical class for ten phases with the guard
 // above passing: the guard measured the route into the lock rather than the
@@ -1201,21 +1201,20 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 // written for, and it reddens against it.
 
 // hangarTableClass includes the outer activation prefix (0), followed by the
-// four object-lifecycle suffix classes. Activation must precede every suffix.
+// three object-lifecycle suffix classes: the correlation (capture rows and input
+// publications), the exact lifecycle, and the rows subordinate to it (claims and
+// read leases). Activation must precede every suffix.
 //
 // It is checked against LockHangarSuffix's own statements below rather than
 // trusted, so a fifth class, or a table moving between classes, cannot leave
 // this list quietly stale.
 var hangarTableClass = map[string]int{
 	"hangar_output_activation_epochs": 0,
-	"hangar_logical_reservations":     1,
 	"hangar_input_publications":       1,
 	"hangar_captures":                 1,
 	"hangar_exact_lifecycles":         2,
-	"hangar_capture_reservations":     3,
-	"hangar_output_receipts":          4,
-	"hangar_claims":                   4,
-	"hangar_read_leases":              4,
+	"hangar_claims":                   3,
+	"hangar_read_leases":              3,
 }
 
 // hangarRequestFieldClass maps a HangarLockRequest field to the class it names.
@@ -1223,10 +1222,8 @@ var hangarRequestFieldClass = map[string]int{
 	"Logical":     1,
 	"CaptureRows": 1,
 	"Exact":       2,
-	"Captures":    3,
-	"Receipts":    4,
-	"Claims":      4,
-	"ReadLeases":  4,
+	"Claims":      3,
+	"ReadLeases":  3,
 }
 
 // hangarAcquisition is one lock class a function takes, in source order.
@@ -1688,17 +1685,17 @@ func TestTheHangarClassMapMatchesTheHelper(t *testing.T) {
 // TestTheHangarLockRuleIsNotVacuous drives the lock-clause rule.
 func TestTheHangarWriteRuleIsNotVacuous(t *testing.T) {
 	for statement, expected := range map[string]string{
-		"UPDATE hangar_logical_reservations SET state = 'terminal' WHERE reservation_id = $1": "hangar_logical_reservations",
-		"\n\t\tUPDATE hangar_capture_reservations r\n\t\tSET state = 'failed'\n":              "hangar_capture_reservations",
-		"update hangar_read_leases set released_at = now()":                                   "hangar_read_leases",
-		"DELETE FROM hangar_claims WHERE claim_id = $1":                                       "hangar_claims",
-		"delete from hangar_exact_lifecycles where id = $1":                                   "hangar_exact_lifecycles",
+		"UPDATE hangar_captures SET state = 'failed' WHERE execution_id = $1":   "hangar_captures",
+		"\n\t\tUPDATE hangar_input_publications p\n\t\tSET lifecycle_id = $1\n": "hangar_input_publications",
+		"update hangar_read_leases set released_at = now()":                     "hangar_read_leases",
+		"DELETE FROM hangar_claims WHERE claim_id = $1":                         "hangar_claims",
+		"delete from hangar_exact_lifecycles where id = $1":                     "hangar_exact_lifecycles",
 		// A read is not a lock, an insert creates a row nobody can hold, and a
-		// table outside the four classes is outside this order.
-		"SELECT state FROM hangar_logical_reservations WHERE reservation_id = $1": "",
-		"INSERT INTO hangar_claims (claim_id) VALUES ($1)":                        "",
-		"UPDATE hangar_reclaim_jobs SET finalized_at = now() WHERE id = $1":       "",
-		"UPDATE builds SET status = 'succeeded' WHERE id = $1":                    "",
+		// table outside the classes is outside this order.
+		"SELECT state FROM hangar_captures WHERE execution_id = $1":         "",
+		"INSERT INTO hangar_claims (claim_id) VALUES ($1)":                  "",
+		"UPDATE hangar_reclaim_jobs SET finalized_at = now() WHERE id = $1": "",
+		"UPDATE builds SET status = 'succeeded' WHERE id = $1":              "",
 		// The shape that matters most: the table is named several words in,
 		// and a read of an unrelated Hangar table comes first.
 		"UPDATE hangar_exact_lifecycles SET state = 'reclaiming' FROM hangar_reclaim_jobs j WHERE j.id = $1": "hangar_exact_lifecycles",

@@ -16,7 +16,7 @@ package jetbridge
 //     (capture_control_test.go:131), which is a reflect.DeepEqual over the
 //     whole spec with the single legitimate difference named.
 //   - an unselected output still recording `<handle>/<name>`:
-//     TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation
+//     TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsStepDirectory
 //     (daemonset_integration_test.go:2382), whose control is the unselected
 //     output.
 //   - post-completion HIJACK, which Req 18 takes away from a capture-held

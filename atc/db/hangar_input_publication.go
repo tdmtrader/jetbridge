@@ -45,11 +45,11 @@ func (repository *HangarOutputRepository) ReserveInputPublication(ctx context.Co
 	return nil
 }
 
-// RegisterInputPublication consumes one retained nonce and registers its exact
-// signed publication. A consumer acquires its claim and writes its own binding
+// RegisterInputPublication consumes one retained nonce and registers the exact
+// publication the publishing node answered over the authenticated channel. A consumer acquires its claim and writes its own binding
 // in this SAME transaction, committing through HangarCommitError. A retry may
 // return only the original publication; it never changes an exact generation.
-func (repository *HangarOutputRepository) RegisterInputPublication(ctx context.Context, tx output.Tx, publication output.InputPublication, verifier *output.ReceiptSignatureVerifier) error {
+func (repository *HangarOutputRepository) RegisterInputPublication(ctx context.Context, tx output.Tx, publication output.InputPublication) error {
 	if err := publication.Validate(); err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func (repository *HangarOutputRepository) RegisterInputPublication(ctx context.C
 		}
 		return nil
 	}
-	if err := verifier.VerifyInputPublication(publication, stage, nonce); err != nil {
+	if err := publication.For(stage, nonce); err != nil {
 		return err
 	}
 	var fresh bool

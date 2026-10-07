@@ -255,9 +255,8 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
 			// A replacement is a NEW POD UID getting a write-capable mount over
 			// this step's tree, and for a capture-selected step that tree is
-			// the reserved incarnation. Req 16 forbids one over a held source,
-			// and this path has no execution identity to take a writer ticket
-			// with, so it asks the ledger instead.
+			// the capture's step directory. Req 16 forbids one over a held
+			// source, so it asks the ledger.
 			//
 			// This is the OTHER pause-pod replacement site. execProcess's
 			// recreatePausePod covers a pod that died after Run returned; this
@@ -679,7 +678,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := validatePodVolumeMounts(pod); err != nil {
 		return nil, err
 	}
-	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureReservedDirectory(c.containerSpec))); err != nil {
+	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec))); err != nil {
 		return nil, err
 	}
 	return pod, nil
@@ -989,18 +988,15 @@ func (c *Container) buildPodLabels() map[string]string {
 
 // buildPodAnnotations returns annotations for the pod.
 //
-// The reservation is stamped here because a looked-up Container has no
-// ContainerSpec to read it from -- `LookupContainer` builds one with an empty
-// spec -- and the hijack refusal Req 18 requires has to know WHICH directory
-// the capture holds. The handle is a sibling of it, so a guard that fell back
-// to the handle could only ever be told `unmanaged`.
-//
-// The ATC composes nothing: ReservedDirectory came off the wire from
-// `reserve-incarnation` and was validated against the incarnation beside it.
+// The capture's step directory is stamped here because a looked-up Container
+// has no ContainerSpec to read it from -- `LookupContainer` builds one with an
+// empty spec -- and the hijack refusal Req 18 requires has to know WHICH
+// directory the capture holds. The handle is a sibling of it, so a guard that
+// fell back to the handle could only ever be told `unmanaged`.
 func (c *Container) buildPodAnnotations() map[string]string {
 	annotations := map[string]string{}
-	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
-		annotations[captureReservationAnnotation] = reserved
+	if reserved := captureStepDirectory(c.containerSpec); reserved != "" {
+		annotations[captureStepAnnotation] = reserved
 	}
 
 	return annotations
@@ -1232,20 +1228,13 @@ func (c *Container) stepVolume(name, subdir string) corev1.Volume {
 }
 
 // outputVolume is stepVolume for a declared output, with one exception: the ONE
-// output selected for capture mounts the incarnation the output daemon
-// reserved, not this step's own directory.
-//
-// The two used to be the same call and that was the seam Phase 4 found. A
-// capture-selected producer wrote into `steps/<handle>/<output>` while the
-// daemon's hold protected `steps/<execution>.<generation>/<output>` -- sibling
-// directories -- so the capture sealed an empty tree and every path-keyed guard
-// correctly answered "unmanaged" about the bytes that mattered.
-//
-// The ATC chooses nothing here. `ReservedDirectory` came off the wire from
-// `reserve-incarnation`, was validated against the incarnation it carries, and
-// is repeated. Req 7 holds because the daemon named the path.
+// output selected for capture mounts the capture's step directory,
+// `steps/<execution>.capture/<output>`, not this step's own directory. That
+// is the directory the node's held marker protects and its seal reads; the
+// path is derived from the capture (CaptureKey.Directory), exactly as the
+// daemon derives it, and no caller chooses it.
 func (c *Container) outputVolume(name, outputName string) corev1.Volume {
-	reserved := captureReservedDirectory(c.containerSpec)
+	reserved := captureStepDirectory(c.containerSpec)
 	if reserved == "" || outputName != captureSelectedOutputName(c.containerSpec) {
 		return c.stepVolume(name, outputName)
 	}
@@ -1257,7 +1246,7 @@ func (c *Container) outputVolume(name, outputName string) corev1.Volume {
 		return emptyDirVolume(name)
 	}
 
-	return c.storageBackend.ReservedIncarnationVolume(name, reserved)
+	return c.storageBackend.CaptureStepVolume(name, reserved)
 }
 
 // inputVolumeName is shared by Pod construction and managed-read admission.

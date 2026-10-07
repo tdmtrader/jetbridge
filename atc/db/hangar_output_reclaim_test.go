@@ -54,7 +54,8 @@ var _ = Describe("reclaiming an exact generation", func() {
 	published := func(digest hangar.Digest, generation int64) hangar.TreeRef {
 		GinkgoHelper()
 		capture := hangarPublishAt(ctx, repository, digest, generation,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 		hangarReleaseSource(ctx, repository, capture)
 		hangarAgeCapture(capture, 48*time.Hour)
 
@@ -252,7 +253,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 
 			// A second capture of the same content opens and does not resolve.
 			hangarReserve(ctx, repository, digest,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 
 			tx := begin()
 			defer db.Rollback(tx)
@@ -789,19 +790,18 @@ var _ = Describe("reclaiming an exact generation", func() {
 	})
 })
 
-// A release intent implies a terminal capture, enforced by the row.
+// A release implies a terminal capture, enforced by the row.
 //
-// The rule used to be an extra WHERE clause in the acknowledgement statement
-// and it could refuse nothing: all three writers of release_intent_id set a
-// terminal state in the same statement, so deleting the clause entirely left
-// every suite green. It is a CHECK now, which is a rule about the row rather
-// than about one path to it -- and which a spec can actually put a row in front
-// of.
+// Every production writer of released_at (SetReleased) names the terminal
+// states in its WHERE clause, so deleting that clause would leave every
+// repository spec green. It is a CHECK on the row, which is a rule about the
+// row rather than about one path to it -- and which a spec can actually put a
+// row in front of.
 //
 // The writes here are deliberately RAW. Every production path satisfies the
 // invariant already; what has to be proved is that a path which did not would
 // be stopped, and the only way to arrange that is to be the path.
-var _ = Describe("a release intent on a capture reservation", func() {
+var _ = Describe("a release on a capture row", func() {
 	var (
 		ctx        context.Context
 		repository *db.HangarOutputRepository
@@ -817,31 +817,34 @@ var _ = Describe("a release intent on a capture reservation", func() {
 
 	It("is refused while the capture is still live, and admitted once it is terminal", func() {
 		capture := hangarPublishAt(ctx, repository, hangarDigest(70), 1725830823000070,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
 
-		// The control: the row exists and is terminal, so an intent on it is
+		// The control: the row exists and is terminal, so a release on it is
 		// legal. Without this the refusal below could be the row being missing.
-		_, err := dbConn.Exec(`
-			UPDATE hangar_capture_reservations SET release_intent_id = gen_random_uuid()
-			 WHERE handoff_id = $1`, string(capture.HandoffID))
+		result, err := dbConn.Exec(`
+			UPDATE hangar_captures SET released_at = now()
+			 WHERE execution_id = $1 AND output_name = $2`,
+			string(capture.Key.ExecutionID), string(capture.Key.Output))
 		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RowsAffected()).To(BeEquivalentTo(1))
 
 		var state string
 		Expect(dbConn.QueryRow(`
-			SELECT state FROM hangar_capture_reservations WHERE handoff_id = $1`,
-			string(capture.HandoffID)).Scan(&state)).To(Succeed())
-		Expect(state).To(Equal("registered"))
+			SELECT state FROM hangar_captures WHERE execution_id = $1 AND output_name = $2`,
+			string(capture.Key.ExecutionID), string(capture.Key.Output)).Scan(&state)).To(Succeed())
+		Expect(state).To(Equal("published"))
 
 		// And now a live one. A capture still being written owes no release:
 		// its source is held BECAUSE it is being written, and an unsealed tree
 		// released mid-write is the seam Phase 4 closed.
 		live := hangarReserve(ctx, repository, hangarDigest(71),
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
 		_, err = dbConn.Exec(`
-			UPDATE hangar_capture_reservations SET release_intent_id = gen_random_uuid()
-			 WHERE handoff_id = $1`, string(live.HandoffID))
+			UPDATE hangar_captures SET released_at = now()
+			 WHERE execution_id = $1 AND output_name = $2`,
+			string(live.Key.ExecutionID), string(live.Key.Output))
 		Expect(err).To(HaveOccurred(),
-			"a release intent was recorded for a capture that is not terminal at all")
-		Expect(err.Error()).To(ContainSubstring("hangar_release_intent_implies_terminal"))
+			"a release was recorded for a capture that is not terminal at all")
+		Expect(err.Error()).To(ContainSubstring("violates check constraint"))
 	})
 })

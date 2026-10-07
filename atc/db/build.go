@@ -726,28 +726,18 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 		}
 		var outputPending bool
 		if err = tx.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM pipeline_run_output_starts s
-			LEFT JOIN pipeline_run_output_finishes f USING(handoff_id)
-			LEFT JOIN pipeline_run_output_releases l USING(handoff_id)
-			LEFT JOIN hangar_capture_reservations c USING(handoff_id)
-			LEFT JOIN pipeline_run_output_candidates candidate USING(handoff_id)
-			LEFT JOIN pipeline_run_output_discards discarded USING(handoff_id)
-			LEFT JOIN hangar_no_capture_dispositions n USING(handoff_id)
-			LEFT JOIN hangar_pre_reservation_cancel_dispositions x USING(handoff_id)
-			WHERE s.build_id=$1 AND NOT coalesce(CASE f.disposition
-				WHEN 'no_capture' THEN l.handoff_id IS NOT NULL AND n.release_acknowledged_at IS NOT NULL AND $2 IN ('failed','errored','aborted')
-				WHEN 'pre_reservation_cancel' THEN x.finalized_at IS NOT NULL AND (NOT x.source_reserved OR l.handoff_id IS NOT NULL) AND $2='aborted'
-				WHEN 'capture' THEN l.handoff_id IS NOT NULL AND c.release_acknowledged_at IS NOT NULL AND (
-					(c.state IN ('failed','cancelled') AND $2 IN ('failed','errored','aborted')) OR
-					(c.state='registered' AND (
-						(candidate.handoff_id IS NOT NULL AND $2 IN ('succeeded','failed','errored') AND NOT $3) OR
-						((candidate.handoff_id IS NOT NULL OR discarded.handoff_id IS NOT NULL) AND $2='aborted' AND $3))))
-				ELSE false END,false))`, b.id, string(status), aborted).Scan(&outputPending); err != nil {
+			SELECT 1 FROM pipeline_run_captures s
+			JOIN hangar_captures c USING (execution_id, output_name)
+			WHERE s.build_id=$1 AND NOT CASE c.state
+				WHEN 'published' THEN ($2 IN ('succeeded','failed','errored') AND NOT $3) OR ($2='aborted' AND $3)
+				WHEN 'discarded' THEN $2 IN ('failed','errored','aborted')
+				WHEN 'failed' THEN $2 IN ('failed','errored','aborted')
+				ELSE false END)`, b.id, string(status), aborted).Scan(&outputPending); err != nil {
 			return err
 		}
-		// Run-owned disposition must precede an externally terminal build.
-		// Non-success requires exact source-release closure. A successful
-		// capture also requires its retained hidden candidate. Aggregate result
+		// A Run-owned capture must settle before an externally terminal build:
+		// a published capture for a build that ran to completion, or one that
+		// was discarded or failed for a build that did not succeed. Aggregate result
 		// publication remains the Run terminalizer's separate transaction.
 		// Aborting a build is scoped to that build: open work it cannot close
 		// itself becomes its build closure, never its Run's cancellation.

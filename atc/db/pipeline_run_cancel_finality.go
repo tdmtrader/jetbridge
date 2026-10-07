@@ -17,7 +17,11 @@ import (
 // Its caller holds no transaction; notifications happen after commit.
 func (f *pipelineRunFactory) ExecuteCancellationFinality(ctx context.Context, lease RunCancellationLease, op RunCancellationOperation) (RunCancellationDebt, error) {
 	switch op.Kind {
-	case CancelBuild, CancelCandidate, CancelTerminalize:
+	case CancelBuild, CancelCandidate, CancelTerminalize, CancelHandoff:
+	case CancelCapture, CancelSourceHold:
+		// Kinds of the handoff era. Nothing discovers them any more; an
+		// operation recorded before the upgrade has nothing left to do.
+		return CancellationDone, nil
 	default:
 		return CancellationUnavailable, ErrRunCancellationExternalWork
 	}
@@ -68,12 +72,15 @@ func (c *runCancellationCommit) perform(ctx context.Context) (bool, error) {
 	}
 	defer Rollback(tx)
 	var ready bool
-	if op.Kind == CancelTerminalize {
+	switch op.Kind {
+	case CancelTerminalize:
 		if op.Subject != strconv.Itoa(op.RunID) {
 			return false, output.ErrInvalidIdentity
 		}
 		ready, err = f.finalizeOutputRun(ctx, tx, op.RunID, c)
-	} else {
+	case CancelHandoff:
+		ready, err = c.settleCapture(ctx, tx)
+	default:
 		ready, err = c.settleCandidate(ctx, tx)
 	}
 	if err != nil || !ready {
@@ -121,13 +128,23 @@ func (c *runCancellationCommit) lockRun(ctx context.Context, tx Tx) error {
 		return nil
 	}
 	// Without Run cancellation, only an open build closure may finish its own
-	// build. Candidates and terminal publication still need the cancellation.
-	if c.op.Kind != CancelBuild {
+	// build or discard its own capture. Candidates and terminal publication
+	// still need the cancellation.
+	var id int
+	switch c.op.Kind {
+	case CancelBuild:
+		parsed, err := strconv.Atoi(c.op.Subject)
+		if err != nil {
+			return output.ErrInvalidIdentity
+		}
+		id = parsed
+	case CancelHandoff:
+		if err := tx.QueryRowContext(ctx, `SELECT build_id FROM pipeline_run_captures
+ WHERE run_id=$1 AND execution_id::text||'/'||output_name=$2`, c.op.RunID, c.op.Subject).Scan(&id); err != nil {
+			return err
+		}
+	default:
 		return ErrRunCancellationProgressStale
-	}
-	id, err := strconv.Atoi(c.op.Subject)
-	if err != nil {
-		return output.ErrInvalidIdentity
 	}
 	open, err := buildHasOpenClosure(ctx, tx, id)
 	if err != nil {
@@ -152,7 +169,8 @@ func (c *runCancellationCommit) prepareBuild(ctx context.Context, tx Tx, buildID
 	var completed, closed bool
 	var status BuildStatus
 	if err := tx.QueryRowContext(ctx, `SELECT completed,status,
- run_execution_closed(b.id) AND NOT EXISTS(SELECT 1 FROM pipeline_run_output_starts s WHERE s.build_id=b.id AND NOT run_output_closed(s.handoff_id))
+ run_execution_closed(b.id) AND NOT EXISTS(SELECT 1 FROM pipeline_run_captures s JOIN hangar_captures h USING(execution_id, output_name)
+  WHERE s.build_id=b.id AND h.state IN ('pending','publishing'))
  FROM builds b WHERE id=$1 AND pipeline_run_id=$2`, buildID, c.op.RunID).Scan(&completed, &status, &closed); err != nil {
 		return false, err
 	}
@@ -166,6 +184,48 @@ func (c *runCancellationCommit) prepareBuild(ctx context.Context, tx Tx, buildID
 	return false, err
 }
 
+// settleCapture is a cancellation's whole effect on a capture: a pending one
+// is discarded, a publishing one is waited for -- past publishing, a
+// cancellation does not undo publication -- and a settled one is done. The
+// node's marker is released by the capture coordinator's release pass.
+func (c *runCancellationCommit) settleCapture(ctx context.Context, tx Tx) (bool, error) {
+	if err := c.lockRun(ctx, tx); err != nil {
+		return false, err
+	}
+	var execution, outputName string
+	if err := tx.QueryRowContext(ctx, `SELECT execution_id::text, output_name FROM pipeline_run_captures
+ WHERE run_id=$1 AND execution_id::text||'/'||output_name=$2`, c.op.RunID, c.op.Subject).Scan(&execution, &outputName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, output.ErrInvalidIdentity
+		}
+		return false, err
+	}
+	key := output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(execution), Output: output.OutputName(outputName)}
+	repository := runCaptureOutputRepository()
+	capture, err := repository.GetCapture(ctx, tx, key)
+	if err != nil {
+		return false, err
+	}
+	switch capture.State {
+	case output.CapturePublishing:
+		return false, nil
+	case output.CapturePending:
+		reason := output.DiscardBuildAborted
+		var cancelled bool
+		if err := tx.QueryRowContext(ctx, `SELECT cancel_requested_at IS NOT NULL FROM pipeline_runs WHERE id=$1`, c.op.RunID).Scan(&cancelled); err != nil {
+			return false, err
+		}
+		if cancelled {
+			reason = output.DiscardRunCancelled
+		}
+		if _, err := repository.CASPendingToDiscarded(ctx, tx, key, reason); err != nil {
+			return false, err
+		}
+	}
+
+	return true, c.check(ctx, tx)
+}
+
 func (c *runCancellationCommit) settleCandidate(ctx context.Context, tx Tx) (bool, error) {
 	if err := c.lockRun(ctx, tx); err != nil {
 		return false, err
@@ -177,13 +237,6 @@ func (c *runCancellationCommit) settleCandidate(ctx context.Context, tx Tx) (boo
 	for _, candidate := range candidates {
 		if string(candidate.ClaimID) != c.op.Subject {
 			continue
-		}
-		var closed bool
-		if err := tx.QueryRowContext(ctx, `SELECT run_output_closed($1)`, string(candidate.Handoff)).Scan(&closed); err != nil {
-			return false, err
-		}
-		if !closed {
-			return false, nil
 		}
 		if _, err := lockRunCandidateClaims(ctx, tx, []runCandidate{candidate}); err != nil {
 			return false, err

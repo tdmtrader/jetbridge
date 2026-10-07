@@ -135,11 +135,11 @@ func (s *Server) publishInput(w http.ResponseWriter, r *http.Request) {
 		readRefusal(w, err)
 		return
 	}
-	publication, err := s.daemon.signer.SignInputPublication(output.InputPublication{
+	publication := output.InputPublication{
 		Stage: entry.identity, Nonce: request.Nonce, Attributes: output.AttributesFromFoundation(object.Attributes),
 		Metageneration: object.Metageneration, Marker: object.Marker.Metadata(),
-	})
-	if err != nil {
+	}
+	if err := publication.Validate(); err != nil {
 		readRefusal(w, err)
 		return
 	}

@@ -123,8 +123,10 @@ func (s *OutputSource) StopExecution(ctx context.Context, name, uid string, epoc
 	return client.RequestStop(ctx, id)
 }
 
-func (s *OutputSource) CaptureControl(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch) (hangaroutput.SourceControl, error) {
-	return s.recoveryClient(ctx, name, uid, epoch)
+// CaptureControl dials the node a capture row names, refusing a node replaced
+// under the same name.
+func (s *OutputSource) CaptureControl(ctx context.Context, name string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+	return s.exactClient(ctx, name, string(uid))
 }
 
 func (s *OutputSource) recoveryClient(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch) (*OutputControlClient, error) {
@@ -188,56 +190,43 @@ func (s *OutputSource) exactClient(ctx context.Context, name, uid string) (*Outp
 	return s.controls.clientForNode(ctx, name)
 }
 
-func (s *OutputSource) ReserveSource(ctx context.Context, name, uid string, admission output.CaptureAdmission) (output.ReservedIncarnation, error) {
-	if err := admission.Validate(); err != nil {
-		return output.ReservedIncarnation{}, err
+// RuntimeControl admits a capture's exact execution on the capture's node and
+// composes the envelope its Pod is built from: the base grant, and the capture
+// control init's one hold grant. The node must be the one the capture row
+// names, by name and by UID; the step directory is derived, not chosen.
+func (s *OutputSource) RuntimeControl(ctx context.Context, capture output.Capture) (*runtime.ExecutionControl, error) {
+	if capture.State != output.CapturePending {
+		return nil, fmt.Errorf("%w: capture %s is %s; only a pending capture admits a producer",
+			output.ErrConflict, capture.Key, capture.State)
 	}
-	if admission.ActivationEpoch != s.controls.epoch {
-		return output.ReservedIncarnation{}, fmt.Errorf("%w: source epoch differs from runtime", output.ErrConflict)
-	}
-	client, err := s.exactClient(ctx, name, uid)
+	client, err := s.exactClient(ctx, capture.Node, string(capture.NodeUID))
 	if err != nil {
-		return output.ReservedIncarnation{}, err
+		return nil, err
 	}
-	capability, err := client.MintGrant(executioncontrol.BaseFacet, "observe", admission.Execution)
+	baseGrant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", capture.Execution)
 	if err != nil {
-		return output.ReservedIncarnation{}, err
+		return nil, err
 	}
 	if _, err := client.Admit(ctx, executioncontrol.Envelope{
-		ProtocolVersion: executioncontrol.ProtocolVersion, Identity: admission.Execution,
-		ActivationEpoch: admission.ActivationEpoch, NodeUID: executioncontrol.NodeUID(uid), Capability: capability,
+		ProtocolVersion: executioncontrol.ProtocolVersion, Identity: capture.Execution,
+		ActivationEpoch: s.controls.epoch, NodeUID: capture.NodeUID, Capability: baseGrant,
 	}); err != nil {
-		return output.ReservedIncarnation{}, err
-	}
-	return client.ReserveIncarnation(ctx, admission)
-}
-
-func (s *OutputSource) RuntimeControl(ctx context.Context, name string, record output.HandoffRecord) (*runtime.ExecutionControl, error) {
-	if !record.Source.Reserved() || record.Source.Locator != name || record.ActivationEpoch != s.controls.epoch {
-		return nil, fmt.Errorf("%w: no matching reserved runtime source", output.ErrInvalidIdentity)
-	}
-	client, err := s.exactClient(ctx, name, string(record.Source.Incarnation.NodeUID))
-	if err != nil {
 		return nil, err
 	}
-	baseGrant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", record.Execution)
-	if err != nil {
-		return nil, err
-	}
-	holdGrant, err := client.MintGrant(output.CaptureFacet, "hold", record.Execution)
+	holdGrant, err := client.MintGrant(output.CaptureFacet, "hold", capture.Execution)
 	if err != nil {
 		return nil, err
 	}
 	control := &runtime.ExecutionControl{
 		Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted,
-		Identity: record.Execution, ActivationEpoch: record.ActivationEpoch,
+		Identity: capture.Execution, ActivationEpoch: s.controls.epoch,
 		Endpoint: client.endpoint, Capability: baseGrant,
 	}
 	err = control.SelectCapture(runtime.DurableOutputCapture{
-		Version: runtime.DurableOutputCaptureVersion, Identity: record.Execution, ActivationEpoch: record.ActivationEpoch,
-		HandoffID: record.HandoffID, SourceHoldID: record.SourceHoldID, Output: string(record.Output),
-		SourceControlGrant: holdGrant, CaptureDeadline: record.CaptureDeadline.Time,
-		ReservedIncarnation: record.Source.Incarnation, ReservedDirectory: record.Source.Directory, ReservingNode: name,
+		Version: runtime.DurableOutputCaptureVersion, Identity: capture.Execution,
+		ActivationEpoch: s.controls.epoch, Output: string(capture.Key.Output),
+		SourceControlGrant: holdGrant, CaptureDeadline: capture.CaptureDeadline,
+		Node: capture.Node, NodeUID: capture.NodeUID,
 	})
 	return control, err
 }

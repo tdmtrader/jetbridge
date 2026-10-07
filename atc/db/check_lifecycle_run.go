@@ -23,10 +23,10 @@ const inertRunCheckEvidence = `
 	b.completed AND b.pipeline_run_id IS NOT NULL AND b.run_job_name IS NULL
 	AND NOT EXISTS (
 	  SELECT 1 FROM pipeline_run_executions other
-	  WHERE other.build_id = b.id AND (other.kind NOT IN ('check', 'get') OR other.handoff_id IS NOT NULL OR NOT EXISTS (
+	  WHERE other.build_id = b.id AND (other.kind NOT IN ('check', 'get') OR other.capture_output IS NOT NULL OR NOT EXISTS (
 	    SELECT 1 FROM pipeline_run_execution_closures c
 	    WHERE c.execution_id = other.execution_id AND c.execution_fence = other.execution_fence)))
-	AND NOT EXISTS (SELECT 1 FROM pipeline_run_output_starts s WHERE s.build_id = b.id)`
+	AND NOT EXISTS (SELECT 1 FROM pipeline_run_captures s WHERE s.build_id = b.id)`
 
 // closedRunChecks selects executed Run checks whose execution evidence is
 // inert, and which the ordinary rules would collect: a resource check that

@@ -59,14 +59,11 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 		return conn
 	}
 
-	deadline := func() output.Timestamp {
-		return output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline))
-	}
+	deadline := func() time.Duration { return output.DefaultCaptureDeadline }
 
 	// holdLogical takes class 1 for one correlation on its own connection and
-	// leaves it held, which is exactly where RegisterReceipt and
-	// ResolveLogicalReservation are between their first suffix statement and
-	// their third.
+	// leaves it held, which is exactly where CASPublishingToPublished is
+	// between its first suffix statement and its capture-row statement.
 	holdLogical := func(key db.HangarLogicalKey) db.Tx {
 		GinkgoHelper()
 
@@ -83,25 +80,23 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 		return tx
 	}
 
-	// takeCaptureClass is the publisher's third suffix statement: the capture
-	// row of the same reservation, reached while it still holds class 1. A
-	// writer that took class 3 first and is now reaching back for class 1 turns
-	// this into a cycle, and PostgreSQL says so.
-	takeCaptureClass := func(tx db.Tx, reservation output.ReservationID) error {
+	// takeCaptureClass is the publisher's capture-row statement: the row of
+	// the same capture, reached while it still holds class 1. A writer that
+	// took the row first and is now reaching back for class 1 turns this into
+	// a cycle, and PostgreSQL says so.
+	takeCaptureClass := func(tx db.Tx, key output.CaptureKey) error {
 		_, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
-			Captures: []output.ReservationID{reservation},
+			CaptureRows: []output.CaptureKey{key},
 		})
 
 		return err
 	}
 
 	Describe("a terminal capture failure against a publisher holding the logical row", func() {
-		// F1, first half. RecordTerminalCaptureFailure used to take
-		// HangarLockRequest{Captures} -- class 3 -- and then UPDATE the logical
-		// reservation through hangarTerminalizeLogical, which is class 1 taken
-		// after class 3. Against a publisher holding class 1 and reaching for
-		// class 3 that is an ABBA, and it was reproduced as SQLSTATE 40P01 on
-		// two connections before this spec existed.
+		// F1. A failure that took the capture row and then reached back for
+		// the logical class would be an ABBA against a publisher holding class
+		// 1 and reaching for the row. MarkFailed takes the row alone, and the
+		// row is one of the rows class 1 holds, so it waits.
 		It("waits for the logical row instead of deadlocking against the publisher", func() {
 			digest := hangarDigest(61)
 			capture := hangarReserve(ctx, repository, digest, deadline())
@@ -119,8 +114,7 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 					return
 				}
 				defer db.Rollback(tx)
-				if err := repository.RecordTerminalCaptureFailure(ctx, tx,
-					capture.ReservationID, 1, "seal_unconfirmed"); err != nil {
+				if _, err := repository.MarkFailed(ctx, tx, capture.Key, "seal_unconfirmed"); err != nil {
 					done <- err
 
 					return
@@ -129,15 +123,14 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 			}()
 
 			Consistently(done, time.Second, 50*time.Millisecond).ShouldNot(Receive(),
-				"the terminal failure finished without ever meeting the logical row the "+
-					"publisher holds, so it wrote the logical half outside the order")
+				"the terminal failure finished without ever meeting the capture row the "+
+					"publisher's logical class holds")
 
-			// The publisher now reaches for class 3, which is what it does four
-			// statements into its own suffix. Before the fix this returned
-			// `deadlock detected`.
-			Expect(takeCaptureClass(publisher, capture.ReservationID)).To(Succeed(),
-				"the publisher's class-3 acquisition deadlocked; the terminal failure holds "+
-					"class 3 and is reaching back for class 1, which is the ABBA the lock "+
+			// The publisher now reaches for the capture row, which is what it
+			// does inside its own suffix.
+			Expect(takeCaptureClass(publisher, capture.Key)).To(Succeed(),
+				"the publisher's capture-row acquisition deadlocked; the terminal failure holds "+
+					"the row and is reaching back for class 1, which is the ABBA the lock "+
 					"order exists to forbid")
 			Expect(publisher.Commit()).To(Succeed())
 
@@ -147,74 +140,14 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 
 			var state string
 			Expect(dbConn.QueryRow(`
-				SELECT state FROM hangar_logical_reservations WHERE reservation_id = $1`,
-				string(capture.ReservationID)).Scan(&state)).To(Succeed())
-			Expect(state).To(Equal("terminal"))
-		})
-	})
-
-	Describe("a cancellation against a publisher holding the logical row", func() {
-		// F1, second half. CancelOrSettle took no suffix at all: a bare UPDATE
-		// of the capture row followed by a bare UPDATE of the logical row is
-		// class 3 then class 1, with nothing on the way in to say so.
-		It("waits for the logical row instead of deadlocking against the publisher", func() {
-			digest := hangarDigest(62)
-			capture := hangarReserveBeforePublishPoint(ctx, repository, digest, deadline())
-			key := db.HangarLogicalKey{Scope: "team-a", Digest: digest}
-
-			publisher := holdLogical(key)
-
-			done := make(chan error, 1)
-			go func() {
-				defer GinkgoRecover()
-				tx, err := dbConn.Begin()
-				if err != nil {
-					done <- err
-
-					return
-				}
-				defer db.Rollback(tx)
-				status, err := repository.CancelOrSettle(ctx, tx, capture.HandoffID)
-				if err != nil {
-					done <- err
-
-					return
-				}
-				if status.PastIrreversiblePublishPoint {
-					done <- tx.Rollback()
-
-					return
-				}
-				done <- tx.Commit()
-			}()
-
-			Consistently(done, time.Second, 50*time.Millisecond).ShouldNot(Receive(),
-				"the cancellation finished without ever meeting the logical row the publisher "+
-					"holds, so it wrote the logical half outside the order")
-
-			Expect(takeCaptureClass(publisher, capture.ReservationID)).To(Succeed(),
-				"the publisher's class-3 acquisition deadlocked against the cancellation, "+
-					"which holds class 3 and is reaching back for class 1")
-			Expect(publisher.Commit()).To(Succeed())
-
-			var failure error
-			Eventually(done, 30*time.Second).Should(Receive(&failure))
-			Expect(failure).NotTo(HaveOccurred())
-
-			var captureState, logicalState string
-			Expect(dbConn.QueryRow(`
-				SELECT r.state, g.state
-				FROM hangar_capture_reservations r
-				JOIN hangar_logical_reservations g ON g.reservation_id = r.reservation_id
-				WHERE r.reservation_id = $1`,
-				string(capture.ReservationID)).Scan(&captureState, &logicalState)).To(Succeed())
-			Expect(captureState).To(Equal("cancelled"))
-			Expect(logicalState).To(Equal("terminal"))
+				SELECT state FROM hangar_captures WHERE execution_id = $1 AND output_name = $2`,
+				string(capture.Key.ExecutionID), string(capture.Key.Output)).Scan(&state)).To(Succeed())
+			Expect(state).To(Equal("failed"))
 		})
 	})
 
 	Describe("a read-lease renewal against a reclaim admission", func() {
-		// F2. The renewal took class 4 alone and AdmitReclaim takes classes 1
+		// F2. The renewal took class 3 alone and AdmitReclaim takes classes 1
 		// and 2, so the two took DISJOINT lock sets and nothing serialized
 		// them. The deferred hangar_reclaim_exclusion trigger is a snapshot
 		// read, not a mutex: with the renewal still uncommitted, the
@@ -227,8 +160,8 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 		// code, which is how this survived ten phases.
 		It("blocks the admission on the renewal's own lock rather than on a deferred trigger", func() {
 			digest := hangarDigest(63)
-			reservation, ref := hangarPublish(ctx, repository, digest, 1725830823000063)
-			Expect(reservation).NotTo(BeEmpty())
+			capture, ref := hangarPublish(ctx, repository, digest, 1725830823000063)
+			Expect(capture.Validate()).To(Succeed())
 			hangarAgePublication(ref, hangarGraceElapsed)
 
 			claimID := output.ClaimID(uuid.NewString())
@@ -326,18 +259,19 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 	})
 
 	Describe("the capture class of the suffix", func() {
-		// F3. Class 3 was pinned by nothing: deleting `FOR NO KEY UPDATE` from
-		// the class-3 statement left 138 specs green. This is the NOWAIT arm
-		// the AC 11 specs already use for classes 1 and 2, applied to class 3:
-		// a holder takes the capture row, and a third connection asks whether
-		// it is really held.
+		// F3. The capture-row statement (class 1, after the correlations) was
+		// once pinned by nothing: deleting `FOR NO KEY UPDATE` from it left 138
+		// specs green. This is the NOWAIT arm the AC 11 specs already use for
+		// the correlation and exact classes, applied to a capture row named by
+		// key: a holder takes the row, and a third connection asks whether it
+		// is really held.
 		It("really holds the capture row it says it locked", func() {
 			digest := hangarDigest(64)
 			capture := hangarReserve(ctx, repository, digest, deadline())
 
 			const probeCapture = `
-				SELECT 1 FROM hangar_capture_reservations
-				WHERE reservation_id = $1
+				SELECT 1 FROM hangar_captures
+				WHERE execution_id = $1 AND output_name = $2
 				FOR NO KEY UPDATE NOWAIT`
 			probe := func() error {
 				tx, err := dbConn.Begin()
@@ -345,7 +279,7 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 					return err
 				}
 				defer db.Rollback(tx)
-				_, err = tx.Exec(probeCapture, string(capture.ReservationID))
+				_, err = tx.Exec(probeCapture, string(capture.Key.ExecutionID), string(capture.Key.Output))
 
 				return err
 			}
@@ -358,13 +292,13 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(holder)
 			_, err = db.LockHangarSuffix(ctx, holder, consumer, db.HangarLockRequest{
-				Captures: []output.ReservationID{capture.ReservationID},
+				CaptureRows: []output.CaptureKey{capture.Key},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(probe()).To(MatchError(ContainSubstring("55P03")),
-				"the class-3 statement returned without taking the row lock it names, so the "+
-					"capture class of the suffix is a comment")
+				"the capture-row statement returned without taking the row lock it names, so the "+
+					"capture rows of the suffix are a comment")
 
 			Expect(holder.Rollback()).To(Succeed())
 			Expect(probe()).To(Succeed())
@@ -376,14 +310,14 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 		It("locks capture rows in sorted order when the batch arrives reversed", func() {
 			first := hangarReserve(ctx, repository, hangarDigest(65), deadline())
 			other := hangarReserve(ctx, repository, hangarDigest(66), deadline())
-			low, high := first.ReservationID, other.ReservationID
-			if high < low {
+			low, high := first.Key, other.Key
+			if high.String() < low.String() {
 				low, high = high, low
 			}
 
 			const lockCapture = `
-				SELECT 1 FROM hangar_capture_reservations
-				WHERE reservation_id = $1
+				SELECT 1 FROM hangar_captures
+				WHERE execution_id = $1 AND output_name = $2
 				FOR NO KEY UPDATE`
 			probeFirst := func() error {
 				tx, err := dbConn.Begin()
@@ -391,7 +325,7 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 					return err
 				}
 				defer db.Rollback(tx)
-				_, err = tx.Exec(lockCapture+" NOWAIT", string(low))
+				_, err = tx.Exec(lockCapture+" NOWAIT", string(low.ExecutionID), string(low.Output))
 
 				return err
 			}
@@ -401,7 +335,7 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 			holder, err := holding.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(holder)
-			_, err = holder.Exec(lockCapture, string(high))
+			_, err = holder.Exec(lockCapture, string(high.ExecutionID), string(high.Output))
 			Expect(err).NotTo(HaveOccurred())
 
 			done := make(chan error, 1)
@@ -415,14 +349,14 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 				}
 				defer db.Rollback(tx)
 				_, err = db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
-					Captures: []output.ReservationID{high, high, low},
+					CaptureRows: []output.CaptureKey{high, high, low},
 				})
 				done <- err
 			}()
 
 			Eventually(probeFirst, 10*time.Second, 50*time.Millisecond).Should(
 				MatchError(ContainSubstring("55P03")),
-				"the reservation that sorts first was never locked while the helper blocked on "+
+				"the capture that sorts first was never locked while the helper blocked on "+
 					"the one that sorts second, so the helper took the batch as handed")
 
 			Expect(holder.Rollback()).To(Succeed())

@@ -4,7 +4,7 @@
 //
 // It is an INTERNAL command, run as a one-shot Kubernetes Job under its own
 // service account and its own least-privilege PostgreSQL role. There is
-// deliberately no public HTTP activation endpoint and no receipt private key
+// deliberately no public HTTP activation endpoint and no node private key
 // mounted into any activation Job: the epoch row is the plane's single
 // authority, and an authority reachable over the API is one an exploit of the
 // web node inherits.
@@ -264,9 +264,8 @@ func walk(ctx context.Context, epochs activation.Epochs,
 			name:      config.DaemonSetName,
 			selector:  config.DaemonSelector,
 		},
-		ReceiptKeyLifetime: config.ReceiptKeyLifetime,
-		ReadinessTimeout:   config.ReadinessTimeout,
-		Out:                out,
+		ReadinessTimeout: config.ReadinessTimeout,
+		Out:              out,
 	}
 
 	return walker.Walk(ctx, epoch, config.Target, config.Finalize)
@@ -313,14 +312,7 @@ func attest(ctx context.Context, config Config,
 		return activation.AttestBase(ctx, source, handshaker, epoch)
 	}
 
-	evidence, err := activation.AttestOutput(ctx, source, handshaker, epoch)
-	if err != nil {
-		return activation.Evidence{}, err
-	}
-	evidence.ReceiptKeyValidFrom = time.Now().UTC()
-	evidence.ReceiptKeyValidUntil = evidence.ReceiptKeyValidFrom.Add(config.ReceiptKeyLifetime)
-
-	return evidence, nil
+	return activation.AttestOutput(ctx, source, handshaker, epoch)
 }
 
 // podCohort enumerates the output daemon's pods from the Kubernetes API.

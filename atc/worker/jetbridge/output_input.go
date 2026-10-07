@@ -43,12 +43,13 @@ func (c *OutputControlClient) StageInput(ctx context.Context, node executioncont
 	return stage, nil
 }
 
-// PublishInput returns signed publication evidence, not a Run binding or claim.
-// Consumer registration must recheck its retained nonce and ownership atomically.
-func (c *OutputControlClient) PublishInput(ctx context.Context, stage output.InputStage, nonce string, verifier *output.ReceiptSignatureVerifier) (output.InputPublication, error) {
+// PublishInput returns the node's publication, answered over the mutually
+// authenticated connection, not a Run binding or claim. Consumer registration
+// must recheck its retained nonce and ownership atomically.
+func (c *OutputControlClient) PublishInput(ctx context.Context, stage output.InputStage, nonce string) (output.InputPublication, error) {
 	var publication output.InputPublication
 	request := output.InputPublishRequest{Version: output.InputPublicationVersion, ReservationID: stage.ReservationID, Nonce: nonce}
-	if verifier == nil || stage.Validate() != nil || stage.ActivationEpoch != c.epoch || request.Validate() != nil {
+	if stage.Validate() != nil || stage.ActivationEpoch != c.epoch || request.Validate() != nil {
 		return publication, output.ErrIncomplete
 	}
 	response, err := c.postRead(ctx, "/input/v1/publish", request)
@@ -62,7 +63,7 @@ func (c *OutputControlClient) PublishInput(ctx context.Context, stage output.Inp
 	if err := decodeInputResponse(response.Body, &publication); err != nil {
 		return publication, err
 	}
-	if err := verifier.VerifyInputPublication(publication, stage, nonce); err != nil {
+	if err := publication.For(stage, nonce); err != nil {
 		return output.InputPublication{}, err
 	}
 	return publication, nil

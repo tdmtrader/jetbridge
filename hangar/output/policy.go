@@ -19,7 +19,6 @@ type ExtensionHandshake struct {
 	Base                    executioncontrol.Handshake `json:"base"`
 	CaptureExtensionVersion string                     `json:"capture_extension_version"`
 	SourceLedgerVersion     string                     `json:"source_ledger_version"`
-	ReceiptPublicKeyID      string                     `json:"receipt_public_key_id"`
 	MaterializationKeyID    string                     `json:"materialization_key_id"`
 	BucketFingerprint       string                     `json:"bucket_fingerprint"`
 	DerivedNamespace        string                     `json:"derived_namespace"`
@@ -37,15 +36,8 @@ func (handshake ExtensionHandshake) Validate() error {
 		return fmt.Errorf("%w: source ledger version %q, this cohort speaks %q",
 			ErrUnsupportedProtocol, handshake.SourceLedgerVersion, SourceLedgerVersion)
 	}
-	if handshake.ReceiptPublicKeyID == "" {
-		return fmt.Errorf("%w: handshake reports no receipt public key id", ErrIncomplete)
-	}
 	if handshake.MaterializationKeyID == "" {
 		return fmt.Errorf("%w: handshake reports no materialization key id", ErrIncomplete)
-	}
-	if handshake.ReceiptPublicKeyID == handshake.MaterializationKeyID {
-		return fmt.Errorf("%w: the receipt and materialization keys are the same; a read warrant "+
-			"must not be signable by anything that can mint a publication receipt", ErrIncomplete)
 	}
 	if handshake.BucketFingerprint == "" {
 		return fmt.Errorf("%w: handshake reports no output bucket", ErrIncomplete)

@@ -46,10 +46,6 @@ type Config struct {
 	// domains are separated by key prefix inside one bucket. It is refused.
 	SharedBucketPrefixOnlyIsolation bool
 
-	// The receipt key material. The private half is mounted only here.
-	ReceiptKeyID   string
-	ReceiptKeyFile string
-
 	// The output read-warrant key: a THIRD key, an exact 32-byte HMAC secret
 	// under the hangar-output-materialize-v1 domain. It is neither the receipt
 	// key (a read warrant must not be signable by anything that can mint a
@@ -98,6 +94,11 @@ type Config struct {
 	// Terminations answers whether a Pod's containers have all stopped. Nil
 	// means the Kubernetes API, read for this node's own Pods; a test sets it.
 	Terminations PodTerminations
+
+	// PodTerminationsDir is the standalone answer to the same question, for a
+	// daemon run with no Kubernetes API: a file named after a Pod UID in this
+	// directory declares that Pod's containers terminated.
+	PodTerminationsDir string
 }
 
 // BindFlags declares the output plane's flags on the artifact daemon's set.
@@ -124,10 +125,6 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"The caller-published strict-input Hangar bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
 	flags.BoolVar(&config.SharedBucketPrefixOnlyIsolation, "shared-bucket-prefix-only-isolation", false,
 		"Declare that trust domains are separated by key prefix inside one shared bucket. This is refused: object-level permission is not expressible in a bucket policy, so prefix-only IAM is not an activation-compatible substitute for a dedicated bucket.")
-	flags.StringVar(&config.ReceiptKeyID, "receipt-key-id", "",
-		"Identifier of the Ed25519 receipt signing key. A receipt names it so a verifier knows which activation-pinned public key can check it.")
-	flags.StringVar(&config.ReceiptKeyFile, "receipt-key-file", "",
-		"Path to the PKCS#8 PEM Ed25519 private key used to sign receipts. It is mounted only in this Pod: the control plane, the web node, the existing artifact daemon, the controllers, the control init container, the task and the sidecar hold the public key and the key id only.")
 	flags.StringVar(&config.MaterializationKeyID, "materialization-key-id", "",
 		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which activation-pinned key can check it.")
 	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
@@ -138,6 +135,8 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", 30*time.Second,
 		"How long one capture seal waits for every container of the producing Pod to terminate before answering that it has not yet; the control plane asks again. The seal never deletes a Pod to get there.")
+	flags.StringVar(&config.PodTerminationsDir, "pod-terminations-dir", "",
+		"Standalone operation only, with no Kubernetes API to read Pods from: a directory in which a file named after a Pod UID declares that every container of that Pod has terminated. A capture seal waits for it. Ignored when the daemon reads Pods from Kubernetes.")
 	flags.IntVar(&config.PublishConcurrency, "publish-concurrency", 1,
 		"How many trees may be canonicalized and spooled to scratch at once. The scratch volume's size limit must cover this many maximum-sized trees; the chart renders both from one pair of values and refuses a product that does not fit.")
 	flags.StringVar(&config.NodeUID, "node-uid", "",
@@ -213,10 +212,10 @@ func (config Config) Validate() error {
 //
 // Two directions, and the second is the one that is easy to leave out: the
 // facet's own values are required when it is ON, and REFUSED when it is off. A
-// daemon configured with a receipt private key and no bucket is a process
-// holding a signing key it can never need, which is a key an exploit of that
-// process gets for free (Req 24); and a prefix or a tenant with no bucket is an
-// operator who believes the plane is on.
+// daemon configured with a read-warrant key and no bucket is a process holding
+// a key it can never need, which is a key an exploit of that process gets for
+// free (Req 24); and a prefix or a tenant with no bucket is an operator who
+// believes the plane is on.
 func (config Config) validateOutputFacet() error {
 	if !config.OutputFacetEnabled() {
 		for _, set := range []struct{ flag, value string }{
@@ -226,8 +225,6 @@ func (config Config) validateOutputFacet() error {
 			{"--output-store-id", config.OutputStoreID},
 			{"--output-token-file", config.OutputTokenFile},
 			{"--output-ca-cert", config.OutputCACert},
-			{"--receipt-key-id", config.ReceiptKeyID},
-			{"--receipt-key-file", config.ReceiptKeyFile},
 			{"--materialization-key-id", config.MaterializationKeyID},
 			{"--materialization-key-file", config.MaterializationKeyFile},
 		} {
@@ -243,14 +240,10 @@ func (config Config) validateOutputFacet() error {
 	}
 
 	for _, required := range []struct{ flag, value, why string }{
-		{"--receipt-key-id", config.ReceiptKeyID,
-			"a receipt names the key that can check it"},
-		{"--receipt-key-file", config.ReceiptKeyFile,
-			"this is the only process that holds the private half"},
 		{"--materialization-key-id", config.MaterializationKeyID,
 			"a read warrant names the key that can check it"},
 		{"--materialization-key-file", config.MaterializationKeyFile,
-			"the output read warrant uses its own key and its own domain, never the receipt key"},
+			"the output read warrant uses its own key and its own domain"},
 	} {
 		if strings.TrimSpace(required.value) == "" {
 			return fmt.Errorf("%w: %s is required when --output-bucket is set; %s",
@@ -262,10 +255,7 @@ func (config Config) validateOutputFacet() error {
 	// epoch pins them separately, and one file for two of them means rotating
 	// either rotates both.
 	for _, pair := range []struct{ left, right, leftFlag, rightFlag string }{
-		{config.ControlKeyFile, config.ReceiptKeyFile, "--control-key-file", "--receipt-key-file"},
 		{config.ControlKeyFile, config.MaterializationKeyFile, "--control-key-file", "--materialization-key-file"},
-		{config.ReceiptKeyFile, config.MaterializationKeyFile, "--receipt-key-file", "--materialization-key-file"},
-		{config.ReceiptKeyFile, config.CapabilityKeyFile, "--receipt-key-file", "--capability-key"},
 		{config.MaterializationKeyFile, config.CapabilityKeyFile, "--materialization-key-file", "--capability-key"},
 	} {
 		if pair.left != "" && pair.left == pair.right {
@@ -274,12 +264,6 @@ func (config Config) validateOutputFacet() error {
 				"either rotates both", output.ErrIncomplete, pair.leftFlag, pair.rightFlag)
 		}
 	}
-	if config.ReceiptKeyID == config.MaterializationKeyID {
-		return fmt.Errorf("%w: the receipt and materialization key ids are the same; a read "+
-			"warrant must not be signable by anything that can mint a publication receipt",
-			output.ErrIncomplete)
-	}
-
 	return nil
 }
 
@@ -299,7 +283,6 @@ func (config Config) RefuseCollidingKeyMaterial() error {
 	loaded := map[string][]byte{}
 	for _, key := range []struct{ flag, file string }{
 		{"--control-key-file", config.ControlKeyFile},
-		{"--receipt-key-file", config.ReceiptKeyFile},
 		{"--materialization-key-file", config.MaterializationKeyFile},
 		{"--capability-key", config.CapabilityKeyFile},
 	} {
@@ -324,9 +307,7 @@ func (config Config) RefuseCollidingKeyMaterial() error {
 			if subtle.ConstantTimeCompare(loaded[flags[i]], loaded[flags[j]]) == 1 {
 				return fmt.Errorf("%w: %s and %s name different files holding the SAME key "+
 					"material. They say different things and an activation epoch pins them "+
-					"separately, so one key would mean rotating either rotates both -- and a "+
-					"read warrant must not be signable by anything that can mint a publication "+
-					"receipt", output.ErrIncomplete, flags[i], flags[j])
+					"separately, so one key would mean rotating either rotates both", output.ErrIncomplete, flags[i], flags[j])
 			}
 		}
 	}
@@ -408,16 +389,6 @@ func (config Config) PrepareScratch() error {
 // LoadControlKey reads the node's control signing key off disk.
 func (config Config) LoadControlKey() (ed25519.PrivateKey, error) {
 	return loadEd25519(config.ControlKeyFile, "control")
-}
-
-// LoadReceiptKey reads the private key off disk.
-//
-// It refuses anything that is not an Ed25519 private key, including an RSA key
-// that would otherwise parse: the receipt algorithm is closed, and a daemon
-// that silently accepted another algorithm would produce receipts no verifier
-// in this cohort can check.
-func (config Config) LoadReceiptKey() (ed25519.PrivateKey, error) {
-	return loadEd25519(config.ReceiptKeyFile, "receipt")
 }
 
 func loadEd25519(file, what string) (ed25519.PrivateKey, error) {

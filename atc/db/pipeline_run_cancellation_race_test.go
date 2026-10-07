@@ -2,19 +2,12 @@ package db_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
-	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -201,24 +194,11 @@ func cancellationBoundaries() []TableEntry {
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_run_executions WHERE build_id=$1 AND plan_id='race-task'`, f.review.ID()).Scan(&count)).To(Succeed())
 		return count
 	}
-	tokens := func(f *cancellationRace) (int, int) {
+	captures := func(f *cancellationRace) (int, int) {
 		GinkgoHelper()
-		var starts, handoffs int
-		Expect(dbConn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_output_starts WHERE run_id=$1),(SELECT count(*) FROM hangar_handoff_predeclarations)`, f.runID).Scan(&starts, &handoffs)).To(Succeed())
-		return starts, handoffs
-	}
-	reservations := func(f *cancellationRace) (int, int) {
-		GinkgoHelper()
-		var finishes, captures int
-		Expect(dbConn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_output_finishes WHERE handoff_id=$1 AND disposition='capture'),(SELECT count(*) FROM hangar_capture_reservations WHERE handoff_id=$1)`, string(f.handoff.HandoffID)).Scan(&finishes, &captures)).To(Succeed())
-		return finishes, captures
-	}
-	candidates := func(f *cancellationRace) (int, string) {
-		GinkgoHelper()
-		var count int
-		var discard sql.NullString
-		Expect(dbConn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_output_candidates WHERE handoff_id=$1),(SELECT reason FROM pipeline_run_output_discards WHERE handoff_id=$1)`, string(f.handoff.HandoffID)).Scan(&count, &discard)).To(Succeed())
-		return count, discard.String
+		var links, rows int
+		Expect(dbConn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_captures WHERE run_id=$1),(SELECT count(*) FROM hangar_captures)`, f.runID).Scan(&links, &rows)).To(Succeed())
+		return links, rows
 	}
 	published := func(f *cancellationRace) (string, bool) {
 		GinkgoHelper()
@@ -301,59 +281,19 @@ func cancellationBoundaries() []TableEntry {
 			absent:   func(f *cancellationRace) { Expect(executions(f)).To(BeZero()) },
 			outcome:  atc.RunCancelAccepted,
 		}),
-		Entry("a Stage 1 start token", cancellationBoundary{
+		Entry("a capture start", cancellationBoundary{
 			inTx: func(f *cancellationRace, tx db.Tx) error {
-				var err error
-				f.handoff, err = f.factory.PredeclareOutputTask(f.ctx, tx, f.review.ID(), f.plan, 1, time.Hour, "node", "node-uid")
+				_, err := f.factory.StartRunCapture(f.ctx, tx, f.review.ID(), f.plan, 1, time.Hour, "node", "node-uid")
 				return err
 			},
 			refused: refusedAs(db.ErrPipelineRunCancelling),
 			admitted: func(f *cancellationRace) {
-				starts, handoffs := tokens(f)
-				Expect([]int{starts, handoffs}).To(Equal([]int{1, 1}))
+				links, rows := captures(f)
+				Expect([]int{links, rows}).To(Equal([]int{1, 1}))
 			},
 			absent: func(f *cancellationRace) {
-				starts, handoffs := tokens(f)
-				Expect([]int{starts, handoffs}).To(Equal([]int{0, 0}))
-			},
-			outcome: atc.RunCancelAccepted,
-		}),
-		Entry("a Stage 2 capture reservation", cancellationBoundary{
-			prepare: func(f *cancellationRace) { f.holdSource() },
-			inTx: func(f *cancellationRace, tx db.Tx) error {
-				var err error
-				f.reservation, err = f.outputs().CommitCaptureReservation(f.ctx, tx, f.finish)
-				return err
-			},
-			refused: refusedAs(output.ErrConflict),
-			admitted: func(f *cancellationRace) {
-				finishes, captures := reservations(f)
-				Expect([]int{finishes, captures}).To(Equal([]int{1, 1}))
-			},
-			absent: func(f *cancellationRace) {
-				finishes, captures := reservations(f)
-				Expect([]int{finishes, captures}).To(Equal([]int{0, 0}))
-			},
-			outcome: atc.RunCancelAccepted,
-		}),
-		// Registration happens as the Run records the published source's
-		// release. Behind the fence that release still settles the source, but
-		// records a discard where registration would have made a candidate.
-		Entry("candidate registration", cancellationBoundary{
-			prepare: func(f *cancellationRace) { f.publish() },
-			inTx: func(f *cancellationRace, tx db.Tx) error {
-				return f.outputs().AcknowledgeCaptureRelease(f.ctx, tx, f.release)
-			},
-			refused: func(err error) { Expect(err).NotTo(HaveOccurred()) },
-			admitted: func(f *cancellationRace) {
-				count, discard := candidates(f)
-				Expect(count).To(Equal(1))
-				Expect(discard).To(BeEmpty())
-			},
-			absent: func(f *cancellationRace) {
-				count, discard := candidates(f)
-				Expect(count).To(BeZero())
-				Expect(discard).To(Equal("run_cancelled"))
+				links, rows := captures(f)
+				Expect([]int{links, rows}).To(Equal([]int{0, 0}))
 			},
 			outcome: atc.RunCancelAccepted,
 		}),
@@ -397,15 +337,6 @@ type cancellationRace struct {
 	review, fetch                   db.Build
 	plan                            atc.TaskPlan
 	scheduleRequested               time.Time
-	control                         *executioncontrol.AcknowledgementSigner
-	capture                         *output.CaptureStatementSigner
-	receipts                        *output.ReceiptSigner
-	controlKeys                     hangaroutput.ControlKeyRing
-	receiptKeys                     hangaroutput.ReceiptKeyRing
-	handoff                         output.HandoffRecord
-	finish                          output.SuccessfulFinishDisposition
-	reservation                     output.ReservationID
-	release                         output.ReleaseAcknowledgement
 }
 
 func newCancellationRace() *cancellationRace {
@@ -452,21 +383,6 @@ func newCancellationRace() *cancellationRace {
 	f.payloadID = f.review.PipelineID()
 	materialized := f.creation.Config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
 	f.plan = atc.TaskPlan{Name: materialized.Name, TaskID: materialized.TaskID, RunResult: materialized.RunResult, Config: materialized.Config}
-
-	// One node key signs both control statements, as the control key ring
-	// pins one verification key per epoch.
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	f.control, err = executioncontrol.NewAcknowledgementSigner(private)
-	Expect(err).NotTo(HaveOccurred())
-	f.capture, err = output.NewCaptureStatementSigner(private)
-	Expect(err).NotTo(HaveOccurred())
-	f.controlKeys = hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}}
-	receiptPublic, receiptPrivate, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	f.receipts, err = output.NewReceiptSigner("receipt-key-1", 1, receiptPrivate, output.ClockFunc(time.Now))
-	Expect(err).NotTo(HaveOccurred())
-	f.receiptKeys = hangaroutput.ReceiptKeyRing{ActiveKeyID: "receipt-key-1", ActivationEpoch: 1, Keys: []hangaroutput.ReceiptKeyEntry{{ID: "receipt-key-1", Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(receiptPublic)}}}
 
 	f.cancelConn = openRunLifecycleConn()
 	f.workConn = openRunLifecycleConn()
@@ -565,128 +481,6 @@ func (f *cancellationRace) failEveryJob() {
 		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
 	}
 	f.settleScheduling()
-}
-
-func (f *cancellationRace) outputs() *db.RunOutputRepository {
-	GinkgoHelper()
-	verifier, err := f.receiptKeys.SignatureVerifier(output.ClockFunc(time.Now))
-	Expect(err).NotTo(HaveOccurred())
-	return db.NewRunOutputRepository(db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()), f.controlKeys, verifier)
-}
-
-func (f *cancellationRace) inTx(apply func(db.Tx) error) {
-	GinkgoHelper()
-	tx, err := dbConn.Begin()
-	Expect(err).NotTo(HaveOccurred())
-	defer db.Rollback(tx)
-	Expect(apply(tx)).To(Succeed())
-	Expect(tx.Commit()).To(Succeed())
-}
-
-// holdSource admits the producer, reserves and holds its source and witnesses
-// its successful finish: everything Stage 2 verifies before it reserves.
-func (f *cancellationRace) holdSource() {
-	GinkgoHelper()
-	f.inTx(func(tx db.Tx) error {
-		var err error
-		f.handoff, err = f.factory.PredeclareOutputTask(f.ctx, tx, f.review.ID(), f.plan, 1, time.Hour, "node", "node-uid")
-		return err
-	})
-	f.inTx(func(tx db.Tx) error {
-		return f.factory.RequestOutputSource(f.ctx, tx, f.review.ID(), f.plan, 1)
-	})
-	r := f.handoff
-	incarnation := output.SourceIncarnation{ExecutionID: r.Execution.ExecutionID, NodeUID: "node-uid", HandleGeneration: 1, Output: r.Output}
-	f.inTx(func(tx db.Tx) error {
-		return f.factory.RecordOutputSource(f.ctx, tx, f.review.ID(), f.plan, output.ReservedIncarnation{
-			ProtocolVersion: output.ProtocolVersion, Execution: r.Execution, ActivationEpoch: 1,
-			HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID, NodeUID: "node-uid", Incarnation: incarnation,
-			Directory: string(r.Execution.ExecutionID) + ".1/" + string(r.Output), LedgerSequence: 1,
-			ObservedAt: output.NewTimestamp(time.Now()),
-		}, "node")
-	})
-	hold, err := f.capture.SignCapture(output.CaptureAcknowledgement{
-		ProtocolVersion: output.ProtocolVersion, Kind: output.CaptureHoldAcknowledged, Execution: r.Execution,
-		ActivationEpoch: 1, LedgerSequence: 2, NodeUID: "node-uid", PodUID: "pod-uid",
-		HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID, Incarnation: incarnation,
-		ObservedAt: output.NewTimestamp(time.Now()),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	f.inTx(func(tx db.Tx) error { return f.outputs().AcknowledgeSourceHold(f.ctx, tx, hold) })
-	finish, err := f.control.Sign(executioncontrol.Acknowledgement{
-		ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementFinish,
-		Identity: r.Execution, ActivationEpoch: 1, LedgerSequence: 3, NodeUID: "node-uid", PodUID: "pod-uid",
-		ProcessIdentity: "review-process", ObservedAt: output.NewTimestamp(time.Now()),
-		Outcome: &executioncontrol.ExitOutcome{ExitCode: 0},
-	})
-	Expect(err).NotTo(HaveOccurred())
-	f.finish = output.SuccessfulFinishDisposition{
-		ProtocolVersion: output.ProtocolVersion, Disposition: output.DispositionCapture, Execution: r.Execution,
-		ActivationEpoch: 1, HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID,
-		ProducerCheckpointID: output.OpaqueID(uuid.NewString()), Output: r.Output, CaptureFence: 1,
-		CaptureDeadline: r.CaptureDeadline, FinishAcknowledgement: finish,
-	}
-}
-
-// publish carries the capture through Stage 2, publication and a verified
-// receipt, and signs the source release that registers its candidate.
-func (f *cancellationRace) publish() {
-	GinkgoHelper()
-	f.holdSource()
-	f.inTx(func(tx db.Tx) error {
-		var err error
-		f.reservation, err = f.outputs().CommitCaptureReservation(f.ctx, tx, f.finish)
-		return err
-	})
-	r := f.handoff
-	ref := hangar.TreeRef{Scope: "team-a", Digest: hangar.Digest("sha256:" + randomHex()), Generation: 1}
-	f.inTx(func(tx db.Tx) error {
-		repository := f.outputs()
-		if _, err := repository.AcquireCaptureLease(f.ctx, tx, f.reservation, uuid.NewString(), output.MinLeaseTerm); err != nil {
-			return err
-		}
-		if err := repository.ResolveLogicalReservation(f.ctx, tx, output.LogicalResolution{
-			ProtocolVersion: output.ProtocolVersion, Execution: r.Execution, ActivationEpoch: 1,
-			HandoffID: r.HandoffID, ReservationID: f.reservation, CaptureFence: 1,
-			Scope: ref.Scope, Digest: ref.Digest, LogicalBytes: 4096, ResolvedAt: output.NewTimestamp(time.Now()),
-		}); err != nil {
-			return err
-		}
-		return repository.RecordFirstObjectCreate(f.ctx, tx, f.reservation, 1)
-	})
-	nonce, issuedAt := hangarIssueChallenge(r.HandoffID, f.reservation, ref)
-	admission := hangarAdmissionFor(r.HandoffID, r.Execution, f.reservation, ref, nonce, issuedAt)
-	admission.Receipt.Claims.ProducerCheckpointID = f.finish.ProducerCheckpointID
-	admission.Receipt.Claims.Output = r.Output
-	admission.Receipt.Claims.Incarnation.Output = r.Output
-	receipt, err := f.receipts.Sign(admission.Receipt.Claims)
-	Expect(err).NotTo(HaveOccurred())
-	admission.Receipt = receipt
-	f.inTx(func(tx db.Tx) error { return f.outputs().RegisterReceipt(f.ctx, tx, admission) })
-
-	var intent string
-	Expect(dbConn.QueryRow(`SELECT release_intent_id FROM hangar_capture_reservations WHERE reservation_id=$1`, string(f.reservation)).Scan(&intent)).To(Succeed())
-	f.release, err = f.capture.SignRelease(output.ReleaseAcknowledgement{
-		ProtocolVersion: output.ProtocolVersion, Disposition: output.DispositionCapture, Execution: r.Execution,
-		ActivationEpoch: 1, HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID,
-		ReleaseIntentID: output.ReleaseIntentID(intent),
-		Incarnation:     output.SourceIncarnation{ExecutionID: r.Execution.ExecutionID, NodeUID: "node-uid", HandleGeneration: 1, Output: r.Output},
-		LedgerSequence:  4, ObservedAt: output.NewTimestamp(time.Now()),
-	})
-	Expect(err).NotTo(HaveOccurred())
-}
-
-func randomHex() string {
-	GinkgoHelper()
-	var b [32]byte
-	_, err := rand.Read(b[:])
-	Expect(err).NotTo(HaveOccurred())
-	const digits = "0123456789abcdef"
-	out := make([]byte, 64)
-	for i, v := range b {
-		out[2*i], out[2*i+1] = digits[v>>4], digits[v&0xf]
-	}
-	return string(out)
 }
 
 func async(work func() error) chan error {

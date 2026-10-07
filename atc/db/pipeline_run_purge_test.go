@@ -26,7 +26,7 @@ var runEvidenceTables = map[string]string{
 	"pipeline_run_executions":               `SELECT count(*) FROM pipeline_run_executions WHERE run_id=$1`,
 	"pipeline_run_execution_starts":         `SELECT count(*) FROM pipeline_run_execution_starts s JOIN pipeline_run_executions e USING(execution_id,execution_fence) WHERE e.run_id=$1`,
 	"pipeline_run_execution_closures":       `SELECT count(*) FROM pipeline_run_execution_closures c JOIN pipeline_run_executions e USING(execution_id,execution_fence) WHERE e.run_id=$1`,
-	"pipeline_run_output_starts":            `SELECT count(*) FROM pipeline_run_output_starts WHERE run_id=$1`,
+	"pipeline_run_captures":                 `SELECT count(*) FROM pipeline_run_captures WHERE run_id=$1`,
 	"pipeline_run_credential_handoffs":      `SELECT count(*) FROM pipeline_run_credential_handoffs WHERE run_id=$1`,
 	"pipeline_run_cancellation_progress":    `SELECT count(*) FROM pipeline_run_cancellation_progress WHERE run_id=$1`,
 	"pipeline_run_cancellation_operations":  `SELECT count(*) FROM pipeline_run_cancellation_operations WHERE run_id=$1`,
@@ -52,7 +52,7 @@ func runEvidenceDigest(value string) string {
 
 // admitRunEvidence drives one v2 Run through the production admission paths
 // until it holds every kind of evidence a team purge has to remove: an
-// executed and closed check, an executed task with a retained output start and
+// executed and closed check, an executed task with a retained capture and
 // a claimed credential handoff, a bound input holding a Hangar claim, and a
 // discovered and claimed cancellation queue.
 func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence {
@@ -140,16 +140,16 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	Expect(tx.Commit()).To(Succeed())
 	Expect(check.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-	// An executed task with an output start and a claimed credential handoff.
+	// An executed task with a capture and a claimed credential handoff.
 	build := creation.EntryBuilds[0]
 	tx, err = dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	record, err := factory.PredeclareOutputTask(ctx, tx, build.ID(), atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunResult: task.RunResult, Config: task.Config}, 1, output.DefaultCaptureDeadline, "node", "node-uid")
+	record, err := factory.StartRunCapture(ctx, tx, build.ID(), atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunResult: task.RunResult, Config: task.Config}, 1, output.DefaultCaptureDeadline, "node", "node-uid")
 	Expect(err).NotTo(HaveOccurred())
 	admission, owned, err = factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{
 		BuildID: build.ID(), PlanID: "task-plan", Kind: db.ContainerTypeTask,
-		Epoch: 1, NodeName: "node", NodeUID: "node-uid", HandoffID: record.HandoffID,
+		Epoch: 1, NodeName: "node", NodeUID: "node-uid", Capture: record.Key(),
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(owned).To(BeTrue())
@@ -233,7 +233,7 @@ var _ = Describe("Run evidence and team purge", func() {
 			"pipeline_run_credential_handoffs":     `DELETE FROM pipeline_run_credential_handoffs WHERE run_id=$1`,
 			"pipeline_run_cancellation_operations": `DELETE FROM pipeline_run_cancellation_operations WHERE run_id=$1`,
 			"pipeline_run_inputs":                  `DELETE FROM pipeline_run_inputs WHERE run_id=$1`,
-			"pipeline_run_output_starts":           `DELETE FROM pipeline_run_output_starts WHERE run_id=$1`,
+			"pipeline_run_captures":                `DELETE FROM pipeline_run_captures WHERE run_id=$1`,
 			"pipeline_run_invocations":             `DELETE FROM pipeline_run_invocations WHERE run_id=$1`,
 			"pipeline_run_definitions":             `DELETE FROM pipeline_run_definitions WHERE run_id=$1`,
 		}

@@ -43,6 +43,7 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/publisher"
 )
 
 // SourceHoldGate is the opaque name the base execution ledger knows a held
@@ -413,7 +414,8 @@ func (ledger *CaptureLedger) Publish(ctx context.Context, request output.Capture
 	defer cleanup()
 
 	namespace := ledger.daemon.Namespace()
-	object, err := ledger.daemon.Publisher().EnsurePublication(ctx,
+	var store *publisher.Publisher = ledger.daemon.Publisher()
+	object, err := store.EnsurePublication(ctx,
 		namespace.MarkerFor(key.MarkerID(), request.Digest, output.NewTimestamp(nowUTC())),
 		archive, size)
 	if err != nil {
@@ -523,7 +525,8 @@ func (ledger *CaptureLedger) Stat(ctx context.Context, request output.CaptureSta
 	if err := request.Validate(); err != nil {
 		return output.CapturePublishResult{}, err
 	}
-	object, err := ledger.daemon.Publisher().StatCurrentObject(ctx, request.Digest)
+	var store *publisher.Publisher = ledger.daemon.Publisher()
+	object, err := store.StatCurrentObject(ctx, request.Digest)
 	if err != nil {
 		return output.CapturePublishResult{}, err
 	}

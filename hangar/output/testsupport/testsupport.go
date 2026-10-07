@@ -61,26 +61,17 @@ func ExecutionIdentity() executioncontrol.Identity {
 	}
 }
 
-// Reservation resolves a reservation into namespace, with the marker the
-// namespace derives for it, and fails the test if the result does not validate.
-func Reservation(t *testing.T, namespace output.OutputNamespace, id output.ReservationID, digest hangar.Digest) output.ResolvedReservation {
+// Reservation is the object marker namespace derives for a reservation id and
+// digest, and fails the test if it does not validate.
+func Reservation(t *testing.T, namespace output.OutputNamespace, id output.ReservationID, digest hangar.Digest) output.ObjectMarker {
 	t.Helper()
 
-	reservation := output.ResolvedReservation{
-		ReservationID:   id,
-		Execution:       ExecutionIdentity(),
-		ActivationEpoch: namespace.ActivationEpoch(),
-		HandoffID:       "11111111-1111-4111-8111-111111111111",
-		CaptureFence:    1,
-		Scope:           namespace.Scope(),
-		Digest:          digest,
-		Marker:          namespace.MarkerFor(id, digest, output.NewTimestamp(FixedInstant)),
-	}
-	if err := reservation.Validate(); err != nil {
-		t.Fatalf("the fixture reservation does not validate: %v", err)
+	marker := namespace.MarkerFor(id, digest, output.NewTimestamp(FixedInstant))
+	if err := marker.Validate(); err != nil {
+		t.Fatalf("the fixture marker does not validate: %v", err)
 	}
 
-	return reservation
+	return marker
 }
 
 // Cursor is a valid cursor at the start of a cycle under one epoch.

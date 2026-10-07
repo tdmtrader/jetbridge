@@ -11,6 +11,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -101,7 +102,8 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 		return false, err
 	}
 	var pending bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_output_starts WHERE run_id=$1 AND NOT run_output_closed(handoff_id))`, runID).Scan(&pending); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_captures s JOIN hangar_captures c USING(execution_id, output_name)
+ WHERE s.run_id=$1 AND c.state IN ('pending','publishing'))`, runID).Scan(&pending); err != nil {
 		return false, err
 	}
 	if pending {
@@ -262,18 +264,22 @@ func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangar
 	return run, hangarEnabled, nil
 }
 
+// runCandidate is a Run producer's published capture: the binding a result
+// would carry if the Run selected it.
 type runCandidate struct {
 	RunResultBinding
 	BuildID      int
 	TaskID, Name string
-	Handoff      output.HandoffID
-	Reservation  output.ReservationID
+	Capture      output.CaptureKey
 }
 
+// readRunCandidates reads the Run's published captures. The result binding is
+// the capture's tree ref and the claim its publication took, unchanged on the
+// wire: a reader still verifies the digest against the ref.
 func readRunCandidates(ctx context.Context, tx Tx, runID int) ([]runCandidate, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT s.build_id,s.task_id,s.result_name,s.handoff_id,f.reservation_id,c.scope,c.digest,c.generation,c.claim_id
- FROM pipeline_run_output_starts s JOIN pipeline_run_output_candidates c USING(handoff_id) JOIN pipeline_run_output_finishes f USING(handoff_id)
- WHERE s.run_id=$1 ORDER BY s.handoff_id`, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT s.build_id,s.task_id,s.result_name,s.execution_id,s.output_name,c.scope,c.digest,c.generation
+ FROM pipeline_run_captures s JOIN hangar_captures c USING(execution_id, output_name)
+ WHERE s.run_id=$1 AND c.state='published' ORDER BY s.execution_id, s.output_name`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -281,9 +287,12 @@ func readRunCandidates(ctx context.Context, tx Tx, runID int) ([]runCandidate, e
 	var out []runCandidate
 	for rows.Next() {
 		var c runCandidate
-		if err := rows.Scan(&c.BuildID, &c.TaskID, &c.Name, &c.Handoff, &c.Reservation, &c.Ref.Scope, &c.Ref.Digest, &c.Ref.Generation, &c.ClaimID); err != nil {
+		var execution, outputName string
+		if err := rows.Scan(&c.BuildID, &c.TaskID, &c.Name, &execution, &outputName, &c.Ref.Scope, &c.Ref.Digest, &c.Ref.Generation); err != nil {
 			return nil, err
 		}
+		c.Capture = output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(execution), Output: output.OutputName(outputName)}
+		c.ClaimID = c.Capture.ClaimID()
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -292,13 +301,11 @@ func readRunCandidates(ctx context.Context, tx Tx, runID int) ([]runCandidate, e
 // Take the complete Hangar suffix once and verify every candidate claim.
 // Cancellation settlement and terminal publication use the same claim proof.
 func lockRunCandidateClaims(ctx context.Context, tx Tx, candidates []runCandidate) (*HangarOutputRepository, error) {
-	repository := runOutputRepository()
+	repository := runCaptureOutputRepository()
 	request := HangarLockRequest{}
 	for _, c := range candidates {
 		request.Logical = append(request.Logical, HangarLogicalKey{Scope: c.Ref.Scope, Digest: c.Ref.Digest})
 		request.Exact = append(request.Exact, c.Ref)
-		request.Captures = append(request.Captures, c.Reservation)
-		request.Receipts = append(request.Receipts, c.Reservation)
 		request.Claims = append(request.Claims, c.ClaimID)
 	}
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, request); err != nil {
@@ -317,7 +324,7 @@ func lockRunCandidateClaims(ctx context.Context, tx Tx, candidates []runCandidat
 		}
 		protected := false
 		for _, claim := range claims[c.Ref] {
-			if claim.ClaimID == c.ClaimID && claim.Active() && claim.ConsumerBindingID == output.OpaqueID(c.Handoff) {
+			if claim.ClaimID == c.ClaimID && claim.Active() && claim.ConsumerBindingID == output.OpaqueID("capture:"+c.Capture.String()) {
 				protected = true
 				break
 			}

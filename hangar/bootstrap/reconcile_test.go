@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,9 +68,8 @@ func inventory() bootstrap.Inventory {
 			{Name: "output-server", Kind: bootstrap.KindTLSServer, CA: "output-ca", CommonName: "output", DNSNames: []string{"output-daemon.cicd"}},
 			{Name: "output-client", Kind: bootstrap.KindTLSClient, CA: "output-ca", CommonName: "web"},
 			{Name: "output-ca", Kind: bootstrap.KindCA, CommonName: "output plane"},
-			{Name: "receipt-1", Kind: bootstrap.KindEd25519, Key: "receipt.key", Ring: bootstrap.ReceiptRing, Epoch: 1, KeyID: "receipt-1"},
 			{Name: "materialize-key", Kind: bootstrap.KindRandomKey, Key: "materialize.key"},
-			{Name: "rings", Kind: bootstrap.KindRing, ActiveEpoch: 1, ActiveKeyID: "receipt-1"},
+			{Name: "rings", Kind: bootstrap.KindRing, ActiveEpoch: 1},
 			{Name: "activation-dsn", Kind: bootstrap.KindDatabaseCredential},
 		},
 	}
@@ -162,8 +162,8 @@ func TestAMalformedSecretRefusesTheRunAndChangesNothing(t *testing.T) {
 		names  []string // replaces the entry's DNS names, when set
 	}{
 		"a short random key": {"hangar-key", func(_ *testing.T, d map[string][]byte) { d["hangar.key"] = d["hangar.key"][:16] }, "holds 16 bytes", nil},
-		"a non-Ed25519 key": {"receipt-1", func(_ *testing.T, d map[string][]byte) {
-			d["receipt.key"] = newKeyPEM()
+		"a non-Ed25519 key": {"control-1", func(_ *testing.T, d map[string][]byte) {
+			d["control.key"] = newKeyPEM()
 		}, "not an Ed25519 key", nil},
 		"a repeated token": {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["publisher"] = d["input"] }, "repeats another principal's token", nil},
 		"a short token":    {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["inventory"] = []byte("short") }, "at least 32", nil},
@@ -222,10 +222,10 @@ func TestALeafWithoutItsCAIsRefused(t *testing.T) {
 
 func TestAnEarlierEpochsKeyIsReadAndNeverCreated(t *testing.T) {
 	inv := inventory()
-	inv.Entries = append(inv.Entries, bootstrap.Entry{Name: "receipt-0", Kind: bootstrap.KindEd25519, Key: "receipt.key",
-		Ring: bootstrap.ReceiptRing, Epoch: 1, KeyID: "receipt-0", Required: true})
+	inv.Entries = append(inv.Entries, bootstrap.Entry{Name: "control-0", Kind: bootstrap.KindEd25519, Key: "control.key",
+		Ring: bootstrap.ControlRing, Epoch: 1, Required: true})
 	for i := range inv.Entries {
-		if inv.Entries[i].Name == "receipt-1" {
+		if inv.Entries[i].Name == "control-1" {
 			inv.Entries[i].Epoch = 2
 		}
 		if inv.Entries[i].Kind == bootstrap.KindRing {
@@ -234,7 +234,7 @@ func TestAnEarlierEpochsKeyIsReadAndNeverCreated(t *testing.T) {
 	}
 	store := newMemoryStore()
 	_, err := reconcile(t, inv, store)
-	if !errors.Is(err, bootstrap.ErrRefused) || !strings.Contains(err.Error(), `"receipt-0": is absent`) {
+	if !errors.Is(err, bootstrap.ErrRefused) || !strings.Contains(err.Error(), `"control-0": is absent`) {
 		t.Fatalf("got %v, want a refusal naming the absent earlier key", err)
 	}
 	if len(store.secrets) != 0 {
@@ -242,37 +242,48 @@ func TestAnEarlierEpochsKeyIsReadAndNeverCreated(t *testing.T) {
 	}
 }
 
-// The ring is what web verifies publication receipts with; a receipt signed
-// before a second run must verify after it, through the loader web uses.
-func TestAPublicationReceiptSignedBeforeASecondRunVerifiesAfterIt(t *testing.T) {
+// The ring holds the control ring and nothing else: web mounts one file from it.
+func TestTheRingComposesOnlyTheControlRing(t *testing.T) {
 	store := newMemoryStore()
 	if _, err := reconcile(t, inventory(), store); err != nil {
 		t.Fatal(err)
 	}
-	private := parseEd25519(t, store.secrets["receipt-1"].Data["receipt.key"])
-	message := []byte("publication receipt payload")
-	signature := ed25519.Sign(private, message)
+	files := slices.Sorted(maps.Keys(store.secrets["rings"].Data))
+	if !slices.Equal(files, []string{"control-keys.json"}) {
+		t.Errorf("the ring holds %v, want only control-keys.json", files)
+	}
+}
 
+// A ring created before its composition shrank keeps the file it no longer
+// composes. The bootstrap never changes a Secret, so the next run checks the
+// files it composes and leaves the extra one alone rather than refusing.
+func TestAnExistingRingWithAFileItNoLongerComposesIsKept(t *testing.T) {
+	store := newMemoryStore()
+	if _, err := reconcile(t, inventory(), store); err != nil {
+		t.Fatal(err)
+	}
+	store.secrets["rings"].Data["retired-keys.json"] = []byte(`{"keys":[]}`)
+	before := store.snapshot()
+	store.created = nil
+	if _, err := reconcile(t, inventory(), store); err != nil {
+		t.Fatalf("an existing ring with an extra file was refused: %v", err)
+	}
+	if len(store.created) != 0 || !equalSnapshots(before, store.snapshot()) {
+		t.Errorf("the run changed the existing ring: created %v", store.created)
+	}
+}
+
+// The control ring is what web verifies node statements with; it must load
+// through web's own loader after a second run.
+func TestTheControlRingLoadsThroughWebsLoaderAfterASecondRun(t *testing.T) {
+	store := newMemoryStore()
+	if _, err := reconcile(t, inventory(), store); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := reconcile(t, inventory(), store); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, "receipt-keys.json")
-	if err := os.WriteFile(path, store.secrets["rings"].Data["receipt-keys.json"], 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ring, err := hangaroutput.LoadReceiptKeyRing(path)
-	if err != nil {
-		t.Fatalf("web's loader refused the ring: %v", err)
-	}
-	public, err := ring.VerifierFor("receipt-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ed25519.Verify(public, message, signature) {
-		t.Error("a receipt signed before the second run does not verify against the ring after it")
-	}
-
 	controlPath := filepath.Join(dir, "control-keys.json")
 	if err := os.WriteFile(controlPath, store.secrets["rings"].Data["control-keys.json"], 0o600); err != nil {
 		t.Fatal(err)
@@ -300,7 +311,7 @@ func TestNoPrivateValueReachesARingOrTheLog(t *testing.T) {
 			fmt.Fprintf(&log, "%s=%s\n", key, value)
 		}
 	}
-	rings := string(store.secrets["rings"].Data["receipt-keys.json"]) + string(store.secrets["rings"].Data["control-keys.json"])
+	rings := string(store.secrets["rings"].Data["control-keys.json"])
 	for name, secret := range store.secrets {
 		if name == "rings" {
 			continue

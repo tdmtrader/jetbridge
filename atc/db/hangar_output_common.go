@@ -77,26 +77,6 @@ func hangarInterval(term time.Duration) string {
 	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds()))
 }
 
-// hangarCurrentCaptureFence is the ONE spelling of "the fence this capture is
-// currently owned at", as a SQL scalar over a reservation aliased `r`.
-//
-// The lease is the authority the moment it exists. AcquireCaptureLease advances
-// hangar_capture_attempt_leases.capture_fence on every takeover, and
-// hangar_capture_reservations.capture_fence is written once, at Stage 2, and
-// never again -- so it is the fence a capture is admitted under before anybody
-// has taken a lease, and nothing else.
-//
-// Two readers of two columns is not a redundancy, it is a split brain: the
-// writes that joined the lease (the irreversible publish point, the
-// logical-resolution trigger) honoured a takeover and the writes that read the
-// row refused it, so a capture that survived an ATC restart past Stage 2 -- and
-// OwnerID is minted per process, so every restart is a takeover -- reached the
-// object create and could then neither obtain a receipt nor fail terminally.
-// It stayed incomplete until a deadline nothing enforces.
-const hangarCurrentCaptureFence = `coalesce(
-		(SELECT l.capture_fence FROM hangar_capture_attempt_leases l
-		 WHERE l.reservation_id = r.reservation_id), r.capture_fence)`
-
 // The four classes of refusal the output plane's schema raises, as SQLSTATEs.
 //
 // A class on the RAISE, not a substring of its message, because the messages
@@ -227,3 +207,31 @@ func (tx HangarOutputTx) Commit() error {
 // cannot drift, and the notification is issued by the statement that creates
 // the work, inside its transaction: PostgreSQL delivers a NOTIFY only when the
 // transaction that issued it commits, which is exactly "after the work exists".
+
+// HangarOutputRepository is the PostgreSQL half of the Hangar output plane.
+//
+// Every method takes the caller's Tx and nothing that can commit. A consumer's
+// binding write and the Hangar operation beside it commit together or roll
+// back together, which is only true if the transaction belongs to the caller.
+type HangarOutputRepository struct {
+	prefix HangarConsumerPrefix
+}
+
+// NewHangarOutputRepository takes the consumer-prefix token rather than a
+// string, so that a caller that never thought about its own domain locks cannot
+// construct one.
+func NewHangarOutputRepository(prefix HangarConsumerPrefix) *HangarOutputRepository {
+	return &HangarOutputRepository{prefix: prefix}
+}
+
+// HangarConsumerPrefixForComponent is the capture component's own token. The
+// component advances captures and composes with nobody's binding write, so the
+// prefix it holds is empty by construction; it still names itself.
+func HangarConsumerPrefixForComponent() HangarConsumerPrefix {
+	prefix, err := HangarConsumerPrefixHeld("hangar-output-capture-component")
+	if err != nil {
+		panic("hangar: the capture component's own consumer prefix is invalid: " + err.Error())
+	}
+
+	return prefix
+}

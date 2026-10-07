@@ -79,17 +79,17 @@ func TestNewRefusesAnIncompleteRole(t *testing.T) {
 	}
 }
 
-func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
+func TestEnsurePublicationRefusesBeforeTheStoreIsReached(t *testing.T) {
 	ctx := context.Background()
 	namespace := namespaceFor(t, "tenant-a")
 	digest := testsupport.Digest("ab")
-	resolved := func(t *testing.T, in output.OutputNamespace) output.ResolvedReservation {
+	resolved := func(t *testing.T, in output.OutputNamespace) output.ObjectMarker {
 		return testsupport.Reservation(t, in, reservation, digest)
 	}
 
 	t.Run("no canonical bytes", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.EnsureObject(ctx, resolved(t, namespace), nil, 3)
+		_, err := built.EnsurePublication(ctx, resolved(t, namespace), nil, 3)
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
@@ -98,20 +98,20 @@ func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 
 	t.Run("a negative canonical size", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.EnsureObject(ctx, resolved(t, namespace), bytes.NewReader([]byte("abc")), -1)
+		_, err := built.EnsurePublication(ctx, resolved(t, namespace), bytes.NewReader([]byte("abc")), -1)
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
 		testsupport.ExpectNoRPC(t, recorder)
 	})
 
-	t.Run("a reservation that does not validate", func(t *testing.T) {
+	t.Run("a marker that does not validate", func(t *testing.T) {
 		built, recorder := role(t, namespace)
 		unresolved := resolved(t, namespace)
-		unresolved.CaptureFence = 0
-		_, err := built.EnsureObject(ctx, unresolved, bytes.NewReader([]byte("abc")), 3)
-		if !errors.Is(err, output.ErrIncomplete) {
-			t.Errorf("expected ErrIncomplete, got %v", err)
+		unresolved.ReservationID = ""
+		_, err := built.EnsurePublication(ctx, unresolved, bytes.NewReader([]byte("abc")), 3)
+		if !errors.Is(err, output.ErrCorrupt) {
+			t.Errorf("expected ErrCorrupt, got %v", err)
 		}
 		testsupport.ExpectNoRPC(t, recorder)
 	})
@@ -122,7 +122,7 @@ func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 	// publisher being asked to write into somebody else's namespace.
 	t.Run("a reservation resolved to another tenant's scope", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.EnsureObject(ctx, resolved(t, namespaceFor(t, "tenant-b")),
+		_, err := built.EnsurePublication(ctx, resolved(t, namespaceFor(t, "tenant-b")),
 			bytes.NewReader([]byte("abc")), 3)
 		if !errors.Is(err, output.ErrUnauthorized) {
 			t.Errorf("expected ErrUnauthorized, got %v", err)
@@ -137,11 +137,10 @@ func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 		built, recorder := role(t, namespace)
 		stale := resolved(t, namespace)
 		stale.ActivationEpoch = epoch + 1
-		stale.Marker.ActivationEpoch = epoch + 1
 		if err := stale.Validate(); err != nil {
 			t.Fatalf("the fixture must be a valid reservation for the case to be about the epoch: %v", err)
 		}
-		_, err := built.EnsureObject(ctx, stale, bytes.NewReader([]byte("abc")), 3)
+		_, err := built.EnsurePublication(ctx, stale, bytes.NewReader([]byte("abc")), 3)
 		if !errors.Is(err, output.ErrConflict) {
 			t.Errorf("expected ErrConflict, got %v", err)
 		}

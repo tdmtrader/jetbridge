@@ -113,21 +113,17 @@ var _ = Describe("adopting a managed orphan", func() {
 			Expect(origin).To(Equal("adopted"))
 		})
 
-		It("records lifecycle state and invents no capture, receipt or binding", func() {
+		It("records lifecycle state and invents no capture or claim", func() {
 			_, err := adopt(hangarAdoptionFor(orphan, time.Now().Add(-long)))
 			Expect(err).NotTo(HaveOccurred())
 
-			// Adoption enters LIFECYCLE bookkeeping only. A receipt is
-			// daemon-signed (Req 25) and registration on retry belongs to the
-			// fenced capture owner (Req 40); the inventory principal that calls
-			// this holds list and get and nothing else (Req 54(b)).
-			Expect(countRows("hangar_output_receipts", "lifecycle_id IN "+
-				"(SELECT id FROM hangar_exact_lifecycles WHERE generation = $1)",
-				orphan.Generation)).To(Equal(0),
-				"adoption signed a receipt it has no key for")
-			Expect(countRows("hangar_logical_reservations", "scope = $1 AND digest = $2",
+			// Adoption enters LIFECYCLE bookkeeping only. Publication belongs to
+			// the capture row that made the object (Req 40); the inventory
+			// principal that calls this holds list and get and nothing else
+			// (Req 54(b)).
+			Expect(countRows("hangar_captures", "scope = $1 AND digest = $2",
 				string(orphan.Scope), string(orphan.Digest))).To(Equal(0),
-				"adoption invented a logical reservation")
+				"adoption invented a capture")
 			Expect(countRows("hangar_claims", "lifecycle_id IN "+
 				"(SELECT id FROM hangar_exact_lifecycles WHERE generation = $1)",
 				orphan.Generation)).To(Equal(0), "adoption invented a claim")
@@ -147,7 +143,7 @@ var _ = Describe("adopting a managed orphan", func() {
 
 		It("never rewrites a REGISTERED generation's origin", func() {
 			capture := hangarPublishAt(ctx, repository, hangarDigest(41), 1725830823000041,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 
 			outcome, err := adopt(hangarAdoptionFor(capture.Ref, time.Now().Add(-long)))
 			Expect(err).NotTo(HaveOccurred())
@@ -157,7 +153,7 @@ var _ = Describe("adopting a managed orphan", func() {
 			Expect(state).To(Equal("registered"))
 			Expect(origin).To(Equal("registered"),
 				"adoption relabelled a generation this deployment had registered through a "+
-					"signed receipt")
+					"capture's publication")
 		})
 
 		It("refuses an object marked for another activation epoch, and touches nothing", func() {
@@ -186,7 +182,7 @@ var _ = Describe("adopting a managed orphan", func() {
 		It("blocks adoption however much grace has elapsed, before any generation is known", func() {
 			digest := hangarDigest(43)
 			hangarReserve(ctx, repository, digest,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 
 			orphan := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: 1725830823000043}
 
@@ -203,7 +199,7 @@ var _ = Describe("adopting a managed orphan", func() {
 		It("keeps blocking after the capture deadline has passed", func() {
 			digest := hangarDigest(44)
 			capture := hangarReserve(ctx, repository, digest,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 			hangarAgeCapture(capture, 48*time.Hour)
 
 			orphan := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: 1725830823000044}
@@ -221,7 +217,7 @@ var _ = Describe("adopting a managed orphan", func() {
 
 		BeforeEach(func() {
 			capture = hangarPublishAt(ctx, repository, hangarDigest(45), 1725830823000045,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 		})
 
 		// A SECOND generation at the same correlation: the orphan whose
@@ -275,26 +271,17 @@ var _ = Describe("adopting a managed orphan", func() {
 	})
 
 	Describe("no reservation is extended past its original deadline to avoid collection", func() {
-		It("refuses to move a predeclared capture deadline at all", func() {
+		It("refuses to move a capture deadline at all", func() {
 			capture := hangarReserve(ctx, repository, hangarDigest(47),
-				output.NewTimestamp(time.Now().Add(2*time.Hour)))
+				2*time.Hour)
 
 			_, err := dbConn.Exec(`
-				UPDATE hangar_handoff_predeclarations
+				UPDATE hangar_captures
 				   SET capture_deadline_at = capture_deadline_at + interval '6 days'
-				 WHERE handoff_id = $1`, string(capture.HandoffID))
+				 WHERE execution_id = $1 AND output_name = $2`,
+				string(capture.Key.ExecutionID), string(capture.Key.Output))
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("immutable"))
-
-			// And the reservation's copy cannot drift from it either, which is
-			// the other half: a deadline extended on one side only would be a
-			// capture with two deadlines.
-			_, err = dbConn.Exec(`
-				UPDATE hangar_capture_reservations
-				   SET capture_deadline_at = capture_deadline_at + interval '6 days'
-				 WHERE reservation_id = $1`, string(capture.ReservationID))
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("does not match the predeclared"))
 		})
 	})
 
@@ -308,7 +295,7 @@ var _ = Describe("adopting a managed orphan", func() {
 		BeforeEach(func() {
 			digest := hangarDigest(48)
 			capture = hangarReserve(ctx, repository, digest,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 			orphan = hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: 1725830823000048}
 		})
 
@@ -334,17 +321,18 @@ var _ = Describe("adopting a managed orphan", func() {
 			claimIsRefused(orphan)
 		})
 
-		It("lets the fenced owner register the exact generation after the deadline", func() {
+		It("lets the capture publish the exact generation after the deadline", func() {
 			hangarAgeCapture(capture, 48*time.Hour)
 
-			// The owner's retry wins: it registers the exact generation the
-			// inventory was looking at, and adoption then has nothing to do.
-			capture.Ref = orphan
-			nonce, issuedAt := hangarIssueChallenge(capture.HandoffID, capture.ReservationID, orphan)
+			// The publishing row's recovery wins: it publishes the exact
+			// generation the inventory was looking at, and adoption then has
+			// nothing to do.
 			tx := begin()
 			defer db.Rollback(tx)
-			Expect(repository.RegisterReceipt(ctx, tx, hangarAdmissionFor(capture.HandoffID,
-				capture.Execution, capture.ReservationID, orphan, nonce, issuedAt))).To(Succeed())
+			_, err := repository.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
+				Key: capture.Key, Generation: orphan.Generation, Metageneration: 1, ActivationEpoch: 1,
+			})
+			Expect(err).NotTo(HaveOccurred())
 			Expect(tx.Commit()).To(Succeed())
 
 			outcome, err := adopt(hangarAdoptionFor(orphan, time.Now().Add(-long)))
@@ -359,12 +347,12 @@ var _ = Describe("adopting a managed orphan", func() {
 		It("permits marked-orphan adoption once the capture settles terminally", func() {
 			hangarAgeCapture(capture, 48*time.Hour)
 
-			// The other arm: the owner records terminal failure instead, and
-			// then releases the source it held.
+			// The other arm: the capture fails instead, and then releases the
+			// source it held.
 			tx := begin()
 			defer db.Rollback(tx)
-			Expect(repository.RecordTerminalCaptureFailure(ctx, tx,
-				capture.ReservationID, 1, "seal_unconfirmed")).To(Succeed())
+			_, err := repository.MarkFailed(ctx, tx, capture.Key, "seal_unconfirmed")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(tx.Commit()).To(Succeed())
 
 			// Decided and unsettled: still not adoptable, because the source is
@@ -382,26 +370,25 @@ var _ = Describe("adopting a managed orphan", func() {
 		})
 	})
 
-	// The Req 33 lifecycle boundary: adoption and a late receipt registration
-	// are one winner, because both take the same exact-lifecycle lock.
-	Describe("adoption and a late receipt registration serialize", func() {
+	// The Req 33 lifecycle boundary: adoption and a late publication are one
+	// winner, because both take the same exact-lifecycle lock.
+	Describe("adoption and a late publication serialize", func() {
 		It("yields one lifecycle row whichever arrives first", func() {
 			dbConn.SetMaxOpenConns(4)
 
 			digest := hangarDigest(49)
 			capture := hangarReserve(ctx, repository, digest,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 			ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: 1725830823000049}
 			hangarAgeCapture(capture, 48*time.Hour)
 
-			nonce, issuedAt := hangarIssueChallenge(capture.HandoffID, capture.ReservationID, ref)
-
-			// The registration opens first and holds the exact row.
+			// The publication opens first and holds the exact row.
 			registering := begin()
 			defer db.Rollback(registering)
-			Expect(repository.RegisterReceipt(ctx, registering, hangarAdmissionFor(
-				capture.HandoffID, capture.Execution, capture.ReservationID, ref,
-				nonce, issuedAt))).To(Succeed())
+			_, err := repository.CASPublishingToPublished(ctx, registering, output.PublishedCapture{
+				Key: capture.Key, Generation: ref.Generation, Metageneration: 1, ActivationEpoch: 1,
+			})
+			Expect(err).NotTo(HaveOccurred())
 
 			// The adoption arrives while it is open and blocks on the lock the
 			// registration holds.

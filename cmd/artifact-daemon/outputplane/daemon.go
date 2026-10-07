@@ -22,17 +22,15 @@ func activationEpoch(value uint64) executioncontrol.ActivationEpoch {
 	return executioncontrol.ActivationEpoch(value)
 }
 
-// Daemon is the output plane's node-local publisher and receipt signer.
+// Daemon is the output plane's node-local publisher.
 //
-// What it holds is the whole statement of its role: one namespace, one
-// publisher restricted to create and read, and one epoch's private key. What it
-// does not hold is the point -- there is no cache client, no strict-input
-// client, no list or delete capability, and no database handle. A daemon with a
-// database handle would need a database credential on every node; the durable
-// half of a capture is the control plane's transaction, and this process's
-// contribution to it is a signed receipt it hands back.
+// What it holds is the whole statement of its role: one namespace and one
+// publisher restricted to create and read. What it does not hold is the point
+// -- there is no cache client, no strict-input client, no list or delete
+// capability, and no database handle. The durable half of a capture is the
+// control plane's row; this process answers a digest and a generation.
 type Daemon struct {
-	// namespace, publisher and signer are the OUTPUT facet, and all three are
+	// namespace and publisher are the OUTPUT facet, and both are
 	// zero on a base-control-only daemon. That is a real deployment and not a
 	// degraded one: the sibling `exact_execution_control` track schedules onto
 	// it, and Req 58's output-only downgrade has to reach it from a running
@@ -41,7 +39,6 @@ type Daemon struct {
 	// rather than a nil dereference three calls in.
 	namespace output.OutputNamespace
 	publisher *publisher.Publisher
-	signer    *output.ReceiptSigner
 
 	// epoch is the base facet's activation epoch, which exists whether or not
 	// the output facet does. It is read from configuration rather than from the
@@ -60,8 +57,7 @@ type Daemon struct {
 	operationTimeout time.Duration
 
 	// controlKeyID names the Ed25519 key this node signs execution and source
-	// ledger statements with. It is a DIFFERENT key from the receipt key: a
-	// receipt says an object exists in a bucket, a control statement says a
+	// ledger statements with. A control statement says a
 	// process on this node did something, and an epoch pins both separately so
 	// that rotating one does not rotate the other.
 	controlKeyID  string
@@ -91,23 +87,11 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 	// exploit of that process gets for free.
 	var (
 		namespace     output.OutputNamespace
-		signer        *output.ReceiptSigner
 		role          *publisher.Publisher
 		canonicalizer hangar.Canonicalizer
 	)
 	if config.OutputFacetEnabled() {
 		namespace, err = config.Namespace()
-		if err != nil {
-			return nil, err
-		}
-
-		private, err := config.LoadReceiptKey()
-		if err != nil {
-			return nil, err
-		}
-
-		signer, err = output.NewReceiptSigner(config.ReceiptKeyID, namespace.ActivationEpoch(),
-			private, output.ClockFunc(nowUTC))
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +137,7 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 	}
 
 	return &Daemon{
-		namespace: namespace, publisher: role, signer: signer,
+		namespace: namespace, publisher: role,
 		epoch:                activationEpoch(config.ActivationEpoch),
 		materializationKeyID: config.MaterializationKeyID,
 		canonicalizer:        canonicalizer,
@@ -175,9 +159,6 @@ func (daemon *Daemon) OutputEnabled() bool { return !daemon.namespace.IsZero() }
 // every capability check against epoch zero.
 func (daemon *Daemon) ActivationEpoch() executioncontrol.ActivationEpoch { return daemon.epoch }
 
-// ReceiptSigner and Publisher are the output facet, and are nil without it.
-func (daemon *Daemon) ReceiptSigner() *output.ReceiptSigner { return daemon.signer }
-
 func (daemon *Daemon) Publisher() *publisher.Publisher { return daemon.publisher }
 
 // ExtensionHandshake is the authenticated evidence Req 56 requires before a
@@ -192,7 +173,6 @@ func (daemon *Daemon) ExtensionHandshake() output.ExtensionHandshake {
 		Base:                    daemon.BaseHandshake(),
 		CaptureExtensionVersion: output.ProtocolVersion,
 		SourceLedgerVersion:     output.SourceLedgerVersion,
-		ReceiptPublicKeyID:      daemon.receiptKeyID(),
 		MaterializationKeyID:    daemon.materializationKeyID,
 		BucketFingerprint:       daemon.namespace.BucketFingerprint(),
 		DerivedNamespace:        daemon.namespace.ListPrefix(),
@@ -209,20 +189,12 @@ func (daemon *Daemon) BaseHandshake() executioncontrol.Handshake {
 	}
 }
 
-func (daemon *Daemon) receiptKeyID() string {
-	if daemon.signer == nil {
-		return ""
-	}
-
-	return daemon.signer.KeyID()
-}
-
 // ControlKeyID is what the handshake reports, so a control plane knows which
 // pinned public key checks this node's statements.
 func (daemon *Daemon) ControlKeyID() string { return daemon.controlKeyID }
 
-// ControlSigner and CaptureSigner are the node's two statement signers over one
-// key. They are handed to the ledgers at construction and to nothing else.
+// ControlSigner is the node's statement signer. It is handed to the execution
+// ledger at construction and to nothing else.
 func (daemon *Daemon) ControlSigner() *executioncontrol.AcknowledgementSigner {
 	return daemon.controlSigner
 }
@@ -234,29 +206,9 @@ func (daemon *Daemon) ControlPublicKey() ed25519.PublicKey { return daemon.contr
 // Namespace is what this daemon publishes into.
 func (daemon *Daemon) Namespace() output.OutputNamespace { return daemon.namespace }
 
-// ReceiptPublicKey is the half the activation epoch pins. It is the only key
-// material this process will hand out.
-func (daemon *Daemon) ReceiptPublicKey() ed25519.PublicKey { return daemon.signer.PublicKey() }
-
 // OpenRead opens one published object's bytes under a verified read warrant.
 func (daemon *Daemon) OpenRead(ctx context.Context, warrant output.ReadWarrantClaims) (io.ReadCloser, output.PublishedObject, error) {
 	return daemon.publisher.OpenExactObject(ctx, warrant.Ref, warrant)
-}
-
-// parsePKCS8Ed25519 refuses anything that is not an Ed25519 private key.
-func parsePKCS8Ed25519(der []byte) (ed25519.PrivateKey, error) {
-	parsed, err := x509.ParsePKCS8PrivateKey(der)
-	if err != nil {
-		return nil, fmt.Errorf("%w: the receipt signing key is not a PKCS#8 private key: %v",
-			output.ErrCorrupt, err)
-	}
-	private, ok := parsed.(ed25519.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("%w: the receipt signing key is a %T; this cohort signs receipts "+
-			"with %s and nothing else", output.ErrUnsupportedProtocol, parsed, output.ReceiptAlgorithm)
-	}
-
-	return private, nil
 }
 
 // The daemon holds the shared seam, never a cloud client type: hangargcs's
@@ -265,3 +217,19 @@ func parsePKCS8Ed25519(der []byte) (ed25519.PrivateKey, error) {
 // names cloud.google.com/go/storage nowhere, which is what keeps hangar/gcs the
 // only package in the repository that does.
 var _ objectstore.Client = (objectstore.Client)(nil)
+
+// parsePKCS8Ed25519 refuses anything that is not an Ed25519 private key.
+func parsePKCS8Ed25519(der []byte) (ed25519.PrivateKey, error) {
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the signing key is not a PKCS#8 private key: %v",
+			output.ErrCorrupt, err)
+	}
+	private, ok := parsed.(ed25519.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("%w: the signing key is a %T; this cohort signs with Ed25519 "+
+			"and nothing else", output.ErrUnsupportedProtocol, parsed)
+	}
+
+	return private, nil
+}

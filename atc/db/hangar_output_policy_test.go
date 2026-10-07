@@ -76,7 +76,8 @@ var _ = Describe("the storage-integrity admission gate", func() {
 	settled := func(digest hangar.Digest, generation int64) HangarCapture {
 		GinkgoHelper()
 		capture := hangarPublishAt(ctx, repository, digest, generation,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 		hangarReleaseSource(ctx, repository, capture)
 
 		return capture
@@ -108,18 +109,13 @@ var _ = Describe("the storage-integrity admission gate", func() {
 			recordFailure()
 		})
 
-		It("refuses a new capture's predeclaration", func() {
+		It("refuses a new capture", func() {
 			err := commitOf(func(tx db.HangarOutputTx) {
-				Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
-					ProtocolVersion: output.ProtocolVersion,
-					Execution:       hangarIdentity(),
-					ActivationEpoch: 1,
-					HandoffID:       output.HandoffID(uuid.NewString()),
-					SourceHoldID:    output.SourceHoldID(uuid.NewString()),
-					Output:          output.OutputName("result"),
-					CaptureDeadline: output.NewTimestamp(
-						time.Now().Add(output.DefaultCaptureDeadline)),
-				})).To(Succeed())
+				_, err := repository.InsertPending(ctx, tx, output.PendingCapture{
+					Execution: hangarIdentity(), Output: "result",
+					Node: "node-a", NodeUID: "node-uid", Term: output.DefaultCaptureDeadline,
+				})
+				Expect(err).NotTo(HaveOccurred())
 			})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("storage integrity"))
@@ -169,7 +165,7 @@ var _ = Describe("the storage-integrity admission gate", func() {
 	Describe("what keeps working", func() {
 		It("lets a terminal capture release its source and settle", func() {
 			capture := hangarPublishAt(ctx, repository, hangarDigest(82), 1725830823000082,
-				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+				output.DefaultCaptureDeadline)
 			recordFailure()
 
 			// Releases remain possible. A plane that stopped releasing while
@@ -177,12 +173,13 @@ var _ = Describe("the storage-integrity admission gate", func() {
 			// long as the monitor stayed unhappy.
 			hangarReleaseSource(ctx, repository, capture)
 
-			var settledAt bool
+			var released bool
 			Expect(dbConn.QueryRow(`
-				SELECT settled_at IS NOT NULL FROM hangar_capture_reservations
-				WHERE reservation_id = $1`, string(capture.ReservationID)).Scan(&settledAt)).
+				SELECT released_at IS NOT NULL FROM hangar_captures
+				WHERE execution_id = $1 AND output_name = $2`,
+				string(capture.Key.ExecutionID), string(capture.Key.Output)).Scan(&released)).
 				To(Succeed())
-			Expect(settledAt).To(BeTrue())
+			Expect(released).To(BeTrue())
 		})
 
 		It("keeps existing claims recorded and lets them be released", func() {
@@ -205,7 +202,15 @@ var _ = Describe("the storage-integrity admission gate", func() {
 			in(func(tx db.HangarOutputTx) {
 				claims, err := repository.ReadClaims(ctx, tx, capture.Ref)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(claims).To(HaveLen(1))
+				// The capture's own claim is a tombstone beside it; the
+				// consumer's is the one still active.
+				var active []output.ClaimID
+				for _, claim := range claims {
+					if claim.Active() {
+						active = append(active, claim.ClaimID)
+					}
+				}
+				Expect(active).To(ConsistOf(claimID))
 			})
 
 			// And it can be released. A release is not a new protection.
@@ -238,18 +243,14 @@ var _ = Describe("the storage-integrity admission gate", func() {
 		capture := settled(hangarDigest(85), 1725830823000085)
 		Expect(capture.Ref.Generation).NotTo(BeZero())
 		var count int
-		Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_policy_violations WHERE activation_epoch = 1 AND resolved_at IS NOT NULL`).Scan(&count)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_integrity_findings WHERE resolved_at IS NOT NULL`).Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(1))
-		_, err := dbConn.Exec(`UPDATE hangar_policy_violations SET resolved_at = NULL WHERE activation_epoch = 1`)
+		_, err := dbConn.Exec(`UPDATE hangar_integrity_findings SET resolved_at = NULL`)
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("admits work without policy evidence and ignores historical unsafe or stale readings", func() {
+	It("admits work without policy evidence", func() {
 		Expect(settled(hangarDigest(86), 1725830823000086).Ref.Generation).NotTo(BeZero())
-		_, err := dbConn.Exec(`INSERT INTO hangar_policy_snapshots
-            (activation_epoch, bucket_fingerprint, metageneration, policy_hash, lifecycle_delete_rules, state, observed_at)
-            VALUES (1, 'gs://output-bucket', 1, 'legacy-policy', 1, 'at_risk', now() - interval '1 day')`)
-		Expect(err).NotTo(HaveOccurred())
 		Expect(settled(hangarDigest(87), 1725830823000087).Ref.Generation).NotTo(BeZero())
 	})
 })

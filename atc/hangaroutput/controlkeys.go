@@ -58,19 +58,6 @@ func (ring ControlKeyRing) Validate() error {
 	return nil
 }
 
-func (ring ControlKeyRing) VerifyCapture(ack output.CaptureAcknowledgement) error {
-	if err := ring.Validate(); err != nil {
-		return err
-	}
-	for _, key := range ring.Keys {
-		if key.Epoch == ack.ActivationEpoch {
-			public, _ := base64.StdEncoding.DecodeString(key.PublicKey)
-			return output.VerifyCaptureAcknowledgement(ack, ed25519.PublicKey(public))
-		}
-	}
-	return fmt.Errorf("%w: no control verification key for the hold's epoch", output.ErrUnsigned)
-}
-
 func (ring ControlKeyRing) VerifyExecution(ack executioncontrol.Acknowledgement) error {
 	if err := ring.Validate(); err != nil {
 		return err
@@ -81,18 +68,5 @@ func (ring ControlKeyRing) VerifyExecution(ack executioncontrol.Acknowledgement)
 			return executioncontrol.VerifyAcknowledgement(ack, ed25519.PublicKey(public))
 		}
 	}
-	return fmt.Errorf("%w: no control verification key for the execution's epoch", output.ErrUnsigned)
-}
-
-func (ring ControlKeyRing) VerifyRelease(ack output.ReleaseAcknowledgement) error {
-	if err := ring.Validate(); err != nil {
-		return err
-	}
-	for _, key := range ring.Keys {
-		if key.Epoch == ack.ActivationEpoch {
-			public, _ := base64.StdEncoding.DecodeString(key.PublicKey)
-			return output.VerifyReleaseAcknowledgement(ack, ed25519.PublicKey(public))
-		}
-	}
-	return fmt.Errorf("%w: no control verification key for the release's epoch", output.ErrUnsigned)
+	return fmt.Errorf("%w: no control verification key for the execution's epoch", executioncontrol.ErrUnsigned)
 }

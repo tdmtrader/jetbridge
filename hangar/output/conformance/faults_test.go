@@ -41,7 +41,7 @@ func publishedForDeletion(t *testing.T, tier substrate, fill string) (
 	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
-	object, err := role.EnsureObject(ctx,
+	object, err := role.EnsurePublication(ctx,
 		testsupport.Reservation(t, namespace, testReservation, testsupport.Digest(fill)),
 		bytes.NewReader(canonicalBytes("to be reclaimed")), 15)
 	if err != nil {
@@ -193,7 +193,7 @@ func TestARetryAfterAnAmbiguousCreateConvergesOnOneGeneration(t *testing.T) {
 
 	// The first attempt commits the object and loses the response.
 	tier.memory.Inject(gcstest.Faults{CreateResponseLost: true})
-	first, err := role.EnsureObject(ctx, reservation,
+	first, err := role.EnsurePublication(ctx, reservation,
 		bytes.NewReader(canonicalBytes("ambiguous")), 9)
 	if err != nil {
 		t.Fatalf("the ambiguous create did not reconcile: %v", err)
@@ -201,7 +201,7 @@ func TestARetryAfterAnAmbiguousCreateConvergesOnOneGeneration(t *testing.T) {
 
 	// The retry is the SAME capture: the same reservation, the same bytes.
 	tier.memory.Inject(gcstest.Faults{})
-	second, err := role.EnsureObject(ctx, reservation,
+	second, err := role.EnsurePublication(ctx, reservation,
 		bytes.NewReader(canonicalBytes("ambiguous")), 9)
 	if err != nil {
 		t.Fatalf("retrying the capture after an ambiguous create: %v", err)

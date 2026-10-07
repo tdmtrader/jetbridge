@@ -163,6 +163,8 @@ func TestThePlaneInventoryIsCountedInOnePass(t *testing.T) {
 		t.Fatalf("reading status: %v", err)
 	}
 
+	// A published capture registers its generation and takes its own claim;
+	// one more consumer's claim makes two.
 	ref := registeredRef(t, h)
 	claimOn(t, h, ref)
 
@@ -175,7 +177,7 @@ func TestThePlaneInventoryIsCountedInOnePass(t *testing.T) {
 		t.Errorf("a registered generation moved the count from %d to %d",
 			before.Counts.LiveGenerations, after.Counts.LiveGenerations)
 	}
-	if after.Counts.OpenClaims != before.Counts.OpenClaims+1 {
+	if after.Counts.OpenClaims != before.Counts.OpenClaims+2 {
 		t.Errorf("an acquired claim moved the open-claim count from %d to %d",
 			before.Counts.OpenClaims, after.Counts.OpenClaims)
 	}

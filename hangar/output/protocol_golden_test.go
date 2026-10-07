@@ -123,40 +123,6 @@ func refuseMarker(t *testing.T, raw []byte) {
 	t.Logf("refused as required: %v", err)
 }
 
-// roundTripAcknowledgementOfKind is roundTrip plus ValidateAs: the fixture must
-// be the statement it claims to be. A source-ledger statement whose kind is not
-// bound to the state it proves is finding 1's defect on the wire.
-func roundTripAcknowledgementOfKind(kind CaptureAcknowledgementKind) func(*testing.T, []byte) {
-	return func(t *testing.T, raw []byte) {
-		t.Helper()
-
-		roundTrip[CaptureAcknowledgement](t, raw)
-
-		ack := decodeExact[CaptureAcknowledgement](t, raw)
-		if err := ack.ValidateAs(kind); err != nil {
-			t.Errorf("the frozen fixture is not a %s statement: %v", kind, err)
-		}
-	}
-}
-
-// WriterInspection is an envelope of already-bounded statements. Freeze both
-// states: an open writer omits closed; a retired writer preserves both statements.
-func roundTripWriterInspection(t *testing.T, raw []byte) {
-	t.Helper()
-	value := decodeExact[WriterInspection](t, raw)
-	if err := value.Issued.ValidateAs(CaptureWriterTicketIssued); err != nil {
-		t.Fatalf("invalid issued statement: %v", err)
-	}
-	if value.Closed != nil {
-		if err := value.Closed.ValidateAs(CaptureWriterTicketClosed); err != nil {
-			t.Fatalf("invalid closed statement: %v", err)
-		}
-	}
-	if got := canonicalJSON(t, value); !bytes.Equal(got, raw) {
-		t.Errorf("writer inspection changed its frozen shape.\n--- got ---\n%s\n--- want ---\n%s", got, raw)
-	}
-}
-
 var protocolFixtures = map[string]func(*testing.T, []byte){
 	// The capture routes and the node marker.
 	"capture-key.json":                     func(t *testing.T, raw []byte) { roundTrip[CaptureKey](t, raw) },
@@ -173,71 +139,20 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"input-stage.json":                     func(t *testing.T, raw []byte) { roundTrip[InputStage](t, raw) },
 	"input-publish-request.json":           func(t *testing.T, raw []byte) { roundTrip[InputPublishRequest](t, raw) },
 	"input-publication.json":               func(t *testing.T, raw []byte) { roundTrip[InputPublication](t, raw) },
-	"source-incarnation.json":              func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
-	"capture-admission.json":               func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
 
 	// The reservation the ATC repeats into the producing Pod's volume. Its
 	// refusal twin is a reservation whose directory does not derive from the
 	// incarnation beside it -- a chosen path wearing a server-issued identity,
 	// which is the shape Req 7 exists to refuse.
-	"reserved-incarnation.json": func(t *testing.T, raw []byte) {
-		roundTrip[ReservedIncarnation](t, raw)
-	},
-	"refusal-chosen-incarnation-directory.json": func(t *testing.T, raw []byte) {
-		refuse[ReservedIncarnation](t, raw)
-	},
-
-	"hold-acknowledgement.json": func(t *testing.T, raw []byte) {
-		roundTrip[CaptureAcknowledgement](t, raw)
-	},
-	"writer-ticket-acknowledgement.json": func(t *testing.T, raw []byte) {
-		roundTrip[CaptureAcknowledgement](t, raw)
-	},
 
 	// Sealing's two halves are two statements, so each gets its own frozen
 	// fixture and each is asserted to be of its own kind. A single fixture
 	// would freeze the merged shape this contract exists not to have.
-	"seal-started-acknowledgement.json":   roundTripAcknowledgementOfKind(CaptureSealStarted),
-	"seal-confirmed-acknowledgement.json": roundTripAcknowledgementOfKind(CaptureSealConfirmed),
-
-	"successful-finish-disposition.json": func(t *testing.T, raw []byte) {
-		roundTrip[SuccessfulFinishDisposition](t, raw)
-	},
-	"no-capture-disposition.json": func(t *testing.T, raw []byte) {
-		roundTrip[NoCaptureDisposition](t, raw)
-	},
-	"pre-reservation-cancel-disposition.json": func(t *testing.T, raw []byte) {
-		roundTrip[PreReservationCancelDisposition](t, raw)
-	},
-	"release-acknowledgement.json": func(t *testing.T, raw []byte) {
-		roundTrip[ReleaseAcknowledgement](t, raw)
-	},
 
 	// The node-local control API's request bodies. They are wire in exactly the
 	// sense this file means it: another implementation of the output daemon
 	// reads them, so their shape is a promise and not an internal detail.
-	"writer-admission.json":         func(t *testing.T, raw []byte) { roundTrip[WriterAdmission](t, raw) },
-	"writer-inspection-open.json":   roundTripWriterInspection,
-	"writer-inspection-closed.json": roundTripWriterInspection,
-	"seal-request.json":             func(t *testing.T, raw []byte) { roundTrip[SealRequest](t, raw) },
-	"seal-started.json":             func(t *testing.T, raw []byte) { roundTrip[SealStarted](t, raw) },
-	"drained-writer.json":           func(t *testing.T, raw []byte) { roundTrip[DrainedWriter](t, raw) },
-	"release-intent.json":           func(t *testing.T, raw []byte) { roundTrip[ReleaseIntent](t, raw) },
-	"publication-request.json": func(t *testing.T, raw []byte) {
-		roundTrip[PublicationRequest](t, raw)
-	},
-	"publication-result.json": func(t *testing.T, raw []byte) {
-		roundTrip[PublicationResult](t, raw)
-	},
-	"canonicalization-result.json": func(t *testing.T, raw []byte) {
-		roundTrip[CanonicalizationResult](t, raw)
-	},
 
-	"receipt.json":           func(t *testing.T, raw []byte) { roundTrip[Receipt](t, raw) },
-	"receipt-admission.json": func(t *testing.T, raw []byte) { roundTrip[ReceiptAdmission](t, raw) },
-	"logical-resolution.json": func(t *testing.T, raw []byte) {
-		roundTrip[LogicalResolution](t, raw)
-	},
 	"claim-acquire.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimAcquisition](t, raw) },
 	"claim-release.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimRelease](t, raw) },
 	"read-lease.json":          func(t *testing.T, raw []byte) { roundTrip[ReadLease](t, raw) },
@@ -267,14 +182,8 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
 	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
 
-	"dispositions.json":                  assertClosedDispositions,
-	"capture-acknowledgement-kinds.json": assertClosedCaptureAcknowledgementKinds,
-	"no-capture-reasons.json":            assertClosedNoCaptureReasons,
 	"debt-reasons.json":                  assertClosedDebtReasons,
 
-	"refusal-unknown-disposition.json": func(t *testing.T, raw []byte) {
-		refuse[NoCaptureDisposition](t, raw)
-	},
 	"refusal-unknown-marker-version.json":   refuseMarker,
 	"refusal-unmarked-object-metadata.json": refuseMarker,
 }
@@ -298,18 +207,6 @@ func assertClosedEnum[T ~string](t *testing.T, raw []byte, got []T, name string)
 	if !bytes.Equal(canonicalJSON(t, got), raw) {
 		t.Errorf("%s does not re-encode to the frozen fixture:\n%s", name, canonicalJSON(t, got))
 	}
-}
-
-func assertClosedDispositions(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, Dispositions(), "Dispositions()")
-}
-
-func assertClosedCaptureAcknowledgementKinds(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, CaptureAcknowledgementKinds(), "CaptureAcknowledgementKinds()")
-}
-
-func assertClosedNoCaptureReasons(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, NoCaptureReasons(), "NoCaptureReasons()")
 }
 
 func assertClosedDebtReasons(t *testing.T, raw []byte) {

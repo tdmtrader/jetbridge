@@ -11,8 +11,8 @@ package jetbridge
 // free port.
 //
 // No bucket is involved. The control API touches none: it admits executions,
-// records starts and outcomes, holds sources and issues writer tickets, and
-// every one of those is a write to the node's own ledger. The daemon is pointed
+// records starts and outcomes and holds capture step directories, and every one
+// of those is a write to the node's own ledger. The daemon is pointed
 // at an endpoint nothing answers on, which is honest -- if a control route ever
 // reaches for the bucket, these specs fail rather than passing against a store
 // somebody stubbed.
@@ -49,8 +49,15 @@ const (
 type outputDaemonHarness struct {
 	Endpoint string
 	StepsDir string
-	Client   *OutputControlClient
-	Minter   *executioncontrol.CapabilityMinter
+	// StorageRoot is the daemon's managed storage root: StepsDir's parent and
+	// the root the read-only ledger classifier opens.
+	StorageRoot string
+	// TerminationsDir is the daemon's --pod-terminations-dir: a file named
+	// after a Pod UID in it declares that Pod's containers terminated, which is
+	// what a standalone daemon's capture seal waits for.
+	TerminationsDir string
+	Client          *OutputControlClient
+	Minter          *executioncontrol.CapabilityMinter
 	// PKI is set for a TLS daemon: what a real OutputSource needs to reach it.
 	PKI *harnessControlPKI
 
@@ -134,14 +141,10 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch"} {
+	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch", "terminations"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return nil, err
 		}
-	}
-	receiptKey, err := writeHarnessEd25519(dir, "receipt.pem")
-	if err != nil {
-		return nil, err
 	}
 	controlKey, err := writeHarnessEd25519(dir, "control.pem")
 	if err != nil {
@@ -155,10 +158,9 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
 		return nil, err
 	}
-	// The output read-warrant key: a THIRD key, distinct from the receipt key and
-	// from the control capability key. A warrant must not be signable by anything
-	// that can mint a publication receipt, and the daemon refuses a
-	// configuration where two of the three are one file.
+	// The output read-warrant key, distinct from the control capability key: a
+	// warrant must not be signable by anything that can mint a control
+	// capability.
 	materializeSecret := make([]byte, output.ReadWarrantKeyBytes)
 	if _, err := rand.Read(materializeSecret); err != nil {
 		return nil, err
@@ -186,8 +188,6 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--output-bucket", "jetbridge-harness-output",
 		"--output-prefix", "harness/one",
 		"--output-tenant", "harness",
-		"--receipt-key-id", "harness-receipt-1",
-		"--receipt-key-file", receiptKey,
 		"--control-key-id", "harness-control-1",
 		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
@@ -197,6 +197,9 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
 		"--storage-path", filepath.Join(dir, "storage"),
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
+		// Standalone: no Kubernetes API to read Pods from, so a capture seal
+		// waits for a Pod's termination to be declared here.
+		"--pod-terminations-dir", filepath.Join(dir, "terminations"),
 		"--listen-address", "127.0.0.1",
 		"--port", fmt.Sprint(port),
 	)
@@ -230,12 +233,14 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	}
 
 	return &outputDaemonHarness{
-		Endpoint: endpoint,
-		StepsDir: filepath.Join(dir, "storage", "steps"),
-		Minter:   minter,
-		PKI:      pki,
-		Client:   NewOutputControlClient(endpoint, transport, minter, harnessEpoch),
-		cmd:      daemon,
+		Endpoint:        endpoint,
+		StepsDir:        filepath.Join(dir, "storage", "steps"),
+		StorageRoot:     filepath.Join(dir, "storage"),
+		TerminationsDir: filepath.Join(dir, "terminations"),
+		Minter:          minter,
+		PKI:             pki,
+		Client:          NewOutputControlClient(endpoint, transport, minter, harnessEpoch),
+		cmd:             daemon,
 	}, nil
 }
 

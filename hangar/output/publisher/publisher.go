@@ -53,25 +53,9 @@ func New(namespace output.OutputNamespace, store Store, timeout time.Duration) (
 	return &Publisher{namespace: namespace, store: store, timeout: timeout}, nil
 }
 
-// EnsureObject creates the canonical tree if absent and reports the exact
-// generation either way.
-//
-// The whole method is one rule: an object is deduplicated against only after it
-// has been verified whole. A 412 on the create means *something* is at the key,
-// and "something at the key with the right name" is precisely the weaker check
-// Req 23 forbids -- so the 412 path stats the object, parses its marker, and
-// refuses as a typed collision unless the scope, the digest, the marker version
-// and the marker's own logical identity all agree.
-func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output.ResolvedReservation, canonical io.Reader, size int64) (output.PublishedObject, error) {
-	if err := reservation.Validate(); err != nil {
-		return output.PublishedObject{}, err
-	}
-	return publisher.EnsurePublication(ctx, reservation.Marker, canonical, size)
-}
-
 // EnsurePublication is the shared physical create operation. Its caller must
 // first durably reserve the server-derived logical identity. Capture callers
-// enter through EnsureObject, which retains all execution/capture validation;
+// enter through EnsurePublication, which retains all execution/capture validation;
 // input intake callers hold a node-owned canonical stage and an upload intent.
 func (publisher *Publisher) EnsurePublication(ctx context.Context, reservation output.ObjectMarker, canonical io.Reader, size int64) (output.PublishedObject, error) {
 	if err := reservation.Validate(); err != nil {

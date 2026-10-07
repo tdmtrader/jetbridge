@@ -331,7 +331,9 @@ func (repository *HangarOutputRepository) ReadInventoryDebt(ctx context.Context,
 	return owed, nil
 }
 
-// RecordRuntimeAtRisk preserves a storage failure until explicit operator reconciliation.
+// RecordRuntimeAtRisk preserves a storage failure until explicit operator
+// reconciliation. Findings carry no epoch; the epoch parameter goes with the
+// epochs themselves.
 func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Context, tx output.Tx, epoch int64, finding output.PolicyFinding) error {
 	if err := finding.Validate(); err != nil {
 		return err
@@ -345,11 +347,11 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (activation_epoch, violation, subject) WHERE resolved_at IS NULL
+		INSERT INTO hangar_integrity_findings (violation, subject, detail)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (violation, subject) WHERE resolved_at IS NULL
 		DO NOTHING`,
-		epoch, string(finding.Violation), finding.Subject, finding.Detail); err != nil {
+		string(finding.Violation), finding.Subject, finding.Detail); err != nil {
 		return hangarConflict(err)
 	}
 
@@ -361,10 +363,10 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 // Historical configuration observations remain archived but do not affect admission.
 func (repository *HangarOutputRepository) OpenPolicyViolations(ctx context.Context, tx output.Tx, epoch int64) ([]output.PolicyFinding, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT violation, subject, detail FROM hangar_policy_violations
-		 WHERE activation_epoch = $1 AND resolved_at IS NULL
+		SELECT violation, subject, detail FROM hangar_integrity_findings
+		 WHERE resolved_at IS NULL
            AND violation IN ('out_of_band_absence', 'runtime_principal_denied')
-		 ORDER BY observed_at, id`, epoch)
+		 ORDER BY observed_at, id`)
 	if err != nil {
 		return nil, hangarConflict(err)
 	}
@@ -402,9 +404,9 @@ func (repository *HangarOutputRepository) ReconcilePolicyViolation(ctx context.C
 	}
 
 	result, err := tx.ExecContext(ctx, `
-		UPDATE hangar_policy_violations SET resolved_at = now()
-		 WHERE activation_epoch = $1 AND violation = $2 AND subject = $3 AND resolved_at IS NULL`,
-		epoch, string(violation), subject)
+		UPDATE hangar_integrity_findings SET resolved_at = now()
+		 WHERE violation = $1 AND subject = $2 AND resolved_at IS NULL`,
+		string(violation), subject)
 	if err != nil {
 		return hangarConflict(err)
 	}
@@ -413,8 +415,7 @@ func (repository *HangarOutputRepository) ReconcilePolicyViolation(ctx context.C
 		return err
 	}
 	if closed == 0 {
-		return fmt.Errorf("%w: no open %s violation for %q at epoch %d",
-			output.ErrNotFound, violation, subject, epoch)
+		return fmt.Errorf("%w: no open %s finding for %q", output.ErrNotFound, violation, subject)
 	}
 
 	return nil
@@ -435,8 +436,8 @@ func (repository *HangarOutputRepository) CountOutputPlaneState(ctx context.Cont
 			(SELECT count(*) FROM hangar_exact_lifecycles
 			  WHERE activation_epoch = $1
 			    AND state IN ('registered', 'adopted', 'reclaiming')),
-			(SELECT count(*) FROM hangar_capture_reservations
-			  WHERE activation_epoch = $1 AND state IN ('unresolved', 'resolved')),
+			(SELECT count(*) FROM hangar_captures
+			  WHERE state IN ('pending', 'publishing')),
 			(SELECT count(*) FROM hangar_claims
 			  WHERE activation_epoch = $1 AND released_at IS NULL),
 			(SELECT count(*) FROM hangar_read_leases lease

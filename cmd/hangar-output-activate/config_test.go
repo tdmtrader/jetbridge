@@ -199,11 +199,6 @@ func TestAnIncompleteWalkIsRefusedAndSaysWhat(t *testing.T) {
 				"--readiness-timeout=0s"},
 			"--readiness-timeout",
 		},
-		"no receipt key lifetime": {
-			[]string{"--target=output", "--namespace=cicd", "--daemonset-name=d",
-				"--receipt-key-lifetime=0s"},
-			"--receipt-key-lifetime",
-		},
 		"half a client certificate": {
 			[]string{"--target=base", "--namespace=cicd", "--daemonset-name=d", "--tls-key=/k"},
 			"partially configured",

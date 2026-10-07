@@ -10,12 +10,28 @@ package output
 // because the capability that authorizes it is bound to that identity.
 
 import (
+	"context"
 	"fmt"
 	"slices"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
+
+// CaptureFacet is the capture routes' authorization surface. A base control
+// capability presented at a capture route is refused, and a capture capability
+// presented at a base route is refused there.
+const CaptureFacet executioncontrol.Facet = "durable-output-capture"
+
+// SourceControl is the control plane's seam to one node's capture routes.
+// Every method takes a request naming an execution and an output -- never a
+// path, bucket, scope or key -- and the node derives each location itself.
+type SourceControl interface {
+	Seal(ctx context.Context, request CaptureSealRequest) (CaptureSealResult, error)
+	Publish(ctx context.Context, request CapturePublishRequest) (CapturePublishResult, error)
+	Release(ctx context.Context, request CaptureReleaseRequest) (CaptureReleaseAcknowledgement, error)
+	Stat(ctx context.Context, request CaptureStatRequest) (CapturePublishResult, error)
+}
 
 // StepMarkerState is the closed vocabulary of the node-local marker.
 type StepMarkerState string

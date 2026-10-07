@@ -125,9 +125,6 @@ var deferredEntryPoints = []deferredEntryPoint{
 
 	// The consumer half: verifying a warrant, a receipt or a lease answer that
 	// this plane issued. This phase issues them and reads none of them back.
-	{name: "KeyIDs", why: consumerHalf},
-	{name: "ConstantTimeKeyIDEqual", why: consumerHalf},
-	{name: "ReceiptEnvelopeIsUnaltered", why: consumerHalf},
 
 	{name: "Rotate", pkg: "atc/hangaroutput/activation", why: rotationHasNoOperatorPath},
 
@@ -152,11 +149,6 @@ const (
 		"a count, because a series per in-flight object is cardinality nobody can alert on. " +
 		"Loading one job and reading its remaining term is a diagnosis of a SPECIFIC object, " +
 		"and this track ships no API that names one"
-	consumerHalf = "the consumer-side verification half needs a consumer: these five verify a " +
-		"receipt or a key id some process read BACK, and the process that does that is the " +
-		"ATC's receipt registration. Three names this reason once covered -- ValidateLease, " +
-		"RenewLease, ReleaseLease -- went with the read-lease control protocol and are " +
-		"off the list"
 	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
 		"does not return; Phase 8, with the activation verification"
 	rotationHasNoOperatorPath = "rotation is the only one of the five transitions with no " +

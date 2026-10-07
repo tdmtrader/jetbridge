@@ -11,8 +11,8 @@
 package jetbridge
 
 // The one thing no unit tier can say: a real kubelet ran the Pod this runtime
-// generated, and the hold the capture control init took inside it is the hold
-// the producer's own start revalidated.
+// generated, and the hold the capture control init took inside it names the
+// step directory the producer wrote into.
 //
 // WHAT THIS FILE COVERS, and what it deliberately does not.
 //
@@ -45,17 +45,16 @@ package jetbridge
 //     honestly invent a UID the API server has not yet issued; this test reads
 //     the request the daemon received back out of the producer's own logs and
 //     compares it against the Pod's `metadata.uid` as the API server reports it.
-//  3. The hostPath the ATC mounted is the directory the daemon reserved on that
-//     node's disk, and the node affinity put the Pod on the node holding the
-//     reservation. The producer writes into the reserved incarnation and the
-//     bytes are read back from the fixture's own view of the host path, so a
-//     builder that composed a path of its own fails here even though every unit
-//     assertion about the Pod spec still passes.
+//  3. The hostPath the ATC mounted is the capture's step directory on that
+//     node's disk (output.CaptureKey.Directory, the derivation the daemon
+//     shares), and the node affinity put the Pod on the capture's node. The
+//     producer writes into the step directory, so a builder that composed a
+//     path of its own fails here even though every unit assertion about the
+//     Pod spec still passes.
 //
 // NOT covered here, and named rather than implied. The Phase 9 plan's list for
 // this box also includes cancellation before hold / after hold / during
-// execution / after Stage 2, pre_reservation_cancel release behaviour,
-// sidecar and hijack termination, seal timeout, web and daemon restart, pod
+// execution / after Stage 2, sidecar and hijack termination, seal timeout, web and daemon restart, pod
 // disappearance, node loss, and the materialization read lease. Every one of
 // those needs a real output daemon binary and a real control plane on the
 // cluster, not the BusyBox stand-in below, and they are the sibling of the
@@ -94,8 +93,6 @@ import (
 // Req 7 is that a task cannot choose one.
 const (
 	liveCaptureExecution = "11111111-1111-4111-8111-111111111111"
-	liveCaptureHandoff   = "22222222-2222-4222-8222-222222222222"
-	liveCaptureLease     = "33333333-3333-4333-8333-333333333333"
 	liveCaptureOutput    = "result"
 	liveCaptureNodeUID   = "live-node-uid"
 	liveCaptureWarrant   = "live-source-control-grant"
@@ -166,17 +163,15 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	cfg.OutputPlaneEnabled = true
 	cfg.OutputActivationEpoch = 9
 
-	// The reservation, as the daemon would have answered it. Nothing here
-	// composes a path: the incarnation's own Directory() is what the ATC
-	// repeats into the Pod, and the fixture below derives the same string the
+	// The capture's step directory. Nothing here composes a path: the
+	// capture key's own Directory() is the one derivation the ATC and the
+	// node's daemon share, and the fixture below derives the same string the
 	// same way rather than being told one.
-	incarnation := hangaroutput.SourceIncarnation{
-		ExecutionID:      liveCaptureExecution,
-		NodeUID:          liveCaptureNodeUID,
-		HandleGeneration: 4,
-		Output:           liveCaptureOutput,
+	captureKey := hangaroutput.CaptureKey{
+		ExecutionID: liveCaptureExecution,
+		Output:      liveCaptureOutput,
 	}
-	reservedDirectory := incarnation.Directory()
+	reservedDirectory := captureKey.Directory()
 
 	// The control endpoint is the NODE's, and it is read off the API server
 	// rather than composed.
@@ -208,17 +203,14 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 		Capability:      "live-base-capability",
 	}
 	if err := control.SelectCapture(atcruntime.DurableOutputCapture{
-		Version:             atcruntime.DurableOutputCaptureVersion,
-		Identity:            control.Identity,
-		ActivationEpoch:     control.ActivationEpoch,
-		HandoffID:           hangaroutput.HandoffID(liveCaptureHandoff),
-		SourceHoldID:        hangaroutput.SourceHoldID(liveCaptureLease),
-		Output:              liveCaptureOutput,
-		SourceControlGrant:  liveCaptureWarrant,
-		CaptureDeadline:     time.Now().Add(time.Hour).UTC(),
-		ReservedIncarnation: incarnation,
-		ReservedDirectory:   reservedDirectory,
-		ReservingNode:       reservingNode,
+		Version:            atcruntime.DurableOutputCaptureVersion,
+		Identity:           control.Identity,
+		ActivationEpoch:    control.ActivationEpoch,
+		Output:             liveCaptureOutput,
+		SourceControlGrant: liveCaptureWarrant,
+		CaptureDeadline:    time.Now().Add(time.Hour).UTC(),
+		Node:               reservingNode,
+		NodeUID:            liveCaptureNodeUID,
 	}); err != nil {
 		t.Fatalf("select capture: %v", err)
 	}
@@ -322,7 +314,7 @@ cat /hold/.hold-request
 	// and "the request arrived" are one fact rather than two.
 	//
 	// It also widens the reserved incarnation directory, which lives under
-	// `steps/` because that is where `ReservedIncarnationVolume` roots it
+	// `steps/` because that is where `CaptureStepVolume` roots it
 	// (`storage_daemonset.go:110`).
 	//
 	// The claim this comment used to make -- that creating it here is what the
@@ -423,9 +415,8 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 	// And the rest of the identity, so a request that carried a UID and nothing
 	// else would not pass.
 	for _, want := range []string{
-		fmt.Sprintf(`"handoff_id":"%s"`, liveCaptureHandoff),
-		fmt.Sprintf(`"source_hold_id":"%s"`, liveCaptureLease),
 		fmt.Sprintf(`"execution_id":"%s"`, liveCaptureExecution),
+		fmt.Sprintf(`"fence":%d`, control.Identity.Fence),
 		fmt.Sprintf(`"output":"%s"`, liveCaptureOutput),
 	} {
 		if !strings.Contains(body, want) {

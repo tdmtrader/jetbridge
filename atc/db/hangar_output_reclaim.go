@@ -28,11 +28,6 @@ package db
 // same reading is what every earlier phase's lease arithmetic uses, and
 // tightening one site alone would make two kinds of lease mean two things.
 // Revisit if a lease is ever tightened below a minute.
-//
-// The SEAL DEADLINE is the exception, and it is not a lease. Req 17 makes it
-// configurable down to thirty seconds, which is inside the error the ruling
-// above accepts, so SealDeadlinePassed reads clock_timestamp() and says why at
-// its own site. The ruling here is about leases and stays about leases.
 
 import (
 	"context"
@@ -610,10 +605,6 @@ func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context,
 		   AND NOT EXISTS (
 		       SELECT 1 FROM hangar_read_leases r
 		        WHERE r.lifecycle_id = l.id AND r.released_at IS NULL AND r.expires_at > now())
-		   AND NOT EXISTS (
-		       SELECT 1 FROM hangar_logical_reservations g
-		        WHERE g.scope = l.scope AND g.digest = l.digest
-		          AND g.state = 'unresolved_generation')
 		   AND NOT EXISTS (
 		       SELECT 1 FROM hangar_captures p
 		        WHERE p.scope = l.scope AND p.digest = l.digest

@@ -16,7 +16,9 @@ var ErrRunCredentialOwner = errors.New("credential handoff requires the original
 // transport only when ClaimedNow was committed by this caller's transaction.
 type RunCredentialTarget struct {
 	atc.RunCredentialSession
-	HandoffID  output.HandoffID
+	// Capture is the producer's capture: the credential goes to the
+	// execution that produces it.
+	Capture    output.CaptureKey
 	NodeName   string
 	Start      *executioncontrol.Acknowledgement
 	ClaimedNow bool
@@ -45,8 +47,10 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	}
 	var storedResult string
 	var ready bool
-	err = tx.QueryRowContext(ctx, `SELECT h.handoff_id,s.result_name,h.ready_at IS NOT NULL FROM pipeline_run_credential_handoffs h
- JOIN pipeline_run_output_starts s USING(handoff_id) WHERE h.run_id=$1`, target.RunID).Scan(&target.HandoffID, &storedResult, &ready)
+	var execution, outputName string
+	err = tx.QueryRowContext(ctx, `SELECT h.execution_id,h.output_name,s.result_name,h.ready_at IS NOT NULL FROM pipeline_run_credential_handoffs h
+ JOIN pipeline_run_captures s USING(execution_id, output_name) WHERE h.run_id=$1`, target.RunID).Scan(&execution, &outputName, &storedResult, &ready)
+	target.Capture = output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(execution), Output: output.OutputName(outputName)}
 	if err == nil {
 		if storedResult != result {
 			return target, output.ErrConflict
@@ -103,9 +107,9 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	target.WorkerImage = atc.RunTaskImage(definition.Materialized, taskID)
 	// Refuse ambiguity instead of choosing a different attempt to receive the
 	// owner's credential. The initial review template has one result producer.
-	rows, err := tx.QueryContext(ctx, `SELECT e.handoff_id,e.node_name,e.node_uid,e.execution_id,e.execution_fence,e.activation_epoch,
+	rows, err := tx.QueryContext(ctx, `SELECT e.capture_output,e.node_name,e.node_uid,e.execution_id,e.execution_fence,e.activation_epoch,
  b.aborted,b.completed,b.status,EXISTS(SELECT 1 FROM pipeline_run_execution_closures c WHERE c.execution_id=e.execution_id AND c.execution_fence=e.execution_fence)
- FROM pipeline_run_output_starts s JOIN pipeline_run_executions e ON e.handoff_id=s.handoff_id AND e.run_id=s.run_id AND e.build_id=s.build_id
+ FROM pipeline_run_captures s JOIN pipeline_run_executions e ON e.execution_id=s.execution_id AND e.capture_output=s.output_name AND e.run_id=s.run_id AND e.build_id=s.build_id
  JOIN builds b ON b.id=e.build_id AND b.pipeline_run_id=e.run_id
  WHERE s.run_id=$1 AND s.task_id=$2 AND s.result_name=$3 AND e.kind='task'`, target.RunID, taskID, result)
 	if err != nil {
@@ -118,10 +122,12 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	count := 0
 	for rows.Next() {
 		count++
-		if err = rows.Scan(&target.HandoffID, &target.NodeName, &uid, &identity.ExecutionID, &identity.Fence, &actualEpoch, &aborted, &completed, &status, &closed); err != nil {
+		var captured string
+		if err = rows.Scan(&captured, &target.NodeName, &uid, &identity.ExecutionID, &identity.Fence, &actualEpoch, &aborted, &completed, &status, &closed); err != nil {
 			rows.Close()
 			return target, err
 		}
+		target.Capture = output.CaptureKey{ExecutionID: identity.ExecutionID, Output: output.OutputName(captured)}
 	}
 	err = rows.Err()
 	rows.Close()
@@ -146,7 +152,7 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	}
 	target.Status = "available"
 	if claim {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO pipeline_run_credential_handoffs(run_id,handoff_id) VALUES($1,$2)`, target.RunID, string(target.HandoffID)); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO pipeline_run_credential_handoffs(run_id,execution_id,output_name) VALUES($1,$2,$3)`, target.RunID, string(target.Capture.ExecutionID), string(target.Capture.Output)); err != nil {
 			return target, err
 		}
 		target.ClaimedNow, target.Status = true, "claimed"
@@ -156,11 +162,11 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 
 // RecordRunCredentialReady records the completed handoff fact, including when
 // cancellation raced delivery. It grants no new authority and accepts no bytes.
-func RecordRunCredentialReady(ctx context.Context, tx Tx, runID int, handoff output.HandoffID) error {
+func RecordRunCredentialReady(ctx context.Context, tx Tx, runID int, capture output.CaptureKey) error {
 	if _, err := lockRunResultPublication(ctx, tx, runID); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE pipeline_run_credential_handoffs SET ready_at=coalesce(ready_at,clock_timestamp()) WHERE run_id=$1 AND handoff_id=$2`, runID, string(handoff))
+	result, err := tx.ExecContext(ctx, `UPDATE pipeline_run_credential_handoffs SET ready_at=coalesce(ready_at,clock_timestamp()) WHERE run_id=$1 AND execution_id=$2 AND output_name=$3`, runID, string(capture.ExecutionID), string(capture.Output))
 	if err != nil {
 		return err
 	}

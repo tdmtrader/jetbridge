@@ -20,7 +20,7 @@ import (
 type StorageBackend interface {
 	StepVolume(name, handle, subdir string) corev1.Volume
 
-	// ReservedIncarnationVolume is the volume for a capture-selected output.
+	// CaptureStepVolume is the volume for a capture-selected output.
 	//
 	// reservedDir is the output daemon's OWN name for the location, relative to
 	// the managed steps root, taken verbatim from the reservation. It is a
@@ -30,7 +30,7 @@ type StorageBackend interface {
 	// from a handle would put the producer's bytes back in the sibling
 	// directory no hold protects, which is the defect this method exists to
 	// close.
-	ReservedIncarnationVolume(name, reservedDir string) corev1.Volume
+	CaptureStepVolume(name, reservedDir string) corev1.Volume
 	CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
 	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error)

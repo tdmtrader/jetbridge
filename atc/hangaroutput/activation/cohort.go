@@ -146,7 +146,6 @@ func AttestOutput(ctx context.Context, source CohortSource, handshakes Handshake
 		Node                 string `json:"node"`
 		CaptureVersion       string `json:"capture_extension_version"`
 		SourceLedgerVersion  string `json:"source_ledger_version"`
-		ReceiptPublicKeyID   string `json:"receipt_public_key_id"`
 		MaterializationKeyID string `json:"materialization_key_id"`
 		BucketFingerprint    string `json:"bucket_fingerprint"`
 		DerivedNamespace     string `json:"derived_namespace"`
@@ -172,7 +171,6 @@ func AttestOutput(ctx context.Context, source CohortSource, handshakes Handshake
 			Node:                 member.Node,
 			CaptureVersion:       handshake.CaptureExtensionVersion,
 			SourceLedgerVersion:  handshake.SourceLedgerVersion,
-			ReceiptPublicKeyID:   handshake.ReceiptPublicKeyID,
 			MaterializationKeyID: handshake.MaterializationKeyID,
 			BucketFingerprint:    handshake.BucketFingerprint,
 			DerivedNamespace:     handshake.DerivedNamespace,
@@ -190,7 +188,6 @@ func AttestOutput(ctx context.Context, source CohortSource, handshakes Handshake
 	}{
 		{"capture extension version", func(r record) string { return r.CaptureVersion }},
 		{"source ledger version", func(r record) string { return r.SourceLedgerVersion }},
-		{"receipt public key id", func(r record) string { return r.ReceiptPublicKeyID }},
 		{"materialization key id", func(r record) string { return r.MaterializationKeyID }},
 		{"bucket", func(r record) string { return r.BucketFingerprint }},
 		{"derived namespace", func(r record) string { return r.DerivedNamespace }},
@@ -216,7 +213,6 @@ func AttestOutput(ctx context.Context, source CohortSource, handshakes Handshake
 	return Evidence{
 		Attestation:          bundle,
 		CohortDigest:         digestOf(bundle),
-		ReceiptPublicKeyID:   records[0].ReceiptPublicKeyID,
 		MaterializationKeyID: records[0].MaterializationKeyID,
 		BucketFingerprint:    records[0].BucketFingerprint,
 		DerivedNamespace:     records[0].DerivedNamespace,

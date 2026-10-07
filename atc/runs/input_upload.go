@@ -17,13 +17,12 @@ import (
 // receives object-store credentials or accepts a caller-selected object ref.
 type InputPublisher interface {
 	StageInput(context.Context, executioncontrol.NodeUID, io.Reader) (output.InputStage, error)
-	PublishInput(context.Context, output.InputStage, string, *output.ReceiptSignatureVerifier) (output.InputPublication, error)
+	PublishInput(context.Context, output.InputStage, string) (output.InputPublication, error)
 }
 
 type InputUploadNode struct {
 	UID       executioncontrol.NodeUID
 	Publisher InputPublisher
-	Verifier  *output.ReceiptSignatureVerifier
 }
 
 // InputUploadConfig is startup wiring. ClaimTTL defaults to the maximum grant
@@ -55,7 +54,7 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 	if err != nil {
 		return source, err
 	}
-	if node.Publisher == nil || node.Verifier == nil || node.UID == "" {
+	if node.Publisher == nil || node.UID == "" {
 		return source, atc.ErrRunInputUnavailable
 	}
 	stage, err := node.Publisher.StageInput(ctx, node.UID, archive)
@@ -74,7 +73,7 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 	}); err != nil {
 		return source, err
 	}
-	publication, err := node.Publisher.PublishInput(ctx, stage, nonce, node.Verifier)
+	publication, err := node.Publisher.PublishInput(ctx, stage, nonce)
 	if err != nil {
 		return source, err
 	}
@@ -84,7 +83,7 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 			return atc.ErrRunInputUnavailable
 		}
 		var err error
-		claim, err = a.runFactory.RegisterRunInputUpload(ctx, tx, current, publication, node.Verifier)
+		claim, err = a.runFactory.RegisterRunInputUpload(ctx, tx, current, publication)
 		return err
 	}); err != nil {
 		return source, err

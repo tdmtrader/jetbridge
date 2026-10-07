@@ -62,7 +62,7 @@ func publishTrees(t *testing.T, tier substrate, namespace output.OutputNamespace
 		body := canonicalBytes("tree " + fill)
 		reservation := testsupport.Reservation(t, namespace, output.ReservationID(
 			fmt.Sprintf("%08d-4444-4444-8444-444444444444", index+1)), testsupport.Digest(fill))
-		object, err := role.EnsureObject(ctx, reservation, bytes.NewReader(body), int64(len(body)))
+		object, err := role.EnsurePublication(ctx, reservation, bytes.NewReader(body), int64(len(body)))
 		if err != nil {
 			t.Fatalf("publishing %s: %v", fill, err)
 		}

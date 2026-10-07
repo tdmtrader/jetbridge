@@ -27,7 +27,7 @@ func TestAMarkedUnregisteredObjectIsAnOrphanAndNotAMiss(t *testing.T) {
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("7a")
-		object, err := role.EnsureObject(ctx,
+		object, err := role.EnsurePublication(ctx,
 			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(canonicalBytes("published, never registered")), 27)
 		if err != nil {

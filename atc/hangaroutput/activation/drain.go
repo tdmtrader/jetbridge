@@ -107,21 +107,12 @@ type residueQuery struct {
 // track has no way to enumerate them and would be asserting an empty set.
 var baseResidueQueries = []residueQuery{
 	{
-		class: "predeclared handoffs with no disposition",
-		sql: `SELECT count(*) FROM hangar_handoff_predeclarations predeclaration
-		       WHERE predeclaration.activation_epoch = $1
-		         AND NOT EXISTS (SELECT 1 FROM hangar_handoff_dispositions disposition
-		                          WHERE disposition.handoff_id = predeclaration.handoff_id)`,
-		why: "a capture-selected execution was admitted under this epoch and has not reached " +
-			"an exact finish or stop acknowledgement; the base protocol is the only thing " +
-			"that can still settle it",
-	},
-	{
-		class: "unresolved capture reservations",
-		sql: `SELECT count(*) FROM hangar_capture_reservations
-		       WHERE activation_epoch = $1 AND state = 'unresolved'`,
-		why: "a fenced owner may still verify and register an exact generation, or record a " +
-			"terminal failure; taking the protocol away leaves it able to do neither",
+		class: "pending captures",
+		sql: `SELECT count(*) FROM hangar_captures
+		       WHERE state = 'pending' AND $1::bigint > 0`,
+		why: "a capture-selected execution was admitted and has not reached an exact finish " +
+			"or stop acknowledgement; the base protocol is the only thing that can still " +
+			"settle it",
 	},
 }
 
@@ -129,12 +120,12 @@ var baseResidueQueries = []residueQuery{
 // plane would forget how to finish.
 var outputResidueQueries = []residueQuery{
 	{
-		class: "nonterminal capture reservations",
-		sql: `SELECT count(*) FROM hangar_capture_reservations
-		       WHERE activation_epoch = $1 AND state IN ('unresolved', 'resolved')`,
-		why: "a capture may still create an object, or already has one whose generation is " +
-			"not yet registered; disabling the facet would leave the object with a reservation " +
-			"nothing will resolve and an orphan sweep that cannot adopt it",
+		class: "unsettled captures",
+		sql: `SELECT count(*) FROM hangar_captures
+		       WHERE (state IN ('pending', 'publishing') OR released_at IS NULL) AND $1::bigint > 0`,
+		why: "a capture may still create an object, has one whose generation is not yet " +
+			"recorded, or holds a node's step directory until its release; disabling the " +
+			"facet would leave it with nothing to finish it",
 	},
 	{
 		class: "live exact generations",
@@ -171,9 +162,9 @@ var outputResidueQueries = []residueQuery{
 			"is unknown",
 	},
 	{
-		class: "open policy violations",
-		sql: `SELECT count(*) FROM hangar_policy_violations
-		       WHERE activation_epoch = $1 AND resolved_at IS NULL
+		class: "open integrity findings",
+		sql: `SELECT count(*) FROM hangar_integrity_findings
+		       WHERE resolved_at IS NULL AND $1::bigint > 0
 		         AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`,
 		why: "observed object loss or denied storage access remains unresolved. Repair the " +
 			"cause and explicitly reconcile the runtime finding before disabling this facet",

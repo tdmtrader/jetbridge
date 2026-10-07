@@ -4,7 +4,7 @@ package jetbridge
 //
 // The ordering is the subject and every spec here is a crash half around it:
 //
-//	admitted -> held -> ticketed -> START RECORDED -> the command runs
+//	admitted -> held -> START RECORDED -> the command runs
 //	the command exits -> OUTCOME RECORDED -> acknowledged -> the result returns
 //
 // brine says none of this. Its steps are sequential by construction, and "the
@@ -34,6 +34,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // controlExecutor is the exec transport, and it is the thing a spec drives:
@@ -86,12 +87,8 @@ var _ = Describe("An execProcess under exact control", func() {
 	// Resource journals use host-global paths. Parallel Ginkgo workers must
 	// not clear one another's journal while a command is being dispatched.
 	executionID := executioncontrol.ExecutionID(fmt.Sprintf("%08x-aaaa-4aaa-8aaa-aaaaaaaaaaaa", os.Getpid()))
-	const (
-		handoffID = hangaroutput.HandoffID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-		leaseID   = hangaroutput.SourceHoldID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
-	)
-
 	identity := executioncontrol.Identity{ExecutionID: executionID, Fence: 1}
+	captureKey := hangaroutput.CaptureKey{ExecutionID: executionID, Output: "result"}
 
 	newProcess := func() *execProcess {
 		return newExecProcess("proc-1", "capture-pod", clientset, container.config, container,
@@ -99,33 +96,29 @@ var _ = Describe("An execProcess under exact control", func() {
 			runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, nil)
 	}
 
-	// captureAdmission is the same admission the reservation and the hold both
-	// carry. It names no Pod: no Pod exists when it is first sent.
-	captureAdmission := func() hangaroutput.CaptureAdmission {
-		return hangaroutput.CaptureAdmission{
+	// holdRequest is the control init's body: the execution, the selected
+	// output, and the Pod UID the init container reads off the Downward API.
+	holdRequest := func(pod types.UID) hangaroutput.CaptureHoldRequest {
+		return hangaroutput.CaptureHoldRequest{
 			ProtocolVersion: hangaroutput.ProtocolVersion,
 			Execution:       identity,
-			ActivationEpoch: harnessEpoch,
-			HandoffID:       handoffID,
-			SourceHoldID:    leaseID,
-			Output:          "result",
-			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+			Output:          captureKey.Output,
+			PodUID:          executioncontrol.PodUID(pod),
 		}
+	}
+
+	// heldOnNode is the node's own answer about the capture's step directory,
+	// read the way every destructive path on the node reads it.
+	heldOnNode := func() string {
+		return string(ledger.New(harness.StorageRoot).Classify(captureKey.Directory()))
 	}
 
 	// hold drives the sequence in the ONLY order a real producer has, which is
 	// the order the ledger must therefore accept:
 	//
 	//	admit (identity, fence, node -- no Pod exists yet)
-	//	  -> reserve the incarnation
-	//	    -> the API server assigns a Pod UID
-	//	      -> the control init holds, presenting THAT UID
-	//
-	// It used to admit with a Pod UID the spec invented before any Pod, which
-	// is a thing no ATC can do: `buildPod` needs the reservation, so the
-	// reservation cannot wait for the Pod. Every spec in this file goes
-	// through here, so the whole file is now driven from a real producer's
-	// point of view.
+	//	  -> the API server assigns a Pod UID
+	//	    -> the control init holds, presenting THAT UID
 	//
 	// The Pod UID is bound ONCE, at hold time, from the value the init
 	// container reads off the Downward API.
@@ -139,19 +132,10 @@ var _ = Describe("An execProcess under exact control", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
-		// The reservation, which in production happens before the Pod is even
-		// built: the ATC asks for the location, mounts it as the selected
-		// output's volume, and puts it in the control init's environment. The
-		// hold then PRESENTS it, which is how the daemon knows this init
-		// container is running in the Pod the reservation was made for.
-		admission := captureAdmission()
-		reserved, err := harness.Client.ReserveIncarnation(ctx, admission)
-		Expect(err).ToNot(HaveOccurred())
-
 		warrant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(postHold(harness.Endpoint, string(warrant), admission,
-			reserved.Incarnation, executioncontrol.PodUID(podUID))).To(Succeed())
+		_, err = postHold(harness.Endpoint, string(warrant), holdRequest(podUID))
+		Expect(err).ToNot(HaveOccurred())
 	}
 
 	BeforeEach(func() {
@@ -202,11 +186,11 @@ var _ = Describe("An execProcess under exact control", func() {
 			Version:            runtime.DurableOutputCaptureVersion,
 			Identity:           identity,
 			ActivationEpoch:    harnessEpoch,
-			HandoffID:          handoffID,
-			SourceHoldID:       leaseID,
 			Output:             "result",
 			SourceControlGrant: "source-control-grant",
 			CaptureDeadline:    time.Now().Add(time.Hour),
+			Node:               "node-1",
+			NodeUID:            harnessNodeUID,
 		})).To(Succeed())
 
 		config := NewConfig("test-ns", "")
@@ -636,70 +620,15 @@ var _ = Describe("An execProcess under exact control", func() {
 		Entry("retaining the outcome in the Run", "outcome witness"),
 	)
 
-	It("refuses to launch the producer when the source hold is not acknowledged", func() {
-		// No hold. Req 3: the producer's main process may not start before the
-		// daemon durably acknowledges one, and start fails CLOSED.
-		_, err := newProcess().Wait(ctx)
-		Expect(err).To(HaveOccurred())
-		// The message names the guard, not just the failure. The hold is
-		// revalidated BEFORE any writer ticket is taken -- an operator whose
-		// producer will not start needs to know which of the two refused, and
-		// a runtime that reached the ticket first would report the wrong one.
-		Expect(err.Error()).To(ContainSubstring("revalidating the source hold"))
-		Expect(executor.count()).To(Equal(0),
-			"the command was launched without an acknowledged source hold")
-	})
-
-	// The hold's Pod UID arm, which Phase 4 recorded as having no vector of its
-	// own. It has one, and it does not need Phase 5's takeover.
-	//
-	// A hold's statement carries the Pod UID the execution was ADMITTED for. A
-	// pause pod that goes terminal is REPLACED, and a replacement is a new Pod
-	// UID under the same execution identity and the same fence -- no takeover,
-	// no epoch bump, nothing Phase 5 owns. Container.Run now refuses that
-	// replacement over a held source; this arm is the second door, for a Pod
-	// replaced by some other route before the producer reached its start.
-	//
-	// The control is in the same spec and runs first: with the Pod the hold
-	// names, this exact process starts and the command runs.
-	It("refuses to start a producer whose Pod is not the one the hold names", func() {
-		hold()
-
-		// The control, and it is the arm's premise: before anything is
-		// disturbed, the hold in force names THIS Pod. Without it a refusal
-		// below could be a hold that names nothing.
-		acknowledged, err := harness.Client.InspectHold(ctx, identity, handoffID)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(acknowledged.PodUID).To(Equal(executioncontrol.PodUID(podUID)))
-
-		// The Pod was replaced: same execution, same fence, a new incarnation.
-		// Nothing re-admitted the execution, so the ledger's hold still names
-		// the old UID -- which is exactly the state this arm is for.
-		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod",
-			metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.UID = types.UID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
-		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-
-		// The producer's first start, in the replaced Pod.
-		_, err = newProcess().Wait(ctx)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("a recreated Pod is a new incarnation"))
-		Expect(executor.count()).To(Equal(0),
-			"the producer ran in a Pod the hold does not name")
-	})
-
 	// The whole sequence, in the only order a real producer has, asserted as an
 	// order rather than as an outcome.
 	//
-	// This is the Phase 4 round-1 review's probe P2. Every fixture in the phase
-	// used to admit the execution WITH a Pod UID, which is a thing no ATC can
-	// do: `buildPod` mounts the reserved incarnation, so the reservation
-	// precedes the Pod, so the admission that authorizes the reservation
-	// precedes it too. Driven honestly, the old ledger bound the hold to an
-	// empty Pod UID and then refused the producer's own start.
-	It("admits, reserves and holds in the only order a producer has, and then admits its own producer", func() {
+	// This is the Phase 4 round-1 review's probe P2. A fixture that admitted the
+	// execution WITH a Pod UID would be doing a thing no ATC can do: the
+	// admission precedes the Pod. Driven honestly, the hold binds the Pod UID the
+	// init container read off the Downward API, and the producer the ATC
+	// admitted is the producer it then runs.
+	It("admits and holds in the only order a producer has, and then admits its own producer", func() {
 		// 1. Admission. No Pod exists: nothing has been created yet, and the
 		//    envelope has no field to name one with.
 		_, err := harness.Client.Admit(ctx, executioncontrol.Envelope{
@@ -711,73 +640,40 @@ var _ = Describe("An execProcess under exact control", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
-		// 2. The reservation, which is what the Pod will mount. It is issued
-		//    against the admission above and names no Pod either.
-		admission := captureAdmission()
-		reserved, err := harness.Client.ReserveIncarnation(ctx, admission)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(reserved.Directory).To(Equal(reserved.Incarnation.Directory()))
+		// The control: nothing holds the step directory yet.
+		Expect(heldOnNode()).To(Equal(string(ledger.Unmanaged)))
 
-		// 3. The Pod. In this spec it is already in the fake API server, which
+		// 2. The Pod. In this spec it is already in the fake API server, which
 		//    is the point at which a UID first exists at all.
 		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod", metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(pod.UID).ToNot(BeEmpty())
 
-		// 4. The control init's hold, presenting the Downward API's value.
+		// 3. The control init's hold, presenting the Downward API's value.
 		warrant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(postHold(harness.Endpoint, string(warrant), admission,
-			reserved.Incarnation, executioncontrol.PodUID(pod.UID))).To(Succeed())
-
-		// The hold binds THAT Pod, not the empty one an admission could offer.
-		acknowledged, err := harness.Client.InspectHold(ctx, identity, handoffID)
+		acknowledged, err := postHold(harness.Endpoint, string(warrant), holdRequest(pod.UID))
 		Expect(err).ToNot(HaveOccurred())
-		Expect(acknowledged.PodUID).To(Equal(executioncontrol.PodUID(pod.UID)))
-		Expect(acknowledged.Incarnation).To(Equal(reserved.Incarnation))
 
-		// 5. And the producer the ATC admitted is the producer it now runs.
-		//    This is the line that was red: `beginExactCommand` revalidates the
-		//    hold against its own Pod UID and used to refuse itself.
+		// The hold binds THAT Pod, on this node, for this capture -- and the
+		// node says so for the step directory the Pod mounts.
+		Expect(acknowledged.Kind).To(Equal(hangaroutput.HoldAcknowledged))
+		Expect(acknowledged.Marker.PodUID).To(Equal(executioncontrol.PodUID(pod.UID)))
+		Expect(acknowledged.Marker.Node).To(Equal(executioncontrol.NodeUID(harnessNodeUID)))
+		Expect(acknowledged.Marker.Key()).To(Equal(captureKey))
+		Expect(heldOnNode()).To(Equal(string(ledger.Held)))
+		Expect(filepath.Join(harness.StepsDir, captureKey.Directory())).To(BeADirectory())
+
+		// A recreated Pod does not inherit the hold.
+		_, err = postHold(harness.Endpoint, string(warrant),
+			holdRequest(types.UID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")))
+		Expect(err).To(HaveOccurred(), "a second Pod took over a hold another Pod holds")
+
+		// 4. And the producer the ATC admitted is the producer it now runs.
 		result, err := newProcess().Wait(ctx)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.ExitStatus).To(Equal(0))
 		Expect(executor.count()).To(Equal(1))
-	})
-
-	It("holds a writer ticket for every writer in the pod before the command runs", func() {
-		hold()
-
-		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod", metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		pod.Spec.InitContainers = []corev1.Container{{Name: "writer-init"}}
-		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "writer-sidecar"})
-		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-
-		process := newProcess()
-		executor.run = func(int) error {
-			// The main container, init container, and sidecar are all writers.
-			// Check the daemon while the command is running: completion retires
-			// tickets, so inspecting afterward would only prove retirement.
-			Expect(process.exact).ToNot(BeNil())
-			Expect(process.exact.tickets).To(HaveLen(3))
-
-			seen := map[hangaroutput.WriterTicketID]bool{}
-			for _, ticket := range process.exact.tickets {
-				Expect(seen[ticket.WriterTicketID]).To(BeFalse())
-				seen[ticket.WriterTicketID] = true
-
-				inspection, err := harness.Client.InspectWriter(ctx, identity, handoffID, ticket.WriterTicketID)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(inspection.Issued.WriterTicketID).To(Equal(ticket.WriterTicketID))
-				Expect(inspection.Issued.PodUID).To(Equal(executioncontrol.PodUID(podUID)))
-			}
-
-			return nil
-		}
-		_, err = process.Wait(ctx)
-		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("never runs the command a second time when the transport loses its answer", func() {
@@ -898,10 +794,8 @@ var _ = Describe("An execProcess under exact control", func() {
 			_, err = clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred(), "the stop deleted the producer's Pod")
 
-			inspected, holdErr := harness.Client.InspectHold(ctx, identity, handoffID)
 			if wantHeld {
-				Expect(holdErr).ToNot(HaveOccurred())
-				Expect(inspected.Kind).To(Equal(hangaroutput.CaptureHoldAcknowledged),
+				Expect(heldOnNode()).To(Equal(string(ledger.Held)),
 					"the stop released the source hold")
 			}
 
@@ -1223,22 +1117,22 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 	// point on this side.
 	//
 	// The step handle is the wrong question for a capture-selected step: the
-	// producer's declared output is now the reserved incarnation, a SIBLING of
+	// producer's declared output is the capture's step directory, a SIBLING of
 	// `steps/<handle>`, so a classifier asked about the handle correctly
 	// answers `unmanaged` and the refusal never fires. It has to ask about the
 	// directory the hold protects.
 	//
 	// The control is asserted first and it is the ordinary step: with no
-	// capture on the spec there is no reservation, and the handle is still the
-	// right question.
-	It("asks the ledger about the reserved incarnation, and about the handle otherwise", func() {
+	// capture on the spec there is no step directory, and the handle is still
+	// the right question.
+	It("asks the ledger about the capture step directory, and about the handle otherwise", func() {
 		Expect(container.refuseIfCaptureHeld(ctx, "recreating the pause pod")).To(Succeed())
 		Expect(classifier.asked).To(Equal([]string{"held-handle"}),
 			"an ordinary step's guard stopped asking about its own step directory")
 
 		container.containerSpec.ExecutionControl = admittedCapture()
-		reserved := container.containerSpec.ExecutionControl.Capture.ReservedDirectory
-		Expect(reserved).ToNot(BeEmpty())
+		reserved := container.containerSpec.ExecutionControl.Capture.Directory()
+		Expect(reserved).To(Equal(testCaptureKey().Directory()))
 
 		classifier.class = captureClassHeld
 		classifier.asked = nil
@@ -1248,7 +1142,7 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 			"the guard asked about the step handle, which is a sibling of the directory the "+
 				"hold protects; a classifier answering about it can only ever say unmanaged")
 		Expect(classifier.asked).ToNot(ContainElement("held-handle"),
-			"the guard asked BOTH, so a fix that added the incarnation without dropping the "+
+			"the guard asked BOTH, so a fix that added the step directory without dropping the "+
 				"handle would still refuse an ordinary reused handle for the wrong reason")
 	})
 
@@ -1257,15 +1151,15 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 	//
 	// `LookupContainer` builds its Container with `runtime.ContainerSpec{}` --
 	// there is no spec behind a lookup -- so the guard above fell through to
-	// the handle, which is a sibling of the incarnation, and the classifier
+	// the handle, which is a sibling of the step directory, and the classifier
 	// correctly answered `unmanaged`. Req 18 takes post-completion hijack away
 	// from a capture-enabled task, and it was being taken away from nobody.
 	//
-	// The Pod is where a looked-up container's facts live, so the reservation
-	// is stamped on it as an annotation at build time and read back here. The
+	// The Pod is where a looked-up container's facts live, so the step
+	// directory is stamped on it as an annotation at build time and read back here. The
 	// control is first: a looked-up container over an ORDINARY pod still asks
 	// about its handle.
-	It("asks the ledger about the reservation on the Pod when there is no spec", func() {
+	It("asks the ledger about the step directory on the Pod when there is no spec", func() {
 		looked := &Container{
 			handle:       "held-handle",
 			podName:      "held-pod",
@@ -1277,7 +1171,7 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 			lookedUp:     true,
 		}
 
-		// The control: an ordinary pod carries no reservation annotation, so
+		// The control: an ordinary pod carries no step-directory annotation, so
 		// the handle is still the right question.
 		Expect(looked.refuseIfCaptureHeld(ctx, "hijacking the container")).To(Succeed())
 		Expect(classifier.asked).To(Equal([]string{"held-handle"}))
@@ -1289,8 +1183,8 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 		// found (M5: `buildPod` stamping nothing reddened no committed test).
 		// The Pod below comes out of `Container.buildPod` and is created as
 		// it stands.
-		reserved := admittedCapture().Capture.ReservedDirectory
-		Expect(reserved).ToNot(BeEmpty())
+		reserved := admittedCapture().Capture.Directory()
+		Expect(reserved).To(Equal(testCaptureKey().Directory()))
 
 		builder := &Container{
 			handle:         "held-handle",
@@ -1304,8 +1198,8 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 		}
 		built, err := builder.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(built.Annotations).To(HaveKeyWithValue(captureReservationAnnotation, reserved),
-			"buildPod stamped no reservation, so a looked-up container has nothing to read "+
+		Expect(built.Annotations).To(HaveKeyWithValue(captureStepAnnotation, reserved),
+			"buildPod stamped no step directory, so a looked-up container has nothing to read "+
 				"and the hijack refusal Req 18 requires never fires")
 
 		Expect(clientset.CoreV1().Pods("test-ns").Delete(ctx, "held-pod",

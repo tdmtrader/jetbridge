@@ -175,7 +175,8 @@ var _ = Describe("the bounded output-plane workers", func() {
 		// created before the process existed, so there is no notification left
 		// to receive. The periodic wake is what makes the restart find it.
 		capture := hangarPublishAt(ctx, repository, hangarDigest(90), 1725830823000090,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 		hangarReleaseSource(ctx, repository, capture)
 		hangarAgeCapture(capture, 48*time.Hour)
 		hangarAgePublication(capture.Ref, hangarGraceElapsed)
@@ -233,7 +234,8 @@ var _ = Describe("the bounded output-plane workers", func() {
 	// against reclaim until somebody noticed.
 	It("closes abandoned read leases on a bounded periodic pass and leaves live ones alone", func() {
 		capture := hangarPublishAt(ctx, repository, hangarDigest(91), 1725830823000091,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 		hangarReleaseSource(ctx, repository, capture)
 
 		claimID := output.ClaimID(uuid.NewString())
@@ -311,7 +313,8 @@ var _ = Describe("the bounded output-plane workers", func() {
 	// gap was found.
 	It("runs the production read-lease cleanup component against real leases", func() {
 		capture := hangarPublishAt(ctx, repository, hangarDigest(92), 1725830823000092,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 		hangarReleaseSource(ctx, repository, capture)
 
 		claimID := output.ClaimID(uuid.NewString())

@@ -2010,7 +2010,7 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 // The captured output stays an ordinary output.
 //
 // Reviewer's F4, and the ruling on it: capture is ADDITIVE. `Container.buildPod`
-// now mounts the reserved incarnation as the selected output's volume, and
+// now mounts the capture step directory as the selected output's volume, and
 // RecordOutputs went on recording `steps/<handle>/<output>` for it -- a sibling
 // directory the producer never writes into -- so a downstream step consuming
 // that output would fetch an empty directory and nothing would say so.
@@ -2018,7 +2018,7 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 // The control is asserted first and it is the unselected output: it still
 // records `<handle>/<name>`, because Req 59 says an ordinary output's behaviour
 // is unchanged.
-func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *testing.T) {
+func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsStepDirectory(t *testing.T) {
 	type registration struct {
 		Key, LocalPath string
 		ReadOnly       bool
@@ -2098,7 +2098,11 @@ func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *t
 	if !found {
 		t.Fatal("the captured output was not recorded, so no downstream step can find it")
 	}
-	want := control.Capture.ReservedDirectory
+	want := control.Capture.Directory()
+	if want != testCaptureKey().Directory() {
+		t.Fatalf("the capture's step directory is %q and output.CaptureKey.Directory is %q",
+			want, testCaptureKey().Directory())
+	}
 	if capturedLoc.HostDir != want {
 		t.Errorf("the captured output is recorded at %q and its producer wrote into %q; a "+
 			"downstream step would fetch a directory that does not exist",
@@ -2141,7 +2145,7 @@ func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *t
 			"output's ordinary key resolves to nothing")
 	}
 	if !strings.HasSuffix(capturedAlias.LocalPath, want) {
-		t.Errorf("the captured output's alias points at %q and the incarnation is %q",
+		t.Errorf("the captured output's alias points at %q and the step directory is %q",
 			capturedAlias.LocalPath, want)
 	}
 }

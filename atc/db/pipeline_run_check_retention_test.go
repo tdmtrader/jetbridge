@@ -246,18 +246,18 @@ var _ = Describe("Run check collection", func() {
 		}
 	})
 
-	It("keeps a check build that a Run output start names", func() {
+	It("keeps a check build that a Run capture names", func() {
 		f := newRunCheckFixture("output-start-checks")
 		named, _ := f.check(f.resource, executedClosedWithImageGet)
 		f.check(f.resource, executedClosed)
-		// No production path starts a Run output on a check build; only a
+		// No production path starts a Run capture on a check build; only a
 		// direct write can, and collection must not delete what it names.
-		_, err := dbConn.Exec(`ALTER TABLE pipeline_run_output_starts DISABLE TRIGGER ALL`)
+		_, err := dbConn.Exec(`ALTER TABLE pipeline_run_captures DISABLE TRIGGER ALL`)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`INSERT INTO pipeline_run_output_starts(run_id,build_id,task_id,result_name,task_name,node_name,node_uid,handoff_id)
-			VALUES ($1,$2,gen_random_uuid(),'result','task','node','node-uid',gen_random_uuid())`, f.run.ID(), named.ID())
+		_, err = dbConn.Exec(`INSERT INTO pipeline_run_captures(run_id,build_id,task_id,result_name,task_name,execution_id,output_name)
+			VALUES ($1,$2,gen_random_uuid(),'result','task',gen_random_uuid(),'result')`, f.run.ID(), named.ID())
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`ALTER TABLE pipeline_run_output_starts ENABLE TRIGGER ALL`)
+		_, err = dbConn.Exec(`ALTER TABLE pipeline_run_captures ENABLE TRIGGER ALL`)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(db.NewCheckLifecycle(dbConn).DeleteCompletedChecks(logger)).To(Succeed())

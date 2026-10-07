@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
@@ -77,8 +76,6 @@ type HangarLockRequest struct {
 	// one before it has a digest. Same class as Logical, taken after it.
 	CaptureRows []output.CaptureKey
 	Exact       []hangar.TreeRef
-	Captures    []output.ReservationID
-	Receipts    []output.ReservationID
 	Claims      []output.ClaimID
 	ReadLeases  []output.ReadLeaseID
 }
@@ -89,23 +86,19 @@ type HangarLockRequest struct {
 // every caller wants it and re-reading it outside the lock would be reading a
 // fact the lock was taken to freeze.
 type HangarLocks struct {
-	consumer string
-	Logical  []HangarLogicalKey
-	// CaptureRows are capture rows named by key, for a transaction that moves
-	// one before it has a digest. Same class as Logical, taken after it.
-	CaptureRows []output.CaptureKey
-	Exact       []hangar.TreeRef
-	Lifecycles  map[hangar.TreeRef]int64
-	Captures    []output.ReservationID
+	consumer   string
+	Logical    []HangarLogicalKey
+	Exact      []hangar.TreeRef
+	Lifecycles map[hangar.TreeRef]int64
 }
 
 // LockHangarSuffix takes the complete Hangar lock suffix, in the one order this
 // system has, after the caller's own domain prefix.
 //
-// The order is: logical reservation rows sorted by scope bytes then digest
-// bytes; exact lifecycle rows sorted by scope, digest and numeric generation;
-// capture and reservation rows in stable capture-identity order; then the
-// subordinate receipt, claim and read-lease rows. Claimant and reader first
+// The order is: the logical correlation -- capture rows and unregistered input
+// publications sorted by scope bytes then digest bytes, then capture rows
+// named by key; exact lifecycle rows sorted by scope, digest and numeric
+// generation; then the subordinate claim and read-lease rows. Claimant and reader first
 // makes a reclaimer recheck and skip; reclaimer first makes the claimant's
 // transaction roll back without a usable binding or warrant. Both are correct
 // outcomes and neither is a deadlock, which is the entire reason the order is
@@ -125,7 +118,6 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 		Logical:    sortedLogicalKeys(request.Logical),
 		Exact:      sortedExactRefs(request.Exact),
 		Lifecycles: map[hangar.TreeRef]int64{},
-		Captures:   sortedReservationIDs(request.Captures),
 	}
 
 	// 1. Logical reservation rows, by scope bytes then digest bytes.
@@ -153,13 +145,6 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 			SELECT 1 FROM hangar_captures
 			WHERE scope = $1 AND digest = $2
 			ORDER BY execution_id, output_name
-			FOR NO KEY UPDATE`, string(key.Scope), string(key.Digest)); err != nil {
-			return HangarLocks{}, hangarConflict(err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			SELECT 1 FROM hangar_logical_reservations
-			WHERE scope = $1 AND digest = $2
-			ORDER BY reservation_id
 			FOR NO KEY UPDATE`, string(key.Scope), string(key.Digest)); err != nil {
 			return HangarLocks{}, hangarConflict(err)
 		}
@@ -210,25 +195,8 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 		}
 	}
 
-	// 3. Capture and reservation rows, in stable capture-identity order.
-	for _, id := range locks.Captures {
-		if _, err := tx.ExecContext(ctx, `
-			SELECT 1 FROM hangar_capture_reservations
-			WHERE reservation_id = $1
-			FOR NO KEY UPDATE`, string(id)); err != nil {
-			return HangarLocks{}, hangarConflict(err)
-		}
-	}
-
-	// 4. Subordinate rows: receipts, claims, read leases and the tombstones
+	// 3. Subordinate rows: claims, read leases and the tombstones
 	// that share their tables.
-	for _, id := range sortedReservationIDs(request.Receipts) {
-		if _, err := tx.ExecContext(ctx, `
-			SELECT 1 FROM hangar_output_receipts WHERE reservation_id = $1 FOR UPDATE`,
-			string(id)); err != nil {
-			return HangarLocks{}, hangarConflict(err)
-		}
-	}
 	for _, id := range sortedClaimIDs(request.Claims) {
 		if _, err := tx.ExecContext(ctx, `
 			SELECT 1 FROM hangar_claims WHERE claim_id = $1 FOR UPDATE`,
@@ -257,183 +225,6 @@ func (locks HangarLocks) LifecycleID(ref hangar.TreeRef) (int64, error) {
 
 	return id, nil
 }
-
-// HangarDerivation is a candidate lock set derived from facts read without row
-// locks, together with the facts it was derived from.
-//
-// It exists because a caller that does not yet know a digest or a generation
-// cannot name the rows it must lock, and reaching back to an earlier lock class
-// after taking a later one is the deadlock this order exists to prevent. So the
-// facts are read unlocked, the transaction restarts at the consumer's prefix,
-// the earlier classes are taken, and then the derivation is checked against
-// what the locks froze.
-type HangarDerivation struct {
-	ReservationID   output.ReservationID
-	HandoffID       output.HandoffID
-	ActivationEpoch uint64
-	CaptureFence    output.CaptureFence
-	Logical         HangarLogicalKey
-	Resolved        bool
-}
-
-// DeriveHangarRefUnlocked reads the capture, reservation and receipt facts for
-// one reservation with no row locks at all.
-func DeriveHangarRefUnlocked(ctx context.Context, tx output.Tx, reservation output.ReservationID) (HangarDerivation, error) {
-	if err := reservation.Validate(); err != nil {
-		return HangarDerivation{}, err
-	}
-
-	derived := HangarDerivation{ReservationID: reservation}
-	var (
-		scope, digest sql.NullString
-		epoch         int64
-		fence         int64
-		handoff       string
-	)
-	rows, err := tx.QueryContext(ctx, `
-		SELECT r.handoff_id, r.activation_epoch, `+hangarCurrentCaptureFence+`,
-		       g.scope, g.digest
-		FROM hangar_capture_reservations r
-		LEFT JOIN hangar_logical_reservations g ON g.reservation_id = r.reservation_id
-		WHERE r.reservation_id = $1`, string(reservation))
-	if err != nil {
-		return HangarDerivation{}, hangarConflict(err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return HangarDerivation{}, fmt.Errorf("%w: no capture reservation %s",
-			output.ErrNotFound, reservation)
-	}
-	if err := rows.Scan(&handoff, &epoch, &fence, &scope, &digest); err != nil {
-		return HangarDerivation{}, err
-	}
-
-	derived.HandoffID = output.HandoffID(handoff)
-	derived.ActivationEpoch = uint64(epoch)
-	derived.CaptureFence = output.CaptureFence(fence)
-	if scope.Valid && digest.Valid {
-		derived.Resolved = true
-		derived.Logical = HangarLogicalKey{
-			Scope:  hangar.Scope(scope.String),
-			Digest: hangar.Digest(digest.String),
-		}
-	}
-
-	return derived, rows.Err()
-}
-
-// hangarLockTerminalCapture takes the suffix for a writer that closes BOTH
-// halves of one capture: the capture row and the logical reservation it owns.
-//
-// It exists because a bare `UPDATE hangar_logical_reservations` is a lock
-// acquisition in the lock-order sense -- PostgreSQL takes FOR NO KEY UPDATE on
-// every row an UPDATE touches -- and the two writers that close a capture
-// (RecordTerminalCaptureFailure, CancelOrSettle) touch the capture row, which
-// is class 3, and then the logical row, which is class 1. Naming only the class
-// a writer locks EXPLICITLY leaves the other one acquired implicitly and out of
-// order, and against a publisher that holds class 1 and is reaching for class 3
-// -- which is where RegisterReceipt and ResolveLogicalReservation sit between
-// their first suffix statement and their third -- that is an ABBA. It was not a
-// theoretical one: it was reproduced as SQLSTATE 40P01 on two connections.
-//
-// The correlation is not known until it is read, and a reservation may have no
-// logical row at all, so the facts are derived unlocked and the suffix is then
-// entered with both classes named.
-//
-// THE ONE WINDOW THIS CANNOT CLOSE, stated rather than hidden: a resolution
-// that commits between the unlocked read and the class-3 acquisition leaves a
-// logical row that did not exist when the lock set was chosen, and a row that
-// does not exist cannot be locked. Holding class 3 is what ends the window --
-// ResolveLogicalReservation is the only writer that inserts a logical
-// reservation and it takes class 3 for the same reservation -- so the
-// derivation is re-read under the lock and, if a correlation appeared, its
-// class-1 row is taken THEN, explicitly, out of order.
-//
-// That residual acquisition is the only one in this plane that is not in class
-// order, and its cost is bounded: for it to be a cycle a third transaction must
-// have taken class 1 on that correlation in the same microsecond window and be
-// queued behind this transaction for class 3. PostgreSQL detects that and
-// hangarConflict maps 40P01 to ErrHangarLockRetry, so the outcome is a typed
-// retry rather than a hang. Refusing outright instead would turn every ordinary
-// publish-racing-cancel into a retry, which is a worse contract for a seam
-// whose callers are deliberately ignorant of Hangar's internals.
-func hangarLockTerminalCapture(ctx context.Context, tx output.Tx, prefix HangarConsumerPrefix, reservation output.ReservationID) error {
-	derived, err := DeriveHangarRefUnlocked(ctx, tx, reservation)
-	if err != nil {
-		return err
-	}
-
-	request := HangarLockRequest{Captures: []output.ReservationID{reservation}}
-	if derived.Resolved {
-		request.Logical = []HangarLogicalKey{derived.Logical}
-	}
-	if _, err := LockHangarSuffix(ctx, tx, prefix, request); err != nil {
-		return err
-	}
-
-	fresh, err := DeriveHangarRefUnlocked(ctx, tx, reservation)
-	if err != nil {
-		return err
-	}
-	if fresh.Resolved == derived.Resolved && fresh.Logical == derived.Logical {
-		return nil
-	}
-	if derived.Resolved {
-		// A correlation is immutable once resolved -- the schema's own
-		// hangar_logical_reservation_immutability_guard says so -- so this is
-		// not a state the plane has, and treating it as one would be inventing
-		// a recovery for something that cannot happen. It is a retry because
-		// the transaction's own reading of the world is wrong.
-		return fmt.Errorf("%w: reservation %s resolved to %s/%s under the lock and to %s/%s "+
-			"before it", ErrHangarLockRetry, reservation,
-			fresh.Logical.Scope, fresh.Logical.Digest,
-			derived.Logical.Scope, derived.Logical.Digest)
-	}
-
-	_, err = LockHangarSuffix(ctx, tx, prefix, HangarLockRequest{
-		Logical: []HangarLogicalKey{fresh.Logical},
-	})
-
-	return err
-}
-
-// RevalidateDerivation re-reads the derived facts now that the locks are held.
-//
-// A mismatch is ErrHangarLockRetry, not a conflict: the caller rolls back,
-// derives again from the newer truth and takes the suffix again. Nothing here
-// reaches back to a lock class the caller has already passed.
-func (locks HangarLocks) RevalidateDerivation(ctx context.Context, tx output.Tx, derived HangarDerivation) error {
-	fresh, err := DeriveHangarRefUnlocked(ctx, tx, derived.ReservationID)
-	if err != nil {
-		return err
-	}
-	if fresh.HandoffID != derived.HandoffID {
-		return fmt.Errorf("%w: reservation %s now belongs to handoff %s, not %s",
-			ErrHangarLockRetry, derived.ReservationID, fresh.HandoffID, derived.HandoffID)
-	}
-	if fresh.ActivationEpoch != derived.ActivationEpoch {
-		return fmt.Errorf("%w: reservation %s now names activation epoch %d, not %d",
-			ErrHangarLockRetry, derived.ReservationID, fresh.ActivationEpoch, derived.ActivationEpoch)
-	}
-	if fresh.CaptureFence != derived.CaptureFence {
-		return fmt.Errorf("%w: reservation %s is now owned at capture fence %d, not %d; the "+
-			"derivation was made by an owner that has since been superseded",
-			ErrHangarLockRetry, derived.ReservationID, fresh.CaptureFence, derived.CaptureFence)
-	}
-	if fresh.Resolved != derived.Resolved || fresh.Logical != derived.Logical {
-		return fmt.Errorf("%w: reservation %s now resolves to %s/%s, not %s/%s",
-			ErrHangarLockRetry, derived.ReservationID,
-			fresh.Logical.Scope, fresh.Logical.Digest,
-			derived.Logical.Scope, derived.Logical.Digest)
-	}
-
-	return nil
-}
-
-// The sorters. Each deduplicates first, so a batch that names one ref twice
-// locks it once, and two transactions handed the same batch in opposite orders
-// take the same locks in the same order.
 
 func sortedLogicalKeys(keys []HangarLogicalKey) []HangarLogicalKey {
 	seen := map[HangarLogicalKey]bool{}
@@ -479,10 +270,6 @@ func sortedExactRefs(refs []hangar.TreeRef) []hangar.TreeRef {
 	})
 
 	return unique
-}
-
-func sortedReservationIDs(ids []output.ReservationID) []output.ReservationID {
-	return sortedOpaque(ids)
 }
 
 func sortedCaptureKeys(keys []output.CaptureKey) []output.CaptureKey {

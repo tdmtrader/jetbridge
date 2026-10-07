@@ -17,8 +17,8 @@ type RunCancellationExecution struct {
 	Start     *executioncontrol.Acknowledgement
 }
 
-// CancellationRunExecution resolves only a retained base execution. Selected
-// outputs belong to the source handler, which must classify their handoff first.
+// CancellationRunExecution resolves a retained execution, capturing or not: a
+// capture never closes its execution, only the execution's own closure does.
 func (f *pipelineRunFactory) CancellationRunExecution(ctx context.Context, tx Tx, lease RunCancellationLease, op RunCancellationOperation) (RunCancellationExecution, error) {
 	in, err := f.cancellationRunExecution(ctx, tx, op)
 	if err != nil {
@@ -42,7 +42,7 @@ func (f *pipelineRunFactory) cancellationRunExecution(ctx context.Context, tx Tx
 	var build int
 	var plan atc.PlanID
 	err = tx.QueryRowContext(ctx, `SELECT build_id,plan_id FROM pipeline_run_executions
- WHERE run_id=$1 AND execution_id::text||'/'||execution_fence::text=$2 AND handoff_id IS NULL`, op.RunID, op.Subject).Scan(&build, &plan)
+ WHERE run_id=$1 AND execution_id::text||'/'||execution_fence::text=$2`, op.RunID, op.Subject).Scan(&build, &plan)
 	if err == sql.ErrNoRows {
 		// With no base execution row there is no build to scope to. An open
 		// closure discovered only its own build's subjects, so it resolves
@@ -153,17 +153,13 @@ func (f *pipelineRunFactory) RecordCancelledRunExecution(ctx context.Context, tx
 	return f.CheckCancellationOperation(ctx, tx, lease, op)
 }
 
-// collectedRunExecution resolves a discovered execution that has no base
-// execution row. One linked to a selected output belongs to the source
-// handler. One with no row at all was a closed check execution that check
-// collection has since removed with its build: it is closed, and there is
-// nothing left to stop.
+// collectedRunExecution resolves a discovered execution that has no execution
+// row: a closed check execution that check collection has since removed with
+// its build. It is closed, and there is nothing left to stop.
 func collectedRunExecution(ctx context.Context, tx Tx, op RunCancellationOperation, in *RunCancellationExecution) error {
 	var linked bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_executions
- WHERE run_id=$1 AND execution_id::text||'/'||execution_fence::text=$2)
- OR EXISTS(SELECT 1 FROM pipeline_run_output_starts s JOIN hangar_handoff_predeclarations h USING(handoff_id)
- WHERE s.run_id=$1 AND h.execution_id::text||'/'||h.execution_fence::text=$2)`, op.RunID, op.Subject).Scan(&linked)
+ WHERE run_id=$1 AND execution_id::text||'/'||execution_fence::text=$2)`, op.RunID, op.Subject).Scan(&linked)
 	if err != nil {
 		return err
 	}

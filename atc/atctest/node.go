@@ -39,15 +39,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// The node's identities. The receipt, control and read-warrant keys are three
-// keys, as the daemon requires.
+// The node's identities. The control and read-warrant keys are two keys, as
+// the daemon requires.
 const (
-	nodeName        = "atctest-node"
-	receiptKeyID    = "atctest-receipt-1"
-	controlKeyID    = "atctest-control-1"
-	materializeKey  = "atctest-materialize-1"
-	serverName      = "artifact-daemon"
-	receiptLifetime = 24 * time.Hour
+	nodeName       = "atctest-node"
+	controlKeyID   = "atctest-control-1"
+	materializeKey = "atctest-materialize-1"
+	serverName     = "artifact-daemon"
 )
 
 // node is the one output node: the real artifact daemon, with its output plane
@@ -64,15 +62,15 @@ const (
 //   - which node serves the output plane and under what name (node
 //     resolution for uploads, result reads, captures and read leases):
 //     always this one;
-//   - that the producing Pod has terminated before its source is sealed
-//     (hangaroutput.DrainConfirmer): the harness admits no writers, so the
-//     drain proves an empty set;
+//   - that the producing Pod's containers have all terminated before its step
+//     directory is sealed: the harness declares it, through the daemon's
+//     standalone --pod-terminations-dir, once its producer has exited;
 //   - the kubelet exec that carries a credential stream into the producing
 //     Pod's helper (runs.SessionTransport): the bytes are received and the
 //     helper's acknowledgement is answered, or refused on demand.
 //
 // Everything the web node decides about those answers -- authorization,
-// claims, readiness, seals, receipts -- is production code.
+// claims, readiness, seals, publication -- is production code.
 type node struct {
 	uid           executioncontrol.NodeUID
 	dir           string
@@ -81,11 +79,10 @@ type node struct {
 	client        *jetbridge.OutputControlClient
 	http          *http.Client
 	minter        *executioncontrol.CapabilityMinter
-	receipts      *output.ReceiptSignatureVerifier
 	warrants      *output.ReadWarrantSigner
 	control       hangaroutput.ControlKeyRing
-	receipt       hangaroutput.ReceiptKeyRing
 	steps         string
+	terminations  string
 	endpoint      string
 	resultScratch string
 
@@ -114,7 +111,8 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 			n.stop()
 		}
 	}()
-	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch", "tls", "results"} {
+	n.terminations = filepath.Join(dir, "terminations")
+	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch", "tls", "results", "terminations"} {
 		if err = os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return n, err
 		}
@@ -132,10 +130,6 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 	n.http = &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{pki.client}, RootCAs: pki.roots, ServerName: serverName, MinVersion: tls.VersionTLS12}}}
 
-	receiptFile, receiptPublic, err := writeEd25519(tlsDir, "receipt.pem")
-	if err != nil {
-		return n, err
-	}
 	controlFile, controlPublic, err := writeEd25519(tlsDir, "control.pem")
 	if err != nil {
 		return n, err
@@ -152,7 +146,6 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 			return n, err
 		}
 	}
-	clock := output.ClockFunc(func() time.Time { return time.Now().UTC() })
 	if n.minter, err = executioncontrol.NewCapabilityMinter(capability, time.Minute, time.Now); err != nil {
 		return n, err
 	}
@@ -160,15 +153,6 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 		return n, err
 	}
 	n.control = hangaroutput.ControlKeyRing{ActivationEpoch: Epoch, Keys: []hangaroutput.ControlKeyEntry{{Epoch: Epoch, PublicKey: base64.StdEncoding.EncodeToString(controlPublic)}}}
-	n.receipt = hangaroutput.ReceiptKeyRing{ActiveKeyID: receiptKeyID, ActivationEpoch: Epoch, Keys: []hangaroutput.ReceiptKeyEntry{{ID: receiptKeyID, Epoch: Epoch, PublicKey: base64.StdEncoding.EncodeToString(receiptPublic)}}}
-	ring, err := output.NewReceiptKeyRing(output.EpochKey{KeyID: receiptKeyID, Epoch: Epoch, PublicKey: receiptPublic,
-		ValidFrom: output.NewTimestamp(time.Now().Add(-time.Hour)), ValidUntil: output.NewTimestamp(time.Now().Add(receiptLifetime))})
-	if err != nil {
-		return n, err
-	}
-	if n.receipts, err = output.NewReceiptSignatureVerifier(ring, clock); err != nil {
-		return n, err
-	}
 
 	bucket := "atctest-output"
 	n.emulator, err = fakestorage.NewServerWithOptions(fakestorage.Options{Scheme: "http", Host: "127.0.0.1"})
@@ -179,7 +163,7 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 
 	n.process = exec.Command(binary,
 		"--output-endpoint", n.emulator.URL(), "--output-bucket", bucket, "--output-prefix", "atctest/one", "--output-tenant", "atctest",
-		"--receipt-key-id", receiptKeyID, "--receipt-key-file", receiptFile,
+		"--pod-terminations-dir", n.terminations,
 		"--control-key-id", controlKeyID, "--control-key-file", controlFile,
 		"--capability-key", filepath.Join(tlsDir, "capability.key"),
 		"--materialization-key-id", materializeKey, "--materialization-key-file", filepath.Join(tlsDir, "materialize.key"),
@@ -258,8 +242,6 @@ func (n *node) activate(conn *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	out.ReceiptKeyValidFrom = time.Now().UTC().Add(-time.Minute)
-	out.ReceiptKeyValidUntil = out.ReceiptKeyValidFrom.Add(receiptLifetime)
 	if err := epochs.Attest(ctx, Epoch, activation.FacetOutput, out); err != nil {
 		return err
 	}
@@ -300,13 +282,10 @@ func (n *node) get(ctx context.Context, path string, into any) error {
 	return json.NewDecoder(response.Body).Decode(into)
 }
 
-// ConfirmDrain stands for the producing Pod's terminated containers. The
-// harness admits no writer tickets, so the only drain it can prove is empty.
-func (n *node) ConfirmDrain(_ context.Context, locator string, started output.SealStarted) ([]output.DrainedWriter, error) {
-	if locator != nodeName || len(started.DrainSet) != 0 {
-		return nil, fmt.Errorf("%w: %s has no drain for %d writers", output.ErrSealUnconfirmed, locator, len(started.DrainSet))
-	}
-	return nil, nil
+// terminate declares the producing Pod's containers terminated, as the
+// kubelet would report them: the seal waits for exactly this.
+func (n *node) terminate(pod executioncontrol.PodUID) error {
+	return os.WriteFile(filepath.Join(n.terminations, string(pod)), nil, 0o600)
 }
 
 // ExecBoundSession stands for the kubelet exec into the producing Pod: the
@@ -345,17 +324,16 @@ func (n *node) ExecBoundSession(_ context.Context, node string, start executionc
 }
 
 // hold plays the producing Pod's capture control init: it presents the
-// reservation's incarnation and the Pod's UID to the daemon, as the generated
+// execution, the output and the Pod's UID to the daemon, as the generated
 // script does. It is a raw POST because in production it is not a client call.
-func (n *node) hold(ctx context.Context, record output.HandoffRecord, pod executioncontrol.PodUID) error {
-	warrant, err := n.client.MintGrant(output.CaptureFacet, "hold", record.Execution)
+func (n *node) hold(ctx context.Context, capture output.Capture, pod executioncontrol.PodUID) error {
+	warrant, err := n.client.MintGrant(output.CaptureFacet, "hold", capture.Execution)
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{
-		"protocol_version": output.ProtocolVersion, "execution": record.Execution, "activation_epoch": record.ActivationEpoch,
-		"handoff_id": record.HandoffID, "source_hold_id": record.SourceHoldID, "output": record.Output,
-		"capture_deadline_at": record.CaptureDeadline, "incarnation": record.Source.Incarnation, "pod_uid": pod,
+	body, err := json.Marshal(output.CaptureHoldRequest{
+		ProtocolVersion: output.ProtocolVersion, Execution: capture.Execution,
+		Output: capture.Key.Output, PodUID: pod,
 	})
 	if err != nil {
 		return err

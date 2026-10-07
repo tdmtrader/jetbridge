@@ -20,8 +20,8 @@ import (
 )
 
 // Producer is one Run's result producer as the runtime runs it on the output
-// node: its output source reserved and held by its Pod, and its execution
-// admitted and witnessed started. From then on the Run's credential session
+// node: its capture pending and held by its Pod, and its execution admitted
+// and witnessed started. From then on the Run's credential session
 // for the result is available, exactly as when a real Pod has started.
 type Producer struct {
 	p       *Platform
@@ -30,7 +30,8 @@ type Producer struct {
 	buildID int
 	plan    atc.TaskPlan
 	planID  atc.PlanID
-	record  output.HandoffRecord
+	capture output.Capture
+	pod     executioncontrol.PodUID
 
 	mu        sync.Mutex
 	published bool
@@ -119,62 +120,39 @@ func (p *Platform) start(ctx context.Context, team, template string, number int,
 	}
 	producer.planID = atc.PlanID("task-" + producer.plan.TaskID)
 	n := p.node
-	outputs := p.outputs()
 
-	// The output starter's admission: predeclare the exact execution, reserve
-	// its source on the node, record the reservation.
+	// The output starter's admission: the pending capture row and its Run
+	// link, then the exact execution admitted on the node.
 	if err := p.inTx(ctx, func(tx db.Tx) (err error) {
-		producer.record, err = p.runs.PredeclareOutputTask(ctx, tx, producer.buildID, producer.plan, Epoch, time.Hour, nodeName, string(n.uid))
-		if err != nil {
-			return err
-		}
-		return p.runs.RequestOutputSource(ctx, tx, producer.buildID, producer.plan, Epoch)
-	}); err != nil {
-		return nil, err
-	}
-	r := producer.record
-	observe, err := n.client.MintGrant(executioncontrol.BaseFacet, "observe", r.Execution)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := n.client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: r.Execution,
-		ActivationEpoch: r.ActivationEpoch, NodeUID: n.uid, Capability: observe}); err != nil {
-		return nil, err
-	}
-	reserved, err := n.client.ReserveIncarnation(ctx, output.CaptureAdmission{ProtocolVersion: output.ProtocolVersion, Execution: r.Execution,
-		ActivationEpoch: r.ActivationEpoch, HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID, Output: r.Output, CaptureDeadline: r.CaptureDeadline})
-	if err != nil {
-		return nil, err
-	}
-	if err := p.inTx(ctx, func(tx db.Tx) (err error) {
-		if err = p.runs.RecordOutputSource(ctx, tx, producer.buildID, producer.plan, reserved, nodeName); err != nil {
-			return err
-		}
-		producer.record, err = p.runs.PredeclareOutputTask(ctx, tx, producer.buildID, producer.plan, Epoch, time.Hour, nodeName, string(n.uid))
+		started, err := p.runs.StartRunCapture(ctx, tx, producer.buildID, producer.plan, Epoch, time.Hour, nodeName, string(n.uid))
+		producer.capture = started.Capture
 		return err
 	}); err != nil {
 		return nil, err
 	}
-
-	// The Pod: its capture init holds the source, its process starts.
-	pod := executioncontrol.PodUID(uuid.NewString())
-	if err := n.hold(ctx, producer.record, pod); err != nil {
-		return nil, err
-	}
-	hold, err := n.client.InspectHold(ctx, r.Execution, r.HandoffID)
+	c := producer.capture
+	observe, err := n.client.MintGrant(executioncontrol.BaseFacet, "observe", c.Execution)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.inTx(ctx, func(tx db.Tx) error { return outputs.AcknowledgeSourceHold(ctx, tx, hold) }); err != nil {
+	if _, err := n.client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: c.Execution,
+		ActivationEpoch: Epoch, NodeUID: n.uid, Capability: observe}); err != nil {
 		return nil, err
 	}
-	started, err := n.client.RecordStart(ctx, r.Execution, hold.PodUID, executioncontrol.ProcessIdentity(uuid.NewString()))
+
+	// The Pod: its capture control init writes the held marker, its process
+	// starts.
+	producer.pod = executioncontrol.PodUID(uuid.NewString())
+	if err := n.hold(ctx, c, producer.pod); err != nil {
+		return nil, err
+	}
+	started, err := n.client.RecordStart(ctx, c.Execution, producer.pod, executioncontrol.ProcessIdentity(uuid.NewString()))
 	if err != nil {
 		return nil, err
 	}
 	if err := p.inTx(ctx, func(tx db.Tx) error {
 		admitted, _, err := p.runs.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: producer.buildID, PlanID: producer.planID,
-			Kind: db.ContainerTypeTask, Epoch: Epoch, NodeName: nodeName, NodeUID: string(n.uid), HandoffID: r.HandoffID})
+			Kind: db.ContainerTypeTask, Epoch: Epoch, NodeName: nodeName, NodeUID: string(n.uid), Capture: c.Key})
 		if err != nil {
 			return err
 		}
@@ -189,9 +167,9 @@ func (p *Platform) start(ctx context.Context, team, template string, number int,
 	return producer, nil
 }
 
-// Publish writes files into the producer's reserved output as its task
-// would, lets its process exit 0, and takes the capture through seal,
-// publication, receipt and release.
+// Publish writes files into the producer's step directory as its task
+// would, lets its process exit 0 and its Pod stop, and takes the capture
+// through seal, publication and release with the production coordinator.
 func (producer *Producer) Publish(t testing.TB, files map[string][]byte) {
 	t.Helper()
 	if err := producer.publish(files); err != nil {
@@ -207,8 +185,8 @@ func (producer *Producer) publish(files map[string][]byte) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	p, n, r := producer.p, producer.p.node, producer.record
-	directory := filepath.Join(n.steps, r.Source.Directory)
+	p, n, c := producer.p, producer.p.node, producer.capture
+	directory := filepath.Join(n.steps, c.Key.Directory())
 	for name, data := range files {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o755); err != nil {
 			return err
@@ -217,62 +195,40 @@ func (producer *Producer) publish(files map[string][]byte) error {
 			return err
 		}
 	}
-	if _, err := n.client.RecordOutcome(ctx, r.Execution, executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
+	if _, err := n.client.RecordOutcome(ctx, c.Execution, executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
 		return err
 	}
-	outputs := p.outputs()
+	if err := n.terminate(producer.pod); err != nil {
+		return err
+	}
 	coordinator := &hangaroutput.Coordinator{
-		Transactor: transactor{p.conn}, Repository: outputs,
-		Dialer: hangaroutput.SourceDialerFunc(func(string) (hangaroutput.SourceControl, error) { return n.client, nil }),
-		Drain:  n, Verifier: outputs.receipts, HoldVerifier: n.control,
-		Announcer: hangaroutput.AnnouncerFunc(outputs.RecordAnnouncement), OwnerID: uuid.NewString(), ReceiptKeyID: receiptKeyID,
+		Transactor: transactor{p.conn}, Rows: db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
+		Dialer: hangaroutput.SourceDialerFunc(func(context.Context, string, executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+			return n.client, nil
+		}),
+		ActivationEpoch: Epoch,
 	}
-	registered := false
-	for range 20 {
-		if _, err := coordinator.Advance(ctx, r.HandoffID); err != nil {
-			return err
-		}
-		var current db.RunOutputTask
-		if err := p.inTx(ctx, func(tx db.Tx) (err error) {
-			current, _, err = p.runs.OutputTask(ctx, tx, producer.buildID, producer.plan.TaskID)
-			return err
-		}); err != nil {
-			return err
-		}
-		if current.Record.State == output.CaptureStateRegistered && current.Record.Receipt != nil {
-			registered = true
-			break
-		}
+	if err := coordinator.Advance(ctx, c.Key); err != nil {
+		return err
 	}
-	if !registered {
-		return errors.New("the capture never reached a verified receipt")
+	var current db.RunCapture
+	if err := p.inTx(ctx, func(tx db.Tx) (err error) {
+		current, _, err = p.runs.RunCaptureTask(ctx, tx, producer.buildID, producer.plan.TaskID)
+		return err
+	}); err != nil {
+		return err
 	}
-	finished, err := n.client.Classify(ctx, r.Execution)
+	if current.Capture.State != output.CapturePublished || !current.Capture.Released() {
+		return fmt.Errorf("the capture is %s (released %v), not published and released",
+			current.Capture.State, current.Capture.Released())
+	}
+	finished, err := n.client.Classify(ctx, c.Execution)
 	if err != nil || finished.Acknowledgement == nil {
 		return fmt.Errorf("the node has no finish: %v", err)
 	}
 	if err := p.inTx(ctx, func(tx db.Tx) error {
 		return p.runs.RecordRunExecutionWitness(ctx, tx, producer.buildID, producer.planID, *finished.Acknowledgement, n.control)
 	}); err != nil {
-		return err
-	}
-	var record output.HandoffRecord
-	if err := p.inTx(ctx, func(tx db.Tx) (err error) {
-		record, err = outputs.LoadHandoffRecord(ctx, tx, r.HandoffID)
-		return err
-	}); err != nil {
-		return err
-	}
-	if record.Disposition == nil {
-		return errors.New("the capture has no disposition to release")
-	}
-	released, err := n.client.AcknowledgeRelease(ctx, output.ReleaseIntent{ProtocolVersion: output.ProtocolVersion, Disposition: *record.Disposition,
-		Execution: record.Execution, ActivationEpoch: record.ActivationEpoch, HandoffID: record.HandoffID, SourceHoldID: record.SourceHoldID,
-		ReleaseIntentID: record.ReleaseIntentID, Incarnation: record.Source.Incarnation})
-	if err != nil {
-		return err
-	}
-	if err := p.inTx(ctx, func(tx db.Tx) error { return outputs.AcknowledgeCaptureRelease(ctx, tx, released) }); err != nil {
 		return err
 	}
 	producer.published = true
@@ -450,19 +406,6 @@ func (p *Platform) run(team, template string, number int) (db.PipelineRun, atc.R
 		return nil, atc.RunDefinition{}, fmt.Errorf("Run %d has no definition: %v", number, err)
 	}
 	return run, definition, nil
-}
-
-type runOutputs struct {
-	*db.RunOutputRepository
-	receipts *output.ReceiptSignatureVerifier
-}
-
-func (p *Platform) outputs() runOutputs {
-	verifier, err := p.node.receipt.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		panic(err)
-	}
-	return runOutputs{db.NewRunOutputRepository(db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()), p.node.control, verifier), verifier}
 }
 
 func (p *Platform) inTx(ctx context.Context, work func(db.Tx) error) error {

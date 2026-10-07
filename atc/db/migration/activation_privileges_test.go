@@ -153,8 +153,8 @@ var _ = Describe("The activation epochs under a non-superuser owner", func() {
 		defer tx.Rollback()
 		_, err = tx.Exec("SELECT 1 FROM hangar_output_activation_epochs WHERE epoch_id = 1 FOR SHARE")
 		Expect(err).NotTo(HaveOccurred())
-		_, err = tx.Exec(`INSERT INTO hangar_policy_violations (activation_epoch, violation, subject)
-			VALUES (1, 'out_of_band_absence', 'objects/lost')`)
+		_, err = tx.Exec(`INSERT INTO hangar_inventory_cursors (bucket_fingerprint, activation_epoch, cursor_fence)
+			VALUES ('gs://output-bucket', 1, 1)`)
 		Expect(err).NotTo(HaveOccurred())
 	})
 

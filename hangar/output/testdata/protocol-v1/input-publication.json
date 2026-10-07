@@ -29,8 +29,5 @@
     "hangar-output-reservation-id": "e2c7b9a4-1d38-4f60-b5a2-9c4e7d1f0836",
     "hangar-output-scope": "o1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0",
     "hangar-output-version": "hangar-output-v1"
-  },
-  "signed_at": "2026-09-15T08:00:01.000000000Z",
-  "key_id": "receipt-key-fixture",
-  "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+  }
 }

@@ -502,57 +502,67 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 	})
 })
 
-// An aborted Run build whose output handoff is unsettled -- its producer never
-// started, or is still executing -- is closed by its build closure through the
-// source operations Run cancellation uses, for that build's own handoff only.
-// The node is closureNode, which answers as the exact node would.
-var _ = Describe("Closing an aborted Run build's unsettled output handoff", func() {
-	var f *closureHandoffs
+// An aborted Run build whose capture is unsettled -- its producer never
+// started, or is still executing -- is closed by its build closure: the
+// capture is discarded by the database-only CancelHandoff operation and the
+// capturing execution is closed through the generic execution closure, like
+// any other execution, for that build's own subjects only. The node is
+// closureNode, which answers as the exact node would.
+var _ = Describe("Closing an aborted Run build's unsettled capture", func() {
+	var f *closureCaptures
 
 	BeforeEach(func() {
-		f = newClosureHandoffs()
+		f = newClosureCaptures()
 	})
 
-	It("discovers only the aborted build's handoff, hold, capture and execution", func() {
-		sibling := f.hold(f.sibling, f.siblingPlan)
-		review := f.hold(f.review, f.reviewPlan)
-		f.node.start()
-		reservation := f.reserveCapture(review)
+	It("discovers only the aborted build's capture, execution and build", func() {
+		sibling := f.start(f.sibling, f.siblingPlan)
+		review := f.start(f.review, f.reviewPlan)
+		f.node.start(f, review)
 		f.abortReview()
 
 		operations := f.discover()
-		Expect(operations).To(HaveKeyWithValue(db.CancelHandoff, ConsistOf(string(review.HandoffID))))
-		Expect(operations).To(HaveKeyWithValue(db.CancelSourceHold, ConsistOf(string(review.SourceHoldID))))
-		Expect(operations).To(HaveKeyWithValue(db.CancelCapture, ConsistOf(string(reservation))))
-		Expect(operations).To(HaveKeyWithValue(db.CancelExecution, ConsistOf(executionSubject(review.Execution))))
+		Expect(operations).To(HaveKeyWithValue(db.CancelHandoff, ConsistOf(review.Capture.String())))
+		Expect(operations).To(HaveKeyWithValue(db.CancelExecution, ConsistOf(executionSubject(review.Identity))))
 		Expect(operations).To(HaveKeyWithValue(db.CancelBuild, ConsistOf(strconv.Itoa(f.review.ID()))))
+		Expect(operations).NotTo(HaveKey(db.CancelCapture), "a capture is one row; nothing discovers a handoff-era capture kind")
+		Expect(operations).NotTo(HaveKey(db.CancelSourceHold), "a capture is one row; nothing discovers a handoff-era hold kind")
 		for kind, subjects := range operations {
-			Expect(subjects).NotTo(ContainElements(string(sibling.HandoffID), string(sibling.SourceHoldID), executionSubject(sibling.Execution)),
-				"%s reached another build's live handoff", kind)
+			Expect(subjects).NotTo(ContainElements(sibling.Capture.String(), executionSubject(sibling.Identity)),
+				"%s reached another build's live capture", kind)
 		}
 
-		// The source handler accepts each of them without Run cancellation.
+		// Each handler accepts its operation without Run cancellation.
 		lease := f.lease("worker")
-		for _, kind := range []db.RunCancellationKind{db.CancelHandoff, db.CancelSourceHold, db.CancelCapture, db.CancelExecution} {
-			op := f.claimed(lease, kind, operations[kind][0])
-			Expect(f.inTx(func(tx db.Tx) error {
-				_, err := f.factory.CancellationOutputTask(f.ctx, tx, lease, op)
-				return err
-			})).To(Succeed(), "the build closure's %s operation was refused", kind)
-		}
+		handoff := f.claimed(lease, db.CancelHandoff, operations[db.CancelHandoff][0])
+		debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, handoff)
+		Expect(err).NotTo(HaveOccurred(), "the build closure's capture operation was refused")
+		Expect(debt).To(Equal(db.CancellationDone))
+		execution := f.claimed(lease, db.CancelExecution, operations[db.CancelExecution][0])
+		Expect(f.inTx(func(tx db.Tx) error {
+			_, err := f.factory.CancellationRunExecution(f.ctx, tx, lease, execution)
+			return err
+		})).To(Succeed(), "the build closure's execution operation was refused")
 		Expect(f.cancellationRequested()).To(BeFalse())
+
+		// An operation of a handoff-era kind recorded before the upgrade has
+		// nothing left to do.
+		for _, kind := range []db.RunCancellationKind{db.CancelCapture, db.CancelSourceHold} {
+			debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, f.claimed(lease, kind, uuid.NewString()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(debt).To(Equal(db.CancellationDone), "a %s operation was left owing work", kind)
+		}
 	})
 
-	It("closes a never-started producer's handoff, and only then lets the Run complete aborted with every unselected claim released", func() {
+	It("discards a never-started producer's capture, and only then lets the Run complete aborted with every unselected claim released", func() {
 		f.publishSibling()
-		review := f.hold(f.review, f.reviewPlan)
+		review := f.start(f.review, f.reviewPlan)
 		f.abortReview()
 
 		f.pass(db.CancelBuild)
 		f.pass(db.CancelBuild)
-		Expect(f.classification(review)).To(Equal("never_started"))
-		Expect(f.evidence(review)).To(Equal("never_started"))
-		Expect(f.released(review)).To(BeTrue(), "the closure did not release the aborted build's hold")
+		Expect(f.captureState(review)).To(Equal([2]string{"discarded", output.DiscardBuildAborted}))
+		Expect(f.executionClosure(review)).To(Equal("never_started"))
 		Expect(f.closureClosed()).To(BeFalse(), "the closure closed before its build finished")
 		Expect(f.finalize()).To(BeFalse(), "the Run was published while its build closure was open")
 
@@ -570,18 +580,18 @@ var _ = Describe("Closing an aborted Run build's unsettled output handoff", func
 		Expect(f.activeClaims()).To(BeZero(), "an aborted Run kept an unselected candidate claim")
 	})
 
-	It("interrupts an executing producer and releases its hold only on the node's exact finish", func() {
-		review := f.hold(f.review, f.reviewPlan)
-		f.node.start()
+	It("interrupts an executing producer and closes its execution only on the node's exact finish", func() {
+		review := f.start(f.review, f.reviewPlan)
+		f.node.start(f, review)
 		f.abortReview()
 
 		for pass := 0; pass < 3; pass++ {
 			f.pass()
 		}
-		Expect(f.classification(review)).To(Equal("executing"))
+		Expect(f.captureState(review)).To(Equal([2]string{"discarded", output.DiscardBuildAborted}),
+			"a pending capture of an aborted build is discarded whatever its producer is doing")
 		Expect(f.node.interrupted).To(BeNumerically(">", 0), "the executing producer was never interrupted")
-		Expect(f.evidence(review)).To(BeEmpty(), "an interruption request was taken for the producer's outcome")
-		Expect(f.released(review)).To(BeFalse(), "the hold was released while the producer was still executing")
+		Expect(f.executionClosure(review)).To(BeEmpty(), "an interruption request was taken for the producer's outcome")
 		completed, _ := f.buildState(f.review)
 		Expect(completed).To(BeFalse())
 		Expect(f.closureClosed()).To(BeFalse())
@@ -590,40 +600,41 @@ var _ = Describe("Closing an aborted Run build's unsettled output handoff", func
 		for pass := 0; pass < 3 && !f.closureClosed(); pass++ {
 			f.pass()
 		}
-		Expect(f.evidence(review)).To(Equal("authoritative_finish"))
-		Expect(f.released(review)).To(BeTrue())
-		Expect(f.releasedAfterEvidence(review)).To(BeTrue(), "the hold was released before the node's finish was retained")
+		Expect(f.executionClosure(review)).To(Equal("authoritative_finish"))
 		Expect(f.closureClosed()).To(BeTrue())
 		Expect(f.runStatus()).To(Equal(string(atc.RunStatusRunning)))
 	})
 
-	It("refuses source work on another build's handoff without Run cancellation", func() {
-		sibling := f.hold(f.sibling, f.siblingPlan)
-		f.hold(f.review, f.reviewPlan)
+	It("refuses capture work on another build's capture without Run cancellation", func() {
+		sibling := f.start(f.sibling, f.siblingPlan)
+		f.start(f.review, f.reviewPlan)
 		f.abortReview()
 		f.discover()
 
 		lease := f.lease("worker")
-		op := f.claimed(lease, db.CancelHandoff, string(sibling.HandoffID))
-		err := f.inTx(func(tx db.Tx) error {
-			_, err := f.factory.CancellationOutputTask(f.ctx, tx, lease, op)
-			return err
-		})
-		Expect(err).To(MatchError(db.ErrRunCancellationProgressStale), "a build closure reached another build's handoff")
+		op := f.claimed(lease, db.CancelHandoff, sibling.Capture.String())
+		debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, op)
+		Expect(err).To(MatchError(db.ErrRunCancellationProgressStale), "a build closure reached another build's capture")
+		Expect(debt).To(Equal(db.CancellationConflict))
+		Expect(f.captureState(sibling)).To(Equal([2]string{"pending", ""}))
 	})
 
-	It("yields its handoff-backed execution to the source handler", func() {
-		review := f.hold(f.review, f.reviewPlan)
+	It("closes its capturing execution through the generic execution closure", func() {
+		review := f.start(f.review, f.reviewPlan)
 		f.abortReview()
 		f.discover()
 
 		lease := f.lease("worker")
-		op := f.claimed(lease, db.CancelExecution, executionSubject(review.Execution))
-		err := f.inTx(func(tx db.Tx) error {
-			_, err := f.factory.CancellationRunExecution(f.ctx, tx, lease, op)
+		op := f.claimed(lease, db.CancelExecution, executionSubject(review.Identity))
+		var in db.RunCancellationExecution
+		Expect(f.inTx(func(tx db.Tx) error {
+			var err error
+			in, err = f.factory.CancellationRunExecution(f.ctx, tx, lease, op)
 			return err
-		})
-		Expect(err).To(MatchError(db.ErrRunCancellationExternalWork), "a closure's handoff-backed execution was not left to the source handler")
+		})).To(Succeed(), "a closure's capturing execution was not resolved by the execution handler")
+		Expect(in.Admission.Identity).To(Equal(review.Identity))
+		Expect(in.Admission.Capture).To(Equal(review.Capture))
+		Expect(in.Closed).To(BeFalse())
 	})
 })
 
@@ -631,19 +642,16 @@ func executionSubject(id executioncontrol.Identity) string {
 	return fmt.Sprintf("%s/%d", id.ExecutionID, id.Fence)
 }
 
-// closureHandoffs is one running v2 Run with two producer builds: review,
-// which is aborted over an unsettled handoff, and sibling.
-type closureHandoffs struct {
+// closureCaptures is one running v2 Run with two producer builds: review,
+// which is aborted over an unsettled capture, and sibling.
+type closureCaptures struct {
 	ctx                     context.Context
 	factory                 db.PipelineRunFactory
 	creation                db.RunCreation
 	review, sibling         db.Build
 	reviewPlan, siblingPlan atc.TaskPlan
 	control                 *executioncontrol.AcknowledgementSigner
-	capture                 *output.CaptureStatementSigner
-	receipts                *output.ReceiptSigner
 	controlKeys             hangaroutput.ControlKeyRing
-	receiptKeys             hangaroutput.ReceiptKeyRing
 	node                    closureNode
 }
 
@@ -657,7 +665,13 @@ type closureNode struct {
 	interrupted int
 }
 
-func (n *closureNode) start() { n.started = true }
+// start starts the producer on the node, and the node's signed start is
+// retained, as the execution starter does.
+func (n *closureNode) start(f *closureCaptures, a db.RunExecutionAdmission) {
+	GinkgoHelper()
+	n.started = true
+	f.witness(a, executioncontrol.AcknowledgementStart, nil)
+}
 
 func (n *closureNode) classify(id executioncontrol.Identity) executioncontrol.ClassifyResult {
 	result := executioncontrol.ClassifyResult{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id, Classification: executioncontrol.ClassificationNeverStarted}
@@ -678,22 +692,16 @@ func (n *closureNode) stop(id executioncontrol.Identity) executioncontrol.Reques
 	return executioncontrol.RequestSourcePreservingStopResult{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id, Accepted: !current.Terminal(), Classification: current}
 }
 
-func (n *closureNode) finish(f *closureHandoffs, r output.HandoffRecord, code int) {
+func (n *closureNode) finish(f *closureCaptures, a db.RunExecutionAdmission, code int) {
 	GinkgoHelper()
-	ack, err := f.control.Sign(executioncontrol.Acknowledgement{
-		ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementFinish,
-		Identity: r.Execution, ActivationEpoch: 1, LedgerSequence: 3, NodeUID: "node-uid", PodUID: "pod-uid",
-		ProcessIdentity: "producer-process", ObservedAt: output.NewTimestamp(time.Now()),
-		Outcome: &executioncontrol.ExitOutcome{ExitCode: code},
-	})
-	Expect(err).NotTo(HaveOccurred())
+	ack := f.sign(a, executioncontrol.AcknowledgementFinish, &executioncontrol.ExitOutcome{ExitCode: code})
 	n.outcome = &ack
 }
 
-func newClosureHandoffs() *closureHandoffs {
+func newClosureCaptures() *closureCaptures {
 	GinkgoHelper()
-	f := &closureHandoffs{ctx: context.Background()}
-	consumer, err := db.HangarConsumerPrefixHeld("abort-handoff-test")
+	f := &closureCaptures{ctx: context.Background()}
+	consumer, err := db.HangarConsumerPrefixHeld("abort-capture-test")
 	Expect(err).NotTo(HaveOccurred())
 	hangarActivateEpoch(f.ctx, db.NewHangarOutputRepository(consumer))
 	_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
@@ -705,7 +713,7 @@ func newClosureHandoffs() *closureHandoffs {
 			Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Outputs: []atc.TaskOutputConfig{{Name: "result"}}},
 		}
 	}
-	template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "aborted-handoffs"}, atc.Config{
+	template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "aborted-captures"}, atc.Config{
 		Template: true,
 		Jobs: atc.JobConfigs{
 			{Name: "review", PlanSequence: []atc.Step{{Config: producer("findings")}}},
@@ -740,24 +748,15 @@ func newClosureHandoffs() *closureHandoffs {
 		}
 	}
 
-	// One node key signs both control statements, as the control key ring
-	// pins one verification key per epoch.
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	Expect(err).NotTo(HaveOccurred())
 	f.control, err = executioncontrol.NewAcknowledgementSigner(private)
 	Expect(err).NotTo(HaveOccurred())
-	f.capture, err = output.NewCaptureStatementSigner(private)
-	Expect(err).NotTo(HaveOccurred())
 	f.controlKeys = hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}}
-	receiptPublic, receiptPrivate, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	f.receipts, err = output.NewReceiptSigner("receipt-key-1", 1, receiptPrivate, output.ClockFunc(time.Now))
-	Expect(err).NotTo(HaveOccurred())
-	f.receiptKeys = hangaroutput.ReceiptKeyRing{ActiveKeyID: "receipt-key-1", ActivationEpoch: 1, Keys: []hangaroutput.ReceiptKeyEntry{{ID: "receipt-key-1", Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(receiptPublic)}}}
 	return f
 }
 
-func (f *closureHandoffs) inTx(fn func(db.Tx) error) error {
+func (f *closureCaptures) inTx(fn func(db.Tx) error) error {
 	tx, err := dbConn.Begin()
 	if err != nil {
 		return err
@@ -769,130 +768,80 @@ func (f *closureHandoffs) inTx(fn func(db.Tx) error) error {
 	return tx.Commit()
 }
 
-func (f *closureHandoffs) outputs() *db.RunOutputRepository {
+// start admits a build's producer as the output starter does: a pending
+// capture and the Run's link to it, then the capturing execution under the
+// capture's own identity. Nothing has settled the capture.
+func (f *closureCaptures) start(build db.Build, plan atc.TaskPlan) db.RunExecutionAdmission {
 	GinkgoHelper()
-	verifier, err := f.receiptKeys.SignatureVerifier(output.ClockFunc(time.Now))
-	Expect(err).NotTo(HaveOccurred())
-	return db.NewRunOutputRepository(db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()), f.controlKeys, verifier)
-}
-
-func (f *closureHandoffs) incarnation(r output.HandoffRecord) output.SourceIncarnation {
-	return output.SourceIncarnation{ExecutionID: r.Execution.ExecutionID, NodeUID: "node-uid", HandleGeneration: 1, Output: r.Output}
-}
-
-// hold admits a build's producer, reserves its source on the node and
-// retains the node's signed hold: an output handoff nothing has settled.
-func (f *closureHandoffs) hold(build db.Build, plan atc.TaskPlan) output.HandoffRecord {
-	GinkgoHelper()
-	var r output.HandoffRecord
+	var admission db.RunExecutionAdmission
 	Expect(f.inTx(func(tx db.Tx) error {
-		var err error
-		r, err = f.factory.PredeclareOutputTask(f.ctx, tx, build.ID(), plan, 1, time.Hour, "node", "node-uid")
-		return err
-	})).To(Succeed())
-	Expect(f.inTx(func(tx db.Tx) error { return f.factory.RequestOutputSource(f.ctx, tx, build.ID(), plan, 1) })).To(Succeed())
-	incarnation := f.incarnation(r)
-	Expect(f.inTx(func(tx db.Tx) error {
-		return f.factory.RecordOutputSource(f.ctx, tx, build.ID(), plan, output.ReservedIncarnation{
-			ProtocolVersion: output.ProtocolVersion, Execution: r.Execution, ActivationEpoch: 1,
-			HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID, NodeUID: "node-uid", Incarnation: incarnation,
-			Directory: string(r.Execution.ExecutionID) + ".1/" + string(r.Output), LedgerSequence: 1,
-			ObservedAt: output.NewTimestamp(time.Now()),
-		}, "node")
-	})).To(Succeed())
-	hold, err := f.capture.SignCapture(output.CaptureAcknowledgement{
-		ProtocolVersion: output.ProtocolVersion, Kind: output.CaptureHoldAcknowledged, Execution: r.Execution,
-		ActivationEpoch: 1, LedgerSequence: 2, NodeUID: "node-uid", PodUID: "pod-uid",
-		HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID, Incarnation: incarnation,
-		ObservedAt: output.NewTimestamp(time.Now()),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(f.inTx(func(tx db.Tx) error { return f.outputs().AcknowledgeSourceHold(f.ctx, tx, hold) })).To(Succeed())
-	return r
-}
-
-// reserveCapture selects capture for a producer that finished successfully:
-// Stage 2, before anything is published.
-func (f *closureHandoffs) reserveCapture(r output.HandoffRecord) output.ReservationID {
-	GinkgoHelper()
-	finish, err := f.control.Sign(executioncontrol.Acknowledgement{
-		ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementFinish,
-		Identity: r.Execution, ActivationEpoch: 1, LedgerSequence: 3, NodeUID: "node-uid", PodUID: "pod-uid",
-		ProcessIdentity: "producer-process", ObservedAt: output.NewTimestamp(time.Now()),
-		Outcome: &executioncontrol.ExitOutcome{ExitCode: 0},
-	})
-	Expect(err).NotTo(HaveOccurred())
-	var reservation output.ReservationID
-	Expect(f.inTx(func(tx db.Tx) error {
-		var err error
-		reservation, err = f.outputs().CommitCaptureReservation(f.ctx, tx, output.SuccessfulFinishDisposition{
-			ProtocolVersion: output.ProtocolVersion, Disposition: output.DispositionCapture, Execution: r.Execution,
-			ActivationEpoch: 1, HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID,
-			ProducerCheckpointID: output.OpaqueID(uuid.NewString()), Output: r.Output, CaptureFence: 1,
-			CaptureDeadline: r.CaptureDeadline, FinishAcknowledgement: finish,
+		capture, err := f.factory.StartRunCapture(f.ctx, tx, build.ID(), plan, 1, time.Hour, "node", "node-uid")
+		if err != nil {
+			return err
+		}
+		var owned bool
+		admission, owned, err = f.factory.AdmitRunExecution(f.ctx, tx, db.RunExecutionRequest{
+			BuildID: build.ID(), PlanID: atc.PlanID("produce-" + plan.TaskID), Kind: db.ContainerTypeTask,
+			Epoch: 1, NodeName: "node", NodeUID: "node-uid", Capture: capture.Key(),
 		})
+		Expect(owned).To(BeTrue())
 		return err
 	})).To(Succeed())
-	return reservation
+	Expect(admission.Identity.ExecutionID).To(Equal(admission.Capture.ExecutionID),
+		"a capturing execution was admitted under an identity other than its capture's")
+	return admission
 }
 
-// publishSibling carries the sibling's capture through publication, a
-// verified receipt and its source release, which registers its candidate,
-// and finishes the sibling succeeded.
-func (f *closureHandoffs) publishSibling() {
+func (f *closureCaptures) sign(a db.RunExecutionAdmission, kind executioncontrol.AcknowledgementKind, outcome *executioncontrol.ExitOutcome) executioncontrol.Acknowledgement {
 	GinkgoHelper()
-	r := f.hold(f.sibling, f.siblingPlan)
-	reservation := f.reserveCapture(r)
-	var checkpoint string
-	Expect(dbConn.QueryRow(`SELECT producer_checkpoint_id FROM pipeline_run_output_finishes WHERE handoff_id=$1`, string(r.HandoffID)).Scan(&checkpoint)).To(Succeed())
-	ref := hangar.TreeRef{Scope: "team-a", Digest: hangar.Digest("sha256:" + closureHex()), Generation: 1}
-	Expect(f.inTx(func(tx db.Tx) error {
-		repository := f.outputs()
-		if _, err := repository.AcquireCaptureLease(f.ctx, tx, reservation, uuid.NewString(), output.MinLeaseTerm); err != nil {
-			return err
-		}
-		if err := repository.ResolveLogicalReservation(f.ctx, tx, output.LogicalResolution{
-			ProtocolVersion: output.ProtocolVersion, Execution: r.Execution, ActivationEpoch: 1,
-			HandoffID: r.HandoffID, ReservationID: reservation, CaptureFence: 1,
-			Scope: ref.Scope, Digest: ref.Digest, LogicalBytes: 4096, ResolvedAt: output.NewTimestamp(time.Now()),
-		}); err != nil {
-			return err
-		}
-		return repository.RecordFirstObjectCreate(f.ctx, tx, reservation, 1)
-	})).To(Succeed())
-	nonce, issuedAt := hangarIssueChallenge(r.HandoffID, reservation, ref)
-	admission := hangarAdmissionFor(r.HandoffID, r.Execution, reservation, ref, nonce, issuedAt)
-	admission.Receipt.Claims.ProducerCheckpointID = output.OpaqueID(checkpoint)
-	admission.Receipt.Claims.Output = r.Output
-	admission.Receipt.Claims.Incarnation.Output = r.Output
-	receipt, err := f.receipts.Sign(admission.Receipt.Claims)
-	Expect(err).NotTo(HaveOccurred())
-	admission.Receipt = receipt
-	Expect(f.inTx(func(tx db.Tx) error { return f.outputs().RegisterReceipt(f.ctx, tx, admission) })).To(Succeed())
-
-	var intent string
-	Expect(dbConn.QueryRow(`SELECT release_intent_id FROM hangar_capture_reservations WHERE reservation_id=$1`, string(reservation)).Scan(&intent)).To(Succeed())
-	release := f.release(r, output.DispositionCapture, output.ReleaseIntentID(intent))
-	Expect(f.inTx(func(tx db.Tx) error { return f.outputs().AcknowledgeCaptureRelease(f.ctx, tx, release) })).To(Succeed())
-	Expect(f.sibling.Finish(db.BuildStatusSucceeded)).To(Succeed())
-	Expect(f.activeClaims()).To(Equal(1))
-}
-
-func (f *closureHandoffs) release(r output.HandoffRecord, disposition output.Disposition, intent output.ReleaseIntentID) output.ReleaseAcknowledgement {
-	GinkgoHelper()
-	ack, err := f.capture.SignRelease(output.ReleaseAcknowledgement{
-		ProtocolVersion: output.ProtocolVersion, Disposition: disposition, Execution: r.Execution,
-		ActivationEpoch: 1, HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID,
-		ReleaseIntentID: intent, Incarnation: f.incarnation(r),
-		LedgerSequence: 4, ObservedAt: output.NewTimestamp(time.Now()),
+	sequence := executioncontrol.LedgerSequence(1)
+	if kind == executioncontrol.AcknowledgementFinish {
+		sequence = 2
+	}
+	ack, err := f.control.Sign(executioncontrol.Acknowledgement{
+		ProtocolVersion: executioncontrol.ProtocolVersion, Kind: kind,
+		Identity: a.Identity, ActivationEpoch: 1, LedgerSequence: sequence, NodeUID: "node-uid", PodUID: "pod-uid",
+		ProcessIdentity: "producer-process", ObservedAt: output.NewTimestamp(time.Now()), Outcome: outcome,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	return ack
 }
 
-// abortReview aborts the review build over its unsettled handoff, which
+// witness retains one of the node's signed statements about an execution.
+func (f *closureCaptures) witness(a db.RunExecutionAdmission, kind executioncontrol.AcknowledgementKind, outcome *executioncontrol.ExitOutcome) {
+	GinkgoHelper()
+	ack := f.sign(a, kind, outcome)
+	Expect(f.inTx(func(tx db.Tx) error {
+		return f.factory.RecordRunExecutionWitness(f.ctx, tx, a.BuildID, a.PlanID, ack, f.controlKeys)
+	})).To(Succeed())
+}
+
+// publishSibling carries the sibling's capture through publication, which
+// takes its candidate claim, closes its execution on the node's finish, and
+// finishes the sibling succeeded.
+func (f *closureCaptures) publishSibling() {
+	GinkgoHelper()
+	a := f.start(f.sibling, f.siblingPlan)
+	f.witness(a, executioncontrol.AcknowledgementStart, nil)
+	f.witness(a, executioncontrol.AcknowledgementFinish, &executioncontrol.ExitOutcome{ExitCode: 0})
+	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
+	Expect(f.inTx(func(tx db.Tx) error {
+		if _, err := repository.CASPendingToPublishing(f.ctx, tx, a.Capture, "pod-uid", "team-a",
+			hangar.Digest("sha256:"+closureHex())); err != nil {
+			return err
+		}
+		_, err := repository.CASPublishingToPublished(f.ctx, tx, output.PublishedCapture{
+			Key: a.Capture, Generation: 1, Metageneration: 1, ActivationEpoch: 1,
+		})
+		return err
+	})).To(Succeed())
+	Expect(f.sibling.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	Expect(f.activeClaims()).To(Equal(1))
+}
+
+// abortReview aborts the review build over its unsettled capture, which
 // records its build closure and leaves the Run running.
-func (f *closureHandoffs) abortReview() {
+func (f *closureCaptures) abortReview() {
 	GinkgoHelper()
 	Expect(f.review.MarkAsAborted()).To(Succeed())
 	Expect(f.review.Finish(db.BuildStatusAborted)).To(MatchError(atc.ErrRunOutputPending))
@@ -902,7 +851,7 @@ func (f *closureHandoffs) abortReview() {
 	Expect(f.cancellationRequested()).To(BeFalse())
 }
 
-func (f *closureHandoffs) lease(owner string) db.RunCancellationLease {
+func (f *closureCaptures) lease(owner string) db.RunCancellationLease {
 	GinkgoHelper()
 	var lease db.RunCancellationLease
 	Expect(f.inTx(func(tx db.Tx) error {
@@ -917,7 +866,7 @@ func (f *closureHandoffs) lease(owner string) db.RunCancellationLease {
 
 // discover runs one bounded discovery pass and returns every recorded
 // operation as kind -> subjects.
-func (f *closureHandoffs) discover() map[db.RunCancellationKind][]string {
+func (f *closureCaptures) discover() map[db.RunCancellationKind][]string {
 	GinkgoHelper()
 	lease := f.lease("worker")
 	Expect(f.inTx(func(tx db.Tx) error {
@@ -940,7 +889,7 @@ func (f *closureHandoffs) discover() map[db.RunCancellationKind][]string {
 // claimed makes one operation, discovered or not, the lease's current claim,
 // as ClaimRunCancellationOperation would, so only the gate under test can
 // refuse it.
-func (f *closureHandoffs) claimed(lease db.RunCancellationLease, kind db.RunCancellationKind, subject string) db.RunCancellationOperation {
+func (f *closureCaptures) claimed(lease db.RunCancellationLease, kind db.RunCancellationKind, subject string) db.RunCancellationOperation {
 	GinkgoHelper()
 	op := db.RunCancellationOperation{RunID: f.creation.Run.ID(), Kind: kind, Subject: subject, Attempt: 1, WorkerEpoch: lease.Epoch}
 	Expect(dbConn.QueryRow(`INSERT INTO pipeline_run_cancellation_operations(run_id,kind,subject) VALUES($1,$2,$3)
@@ -950,12 +899,12 @@ func (f *closureHandoffs) claimed(lease db.RunCancellationLease, kind db.RunCanc
 	return op
 }
 
-// pass is one cancellation-worker pass: the source handler's database
-// operations for handoff-backed work, with the node replaced by closureNode,
-// and finality for the build. Held kinds answer pending, as a slow node
-// would. Backed-off operations are made due first, so each pass sees
-// everything.
-func (f *closureHandoffs) pass(held ...db.RunCancellationKind) {
+// pass is one cancellation-worker pass: the database-only finality for the
+// capture and the build, and the execution handler for the capturing
+// execution with the node replaced by closureNode. Held kinds answer pending,
+// as a slow node would. Backed-off operations are made due first, so each
+// pass sees everything.
+func (f *closureCaptures) pass(held ...db.RunCancellationKind) {
 	GinkgoHelper()
 	_, err := dbConn.Exec(`UPDATE pipeline_run_cancellation_operations SET next_at=now() - interval '1 second' WHERE completed_at IS NULL`)
 	Expect(err).NotTo(HaveOccurred())
@@ -986,141 +935,75 @@ func (f *closureHandoffs) pass(held ...db.RunCancellationKind) {
 		debt := db.CancellationPending
 		switch {
 		case slices.Contains(held, op.Kind):
-		case op.Kind == db.CancelBuild:
-			debt, _ = f.factory.ExecuteCancellationFinality(f.ctx, lease, op)
+		case op.Kind == db.CancelExecution:
+			debt = f.execution(lease, op)
 		default:
-			debt = f.source(lease, op)
+			debt, _ = f.factory.ExecuteCancellationFinality(f.ctx, lease, op)
 		}
 		Expect(f.inTx(func(tx db.Tx) error { return f.factory.RecordRunCancellationProgress(f.ctx, tx, lease, op, debt) })).To(Succeed())
 	}
 }
 
-// source mirrors runs.CancellationSources: classify first, then close the
-// execution on the node's exact evidence, then settle the hold.
-func (f *closureHandoffs) source(lease db.RunCancellationLease, op db.RunCancellationOperation) db.RunCancellationDebt {
+// execution mirrors runs.CancellationExecutions: resolve the execution, and
+// close it on the node's exact evidence -- a verified finish, or a
+// source-preserving stop of a producer that never started.
+func (f *closureCaptures) execution(lease db.RunCancellationLease, op db.RunCancellationOperation) db.RunCancellationDebt {
 	GinkgoHelper()
-	var in db.RunCancellationSource
+	var in db.RunCancellationExecution
 	Expect(f.inTx(func(tx db.Tx) error {
 		var err error
-		in, err = f.factory.CancellationOutputTask(f.ctx, tx, lease, op)
+		in, err = f.factory.CancellationRunExecution(f.ctx, tx, lease, op)
 		return err
-	})).To(Succeed(), "the build closure's %s operation was refused", op.Kind)
-	r := in.Task.Record
-	repository := f.outputs()
-	record := func(fn func(db.Tx) error) db.RunCancellationDebt {
-		err := f.inTx(func(tx db.Tx) error {
-			if err := fn(tx); err != nil {
-				return err
-			}
-			return f.factory.CheckCancellationOperation(f.ctx, tx, lease, op)
-		})
-		if errors.Is(err, atc.ErrRunOutputPending) {
-			return db.CancellationPending
-		}
-		Expect(err).NotTo(HaveOccurred())
+	})).To(Succeed(), "the build closure's execution operation was refused")
+	if in.Closed {
 		return db.CancellationDone
 	}
-	observe := func() db.RunOutputCancellationEvidence {
-		return db.RunOutputCancellationEvidence{NodeUID: "node-uid", Execution: f.node.classify(r.Execution)}
+	id := in.Admission.Identity
+	evidence := db.RunOutputCancellationEvidence{NodeUID: "node-uid", Execution: f.node.classify(id)}
+	if !evidence.Execution.Classification.Authoritative() {
+		stop := f.node.stop(id)
+		if evidence = (db.RunOutputCancellationEvidence{NodeUID: "node-uid", Execution: f.node.classify(id)}); evidence.Execution.Classification == executioncontrol.ClassificationNeverStarted {
+			evidence.StartClosure = &stop
+		}
 	}
-	switch op.Kind {
-	case db.CancelHandoff:
-		if in.Classified {
-			return db.CancellationDone
-		}
-		return record(func(tx db.Tx) error {
-			return repository.RecordCancellationClassification(f.ctx, tx, lease, r.HandoffID, observe())
-		})
-	case db.CancelExecution:
-		if !in.Classified {
-			return db.CancellationPending
-		}
-		evidence := observe()
-		if !evidence.Execution.Classification.Authoritative() {
-			stop := f.node.stop(r.Execution)
-			if evidence = observe(); evidence.Execution.Classification == executioncontrol.ClassificationNeverStarted {
-				evidence.StartClosure = &stop
-			}
-		}
-		return record(func(tx db.Tx) error {
-			return repository.RecordCancellationEvidence(f.ctx, tx, lease, r.HandoffID, evidence)
-		})
-	default:
-		if !in.Classified {
-			return db.CancellationPending
-		}
-		if debt := record(func(tx db.Tx) error {
-			_, err := repository.CancelOrSettle(f.ctx, tx, r.HandoffID)
-			return err
-		}); debt != db.CancellationDone {
-			return debt
-		}
-		var current output.HandoffRecord
-		Expect(f.inTx(func(tx db.Tx) error {
-			var err error
-			current, err = repository.LoadHandoffRecord(f.ctx, tx, r.HandoffID)
-			return err
-		})).To(Succeed())
-		if current.Disposition != nil && !current.ReleaseAcknowledged {
-			ack := f.release(current, *current.Disposition, current.ReleaseIntentID)
-			if debt := record(func(tx db.Tx) error {
-				return repository.AcknowledgePreReservationCancelRelease(f.ctx, tx, ack)
-			}); debt != db.CancellationDone {
-				return debt
-			}
-		}
-		var status output.HandoffStatus
-		Expect(f.inTx(func(tx db.Tx) error {
-			var err error
-			status, err = repository.ClassifyHandoff(f.ctx, tx, r.HandoffID)
-			return err
-		})).To(Succeed())
-		if !status.Settled {
-			return db.CancellationPending
-		}
-		return db.CancellationDone
+	err := f.inTx(func(tx db.Tx) error {
+		return f.factory.RecordCancelledRunExecution(f.ctx, tx, lease, op, evidence, f.controlKeys)
+	})
+	if errors.Is(err, atc.ErrRunOutputPending) {
+		return db.CancellationPending
 	}
+	Expect(err).NotTo(HaveOccurred())
+	return db.CancellationDone
 }
 
-func (f *closureHandoffs) classification(r output.HandoffRecord) string {
+// captureState is the capture row's state and the reason it was discarded or
+// failed, if it was.
+func (f *closureCaptures) captureState(a db.RunExecutionAdmission) [2]string {
+	GinkgoHelper()
+	var state, reason string
+	Expect(dbConn.QueryRow(`SELECT state, coalesce(error,'') FROM hangar_captures WHERE execution_id=$1 AND output_name=$2`,
+		string(a.Capture.ExecutionID), string(a.Capture.Output)).Scan(&state, &reason)).To(Succeed())
+	return [2]string{state, reason}
+}
+
+// executionClosure is the classification the execution was closed with, or
+// empty while it is open.
+func (f *closureCaptures) executionClosure(a db.RunExecutionAdmission) string {
 	GinkgoHelper()
 	var classification string
-	Expect(dbConn.QueryRow(`SELECT coalesce((SELECT classification FROM pipeline_run_output_cancellation_classifications WHERE handoff_id=$1),'')`, string(r.HandoffID)).Scan(&classification)).To(Succeed())
+	Expect(dbConn.QueryRow(`SELECT coalesce((SELECT classification FROM pipeline_run_execution_closures WHERE execution_id=$1 AND execution_fence=$2),'')`,
+		string(a.Identity.ExecutionID), int64(a.Identity.Fence)).Scan(&classification)).To(Succeed())
 	return classification
 }
 
-func (f *closureHandoffs) evidence(r output.HandoffRecord) string {
-	GinkgoHelper()
-	var classification string
-	Expect(dbConn.QueryRow(`SELECT coalesce((SELECT classification FROM pipeline_run_output_cancellation_evidence WHERE handoff_id=$1),'')`, string(r.HandoffID)).Scan(&classification)).To(Succeed())
-	return classification
-}
-
-func (f *closureHandoffs) released(r output.HandoffRecord) bool {
-	GinkgoHelper()
-	var released bool
-	Expect(dbConn.QueryRow(`SELECT EXISTS(SELECT 1 FROM pipeline_run_output_releases WHERE handoff_id=$1)`, string(r.HandoffID)).Scan(&released)).To(Succeed())
-	return released
-}
-
-// releasedAfterEvidence reads the order from the Hangar disposition that
-// records the release intent: it may only follow the retained evidence.
-func (f *closureHandoffs) releasedAfterEvidence(r output.HandoffRecord) bool {
-	GinkgoHelper()
-	var ordered bool
-	Expect(dbConn.QueryRow(`SELECT e.recorded_at <= x.intent_recorded_at FROM pipeline_run_output_cancellation_evidence e
- JOIN hangar_pre_reservation_cancel_dispositions x USING(handoff_id) WHERE handoff_id=$1`, string(r.HandoffID)).Scan(&ordered)).To(Succeed())
-	return ordered
-}
-
-func (f *closureHandoffs) closureClosed() bool {
+func (f *closureCaptures) closureClosed() bool {
 	GinkgoHelper()
 	var closed bool
 	Expect(dbConn.QueryRow(`SELECT closed_at IS NOT NULL FROM pipeline_run_build_closures WHERE build_id=$1`, f.review.ID()).Scan(&closed)).To(Succeed())
 	return closed
 }
 
-func (f *closureHandoffs) closedAfterEveryOperation() bool {
+func (f *closureCaptures) closedAfterEveryOperation() bool {
 	GinkgoHelper()
 	var ordered bool
 	Expect(dbConn.QueryRow(`SELECT bool_and(op.completed_at IS NOT NULL AND op.completed_at <= bc.closed_at)
@@ -1128,7 +1011,7 @@ func (f *closureHandoffs) closedAfterEveryOperation() bool {
 	return ordered
 }
 
-func (f *closureHandoffs) buildState(b db.Build) (bool, string) {
+func (f *closureCaptures) buildState(b db.Build) (bool, string) {
 	GinkgoHelper()
 	var completed bool
 	var status string
@@ -1136,7 +1019,7 @@ func (f *closureHandoffs) buildState(b db.Build) (bool, string) {
 	return completed, status
 }
 
-func (f *closureHandoffs) finalize() bool {
+func (f *closureCaptures) finalize() bool {
 	GinkgoHelper()
 	var ready bool
 	Expect(f.inTx(func(tx db.Tx) error {
@@ -1148,31 +1031,34 @@ func (f *closureHandoffs) finalize() bool {
 }
 
 // schedulerCaughtUp stands in for the scheduler, which no db test runs.
-func (f *closureHandoffs) schedulerCaughtUp() {
+func (f *closureCaptures) schedulerCaughtUp() {
 	GinkgoHelper()
 	_, err := dbConn.Exec(`UPDATE jobs SET last_scheduled=schedule_requested WHERE pipeline_id=(SELECT id FROM pipelines WHERE pipeline_run_id=$1)`, f.creation.Run.ID())
 	Expect(err).NotTo(HaveOccurred())
 }
 
-func (f *closureHandoffs) runStatus() string {
+func (f *closureCaptures) runStatus() string {
 	GinkgoHelper()
 	var status string
 	Expect(dbConn.QueryRow(`SELECT status FROM pipeline_runs WHERE id=$1`, f.creation.Run.ID()).Scan(&status)).To(Succeed())
 	return status
 }
 
-func (f *closureHandoffs) cancellationRequested() bool {
+func (f *closureCaptures) cancellationRequested() bool {
 	GinkgoHelper()
 	var requested bool
 	Expect(dbConn.QueryRow(`SELECT cancel_requested_at IS NOT NULL FROM pipeline_runs WHERE id=$1`, f.creation.Run.ID()).Scan(&requested)).To(Succeed())
 	return requested
 }
 
-func (f *closureHandoffs) activeClaims() int {
+// activeClaims counts the Run's candidate claims still active: the claims
+// its captures' publications took.
+func (f *closureCaptures) activeClaims() int {
 	GinkgoHelper()
 	var active int
-	Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_run_output_candidates c JOIN pipeline_run_output_starts s USING(handoff_id)
- JOIN hangar_claims claim USING(claim_id) WHERE s.run_id=$1 AND claim.released_at IS NULL`, f.creation.Run.ID()).Scan(&active)).To(Succeed())
+	Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_run_captures s
+ JOIN hangar_claims claim ON claim.consumer_binding_id='capture:'||s.execution_id::text||'/'||s.output_name
+ WHERE s.run_id=$1 AND claim.released_at IS NULL`, f.creation.Run.ID()).Scan(&active)).To(Succeed())
 	return active
 }
 

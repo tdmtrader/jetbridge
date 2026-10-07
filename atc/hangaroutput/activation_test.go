@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"github.com/concourse/concourse/atc/postgresrunner"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/concourse/concourse/atc/postgresrunner"
 
 	"github.com/concourse/concourse/atc/hangaroutput/activation"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -75,17 +76,12 @@ func baseEvidence() activation.Evidence {
 }
 
 func outputEvidence() activation.Evidence {
-	now := time.Now().UTC()
-
 	return activation.Evidence{
 		Attestation:          json.RawMessage(`{"members":[{"node":"a"}]}`),
 		CohortDigest:         "digest-output",
-		ReceiptPublicKeyID:   "receipt-1",
 		MaterializationKeyID: "materialize-1",
 		BucketFingerprint:    "gs://activation-output",
 		DerivedNamespace:     "deployments/blue/one",
-		ReceiptKeyValidFrom:  now.Add(-time.Hour),
-		ReceiptKeyValidUntil: now.Add(90 * 24 * time.Hour),
 	}
 }
 
@@ -429,12 +425,6 @@ func TestAnAttestationWithoutEvidenceIsRefused(t *testing.T) {
 	}
 
 	mustAttestAndEnableBase(t, epochs, epoch)
-
-	sameKey := outputEvidence()
-	sameKey.MaterializationKeyID = sameKey.ReceiptPublicKeyID
-	if err := epochs.Attest(ctx, epoch, activation.FacetOutput, sameKey); !errors.Is(err, output.ErrIncomplete) {
-		t.Errorf("one key id for receipts and read warrants was accepted: %v", err)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -645,28 +635,19 @@ func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
 	}{
 		"unresolved object loss": {
 			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
-                    VALUES ($1, 'out_of_band_absence', 'missing-object', 'observed loss')`, int64(epoch))
+				mustExec(t, conn, `INSERT INTO hangar_integrity_findings (violation, subject, detail)
+                    VALUES ('out_of_band_absence', 'missing-object', 'observed loss')`)
 			},
 			unmet: []string{"storage integrity"},
 		},
 		"unresolved denied storage access": {
 			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
-                    VALUES ($1, 'runtime_principal_denied', 'publisher', 'denied')`, int64(epoch))
+				mustExec(t, conn, `INSERT INTO hangar_integrity_findings (violation, subject, detail)
+                    VALUES ('runtime_principal_denied', 'publisher', 'denied')`)
 			},
 			unmet: []string{"storage integrity"},
 		},
 
-		"the receipt key's validity window has passed": {
-			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `UPDATE hangar_output_activation_epochs
-					SET receipt_key_valid_from = now() - interval '90 days',
-					    receipt_key_valid_until = now() - interval '1 day',
-					    revision = revision + 1`)
-			},
-			unmet: []string{"receipt key is currently valid"},
-		},
 		"the database has been rolled back past the plane's migration": {
 			remove: func(t *testing.T, conn *sql.DB) {
 				mustExec(t, conn, `INSERT INTO migrations_history
@@ -762,7 +743,7 @@ func TestEnablingIsRefusedForAnEpochThatWasNeverFullyAttested(t *testing.T) {
 			t.Fatal("the step refused and enabled the facet anyway")
 		}
 		for _, named := range []string{
-			"facet attested", "storage identity attested", "receipt key is currently valid",
+			"facet attested", "storage identity attested",
 		} {
 			if !strings.Contains(err.Error(), named) {
 				t.Errorf("the refusal does not name %q: %v", named, err)
@@ -780,7 +761,7 @@ func TestEnablingIsRefusedForAnEpochThatWasNeverFullyAttested(t *testing.T) {
 		mustAttestAndEnableBase(t, epochs, epoch)
 		mustAttestOutputOnly(t, epochs, epoch)
 		mustExec(t, conn, `UPDATE hangar_output_activation_epochs
-			SET receipt_public_key_id = NULL, materialization_key_id = NULL,
+			SET materialization_key_id = NULL,
 			    bucket_fingerprint = NULL, derived_namespace = NULL,
 			    revision = revision + 1`)
 

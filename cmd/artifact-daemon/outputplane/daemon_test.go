@@ -30,7 +30,7 @@ import (
 // talks to a bucket, and a construction test against a double would prove the
 // double was constructible.
 
-func writeReceiptKey(t *testing.T) (string, ed25519.PublicKey) {
+func writeSigningKey(t *testing.T) (string, ed25519.PublicKey) {
 	t.Helper()
 
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -42,7 +42,7 @@ func writeReceiptKey(t *testing.T) (string, ed25519.PublicKey) {
 		t.Fatalf("encoding the private key: %v", err)
 	}
 
-	path := filepath.Join(t.TempDir(), "receipt.pem")
+	path := filepath.Join(t.TempDir(), "signing.pem")
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		t.Fatalf("writing the private key: %v", err)
 	}
@@ -70,8 +70,7 @@ func emulator(t *testing.T) (*fakestorage.Server, string) {
 func validConfig(t *testing.T, endpoint, bucket string) Config {
 	t.Helper()
 
-	keyFile, _ := writeReceiptKey(t)
-	controlKeyFile, _ := writeReceiptKey(t)
+	controlKeyFile, _ := writeSigningKey(t)
 	materializeKeyFile := writeMaterializationKey(t)
 
 	return Config{
@@ -82,8 +81,6 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 		OutputTenant:      "tenant-a",
 		CacheBucket:       "deployment-durable-cache",
 		StrictInputBucket: "deployment-strict-input",
-		ReceiptKeyID:      "receipt-key-1",
-		ReceiptKeyFile:    keyFile,
 
 		MaterializationKeyID:   "materialize-key-1",
 		MaterializationKeyFile: materializeKeyFile,
@@ -115,13 +112,11 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"no bucket":                                  func(c *Config) { c.OutputBucket = "" },
 		"no tenant":                                  func(c *Config) { c.OutputTenant = "" },
 		"no epoch":                                   func(c *Config) { c.ActivationEpoch = 0 },
-		"no receipt key id":                          func(c *Config) { c.ReceiptKeyID = "" },
-		"no receipt key file":                        func(c *Config) { c.ReceiptKeyFile = "" },
 		"no control key id":                          func(c *Config) { c.ControlKeyID = "" },
 		"no control key file":                        func(c *Config) { c.ControlKeyFile = "" },
 		// One key for both would mean rotating either rotates both, and an
 		// activation epoch pins them separately.
-		"one key for receipts and control": func(c *Config) { c.ControlKeyFile = c.ReceiptKeyFile },
+		"one key for read warrants and control": func(c *Config) { c.ControlKeyFile = c.MaterializationKeyFile },
 		"a non-positive timeout":           func(c *Config) { c.OperationTimeout = 0 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
@@ -133,11 +128,11 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 	}
 }
 
-func TestTheDaemonSignsReceiptsWithAnEd25519KeyAndNothingElse(t *testing.T) {
+func TestTheDaemonSignsWithAnEd25519KeyAndNothingElse(t *testing.T) {
 	server, bucket := emulator(t)
 
 	// An RSA key is the interesting refusal: it parses as a PKCS#8 private key
-	// and would sign perfectly well, producing receipts no verifier in this
+	// and would sign perfectly well, producing statements no verifier in this
 	// cohort can check.
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -153,9 +148,9 @@ func TestTheDaemonSignsReceiptsWithAnEd25519KeyAndNothingElse(t *testing.T) {
 	}
 
 	config := validConfig(t, server.URL(), bucket)
-	config.ReceiptKeyFile = path
+	config.ControlKeyFile = path
 	if _, err := Build(context.Background(), config); !errors.Is(err, output.ErrUnsupportedProtocol) {
-		t.Errorf("the daemon accepted an RSA receipt key: %v", err)
+		t.Errorf("the daemon accepted an RSA control key: %v", err)
 	}
 
 	// And a file that is not PEM at all.
@@ -163,7 +158,7 @@ func TestTheDaemonSignsReceiptsWithAnEd25519KeyAndNothingElse(t *testing.T) {
 	if err := os.WriteFile(notPEM, []byte("this is not a key"), 0o600); err != nil {
 		t.Fatalf("writing the garbage key: %v", err)
 	}
-	config.ReceiptKeyFile = notPEM
+	config.ControlKeyFile = notPEM
 	if _, err := Build(context.Background(), config); !errors.Is(err, output.ErrCorrupt) {
 		t.Errorf("the daemon accepted a key file that is not PEM: %v", err)
 	}
@@ -216,7 +211,7 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 	for _, name := range []string{
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
 		"cache-bucket", "strict-input-bucket", "shared-bucket-prefix-only-isolation",
-		"receipt-key-id", "receipt-key-file", "activation-epoch", "output-timeout",
+		"activation-epoch", "output-timeout",
 		"control-key-id", "control-key-file", "node-uid", "output-scratch-dir",
 		"capability-key", "capability-ttl",
 	} {

@@ -5,7 +5,7 @@
 // against what already exists, refuses with a named cause and writes nothing
 // if any is wrong, and otherwise creates only the absent entries. It never
 // updates, rotates or deletes a Secret: a regenerated key would break every
-// publication receipt and every client already issued against the old one.
+// node statement and every client already issued against the old one.
 package bootstrap
 
 import (
@@ -43,8 +43,8 @@ const (
 	// KindTLSBundle is a self-contained server pair and the CA that issued it,
 	// written in one Secret (tls.crt, tls.key, ca.crt).
 	KindTLSBundle Kind = "tls-bundle"
-	// KindRing is the public verification rings composed from every
-	// KindEd25519 entry: receipt-keys.json and control-keys.json.
+	// KindRing is the public node-control verification ring composed from
+	// every KindEd25519 entry: control-keys.json.
 	KindRing Kind = "ring"
 	// KindDatabaseCredential is created by the database step, not here; the
 	// sync-start reconcile only checks its place in the inventory.
@@ -55,7 +55,6 @@ const (
 type RingName string
 
 const (
-	ReceiptRing RingName = "receipt"
 	ControlRing RingName = "control"
 )
 
@@ -82,20 +81,16 @@ type Entry struct {
 	// CommonName of a CA, leaf or bundle certificate.
 	CommonName string `json:"commonName,omitempty"`
 
-	// Ring, Epoch and KeyID place an Ed25519 key on a ring. KeyID is a
-	// receipt key's id; a control key has none.
+	// Ring and Epoch place an Ed25519 key on a ring.
 	Ring  RingName `json:"ring,omitempty"`
 	Epoch int64    `json:"epoch,omitempty"`
-	KeyID string   `json:"keyID,omitempty"`
 
 	// Required marks an entry the bootstrap reads and never creates: an
 	// earlier activation epoch's key, whose absence is a refusal.
 	Required bool `json:"required,omitempty"`
 
-	// ActiveEpoch and ActiveKeyID are a KindRing entry's active activation
-	// epoch and receipt key id.
-	ActiveEpoch int64  `json:"activeEpoch,omitempty"`
-	ActiveKeyID string `json:"activeKeyID,omitempty"`
+	// ActiveEpoch is a KindRing entry's active activation epoch.
+	ActiveEpoch int64 `json:"activeEpoch,omitempty"`
 
 	// Purposes says what each data key is for, and Consumers which components
 	// mount the Secret. Reconcile does not act on them; they are the
@@ -200,16 +195,13 @@ func (inventory Inventory) validate() error {
 				return fmt.Errorf("%q names no data key", entry.Name)
 			}
 		case KindEd25519:
-			if entry.Key == "" || entry.Epoch <= 0 || (entry.Ring != ReceiptRing && entry.Ring != ControlRing) {
-				return fmt.Errorf("%q needs a data key, an activation epoch and a ring", entry.Name)
-			}
-			if entry.Ring == ReceiptRing && entry.KeyID == "" {
-				return fmt.Errorf("receipt key %q has no key id", entry.Name)
+			if entry.Key == "" || entry.Epoch <= 0 || entry.Ring != ControlRing {
+				return fmt.Errorf("%q needs a data key, an activation epoch and the control ring", entry.Name)
 			}
 		case KindRing:
 			rings++
-			if entry.ActiveEpoch <= 0 || entry.ActiveKeyID == "" {
-				return fmt.Errorf("ring %q needs its active activation epoch and receipt key id", entry.Name)
+			if entry.ActiveEpoch <= 0 {
+				return fmt.Errorf("ring %q needs its active activation epoch", entry.Name)
 			}
 		case KindTLSServer, KindTLSClient:
 			if entry.CA == "" {
@@ -438,19 +430,6 @@ func (plan *createPlan) generate(entry Entry) (Secret, map[string]string, error)
 	return secret, fields, nil
 }
 
-type receiptRingFile struct {
-	ActiveKeyID     string             `json:"active_key_id"`
-	ActivationEpoch int64              `json:"activation_epoch"`
-	Keys            []receiptRingEntry `json:"keys"`
-}
-
-type receiptRingEntry struct {
-	ID        string `json:"id"`
-	Epoch     int64  `json:"epoch"`
-	Retired   bool   `json:"retired"`
-	PublicKey string `json:"public_key"`
-}
-
 type controlRingFile struct {
 	ActivationEpoch int64              `json:"activation_epoch"`
 	Keys            []controlRingEntry `json:"keys"`
@@ -461,11 +440,10 @@ type controlRingEntry struct {
 	PublicKey string `json:"public_key"`
 }
 
-// composeRing builds receipt-keys.json and control-keys.json from the public
-// halves of the inventory's Ed25519 keys, ordered by activation epoch so the
-// same keys always give the same bytes. Only public halves enter a ring.
+// composeRing builds control-keys.json from the public halves of the
+// inventory's Ed25519 keys, ordered by activation epoch so the same keys always
+// give the same bytes. Only public halves enter a ring.
 func composeRing(ring Entry, entries []Entry, publics map[string]ed25519.PublicKey) (map[string][]byte, error) {
-	receipt := receiptRingFile{ActiveKeyID: ring.ActiveKeyID, ActivationEpoch: ring.ActiveEpoch, Keys: []receiptRingEntry{}}
 	control := controlRingFile{ActivationEpoch: ring.ActiveEpoch, Keys: []controlRingEntry{}}
 	for _, entry := range entries {
 		if entry.Kind != KindEd25519 {
@@ -476,22 +454,14 @@ func composeRing(ring Entry, entries []Entry, publics map[string]ed25519.PublicK
 			return nil, fmt.Errorf("key %q has no public half yet", entry.Name)
 		}
 		encoded := base64.StdEncoding.EncodeToString(public)
-		switch entry.Ring {
-		case ReceiptRing:
-			receipt.Keys = append(receipt.Keys, receiptRingEntry{ID: entry.KeyID, Epoch: entry.Epoch, PublicKey: encoded})
-		case ControlRing:
+		if entry.Ring == ControlRing {
 			control.Keys = append(control.Keys, controlRingEntry{Epoch: entry.Epoch, PublicKey: encoded})
 		}
 	}
-	sort.Slice(receipt.Keys, func(i, j int) bool { return receipt.Keys[i].Epoch < receipt.Keys[j].Epoch })
 	sort.Slice(control.Keys, func(i, j int) bool { return control.Keys[i].Epoch < control.Keys[j].Epoch })
-	receiptBody, err := json.Marshal(receipt)
-	if err != nil {
-		return nil, err
-	}
 	controlBody, err := json.Marshal(control)
 	if err != nil {
 		return nil, err
 	}
-	return map[string][]byte{"receipt-keys.json": receiptBody, "control-keys.json": controlBody}, nil
+	return map[string][]byte{"control-keys.json": controlBody}, nil
 }

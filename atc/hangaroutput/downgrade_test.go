@@ -34,17 +34,6 @@ func drainFixture(t *testing.T, epoch executioncontrol.ActivationEpoch) (activat
 	mustAttestAndEnableBase(t, epochs, epoch)
 	mustAttestAndEnableOutput(t, epochs, epoch)
 
-	// Retain a historical policy observation to exercise compatibility with
-	// epochs created before runtime integrity replaced policy admission.
-	if _, err := conn.Exec(`
-		INSERT INTO hangar_policy_snapshots
-			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
-			 lifecycle_delete_rules, state)
-		VALUES ($1, 'gs://activation-output', 3, 'policy-hash-1', 0, 'safe')`,
-		int64(epoch)); err != nil {
-		t.Fatalf("seeding the policy snapshot: %v", err)
-	}
-
 	return epochs, conn
 }
 
@@ -252,12 +241,10 @@ func TestTheBaseFacetRefusesWhileACaptureSelectedExecutionIsUnsettled(t *testing
 	ctx := context.Background()
 
 	if _, err := conn.Exec(`
-		INSERT INTO hangar_handoff_predeclarations
-			(handoff_id, source_hold_id, execution_id, execution_fence, output_name,
-			 activation_epoch, capture_deadline_at)
-		VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1, 'result',
-			$1, now() + interval '1 hour')`, int64(epoch)); err != nil {
-		t.Fatalf("seeding a predeclaration: %v", err)
+		INSERT INTO hangar_captures
+			(execution_id, execution_fence, output_name, node, node_uid, capture_deadline_at)
+		VALUES (gen_random_uuid(), 1, 'result', 'node-a', 'node-a-uid', now() + interval '1 hour')`); err != nil {
+		t.Fatalf("seeding a pending capture: %v", err)
 	}
 
 	residue, err := epochs.DrainResidue(ctx, epoch, activation.FacetBase)
@@ -267,12 +254,12 @@ func TestTheBaseFacetRefusesWhileACaptureSelectedExecutionIsUnsettled(t *testing
 
 	found := false
 	for _, one := range residue {
-		if one.Class == "predeclared handoffs with no disposition" {
+		if one.Class == "pending captures" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("a capture-selected execution with no disposition did not block the base "+
+		t.Errorf("a pending capture did not block the base "+
 			"facet; the residue was %v", residue)
 	}
 }
@@ -407,13 +394,9 @@ func TestDrainFacetsTakesOutputDownBeforeBase(t *testing.T) {
 	}
 }
 
-func TestDrainIgnoresRetiredPolicyEvidenceAndLeases(t *testing.T) {
+func TestDrainIgnoresRetiredPolicyLeases(t *testing.T) {
 	const epoch = executioncontrol.ActivationEpoch(91)
 	epochs, conn := drainFixture(t, epoch)
-	mustExec(t, conn, `INSERT INTO hangar_policy_violations
-   (activation_epoch, snapshot_id, violation, subject, detail)
-   SELECT $1, id, 'evidence_stale', 'legacy-policy', 'old attestor finding'
-     FROM hangar_policy_snapshots WHERE activation_epoch = $1 LIMIT 1`, int64(epoch))
 	mustExec(t, conn, `INSERT INTO hangar_operation_leases
    (kind, activation_epoch, owner_id, lease_fence, expires_at)
    VALUES ('policy_attestation', $1, gen_random_uuid(), 1, now() + interval '1 hour')`, int64(epoch))
@@ -422,14 +405,7 @@ func TestDrainIgnoresRetiredPolicyEvidenceAndLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !outcome.Disabled {
-		t.Fatalf("retired policy evidence prevented drain: %+v", outcome)
-	}
-	var count int
-	if err := conn.QueryRow(`SELECT count(*) FROM hangar_policy_violations WHERE activation_epoch = $1`, int64(epoch)).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("historical finding was erased: count=%d", count)
+		t.Fatalf("a retired policy lease prevented drain: %+v", outcome)
 	}
 }
 
@@ -438,8 +414,8 @@ func TestDrainRequiresRuntimeFindingReconciliation(t *testing.T) {
 		t.Run(string(violation), func(t *testing.T) {
 			const epoch = executioncontrol.ActivationEpoch(92)
 			epochs, conn := drainFixture(t, epoch)
-			mustExec(t, conn, `INSERT INTO hangar_policy_violations
-       (activation_epoch, violation, subject, detail) VALUES ($1, $2, 'runtime-subject', 'observed failure')`, int64(epoch), string(violation))
+			mustExec(t, conn, `INSERT INTO hangar_integrity_findings
+       (violation, subject, detail) VALUES ($1, 'runtime-subject', 'observed failure')`, string(violation))
 			outcome, err := epochs.DrainStep(context.Background(), epoch, activation.FacetOutput, true)
 			if !errors.Is(err, activation.ErrDrainRefused) {
 				t.Fatalf("unresolved runtime finding was not refused: %v", err)
@@ -447,8 +423,8 @@ func TestDrainRequiresRuntimeFindingReconciliation(t *testing.T) {
 			if outcome.Disabled {
 				t.Fatal("disabled despite unresolved runtime finding")
 			}
-			mustExec(t, conn, `UPDATE hangar_policy_violations SET resolved_at = now()
-       WHERE activation_epoch = $1 AND violation = $2 AND subject = 'runtime-subject'`, int64(epoch), string(violation))
+			mustExec(t, conn, `UPDATE hangar_integrity_findings SET resolved_at = now()
+       WHERE violation = $1 AND subject = 'runtime-subject'`, string(violation))
 			outcome, err = epochs.DrainStep(context.Background(), epoch, activation.FacetOutput, true)
 			if err != nil {
 				t.Fatal(err)

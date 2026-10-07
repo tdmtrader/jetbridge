@@ -18,13 +18,10 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
 
 const (
 	testExecutionID = executioncontrol.ExecutionID("11111111-1111-4111-8111-111111111111")
-	testHandoffID   = hangaroutput.HandoffID("22222222-2222-4222-8222-222222222222")
-	testLeaseID     = hangaroutput.SourceHoldID("33333333-3333-4333-8333-333333333333")
 	testEpoch       = executioncontrol.ActivationEpoch(7)
 )
 
@@ -44,30 +41,14 @@ func captureExtension() runtime.DurableOutputCapture {
 		Version:            runtime.DurableOutputCaptureVersion,
 		Identity:           executioncontrol.Identity{ExecutionID: testExecutionID, Fence: 1},
 		ActivationEpoch:    testEpoch,
-		HandoffID:          testHandoffID,
-		SourceHoldID:       testLeaseID,
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Now().Add(time.Hour),
 
-		// The daemon's answer, repeated. Every field here came off the wire;
-		// nothing in atc/ composes one, and
-		// TestNoATCCodeComposesAnIncarnationName is what keeps that true.
-		ReservedIncarnation: reservedIncarnation(),
-		ReservedDirectory:   reservedIncarnation().Directory(),
-
-		// The node whose daemon issued it. A reservation is a directory on one
-		// node's disk, so the producing Pod is pinned to that node by name.
-		ReservingNode: "kube-node-a",
-	}
-}
-
-func reservedIncarnation() hangaroutput.SourceIncarnation {
-	return hangaroutput.SourceIncarnation{
-		ExecutionID:      testExecutionID,
-		NodeUID:          "node-1",
-		HandleGeneration: 4,
-		Output:           "result",
+		// The node whose disk holds the step directory. The producing Pod is
+		// pinned to it by name.
+		Node:    "kube-node-a",
+		NodeUID: "node-1",
 	}
 }
 
@@ -203,60 +184,19 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 			},
 			says: "one epoch attests both facets",
 		},
-		"a capture with no predeclared handoff": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) { c.Capture.HandoffID = "" },
-			says:   "handoff id",
-		},
-		"a capture with no predeclared source hold": {
+		// A capture that cannot say which node holds its step directory. The
+		// Pod is pinned to that node because the directory is on its disk.
+		"a capture naming no node": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.SourceHoldID = ""
+				c.Capture.Node = ""
 			},
-			says: "source hold id",
+			says: "names no node",
 		},
-		// The reservation. An unreserved execution cannot be capture-selected:
-		// the incarnation is issued by the daemon before the Pod is built, and
-		// a capture with no reservation behind it is one whose producer would
-		// write into a directory no hold protects -- the seam this pass closes,
-		// stated where a caller can hit it.
-		"a capture with no reserved incarnation": {
+		"a capture naming no node identity": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.ReservedIncarnation = hangaroutput.SourceIncarnation{}
-				c.Capture.ReservedDirectory = ""
+				c.Capture.NodeUID = ""
 			},
-			says: "no reserved source incarnation",
-		},
-		"a capture whose reservation belongs to another execution": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.ReservedIncarnation.ExecutionID = "44444444-4444-4444-8444-444444444444"
-			},
-			says: "reserved incarnation",
-		},
-		"a capture whose reservation is for another output": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.ReservedIncarnation.Output = "report"
-			},
-			says: "reserved incarnation",
-		},
-		// The ATC repeating a directory it composed itself rather than the one
-		// the daemon answered with. It is the shape Req 7 refuses, and it is
-		// representable here precisely so it can be refused before a Pod is
-		// built around it.
-		"a capture whose directory does not derive from its reservation": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.ReservedDirectory = "steps/a-handle-i-chose/result"
-			},
-			says: "does not derive",
-		},
-		// A capture that cannot say which node reserved its directory. The Pod
-		// is pinned to the reserving node because the reservation is a
-		// directory on that node's disk; without the name there is nothing to
-		// pin to and the scheduler is free to place the producer on a node that
-		// reserved nothing.
-		"a capture naming no reserving node": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.ReservingNode = ""
-			},
-			says: "names no reserving node",
+			says: "names no node",
 		},
 		"a capture with no deadline": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {

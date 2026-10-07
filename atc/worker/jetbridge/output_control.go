@@ -58,38 +58,10 @@ type OutputControl interface {
 	CleanupEligible(ctx context.Context,
 		id executioncontrol.Identity) (executioncontrol.DestructiveCleanupEligibleResult, error)
 
-	// ReserveIncarnation asks the daemon for the location this capture will
-	// hold, BEFORE the producing Pod is built. It is the ATC's only source of
-	// that path: nothing here composes one.
-	ReserveIncarnation(ctx context.Context,
-		admission output.CaptureAdmission) (output.ReservedIncarnation, error)
-	InspectHold(ctx context.Context, id executioncontrol.Identity,
-		handoff output.HandoffID) (output.CaptureAcknowledgement, error)
-	AdmitWriter(ctx context.Context,
-		admission output.WriterAdmission) (output.CaptureAcknowledgement, error)
-	RetireWriter(ctx context.Context,
-		admission output.WriterAdmission) (output.CaptureAcknowledgement, error)
-	InspectWriter(ctx context.Context, id executioncontrol.Identity,
-		handoff output.HandoffID, ticket output.WriterTicketID) (output.WriterInspection, error)
-
-	// The publication half, which the control plane's capture coordinator
+	// The capture routes, which the control plane's capture coordinator
 	// drives. They are on this interface rather than a second one because an
-	// execution's truth lives on exactly one node, and a publication that
-	// could be pointed at a second daemon could seal one node's source and
-	// read another's.
-	BeginSeal(ctx context.Context, request output.SealRequest) (output.SealStarted, error)
-	ConfirmSeal(ctx context.Context,
-		confirmation output.SealConfirmation) (output.CaptureAcknowledgement, error)
-	InspectSeal(ctx context.Context, handoff output.HandoffID,
-		id executioncontrol.Identity) (output.SealStarted, error)
-	Canonicalize(ctx context.Context,
-		request output.PublicationRequest) (output.CanonicalizationResult, error)
-	Publish(ctx context.Context,
-		request output.PublicationRequest) (output.PublicationResult, error)
-	Attest(ctx context.Context, challenge output.StatChallenge,
-		claims output.ReceiptClaims) (output.Receipt, error)
-	AcknowledgeRelease(ctx context.Context,
-		intent output.ReleaseIntent) (output.ReleaseAcknowledgement, error)
+	// execution's truth lives on exactly one node.
+	output.SourceControl
 }
 
 // OutputControlClient is the HTTP implementation, bound to one endpoint.
@@ -362,69 +334,6 @@ func (client *OutputControlClient) CleanupEligible(ctx context.Context,
 	return result, err
 }
 
-// ReserveIncarnation takes the reservation, and is the only place in the ATC
-// that learns a source path.
-//
-// It answers a directory, and the ATC's whole part is to repeat it into the
-// producing Pod's output volume. Req 7 is intact because the daemon derived it:
-// the handle generation is that node's monotonic ledger sequence, and no caller
-// can guess or choose one. TestNoATCCodeComposesAnIncarnationName fails if any
-// file under atc/ starts composing one instead of calling this.
-func (client *OutputControlClient) ReserveIncarnation(ctx context.Context,
-	admission output.CaptureAdmission) (output.ReservedIncarnation, error) {
-	var reserved output.ReservedIncarnation
-	if err := client.call(ctx, output.CaptureFacet, "reserve-incarnation",
-		"/capture/v1/reserve-incarnation", admission.Execution, admission, &reserved); err != nil {
-		return output.ReservedIncarnation{}, err
-	}
-	// The answer is validated before it is repeated. A reservation whose
-	// directory does not derive from the incarnation beside it is not a daemon
-	// this ATC should be mounting hostPaths from.
-	if err := reserved.Validate(); err != nil {
-		return output.ReservedIncarnation{}, fmt.Errorf(
-			"the output daemon answered a reservation that does not validate: %w", err)
-	}
-
-	return reserved, nil
-}
-
-func (client *OutputControlClient) InspectHold(ctx context.Context, id executioncontrol.Identity,
-	handoff output.HandoffID) (output.CaptureAcknowledgement, error) {
-	var ack output.CaptureAcknowledgement
-	err := client.call(ctx, output.CaptureFacet, "inspect-hold", "/capture/v1/hold/inspect", id,
-		map[string]any{"execution": id, "handoff_id": handoff}, &ack)
-
-	return ack, err
-}
-
-func (client *OutputControlClient) AdmitWriter(ctx context.Context,
-	admission output.WriterAdmission) (output.CaptureAcknowledgement, error) {
-	var ack output.CaptureAcknowledgement
-	err := client.call(ctx, output.CaptureFacet, "issue-writer-ticket", "/capture/v1/writer-ticket",
-		admission.Execution, admission, &ack)
-
-	return ack, err
-}
-
-func (client *OutputControlClient) RetireWriter(ctx context.Context,
-	admission output.WriterAdmission) (output.CaptureAcknowledgement, error) {
-	var ack output.CaptureAcknowledgement
-	err := client.call(ctx, output.CaptureFacet, "close-writer-ticket",
-		"/capture/v1/writer-ticket/close", admission.Execution, admission, &ack)
-
-	return ack, err
-}
-
-func (client *OutputControlClient) InspectWriter(ctx context.Context, id executioncontrol.Identity,
-	handoff output.HandoffID, ticket output.WriterTicketID) (output.WriterInspection, error) {
-	var answer output.WriterInspection
-	err := client.call(ctx, output.CaptureFacet, "inspect-writer-ticket",
-		"/capture/v1/writer-ticket/inspect", id, map[string]any{
-			"execution": id, "handoff_id": handoff, "writer_ticket_id": ticket,
-		}, &answer)
-	return answer, err
-}
-
 // nodeOutputControls resolves the output daemon for the node an execution
 // landed on, and dials it the way the ATC dials the artifact daemon: same
 // client certificate, same CA, same scheme predicate. The two daemons are
@@ -472,108 +381,45 @@ func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName 
 	return client, nil
 }
 
-// The publication half, which Phase 5's coordinator drives.
-//
-// These are the ATC-side calls of the capture extension: fence writer
-// admission, prove the drain, learn what the sealed tree is, create the object,
-// obtain a per-capture receipt, and release the source. Each is one route and
-// one attenuated grant, minted per call like every other.
-//
-// They are on the SAME client as the hold and the writer ticket because an
-// execution's truth lives on exactly one node: a publication that could be
-// pointed at a second daemon is a publication that could seal one node's source
-// and read another's.
+// The capture routes, which the capture coordinator drives: seal, publish,
+// release and stat. Each is one route and one attenuated grant, minted per
+// call like every other, on the same client as the base protocol, because an
+// execution's truth lives on exactly one node.
 
-func (client *OutputControlClient) BeginSeal(ctx context.Context,
-	request output.SealRequest) (output.SealStarted, error) {
-	var started output.SealStarted
-	err := client.call(ctx, output.CaptureFacet, "begin-seal", "/capture/v1/seal",
-		request.Execution, request, &started)
-
-	return started, err
-}
-
-// ConfirmSeal sends the route's own body rather than the value type.
-//
-// output.SealConfirmation carries no json tags -- it is a control-plane value
-// and never a wire type -- and the route takes the execution alongside the
-// statement so that a capability minted for one execution cannot confirm
-// another's seal. Marshalling the value directly produced Go field names and
-// no execution at all, which the daemon correctly refused as an empty identity.
-func (client *OutputControlClient) ConfirmSeal(ctx context.Context,
-	confirmation output.SealConfirmation) (output.CaptureAcknowledgement, error) {
-	execution := confirmation.Started.Acknowledgement.Execution
-
-	var ack output.CaptureAcknowledgement
-	err := client.call(ctx, output.CaptureFacet, "confirm-seal", "/capture/v1/seal/confirm",
-		execution, map[string]any{
-			"execution":     execution,
-			"started":       confirmation.Started,
-			"drained":       confirmation.Drained,
-			"capture_fence": confirmation.CaptureFence,
-			"observed_at":   confirmation.ObservedAt,
-		}, &ack)
-
-	return ack, err
-}
-
-func (client *OutputControlClient) InspectSeal(ctx context.Context, handoff output.HandoffID,
-	id executioncontrol.Identity) (output.SealStarted, error) {
-	var started output.SealStarted
-	err := client.call(ctx, output.CaptureFacet, "inspect-seal", "/capture/v1/seal/inspect", id,
-		map[string]any{"execution": id, "handoff_id": handoff}, &started)
-
-	return started, err
-}
-
-// Canonicalize answers what the sealed tree is and creates nothing.
-//
-// It is a separate call from Publish because requirement 21 puts a durable
-// logical resolution between them: every possibly-created object has to have a
-// pre-existing reservation that recovery and inventory can correlate.
-func (client *OutputControlClient) Canonicalize(ctx context.Context,
-	request output.PublicationRequest) (output.CanonicalizationResult, error) {
-	var result output.CanonicalizationResult
-	err := client.call(ctx, output.CaptureFacet, "canonicalize", "/capture/v1/canonicalize",
+func (client *OutputControlClient) Seal(ctx context.Context,
+	request output.CaptureSealRequest) (output.CaptureSealResult, error) {
+	var result output.CaptureSealResult
+	err := client.call(ctx, output.CaptureFacet, "seal", "/capture/v1/seal",
 		request.Execution, request, &result)
 
 	return result, err
 }
 
 func (client *OutputControlClient) Publish(ctx context.Context,
-	request output.PublicationRequest) (output.PublicationResult, error) {
-	var result output.PublicationResult
+	request output.CapturePublishRequest) (output.CapturePublishResult, error) {
+	var result output.CapturePublishResult
 	err := client.call(ctx, output.CaptureFacet, "publish", "/capture/v1/publish",
 		request.Execution, request, &result)
 
 	return result, err
 }
 
-// Attest answers a one-use challenge with a signed per-capture receipt.
-//
-// The challenge names the generation the publish assigned, so this cannot be
-// folded into Publish: a receipt signed inside the publish would be bound to no
-// challenge and would answer every later one naming the same facts.
-func (client *OutputControlClient) Attest(ctx context.Context, challenge output.StatChallenge,
-	claims output.ReceiptClaims) (output.Receipt, error) {
-	var receipt output.Receipt
-	err := client.call(ctx, output.CaptureFacet, "stat", "/capture/v1/stat", claims.Execution,
-		map[string]any{
-			"execution": claims.Execution,
-			"challenge": challenge,
-			"claims":    claims,
-		}, &receipt)
-
-	return receipt, err
-}
-
-func (client *OutputControlClient) AcknowledgeRelease(ctx context.Context,
-	intent output.ReleaseIntent) (output.ReleaseAcknowledgement, error) {
-	var ack output.ReleaseAcknowledgement
-	err := client.call(ctx, output.CaptureFacet, "release-hold", "/capture/v1/release",
-		intent.Execution, intent, &ack)
+func (client *OutputControlClient) Release(ctx context.Context,
+	request output.CaptureReleaseRequest) (output.CaptureReleaseAcknowledgement, error) {
+	var ack output.CaptureReleaseAcknowledgement
+	err := client.call(ctx, output.CaptureFacet, "release", "/capture/v1/release",
+		request.Execution, request, &ack)
 
 	return ack, err
+}
+
+func (client *OutputControlClient) Stat(ctx context.Context,
+	request output.CaptureStatRequest) (output.CapturePublishResult, error) {
+	var result output.CapturePublishResult
+	err := client.call(ctx, output.CaptureFacet, "stat", "/capture/v1/stat",
+		request.Execution, request, &result)
+
+	return result, err
 }
 
 // outputPlaneURLScheme is the scheme every ATC-side caller of the output plane

@@ -76,7 +76,7 @@ func (cmd *RunCommand) configureRunInputUploads(conn db.DbConn, factory db.Pipel
 	cmd.runAdmitter.SetCredentialHandoffConfig(cmd.credentialHandoffConfig(source))
 	cmd.runAdmitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
 		client, uid, err := source.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
-		return runs.InputUploadNode{UID: uid, Publisher: client, Verifier: cmd.hangarOutputReceiptVerifier}, err
+		return runs.InputUploadNode{UID: uid, Publisher: client}, err
 	}})
 	return nil
 }

@@ -32,7 +32,6 @@ package hangaroutput_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -68,9 +67,9 @@ import (
 )
 
 const (
-	harnessNode  = "harness-node-uid"
-	harnessEpoch = executioncontrol.ActivationEpoch(7)
-	harnessKeyID = "harness-receipt-1"
+	harnessNode     = "harness-node-uid"
+	harnessNodeName = "harness-node"
+	harnessEpoch    = executioncontrol.ActivationEpoch(7)
 )
 
 var (
@@ -127,80 +126,7 @@ type harness struct {
 	Bucket     string
 
 	Coordinator *hangaroutput.Coordinator
-	Recoverer   *hangaroutput.Recoverer
-	Drain       *stubDrain
 	Dialer      *injectingDialer
-}
-
-// announcementKinds reads what a watcher was told, from the DURABLE store.
-//
-// Not from a recorder in this process: an announcement whose whole reason for
-// existing is that the process which decided a disposition may be gone cannot
-// be asserted against that process's memory. The store is also the only place
-// that can tell "announced" from "announced and then rolled back", which is
-// exactly the distinction a terminal announcement written inside its
-// disposition's transaction is making.
-func (h *harness) announcementKinds(t *testing.T, handoff output.HandoffID) []hangaroutput.AnnouncementKind {
-	t.Helper()
-
-	tx, err := h.Conn.Begin()
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback()
-
-	stored, err := h.Repository.ReadAnnouncements(context.Background(), tx, handoff)
-	if err != nil {
-		t.Fatalf("reading the announcements: %v", err)
-	}
-
-	var kinds []hangaroutput.AnnouncementKind
-	for _, announcement := range stored {
-		kinds = append(kinds, hangaroutput.AnnouncementKind(announcement.Kind))
-	}
-
-	return kinds
-}
-
-// recoverUntilSettled drives PRODUCTION's recovery component, not the harness's
-// own loop.
-//
-// The difference is the whole assertion in one spec below: `Recoverer.Run`
-// advances every INCOMPLETE handoff by at most one transition, and a handoff
-// that has settled is not incomplete and is never visited again. A spec that
-// looped `Advance` to quiescence would take a transition production never takes.
-func (h *harness) recoverUntilSettled(t *testing.T, handoff output.HandoffID) int {
-	t.Helper()
-
-	for pass := 1; pass <= 12; pass++ {
-		if err := h.Recoverer.Run(context.Background()); err != nil {
-			t.Fatalf("recovery pass %d: %v", pass, err)
-		}
-		if len(h.incompleteHandoffs(t)) == 0 {
-			return pass
-		}
-	}
-	t.Fatalf("twelve recovery passes left %v incomplete", h.incompleteHandoffs(t))
-
-	return 0
-}
-
-func (h *harness) incompleteHandoffs(t *testing.T) []output.HandoffID {
-	t.Helper()
-
-	tx, err := h.Conn.Begin()
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback()
-
-	handoffs, err := h.Repository.IncompleteHandoffs(context.Background(), tx,
-		hangaroutput.DefaultBatchSize)
-	if err != nil {
-		t.Fatalf("listing the incomplete handoffs: %v", err)
-	}
-
-	return handoffs
 }
 
 func newHarness(t *testing.T) *harness {
@@ -222,35 +148,14 @@ func newHarness(t *testing.T) *harness {
 	}
 	repository := db.NewHangarOutputRepository(prefix)
 
-	activate(t, conn, daemon)
+	activate(t, conn)
 
-	drain := &stubDrain{}
-	dialer := &injectingDialer{control: daemon.Client}
-
-	verifier, err := output.NewReceiptSignatureVerifier(daemon.KeyRing, output.ClockFunc(func() time.Time {
-		return time.Now().UTC()
-	}))
-	if err != nil {
-		t.Fatalf("building the verifier: %v", err)
-	}
-
-	transactor := &connTransactor{conn: conn}
+	dialer := &injectingDialer{daemon: daemon}
 	coordinator := &hangaroutput.Coordinator{
-		Transactor: transactor,
-		Repository: repository,
-		Dialer:     dialer,
-		Drain:      drain,
-		Verifier:   verifier,
-		// PRODUCTION's announcer, over the durable store. Requirement 18's
-		// announcements outlive the process that made them, and a recorder in
-		// this one cannot say whether the store has them -- nor whether the
-		// transaction they were written in committed.
-		Announcer: hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
-		// The schema types an owner as a uuid: two processes sharing a name
-		// would be two owners the fence cannot tell apart.
-		OwnerID:      uuid.NewString(),
-		ReceiptKeyID: harnessKeyID,
-		Now:          func() time.Time { return time.Now().UTC() },
+		Transactor:      &connTransactor{conn: conn},
+		Rows:            repository,
+		Dialer:          dialer,
+		ActivationEpoch: harnessEpoch,
 	}
 
 	return &harness{
@@ -260,37 +165,25 @@ func newHarness(t *testing.T) *harness {
 		Daemon:      daemon,
 		Store:       store,
 		Bucket:      bucket,
-		Drain:       drain,
 		Dialer:      dialer,
 		Coordinator: coordinator,
-		Recoverer: &hangaroutput.Recoverer{
-			Coordinator: coordinator,
-			Incomplete:  repository,
-			Transactor:  transactor,
-		},
 	}
 }
 
-// activate opens the plane. Without an epoch and a fresh, safe attestation
-// nothing admits anything, which is the held state the migration leaves behind.
-func activate(t *testing.T, conn db.DbConn, daemon *daemonProcess) {
+// activate opens the plane. Without an enabled epoch nothing admits anything,
+// which is the held state the migration leaves behind.
+func activate(t *testing.T, conn db.DbConn) {
 	t.Helper()
-
-	public := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: daemon.ReceiptPublic})
-	_ = public
 
 	if err := postgresrunner.ExecAsActivationRole(conn, `
 		INSERT INTO hangar_output_activation_epochs
 			(epoch_id, base_state, output_state, base_attestation, output_attestation,
-			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
 			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES ($1, 'enabled', 'enabled', '{}', '{}', $2,
-			now() - interval '1 day', now() + interval '30 days',
+		VALUES ($1, 'enabled', 'enabled', '{}', '{}',
 			'materialize-key-1', 'gs://harness-output', 'harness/one')`,
-		int64(harnessEpoch), harnessKeyID); err != nil {
+		int64(harnessEpoch)); err != nil {
 		t.Fatalf("activating: %v", err)
 	}
-
 }
 
 // connTransactor adapts the real connection to the coordinator's port.
@@ -378,13 +271,17 @@ func repositoryRoot() string {
 type daemonProcess struct {
 	Endpoint string
 	StepsDir string
-	Dir      string
-	Client   *jetbridge.OutputControlClient
+	// StorageDir is the daemon's storage root: its control ledger lives
+	// beneath it, which is where the sweeper's classifier reads markers.
+	StorageDir string
+	// Terminations is the standalone --pod-terminations-dir: a file named
+	// after a Pod UID declares every container of that Pod terminated.
+	Terminations string
+	Dir          string
+	Client       *jetbridge.OutputControlClient
 	// Node is a client that trusts the daemon and presents no certificate:
 	// what a pod on the node holds.
-	Node          *http.Client
-	ReceiptPublic []byte
-	KeyRing       *output.ReceiptKeyRing
+	Node *http.Client
 
 	cmd  *exec.Cmd
 	args []string
@@ -401,13 +298,12 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 	// t.TempDir, so the spec's own directory goes when the spec goes and a
 	// failing run leaves nothing to sweep up by hand.
 	dir := t.TempDir()
-	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch"} {
+	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch", "terminations"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
 	}
 
-	receiptKey, receiptPublic := writeEd25519(t, dir, "receipt.pem")
 	controlKey, _ := writeEd25519(t, dir, "control.pem")
 
 	secret := make([]byte, executioncontrol.CapabilityKeyBytes)
@@ -420,10 +316,8 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 	}
 	// The output read-warrant key, and it is the SAME material the control-plane
 	// side of this harness mints warrants with: one key on both sides is what
-	// makes a warrant the harness signs one the daemon can verify. It is a THIRD
-	// key -- a warrant must not be signable by anything that can mint a
-	// publication receipt -- and the daemon refuses a configuration where two
-	// of the three are one file.
+	// makes a warrant the harness signs one the daemon can verify. The daemon
+	// refuses a configuration where two of its keys are one file.
 	materializeKey := filepath.Join(dir, "materialize.key")
 	if err := os.WriteFile(materializeKey, readWarrantKey, 0o600); err != nil {
 		t.Fatalf("read-warrant key: %v", err)
@@ -440,8 +334,8 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--output-bucket", bucket,
 		"--output-prefix", "harness/one",
 		"--output-tenant", "harness",
-		"--receipt-key-id", harnessKeyID,
-		"--receipt-key-file", receiptKey,
+		"--pod-terminations-dir", filepath.Join(dir, "terminations"),
+		"--capture-seal-wait", "30s",
 		"--control-key-id", "harness-control-1",
 		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
@@ -463,25 +357,14 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		t.Fatalf("minter: %v", err)
 	}
 
-	ring, err := output.NewReceiptKeyRing(output.EpochKey{
-		KeyID:      harnessKeyID,
-		Epoch:      harnessEpoch,
-		PublicKey:  ed25519.PublicKey(receiptPublic),
-		ValidFrom:  output.NewTimestamp(time.Now().Add(-time.Hour)),
-		ValidUntil: output.NewTimestamp(time.Now().Add(time.Hour)),
-	})
-	if err != nil {
-		t.Fatalf("key ring: %v", err)
-	}
-
 	process := &daemonProcess{
-		Endpoint:      base,
-		StepsDir:      filepath.Join(dir, "storage", "steps"),
-		Dir:           dir,
-		ReceiptPublic: receiptPublic,
-		KeyRing:       ring,
-		Node:          nodeClient,
-		args:          args,
+		Endpoint:     base,
+		StepsDir:     filepath.Join(dir, "storage", "steps"),
+		StorageDir:   filepath.Join(dir, "storage"),
+		Terminations: filepath.Join(dir, "terminations"),
+		Dir:          dir,
+		Node:         nodeClient,
+		args:         args,
 	}
 	process.Client = jetbridge.NewOutputControlClient(base, controlClient, minter, harnessEpoch)
 	process.start(t, binary)
@@ -513,6 +396,10 @@ func (process *daemonProcess) start(t *testing.T, binary string) {
 	}
 	t.Fatalf("the daemon never became ready")
 }
+
+// Kill is a SIGKILL: the process gets no chance to finish anything it was
+// doing, and nothing it held in memory survives.
+func (process *daemonProcess) Kill() { process.Stop() }
 
 // Restart stops the process and starts a new one over the SAME control
 // directory, which is what makes it a restart rather than a second daemon: the
@@ -572,35 +459,25 @@ func freePort(t *testing.T) int {
 // holdSource plays the capture control init container.
 //
 // It is a raw POST rather than a client method because in production there IS
-// no client method: the hold is established by a generated shell script inside
-// the producing Pod, presenting a one-shot warrant and the Downward API Pod UID,
+// no client method: the hold is written by a generated shell script inside the
+// producing Pod, presenting a one-shot warrant and the Downward API Pod UID,
 // over a route that is exempt from the client certificate for exactly that
 // reason. A method on the ATC's client would be a hold the ATC could take, and
 // the ATC is not the Pod the hold binds to.
-func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureAdmission,
-	incarnation output.SourceIncarnation, pod executioncontrol.PodUID) output.CaptureAcknowledgement {
+func (process *daemonProcess) holdSource(t *testing.T, execution executioncontrol.Identity,
+	name output.OutputName, pod executioncontrol.PodUID) (int, output.CaptureHoldAcknowledgement) {
 	t.Helper()
 
-	warrant, err := process.Client.MintGrant(output.CaptureFacet, "hold", admission.Execution)
+	warrant, err := process.Client.MintGrant(output.CaptureFacet, "hold", execution)
 	if err != nil {
 		t.Fatalf("minting the hold warrant: %v", err)
 	}
-
-	body, err := json.Marshal(map[string]any{
-		"protocol_version":    admission.ProtocolVersion,
-		"execution":           admission.Execution,
-		"activation_epoch":    admission.ActivationEpoch,
-		"handoff_id":          admission.HandoffID,
-		"source_hold_id":      admission.SourceHoldID,
-		"output":              admission.Output,
-		"capture_deadline_at": admission.CaptureDeadline,
-		"incarnation":         incarnation,
-		"pod_uid":             pod,
+	body, err := json.Marshal(output.CaptureHoldRequest{
+		ProtocolVersion: output.ProtocolVersion, Execution: execution, Output: name, PodUID: pod,
 	})
 	if err != nil {
 		t.Fatalf("encoding the hold: %v", err)
 	}
-
 	request, err := http.NewRequest(http.MethodPost,
 		process.Endpoint+"/capture/v1/hold", bytes.NewReader(body))
 	if err != nil {
@@ -615,16 +492,15 @@ func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureA
 	}
 	defer response.Body.Close()
 	raw, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("the hold was refused: %d %s", response.StatusCode, raw)
+
+	var ack output.CaptureHoldAcknowledgement
+	if response.StatusCode == http.StatusOK {
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			t.Fatalf("decoding the hold: %v", err)
+		}
 	}
 
-	var ack output.CaptureAcknowledgement
-	if err := json.Unmarshal(raw, &ack); err != nil {
-		t.Fatalf("decoding the hold: %v", err)
-	}
-
-	return ack
+	return response.StatusCode, ack
 }
 
 // writeHarnessPKI mints a CA, a server certificate for 127.0.0.1 and a client

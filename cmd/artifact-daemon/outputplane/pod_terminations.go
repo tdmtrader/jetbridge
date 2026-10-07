@@ -2,7 +2,11 @@ package outputplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,4 +67,29 @@ func podTerminated(pod *corev1.Pod) bool {
 	}
 
 	return true
+}
+
+// declaredPodTerminations is the standalone answer: a Pod has terminated when
+// a file named after its UID exists in dir. It exists for a daemon run with no
+// Kubernetes API -- a test, a single host -- where something else knows when
+// the Pod's processes have stopped and says so.
+type declaredPodTerminations struct{ dir string }
+
+// DeclaredPodTerminations reads terminations declared as files in dir.
+func DeclaredPodTerminations(dir string) PodTerminations { return declaredPodTerminations{dir: dir} }
+
+func (declared declaredPodTerminations) Terminated(_ context.Context, uid executioncontrol.PodUID) (bool, error) {
+	name := string(uid)
+	if name == "" || name != filepath.Base(name) || name == "." || name == ".." {
+		return false, fmt.Errorf("%q is not a Pod UID", name)
+	}
+	_, err := os.Stat(filepath.Join(declared.dir, name))
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, err
+	}
 }

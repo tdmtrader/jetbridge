@@ -20,10 +20,8 @@ import (
 // both contract packages: `ClaimAcquisition.RunID` in hangar/output is the same
 // defect on the other side of the extension boundary.
 //
-// The exemptions are the honest part. `WriterTicketID` is a Hangar
-// source-ledger ticket, not a JetBridge one, and there is no way to tell those
-// apart by tokenizing. Each exemption is named, reasoned, and must match
-// something, so it cannot outlive the field it excuses.
+// The exemptions are the honest part: each is named, reasoned, and must match
+// something, so it cannot outlive the field it excuses. There are none today.
 //
 // Reqs 1, 57; AC 20.
 
@@ -127,20 +125,10 @@ func hangarPackageDirs(t *testing.T) []string {
 // vocabularyExemptions are the exported fields whose name or wire spelling
 // contains a forbidden token for a reason that is Hangar's own.
 //
-// There is exactly one such word today. A *writer ticket* is the source
-// ledger's admission record over one source incarnation — issued, drained and
-// closed entirely inside Hangar — and it has nothing to do with the product's
-// tickets. No amount of tokenizing can tell those apart, so the exemption is
-// named rather than inferred, and each entry must match an inventoried field or
-// this rule reports it.
-var vocabularyExemptions = map[string]string{
-	outputPackageDir + ":WriterAdmission.WriterTicketID": "the source ledger's own admission " +
-		"record over one source incarnation, not a product ticket",
-	outputPackageDir + ":CaptureAcknowledgement.WriterTicketID": "the ticket a writer_ticket_* " +
-		"statement is about",
-	outputPackageDir + ":DrainedWriter.WriterTicketID": "the captured-drain-set entry this " +
-		"close evidence accounts for",
-}
+// There are none today: the writer ticket, the one word that needed one, went
+// with the source ledger. An entry must match an inventoried field or this
+// rule reports it.
+var vocabularyExemptions = map[string]string{}
 
 // checkNoProductVocabulary is the rule, as a pure function over an inventory,
 // so that TestTheProductVocabularyGuardIsNotVacuous can drive it with fields
@@ -293,9 +281,6 @@ func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 	// that the exemption-must-match clause does not drown the assertion.
 	exempted := []declaredField{
 		{basePackageDir, "Envelope", "ProtocolVersion", "protocol_version", "string"},
-		{outputPackageDir, "WriterAdmission", "WriterTicketID", "", "WriterTicketID"},
-		{outputPackageDir, "CaptureAcknowledgement", "WriterTicketID", "writer_ticket_id", "WriterTicketID"},
-		{outputPackageDir, "DrainedWriter", "WriterTicketID", "", "WriterTicketID"},
 	}
 	with := func(extra ...declaredField) []declaredField {
 		return append(append([]declaredField{}, exempted...), extra...)

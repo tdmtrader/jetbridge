@@ -15,6 +15,9 @@ var (
 	ErrRunCancellationProgressStale = errors.New("cancellation operation is no longer current")
 )
 
+// runCaptureSubjects names a Run's captures by execution and output.
+const runCaptureSubjects = `SELECT execution_id::text||'/'||output_name AS subject FROM pipeline_run_captures WHERE run_id=$1`
+
 // These queries enumerate existing identities, rather than accepting arbitrary
 // work from a caller. The subject is resolved again by its owning handler. A
 // completed queue row cannot substitute for the owner's durable evidence.
@@ -23,13 +26,16 @@ var cancellationSources = []struct {
 	query string
 }{
 	{CancelSchedulerDebt, `SELECT j.id::text||'/'||(extract(epoch FROM j.schedule_requested)*1000000)::bigint::text AS subject FROM jobs j JOIN pipelines p ON p.id=j.pipeline_id WHERE p.pipeline_run_id=$1 AND j.schedule_requested>j.last_scheduled`},
-	{CancelHandoff, `SELECT handoff_id::text AS subject FROM pipeline_run_output_starts WHERE run_id=$1`},
-	{CancelCapture, `SELECT c.reservation_id::text AS subject FROM pipeline_run_output_starts s JOIN hangar_capture_reservations c USING(handoff_id) WHERE s.run_id=$1`},
-	{CancelSourceHold, `SELECT h.source_hold_id::text AS subject FROM pipeline_run_output_starts s JOIN hangar_handoff_predeclarations h USING(handoff_id) WHERE s.run_id=$1`},
+	{CancelHandoff, runCaptureSubjects},
+	// The handoff era's capture and source-hold kinds discover nothing: a
+	// capture is one row, settled by CancelHandoff. They stay in the cycle
+	// so its persisted progress indices keep their meaning.
+	{CancelCapture, `SELECT NULL::text AS subject WHERE $1::bigint IS NULL`},
+	{CancelSourceHold, `SELECT NULL::text AS subject WHERE $1::bigint IS NULL`},
 	{CancelBuild, `SELECT id::text AS subject FROM builds WHERE pipeline_run_id=$1`},
-	{CancelExecution, `SELECT h.execution_id::text||'/'||h.execution_fence::text AS subject FROM pipeline_run_output_starts s JOIN hangar_handoff_predeclarations h USING(handoff_id) WHERE s.run_id=$1
- UNION SELECT execution_id::text||'/'||execution_fence::text AS subject FROM pipeline_run_executions WHERE run_id=$1`},
-	{CancelCandidate, `SELECT c.claim_id::text AS subject FROM pipeline_run_output_starts s JOIN pipeline_run_output_candidates c USING(handoff_id) WHERE s.run_id=$1`},
+	{CancelExecution, `SELECT execution_id::text||'/'||execution_fence::text AS subject FROM pipeline_run_executions WHERE run_id=$1`},
+	{CancelCandidate, `SELECT cl.claim_id::text AS subject FROM pipeline_run_captures s
+ JOIN hangar_claims cl ON cl.consumer_binding_id='capture:'||s.execution_id::text||'/'||s.output_name WHERE s.run_id=$1`},
 	{CancelTerminalize, `SELECT id::text AS subject FROM pipeline_runs WHERE id=$1`},
 }
 
@@ -298,4 +304,28 @@ func lockCurrentCancellationLease(ctx context.Context, tx Tx, lease RunCancellat
 		err = ErrRunCancellationLeaseLost
 	}
 	return now.UTC(), expires.UTC(), err
+}
+
+// CheckCancellationOperation is the LAST lock before committing action facts.
+// The action has already acquired its domain locks in their normal order. No
+// caller may take Run or Hangar locks after this worker-row lock.
+func (f *pipelineRunFactory) CheckCancellationOperation(ctx context.Context, tx Tx, lease RunCancellationLease, op RunCancellationOperation) error {
+	if op.WorkerEpoch != lease.Epoch {
+		return ErrRunCancellationProgressStale
+	}
+	now, _, err := lockCurrentCancellationLease(ctx, tx, lease)
+	if err != nil {
+		return err
+	}
+	var current bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_cancellation_operations
+ WHERE id=$1 AND run_id=$2 AND kind=$3 AND subject=$4 AND attempt_count=$5 AND worker_epoch=$6
+ AND claimed AND completed_at IS NULL AND next_at>$7)`, op.ID, op.RunID, string(op.Kind), op.Subject, op.Attempt, lease.Epoch, now).Scan(&current)
+	if err != nil {
+		return err
+	}
+	if !current {
+		return ErrRunCancellationProgressStale
+	}
+	return nil
 }

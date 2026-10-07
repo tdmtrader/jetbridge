@@ -81,7 +81,6 @@ func healthyExtension() output.ExtensionHandshake {
 		Base:                    healthyBase(),
 		CaptureExtensionVersion: output.ProtocolVersion,
 		SourceLedgerVersion:     output.SourceLedgerVersion,
-		ReceiptPublicKeyID:      "receipt-key-1",
 		MaterializationKeyID:    "materialize-key-1",
 		BucketFingerprint:       "gs://one-bucket",
 		DerivedNamespace:        "deployments/blue/one",
@@ -230,11 +229,6 @@ func TestTheOutputCohortIsAttestedOnlyWhenItIsHomogeneous(t *testing.T) {
 			spoil:     func(h *output.ExtensionHandshake) { h.SourceLedgerVersion = "v0" },
 			sentinel:  output.ErrIncomplete,
 			substring: "invalid extension handshake",
-		},
-		"receipt public key id": {
-			spoil:     func(h *output.ExtensionHandshake) { h.ReceiptPublicKeyID = "receipt-key-2" },
-			sentinel:  output.ErrUnsupportedProtocol,
-			substring: "receipt public key id",
 		},
 		"materialization key id": {
 			spoil:     func(h *output.ExtensionHandshake) { h.MaterializationKeyID = "materialize-key-2" },
@@ -413,7 +407,6 @@ func TestAnAgreeingCohortAttestsToAStableSortedDigest(t *testing.T) {
 		}
 		healthy := healthyExtension()
 		for _, field := range []struct{ name, got, want string }{
-			{"receipt public key id", evidence.ReceiptPublicKeyID, healthy.ReceiptPublicKeyID},
 			{"materialization key id", evidence.MaterializationKeyID, healthy.MaterializationKeyID},
 			{"bucket fingerprint", evidence.BucketFingerprint, healthy.BucketFingerprint},
 			{"derived namespace", evidence.DerivedNamespace, healthy.DerivedNamespace},

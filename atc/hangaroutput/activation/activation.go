@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -83,7 +82,7 @@ func ParseFacet(value string) (Facet, error) {
 // The base half is the cohort: what the daemons on this cluster speak, and a
 // digest over the whole set so that "homogeneous" is a value somebody can
 // compare rather than a claim somebody made. The output half is the identity a
-// receipt and a read warrant are checked against.
+// read warrant and the bucket's markers are checked against.
 //
 // It is one struct with both halves because the two attestations write into one
 // row and the schema's CHECK constraints are stated across them: a row cannot be
@@ -97,9 +96,6 @@ type Evidence struct {
 	CohortDigest    string
 
 	// Output.
-	ReceiptPublicKeyID   string
-	ReceiptKeyValidFrom  time.Time
-	ReceiptKeyValidUntil time.Time
 	MaterializationKeyID string
 	BucketFingerprint    string
 	DerivedNamespace     string
@@ -127,7 +123,6 @@ func (evidence Evidence) Validate(facet Facet) error {
 	}
 
 	for _, required := range []struct{ name, value string }{
-		{"receipt public key id", evidence.ReceiptPublicKeyID},
 		{"materialization key id", evidence.MaterializationKeyID},
 		{"bucket fingerprint", evidence.BucketFingerprint},
 		{"derived namespace", evidence.DerivedNamespace},
@@ -137,15 +132,6 @@ func (evidence Evidence) Validate(facet Facet) error {
 				output.ErrIncomplete, required.name)
 		}
 	}
-	if evidence.ReceiptPublicKeyID == evidence.MaterializationKeyID {
-		return fmt.Errorf("%w: the receipt and materialization key ids are the same. A read "+
-			"warrant must not be signable by anything that can mint a publication receipt",
-			output.ErrIncomplete)
-	}
-	if !evidence.ReceiptKeyValidUntil.After(evidence.ReceiptKeyValidFrom) {
-		return fmt.Errorf("%w: the receipt key's validity window is empty", output.ErrIncomplete)
-	}
-
 	return nil
 }
 
@@ -236,21 +222,16 @@ func (epochs Epochs) Attest(ctx context.Context, epoch executioncontrol.Activati
 			UPDATE hangar_output_activation_epochs
 			   SET output_state = 'attested',
 			       output_attestation = $2::jsonb,
-			       receipt_public_key_id = $3,
-			       receipt_key_valid_from = $4,
-			       receipt_key_valid_until = $5,
-			       materialization_key_id = $6,
-			       bucket_fingerprint = $7,
-			       derived_namespace = $8,
+			       materialization_key_id = $3,
+			       bucket_fingerprint = $4,
+			       derived_namespace = $5,
 			       revision = revision + 1,
 			       updated_at = now()
 			 WHERE epoch_id = $1
 			   AND output_state IN ('initial', 'attesting')
 			   AND base_state IN ('attested', 'enabled')`
 		arguments = []any{int64(epoch), []byte(evidence.Attestation),
-			evidence.ReceiptPublicKeyID, evidence.ReceiptKeyValidFrom,
-			evidence.ReceiptKeyValidUntil, evidence.MaterializationKeyID,
-			evidence.BucketFingerprint, evidence.DerivedNamespace}
+			evidence.MaterializationKeyID, evidence.BucketFingerprint, evidence.DerivedNamespace}
 	}
 
 	return epochs.apply(ctx, epoch, facet, column, "attested", statement, arguments)

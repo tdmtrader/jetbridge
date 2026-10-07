@@ -28,7 +28,6 @@ package jetbridge
 import (
 	"fmt"
 	"strconv"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -36,7 +35,7 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// captureReservationAnnotation is where a capture-selected Pod says which
+// captureStepAnnotation is where a capture-selected Pod says which
 // incarnation it mounted.
 //
 // It exists for the one caller that has no ContainerSpec: `LookupContainer`
@@ -50,7 +49,7 @@ import (
 // as long as the thing being hijacked, the ATC already annotates it with the
 // exit status, and the value is the daemon's own answer repeated rather than
 // anything composed here.
-const captureReservationAnnotation = "concourse.dev/hangar-reserved-directory"
+const captureStepAnnotation = "concourse.dev/hangar-step-directory"
 
 // controlInitName is the container the hold is established from. It is
 // a constant because the ordering assertion names it.
@@ -63,25 +62,13 @@ const (
 	captureEnvEndpoint   = "HANGAR_CONTROL_ENDPOINT"
 	captureEnvExecution  = "HANGAR_EXECUTION_ID"
 	captureEnvFence      = "HANGAR_EXECUTION_FENCE"
-	captureEnvEpoch      = "HANGAR_ACTIVATION_EPOCH"
-	captureEnvHandoff    = "HANGAR_HANDOFF_ID"
-	captureEnvHold       = "HANGAR_SOURCE_HOLD_ID"
 	captureEnvOutput     = "HANGAR_OUTPUT_NAME"
-	captureEnvDeadline   = "HANGAR_CAPTURE_DEADLINE"
 	captureEnvPodUID     = "HANGAR_POD_UID"
 	captureEnvNodeName   = "HANGAR_NODE_NAME"
 	captureEnvHostIP     = "HANGAR_HOST_IP"
 	captureEnvGrant      = "HANGAR_SOURCE_CONTROL_GRANT"
 	captureEnvHoldTries  = "HANGAR_HOLD_ATTEMPTS"
 	captureEnvOutputPort = "HANGAR_OUTPUT_DAEMON_PORT"
-
-	// The reserved incarnation, field by field. The control init PRESENTS it
-	// at the hold, and presenting it is what proves this container is running
-	// in the Pod the reservation was made for -- the daemon refuses a hold for
-	// any other. The execution id and the output name are already above; these
-	// are the two that are not.
-	captureEnvIncarnationNode       = "HANGAR_INCARNATION_NODE"
-	captureEnvIncarnationGeneration = "HANGAR_INCARNATION_GENERATION"
 )
 
 // hangarCredentialEnvNames is what "carries no Hangar credential" means, in
@@ -133,22 +120,9 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 			{Name: captureEnvEndpoint, Value: control.Endpoint},
 			{Name: captureEnvExecution, Value: string(control.Identity.ExecutionID)},
 			{Name: captureEnvFence, Value: strconv.FormatUint(uint64(control.Identity.Fence), 10)},
-			{Name: captureEnvEpoch, Value: strconv.FormatUint(uint64(control.ActivationEpoch), 10)},
-			{Name: captureEnvHandoff, Value: string(capture.HandoffID)},
-			{Name: captureEnvHold, Value: string(capture.SourceHoldID)},
 			{Name: captureEnvOutput, Value: capture.Output},
-			{Name: captureEnvDeadline, Value: capture.CaptureDeadline.UTC().Format(time.RFC3339Nano)},
 			{Name: captureEnvOutputPort, Value: strconv.Itoa(port)},
 			{Name: captureEnvHoldTries, Value: strconv.Itoa(defaultHoldAttempts)},
-
-			// The reservation, repeated. The ATC composed none of it: these
-			// values came off the wire from `reserve-incarnation`, and the
-			// same reservation is the hostPath of the selected output's
-			// volume in this very Pod.
-			{Name: captureEnvIncarnationNode,
-				Value: string(capture.ReservedIncarnation.NodeUID)},
-			{Name: captureEnvIncarnationGeneration, Value: strconv.FormatUint(
-				uint64(capture.ReservedIncarnation.HandleGeneration), 10)},
 
 			// The credential, in this container and in no other.
 			{Name: captureEnvGrant, Value: string(capture.SourceControlGrant)},
@@ -203,16 +177,15 @@ func captureHoldScript(scheme, wgetOpts string) string {
 set -u
 ENDPOINT="${%[2]s}"
 if [ -z "${ENDPOINT}" ]; then
-  ENDPOINT="%[19]s://${%[11]s}:${%[15]s}"
+  ENDPOINT="%[11]s://${%[7]s}:${%[10]s}"
 fi
-WGET_OPTS="%[20]s"
-INCARNATION='{"execution_id":"'"${%[3]s}"'","node_uid":"'"${%[17]s}"'","handle_generation":'"${%[18]s}"',"output":"'"${%[8]s}"'"}'
-BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"activation_epoch":'"${%[5]s}"',"handoff_id":"'"${%[6]s}"'","source_hold_id":"'"${%[7]s}"'","output":"'"${%[8]s}"'","capture_deadline_at":"'"${%[9]s}"'","pod_uid":"'"${%[10]s}"'","incarnation":'"${INCARNATION}"'}'
-echo "[hangar-capture-control] holding the source for output ${%[8]s} on node ${%[12]s} (pod ${%[10]s})" >&2
+WGET_OPTS="%[12]s"
+BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"output":"'"${%[5]s}"'","pod_uid":"'"${%[6]s}"'"}'
+echo "[hangar-capture-control] holding the step directory for output ${%[5]s} on node ${%[8]s} (pod ${%[6]s})" >&2
 ATTEMPT=0
-while [ "${ATTEMPT}" -lt "${%[13]s}" ]; do
+while [ "${ATTEMPT}" -lt "${%[9]s}" ]; do
   ATTEMPT=$((ATTEMPT+1))
-  RESP="$(wget ${WGET_OPTS} -q -O - --header="Content-Type: application/json" --header="%[14]s: ${%[16]s}" --post-data="${BODY}" "${ENDPOINT}/capture/v1/hold" 2>/dev/null || true)"
+  RESP="$(wget ${WGET_OPTS} -q -O - --header="Content-Type: application/json" --header="%[13]s: ${%[14]s}" --post-data="${BODY}" "${ENDPOINT}/capture/v1/hold" 2>/dev/null || true)"
   case "${RESP}" in
     *'"kind":"hold_acknowledged"'*)
       echo "[hangar-capture-control] hold acknowledged" >&2
@@ -222,31 +195,25 @@ while [ "${ATTEMPT}" -lt "${%[13]s}" ]; do
   echo "[hangar-capture-control] no hold yet (attempt ${ATTEMPT}): ${RESP}" >&2
   sleep 1
 done
-echo "[hangar-capture-control] the daemon never acknowledged the source hold; the producer must not start" >&2
+echo "[hangar-capture-control] the daemon never acknowledged the hold; the producer must not start" >&2
 exit 1
 `,
 		captureEnvProtocol,   // 1
 		captureEnvEndpoint,   // 2
 		captureEnvExecution,  // 3
 		captureEnvFence,      // 4
-		captureEnvEpoch,      // 5
-		captureEnvHandoff,    // 6
-		captureEnvHold,       // 7
-		captureEnvOutput,     // 8
-		captureEnvDeadline,   // 9
-		captureEnvPodUID,     // 10
-		captureEnvHostIP,     // 11
-		captureEnvNodeName,   // 12
-		captureEnvHoldTries,  // 13
-		CapabilityHeaderName, // 14
-		captureEnvOutputPort, // 15
-		captureEnvGrant,      // 16
+		captureEnvOutput,     // 5
+		captureEnvPodUID,     // 6
+		captureEnvHostIP,     // 7
+		captureEnvNodeName,   // 8
+		captureEnvHoldTries,  // 9
+		captureEnvOutputPort, // 10
 
-		captureEnvIncarnationNode,       // 17
-		captureEnvIncarnationGeneration, // 18
+		scheme,   // 11
+		wgetOpts, // 12
 
-		scheme,   // 19
-		wgetOpts, // 20
+		CapabilityHeaderName, // 13
+		captureEnvGrant,      // 14
 	)
 }
 
@@ -277,19 +244,16 @@ func (c *Container) helperImage() string {
 	return DefaultArtifactHelperImage
 }
 
-// captureReservedDirectory is the daemon-issued directory the selected output's
-// volume must resolve to, or "" when nothing is captured.
-//
-// It is a READ of a field that came off the wire. There is deliberately no
-// function here that builds one: Req 7 says no API accepts a caller-chosen
-// path, and a control plane that could spell a source directory could spell a
-// stale generation pointing at somebody else's live source.
-func captureReservedDirectory(spec runtime.ContainerSpec) string {
+// captureStepDirectory is the step directory the selected output's volume
+// must resolve to, or "" when nothing is captured. It is the one derivation
+// (output.CaptureKey.Directory) the node's daemon uses for the same capture;
+// nothing here composes a path of its own.
+func captureStepDirectory(spec runtime.ContainerSpec) string {
 	if !spec.ExecutionControl.HasDurableOutputCapture() {
 		return ""
 	}
 
-	return spec.ExecutionControl.Capture.ReservedDirectory
+	return spec.ExecutionControl.Capture.Directory()
 }
 
 // captureSelectedOutputName is the name of the one output selected for capture,

@@ -53,7 +53,7 @@ var _ = Describe("the output-plane controller passes", func() {
 	//
 	// The store comes FIRST and the lifecycle row is registered at the
 	// generation the store handed back, because that is the order production
-	// has: an object is created, and the receipt that names it follows. A
+	// has: an object is created, and the publication that names it follows. A
 	// fixture that chose the generation itself would be a fixture in which the
 	// two could never disagree.
 	published := func(digest hangar.Digest) hangar.TreeRef {
@@ -71,7 +71,8 @@ var _ = Describe("the output-plane controller passes", func() {
 			}.Metadata())
 
 		capture := hangarPublishAt(ctx, repository, digest, attrs.Generation,
-			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			output.DefaultCaptureDeadline)
+		hangarReleaseCaptureClaim(ctx, repository, capture)
 		hangarReleaseSource(ctx, repository, capture)
 		hangarAgeCapture(capture, 48*time.Hour)
 
@@ -96,8 +97,8 @@ var _ = Describe("the output-plane controller passes", func() {
 	openViolations := func() []string {
 		GinkgoHelper()
 		rows, err := dbConn.Query(`
-			SELECT violation FROM hangar_policy_violations
-			 WHERE activation_epoch = 1 AND resolved_at IS NULL ORDER BY id`)
+			SELECT violation FROM hangar_integrity_findings
+			 WHERE resolved_at IS NULL ORDER BY id`)
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Close(rows)
 
@@ -115,7 +116,7 @@ var _ = Describe("the output-plane controller passes", func() {
 	policyStateOf := func(epoch int64) string {
 		GinkgoHelper()
 		var count int
-		Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_policy_violations WHERE activation_epoch = $1 AND resolved_at IS NULL AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`, epoch).Scan(&count)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_integrity_findings WHERE resolved_at IS NULL AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`).Scan(&count)).To(Succeed())
 		if count > 0 {
 			return "at_risk"
 		}

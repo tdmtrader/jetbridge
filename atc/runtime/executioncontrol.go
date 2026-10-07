@@ -112,12 +112,6 @@ type DurableOutputCapture struct {
 	Identity        executioncontrol.Identity
 	ActivationEpoch executioncontrol.ActivationEpoch
 
-	// The identities the control plane PREDECLARES before the producing Pod
-	// may start. They are minted by the caller at admission; nothing on the
-	// node and nothing in a task configuration chooses them.
-	HandoffID    hangaroutput.HandoffID
-	SourceHoldID hangaroutput.SourceHoldID
-
 	// Output is the NAME of the one declared task output selected for capture.
 	// It is a name into ContainerSpec.Outputs, never a path: a path here would
 	// be a task choosing where the output plane reads from.
@@ -133,41 +127,12 @@ type DurableOutputCapture struct {
 	// under.
 	CaptureDeadline time.Time
 
-	// ReservedIncarnation is the location the output daemon issued for this
-	// capture BEFORE the producing Pod was built, and ReservedDirectory is the
-	// daemon's own name for it relative to the managed steps root.
-	//
-	// They are here because Phase 4 found the seam they close: the producer's
-	// Pod used to mount `steps/<handle>/<output>` while the hold protected
-	// `steps/<execution>.<generation>/<output>`, two sibling directories, so
-	// every path-keyed guard correctly answered "unmanaged" for the bytes the
-	// producer actually wrote. `Container.buildPod` now mounts the reserved
-	// incarnation as the selected output's volume.
-	//
-	// The ATC REPEATS these. It does not compose them, it cannot compose them
-	// -- the handle generation is the daemon's monotonic sequence -- and
-	// TestNoATCCodeComposesAnIncarnationName fails if any file under atc/
-	// starts to. Req 7 holds because the daemon names the path.
-	ReservedIncarnation hangaroutput.SourceIncarnation
-	ReservedDirectory   string
-
-	// ReservingNode is the Kubernetes node whose daemon issued that
-	// reservation, and it is here so the producing Pod can be pinned to it.
-	//
-	// A reservation is a directory on ONE node's disk. The ready labels pick a
-	// COHORT -- nodes where a hold could be acknowledged at all -- and a cohort
-	// is not a node: a multi-node cohort lets the scheduler place the producer
-	// somewhere that reserved nothing, where the hostPath mount silently
-	// creates an empty unheld directory and the control init's hold is refused.
-	// That is a fail-closed outage rather than an exposure, and it is still an
-	// outage, so `BuildAffinity` requires this node by name.
-	//
-	// It is the node NAME rather than the UID because a scheduling constraint
-	// is expressed against `kubernetes.io/hostname`, which is the name. The
-	// UID travels beside it inside ReservedIncarnation, and the daemon checks
-	// that one: a hold naming an incarnation reserved on another node is
-	// refused by the node that receives it.
-	ReservingNode string
+	// Node and NodeUID are where the capture's step directory lives: the node
+	// the producing Pod is pinned to, and the identity a replacement node with
+	// the same name does not have. The step directory itself is derived, never
+	// chosen: Key().Directory(), which the node's daemon derives identically.
+	Node    string
+	NodeUID executioncontrol.NodeUID
 }
 
 // SelectCapture attaches the extension, and is the only way to attach it.
@@ -242,7 +207,7 @@ func (control *ExecutionControl) Validate(spec ContainerSpec) error {
 		if strings.TrimSpace(control.Node.Name) == "" || strings.TrimSpace(string(control.Node.UID)) == "" {
 			return fmt.Errorf("%w: incomplete execution node identity", ErrInvalidExecutionControl)
 		}
-		if control.Capture != nil && (control.Node.Name != control.Capture.ReservingNode || control.Node.UID != control.Capture.ReservedIncarnation.NodeUID) {
+		if control.Capture != nil && (control.Node.Name != control.Capture.Node || control.Node.UID != control.Capture.NodeUID) {
 			return fmt.Errorf("%w: execution and capture name different nodes", ErrInvalidExecutionControl)
 		}
 	}
@@ -277,12 +242,6 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 			"under %d; one epoch attests both facets", ErrInvalidExecutionControl,
 			capture.ActivationEpoch, control.ActivationEpoch)
 	}
-	if err := capture.HandoffID.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidExecutionControl, err)
-	}
-	if err := capture.SourceHoldID.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidExecutionControl, err)
-	}
 	if capture.CaptureDeadline.IsZero() {
 		return fmt.Errorf("%w: the capture names no deadline", ErrInvalidExecutionControl)
 	}
@@ -305,39 +264,12 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 		return err
 	}
 
-	// The reservation. An unreserved execution cannot be capture-selected: the
-	// producing Pod's output volume IS the reserved incarnation, so a capture
-	// with none is one whose producer would write into a directory no hold
-	// protects and whose seal would seal an empty tree.
-	if err := capture.ReservedIncarnation.Validate(); err != nil {
-		return fmt.Errorf("%w: this capture has no reserved source incarnation. The output daemon "+
-			"issues one before the Pod is built and the selected output's volume is that "+
-			"location; an unreserved execution cannot be capture-selected: %v",
-			ErrInvalidExecutionControl, err)
-	}
-	if capture.ReservedIncarnation.ExecutionID != control.Identity.ExecutionID {
-		return fmt.Errorf("%w: the reserved incarnation belongs to execution %s and this envelope "+
-			"names %s", ErrInvalidExecutionControl,
-			capture.ReservedIncarnation.ExecutionID, control.Identity.ExecutionID)
-	}
-	if string(capture.ReservedIncarnation.Output) != capture.Output {
-		return fmt.Errorf("%w: the reserved incarnation is for output %q and this capture selects "+
-			"%q", ErrInvalidExecutionControl, capture.ReservedIncarnation.Output, capture.Output)
-	}
-	if capture.ReservingNode == "" {
-		return fmt.Errorf("%w: this capture names no reserving node. The reservation is a "+
-			"directory on one node's disk and the producing Pod is pinned to that node; a "+
-			"capture that cannot say which node it reserved on cannot be scheduled safely",
-			ErrInvalidExecutionControl)
-	}
-	// The directory the pod builder will mount must be the daemon's own answer.
-	// A directory that does not derive from the incarnation beside it is the
-	// control plane having composed a path, which is what Req 7 forbids and
-	// what this whole pair of fields exists to make unnecessary.
-	if capture.ReservedDirectory != capture.ReservedIncarnation.Directory() {
-		return fmt.Errorf("%w: the capture names directory %q and the reserved incarnation it "+
-			"carries does not derive it. The ATC repeats the daemon's answer; it never composes "+
-			"a source path", ErrInvalidExecutionControl, capture.ReservedDirectory)
+	// The node. The producing Pod is pinned to it, the init container's hold
+	// reaches its daemon, and the step directory is on its disk; a capture that
+	// cannot say which node cannot be scheduled safely.
+	if strings.TrimSpace(capture.Node) == "" || capture.NodeUID == "" {
+		return fmt.Errorf("%w: this capture names no node. The step directory is on one "+
+			"node's disk and the producing Pod is pinned to that node", ErrInvalidExecutionControl)
 	}
 
 	return nil
@@ -398,3 +330,13 @@ func pathWithin(parent, child string) bool {
 
 	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
+
+// Key names the capture: the envelope's execution and the selected output.
+func (capture DurableOutputCapture) Key() hangaroutput.CaptureKey {
+	return hangaroutput.CaptureKey{ExecutionID: capture.Identity.ExecutionID,
+		Output: hangaroutput.OutputName(capture.Output)}
+}
+
+// Directory is the capture's step directory relative to the daemon's managed
+// steps root: the one derivation, shared with the node.
+func (capture DurableOutputCapture) Directory() string { return capture.Key().Directory() }

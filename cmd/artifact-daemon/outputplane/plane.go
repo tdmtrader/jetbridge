@@ -125,8 +125,12 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	// reach this, so a nil here is unreachable rather than tolerated.
 	if daemon.OutputEnabled() {
 		terminations := config.Terminations
-		if terminations == nil && nodes != nil {
+		switch {
+		case terminations != nil:
+		case nodes != nil:
 			terminations = NewNodePodTerminations(nodes, config.NodeName)
+		case config.PodTerminationsDir != "":
+			terminations = DeclaredPodTerminations(config.PodTerminationsDir)
 		}
 		plane.capture, err = OpenCaptureLedger(store, base, daemon, CaptureLedgerConfig{
 			Node: executioncontrol.NodeUID(config.NodeUID), StepsDir: config.StepsDir,
@@ -161,8 +165,6 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		fmt.Fprintf(out, "  bucket:           %s\n", namespace.Bucket())
 		fmt.Fprintf(out, "  key prefix:       %s\n", namespace.Prefix())
 		fmt.Fprintf(out, "  derived scope:    %s\n", namespace.Scope())
-		fmt.Fprintf(out, "  receipt key:      %s (public key %x)\n",
-			config.ReceiptKeyID, daemon.ReceiptPublicKey()[:8])
 		fmt.Fprintf(out, "  materialize key:  %s\n", config.MaterializationKeyID)
 	} else {
 		fmt.Fprintf(out, "  facets:           base exact-execution-control only; "+

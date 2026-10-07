@@ -4,7 +4,7 @@ package jetbridge
 //
 // One ordering runs through all of it, and it is the whole point of the phase:
 //
-//	admit  ->  hold  ->  writer tickets  ->  START RECORD  ->  the command
+//	admit  ->  hold  ->  START RECORD  ->  the command
 //	the command  ->  OUTCOME RECORD  ->  durable acknowledgement  ->  the result
 //
 // Every arrow is a durable write that happens before the thing on its right,
@@ -27,13 +27,11 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
-	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 )
 
 // OutputControlResolver produces the control client for the node an execution
@@ -68,13 +66,6 @@ type exactExecution struct {
 	client   OutputControl
 	podUID   executioncontrol.PodUID
 	nodeName string
-
-	// tickets are the writer admissions this ATC holds on behalf of the Pod's
-	// writers: the main container, its sidecars and every init container that
-	// writes into the source tree. They are held by the ATC because Req 24
-	// gives the task and its sidecars no output-plane credential -- a
-	// container cannot take its own ticket without holding one.
-	tickets []output.WriterAdmission
 
 	// unretainedStart is the node's signed start while the Run has not
 	// retained it. The node answers for a start only until an outcome exists,
@@ -190,9 +181,8 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 	}
 
 	// The envelope names no Pod, and the ATC could not honestly put one here
-	// even though it happens to have read one: an admission is what a location
-	// is reserved against, and the reservation precedes the Pod by
-	// construction. The Pod UID this process holds below is for the START
+	// even though it happens to have read one: an admission precedes the Pod
+	// by construction. The Pod UID this process holds below is for the START
 	// record and for comparing against the hold the init container took.
 	envelope := executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
@@ -239,11 +229,10 @@ func (p *execProcess) awaitScheduledPod(ctx context.Context) (*corev1.Pod, error
 
 // beginExactCommand is everything that must be durable before the command runs.
 //
-// The order is the contract. The hold is revalidated first because a hold that
-// no longer matches current admission means this Pod is not the one the capture
-// is for; the tickets come next because a writer that starts without one is a
-// writer sealing cannot see; the start record is last, immediately before the
-// exec, because it is the record that closes start admission.
+// The order is the contract. A capture's hold is not revalidated here: the
+// control init took it before any other container could start, and a seal
+// refuses a marker naming another Pod. The start record is last, immediately
+// before the exec, because it is the record that closes start admission.
 func (p *execProcess) beginExactCommand(ctx context.Context) error {
 	if p.exact == nil {
 		return errors.New("the exact execution was never admitted")
@@ -280,25 +269,9 @@ func (p *execProcess) beginExactCommand(ctx context.Context) error {
 		}
 	}
 
-	if p.capturing() {
-		hold, err := p.exact.client.InspectHold(ctx, p.control.Identity, p.control.Capture.HandoffID)
-		if err != nil {
-			return fmt.Errorf("revalidating the source hold before the producer starts: %w", err)
-		}
-		if err := hold.ValidateAs(output.CaptureHoldAcknowledged); err != nil {
-			return fmt.Errorf("the source hold is not acknowledged, so the producer may not "+
-				"start: %w", err)
-		}
-		if hold.PodUID != p.exact.podUID {
-			return fmt.Errorf("the source hold names pod %s and this producer is pod %s; a "+
-				"recreated Pod is a new incarnation that may not write",
-				hold.PodUID, p.exact.podUID)
-		}
-		if err := p.acquireWriterTickets(ctx, hold); err != nil {
-			return err
-		}
-		logger.Info("hold-revalidated", lager.Data{"tickets": len(p.exact.tickets)})
-	}
+	// A capture needs no step here. The capture control init wrote the
+	// node's held marker before any other container could start, and a seal
+	// refuses a step directory with no marker naming exactly this Pod.
 
 	start, err := p.exact.client.RecordStart(ctx, p.control.Identity, p.exact.podUID, p.exactProcessIdentity())
 	if err != nil {
@@ -367,65 +340,6 @@ func exactCommandContext(ctx context.Context, stop func(context.Context) error) 
 	}
 }
 
-// acquireWriterTickets takes one ticket per writer this Pod will run.
-//
-// Req 12 counts main, sidecar and init processes as writers, and the ATC takes
-// their tickets because they cannot: Req 24 gives the task and its sidecars no
-// output-plane credential, so a container has nothing to present. Every ticket
-// is bound to this exact Pod UID and writer fence, so a recreated Pod inherits
-// none of them.
-//
-// A refusal here is surfaced BEFORE the process or its mounts exist, which is
-// what makes it a refusal rather than a race.
-func (p *execProcess) acquireWriterTickets(ctx context.Context, hold output.CaptureAcknowledgement) error {
-	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("reading the pod's writers: %w", err)
-	}
-
-	for _, writer := range podWriterNames(pod) {
-		admission := output.WriterAdmission{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       p.control.Identity,
-			ActivationEpoch: p.control.ActivationEpoch,
-			HandoffID:       p.control.Capture.HandoffID,
-			Incarnation:     hold.Incarnation,
-			WriterTicketID:  output.WriterTicketID(uuid.NewString()),
-			// The first incarnation's writer fence. It advances on takeover,
-			// which is Phase 5's; what matters here is that every ticket this
-			// Pod takes carries the SAME fence, so a seal's drain set is one
-			// set rather than a mixture.
-			WriterFence: firstWriterFence,
-			PodUID:      p.exact.podUID,
-		}
-		if _, err := p.exact.client.AdmitWriter(ctx, admission); err != nil {
-			return fmt.Errorf("admitting writer %q before it can create a mount or a process: %w",
-				writer, err)
-		}
-		p.exact.tickets = append(p.exact.tickets, admission)
-	}
-
-	return nil
-}
-
-// podWriterNames is every container in the Pod that can write into the source
-// tree. The capture control init is not one of them: it establishes the hold
-// and touches nothing the hold protects.
-func podWriterNames(pod *corev1.Pod) []string {
-	var writers []string
-	for _, container := range pod.Spec.InitContainers {
-		if container.Name == controlInitName {
-			continue
-		}
-		writers = append(writers, container.Name)
-	}
-	for _, container := range pod.Spec.Containers {
-		writers = append(writers, container.Name)
-	}
-
-	return writers
-}
-
 // finishExactCommand records the outcome and waits for the daemon to
 // acknowledge it, before the caller may expose a ProcessResult. Anything that
 // stops it short leaves the outcome unresolved, whatever the cause.
@@ -470,26 +384,7 @@ func (p *execProcess) recordExactOutcome(ctx context.Context, outcome executionc
 		return err
 	}
 
-	p.retireWriterTickets(ctx)
-
 	return nil
-}
-
-// retireWriterTickets closes every ticket this ATC took. A ticket left open
-// holds sealing forever, so this runs on every path out -- including the ones
-// where the command failed.
-func (p *execProcess) retireWriterTickets(ctx context.Context) {
-	if p.exact == nil {
-		return
-	}
-	logger := lagerctx.FromContext(ctx).Session("exact-execution")
-	for _, ticket := range p.exact.tickets {
-		if _, err := p.exact.client.RetireWriter(ctx, ticket); err != nil {
-			logger.Error("failed-to-retire-writer-ticket", err,
-				lager.Data{"ticket": string(ticket.WriterTicketID)})
-		}
-	}
-	p.exact.tickets = nil
 }
 
 // reportExactOutcomeWithoutRerunning is the recovery path.
@@ -534,8 +429,6 @@ func (p *execProcess) reportExactOutcomeWithoutRerunning(ctx context.Context) (r
 			return runtime.ProcessResult{}, unresolvedLedgerError(fmt.Errorf(
 				"retaining the node's outcome in the Run: %w", err))
 		}
-		p.retireWriterTickets(ctx)
-
 		exitCode := classified.Acknowledgement.Outcome.ExitCode
 		if err := p.exposeJournaledAnswer(ctx, *classified.Acknowledgement, exitCode); err != nil {
 			return runtime.ProcessResult{}, err
@@ -597,17 +490,17 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 	// WHICH path is asked matters more than that one is.
 	//
 	// The step handle is the wrong question for a capture-selected step. Its
-	// declared output is mounted from the reserved incarnation --
-	// `steps/<execution>.<generation>/<output>` -- which is a SIBLING of
+	// declared output is mounted from the capture's step directory --
+	// `steps/<execution>.capture/<output>` -- which is a SIBLING of
 	// `steps/<handle>`, so a classifier asked about the handle correctly
-	// answers `unmanaged` and this refusal never fires. Asking about the
-	// reservation is what makes the guard load-bearing rather than a call that
+	// answers `unmanaged` and this refusal never fires. Asking about the step
+	// directory is what makes the guard load-bearing rather than a call that
 	// always says yes.
 	//
-	// An ordinary step has no reservation and the handle is still the right
+	// An ordinary step has no capture and the handle is still the right
 	// question: its whole workspace is `steps/<handle>`.
 	asked := c.handle
-	if reserved := c.reservedDirectory(ctx); reserved != "" {
+	if reserved := c.captureStepDirectoryOf(ctx); reserved != "" {
 		asked = reserved
 	}
 
@@ -633,8 +526,8 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 	return nil
 }
 
-// reservedDirectory is the incarnation this container's step mounted, from
-// whichever of the two places knows it.
+// captureStepDirectoryOf is the capture step directory this container's step
+// mounted, from whichever of the two places knows it.
 //
 // The spec knows it on every path that HAS a spec -- pod replacement, the
 // producer's own start -- and a looked-up container has none: `LookupContainer`
@@ -647,8 +540,8 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 // An unreadable Pod yields "", and the caller then asks about the handle: this
 // is not the fail-closed decision, the classifier call after it is, and an
 // ordinary step's handle IS the right question.
-func (c *Container) reservedDirectory(ctx context.Context) string {
-	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
+func (c *Container) captureStepDirectoryOf(ctx context.Context) string {
+	if reserved := captureStepDirectory(c.containerSpec); reserved != "" {
 		return reserved
 	}
 	if !c.lookedUp {
@@ -660,7 +553,7 @@ func (c *Container) reservedDirectory(ctx context.Context) string {
 		return ""
 	}
 
-	return pod.Annotations[captureReservationAnnotation]
+	return pod.Annotations[captureStepAnnotation]
 }
 
 func (c *Container) captureNodeName(ctx context.Context) string {
@@ -685,9 +578,6 @@ const (
 	captureClassHeld      = "held"
 	captureClassUnmanaged = "unmanaged"
 )
-
-// firstWriterFence is the writer fence of an incarnation nobody has taken over.
-const firstWriterFence = output.WriterFence(1)
 
 // stopPreservingSource is the whole of source-preserving termination, written
 // once.
