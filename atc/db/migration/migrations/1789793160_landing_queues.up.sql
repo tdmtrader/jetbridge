@@ -29,9 +29,9 @@ CREATE TABLE landing_entries (
     UNIQUE (queue_id, entry_id)
 );
 
--- One landing intent per candidate: written before the land Run is admitted
--- and keyed by the compose Run, so a land Run exists at most once for a
--- candidate however many times the component restarts. state is
+-- One landing intent per candidate: created when the compose Run is admitted,
+-- keyed by it, and completed by the land Run, so a land Run exists at most
+-- once for a candidate however many times the component restarts. state is
 -- composing | landing | done; fails counts land Runs that did not succeed in
 -- a row, cleared by a landing.
 CREATE TABLE landing_intents (
