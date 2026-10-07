@@ -281,6 +281,48 @@ admission checks none of these, so without them a run is admitted and its
 steps fail.
 _Avoid_: run creation gate, creation flag.
 
+### Landing queue
+
+**Landing queue**:
+A team-owned queue that lands submitted changes on a repository's trunk by
+fast-forward once every gate it declares has passed on a candidate. Its state
+is core tables; its only outward acts are Runs it admits (ADR-0009).
+_Avoid_: merge queue, queue (alone)
+
+**Entry**:
+One submitted change in a landing queue: an id, the commit to land, and when
+it was submitted. Queued until settled as landed or ejected; both are final.
+_Avoid_: admission, change (alone), request
+
+**Submit ref**:
+`refs/queue/submit/<id>`, pushed by the submitter's own git so the compose
+step can reach the commit. The API row is the entry; the ref is only
+reachability.
+_Avoid_: admit ref
+
+**Candidate**:
+The tree the compose Run publishes as its `candidate` result, built by
+rebuilding the entries on the trunk's head, with its `manifest` naming base,
+entries, identities and the rebuilt sha. Gates test the candidate; the land
+step rebuilds and pushes exactly that commit. It is never a branch.
+_Avoid_: candidate branch, queue-next
+
+**Landing intent**:
+The row written before the land Run is admitted, keyed by the compose Run,
+that makes a land Run for a candidate admitted at most once across restarts.
+_Avoid_: queue lease, fence
+
+**Queue principal**:
+The third form of the run admission port's principal: a landing queue acting
+for its team, authorized for that team and no other, recorded as
+`landing-queue/<team>/<queue>`. Only `atc/landing` constructs it.
+_Avoid_: system principal, service account
+
+**Settle record**:
+Why an entry left the queue: landed with its land Run, or ejected naming the
+Run and status that ejected it. `fly landing-queue` prints them.
+_Avoid_: event, notification
+
 ### Sidecar
 
 **Sidecar**:
