@@ -1,3 +1,12 @@
+-- capture_is_one_row, part one, reversed.
+--
+-- LOSSY. Every capture row (hangar_captures), every Run-side capture link
+-- (pipeline_run_captures), every execution's capture_output, the in-service
+-- switch (hangar_enabled) and every integrity finding
+-- (hangar_integrity_findings, open or resolved) are dropped and not carried
+-- anywhere: the handoff tables this migration sits beside have no shape for
+-- them. Reclaim exclusion returns to counting unresolved logical reservations
+-- only.
 CREATE OR REPLACE FUNCTION public.hangar_check_reclaim_exclusion()
  RETURNS trigger
  LANGUAGE plpgsql

@@ -1,67 +1,82 @@
 -- capture_is_one_row, part two: the capture row becomes the only capture
 -- state, and everything it replaces goes.
 --
+-- IRREVERSIBLE FOR OUTPUT HISTORY. This migration does not carry old output
+-- history across: it refuses to run while ANY exists, and must run on a
+-- database that never recorded a handoff (concourse.home has none). The
+-- reversal (the .down file) brings the old tables back empty.
+--
 -- Admission still consults the activation epoch in this track (hangar_enabled
 -- is created and seeded by 1789793152 and switched on by no_activation).
 
--- A Run still producing through the old handoff tables cannot be carried
--- across: its node-side state is in a ledger format the new daemon does not
--- read. Refuse rather than strand it; drain (let running Runs finish or cancel
--- them) and migrate again.
+-- Old output history is any row in a table this migration drops that records
+-- a handoff, its reservation, receipt, disposition or Run side; any execution
+-- or credential delivery naming a handoff; and any claim bound to a handoff
+-- (a candidate's claim, or one whose consumer binding is a handoff id). Claims
+-- an input binding or upload took are not output history and stay. Integrity
+-- state (policy violations and snapshots) is not output history: open
+-- violations are carried into hangar_integrity_findings below.
+--
+-- A running Run that still owns an output start is one case of this: its
+-- node-side state is in a ledger format the new daemon does not read, so it
+-- cannot be carried across either.
 DO $$
+DECLARE
+    history text[] := ARRAY[]::text[];
+    tbl     text;
+    n       bigint;
 BEGIN
-    IF EXISTS (SELECT 1 FROM pipeline_run_output_starts s
-               JOIN pipeline_runs r ON r.id = s.run_id
-               WHERE r.status = 'running') THEN
-        RAISE EXCEPTION 'capture_is_one_row: a running Run still owns an output capture under the handoff tables; let it finish or cancel it, then migrate again';
+    FOREACH tbl IN ARRAY ARRAY[
+        'hangar_handoff_predeclarations', 'hangar_handoff_dispositions',
+        'hangar_no_capture_dispositions', 'hangar_pre_reservation_cancel_dispositions',
+        'hangar_capture_announcements', 'hangar_capture_reservations',
+        'hangar_capture_attempt_leases', 'hangar_logical_reservations',
+        'hangar_output_receipts', 'hangar_receipt_stat_challenges',
+        'pipeline_run_output_starts', 'pipeline_run_output_finishes',
+        'pipeline_run_output_holds', 'pipeline_run_output_releases',
+        'pipeline_run_output_discards', 'pipeline_run_output_candidates',
+        'pipeline_run_output_cancellation_evidence',
+        'pipeline_run_output_cancellation_classifications',
+        'pipeline_run_credential_handoffs'
+    ] LOOP
+        EXECUTE format('SELECT count(*) FROM %I', tbl) INTO n;
+        IF n > 0 THEN
+            history := history || format('%s (%s rows)', tbl, n);
+        END IF;
+    END LOOP;
+
+    SELECT count(*) INTO n FROM pipeline_run_executions WHERE handoff_id IS NOT NULL;
+    IF n > 0 THEN
+        history := history || format('pipeline_run_executions with a handoff_id (%s rows)', n);
+    END IF;
+
+    SELECT count(*) INTO n FROM hangar_claims claim
+        WHERE claim.claim_id IN (SELECT claim_id FROM pipeline_run_output_candidates)
+           OR claim.consumer_binding_id IN (SELECT handoff_id::text FROM hangar_handoff_predeclarations);
+    IF n > 0 THEN
+        history := history || format('hangar_claims bound to a handoff (%s rows)', n);
+    END IF;
+
+    IF cardinality(history) > 0 THEN
+        RAISE EXCEPTION 'capture_is_one_row: old output history exists: %; this migration is irreversible for output history and does not carry it across, so it must run on a database with no old output history (let running Runs finish or cancel them, purge the history, then migrate again)',
+            array_to_string(history, ', ');
     END IF;
 END $$;
 
--- Completed Runs keep their history: each producer becomes a terminal,
--- released capture row (published when the Run retained a candidate for it,
--- discarded otherwise), and the Run's side becomes pipeline_run_captures.
-INSERT INTO hangar_captures
-    (execution_id, execution_fence, output_name, state, node, node_uid,
-     scope, digest, generation, capture_deadline_at, released_at, error, created_at, finished_at)
-SELECT h.execution_id, h.execution_fence, h.output_name,
-       CASE WHEN c.handoff_id IS NOT NULL THEN 'published' ELSE 'discarded' END,
-       s.node_name, s.node_uid,
-       c.scope, c.digest, c.generation,
-       h.capture_deadline_at, now(),
-       CASE WHEN c.handoff_id IS NOT NULL THEN NULL ELSE 'migrated from a settled handoff' END,
-       h.created_at, now()
-FROM pipeline_run_output_starts s
-JOIN hangar_handoff_predeclarations h USING (handoff_id)
-LEFT JOIN pipeline_run_output_candidates c USING (handoff_id);
-
-INSERT INTO pipeline_run_captures
-    (run_id, build_id, task_id, result_name, task_name, execution_id, output_name)
-SELECT s.run_id, s.build_id, s.task_id, s.result_name, s.task_name, h.execution_id, h.output_name
-FROM pipeline_run_output_starts s
-JOIN hangar_handoff_predeclarations h USING (handoff_id);
-
--- The execution that captured names its capture by output, not by handoff.
-ALTER TABLE pipeline_run_executions DISABLE TRIGGER run_execution_identity_immutable;
-UPDATE pipeline_run_executions e SET capture_output = h.output_name
-FROM hangar_handoff_predeclarations h
-WHERE e.handoff_id = h.handoff_id;
-ALTER TABLE pipeline_run_executions ENABLE TRIGGER run_execution_identity_immutable;
+-- The execution that captured names its capture by output (capture_output,
+-- added by 1789793152), not by handoff. No execution names a handoff here.
 ALTER TABLE pipeline_run_executions DROP COLUMN handoff_id;
 
--- The credential handoff names the capture whose producer receives it.
-ALTER TABLE pipeline_run_credential_handoffs DISABLE TRIGGER immutable_run_credential_handoff;
-ALTER TABLE pipeline_run_credential_handoffs ADD COLUMN execution_id uuid, ADD COLUMN output_name text;
-UPDATE pipeline_run_credential_handoffs c SET execution_id = h.execution_id, output_name = h.output_name
-FROM hangar_handoff_predeclarations h
-WHERE c.handoff_id = h.handoff_id;
+-- The credential handoff names the capture whose producer receives it. The
+-- table is empty here (a row would be old output history).
 ALTER TABLE pipeline_run_credential_handoffs DROP COLUMN handoff_id;
-ALTER TABLE pipeline_run_credential_handoffs ALTER COLUMN execution_id SET NOT NULL,
-    ALTER COLUMN output_name SET NOT NULL,
+ALTER TABLE pipeline_run_credential_handoffs
+    ADD COLUMN execution_id uuid NOT NULL,
+    ADD COLUMN output_name text NOT NULL,
     ADD CONSTRAINT pipeline_run_credential_handoffs_capture_key UNIQUE (execution_id, output_name),
     ADD CONSTRAINT pipeline_run_credential_handoffs_capture_fkey
         FOREIGN KEY (execution_id, output_name) REFERENCES hangar_captures (execution_id, output_name)
         ON DELETE RESTRICT;
-ALTER TABLE pipeline_run_credential_handoffs ENABLE TRIGGER immutable_run_credential_handoff;
 
 CREATE OR REPLACE FUNCTION immutable_run_credential_handoff() RETURNS trigger
 LANGUAGE plpgsql AS $$

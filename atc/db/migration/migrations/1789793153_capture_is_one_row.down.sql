@@ -2,6 +2,17 @@
 -- with the functions, constraints and triggers they had. Capture rows stay
 -- (1789793152 owns them). A credential delivery recorded against a capture
 -- row has no handoff to point at, so the reversal refuses while one exists.
+--
+-- LOSSY. The up migration carried no output history across, and this one
+-- carries nothing back: every dropped table (handoff predeclarations,
+-- dispositions, reservations, capture leases, receipts, stat challenges,
+-- announcements, policy snapshots, policy violations and the Run-side
+-- pipeline_run_output_* tables) returns EMPTY. Integrity findings are not
+-- moved back into hangar_policy_violations: they stay in
+-- hangar_integrity_findings, which 1789793152's reversal then drops, so an
+-- open finding no longer gates admission after a full reversal. Capture rows
+-- and their pipeline_run_captures links have no handoff shape to return to;
+-- they stay here and are lost with 1789793152's reversal.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pipeline_run_credential_handoffs) THEN
@@ -1342,5 +1353,19 @@ DELETE FROM hangar_integrity_findings;
 ALTER TABLE hangar_output_activation_epochs
     DROP CONSTRAINT hangar_output_epoch_enabled_output_identity,
     ADD CONSTRAINT hangar_output_epoch_enabled_output_identity CHECK (output_state <> 'enabled'::text OR receipt_public_key_id IS NOT NULL AND materialization_key_id IS NOT NULL AND receipt_public_key_id <> materialization_key_id AND bucket_fingerprint IS NOT NULL AND derived_namespace IS NOT NULL AND receipt_key_valid_from IS NOT NULL AND receipt_key_valid_until IS NOT NULL AND receipt_key_valid_until > receipt_key_valid_from) NOT VALID;
+-- NOT VALID because an epoch enabled without a receipt key under this
+-- migration cannot be given one back; validated whenever none exists, so a
+-- reversal of a database that never enabled one restores the shape exactly.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM hangar_output_activation_epochs
+                   WHERE output_state = 'enabled' AND NOT (receipt_public_key_id IS NOT NULL
+                     AND materialization_key_id IS NOT NULL AND receipt_public_key_id <> materialization_key_id
+                     AND bucket_fingerprint IS NOT NULL AND derived_namespace IS NOT NULL
+                     AND receipt_key_valid_from IS NOT NULL AND receipt_key_valid_until IS NOT NULL
+                     AND receipt_key_valid_until > receipt_key_valid_from)) THEN
+        ALTER TABLE hangar_output_activation_epochs VALIDATE CONSTRAINT hangar_output_epoch_enabled_output_identity;
+    END IF;
+END $$;
 
 SELECT hangar_activation_grants();
