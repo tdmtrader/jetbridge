@@ -133,7 +133,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if err != nil {
 		return err
 	}
-	a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: build.ID(), PlanID: "credential-step", Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: in.Node.Name, NodeUID: string(in.Node.UID), HandoffID: in.Start.Record.HandoffID})
+	a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: build.ID(), PlanID: "credential-step", Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: in.Node.Name, NodeUID: string(in.Node.UID), Capture: in.Start.Record.Key})
 	if err != nil {
 		db.Rollback(tx)
 		return err
@@ -268,7 +268,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	case "activation hold":
 		_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Start.DB.Conn, 0)
 	case "claimed replay":
-		_, err = in.Start.DB.Conn.Exec(`INSERT INTO pipeline_run_credential_handoffs(run_id,handoff_id) VALUES($1,$2)`, change.RunID, string(in.Start.Record.HandoffID))
+		_, err = in.Start.DB.Conn.Exec(`INSERT INTO pipeline_run_credential_handoffs(run_id,execution_id,output_name) VALUES($1,$2,$3)`, change.RunID, string(in.Start.Record.Key.ExecutionID), string(in.Start.Record.Key.Output))
 	}
 	if err != nil {
 		return err

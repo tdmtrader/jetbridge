@@ -15,10 +15,10 @@ Feature: What the output daemon answers
   NOTHING HERE COUNTS A REQUEST. The scenarios that mean "the daemon was not
   called" say instead that the source is still held.
 
-  # Reddened by: the hold handler deriving the incarnation from the request
-  # instead of issuing it — the acknowledgement line reddens.
+  # Reddened by: the hold handler writing no held marker before creating the
+  # step directory — the acknowledgement line reddens.
   @HOP-3 @HOP-7
-  Scenario: The daemon acknowledges a hold for a server-issued source incarnation
+  Scenario: The daemon acknowledges a hold for the capture's step directory
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     When the daemon holds the source
@@ -55,7 +55,7 @@ Feature: What the output daemon answers
   # after it (MIGRATION-EVIDENCE.md:218-230) — a survival check written last is
   # never evaluated on a run where the stop went wrong.
   #
-  # Reddened by: RequestSourcePreservingStop removing the incarnation directory
+  # Reddened by: RequestSourcePreservingStop removing the step directory
   # as part of the stop — the source line reddens while the acknowledgement line
   # above it stays green.
   @HOP-14 @HOP-16
@@ -105,32 +105,33 @@ Feature: What the output daemon answers
     When the same hold is repeated with the same identity
     Then the hold acknowledgement is the one the first hold returned
 
-  # Convention 6. "Repeating the handoff returns the same state" passes for a
-  # daemon that ignores the identity entirely, so the twin has to show reuse for
-  # DIFFERENT facts is a typed conflict and the original hold still stands.
+  # Convention 6. "Repeating the hold returns the same marker" passes for a
+  # daemon that ignores the Pod entirely, so the twin has to show that a hold
+  # from a DIFFERENT Pod -- a recreated one -- is a typed conflict and the
+  # original hold still stands.
   #
-  # Reddened by: the hold handler comparing only the handoff UUID and not the
-  # fence before returning the stored acknowledgement.
+  # Reddened by: the hold handler returning the stored marker without comparing
+  # the Pod it was held for.
   @HOP-6 @HOP-10
-  Scenario: A repeated hold with a different fence is a typed conflict, and the first hold still stands
+  Scenario: A repeated hold from a different pod is a typed conflict, and the first hold still stands
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
-    When the same hold is repeated with a different fence
+    When the same hold is repeated for a different pod
     Then the daemon's refusal says "conflict"
     And the hold acknowledgement is the one the first hold returned
     And the source is still held on the node
 
-  # Reddened by: the source-control route resolving its target with
-  # filepath.Join on the request's path instead of the server-derived
-  # incarnation root under the daemon's os.Root handle.
+  # Reddened by: the hold route accepting a field it does not declare -- a
+  # caller-chosen location silently dropped is one an operator never hears
+  # about.
   @HOP-7 @HOP-8
-  Scenario: A hold request naming a path instead of an incarnation is refused
+  Scenario: A hold request naming a path instead of a step is refused
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
     Then the Hangar daemon answers 200, holding the source
-    When the hold request names a path instead of an incarnation
+    When the hold request names a path instead of a step
     Then the daemon's refusal says "path"
 
   @HOP-8
@@ -140,7 +141,7 @@ Feature: What the output daemon answers
     And the daemon holds the source
     Then the source is still held on the node
     When the source path is replaced by a symlink to "/etc"
-    Then the daemon's refusal says "containment"
+    Then the daemon's refusal says "not a directory"
 
   # Reddened by: the capability middleware checking that a token is VALID
   # without checking that its facet matches the route it arrived on. The control
@@ -160,15 +161,6 @@ Feature: What the output daemon answers
     When a base control capability is used to "publish"
     Then the daemon's refusal says "facet"
 
-  @HOP-12 @HOP-13
-  Scenario: A writer ticket issued after the seal is a typed refusal, and one issued before it is not
-    Given a real artifact daemon publishing to a Hangar output bucket
-    And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    When a writer ticket is issued before the seal
-    Then the Hangar daemon answers 200, holding the source
-    When a writer ticket is issued after the seal
-    Then the daemon's refusal says "sealed"
 
   # The CONTROL, and it is the regression the refusal must not become: without
   # it, "a capture-held pause pod is refused" passes on a runtime that has
@@ -186,10 +178,10 @@ Feature: What the output daemon answers
 
   # A pause pod that dies before the step's command runs is REPLACED, and a
   # replacement is a new Pod UID getting a write-capable mount over the step's
-  # tree. For a capture-selected step that tree is the reserved incarnation, and
-  # Req 16 says a held incarnation may not receive one. This is the one
-  # destructive path with no execution identity to take a writer ticket with,
-  # which is why it goes through the ledger classifier instead.
+  # tree. For a capture-selected step that tree is the held step directory, and
+  # Req 16 says a held step directory may not receive one. This is the one
+  # destructive path with no execution identity to ask about, which is why it
+  # goes through the ledger classifier instead.
   #
   # Reddened by: Container.Run replacing the terminal pause Pod without first
   # consulting the ledger classifier -- this scenario reddens on `the pause pod
@@ -218,12 +210,10 @@ Feature: What the output daemon answers
   # thing that makes it gone: the scenario asserts the source is held, releases
   # it, and asserts it is not.
   #
-  # The FAILING producer between them is not decoration. A no_capture release
-  # follows an authoritative non-success witness (Req 5), and the daemon
-  # refuses a release for a producer nobody has heard from -- "is
-  # never_started; only a durable finish or stop may authorize destroying
-  # anything". Without this line the scenario asked for a state production
-  # cannot reach.
+  # The FAILING producer between them is not decoration. The control plane
+  # releases a capture whose row is terminal, and a row is terminal only after
+  # the node's finish or stop (Req 5). Without this line the scenario asked
+  # for a state production cannot reach.
   #
   # Reddened by: the release route leaving the hold's gate open -- the first
   # check, the presence half, stays green and only "the source has been

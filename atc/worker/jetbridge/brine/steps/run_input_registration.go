@@ -19,7 +19,7 @@ import (
 // behavioral failure. All dependencies below it are real node/DB operations.
 type inputRegistrationPort interface {
 	ReserveInputPublication(context.Context, output.Tx, output.InputStage, string) error
-	RegisterInputPublication(context.Context, output.Tx, output.InputPublication, *output.ReceiptSignatureVerifier) error
+	RegisterInputPublication(context.Context, output.Tx, output.InputPublication) error
 }
 
 func RunInputRegistrationDefinitions() []brine.StepDefinition {
@@ -55,10 +55,6 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 		if err := in.Output.restart(in.Ctx, in.HTTP); err != nil {
 			return err
 		}
-	}
-	verifier, err := inputPublicationVerifier(in)
-	if err != nil {
-		return err
 	}
 	node := jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
 	archive, err := durableTarOfOneFile("manifest.json", "registered review bundle")
@@ -140,7 +136,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 			return fmt.Errorf("database nonce mutation was not refused: %v", err)
 		}
 	}
-	publication, err := node.PublishInput(in.Ctx, stage, nonce, verifier)
+	publication, err := node.PublishInput(in.Ctx, stage, nonce)
 	if err != nil {
 		return fmt.Errorf("publish real upload: %w", err)
 	}
@@ -159,7 +155,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 			return fmt.Errorf("pending upload did not protect adoption: %s, %v", outcome, err)
 		}
 	}
-	register := func(tx db.Tx) error { return port.RegisterInputPublication(in.Ctx, tx, publication, verifier) }
+	register := func(tx db.Tx) error { return port.RegisterInputPublication(in.Ctx, tx, publication) }
 	if mode == "pending reclaim shield" || mode == "reclaim first" {
 		if err := transact(false, register); err != nil {
 			return err
@@ -185,7 +181,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 				return fmt.Errorf("reclaim did not refuse pending input publication: %v", err)
 			}
 		}
-		publication, err = node.PublishInput(in.Ctx, stage, nonce, verifier)
+		publication, err = node.PublishInput(in.Ctx, stage, nonce)
 		if err != nil {
 			return err
 		}
@@ -193,12 +189,8 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 	switch mode {
 	case "changed nonce":
 		publication.Nonce = uuid.NewString()
-	case "changed generation":
-		publication.Attributes.Ref.Generation++
 	case "changed node":
 		publication.Stage.NodeUID = executioncontrol.NodeUID(uuid.NewString())
-	case "changed signature":
-		publication.Signature = "invalid"
 	case "expired reservation":
 		<-time.After(time.Until(stage.ExpiresAt.Time) + 100*time.Millisecond)
 	}
@@ -216,7 +208,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 		return nil
 	}
 	registrationErr := transact(mode == "registration rollback", registerAndClaim)
-	refused := mode == "missing reservation" || mode == "reservation rollback" || mode == "changed nonce" || mode == "changed generation" || mode == "changed node" || mode == "changed signature" || mode == "expired reservation" || mode == "reclaim first" || mode == "commit after deadline"
+	refused := mode == "missing reservation" || mode == "reservation rollback" || mode == "changed nonce" || mode == "changed node" || mode == "expired reservation" || mode == "reclaim first" || mode == "commit after deadline"
 	if refused {
 		if !errors.Is(registrationErr, output.ErrConflict) && !errors.Is(registrationErr, output.ErrUnauthorized) && !errors.Is(registrationErr, output.ErrNotFound) && !errors.Is(registrationErr, output.ErrCorrupt) {
 			return fmt.Errorf("registration did not refuse %s: %v", mode, registrationErr)
@@ -249,22 +241,14 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 			return fmt.Errorf("retry duplicated or lost ownership")
 		}
 	}
-	if mode == "database receipt mutation" {
+	if mode == "database publication mutation" {
 		err := transact(false, func(tx db.Tx) error {
-			_, err := tx.ExecContext(in.Ctx, `UPDATE hangar_input_publications SET publication=publication || '{"signature":"changed"}'::jsonb WHERE reservation_id=$1`, string(stage.ReservationID))
+			_, err := tx.ExecContext(in.Ctx, `UPDATE hangar_input_publications SET publication=publication || '{"nonce":"changed"}'::jsonb WHERE reservation_id=$1`, string(stage.ReservationID))
 			return db.HangarCommitError(err)
 		})
 		if !errors.Is(err, output.ErrConflict) {
-			return fmt.Errorf("database receipt mutation was not refused: %v", err)
+			return fmt.Errorf("database publication mutation was not refused: %v", err)
 		}
 	}
 	return assertInputObjectCount(in, 1)
-}
-
-func inputPublicationVerifier(in HangarDaemon) (*output.ReceiptSignatureVerifier, error) {
-	ring, err := output.NewReceiptKeyRing(output.EpochKey{KeyID: hangarReceiptKeyID, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: in.ReceiptPublic, ValidFrom: output.NewTimestamp(time.Now().Add(-time.Hour)), ValidUntil: output.NewTimestamp(time.Now().Add(time.Hour))})
-	if err != nil {
-		return nil, err
-	}
-	return output.NewReceiptSignatureVerifier(ring, output.ClockFunc(time.Now))
 }

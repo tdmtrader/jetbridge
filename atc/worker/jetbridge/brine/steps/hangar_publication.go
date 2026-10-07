@@ -7,18 +7,8 @@ package steps
 // one object" an OUTCOME: there is no request log on the fixture, so dedup can
 // only be told from overwrite by seeding the key with a different variant and
 // naming which bytes are there afterwards.
-//
-// Both halves of a receipt assertion are production. The daemon signs with its
-// epoch private key and the check verifies with the production verifier under
-// the activation-pinned public key — never against a string a test wrote, which
-// is the defect step-closing.feature records.
-//
-// The bodies are stubs until Phase 2 Green adds the output namespace, marker
-// and receipt, and Phase 3 Green the publish route.
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
@@ -38,60 +27,48 @@ import (
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
 
-const publicationPhase = "Phase 2 Green"
-
-// sealAndPublish is the daemon-level publish phrase's whole body.
+// sealAndPublish is the daemon-level publish phrase's whole body: the node's
+// half of the capture sequence, asked directly. The producing Pod is declared
+// stopped, the seal answers what the sealed tree IS, and the publish creates
+// the object for exactly that digest -- or joins the one this plane already
+// marked with it.
 //
 // It is at the DAEMON level and not at `the capture settles` deliberately: the
-// settlement is the control plane's Stage 2 transaction and belongs to Phase 5.
-// What this does is the node's half -- confirm the seal, publish the sealed
-// tree, then answer a stat challenge with a signed receipt -- which is exactly
-// what Phase 3 owns.
-//
-// The receipt comes from a SECOND call against a challenge, not from the
-// publish. A challenge names the generation the publish assigned, so it cannot
-// exist until the publish returns; a receipt signed inside the publish would be
-// bound to no challenge and would answer every later one naming the same facts.
+// settlement is the control plane's row, and what this pins is what the node
+// answers.
 func sealAndPublish(in FinishWitnessed) (CaptureOutcome, error) {
 	source := in.Source
 	outcome := CaptureOutcome{Source: source}
 
-	sealed := source.Draft.Daemon.capture("begin-seal", "/capture/v1/seal",
-		source.Execution, source.sealRequest())
-	started, err := decodeControl[hangaroutput.SealStarted](sealed)
-	if err != nil {
-		return outcome, fmt.Errorf("beginning the seal: %w", err)
-	}
-	if len(started.DrainSet) != 0 {
-		return outcome, fmt.Errorf("the seal captured %d outstanding writer(s); this chain "+
-			"admitted none", len(started.DrainSet))
-	}
-	if err := hangaroutput.VerifyCaptureAcknowledgement(started.Acknowledgement,
-		source.Draft.Daemon.ControlPublic); err != nil {
-		return outcome, fmt.Errorf("the seal statement does not verify: %w", err)
-	}
-	if err := source.Draft.Daemon.confirmSeal(source, started); err != nil {
+	if err := source.Draft.Daemon.terminate(source.PodUID); err != nil {
 		return outcome, err
 	}
+	sealed := source.Draft.Daemon.capture("seal", "/capture/v1/seal",
+		source.Execution, source.sealRequest())
+	result, err := decodeControl[hangaroutput.CaptureSealResult](sealed)
+	if err != nil {
+		return outcome, fmt.Errorf("sealing the step directory: %w", err)
+	}
+	if err := result.Validate(); err != nil {
+		return outcome, fmt.Errorf("the seal answer does not validate: %w", err)
+	}
+	if result.Marker.Key() != source.key() || result.Marker.PodUID != source.PodUID {
+		return outcome, fmt.Errorf("the seal answered for %s in pod %s", result.Marker.Key(),
+			result.Marker.PodUID)
+	}
+	outcome.Sealed = result
 
+	publication := source.publishRequest(result.Digest)
+	publication.Staged = result.Staged
 	published := source.Draft.Daemon.capture("publish", "/capture/v1/publish",
-		source.Execution, source.publicationRequest())
+		source.Execution, publication)
 	outcome.Answer = published
-	result, err := decodeControl[hangaroutput.PublicationResult](published)
+	answer, err := decodeControl[hangaroutput.CapturePublishResult](published)
 	if err != nil {
 		// A refusal is a VALUE. "The capture is refused as collision" reads it.
 		return outcome, nil
 	}
-	outcome.Published = result
-	outcome.Settled = true
-	outcome.Disposition = hangaroutput.DispositionCapture
-
-	receipt, challenge, err := source.Draft.Daemon.attest(source, result)
-	if err != nil {
-		return outcome, err
-	}
-	outcome.Receipt = receipt
-	outcome.Challenge = challenge
+	outcome.Published = answer
 
 	return outcome, nil
 }
@@ -154,25 +131,18 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// A NEW BUILD of the same step: new execution, new handoff, new source
-		// lease. It is the identity rule requirement 6 states, and it is
-		// asserted over the DRAFT rather than the outcome because the
-		// identities are predeclared at admission -- the only moment both the
-		// old and the new one are knowable.
+		// A NEW BUILD of the same step: a new execution, admitted on the node,
+		// and a new Pod. A replacement Pod is a new writer and does not inherit
+		// the old one's hold.
 		brine.DefineMap[CaptureOutcome, CaptureDraft](
 			"a new build of the same step is admitted",
 			func(in CaptureOutcome, _ brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
-				previous := in.Source.Admission
-
-				execution := executioncontrol.Identity{
-					ExecutionID: executioncontrol.ExecutionID(freshUUID()),
-					Fence:       1,
-				}
-				admitted := in.Source.Draft.Daemon.base("admit", "/execution/v1/admit", execution,
-					executioncontrol.Envelope{
+				admission := newCaptureAdmission(in.Source.Admission.Output)
+				admitted := in.Source.Draft.Daemon.base("admit", "/execution/v1/admit",
+					admission.Execution, executioncontrol.Envelope{
 						ProtocolVersion: executioncontrol.ProtocolVersion,
-						Identity:        execution,
-						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+						Identity:        admission.Execution,
+						ActivationEpoch: admission.ActivationEpoch,
 						NodeUID:         hangarNodeUID,
 						Capability:      "opaque-capability",
 					})
@@ -181,22 +151,10 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				}
 
 				return CaptureDraft{
-					Daemon: in.Source.Draft.Daemon,
-					Output: in.Source.Draft.Output,
-					Admission: hangaroutput.CaptureAdmission{
-						ProtocolVersion: hangaroutput.ProtocolVersion,
-						Execution:       execution,
-						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
-						HandoffID:       hangaroutput.HandoffID(freshUUID()),
-						SourceHoldID:    hangaroutput.SourceHoldID(freshUUID()),
-						Output:          in.Source.Draft.Output,
-						CaptureDeadline: previous.CaptureDeadline,
-					},
-					PreviousAdmission: previous,
-					// The cluster hands back a new Pod for a new build, and a
-					// hold binds to it: a replacement Pod is a new incarnation
-					// and does not inherit the old one's hold.
-					PodUID: executioncontrol.PodUID(freshUUID()),
+					Daemon:    in.Source.Draft.Daemon,
+					Output:    in.Source.Draft.Output,
+					Admission: admission,
+					PodUID:    executioncontrol.PodUID(freshUUID()),
 				}, nil
 			},
 		),
@@ -208,12 +166,8 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			"the published tree is read back from the output bucket",
 			func(in CaptureOutcome, _ brine.Params, _ *brine.Recorder) (PublishedTree, error) {
 				tree := PublishedTree{
-					Outcome:    in,
-					Ref:        in.Published.Ref,
-					Attributes: in.Published.Attributes.Foundation(),
-				}
-				if in.Receipt.Signature != "" {
-					tree.Receipts = append(tree.Receipts, in.Receipt)
+					Outcome: in,
+					Ref:     in.Published.Ref,
 				}
 				keys, err := in.Source.Draft.Daemon.outputObjectKeys()
 				if err != nil {
@@ -242,9 +196,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				second, err := in.Outcome.Source.Draft.Daemon.captureAgain(in.Outcome.Source)
 				if err != nil {
 					return in, err
-				}
-				if second.Receipt.Signature != "" {
-					in.Receipts = append(in.Receipts, second.Receipt)
 				}
 				in.Second = second
 
@@ -313,50 +264,34 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 
 				in.Second = replacement
 				in.Ref = replacement.Published.Ref
-				in.Attributes = replacement.Published.Attributes.Foundation()
-				if replacement.Receipt.Signature != "" {
-					in.Receipts = append(in.Receipts, replacement.Receipt)
-				}
 
 				return in, nil
 			},
 		),
 
 		// Checks over the outcome.
-		// The receipt is asserted WHOLE, and against the SERVER-DERIVED scope --
-		// which is why the sentence cannot name one. The scope is an opaque
-		// per-tenant, per-epoch hash; a feature file that could spell it would
-		// be a feature file choosing where an object goes.
-		CheckThat[CaptureOutcome]("the capture returns a receipt for the server-derived scope at a store-assigned generation",
+		// The publication is asserted WHOLE, and against the SERVER-DERIVED
+		// scope -- which is why the sentence cannot name one. The scope is an
+		// opaque per-tenant, per-epoch hash; a feature file that could spell it
+		// would be a feature file choosing where an object goes.
+		CheckThat[CaptureOutcome]("the publication names the server-derived scope and the sealed digest at a store-assigned generation",
 			func(in CaptureOutcome) error {
 				if in.Err != nil {
 					return in.Err
 				}
-				if in.Receipt.Signature == "" {
-					return fmt.Errorf("no receipt: %s", in.Answer.describe())
+				if in.Published.Ref.Generation <= 0 {
+					return fmt.Errorf("nothing was published: %s", in.Answer.describe())
 				}
-				claims := in.Receipt.Claims
-				if claims.Ref != in.Published.Ref {
-					return fmt.Errorf("the receipt names %v and the object is %v",
-						claims.Ref, in.Published.Ref)
+				if in.Published.Ref.Scope != in.Sealed.Scope {
+					return fmt.Errorf("the object is in scope %q and the seal derived %q",
+						in.Published.Ref.Scope, in.Sealed.Scope)
 				}
-				if claims.Ref.Generation <= 0 {
-					return fmt.Errorf("the receipt names generation %d", claims.Ref.Generation)
+				if in.Published.Ref.Digest != in.Sealed.Digest {
+					return fmt.Errorf("the object is digest %s and the seal canonicalized %s",
+						in.Published.Ref.Digest, in.Sealed.Digest)
 				}
-				if claims.Ref.Scope != in.Published.Ref.Scope {
-					return fmt.Errorf("the receipt names scope %q", claims.Ref.Scope)
-				}
-				if claims.MarkerVersion != hangaroutput.MarkerVersion {
-					return fmt.Errorf("the receipt names marker version %q", claims.MarkerVersion)
-				}
-				if claims.ActivationEpoch != executioncontrol.ActivationEpoch(hangarEpoch) {
-					return fmt.Errorf("the receipt names epoch %d", claims.ActivationEpoch)
-				}
-				if in.Receipt.KeyID != hangarReceiptKeyID {
-					return fmt.Errorf("the receipt names key %q", in.Receipt.KeyID)
-				}
-				if claims.Attributes.Ref != in.Published.Ref {
-					return fmt.Errorf("the receipt's attributes name %v", claims.Attributes.Ref)
+				if in.Published.MarkerVersion != hangaroutput.MarkerVersion {
+					return fmt.Errorf("the object is marked %q", in.Published.MarkerVersion)
 				}
 
 				return nil
@@ -365,13 +300,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		CheckContains[CaptureOutcome]("the capture is refused as {string}",
 			"the capture's refusal",
 			func(in CaptureOutcome) (string, error) {
-				// A refusal from the control plane's own guard, when the
-				// capture never reached the daemon. It is asked first because
-				// a predeclaration cannot produce a daemon answer at all --
-				// there is nothing to send.
-				if in.Refusal != nil {
-					return in.Refusal.Error(), nil
-				}
 				if in.Answer.Err != nil {
 					return "", fmt.Errorf("no answer at all: %w", in.Answer.Err)
 				}
@@ -382,35 +310,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				return string(in.Answer.Body), nil
 			},
 			func(in CaptureOutcome) string { return fmt.Sprintf("status %d", in.Answer.Status) }),
-
-		// BOTH HALVES ARE PRODUCTION. The daemon signed with its epoch private
-		// key; this verifies with the production verifier under the pinned
-		// public half, never against a string a step wrote.
-		CheckThat[CaptureOutcome]("the receipt verifies under the activation-pinned public key",
-			func(in CaptureOutcome) error {
-				if in.Receipt.Signature == "" {
-					return fmt.Errorf("no receipt: %s", in.Answer.describe())
-				}
-
-				return verifyHangarReceipt(in.Receipt, in.Challenge,
-					in.Source.Draft.Daemon.ReceiptPublic)
-			}),
-
-		CheckThat[CaptureOutcome]("the receipt does not verify under any other key",
-			func(in CaptureOutcome) error {
-				if in.Receipt.Signature == "" {
-					return fmt.Errorf("no receipt: %s", in.Answer.describe())
-				}
-				other, _, err := ed25519.GenerateKey(rand.Reader)
-				if err != nil {
-					return err
-				}
-				if err := verifyHangarReceipt(in.Receipt, in.Challenge, other); err == nil {
-					return fmt.Errorf("the receipt verified under a key that did not sign it")
-				}
-
-				return nil
-			}),
 
 		// Checks over the bucket.
 		CheckThat[PublishedTree]("the output bucket holds exactly one object, marked \"hangar-output-v1\"",
@@ -427,25 +326,26 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		CheckThat[PublishedTree]("the two captures share one object and carry two distinct receipts",
+		CheckThat[PublishedTree]("the two captures share one object",
 			func(in PublishedTree) error {
 				if len(in.BucketKeys) != 1 {
 					return fmt.Errorf("the two captures produced %d objects: %v",
 						len(in.BucketKeys), in.BucketKeys)
 				}
+				if in.Second.Published.Ref.Generation == 0 {
+					return fmt.Errorf("the second capture published nothing: %s",
+						in.Second.Answer.describe())
+				}
 				if !in.Second.Published.Deduplicated {
 					return fmt.Errorf("the second capture did not deduplicate against the first")
 				}
-				if len(in.Receipts) != 2 {
-					return fmt.Errorf("the two captures carry %d receipts", len(in.Receipts))
+				if in.Second.Published.Ref != in.Ref {
+					return fmt.Errorf("the two captures name different objects: %v and %v",
+						in.Ref, in.Second.Published.Ref)
 				}
-				if in.Receipts[0].Signature == in.Receipts[1].Signature {
-					return fmt.Errorf("the two captures carry the same receipt; a receipt is per " +
-						"capture, not per object")
-				}
-				if in.Receipts[0].Claims.Ref != in.Receipts[1].Claims.Ref {
-					return fmt.Errorf("the two receipts name different objects: %v and %v",
-						in.Receipts[0].Claims.Ref, in.Receipts[1].Claims.Ref)
+				if in.Second.Source.key() == in.Outcome.Source.key() {
+					return fmt.Errorf("the second capture is the first one again, so its " +
+						"deduplication says nothing")
 				}
 
 				return nil
@@ -466,7 +366,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			func(in PublishedTree) error {
 				if in.Outcome.Plane == nil {
 					return fmt.Errorf("this capture never settled on a control plane, so " +
-						"nothing registered a receipt")
+						"nothing registered its generation")
 				}
 				if in.Ref.Generation == 0 {
 					return fmt.Errorf("the capture published no generation: %s",
@@ -558,69 +458,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 	}
 }
 
-// confirmSeal proves the drain the ATC is responsible for.
-//
-// In production the ATC terminates the admitted writers and offers the
-// evidence; here nothing was admitted, so the evidence is empty and the daemon
-// still checks it against the set IT captured. That is the honest shape: the
-// daemon replaces whatever set a caller offers with its own before validating.
-func (s HangarDaemon) confirmSeal(source HeldSource, started hangaroutput.SealStarted) error {
-	answer := s.capture("confirm-seal", "/capture/v1/seal/confirm", source.Execution,
-		map[string]any{
-			"execution":     source.Execution,
-			"started":       started,
-			"drained":       []any{},
-			"capture_fence": source.Execution.Fence,
-			"observed_at":   hangaroutput.NewTimestamp(time.Now().UTC()),
-		})
-	if _, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer); err != nil {
-		return fmt.Errorf("confirming the seal: %w", err)
-	}
-
-	return nil
-}
-
-// attest asks for the receipt against a one-use stat challenge.
-//
-// The challenge names the generation the publish assigned, which is why it
-// cannot be minted a call earlier. The control plane owns it in production; the
-// fixture plays that part, and the daemon still checks it against what it finds
-// in the bucket.
-func (s HangarDaemon) attest(source HeldSource,
-	published hangaroutput.PublicationResult) (hangaroutput.Receipt, hangaroutput.StatChallenge, error) {
-	issuedAt := time.Now().UTC()
-	challenge := hangaroutput.StatChallenge{
-		Nonce:           "brine-challenge-" + freshUUID(),
-		HandoffID:       source.Admission.HandoffID,
-		ReservationID:   hangaroutput.ReservationID(source.ReservationID),
-		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
-		Ref:             published.Ref,
-		CaptureFence:    hangaroutput.CaptureFence(source.Execution.Fence),
-		IssuedAt:        hangaroutput.NewTimestamp(issuedAt),
-		NotAfter:        hangaroutput.NewTimestamp(issuedAt.Add(5 * time.Minute)),
-	}
-
-	answer := s.capture("stat", "/capture/v1/stat", source.Execution, map[string]any{
-		"execution": source.Execution,
-		"challenge": challenge,
-		"claims": hangaroutput.ReceiptClaims{
-			Execution:            source.Execution,
-			ProducerCheckpointID: hangaroutput.OpaqueID("brine-checkpoint-" + freshUUID()),
-			Incarnation:          source.Incarnation,
-			Output:               source.Admission.Output,
-			WriterFence:          1,
-		},
-	})
-
-	receipt, err := decodeControl[hangaroutput.Receipt](answer)
-	if err != nil {
-		return hangaroutput.Receipt{}, hangaroutput.StatChallenge{},
-			fmt.Errorf("attesting the publication: %w", err)
-	}
-
-	return receipt, challenge, nil
-}
-
 // captureAgain runs a whole second capture of the same bytes: a new admission,
 // a new hold, a new source with the same content, sealed and published.
 //
@@ -629,21 +466,10 @@ func (s HangarDaemon) attest(source HeldSource,
 // what production does, and the assertion is that they share one object.
 func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 	draft := CaptureDraft{
-		Daemon: s,
-		Output: first.Admission.Output,
-		Admission: hangaroutput.CaptureAdmission{
-			ProtocolVersion: hangaroutput.ProtocolVersion,
-			Execution: executioncontrol.Identity{
-				ExecutionID: executioncontrol.ExecutionID(freshUUID()),
-				Fence:       1,
-			},
-			ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
-			HandoffID:       hangaroutput.HandoffID(freshUUID()),
-			SourceHoldID:    hangaroutput.SourceHoldID(freshUUID()),
-			Output:          first.Admission.Output,
-			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
-		},
-		PodUID: executioncontrol.PodUID(freshUUID()),
+		Daemon:    s,
+		Output:    first.Admission.Output,
+		Admission: newCaptureAdmission(first.Admission.Output),
+		PodUID:    executioncontrol.PodUID(freshUUID()),
 	}
 
 	admitted := s.base("admit", "/execution/v1/admit", draft.Admission.Execution,
@@ -658,27 +484,18 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 		return CaptureOutcome{}, fmt.Errorf("admitting the second capture: %w", err)
 	}
 
-	// The second capture reserves its own incarnation, as the first did: a
-	// reservation is per handoff, and two captures of the same bytes are two
-	// locations on this node.
-	reserving := s.capture("reserve-incarnation", "/capture/v1/reserve-incarnation",
-		draft.Admission.Execution, draft.Admission)
-	reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
-	if err != nil {
-		return CaptureOutcome{}, fmt.Errorf("reserving the second incarnation: %w", err)
-	}
-	draft.Reserved = reserved
-
-	answer := s.capture("hold", "/capture/v1/hold", draft.Admission.Execution,
-		holdBody(draft.Admission, reserved.Incarnation, draft.PodUID))
-	ack, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
+	// The second capture is held in its own step directory, as the first was:
+	// a step directory is per capture, and two captures of the same bytes are
+	// two directories on this node.
+	answer := draft.hold()
+	ack, err := decodeControl[hangaroutput.CaptureHoldAcknowledgement](answer)
 	if err != nil {
 		return CaptureOutcome{}, fmt.Errorf("holding the second source: %w", err)
 	}
 	second := heldFrom(draft, ack, answer)
 
-	// The same bytes, written into the second incarnation.
-	if err := copySourceTree(first.incarnationRoot(), second.incarnationRoot()); err != nil {
+	// The same bytes, written into the second step directory.
+	if err := copySourceTree(first.stepRoot(), second.stepRoot()); err != nil {
 		return CaptureOutcome{}, err
 	}
 
@@ -691,7 +508,7 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 	return sealAndPublish(witnessed)
 }
 
-// copySourceTree reproduces a source's content under a second incarnation. It
+// copySourceTree reproduces a source's content under a second step directory. It
 // is the fixture standing in for two producers that wrote the same thing.
 func copySourceTree(from, to string) error {
 	return filepath.WalkDir(from, func(name string, entry fs.DirEntry, err error) error {
@@ -713,32 +530,6 @@ func copySourceTree(from, to string) error {
 
 		return os.WriteFile(target, body, 0o600)
 	})
-}
-
-// verifyHangarReceipt checks a receipt with the PRODUCTION verifier under a
-// pinned key ring, never against a string a step wrote.
-func verifyHangarReceipt(receipt hangaroutput.Receipt, challenge hangaroutput.StatChallenge,
-	public ed25519.PublicKey) error {
-	ring, err := hangaroutput.NewReceiptKeyRing(hangaroutput.EpochKey{
-		KeyID:      hangarReceiptKeyID,
-		Epoch:      executioncontrol.ActivationEpoch(hangarEpoch),
-		PublicKey:  public,
-		ValidFrom:  hangaroutput.NewTimestamp(time.Now().UTC().Add(-time.Hour)),
-		ValidUntil: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
-	})
-	if err != nil {
-		return err
-	}
-	verifier, err := hangaroutput.NewReceiptSignatureVerifier(ring,
-		hangaroutput.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		return err
-	}
-
-	// The FULL production verification: ring, window, signature, the challenge
-	// binding and the one-use consume. A verifier per call, so the nonce one
-	// row spends is not one the next row needs.
-	return verifier.Verify(receipt, challenge)
 }
 
 // The output bucket, read through the same client the daemon uses. It is the

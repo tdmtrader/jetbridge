@@ -53,7 +53,7 @@ func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode st
 		if err := os.MkdirAll(filepath.Dir(root), 0755); err != nil {
 			return err
 		}
-		if err := os.Symlink(in.Tree.Outcome.Source.incarnationRoot(), root); err != nil {
+		if err := os.Symlink(in.Tree.Outcome.Source.stepRoot(), root); err != nil {
 			return err
 		}
 	}
@@ -124,7 +124,7 @@ func verifyManagedMaterialization(in BoundOutput, root string) error {
 	if err != nil || !bytes.Equal(receipt, want) {
 		return fmt.Errorf("materialized input lacks its exact receipt: %v", err)
 	}
-	source := in.Tree.Outcome.Source.incarnationRoot()
+	source := in.Tree.Outcome.Source.stepRoot()
 	entries := 0
 	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {

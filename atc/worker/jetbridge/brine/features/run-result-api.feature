@@ -4,7 +4,6 @@ Feature: Authorized clients read the durable Run terminal observation
   Scenario Outline: Result visibility follows team access before and after reclamation
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -26,7 +25,6 @@ Feature: Authorized clients read the durable Run terminal observation
   Scenario: Pending candidate claims are not exposed in Run detail
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And a fresh "owner" client reads the retained Run result
@@ -36,7 +34,6 @@ Feature: Authorized clients read the durable Run terminal observation
   Scenario Outline: Non-success has a terminal version and an explicit empty map
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "<status>"

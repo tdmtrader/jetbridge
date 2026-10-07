@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,42 +19,30 @@ import (
 
 type RunOutputCandidate struct {
 	Runtime RunOutputRuntime
-	Finish  RunOutputFinish
-	Record  output.HandoffRecord
+	Start   RunOutputStart
+	Hold    output.CaptureHoldAcknowledgement
+	Record  runCaptureRecord
 	Err     error
 }
 
 func RunOutputCandidateDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("its published producer is aborted", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
-			_, err := in.Finish.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, in.Finish.Start.Creation.EntryBuilds[0].ID())
+			_, err := in.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, in.Start.Creation.EntryBuilds[0].ID())
 			return in, err
 		}),
 		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("its published producer finishes as {string}", func(in RunOutputCandidate, p brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
 			status, _ := p.GetString(0)
-			in.Err = in.Finish.Start.Creation.EntryBuilds[0].Finish(db.BuildStatus(status))
+			in.Err = in.Start.Creation.EntryBuilds[0].Finish(db.BuildStatus(status))
 			return in, nil
 		}),
 		CheckThat[RunOutputCandidate]("its build is complete while its Run result remains unpublished", checkCandidateBuildComplete),
-		CheckThat[RunOutputCandidate]("its build is complete with no candidate claim", func(in RunOutputCandidate) error {
-			if err := checkCandidateBuildComplete(in); err != nil {
-				return err
-			}
-			claims, r, err := in.claims()
-			if err != nil {
-				return err
-			}
-			if len(claims) != 0 || !r.Settled {
-				return fmt.Errorf("cancelled publication retained a candidate claim or left source settlement pending")
-			}
-			return nil
-		}),
 		CheckThat[RunOutputCandidate]("the published producer outcome is refused", func(in RunOutputCandidate) error {
 			if in.Err == nil {
 				return fmt.Errorf("aborted producer was reported as successful")
 			}
 			var completed bool
-			if err := in.Finish.Start.DB.Conn.QueryRow(`SELECT completed FROM builds WHERE id=$1`, in.Finish.Start.Creation.EntryBuilds[0].ID()).Scan(&completed); err != nil {
+			if err := in.Start.DB.Conn.QueryRow(`SELECT completed FROM builds WHERE id=$1`, in.Start.Creation.EntryBuilds[0].ID()).Scan(&completed); err != nil {
 				return err
 			}
 			if completed {
@@ -66,45 +53,23 @@ func RunOutputCandidateDefinitions() []brine.StepDefinition {
 		brine.DefineMap[RunOutputRuntime, RunOutputCandidate]("its runtime producer publishes a successful review", func(in RunOutputRuntime, _ brine.Params, rec *brine.Recorder) (RunOutputCandidate, error) {
 			return publishRunCandidate(in, rec)
 		}),
-		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("its Run records the published source release", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
-			var err error
-			in.Finish.Release, err = in.Finish.daemonRelease()
-			if err == nil {
-				err = in.Finish.recordRelease(in.Finish.Release, false)
+		// The capture's publication takes a claim of its own, in the same
+		// transaction that moves the row to published: that claim is what
+		// protects the generation until the Run binds it as a result.
+		CheckThat[RunOutputCandidate]("one Run capture claim protects that exact generation", func(in RunOutputCandidate) error {
+			if in.Err != nil {
+				return in.Err
 			}
-			return in, err
-		}),
-		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("its Run rolls back the published source release", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
-			var err error
-			in.Finish.Release, err = in.Finish.daemonRelease()
-			if err == nil {
-				err = in.Finish.recordRelease(in.Finish.Release, true)
-			}
-			return in, err
-		}),
-		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("another Run controller repeats the published source release", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
-			return in, in.Finish.recordRelease(in.Finish.Release, false)
-		}),
-		CheckThat[RunOutputCandidate]("one Run candidate claim protects that exact generation", func(in RunOutputCandidate) error {
-			claims, r, err := in.claims()
+			claims, err := in.claims()
 			if err != nil {
 				return err
 			}
-			if len(claims) != 1 || !claims[0].Active() || claims[0].Ref != in.Record.Ref {
-				return fmt.Errorf("settled Run capture has %d claims protecting its generation", len(claims))
+			own := in.Record.Key.ClaimID()
+			if len(claims) != 1 || !claims[0].Active() || claims[0].Ref != in.Record.Ref || claims[0].ClaimID != own {
+				return fmt.Errorf("the published Run capture has %d claims on its generation; want its own claim %s, active", len(claims), own)
 			}
-			if !r.Settled || !r.ReleaseAcknowledged {
-				return fmt.Errorf("candidate became visible without source settlement")
-			}
-			return nil
-		}),
-		CheckThat[RunOutputCandidate]("neither a candidate claim nor settled capture is visible", func(in RunOutputCandidate) error {
-			claims, r, err := in.claims()
-			if err != nil {
-				return err
-			}
-			if len(claims) != 0 || r.Settled || r.ReleaseAcknowledged {
-				return fmt.Errorf("rollback exposed a claim or settled capture")
+			if !in.Record.Released() {
+				return fmt.Errorf("the capture's claim became visible before its node marker was released")
 			}
 			return nil
 		}),
@@ -117,7 +82,7 @@ func checkCandidateBuildComplete(in RunOutputCandidate) error {
 	}
 	var completed bool
 	var status string
-	err := in.Finish.Start.DB.Conn.QueryRow(`SELECT b.completed,r.status FROM builds b JOIN pipeline_runs r ON r.id=b.pipeline_run_id WHERE b.id=$1`, in.Finish.Start.Creation.EntryBuilds[0].ID()).Scan(&completed, &status)
+	err := in.Start.DB.Conn.QueryRow(`SELECT b.completed,r.status FROM builds b JOIN pipeline_runs r ON r.id=b.pipeline_run_id WHERE b.id=$1`, in.Start.Creation.EntryBuilds[0].ID()).Scan(&completed, &status)
 	if err != nil {
 		return err
 	}
@@ -127,19 +92,13 @@ func checkCandidateBuildComplete(in RunOutputCandidate) error {
 	return nil
 }
 
-func (in RunOutputCandidate) claims() ([]output.ClaimRecord, output.HandoffRecord, error) {
-	tx, err := in.Finish.Start.DB.Conn.Begin()
+func (in RunOutputCandidate) claims() ([]output.ClaimRecord, error) {
+	tx, err := in.Start.DB.Conn.Begin()
 	if err != nil {
-		return nil, output.HandoffRecord{}, err
+		return nil, err
 	}
 	defer db.Rollback(tx)
-	repository := in.Finish.repository()
-	r, err := repository.LoadHandoffRecord(context.Background(), tx, in.Record.HandoffID)
-	if err != nil {
-		return nil, r, err
-	}
-	claims, err := repository.ReadClaims(context.Background(), tx, in.Record.Ref)
-	return claims, r, err
+	return runCaptureRepository().ReadClaims(context.Background(), tx, in.Record.Ref)
 }
 
 // The model's fixed output is the only substituted content. All admission,
@@ -159,124 +118,116 @@ func writeRunFindings(directory string) error {
 }
 
 func publishRunCandidateStarted(in RunOutputRuntime, rec *brine.Recorder, publish func(string, executioncontrol.Acknowledgement) error) (RunOutputCandidate, error) {
-	return advanceRunCapture(in, rec, publish, func(_ hangaroutput.Decision, r output.HandoffRecord) bool {
-		return r.State == output.CaptureStateRegistered && r.Receipt != nil
+	return advanceRunCapture(in, rec, publish, func(r runCaptureRecord) bool {
+		return r.State == output.CapturePublished && r.Released()
 	})
 }
 
-// advanceRunCapture runs the producer and then its capture coordinator, one
-// bounded transition at a time, until the durable record satisfies until.
-func advanceRunCapture(in RunOutputRuntime, rec *brine.Recorder, publish func(string, executioncontrol.Acknowledgement) error, until func(hangaroutput.Decision, output.HandoffRecord) bool) (RunOutputCandidate, error) {
-	out := RunOutputCandidate{Runtime: in}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+// advanceRunCapture runs the producer and then the production capture
+// coordinator until the Run's capture row satisfies until.
+//
+// The producer is played the way a deployment's Pod plays it: the runtime's
+// own hold grant writes the held marker from a real Pod on the capture's
+// node, the supervisor records the start, the task writes its output into the
+// capture's step directory, the supervisor records the finish, and the Pod's
+// containers stop. Everything after that is the coordinator's.
+func advanceRunCapture(in RunOutputRuntime, rec *brine.Recorder, publish func(string, executioncontrol.Acknowledgement) error, until func(runCaptureRecord) bool) (RunOutputCandidate, error) {
+	out := RunOutputCandidate{Runtime: in, Start: in.Start}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var err error
 	in.Control, err = in.prepare()
 	if err != nil {
 		return out, err
 	}
-	if err := checkRuntimeGrant(in, rec); err != nil {
+	out.Runtime = in
+	out.Hold, err = holdRuntimeCapture(in, rec)
+	if err != nil {
 		return out, err
 	}
 	r, err := in.readSource()
 	if err != nil {
 		return out, err
 	}
-	out.Finish = RunOutputFinish{Start: in.Start}
-	out.Finish.Start.Record = r
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, r.ActivationEpoch)
-	out.Finish.Hold, err = client.InspectHold(ctx, r.Execution, r.HandoffID)
+	out.Start.Record = r
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	start, err := client.RecordStart(ctx, r.Execution, out.Hold.Marker.PodUID, executioncontrol.ProcessIdentity(freshUUID()))
 	if err != nil {
 		return out, err
 	}
-	tx, err := in.Start.DB.Conn.Begin()
-	if err != nil {
+	if err := publish(in.Start.Daemon.stepRoot(r.Key), start); err != nil {
 		return out, err
 	}
-	err = out.Finish.repository().AcknowledgeSourceHold(ctx, tx, out.Finish.Hold)
-	if err == nil {
-		err = tx.Commit()
-	}
-	db.Rollback(tx)
-	if err != nil {
-		return out, err
-	}
-	start, err := client.RecordStart(ctx, r.Execution, out.Finish.Hold.PodUID, executioncontrol.ProcessIdentity(freshUUID()))
-	if err != nil {
-		return out, err
-	}
-	directory := filepath.Join(in.Start.Daemon.Output.Root, "steps", r.Source.Directory)
-	err = publish(directory, start)
-	if err != nil {
-		return out, err
-	}
-
 	if _, err := client.RecordOutcome(ctx, r.Execution, executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
 		return out, err
 	}
-	// A real API identity and current termination status, matching the drain
-	// fixture's boundary. Live CI is responsible for kubelet-driven status.
-	pods, err := in.Client.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
-	if err != nil {
+	if err := terminateRunProducer(ctx, in, out.Hold.Marker.PodUID); err != nil {
 		return out, err
 	}
-	found := false
-	for _, pod := range pods.Items {
-		if string(pod.UID) != string(out.Finish.Hold.PodUID) {
-			continue
-		}
-		found = true
-		pod.Status.Phase = corev1.PodSucceeded
-		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", Image: "busybox", ImageID: "brine-image", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}}}
-		if _, err := in.Client.CoreV1().Pods("default").UpdateStatus(ctx, &pod, metav1.UpdateOptions{}); err != nil {
-			return out, err
-		}
-	}
-	if !found {
-		return out, fmt.Errorf("source hold names no real producing Pod")
-	}
-	coordinator, err := runOutputCoordinator(in, freshUUID())
-	if err != nil {
-		return out, err
-	}
-	for i := 0; i < 15; i++ {
-		decision, err := coordinator.Advance(ctx, r.HandoffID)
-		if err != nil {
+	coordinator := runOutputCoordinator(in)
+	for i := 0; i < 5; i++ {
+		if err := coordinator.Advance(ctx, r.Key); err != nil {
 			return out, err
 		}
 		out.Record, err = in.readSource()
 		if err != nil {
 			return out, err
 		}
-		if until(decision, out.Record) {
+		if until(out.Record) {
+			out.Start.Record = out.Record
 			return out, nil
 		}
 	}
-	return out, fmt.Errorf("Run capture did not reach its stopping transition; it is %s", out.Record.State)
+	return out, fmt.Errorf("Run capture did not reach its stopping state; it is %s (released %t, error %q)",
+		out.Record.State, out.Record.Released(), out.Record.Error)
+}
+
+// terminateRunProducer stops the producing Pod's containers: its status in
+// the API server, the way a kubelet reports it, and the standalone daemon's
+// own declaration, which is what a seal on a daemon with no Kubernetes API
+// waits for.
+func terminateRunProducer(ctx context.Context, in RunOutputRuntime, uid executioncontrol.PodUID) error {
+	pods, err := in.Client.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, pod := range pods.Items {
+		if string(pod.UID) != string(uid) {
+			continue
+		}
+		found = true
+		pod.Status.Phase = corev1.PodSucceeded
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", Image: "busybox", ImageID: "brine-image", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}}}
+		if _, err := in.Client.CoreV1().Pods("default").UpdateStatus(ctx, &pod, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+	if !found {
+		return fmt.Errorf("the hold names no real producing Pod")
+	}
+	return in.Start.Daemon.terminate(uid)
 }
 
 // runOutputCoordinator is atccmd's hangarOutputCoordinator over this fixture:
-// every field production sets, over the node's real controls and drain and
-// the activation-pinned receipt and control rings. The lease and seal terms
-// are production's defaults, as the chart's are.
-func runOutputCoordinator(in RunOutputRuntime, owner string) (*hangaroutput.Coordinator, error) {
-	epoch := executioncontrol.ActivationEpoch(hangarEpoch)
-	keys := hangaroutput.ReceiptKeyRing{ActiveKeyID: hangarReceiptKeyID, ActivationEpoch: epoch, Keys: []hangaroutput.ReceiptKeyEntry{{ID: hangarReceiptKeyID, Epoch: epoch, PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ReceiptPublic)}}}
-	verifier, err := keys.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		return nil, err
-	}
-	controls := jetbridge.NewOutputControls(in.Config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, epoch)
-	repository := (RunOutputFinish{Start: in.Start}).repository()
+// the capture rows in this scenario's PostgreSQL, and the node daemons the
+// rows name reached through the production output source.
+func runOutputCoordinator(in RunOutputRuntime) *hangaroutput.Coordinator {
+	source := in.source()
 	return &hangaroutput.Coordinator{
-		Transactor: brineTransactor{conn: in.Start.DB.Conn}, Repository: repository,
-		Dialer: hangaroutput.SourceDialerFunc(func(node string) (hangaroutput.SourceControl, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		Transactor: brineTransactor{conn: in.Start.DB.Conn},
+		Rows:       runCaptureRepository(),
+		Dialer: hangaroutput.SourceDialerFunc(func(ctx context.Context, node string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+			dial, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			return controls.ForNode(ctx, node)
+			return source.CaptureControl(dial, node, uid)
 		}),
-		Drain:    &jetbridge.OutputDrain{Client: in.Client, Controls: controls, Namespace: "default"},
-		Verifier: verifier, HoldVerifier: closureControlKeys(in),
-		Announcer: hangaroutput.AnnouncerFunc(repository.RecordAnnouncement), OwnerID: owner, ReceiptKeyID: hangarReceiptKeyID,
-	}, nil
+		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+	}
+}
+
+// runCaptureRepository is the component-held repository production's
+// coordinator and Run finalization read capture rows and claims through.
+func runCaptureRepository() *db.HangarOutputRepository {
+	return db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
 }

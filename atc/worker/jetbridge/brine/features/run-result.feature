@@ -4,7 +4,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Successful completion publishes the exact protected candidate
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -16,7 +15,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: A failed sibling hides results and releases the candidate
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "failed"
@@ -28,7 +26,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: An errored sibling hides results and releases the candidate
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "errored"
@@ -40,7 +37,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Pending sibling work prevents terminal publication
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its scheduler consumes all requested Run work
@@ -51,7 +47,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Unconsumed scheduling requests prevent terminal publication
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -71,7 +66,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Rollback preserves the running Run and retained candidate
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "failed"
@@ -85,7 +79,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Completion replay retains its immutable version and publication
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -102,7 +95,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Recovery finalizes without the original build tracker
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -114,7 +106,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Rerun candidate selection releases the superseded claim
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And the selected job reruns with "a new candidate"
@@ -128,7 +119,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: An older candidate cannot substitute for the effective rerun
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And the selected job reruns with "no candidate"
@@ -141,7 +131,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Terminal publication closes late build writes
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -153,7 +142,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Generic release cannot bypass a running candidate lifetime
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     Then a generic release cannot discard its protected candidate claim
@@ -162,7 +150,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Generic release cannot bypass a published result lifetime
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -174,7 +161,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario Outline: Later job failure can finish a captured producer without publishing its result
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "<status>"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -190,7 +176,6 @@ Feature: A Run atomically publishes one complete immutable result
   Scenario: Result identity and claim survive payload reclamation
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"

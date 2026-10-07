@@ -7,18 +7,18 @@ package steps
 // error is a VALUE so a refusal is assertable rather than fatal, and there is
 // one nominal type per reachable set of assertions — because the chain walk
 // matches on nominal type, and a scenario that never published should not be
-// able to reach a receipt assertion.
+// able to reach a publication assertion.
 //
 // WHAT A PHRASE MAY NOT BUILD (convention 3). None of these states can be
-// constructed with a caller-chosen bucket, scope or object key, with a receipt
-// the test signed, or with capture selected after the run:
+// constructed with a caller-chosen bucket, scope or object key, with a capture
+// row the test wrote, or with capture selected after the run:
 //
 //   - CaptureDraft is reached ONLY by a refinement over a draft, so "capture
 //     requested after the task started" has no sentence. That is Req 1 spelled
 //     in the type system rather than asserted.
 //   - HangarDaemon names its own bucket. There is no phrase that sets it.
-//   - CaptureOutcome's Receipt is whatever the daemon signed; the only phrase
-//     that fills it is `the capture settles`.
+//   - CaptureOutcome's Capture is the row production's coordinator left; the
+//     only phrase that fills it is `the capture settles`.
 //   - PublishedTree's BucketKeys is a read of the bucket, not a memory of what
 //     was put there.
 //
@@ -30,12 +30,12 @@ package steps
 import (
 	"crypto/rand"
 	"fmt"
+	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
@@ -69,6 +69,38 @@ func pending(phrase, phase, needs string) error {
 	return pendingPhase{phrase: phrase, phase: phase, needs: needs}
 }
 
+// captureAdmission is what the control plane knows about a capture before its
+// producing Pod exists: the exact execution being extended, the activation
+// epoch it is admitted under, the one declared output, and the deadline. It
+// is the fixture's spelling of what a pending capture row carries; nothing
+// about success, scope or digest is knowable here, and the type says so.
+type captureAdmission struct {
+	Execution       executioncontrol.Identity
+	ActivationEpoch executioncontrol.ActivationEpoch
+	Output          hangaroutput.OutputName
+	CaptureDeadline time.Time
+}
+
+// newCaptureAdmission mints a fresh execution for one output. No feature file
+// chooses the identity: a scenario that could name an execution could make
+// two scenarios collide on one node's markers.
+func newCaptureAdmission(output hangaroutput.OutputName) captureAdmission {
+	return captureAdmission{
+		Execution: executioncontrol.Identity{
+			ExecutionID: executioncontrol.ExecutionID(freshUUID()),
+			Fence:       1,
+		},
+		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+		Output:          output,
+		CaptureDeadline: time.Now().UTC().Add(24 * time.Hour),
+	}
+}
+
+// Key is the capture row's key: the execution and the declared output.
+func (admission captureAdmission) Key() hangaroutput.CaptureKey {
+	return hangaroutput.CaptureKey{ExecutionID: admission.Execution.ExecutionID, Output: admission.Output}
+}
+
 // CaptureDraft is a container spec under description whose ONE declared output
 // has been selected for capture, plus the identities the server issues before
 // anything runs.
@@ -87,7 +119,7 @@ type CaptureDraft struct {
 
 	// Daemon is present when the chain entered through the daemon fixture, and
 	// zero when it entered through the plain worker. The pod-shape scenarios
-	// need no daemon; the handoff and disposition scenarios do, and reach it
+	// need no daemon; the hold and settlement scenarios do, and reach it
 	// through here rather than through a second live state.
 	Daemon HangarDaemon
 
@@ -100,16 +132,9 @@ type CaptureDraft struct {
 	// selected; it reaches a state where a second was asked for.
 	SecondOutput hangaroutput.OutputName
 
-	// Admission is what is predeclared before the producing Pod may start: the
-	// caller-generated handoff and source-hold identities, the execution being
-	// extended, the declared output and the activation epoch. Nothing about
-	// success, scope, digest or receipt is knowable here, and the type says so.
-	Admission hangaroutput.CaptureAdmission
-
-	// PreviousAdmission is the admission a PREVIOUS build of the same step was
-	// given, carried so "a new build gets a new handoff identity and a new
-	// source hold" has both halves to compare. Zero on a first build.
-	PreviousAdmission hangaroutput.CaptureAdmission
+	// Admission is what the capture row carries before the producing Pod may
+	// start.
+	Admission captureAdmission
 
 	// ReadyFacets and CohortHandshaked are the scheduling refinements. A label
 	// is not authority — the authenticated handshake is — so they are two
@@ -122,17 +147,10 @@ type CaptureDraft struct {
 	// capture-held one.
 	PausePodTerminal bool
 
-	// PodUID is the Pod the execution was admitted for. In Phase 3 the chain
-	// has no cluster and this is the identity the daemon was told; in Phase 4
-	// it is the Pod the cluster handed back, and the same field carries it.
+	// PodUID is the Pod the execution's capture is held for. The draft mints
+	// it because the hold is the first message sent from inside the Pod, and
+	// that is where the daemon binds it.
 	PodUID executioncontrol.PodUID
-
-	// Reserved is the location the daemon issued before any Pod exists. It is
-	// the daemon's answer and never a scenario's choice: the pod-shape chain
-	// has no daemon to ask, so it carries a stand-in with the same shape, and
-	// what the scenarios assert is that the pod builder REPEATS whatever it was
-	// given rather than composing a path of its own.
-	Reserved hangaroutput.ReservedIncarnation
 
 	// StrictInput is the destination of a strict-input Hangar tree this step
 	// also takes, empty when it takes none. It is the AC 20 regression twin's
@@ -145,9 +163,8 @@ type CaptureDraft struct {
 // freshUUID mints an identity no feature file chose.
 //
 // Every identity in this family is server- or fixture-generated for the same
-// reason: a scenario that could name a handoff could make two scenarios collide
-// on one node's ledger, and one that could name an activation epoch would be
-// choosing which key signs its receipts.
+// reason: a scenario that could name an execution could make two scenarios
+// collide on one node's markers.
 func freshUUID() string {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
@@ -172,14 +189,13 @@ type CapturePodCreated struct {
 	Err   error
 }
 
-// HeldSource is a capture whose source the daemon has acknowledged holding.
+// HeldSource is a capture whose step directory the daemon has acknowledged
+// holding: the node's held marker is durable.
 //
 // It carries the daemon URL and the storage root because the containment and
-// stop scenarios assert on what is STILL ON THE NODE afterwards, and it carries
-// the fencing epoch because every later control operation is admitted against
-// it. It carries no request log: "the daemon was not called" is never assertable
-// here, and the scenarios that mean it say it as an outcome instead — the source
-// is still held, the store's copy is still the store's copy.
+// stop scenarios assert on what is STILL ON THE NODE afterwards. It carries no
+// request log: "the daemon was not called" is never assertable here, and the
+// scenarios that mean it say it as an outcome instead.
 type HeldSource struct {
 	Draft HeldDraft
 
@@ -191,43 +207,27 @@ type HeldSource struct {
 	DaemonURL   string
 	StorageRoot string
 
-	// Acknowledgement is the durable hold acknowledgement the daemon returned.
-	// A repeat with the same identity must return this same value; a repeat
-	// with different facts must be a typed conflict.
-	Acknowledgement hangaroutput.CaptureAcknowledgement
-
-	// Incarnation is the SERVER-issued source identity. There is no phrase that
-	// sets it, which is Req 7 in the type system.
-	Incarnation hangaroutput.SourceIncarnation
-
-	// Reserved is the reservation the incarnation came from, carried so a later
-	// step can present the daemon's own answer rather than rebuild one.
-	Reserved hangaroutput.ReservedIncarnation
-
-	// Fence is the epoch every later control operation is admitted against.
-	Fence hangaroutput.CaptureFence
+	// Acknowledgement is the hold the daemon returned: the held marker. A
+	// repeat with the same Pod must return the same marker; a repeat for a
+	// different Pod must be a typed conflict.
+	Acknowledgement hangaroutput.CaptureHoldAcknowledgement
 
 	// Execution is the exact identity every control operation is admitted
 	// against. It is the BASE ledger's, carried here so a takeover can advance
 	// it and the line after can ask the daemon about the new one.
 	Execution executioncontrol.Identity
 
-	// Admission is what was predeclared. Every later request re-derives its
-	// identities from this rather than from anything a scenario said.
-	Admission hangaroutput.CaptureAdmission
+	// Admission is what the capture row carries. Every later request
+	// re-derives its identities from this rather than from anything a
+	// scenario said.
+	Admission captureAdmission
 
-	// PodUID is the pod the execution was admitted for.
+	// PodUID is the pod the hold names.
 	PodUID executioncontrol.PodUID
-
-	// ReservationID is the Stage 2 reservation a publication is made under. The
-	// control plane mints it after a successful finish; here the fixture does,
-	// for the same reason it mints every other identity -- a scenario that
-	// could name one could make two scenarios collide on one key.
-	ReservationID string
 
 	// Repeated is what a repeated hold returned, so the idempotency pair can
 	// compare two statements rather than one statement with itself.
-	Repeated hangaroutput.CaptureAcknowledgement
+	Repeated hangaroutput.CaptureHoldAcknowledgement
 
 	// Status, Body and Err are the last answer, the same shape the daemon
 	// families already use.
@@ -235,6 +235,12 @@ type HeldSource struct {
 	Body   []byte
 	Err    error
 }
+
+// key is the capture this source is held for.
+func (source HeldSource) key() hangaroutput.CaptureKey { return source.Admission.Key() }
+
+// stepRoot is the step directory the daemon derives for this capture.
+func (source HeldSource) stepRoot() string { return source.Draft.Daemon.stepRoot(source.key()) }
 
 // HeldDraft is the part of the draft a held source still needs. It exists so
 // HeldSource does not carry a whole ContainerDraft it cannot use.
@@ -271,8 +277,8 @@ type FinishWitnessed struct {
 	Asked controlAnswer
 
 	// Cancelled records that a caller asked to cancel, which is a REQUEST and
-	// not a row: which branch the arbiter then wins is the plane's answer, and
-	// this state carries the question rather than the answer.
+	// not a row: what the row then becomes is the plane's answer, and this
+	// state carries the question rather than the answer.
 	Cancelled bool
 
 	Err error
@@ -285,7 +291,8 @@ func (witnessed FinishWitnessed) asked(answer controlAnswer) FinishWitnessed {
 	return witnessed
 }
 
-// CaptureOutcome is a receipt OR a typed failure, in the shape of VolumeRead.
+// CaptureOutcome is what a capture became, in the shape of VolumeRead: the
+// capture row production left, or the daemon's typed refusal.
 //
 // The typed failure is the point. Absence, collision, cancellation, seal
 // failure and infrastructure failure stay distinct in hangar/output's sentinel
@@ -294,66 +301,26 @@ func (witnessed FinishWitnessed) asked(answer controlAnswer) FinishWitnessed {
 type CaptureOutcome struct {
 	Source HeldSource
 
-	// Receipt is what the daemon signed. The scenario verifies it with the
-	// PRODUCTION verifier under the activation-pinned public key; there is no
-	// phrase that constructs one.
-	Receipt hangaroutput.Receipt
-
-	// Disposition is the arbiter's selection: capture, no_capture,
-	// pre_reservation_cancel.
-	Disposition hangaroutput.Disposition
-
-	// Reason is the no_capture reason, empty for any other disposition.
-	Reason hangaroutput.NoCaptureReason
-
-	// Announcements are the build's own Req 18 events, read back through the
-	// production reader, in emission order — order is part of the assertion.
-	Announcements []db.HangarAnnouncement
-
-	// Transitions is every bounded step the coordinator took, in order, and
-	// Snapshots is the durable record after each one.
-	//
-	// They are here because two of this family's assertions are about ORDERING
-	// rather than about a final state: "the checkpoint is committed with an
-	// UNRESOLVED reservation" and "the outcome was pending between the two
-	// halves" are both true at a moment the settled state no longer shows.
-	Transitions []string
-	Snapshots   []hangaroutput.HandoffRecord
-
-	// Final is the durable record when nothing is owed any more.
-	Final hangaroutput.HandoffRecord
-
-	// AllAnnouncements is what the plane told watchers about EVERY handoff,
-	// which is the only form the Req 18 absence can take: "an ordinary step
-	// announces none of them" is a statement about what is not in the store.
-	AllAnnouncements []db.HangarAnnouncement
-
-	// Refusal is what a publication API answered a caller offering something
-	// that is not capture authority. It is a VALUE so the refusal is
-	// assertable rather than fatal.
-	Refusal error
+	// Capture is the row as production left it, read back through the
+	// production repository. Zero when the chain never settled on a control
+	// plane.
+	Capture hangaroutput.Capture
 
 	// Plane is the control plane this capture settled on, kept so a later step
-	// can ask it another question -- what the announcement store holds for a
-	// DIFFERENT handoff, say.
+	// can ask it another question.
 	Plane *settlementPlane
 
-	// Settled is false while the outcome is still pending, which is a state the
-	// two-halves scenarios assert on directly.
-	Settled bool
+	// Sealed is what the node's seal answered: the scope and digest the
+	// sealed tree IS.
+	Sealed hangaroutput.CaptureSealResult
 
-	// Published is the tree reference the store assigned, as the publish route
-	// reported it.
-	Published hangaroutput.PublicationResult
+	// Published is the tree reference the store assigned, as the publish
+	// route reported it, or as the settled row records it.
+	Published hangaroutput.CapturePublishResult
 
 	// Answer is the raw publish answer, kept as a value so a typed refusal --
 	// collision, unauthorized, sealed -- is assertable rather than fatal.
 	Answer controlAnswer
-
-	// Challenge is the one-use stat challenge the receipt answers. Verifying
-	// without it would skip the freshness half of the contract, which is the
-	// half that stops a receipt over old facts being replayed.
-	Challenge hangaroutput.StatChallenge
 
 	Err error
 }
@@ -367,8 +334,7 @@ type CaptureOutcome struct {
 type PublishedTree struct {
 	Outcome CaptureOutcome
 
-	Ref        hangar.TreeRef
-	Attributes hangar.TreeAttributes
+	Ref hangar.TreeRef
 
 	// BucketKeys and MarkerVersions are read back from the store at assertion
 	// time. They are what makes "holds exactly one object" an outcome.
@@ -377,10 +343,6 @@ type PublishedTree struct {
 
 	// Second is the second capture of the same bytes, for the dedup pair.
 	Second CaptureOutcome
-
-	// Receipts accumulates every receipt issued for this key, so the dedup
-	// scenario can say one object and two DISTINCT receipts.
-	Receipts []hangaroutput.Receipt
 
 	// Superseded is the ref a replacement generation displaced, so "the old ref
 	// no longer resolves" has an old ref to fail on.

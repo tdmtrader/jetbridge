@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 
@@ -29,11 +28,11 @@ import (
 
 const capturePodPhase = "Phase 4 Green"
 
-// scenarioReservingNode is the Kubernetes node whose daemon issued the
-// scenario's reservation. A reservation is a directory on ONE node's disk, so
-// the capture pod carries a required affinity on this node by name; the node
-// UID beside it (hangarNodeUID) is what the daemon compares a hold against.
-const scenarioReservingNode = "hangar-node-a"
+// scenarioCaptureNode is the Kubernetes node the scenario's capture row names.
+// A step directory is a directory on ONE node's disk, so the capture pod
+// carries a required affinity on this node by name; the node UID beside it
+// (hangarNodeUID) is what the daemon on that node writes its markers under.
+const scenarioCaptureNode = "hangar-node-a"
 
 // HangarCapturePodDefinitions is the capture-pod family.
 func HangarCapturePodDefinitions() []brine.StepDefinition {
@@ -54,23 +53,12 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 
 				// The identities are MINTED HERE, not named by the feature
 				// file, for the same reason the daemon-side sentence mints
-				// them: a scenario that could choose a handoff could make two
-				// scenarios collide on one node's ledger.
+				// them: a scenario that could choose an execution could make
+				// two scenarios collide on one node's markers.
 				return CaptureDraft{
-					Draft:  in,
-					Output: hangaroutput.OutputName(outputName),
-					Admission: hangaroutput.CaptureAdmission{
-						ProtocolVersion: hangaroutput.ProtocolVersion,
-						Execution: executioncontrol.Identity{
-							ExecutionID: executioncontrol.ExecutionID(freshUUID()),
-							Fence:       1,
-						},
-						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
-						HandoffID:       hangaroutput.HandoffID(freshUUID()),
-						SourceHoldID:    hangaroutput.SourceHoldID(freshUUID()),
-						Output:          hangaroutput.OutputName(outputName),
-						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
-					},
+					Draft:     in,
+					Output:    hangaroutput.OutputName(outputName),
+					Admission: newCaptureAdmission(hangaroutput.OutputName(outputName)),
 				}, nil
 			},
 		),
@@ -81,17 +69,16 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// pattern has exactly one input type, and a duplicate pattern is caught
 		// by TestNoStepLineMatchesTwoDefinitions.
 		//
-		// WHAT IT BUILDS IS AN ADMISSION, not a Pod. Everything a Phase 3
-		// scenario needs from this sentence is the identities the control plane
-		// predeclares before anything may run -- the handoff, the source hold,
-		// the exact execution, the declared output and the activation epoch --
-		// and none of that is a Pod fact. The Pod-shaped assertions still enter
-		// through `the capture pod is built`, which stays Phase 4's.
+		// WHAT IT BUILDS IS AN ADMISSION, not a Pod. Everything these
+		// scenarios need from this sentence is what the capture row carries
+		// before anything may run -- the exact execution, the declared output
+		// and the activation epoch -- and none of that is a Pod fact. The
+		// Pod-shaped assertions still enter through `the capture pod is built`.
 		//
 		// The identities are MINTED HERE, not named by the feature file. A
-		// scenario that could choose a handoff id could make two scenarios
-		// collide on one node's ledger, and a scenario that could choose an
-		// activation epoch would be choosing which key signs its receipts.
+		// scenario that could choose an execution could make two scenarios
+		// collide on one node's markers, and a scenario that could choose an
+		// activation epoch would be choosing which key signs its statements.
 		brine.DefineMap[HangarDaemon, CaptureDraft](
 			"a capture-selected task {string} built from image {string} declares the output {string}",
 			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
@@ -110,20 +97,9 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				}
 
 				draft := CaptureDraft{
-					Daemon: in,
-					Output: hangaroutput.OutputName(outputName),
-					Admission: hangaroutput.CaptureAdmission{
-						ProtocolVersion: hangaroutput.ProtocolVersion,
-						Execution: executioncontrol.Identity{
-							ExecutionID: executioncontrol.ExecutionID(freshUUID()),
-							Fence:       1,
-						},
-						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
-						HandoffID:       hangaroutput.HandoffID(freshUUID()),
-						SourceHoldID:    hangaroutput.SourceHoldID(freshUUID()),
-						Output:          hangaroutput.OutputName(outputName),
-						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
-					},
+					Daemon:    in,
+					Output:    hangaroutput.OutputName(outputName),
+					Admission: newCaptureAdmission(hangaroutput.OutputName(outputName)),
 				}
 				draft.Draft.StepName, draft.Draft.ImageURL = name, image
 
@@ -132,11 +108,10 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				// doing it here rather than inside `the daemon holds the
 				// source` keeps the two facts separable: a scenario can admit
 				// and then never hold.
-				// The envelope names no Pod, and could not: the reservation the
-				// producer will mount is issued against this admission, so the
-				// admission precedes the Pod. The draft mints a Pod UID here
-				// only because the next step -- the hold -- is the one made
-				// from inside the Pod, and that is where the daemon binds it.
+				// The envelope names no Pod, and could not: the admission
+				// precedes the Pod. The draft mints a Pod UID here only because
+				// the next step -- the hold -- is the one made from inside the
+				// Pod, and that is where the daemon binds it.
 				answer := in.base("admit", "/execution/v1/admit", draft.Admission.Execution,
 					executioncontrol.Envelope{
 						ProtocolVersion: executioncontrol.ProtocolVersion,
@@ -260,18 +235,13 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"the number of mounts that resolve to a declared Volume",
 			captureResolvedMountCount),
 
-		// The reservation, read off the Pod. It is the claim the whole
-		// completion pass is about: the producer's declared output volume is
-		// the location the daemon issued, not this step's own directory.
-		//
-		// The assertion is that the pod builder REPEATED what it was given.
-		// The reservation in this chain is the fixture's stand-in (there is no
-		// daemon in a pod-shape scenario), so what would redden here is a
-		// builder that composed a path of its own -- which is exactly what it
-		// used to do.
+		// The step directory, read off the Pod. The producer's declared
+		// output volume is the capture's step directory -- the one derivation
+		// of CaptureKey.Directory() the node's daemon, its marker and its
+		// sweeper all key on -- not this step's own directory.
 		CheckThat[CapturePodCreated](
-			"the captured output is mounted at the incarnation the daemon reserved",
-			capturedOutputMountsTheReservation),
+			"the captured output is mounted at the capture's step directory",
+			capturedOutputMountsTheStepDirectory),
 
 		CheckInt[CapturePodCreated]("the capture pod carries {int} init containers",
 			"the number of init containers",
@@ -303,11 +273,11 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// what the ruling declined. The production half exists and is red
 		// under M8 in Go
 		// (TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot).
-		// The node pin. A reservation is a directory on ONE node's disk, made
-		// before this Pod existed, so a cohort-wide placement lets the
-		// scheduler land the producer on a node that reserved nothing -- where
-		// the hostPath's DirectoryOrCreate makes an empty unheld directory and
-		// the control init's hold is refused. Requiring the node turns that
+		// The node pin. A step directory is a directory on ONE node's disk,
+		// named by the capture row before this Pod existed, so a cohort-wide
+		// placement lets the scheduler land the producer on a node the row
+		// does not name -- where the daemon writes no marker the control plane
+		// will ever ask about. Requiring the node turns that
 		// outage into a pending Pod.
 		CheckString[CapturePodCreated](
 			"the capture pod is admitted only by the node {string}",
@@ -423,19 +393,15 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 		Endpoint:        "http://127.0.0.1:7781",
 		Capability:      "brine-base-capability",
 	}
-	reserved := scenarioReservation(in)
 	selection := runtime.DurableOutputCapture{
-		Version:             runtime.DurableOutputCaptureVersion,
-		Identity:            in.Admission.Execution,
-		ActivationEpoch:     in.Admission.ActivationEpoch,
-		HandoffID:           in.Admission.HandoffID,
-		SourceHoldID:        in.Admission.SourceHoldID,
-		Output:              string(in.Output),
-		SourceControlGrant:  captureGrantForScenario,
-		CaptureDeadline:     in.Admission.CaptureDeadline.Time,
-		ReservedIncarnation: reserved.Incarnation,
-		ReservedDirectory:   reserved.Directory,
-		ReservingNode:       scenarioReservingNode,
+		Version:            runtime.DurableOutputCaptureVersion,
+		Identity:           in.Admission.Execution,
+		ActivationEpoch:    in.Admission.ActivationEpoch,
+		Output:             string(in.Output),
+		SourceControlGrant: captureGrantForScenario,
+		CaptureDeadline:    in.Admission.CaptureDeadline,
+		Node:               scenarioCaptureNode,
+		NodeUID:            hangarNodeUID,
 	}
 	if err := control.SelectCapture(selection); err != nil {
 		return CapturePodCreated{Draft: in, Err: err}, nil
@@ -491,47 +457,7 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 		return CapturePodCreated{Draft: in, Err: err}, nil
 	}
 
-	in.Reserved = reserved
-
 	return CapturePodCreated{Draft: in, Pod: created.Pod}, nil
-}
-
-// scenarioReservation is the daemon's answer, or a stand-in with the same shape
-// when this chain has no daemon.
-//
-// The pod-shape scenarios enter through `a jetbridge worker with an artifact
-// store` and never start an output daemon, so there is nothing to ask. What
-// they assert is not WHICH location was reserved -- that is the daemon's own
-// suite -- but that the pod builder REPEATS whatever reservation it was handed,
-// rather than composing `steps/<handle>/<output>` the way it used to. A
-// stand-in makes that assertion possible; a scenario that named a directory
-// would not, and there is deliberately no phrase that lets one.
-//
-// The generation is fixed rather than random so the mount assertion can name
-// the directory it expects.
-func scenarioReservation(in CaptureDraft) hangaroutput.ReservedIncarnation {
-	if in.Reserved.Directory != "" {
-		return in.Reserved
-	}
-	incarnation := hangaroutput.SourceIncarnation{
-		ExecutionID:      in.Admission.Execution.ExecutionID,
-		NodeUID:          hangarNodeUID,
-		HandleGeneration: 4,
-		Output:           in.Output,
-	}
-
-	return hangaroutput.ReservedIncarnation{
-		ProtocolVersion: hangaroutput.ProtocolVersion,
-		Execution:       in.Admission.Execution,
-		ActivationEpoch: in.Admission.ActivationEpoch,
-		HandoffID:       in.Admission.HandoffID,
-		SourceHoldID:    in.Admission.SourceHoldID,
-		NodeUID:         hangarNodeUID,
-		Incarnation:     incarnation,
-		Directory:       incarnation.Directory(),
-		LedgerSequence:  4,
-		ObservedAt:      hangaroutput.NewTimestamp(time.Now().UTC()),
-	}
 }
 
 // captureGrantForScenario is the attenuated source-control grant the control
@@ -661,9 +587,7 @@ func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
 		"HANGAR_PROTOCOL_VERSION": hangaroutput.ProtocolVersion,
 		"HANGAR_EXECUTION_ID":     string(in.Draft.Admission.Execution.ExecutionID),
 		"HANGAR_EXECUTION_FENCE":  fmt.Sprintf("%d", in.Draft.Admission.Execution.Fence),
-		"HANGAR_ACTIVATION_EPOCH": fmt.Sprintf("%d", in.Draft.Admission.ActivationEpoch),
-		"HANGAR_HANDOFF_ID":       string(in.Draft.Admission.HandoffID),
-		"HANGAR_SOURCE_HOLD_ID":   string(in.Draft.Admission.SourceHoldID),
+		"HANGAR_OUTPUT_NAME":      string(in.Draft.Admission.Output),
 	} {
 		got, present := values[name]
 		if !present {
@@ -675,7 +599,7 @@ func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
 	}
 
 	// The Downward API fields, by EXACT field path. `metadata.uid` is the Pod
-	// incarnation a writer ticket binds to; `spec.nodeName` and
+	// the held marker binds to; `spec.nodeName` and
 	// `status.hostIP` are how the container reaches the daemon that owns this
 	// node's ledger. A literal value here would be the control plane filling
 	// in a guess: neither exists when the Pod is composed.
@@ -701,20 +625,17 @@ func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
 	return nil
 }
 
-// capturedOutputMountsTheReservation reads the selected output's volume off the
-// Pod and requires its hostPath to end in the reserved directory.
+// capturedOutputMountsTheStepDirectory reads the selected output's volume off
+// the Pod and requires its hostPath to end in the capture's step directory.
 //
 // The control is in the same function and checked first: the step's WORKING
 // directory still resolves under the step's own handle, so this cannot pass on
-// a builder that has started pointing every volume at the incarnation.
-func capturedOutputMountsTheReservation(in CapturePodCreated) error {
+// a builder that has started pointing every volume at the step directory.
+func capturedOutputMountsTheStepDirectory(in CapturePodCreated) error {
 	if in.Pod == nil {
 		return fmt.Errorf("no capture pod was built: %v", in.Err)
 	}
-	reserved := in.Draft.Reserved
-	if reserved.Directory == "" {
-		return fmt.Errorf("this chain reserved no incarnation, so there is nothing to repeat")
-	}
+	directory := in.Draft.Admission.Key().Directory()
 
 	hostPath := func(name string) string {
 		for _, volume := range in.Pod.Spec.Volumes {
@@ -742,7 +663,7 @@ func capturedOutputMountsTheReservation(in CapturePodCreated) error {
 	if dir != "" {
 		if path := mounted[dir]; !strings.HasSuffix(path, "/steps/"+in.Draft.Draft.Handle+"/dir") {
 			return fmt.Errorf("the step's working directory resolves to %q, which is not this "+
-				"step's own directory; a builder that pointed everything at the incarnation "+
+				"step's own directory; a builder that pointed everything at the step directory "+
 				"would pass the assertion below while breaking every ordinary volume", path)
 		}
 	}
@@ -760,10 +681,10 @@ func capturedOutputMountsTheReservation(in CapturePodCreated) error {
 	if !found {
 		return fmt.Errorf("the task container mounts nothing at the captured output %q", outputPath)
 	}
-	if !strings.HasSuffix(path, "/steps/"+reserved.Directory) {
-		return fmt.Errorf("the captured output is mounted from %q and the daemon reserved "+
-			"%q. A producer writing anywhere else is a hold over bytes nobody wrote",
-			path, reserved.Directory)
+	if !strings.HasSuffix(path, "/steps/"+directory) {
+		return fmt.Errorf("the captured output is mounted from %q and the capture's step "+
+			"directory is %q. A producer writing anywhere else is a hold over bytes nobody wrote",
+			path, directory)
 	}
 
 	return nil
@@ -939,7 +860,7 @@ func capturePodRequiredNode(in CapturePodCreated) (string, error) {
 			continue
 		}
 		if len(expression.Values) != 1 {
-			return "", fmt.Errorf("the capture pod is pinned to %d nodes; a reservation is a "+
+			return "", fmt.Errorf("the capture pod is pinned to %d nodes; a step directory is a "+
 				"directory on ONE node's disk", len(expression.Values))
 		}
 
@@ -947,8 +868,8 @@ func capturePodRequiredNode(in CapturePodCreated) (string, error) {
 	}
 
 	return "", fmt.Errorf("the capture pod is not pinned to any node. The two ready labels pick " +
-		"a COHORT; the reservation is narrower than that, so a cohort-wide placement lets the " +
-		"scheduler land the producer on a node that reserved nothing")
+		"a COHORT; the capture row is narrower than that, so a cohort-wide placement lets the " +
+		"scheduler land the producer on a node the row does not name")
 }
 
 // sameWorkerStillBuildsAnOrdinaryPod is the absence's control.
@@ -1012,7 +933,6 @@ func sameWorkerAdmitsAMatchingEpoch(in CapturePodCreated) error {
 	// one epoch. The refusal above was an admission from another one.
 	matching.Admission.ActivationEpoch = executioncontrol.ActivationEpoch(hangarEpoch)
 	matching.CohortHandshaked = true
-	matching.Reserved = hangaroutput.ReservedIncarnation{}
 
 	built, err := buildCapturePod(matching)
 	if err != nil {

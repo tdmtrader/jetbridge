@@ -13,21 +13,15 @@ Feature: Aborting a Run build closes that build's own work
     Then the build finishes aborted on the node's acknowledgement and its job admits a rerun
 
   @core-review
-  Scenario: An unsettled handoff is released and the Run completes aborted
+  Scenario: An unsettled capture is discarded and the Run completes aborted
     Given a Run producer and a ready output node
-    When its build is aborted over "an unsettled handoff"
+    When its build is aborted over "an unsettled capture"
     Then the Run completes aborted and its payload is reclaimed
-
-  @core-review
-  Scenario: An executing producer is stopped before its hold is released
-    Given a Run producer and a ready output node
-    When its build is aborted over "an executing producer"
-    Then the producer is interrupted before its hold is released on exact evidence
 
   @core-review
   Scenario: A rerun that succeeds before the closure supersedes the aborted build
     Given a Run producer and a ready output node
-    When its build is aborted over "a superseded handoff"
+    When its build is aborted over "a superseded capture"
     Then the successful rerun supersedes it and the Run succeeds
 
   @core-review

@@ -4,7 +4,6 @@ Feature: The task engine prepares retained Run inputs through the real worker
   Scenario Outline: The engine admits only retained task routes
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"

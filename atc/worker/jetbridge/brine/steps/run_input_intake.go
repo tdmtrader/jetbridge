@@ -83,16 +83,12 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		return err
 	}
 	admitter.SetSealedInputAuthority(authority)
-	verifier, err := inputPublicationVerifier(in)
-	if err != nil {
-		return err
-	}
 	uploadConfig := runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
 		uid := executioncontrol.NodeUID(in.NodeUID)
 		if mode == "wrong node" {
 			uid = executioncontrol.NodeUID(freshUUID())
 		}
-		return runs.InputUploadNode{UID: uid, Publisher: jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter, executioncontrol.ActivationEpoch(epoch)), Verifier: verifier}, nil
+		return runs.InputUploadNode{UID: uid, Publisher: jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter, executioncontrol.ActivationEpoch(epoch))}, nil
 	}}
 	expires := mode == "unused upload expires" || mode == "Run claim survives expiry" || mode == "expired grant" || mode == "replay after expiry" || mode == "expiry while held"
 	if expires {

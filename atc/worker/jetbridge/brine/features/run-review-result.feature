@@ -4,7 +4,6 @@ Feature: Human and agent clients retrieve typed review findings
   Scenario Outline: A fresh client retrieves the real worker report after cleanup
     Given a Run producer and a ready output node
     When its runtime producer publishes review worker findings
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"

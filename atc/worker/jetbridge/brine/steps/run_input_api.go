@@ -51,18 +51,13 @@ func configureRunInputAPI(in RunInputAdmission, caller string, rec *brine.Record
 	if caller == "missing authority" {
 		in.Port.SetSealedInputAuthority(nil)
 	}
-	daemon := in.Source.Start.Daemon
-	verifier, err := inputPublicationVerifier(daemon)
-	if err != nil {
-		return nil, nil, err
-	}
 	outputSource, _, _, err := configureRunReadPlane(in.Source, rec, res)
 	if err != nil {
 		return nil, nil, err
 	}
 	in.Port.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
 		client, uid, err := outputSource.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
-		return runs.InputUploadNode{UID: uid, Publisher: client, Verifier: verifier}, err
+		return runs.InputUploadNode{UID: uid, Publisher: client}, err
 	}})
 	oldEnabled := atc.PipelineRunActivationEpoch
 	atc.PipelineRunActivationEpoch = 0

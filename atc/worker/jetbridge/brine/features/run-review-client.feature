@@ -4,7 +4,6 @@ Feature: Any local client can inspect a review Run
   Scenario: A human CLI reads the retained observation after payload cleanup
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -21,7 +20,6 @@ Feature: Any local client can inspect a review Run
   Scenario: The CLI distinguishes a pending review from a published result
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And a fresh "owner" client reads the retained Run result
@@ -31,7 +29,6 @@ Feature: Any local client can inspect a review Run
   Scenario: An MCP client reads the retained observation after payload cleanup
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"
@@ -50,7 +47,6 @@ Feature: Any local client can inspect a review Run
   Scenario: The MCP distinguishes a pending review from a published result
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And a fresh "owner" client reads the retained Run result

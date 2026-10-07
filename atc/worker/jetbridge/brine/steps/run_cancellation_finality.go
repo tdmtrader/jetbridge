@@ -14,11 +14,44 @@ import (
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
 func RunCancellationFinalityDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
+		// The prepared producer's execution, bound by a real worker the way a
+		// build step binds it: a Run execution that names the capture it
+		// feeds, so cancellation has an execution to close.
+		brine.DefineCheck[RunOutputRuntime]("its real worker binds the producer execution", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			row, err := in.Start.DB.PersistNamedWorker("capture-execution")
+			if err != nil {
+				return err
+			}
+			factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
+			worker := jetbridge.NewWorker(row, in.Client, in.Config, jetbridge.WorkerDeps{
+				ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: closureControlKeys(in)},
+			})
+			build := in.Start.Creation.EntryBuilds[0]
+			spec := in.Spec
+			spec.TeamID, spec.Type, spec.ExecutionControl = build.TeamID(), db.ContainerTypeTask, in.Control
+			_, _, err = worker.FindOrCreateContainer(ctx, db.NewBuildStepContainerOwner(build.ID(), "capture-step", build.TeamID()), db.ContainerMetadata{BuildID: build.ID(), PipelineID: build.PipelineID(), Type: db.ContainerTypeTask}, spec, nil)
+			if err != nil {
+				return err
+			}
+			capture := in.Control.Capture.Key()
+			var matched bool
+			if err = in.Start.DB.Conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_executions WHERE build_id=$1 AND plan_id='capture-step' AND execution_id=$2 AND capture_output=$3)`, build.ID(), string(capture.ExecutionID), string(capture.Output)).Scan(&matched); err != nil {
+				return err
+			}
+			if !matched {
+				return fmt.Errorf("worker did not bind the selected output execution")
+			}
+			return nil
+		}),
 		brine.DefineMap[RunOutputRuntime, CancellationLeaseResult]("the periodic cancellation component recovers a lost notification", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (CancellationLeaseResult, error) {
 			return CancellationLeaseResult{Err: exerciseRunCancellationPoll(in)}, nil
 		}),
@@ -32,16 +65,15 @@ func RunCancellationFinalityDefinitions() []brine.StepDefinition {
 		brine.DefineMap[RunOutputCandidate, CancellationLeaseResult]("cancellation workers settle its hidden review", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (CancellationLeaseResult, error) {
 			err := exerciseRunCancellationFinality(in.Runtime, "hidden candidate")
 			if err == nil {
-				claims, _, readErr := in.claims()
+				claims, readErr := in.claims()
 				err = readErr
 				if err == nil && (len(claims) != 1 || claims[0].Active()) {
-					err = fmt.Errorf("aborted publication did not release the retained hidden claim")
+					err = fmt.Errorf("aborted publication did not release the published capture's claim")
 				}
 			}
 			return CancellationLeaseResult{Err: err}, nil
 		}),
 		CheckThat[CancellationLeaseResult]("its aborted Run is immutable and has no public results", func(in CancellationLeaseResult) error { return in.Err }),
-		CheckThat[CancellationLeaseResult]("its unresolved source prevents an aborted publication", func(in CancellationLeaseResult) error { return in.Err }),
 	}
 }
 
@@ -297,12 +329,12 @@ func exerciseCancelledPublicationRollback(in RunOutputCandidate) error {
 	if err := conn.QueryRowContext(ctx, `SELECT status<>'running' OR result_manifest IS NOT NULL OR completed_at IS NOT NULL FROM pipeline_runs WHERE id=$1`, in.Runtime.Start.Creation.Run.ID()).Scan(&visible); err != nil {
 		return err
 	}
-	claims, _, err := in.claims()
+	claims, err := in.claims()
 	if err != nil {
 		return err
 	}
 	if visible || len(claims) != 1 || !claims[0].Active() {
-		return fmt.Errorf("refused publication exposed a terminal result or released its candidate")
+		return fmt.Errorf("refused publication exposed a terminal result or released the capture's claim")
 	}
 	if _, err = conn.ExecContext(ctx, `DROP TRIGGER brine_refuse_cancel_publication ON pipeline_runs; DROP FUNCTION brine_refuse_cancel_publication()`); err != nil {
 		return err
@@ -310,12 +342,12 @@ func exerciseCancelledPublicationRollback(in RunOutputCandidate) error {
 	if err = exerciseRunCancellationFinality(in.Runtime, "recovered commit"); err != nil {
 		return err
 	}
-	claims, _, err = in.claims()
+	claims, err = in.claims()
 	if err != nil {
 		return err
 	}
 	if len(claims) != 1 || claims[0].Active() {
-		return fmt.Errorf("recovered aborted publication did not release its candidate")
+		return fmt.Errorf("recovered aborted publication did not release the capture's claim")
 	}
 	return nil
 }

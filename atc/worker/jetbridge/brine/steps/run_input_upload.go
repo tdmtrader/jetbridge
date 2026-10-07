@@ -146,27 +146,13 @@ func exerciseInputUpload(in HangarDaemon, mode string) error {
 	if status != http.StatusOK || json.Unmarshal(data, &receipt) != nil || receipt.Validate() != nil || receipt.Stage != stage || receipt.Nonce != request.Nonce {
 		return fmt.Errorf("input publication failed: HTTP %d: %s", status, data)
 	}
-	ring, err := output.NewReceiptKeyRing(output.EpochKey{KeyID: hangarReceiptKeyID, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: in.ReceiptPublic, ValidFrom: output.NewTimestamp(time.Now().Add(-time.Hour)), ValidUntil: output.NewTimestamp(time.Now().Add(time.Hour))})
-	if err != nil {
-		return err
+	// The publication is checked against the consumer's retained stage and
+	// nonce, and nothing else: there is no signature on it to verify.
+	if err := receipt.For(stage, request.Nonce); err != nil {
+		return fmt.Errorf("input publication does not answer its stage and nonce: %w", err)
 	}
-	verifier, err := output.NewReceiptSignatureVerifier(ring, output.ClockFunc(time.Now))
-	if err != nil {
-		return err
-	}
-	inputVerifier, ok := any(verifier).(interface {
-		VerifyInputPublication(output.InputPublication, output.InputStage, string) error
-	})
-	if !ok {
-		return fmt.Errorf("input publication has no signature verifier")
-	}
-	if err := inputVerifier.VerifyInputPublication(receipt, stage, request.Nonce); err != nil {
-		return fmt.Errorf("input publication signature failed: %w", err)
-	}
-	altered := receipt
-	altered.Attributes.Ref.Generation++
-	if inputVerifier.VerifyInputPublication(altered, stage, request.Nonce) == nil || inputVerifier.VerifyInputPublication(receipt, stage, uuid.NewString()) == nil {
-		return fmt.Errorf("changed publication identity or nonce retained authority")
+	if receipt.For(stage, uuid.NewString()) == nil {
+		return fmt.Errorf("a publication answered for a different nonce retained authority")
 	}
 	canonical, err := (hangar.Canonicalizer{}).Capture(in.Ctx, bytes.NewReader(archive))
 	if err != nil {
@@ -203,7 +189,7 @@ func exerciseInputUpload(in HangarDaemon, mode string) error {
 		if err != nil {
 			return fmt.Errorf("stage through production client: %w", err)
 		}
-		duplicate, err := node.PublishInput(in.Ctx, again, uuid.NewString(), verifier)
+		duplicate, err := node.PublishInput(in.Ctx, again, uuid.NewString())
 		if err != nil || duplicate.Attributes.Ref != receipt.Attributes.Ref {
 			return fmt.Errorf("identical uploaded bytes did not retain one exact generation: %v", err)
 		}
@@ -213,7 +199,7 @@ func exerciseInputUpload(in HangarDaemon, mode string) error {
 }
 
 func assertInputStages(in HangarDaemon, want int) error {
-	paths, err := filepath.Glob(filepath.Join(in.Output.Root, "scratch", hangar.CanonicalizerTempPrefix+"*"))
+	paths, err := filepath.Glob(filepath.Join(in.OutputScratch, hangar.CanonicalizerTempPrefix+"*"))
 	if err != nil {
 		return err
 	}

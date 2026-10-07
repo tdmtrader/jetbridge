@@ -6,4 +6,4 @@ Feature: The review image can publish into a real reserved output
 
   Scenario: The image user can publish a report without changing source permissions
     Given a Run producer and a ready output node
-    Then the review image user can write its reserved output
+    Then the review image user can write its captured output

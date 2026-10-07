@@ -112,7 +112,7 @@ Feature: What a capture-selected task's Pod says
     And its output "result" is captured when the step succeeds
     When the capture pod is built
     Then the capture pod declares 5 mounts, and every one resolves to a declared Volume
-    And the captured output is mounted at the incarnation the daemon reserved
+    And the captured output is mounted at the capture's step directory
 
   # ----------------------------------------------------------------------
   # The scheduling block. A ready label is a HINT and never authority: the

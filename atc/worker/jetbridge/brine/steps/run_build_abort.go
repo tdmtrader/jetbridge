@@ -39,7 +39,6 @@ func RunBuildAbortDefinitions() []brine.StepDefinition {
 		}),
 		CheckThat[CancellationLeaseResult]("the build finishes aborted on the node's acknowledgement and its job admits a rerun", func(in CancellationLeaseResult) error { return in.Err }),
 		CheckThat[CancellationLeaseResult]("the Run completes aborted and its payload is reclaimed", func(in CancellationLeaseResult) error { return in.Err }),
-		CheckThat[CancellationLeaseResult]("the producer is interrupted before its hold is released on exact evidence", func(in CancellationLeaseResult) error { return in.Err }),
 		CheckThat[CancellationLeaseResult]("the successful rerun supersedes it and the Run succeeds", func(in CancellationLeaseResult) error { return in.Err }),
 		CheckThat[CancellationLeaseResult]("the other build's live execution is untouched", func(in CancellationLeaseResult) error { return in.Err }),
 		CheckThat[CancellationLeaseResult]("node loss keeps the build open until a restarted worker closes it", func(in CancellationLeaseResult) error { return in.Err }),
@@ -56,12 +55,10 @@ func exerciseBuildAbort(in RunOutputRuntime, work string, rec *brine.Recorder, w
 		return exerciseAbortBesideLiveExecution(ctx, in, rec, workspace)
 	case "a lost node":
 		return exerciseAbortOverLostNode(ctx, in, rec, workspace)
-	case "an unsettled handoff":
-		return exerciseAbortedHandoff(ctx, in, rec)
-	case "an executing producer":
-		return exerciseAbortedExecutingProducer(ctx, in, rec)
-	case "a superseded handoff":
-		return exerciseSupersededAbortedHandoff(ctx, in, rec)
+	case "an unsettled capture":
+		return exerciseAbortedCapture(ctx, in, rec)
+	case "a superseded capture":
+		return exerciseSupersededAbortedCapture(ctx, in, rec)
 	}
 	return fmt.Errorf("unknown aborted work %q", work)
 }
@@ -253,36 +250,39 @@ func exerciseAbortOverLostNode(ctx context.Context, in RunOutputRuntime, rec *br
 	return checkRunUncancelled(ctx, in)
 }
 
-// A2: a producer that never started leaves a held, unsettled handoff. The
-// closure releases the hold on the node's never-started evidence and finishes
-// the build aborted; the Run then completes aborted by ordinary completion,
-// with no manual step, and its payload is reclaimed.
-func exerciseAbortedHandoff(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) error {
-	r, _, err := holdProducerSource(ctx, in, rec)
-	if err != nil {
+// A2: a producer that never started leaves a held, pending capture. The
+// closure discards the capture as build_aborted -- a database decision, made
+// under the Run lock with no node call -- and finishes the build aborted; the
+// capture coordinator then releases the node's marker on its own pass. The
+// Run completes aborted by ordinary completion, with no manual step, and its
+// payload is reclaimed.
+func exerciseAbortedCapture(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) error {
+	if _, err := holdProducerSource(ctx, in, rec); err != nil {
 		return err
 	}
 	build := in.Start.Creation.EntryBuilds[0]
-	if err = abortOverOpenWork(in, build); err != nil {
+	if err := abortOverOpenWork(in, build); err != nil {
 		return err
 	}
 	source := newRecordingSource(in)
-	if err = convergeBuildClosure(ctx, in, build, func() runs.CancellationWorker { return buildClosureWorker(in, source, "closure-worker") }); err != nil {
+	if err := convergeBuildClosure(ctx, in, build, func() runs.CancellationWorker { return buildClosureWorker(in, source, "closure-worker") }); err != nil {
 		return err
 	}
-	var evidence string
-	var released bool
-	if err = in.Start.DB.Conn.QueryRowContext(ctx, `SELECT
- coalesce((SELECT classification FROM pipeline_run_output_cancellation_evidence WHERE handoff_id=$1),''),
- EXISTS(SELECT 1 FROM pipeline_run_output_releases WHERE handoff_id=$1)`, string(r.HandoffID)).Scan(&evidence, &released); err != nil {
+	r, err := in.readSource()
+	if err != nil {
 		return err
 	}
-	if evidence != string(executioncontrol.ClassificationNeverStarted) || !released {
-		return fmt.Errorf("the closure settled the handoff with evidence %q and released=%t", evidence, released)
+	if r.State != output.CaptureDiscarded || r.Error != output.DiscardBuildAborted {
+		return fmt.Errorf("the closure left the capture %s (%q), not discarded as %s", r.State, r.Error, output.DiscardBuildAborted)
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, r.ActivationEpoch)
-	if _, err = client.RecordStart(ctx, r.Execution, "delayed-pod", "delayed-supervisor"); err == nil {
-		return fmt.Errorf("the released source still admitted a delayed start")
+	if err := runOutputCoordinator(in).Run(ctx); err != nil {
+		return fmt.Errorf("the capture coordinator's pass: %w", err)
+	}
+	if r, err = in.readSource(); err != nil {
+		return err
+	}
+	if !r.Released() {
+		return fmt.Errorf("the coordinator never released the discarded capture's marker")
 	}
 	if err = checkRunUncancelled(ctx, in); err != nil {
 		return err
@@ -344,94 +344,11 @@ func exerciseAbortedHandoff(ctx context.Context, in RunOutputRuntime, rec *brine
 	return nil
 }
 
-// A3: an executing producer with a held source. The closure first asks the
-// node for a source-preserving stop, and releases the hold only once the node
-// has recorded the producer's exact outcome. It deletes no Pod: the hold's
-// Pod still exists when the release is recorded.
-func exerciseAbortedExecutingProducer(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) error {
-	r, hold, err := holdProducerSource(ctx, in, rec)
-	if err != nil {
-		return err
-	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, r.ActivationEpoch)
-	if _, err = client.RecordStart(ctx, r.Execution, hold.PodUID, executioncontrol.ProcessIdentity(freshUUID())); err != nil {
-		return err
-	}
-	build := in.Start.Creation.EntryBuilds[0]
-	if err = abortOverOpenWork(in, build); err != nil {
-		return err
-	}
-	source := newRecordingSource(in)
-	// Run until the closure has asked for the stop, then one pass more: a
-	// release could only follow it.
-	for pass, extra := 0, 1; pass < 12 && extra >= 0; pass++ {
-		worker := buildClosureWorker(in, source, "closure-worker")
-		if err = worker.Run(ctx); err != nil && !onlyExternalCancellationWork(err) {
-			return err
-		}
-		if source.called(r.Execution.ExecutionID, "stop") {
-			extra--
-		}
-		if err = pause(ctx); err != nil {
-			return err
-		}
-	}
-	var classification, evidence string
-	var released bool
-	query := `SELECT
- coalesce((SELECT classification FROM pipeline_run_output_cancellation_classifications WHERE handoff_id=$1),''),
- coalesce((SELECT classification FROM pipeline_run_output_cancellation_evidence WHERE handoff_id=$1),''),
- EXISTS(SELECT 1 FROM pipeline_run_output_releases WHERE handoff_id=$1)`
-	if err = in.Start.DB.Conn.QueryRowContext(ctx, query, string(r.HandoffID)).Scan(&classification, &evidence, &released); err != nil {
-		return err
-	}
-	if classification != string(executioncontrol.ClassificationExecuting) || evidence != "" || released {
-		return fmt.Errorf("while the producer executed: classification %q, evidence %q, released=%t", classification, evidence, released)
-	}
-	if !source.called(r.Execution.ExecutionID, "stop") {
-		return fmt.Errorf("the closure never asked the node for a source-preserving stop")
-	}
-	if source.called(r.Execution.ExecutionID, "release") {
-		return fmt.Errorf("the node was asked to release a hold its producer still executes over")
-	}
-	if _, err = client.InspectHold(ctx, r.Execution, r.HandoffID); err != nil {
-		return fmt.Errorf("the executing producer's hold is gone: %w", err)
-	}
-	if err = checkHoldPod(ctx, in, hold.PodUID); err != nil {
-		return err
-	}
-	if completed, _, err := buildOutcome(ctx, in, build); err != nil || completed {
-		return fmt.Errorf("the build finished while its producer executed (error %v)", err)
-	}
-
-	source.note(r.Execution.ExecutionID, "outcome")
-	if _, err = client.RecordOutcome(ctx, r.Execution, executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 143}); err != nil {
-		return err
-	}
-	if err = convergeBuildClosure(ctx, in, build, func() runs.CancellationWorker { return buildClosureWorker(in, source, "closure-worker") }); err != nil {
-		return err
-	}
-	if err = in.Start.DB.Conn.QueryRowContext(ctx, query, string(r.HandoffID)).Scan(&classification, &evidence, &released); err != nil {
-		return err
-	}
-	if evidence != string(executioncontrol.ClassificationAuthoritativeFinish) || !released {
-		return fmt.Errorf("after the exact outcome: evidence %q, released=%t", evidence, released)
-	}
-	calls := source.callsFor(r.Execution.ExecutionID)
-	stop, outcome, release := slices.Index(calls, "stop"), slices.Index(calls, "outcome"), slices.Index(calls, "release")
-	if stop < 0 || release < 0 || !(stop < outcome && outcome < release) {
-		return fmt.Errorf("node calls out of order, want stop < outcome < release: %v", calls)
-	}
-	if err = checkHoldPod(ctx, in, hold.PodUID); err != nil {
-		return err
-	}
-	return checkRunUncancelled(ctx, in)
-}
-
 // A4: a rerun of the aborted build's job succeeds, with its own published
-// candidate, before the closure settles the aborted build's handoff. The rerun
-// supersedes the aborted build, and the Run completes succeeded.
-func exerciseSupersededAbortedHandoff(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) error {
+// capture, before the closure settles the aborted build's capture. The rerun
+// supersedes the aborted build, and the Run completes succeeded with the
+// rerun's generation bound as its result.
+func exerciseSupersededAbortedCapture(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) error {
 	var err error
 	if in.Control, err = in.prepare(); err != nil {
 		return err
@@ -452,13 +369,7 @@ func exerciseSupersededAbortedHandoff(ctx context.Context, in RunOutputRuntime, 
 	rerunIn.Start.Creation.EntryBuilds = append([]db.Build{rerun}, in.Start.Creation.EntryBuilds[1:]...)
 	candidate, err := publishRunCandidate(rerunIn, rec)
 	if err != nil {
-		return fmt.Errorf("the rerun did not publish its candidate: %w", err)
-	}
-	if candidate.Finish.Release, err = candidate.Finish.daemonRelease(); err != nil {
-		return err
-	}
-	if err = candidate.Finish.recordRelease(candidate.Finish.Release, false); err != nil {
-		return err
+		return fmt.Errorf("the rerun did not publish its capture: %w", err)
 	}
 	if err = rerun.Finish(db.BuildStatusSucceeded); err != nil {
 		return err
@@ -491,13 +402,14 @@ func exerciseSupersededAbortedHandoff(ctx context.Context, in RunOutputRuntime, 
 	if !found || result.Status != atc.RunStatusSucceeded {
 		return fmt.Errorf("the successful rerun did not supersede the aborted build: found=%t, %+v", found, result)
 	}
-	var selected int
-	if err = in.Start.DB.Conn.QueryRowContext(ctx, `SELECT s.build_id FROM pipeline_run_output_candidates c JOIN pipeline_run_output_starts s USING(handoff_id)
- JOIN hangar_claims claim USING(claim_id) WHERE s.run_id=$1 AND claim.released_at IS NULL`, in.Start.Creation.Run.ID()).Scan(&selected); err != nil {
-		return fmt.Errorf("the succeeded Run selected no single candidate: %w", err)
+	for name, bound := range result.Results {
+		if bound.Ref != candidate.Record.Ref || bound.ClaimID != candidate.Record.Key.ClaimID() {
+			return fmt.Errorf("the Run bound %s to %v under claim %s, not the rerun's capture %v",
+				name, bound.Ref, bound.ClaimID, candidate.Record.Ref)
+		}
 	}
-	if selected != rerun.ID() {
-		return fmt.Errorf("the Run selected build %d's candidate, not the rerun's", selected)
+	if len(result.Results) != 1 {
+		return fmt.Errorf("the succeeded Run bound %d results, want the rerun's one", len(result.Results))
 	}
 	return checkNoCancellationRequest(ctx, in)
 }
@@ -646,52 +558,14 @@ func bindRunningPod(ctx context.Context, in RunOutputRuntime, namespace, name st
 	return err
 }
 
-// holdProducerSource prepares the Run's producer, establishes its signed
-// source hold on the node, and retains the hold in the Run.
-func holdProducerSource(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) (output.HandoffRecord, output.CaptureAcknowledgement, error) {
-	var hold output.CaptureAcknowledgement
+// holdProducerSource prepares the Run's producer and, from a real Pod on its
+// node, writes the capture's held marker with the runtime's own hold grant.
+func holdProducerSource(ctx context.Context, in RunOutputRuntime, rec *brine.Recorder) (output.CaptureHoldAcknowledgement, error) {
 	var err error
 	if in.Control, err = in.prepare(); err != nil {
-		return output.HandoffRecord{}, hold, err
+		return output.CaptureHoldAcknowledgement{}, err
 	}
-	if err = checkRuntimeGrant(in, rec); err != nil {
-		return output.HandoffRecord{}, hold, err
-	}
-	r, err := in.readSource()
-	if err != nil {
-		return r, hold, err
-	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, r.ActivationEpoch)
-	if hold, err = client.InspectHold(ctx, r.Execution, r.HandoffID); err != nil {
-		return r, hold, err
-	}
-	tx, err := in.Start.DB.Conn.BeginTx(ctx, nil)
-	if err != nil {
-		return r, hold, err
-	}
-	err = (RunOutputFinish{Start: in.Start}).repository().AcknowledgeSourceHold(ctx, tx, hold)
-	if err == nil {
-		err = tx.Commit()
-	}
-	db.Rollback(tx)
-	return r, hold, err
-}
-
-// checkHoldPod proves the Pod the hold names still exists, undeleted.
-func checkHoldPod(ctx context.Context, in RunOutputRuntime, uid executioncontrol.PodUID) error {
-	pods, err := in.Client.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, pod := range pods.Items {
-		if string(pod.UID) == string(uid) {
-			if pod.DeletionTimestamp != nil {
-				return fmt.Errorf("the closure deleted the producer's Pod")
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("the producer's Pod is gone")
+	return holdRuntimeCapture(in, rec)
 }
 
 // abortOverOpenWork aborts the build over the work it left open. Finishing it
@@ -843,23 +717,36 @@ func closureControlKeys(in RunOutputRuntime) hangaroutput.ControlKeyRing {
 }
 
 // buildClosureWorker is the production cancellation worker over the given
-// node source, with a coordinator that holds only its owner and hold
-// verifier: the closures here never reach a capture past its reservation.
+// node source.
 func buildClosureWorker(in RunOutputRuntime, source runs.CancellationSourcePlane, owner string) runs.CancellationWorker {
-	return cancellationWorkerOver(in, source, &hangaroutput.Coordinator{OwnerID: owner, HoldVerifier: closureControlKeys(in)})
+	return cancellationWorkerOver(in, source, owner)
 }
 
 // cancellationWorkerOver is the production cancellation worker: factory,
-// sources, executions and finality, in atccmd's order, over the given node
-// source and capture coordinator. Like atccmd, it owns its lease under the
-// coordinator's owner.
-func cancellationWorkerOver(in RunOutputRuntime, source runs.CancellationSourcePlane, coordinator *hangaroutput.Coordinator) runs.CancellationWorker {
+// executions and finality, in atccmd's order, over the given node source.
+// Capture cancellation is the finality's, and makes no node call.
+func cancellationWorkerOver(in RunOutputRuntime, source runs.CancellationSourcePlane, owner string) runs.CancellationWorker {
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
-	keys := closureControlKeys(in)
-	sources := &runs.CancellationSources{Conn: in.Start.DB.Conn, Factory: factory, Repository: (RunOutputFinish{Start: in.Start}).repository(), Source: source, Coordinator: coordinator, Verifier: keys}
-	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: source, Verifier: keys}
-	return runs.CancellationWorker{Conn: in.Start.DB.Conn, Factory: factory, OwnerID: coordinator.OwnerID,
-		Actions: runs.CancellationActionSet{factory, sources, executions, runs.CancellationActionFunc(factory.ExecuteCancellationFinality)}}
+	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: source, Verifier: closureControlKeys(in)}
+	return runs.CancellationWorker{Conn: in.Start.DB.Conn, Factory: factory, OwnerID: owner,
+		Actions: runs.CancellationActionSet{factory, executions, runs.CancellationActionFunc(factory.ExecuteCancellationFinality)}}
+}
+
+// cancellationSourceWorker is the worker's source half without the Run's
+// finality: execution closures over the node, and the database-only capture
+// kinds, which are what replaced the source plane's node calls. Build, candidate
+// and terminal operations are left to a worker that carries the finality.
+func cancellationSourceWorker(in RunOutputRuntime) runs.CancellationWorker {
+	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
+	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Verifier: closureControlKeys(in)}
+	captures := runs.CancellationActionFunc(func(ctx context.Context, lease db.RunCancellationLease, op db.RunCancellationOperation) (db.RunCancellationDebt, error) {
+		switch op.Kind {
+		case db.CancelHandoff, db.CancelCapture, db.CancelSourceHold:
+			return factory.ExecuteCancellationFinality(ctx, lease, op)
+		}
+		return db.CancellationUnavailable, db.ErrRunCancellationExternalWork
+	})
+	return runs.CancellationWorker{Conn: in.Start.DB.Conn, Factory: factory, OwnerID: "source-worker", Actions: runs.CancellationActionSet{factory, captures, executions}}
 }
 
 // recordingSource is the real node source, with every node call it makes
@@ -869,7 +756,6 @@ type recordingSource struct {
 	*jetbridge.OutputSource
 	mu    *sync.Mutex
 	calls *[]recordedNodeCall
-	probe *runLockProbe
 }
 
 type recordedNodeCall struct {
@@ -885,9 +771,6 @@ func (s recordingSource) note(execution executioncontrol.ExecutionID, call strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	*s.calls = append(*s.calls, recordedNodeCall{execution, call})
-	if s.probe != nil {
-		s.probe.observe(call)
-	}
 }
 
 func (s recordingSource) callsFor(execution executioncontrol.ExecutionID) []string {
@@ -934,64 +817,4 @@ func (s recordingSource) RecoverExecutionOutcome(ctx context.Context, node strin
 func (s recordingSource) BaseRuntimeControl(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (*runtime.ExecutionControl, error) {
 	s.note(id.ExecutionID, "reconcile")
 	return s.OutputSource.BaseRuntimeControl(ctx, name, uid, epoch, id)
-}
-
-func (s recordingSource) CaptureControl(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch) (hangaroutput.SourceControl, error) {
-	control, err := s.OutputSource.CaptureControl(ctx, name, uid, epoch)
-	if err != nil {
-		return nil, err
-	}
-	return recordingCapture{SourceControl: control, source: s}, nil
-}
-
-type recordingCapture struct {
-	hangaroutput.SourceControl
-	source recordingSource
-}
-
-func (c recordingCapture) InspectHold(ctx context.Context, id executioncontrol.Identity, handoff output.HandoffID) (output.CaptureAcknowledgement, error) {
-	c.source.note(id.ExecutionID, "inspect-hold")
-	return c.SourceControl.InspectHold(ctx, id, handoff)
-}
-
-func (c recordingCapture) Observe(ctx context.Context, id executioncontrol.Identity, wait time.Duration) (executioncontrol.ObserveFinishOrStopResult, error) {
-	c.source.note(id.ExecutionID, "observe")
-	return c.SourceControl.Observe(ctx, id, wait)
-}
-
-func (c recordingCapture) AcknowledgeRelease(ctx context.Context, intent output.ReleaseIntent) (output.ReleaseAcknowledgement, error) {
-	c.source.note(intent.Execution.ExecutionID, "release")
-	return c.SourceControl.AcknowledgeRelease(ctx, intent)
-}
-
-func (c recordingCapture) InspectSeal(ctx context.Context, handoff output.HandoffID, id executioncontrol.Identity) (output.SealStarted, error) {
-	c.source.note(id.ExecutionID, "inspect-seal")
-	return c.SourceControl.InspectSeal(ctx, handoff, id)
-}
-
-func (c recordingCapture) BeginSeal(ctx context.Context, request output.SealRequest) (output.SealStarted, error) {
-	c.source.note(request.Execution.ExecutionID, "begin-seal")
-	return c.SourceControl.BeginSeal(ctx, request)
-}
-
-func (c recordingCapture) ConfirmSeal(ctx context.Context, confirmation output.SealConfirmation) (output.CaptureAcknowledgement, error) {
-	c.source.note(confirmation.Started.Acknowledgement.Execution.ExecutionID, "confirm-seal")
-	return c.SourceControl.ConfirmSeal(ctx, confirmation)
-}
-
-func (c recordingCapture) Canonicalize(ctx context.Context, request output.PublicationRequest) (output.CanonicalizationResult, error) {
-	c.source.note(request.Execution.ExecutionID, "canonicalize")
-	return c.SourceControl.Canonicalize(ctx, request)
-}
-
-// Publish is where the store is written: the daemon creates the object in
-// its output bucket inside this call and nowhere else.
-func (c recordingCapture) Publish(ctx context.Context, request output.PublicationRequest) (output.PublicationResult, error) {
-	c.source.note(request.Execution.ExecutionID, "publish")
-	return c.SourceControl.Publish(ctx, request)
-}
-
-func (c recordingCapture) Attest(ctx context.Context, challenge output.StatChallenge, claims output.ReceiptClaims) (output.Receipt, error) {
-	c.source.note(claims.Execution.ExecutionID, "attest")
-	return c.SourceControl.Attest(ctx, challenge, claims)
 }

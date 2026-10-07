@@ -212,6 +212,22 @@ func (consumer neutralConsumer) ledger(ref hangar.TreeRef) ([]hangaroutputleaf.C
 	return consumer.Repository.ReadClaims(context.Background(), tx, ref)
 }
 
+// consumerClaims counts the active claims on the ref OTHER than the capture's
+// own. A publication takes a claim of its own -- CaptureKey.ClaimID, acquired
+// in the transaction that moves the row to published -- so the claims a
+// consumer's sentence counts are the ones beside it.
+func (in BoundOutput) consumerClaims() int {
+	own := in.Tree.Outcome.Capture.Key.ClaimID()
+	active := 0
+	for _, claim := range in.Claims {
+		if claim.Active() && claim.ClaimID != own {
+			active++
+		}
+	}
+
+	return active
+}
+
 // consumerFor builds the neutral consumer over the plane a capture settled on.
 func consumerFor(tree PublishedTree) (neutralConsumer, error) {
 	plane := tree.Outcome.Plane
@@ -593,7 +609,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 					in.Tree.Ref.Scope, in.Tree.Ref.Digest, in.Tree.Ref.Generation)
 			}),
 
-		check[BoundOutput]("exactly {int} claim is recorded",
+		check[BoundOutput]("exactly {int} consumer claim is recorded",
 			func(in BoundOutput, p brine.Params) error {
 				want, ok := p.GetInt(0)
 				if !ok {
@@ -603,12 +619,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 					return in.Err
 				}
 
-				active := 0
-				for _, claim := range in.Claims {
-					if claim.Active() {
-						active++
-					}
-				}
+				active := in.consumerClaims()
 				if active != want {
 					return fmt.Errorf("%d active claim(s) protect %s/%s/%d, not %d",
 						active, in.Tree.Ref.Scope, in.Tree.Ref.Digest, in.Tree.Ref.Generation, want)
@@ -673,12 +684,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 						in.HeldClaimID, in.Acquisition.ClaimID)
 				}
 
-				active := 0
-				for _, claim := range in.Claims {
-					if claim.Active() {
-						active++
-					}
-				}
+				active := in.consumerClaims()
 				if active != 1 {
 					return fmt.Errorf("%d active claim(s) after a transition that acquires none",
 						active)

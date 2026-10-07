@@ -127,7 +127,7 @@ func HangarPausePodDefinitions() []brine.StepDefinition {
 				if in.Err == nil {
 					return fmt.Errorf("the runtime replaced the pause pod of a capture-held "+
 						"source: %s became %s. A new Pod UID has a write-capable mount over an "+
-						"incarnation a capture is about to seal", in.Before, in.After)
+						"step directory a capture is about to seal", in.Before, in.After)
 				}
 				if !in.Present || in.After != in.Before {
 					return fmt.Errorf("the replacement was refused and the terminal pod is gone "+
@@ -153,12 +153,12 @@ func HangarPausePodDefinitions() []brine.StepDefinition {
 }
 
 // capturedControl rebuilds the envelope the control plane put on the step's
-// spec, carrying the reservation the daemon issued. Nothing here composes a
-// path: the incarnation and its directory are the daemon's own answer, carried
-// forward from `the daemon holds the source`.
+// spec for the capture `the daemon holds the source` held. Nothing here
+// composes a path: the step directory is derived from the capture's key, the
+// same derivation the daemon made when it held it.
 func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {
-	if in.Reserved.Directory == "" {
-		return nil, fmt.Errorf("this chain holds a source with no reservation behind it")
+	if in.Acknowledgement.Kind == "" {
+		return nil, fmt.Errorf("this chain holds no capture: the daemon never acknowledged a hold")
 	}
 	control := &runtime.ExecutionControl{
 		Version:         runtime.ExecutionControlVersion,
@@ -169,17 +169,14 @@ func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {
 		Capability:      "brine-base-capability",
 	}
 	if err := control.SelectCapture(runtime.DurableOutputCapture{
-		Version:             runtime.DurableOutputCaptureVersion,
-		Identity:            in.Execution,
-		ActivationEpoch:     in.Admission.ActivationEpoch,
-		HandoffID:           in.Admission.HandoffID,
-		SourceHoldID:        in.Admission.SourceHoldID,
-		Output:              string(in.Admission.Output),
-		SourceControlGrant:  captureGrantForScenario,
-		CaptureDeadline:     in.Admission.CaptureDeadline.Time,
-		ReservedIncarnation: in.Reserved.Incarnation,
-		ReservedDirectory:   in.Reserved.Directory,
-		ReservingNode:       scenarioReservingNode,
+		Version:            runtime.DurableOutputCaptureVersion,
+		Identity:           in.Execution,
+		ActivationEpoch:    in.Admission.ActivationEpoch,
+		Output:             string(in.Admission.Output),
+		SourceControlGrant: captureGrantForScenario,
+		CaptureDeadline:    in.Admission.CaptureDeadline,
+		Node:               scenarioCaptureNode,
+		NodeUID:            hangarNodeUID,
 	}); err != nil {
 		return nil, err
 	}

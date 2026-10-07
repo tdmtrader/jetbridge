@@ -131,7 +131,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 			if capture == "no candidate" {
 				return in, build.Finish(db.BuildStatusSucceeded)
 			}
-			claims, _, err := in.Candidate.claims()
+			claims, err := in.Candidate.claims()
 			if err != nil {
 				return in, err
 			}
@@ -145,13 +145,6 @@ func RunResultDefinitions() []brine.StepDefinition {
 			runtime.Start.Creation.EntryBuilds[0] = build
 			candidate, err := publishRunCandidate(runtime, rec)
 			if err != nil {
-				return in, err
-			}
-			candidate.Finish.Release, err = candidate.Finish.daemonRelease()
-			if err != nil {
-				return in, err
-			}
-			if err := candidate.Finish.recordRelease(candidate.Finish.Release, false); err != nil {
 				return in, err
 			}
 			in.Candidate = &candidate
@@ -190,7 +183,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 			if in.Candidate == nil {
 				return fmt.Errorf("no fixture candidate")
 			}
-			claims, _, err := in.Candidate.claims()
+			claims, err := in.Candidate.claims()
 			if err != nil {
 				return err
 			}
@@ -201,7 +194,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 						return err
 					}
 					defer db.Rollback(tx)
-					err = in.Candidate.Finish.repository().ReleaseClaim(context.Background(), tx, output.ClaimRelease{ProtocolVersion: output.ProtocolVersion, ClaimID: c.ClaimID, Ref: c.Ref, RequestedAt: output.NewTimestamp(time.Now().UTC())})
+					err = runCaptureRepository().ReleaseClaim(context.Background(), tx, output.ClaimRelease{ProtocolVersion: output.ProtocolVersion, ClaimID: c.ClaimID, Ref: c.Ref, RequestedAt: output.NewTimestamp(time.Now().UTC())})
 					if err == nil {
 						err = tx.Commit()
 					}
@@ -215,7 +208,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 		}),
 
 		brine.DefineMap[RunOutputCandidate, RunResultPublication]("its aggregate Run result is inspected", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunResultPublication, error) {
-			return RunResultPublication{Start: in.Finish.Start, Candidate: &in}, in.Err
+			return RunResultPublication{Start: in.Start, Candidate: &in}, in.Err
 		}),
 		brine.DefineMap[RunOutputStart, RunResultPublication]("its uncaptured result producer finishes successfully", func(in RunOutputStart, _ brine.Params, _ *brine.Recorder) (RunResultPublication, error) {
 			return RunResultPublication{Start: in}, in.Creation.EntryBuilds[0].Finish(db.BuildStatusSucceeded)
@@ -264,7 +257,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 				return fmt.Errorf("incomplete Run exposed a terminal observation: %s %s", status, body)
 			}
 			if in.Candidate != nil {
-				claims, _, err := in.Candidate.claims()
+				claims, err := in.Candidate.claims()
 				if err != nil {
 					return err
 				}
@@ -378,7 +371,7 @@ func checkRunResult(in RunResultPublication, status string, selected bool) error
 			return fmt.Errorf("missing fixture candidate")
 		}
 		result, found := results[in.Start.Plan.RunResult.Name]
-		claims, _, err := in.Candidate.claims()
+		claims, err := in.Candidate.claims()
 		if err != nil {
 			return err
 		}
@@ -390,7 +383,7 @@ func checkRunResult(in RunResultPublication, status string, selected bool) error
 			return fmt.Errorf("non-success exposed partial results: %s", body)
 		}
 		if in.Candidate != nil {
-			claims, _, err := in.Candidate.claims()
+			claims, err := in.Candidate.claims()
 			if err != nil {
 				return err
 			}

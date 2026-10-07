@@ -284,8 +284,9 @@ type submittedRun struct {
 
 // driveSubmittedProducer takes one result producer of a submitted Run's build
 // through the real capture plane: its exact execution admitted and witnessed
-// at start, its original Pod running, work filling the reserved output, then
-// the actual finish witnessed and the capture's release recorded. Envtest
+// at start, its original Pod running, work filling the capture's step
+// directory, then the actual finish witnessed, the capture published and its
+// node marker released. Envtest
 // supplies Pod identity; the live tier supplies kubelet enforcement.
 func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, factory db.PipelineRunFactory, buildID int, planID atc.PlanID, keys hangaroutput.ControlKeyRing, rec *brine.Recorder, work func(directory string) error) (RunOutputCandidate, error) {
 	jdb := runtime.Start.DB
@@ -299,7 +300,7 @@ func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, facto
 			return err
 		}
 		defer db.Rollback(tx)
-		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), HandoffID: record.HandoffID})
+		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), Capture: record.Key})
 		if err != nil {
 			return err
 		}
@@ -353,11 +354,7 @@ func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, facto
 	if err = tx.Commit(); err != nil {
 		return candidate, err
 	}
-	candidate.Finish.Release, err = candidate.Finish.daemonRelease()
-	if err != nil {
-		return candidate, err
-	}
-	return candidate, candidate.Finish.recordRelease(candidate.Finish.Release, false)
+	return candidate, nil
 }
 
 func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner, name string) (string, error) {

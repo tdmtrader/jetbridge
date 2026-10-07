@@ -56,7 +56,6 @@ func TestRunManagedReadsProtectTheConfiguredOperationBudget(t *testing.T) {
   Scenario: Input delivery and a retained result download admit sufficient leases
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"

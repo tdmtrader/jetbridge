@@ -19,8 +19,8 @@ import (
 
 func ReviewWorkerDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("the review image user can write its reserved output", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (RunOutputRuntime, error) {
-			return in, checkReviewImageOutputUser(in)
+		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("the review image user can write its captured output", func(in RunOutputRuntime, _ brine.Params, rec *brine.Recorder) (RunOutputRuntime, error) {
+			return in, checkReviewImageOutputUser(in, rec)
 		}),
 		brine.DefineMap[ReviewChange, ReviewChange]("the review worker receives model output {string}", func(in ReviewChange, p brine.Params, _ *brine.Recorder) (ReviewChange, error) {
 			mode, _ := p.GetString(0)
@@ -218,11 +218,16 @@ func (in ReviewChange) runWorker(mode, auth, control string) (ReviewChange, erro
 	return in, nil
 }
 
-// Exercise the configured image UID against the real daemon's reservation. The
-// process enters the directory before dropping privilege, as a volume mount
-// does, so unrelated fixture ancestor permissions cannot cause the result.
-func checkReviewImageOutputUser(in RunOutputRuntime) error {
-	if _, err := in.prepare(); err != nil {
+// Exercise the configured image UID against the step directory the real
+// daemon creates when the capture is held. The process enters the directory
+// before dropping privilege, as a volume mount does, so unrelated fixture
+// ancestor permissions cannot cause the result.
+func checkReviewImageOutputUser(in RunOutputRuntime, rec *brine.Recorder) error {
+	var err error
+	if in.Control, err = in.prepare(); err != nil {
+		return err
+	}
+	if _, err = holdRuntimeCapture(in, rec); err != nil {
 		return err
 	}
 	source, err := in.readSource()
@@ -253,7 +258,7 @@ func checkReviewImageOutputUser(in RunOutputRuntime) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reservation := filepath.Join(in.Start.Daemon.Output.Root, "steps", source.Source.Directory)
+	reservation := in.Start.Daemon.stepRoot(source.Key)
 	before, err := os.Stat(reservation)
 	if err != nil {
 		return err

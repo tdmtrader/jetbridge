@@ -18,7 +18,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     And the capture settles
     And the published tree is read back from the output bucket
     When the consumer binds the output inside its own transaction
-    Then exactly 1 claim is recorded
+    Then exactly 1 consumer claim is recorded
     And the claim protects the published generation
 
   # The committed half is asserted FIRST, so the absence cannot pass on a
@@ -32,7 +32,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     And the capture settles
     And the published tree is read back from the output bucket
     When the consumer binds the output inside its own transaction
-    Then exactly 1 claim is recorded
+    Then exactly 1 consumer claim is recorded
     When the consumer's transaction is rolled back
     Then no claim is left behind
 
@@ -68,7 +68,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     When the released claim ID is acquired again
     Then the binding is refused as "lifecycle conflict"
     When a fresh claim ID is acquired
-    Then exactly 1 claim is recorded
+    Then exactly 1 consumer claim is recorded
 
   @HOP-29
   Scenario: A hidden-to-published transition keeps the same candidate claim ID
@@ -91,7 +91,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     And the capture settles
     And the published tree is read back from the output bucket
     When the consumer binds the output inside its own transaction
-    Then exactly 1 claim is recorded
+    Then exactly 1 consumer claim is recorded
     When the consumer names an unregistered tree ref
     Then the binding is refused as "not found"
 

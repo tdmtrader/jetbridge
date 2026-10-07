@@ -47,7 +47,7 @@ package steps
 // serves the STRICT-INPUT surface, which is what the proving sentences at the
 // bottom of this file exercise end to end against the emulator, and -- given
 // a control key -- the output plane: the capture control API and the publish
-// route, against ITS OWN bucket, under its own control and receipt keys.
+// route, against ITS OWN bucket, under its own control key.
 // hangarOutputDaemonFlags below is where the bucket separation is stated, and
 // a fixture that pointed both at one bucket would be testing a deployment the
 // daemon refuses to be.
@@ -146,8 +146,35 @@ type HangarDaemon struct {
 	// the daemon was given, so an assertion is against production verification
 	// rather than against a string a step wrote.
 	ControlPublic ed25519.PublicKey
-	ReceiptPublic ed25519.PublicKey
 	NodeUID       string
+
+	// OutputScratch is the output plane's --output-scratch-dir: where the
+	// daemon canonicalizes, and where a staged input waits for its publish.
+	OutputScratch string
+
+	// Terminations is the standalone daemon's --pod-terminations-dir. There is
+	// no kubelet behind this fixture, so a file named after a Pod UID in it is
+	// how a scenario says that Pod's containers have all stopped; a capture
+	// seal waits for exactly that.
+	Terminations string
+}
+
+// terminate declares the producing Pod's containers stopped, the way a
+// kubelet's status would. A seal of a Pod nobody declared waits and answers
+// that it has not terminated yet.
+func (s HangarDaemon) terminate(pod executioncontrol.PodUID) error {
+	if s.Terminations == "" {
+		return fmt.Errorf("this daemon was started with no pod-terminations directory")
+	}
+
+	return os.WriteFile(filepath.Join(s.Terminations, string(pod)), nil, 0o600)
+}
+
+// stepRoot is the step directory the daemon derives for a capture, under its
+// storage root. No request carries it; the fixture knows the shape because it
+// plays the producer that writes there.
+func (s HangarDaemon) stepRoot(key hangaroutput.CaptureKey) string {
+	return filepath.Join(s.Output.Root, "steps", key.Directory())
 }
 
 // hangarOutputDaemonFlags is the output plane's whole argv beyond the address,
@@ -155,15 +182,13 @@ type HangarDaemon struct {
 //
 // It names a DIFFERENT bucket from the artifact daemon's, which is the point:
 // the two buckets are the trust boundary between the planes.
-func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilityKey,
-	materializeKey, nodeUID string) []string {
+func hangarOutputDaemonFlags(endpoint, bucket, controlKey, capabilityKey,
+	materializeKey, nodeUID, terminations string) []string {
 	return []string{
 		"--output-endpoint", endpoint,
 		"--output-bucket", bucket,
 		"--output-prefix", "brine/deployments/one",
 		"--output-tenant", "brine-tenant",
-		"--receipt-key-id", hangarReceiptKeyID,
-		"--receipt-key-file", receiptKey,
 		"--control-key-id", hangarControlKeyID,
 		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
@@ -171,17 +196,16 @@ func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilit
 		"--materialization-key-file", materializeKey,
 		"--node-uid", nodeUID,
 		"--activation-epoch", fmt.Sprint(hangarEpoch),
+		"--pod-terminations-dir", terminations,
 	}
 }
 
 // The identities the fixture mints. They are constants rather than parameters
 // because no scenario may choose one: an activation epoch a feature file could
-// set would be a feature file choosing which key signs its receipts.
+// set would be a feature file choosing which key signs its statements.
 const (
-	hangarReceiptKeyID = "brine-receipt-key-1"
-	// The read-warrant key's id. A THIRD key: a warrant must not be signable by
-	// anything that can mint a publication receipt, and the daemon refuses a
-	// configuration where two of the three are one file.
+	// The read-warrant key's id. A key of its own: a warrant must not be
+	// signable by anything that signs a control statement.
 	hangarMaterializationKeyID = "brine-materialize-key-1"
 	hangarControlKeyID         = "brine-control-key-1"
 	hangarNodeUID              = "brine-node-1"
@@ -335,8 +359,9 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	return state, nil
 }
 
-// prepareOutputPlane creates the output plane's own bucket and mints its two
-// Ed25519 keys and its capability secret, and returns the flags that mount it.
+// prepareOutputPlane creates the output plane's own bucket and mints its
+// Ed25519 control key and its capability secret, and returns the flags that
+// mount it.
 //
 // The bucket is created here and named by the fixture, never by a feature file
 // -- convention 3 applied to the fixture itself -- and it is a different bucket
@@ -351,15 +376,11 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string
 		return nil, err
 	}
 
-	receiptKey, receiptPublic, err := writeEd25519Key(certDir, "receipt.pem")
-	if err != nil {
-		return nil, err
-	}
 	controlKey, controlPublic, err := writeEd25519Key(certDir, "control.pem")
 	if err != nil {
 		return nil, err
 	}
-	state.ReceiptPublic, state.ControlPublic = receiptPublic, controlPublic
+	state.ControlPublic = controlPublic
 
 	capabilitySecret := make([]byte, executioncontrol.CapabilityKeyBytes)
 	if _, err := rand.Read(capabilitySecret); err != nil {
@@ -395,9 +416,18 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string
 	if err != nil {
 		return nil, fmt.Errorf("resolve the output scratch directory: %w", err)
 	}
+	state.OutputScratch = scratch
+
+	terminations, err := AttributedTempDir("brine-hangar-terminations-*")
+	if err != nil {
+		return nil, err
+	}
+	TrackDisposer(rec, "the output plane's pod-terminations directory",
+		func() error { return os.RemoveAll(terminations) })
+	state.Terminations = terminations
 
 	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
-		receiptKey, controlKey, capabilityFile, materializeFile, state.NodeUID)
+		controlKey, capabilityFile, materializeFile, state.NodeUID, terminations)
 
 	return append(flags, "--output-scratch-dir", scratch), nil
 }
@@ -593,6 +623,15 @@ func HangarFixtureDefinitions() []brine.StepDefinition {
 			"a real artifact daemon publishing to a Hangar output bucket",
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (HangarDaemon, error) {
 				return startHangarDaemon(rec)
+			},
+		),
+
+		// The same fixture, named for what the managed-read families need of
+		// it: every route but the node-local hold is behind mutual TLS.
+		brine.DefineMap[brine.Empty, HangarDaemon](
+			"a Hangar output daemon accepting authenticated TLS connections",
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (HangarDaemon, error) {
+				return startHangarDaemon(rec, true)
 			},
 		),
 

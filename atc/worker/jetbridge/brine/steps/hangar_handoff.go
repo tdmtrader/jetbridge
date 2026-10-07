@@ -20,32 +20,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
 
-const handoffPhase = "Phase 3 Green"
-
 // heldFrom carries a draft's identities into the held state.
-func heldFrom(draft CaptureDraft, ack hangaroutput.CaptureAcknowledgement, answer controlAnswer) HeldSource {
+func heldFrom(draft CaptureDraft, ack hangaroutput.CaptureHoldAcknowledgement, answer controlAnswer) HeldSource {
 	return HeldSource{
 		Draft: HeldDraft{
-			Handle: string(draft.Admission.HandoffID),
+			Handle: string(draft.Admission.Execution.ExecutionID),
 			Output: draft.Output,
 			Daemon: draft.Daemon,
 		},
 		DaemonURL:       draft.Daemon.Output.URL,
 		StorageRoot:     draft.Daemon.Output.Root,
 		Acknowledgement: ack,
-		Incarnation:     ack.Incarnation,
-		Fence:           hangaroutput.CaptureFence(draft.Admission.Execution.Fence),
 		Execution:       draft.Admission.Execution,
-		ReservationID:   freshUUID(),
 		Admission:       draft.Admission,
-		Reserved:        draft.Reserved,
 		PodUID:          draft.PodUID,
 		Status:          answer.Status,
 		Body:            answer.Body,
@@ -62,26 +58,13 @@ func (source HeldSource) answered(answer controlAnswer) HeldSource {
 	return source
 }
 
-func (source HeldSource) writerAdmission(ticket string) hangaroutput.WriterAdmission {
-	return hangaroutput.WriterAdmission{
-		ProtocolVersion: hangaroutput.ProtocolVersion,
-		Execution:       source.Execution,
-		ActivationEpoch: source.Admission.ActivationEpoch,
-		HandoffID:       source.Admission.HandoffID,
-		Incarnation:     source.Incarnation,
-		WriterTicketID:  hangaroutput.WriterTicketID(ticket),
-		WriterFence:     1,
-		PodUID:          source.PodUID,
-	}
-}
-
-// incarnationRoot is the directory the daemon issued, derived the way the
-// daemon derives it. The fixture knows the shape because it is the one that
-// swaps a symlink under it; no scenario names it, and no request carries it.
-func (source HeldSource) incarnationRoot() string {
-	return filepath.Join(source.StorageRoot, "steps",
-		fmt.Sprintf("%s.%d", source.Incarnation.ExecutionID, source.Incarnation.HandleGeneration),
-		string(source.Incarnation.Output))
+// hold is the capture control init's request, made from inside the Pod: the
+// execution, the declared output and the Pod UID the container read off the
+// Downward API. It names no path: the daemon derives the step directory from
+// the capture's key.
+func (draft CaptureDraft) hold() controlAnswer {
+	return draft.Daemon.capture("hold", "/capture/v1/hold", draft.Admission.Execution,
+		holdBody(draft.Admission.Execution, draft.Admission.Output, draft.PodUID))
 }
 
 // HangarHandoffDefinitions is the daemon-handoff family.
@@ -91,41 +74,36 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		brine.DefineMap[CaptureDraft, HeldSource](
 			"the daemon holds the source",
 			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				// The reservation comes first, because in production it comes
-				// before the Pod exists at all: the ATC asks the daemon for the
-				// location, mounts it as the producer's output volume, and puts
-				// it in the control init's environment. The hold PRESENTS it.
-				reserving := in.Daemon.capture("reserve-incarnation",
-					"/capture/v1/reserve-incarnation", in.Admission.Execution, in.Admission)
-				reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
-				if err != nil {
-					return HeldSource{}, fmt.Errorf("reserving the incarnation: %w", err)
-				}
-				in.Reserved = reserved
-
-				answer := in.Daemon.capture("hold", "/capture/v1/hold",
-					in.Admission.Execution, holdBody(in.Admission, reserved.Incarnation, in.PodUID))
-				ack, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
+				// The hold is the capture control init's request, made from
+				// inside the Pod before any writer starts. It names the
+				// execution, the output and the Pod; the daemon writes the held
+				// marker and creates the step directory the key derives.
+				answer := in.hold()
+				ack, err := decodeControl[hangaroutput.CaptureHoldAcknowledgement](answer)
 				if err != nil {
 					return HeldSource{}, fmt.Errorf("establishing the hold: %w", err)
 				}
-				if err := hangaroutput.VerifyCaptureAcknowledgement(ack,
-					in.Daemon.ControlPublic); err != nil {
-					return HeldSource{}, fmt.Errorf("the hold statement does not verify under the "+
-						"activation-pinned public key: %w", err)
+				if err := ack.Validate(); err != nil {
+					return HeldSource{}, fmt.Errorf("the hold answer does not validate: %w", err)
+				}
+				if ack.Marker.Key() != in.Admission.Key() || ack.Marker.PodUID != in.PodUID ||
+					ack.Marker.State != hangaroutput.StepHeld {
+					return HeldSource{}, fmt.Errorf("the daemon held %s for pod %s in state %s; "+
+						"the hold asked for %s in pod %s", ack.Marker.Key(), ack.Marker.PodUID,
+						ack.Marker.State, in.Admission.Key(), in.PodUID)
 				}
 
 				held := heldFrom(in, ack, answer)
 
 				// The bytes a producer wrote, written HERE rather than at the
 				// witness, and the move is the point. The source-preserving
-				// stop scenario asserts that the incarnation survives the stop;
-				// writing into it while witnessing made a stop that removed the
-				// directory fail on the `When` instead, so the named `Then` was
-				// never reached. The content is deterministic and shared, which
-				// is what lets two captures of "the same canonical bytes"
-				// really be the same bytes.
-				if err := os.WriteFile(filepath.Join(held.incarnationRoot(), "artifact.txt"),
+				// stop scenario asserts that the step directory survives the
+				// stop; writing into it while witnessing made a stop that
+				// removed the directory fail on the `When` instead, so the
+				// named `Then` was never reached. The content is deterministic
+				// and shared, which is what lets two captures of "the same
+				// canonical bytes" really be the same bytes.
+				if err := os.WriteFile(filepath.Join(held.stepRoot(), "artifact.txt"),
 					[]byte("the bytes a producer wrote\n"), 0o600); err != nil {
 					return HeldSource{}, fmt.Errorf("writing the produced source: %w", err)
 				}
@@ -138,8 +116,8 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			"the same hold is repeated with the same identity",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				answer := in.Draft.Daemon.capture("hold", "/capture/v1/hold",
-					in.Execution, holdBody(in.Admission, in.Incarnation, in.PodUID))
-				repeated, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
+					in.Execution, holdBody(in.Execution, in.Admission.Output, in.PodUID))
+				repeated, err := decodeControl[hangaroutput.CaptureHoldAcknowledgement](answer)
 				if err == nil {
 					in.Repeated = repeated
 				}
@@ -148,28 +126,30 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The conflict twin. "Repeating the handoff returns the same state"
-		// passes for a daemon that ignores the identity entirely, so the twin
-		// has to show that reuse for DIFFERENT facts is a typed conflict.
+		// The conflict twin. "Repeating the hold returns the same marker"
+		// passes for a daemon that ignores the Pod entirely, so the twin has
+		// to show that a hold from a DIFFERENT Pod -- a recreated one -- is a
+		// typed conflict: a replacement Pod is a new writer and does not
+		// inherit a hold.
 		brine.DefineMap[HeldSource, HeldSource](
-			"the same hold is repeated with a different fence",
+			"the same hold is repeated for a different pod",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				different := in.Admission
-				different.Execution.Fence++
-
 				return in.answered(in.Draft.Daemon.capture("hold", "/capture/v1/hold",
-					different.Execution, holdBody(different, in.Incarnation, in.PodUID))), nil
+					in.Execution, holdBody(in.Execution, in.Admission.Output,
+						executioncontrol.PodUID(freshUUID())))), nil
 			},
 		),
 
+		// A hold presented under the fence the takeover superseded. Every
+		// capture route is admitted against the base ledger's CURRENT fence.
 		brine.DefineMap[HeldSource, HeldSource](
 			"a stale fence is presented",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				stale := in.writerAdmission(freshUUID())
-				stale.Execution.Fence = in.Execution.Fence - 1
+				stale := in.Execution
+				stale.Fence = in.Execution.Fence - 1
 
-				return in.answered(in.Draft.Daemon.capture("issue-writer-ticket",
-					"/capture/v1/writer-ticket", stale.Execution, stale)), nil
+				return in.answered(in.Draft.Daemon.capture("hold", "/capture/v1/hold",
+					stale, holdBody(stale, in.Admission.Output, in.PodUID))), nil
 			},
 		),
 
@@ -201,22 +181,23 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// A path a hostile client really can send. It is a raw map because the
 		// whole point is a field no production type declares.
 		brine.DefineMap[HeldSource, HeldSource](
-			"the hold request names a path instead of an incarnation",
+			"the hold request names a path instead of a step",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				return in.answered(in.Draft.Daemon.rawCapture("hold", "/capture/v1/hold",
 					in.Execution, map[string]any{
-						"protocol_version":    hangaroutput.ProtocolVersion,
-						"execution":           in.Execution,
-						"activation_epoch":    in.Admission.ActivationEpoch,
-						"handoff_id":          in.Admission.HandoffID,
-						"source_hold_id":      in.Admission.SourceHoldID,
-						"output":              in.Admission.Output,
-						"capture_deadline_at": in.Admission.CaptureDeadline,
-						"path":                in.incarnationRoot(),
+						"protocol_version": hangaroutput.ProtocolVersion,
+						"execution":        in.Execution,
+						"output":           in.Admission.Output,
+						"pod_uid":          in.PodUID,
+						"path":             in.stepRoot(),
 					})), nil
 			},
 		),
 
+		// The step directory swapped for a symlink after the hold, and the
+		// producer gone. The seal is the operation that resolves the directory
+		// to canonicalize it, so it is the one that must refuse: the bytes a
+		// capture seals are the ones the producer wrote there.
 		brine.DefineMap[HeldSource, HeldSource](
 			"the source path is replaced by a symlink to {string}",
 			func(in HeldSource, p brine.Params, _ *brine.Recorder) (HeldSource, error) {
@@ -224,21 +205,19 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				root := in.incarnationRoot()
+				root := in.stepRoot()
 				if err := os.RemoveAll(root); err != nil {
 					return in, err
 				}
 				if err := os.Symlink(target, root); err != nil {
 					return in, err
 				}
+				if err := in.Draft.Daemon.terminate(in.PodUID); err != nil {
+					return in, err
+				}
 
-				// Any control operation that has to resolve the incarnation
-				// will do; a writer ticket is the cheapest, and it is one of
-				// the operations Req 12 says must go through the ledger.
-				admission := in.writerAdmission(freshUUID())
-
-				return in.answered(in.Draft.Daemon.capture("issue-writer-ticket",
-					"/capture/v1/writer-ticket", in.Execution, admission)), nil
+				return in.answered(in.Draft.Daemon.capture("seal", "/capture/v1/seal",
+					in.Execution, in.sealRequest())), nil
 			},
 		),
 
@@ -259,51 +238,18 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				case "publish":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
 						"publish", "/capture/v1/publish", in.Execution,
-						in.publicationRequest())), nil
+						in.publishRequest(placeholderDigest))), nil
 				case "hold":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
 						"hold", "/capture/v1/hold", in.Execution,
-						holdBody(in.Admission, in.Incarnation, in.PodUID))), nil
+						holdBody(in.Execution, in.Admission.Output, in.PodUID))), nil
 				case "seal":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
-						"begin-seal", "/capture/v1/seal", in.Execution, in.sealRequest())), nil
+						"seal", "/capture/v1/seal", in.Execution, in.sealRequest())), nil
 				}
 
 				return in, fmt.Errorf("no base control operation named %q; the scenario vocabulary "+
 					"is classify, hold, seal and publish", operation)
-			},
-		),
-
-		brine.DefineMap[HeldSource, HeldSource](
-			"a writer ticket is issued after the seal",
-			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				sealAnswer := in.Draft.Daemon.capture("begin-seal", "/capture/v1/seal",
-					in.Execution, in.sealRequest())
-				if _, err := decodeControl[hangaroutput.SealStarted](sealAnswer); err != nil {
-					return in, fmt.Errorf("beginning the seal: %w", err)
-				}
-
-				admission := in.writerAdmission(freshUUID())
-
-				return in.answered(in.Draft.Daemon.capture("issue-writer-ticket",
-					"/capture/v1/writer-ticket", in.Execution, admission)), nil
-			},
-		),
-
-		brine.DefineMap[HeldSource, HeldSource](
-			"a writer ticket is issued before the seal",
-			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				admission := in.writerAdmission(freshUUID())
-				answer := in.Draft.Daemon.capture("issue-writer-ticket",
-					"/capture/v1/writer-ticket", in.Execution, admission)
-				if _, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer); err == nil {
-					// The ticket has to be retired, or the seal in the line
-					// after this one waits for it forever.
-					in.Draft.Daemon.capture("close-writer-ticket",
-						"/capture/v1/writer-ticket/close", in.Execution, admission)
-				}
-
-				return in.answered(answer), nil
 			},
 		),
 
@@ -317,19 +263,8 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				// The release is the other half of the gate, and it is done
 				// here rather than in a Given so that the permitted case really
 				// has both halves and the refused case really has neither.
-				release := hangaroutput.ReleaseIntent{
-					ProtocolVersion: hangaroutput.ProtocolVersion,
-					Disposition:     hangaroutput.DispositionNoCapture,
-					Execution:       in.Source.Execution,
-					ActivationEpoch: in.Source.Admission.ActivationEpoch,
-					HandoffID:       in.Source.Admission.HandoffID,
-					SourceHoldID:    in.Source.Admission.SourceHoldID,
-					ReleaseIntentID: hangaroutput.ReleaseIntentID(freshUUID()),
-					Incarnation:     in.Source.Incarnation,
-				}
-				released := in.Source.Draft.Daemon.capture("release-hold", "/capture/v1/release",
-					in.Source.Execution, release)
-				if _, err := decodeControl[hangaroutput.ReleaseAcknowledgement](released); err != nil {
+				released := in.Source.release()
+				if _, err := decodeControl[hangaroutput.CaptureReleaseAcknowledgement](released); err != nil {
 					return in, fmt.Errorf("releasing the hold: %w", err)
 				}
 
@@ -350,37 +285,19 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// A no_capture release, and it takes a WITNESSED step rather than a held
-		// source.
-		//
-		// That is Req 5 in the type system rather than in a comment: the
-		// no_capture handoff follows an authoritative non-success witness, and
-		// there is no production path on which a hold is released for a
-		// producer nobody has heard from. Written over HeldSource the phrase
-		// constructed a state production cannot reach -- convention 3 -- and the
-		// daemon said so at runtime, refusing with "is never_started; only a
-		// durable finish or stop may authorize destroying anything". It was a
-		// pending scenario, so nothing ran it and nothing noticed.
+		// A release of a failed producer's hold, and it takes a WITNESSED step
+		// rather than a held source: there is no production path on which a
+		// hold is released for a producer nobody has heard from -- the
+		// control plane releases a capture whose row is terminal, and a row is
+		// terminal only after the node's finish or stop.
 		//
 		// It returns the HeldSource so the two node-side checks either side of
 		// it -- the source is still held, the source has been released -- read
-		// the same incarnation on the same node.
+		// the same step directory on the same node.
 		brine.DefineMap[FinishWitnessed, HeldSource](
 			"the hold is released",
 			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				source := in.Source
-
-				return source.answered(source.Draft.Daemon.capture("release-hold",
-					"/capture/v1/release", source.Execution, hangaroutput.ReleaseIntent{
-						ProtocolVersion: hangaroutput.ProtocolVersion,
-						Disposition:     hangaroutput.DispositionNoCapture,
-						Execution:       source.Execution,
-						ActivationEpoch: source.Admission.ActivationEpoch,
-						HandoffID:       source.Admission.HandoffID,
-						SourceHoldID:    source.Admission.SourceHoldID,
-						ReleaseIntentID: hangaroutput.ReleaseIntentID(freshUUID()),
-						Incarnation:     source.Incarnation,
-					})), nil
+				return in.Source.answered(in.Source.release()), nil
 			},
 		),
 
@@ -391,7 +308,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				publication := in.publicationRequest()
+				publication := in.publishRequest(placeholderDigest)
 				switch field {
 				case "bucket":
 					publication.Namespace.Bucket = "somebody-elses-bucket"
@@ -410,8 +327,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The supervisor's two writes, played by the fixture. In Phase 4
-		// execProcess makes these calls; what they say does not change.
+		// The supervisor's two writes, played by the fixture.
 		brine.DefineMap[HeldSource, FinishWitnessed](
 			"the step finishes and the daemon witnesses it",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
@@ -446,19 +362,16 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		),
 
 		// Cancellation is a REQUEST and not a row. What the state carries is
-		// the question; which branch the arbiter then wins is the plane's
+		// the question; what the capture row then becomes is the plane's
 		// answer, and no phrase here decides it.
 		//
 		// It takes a WITNESSED step rather than a held source, and that is the
-		// whole point of the phrase: Req 11 says cancellation before Stage 2
-		// selects only pre_reservation_cancel, never no_capture, and the only
-		// way a scenario can be false against that "never" is for the producer
-		// to have a non-success outcome the arbiter could confuse it with. A
-		// cancellation with no witness beside it is answered
-		// `pre_reservation_cancel` by an arbiter that asks the outcome FIRST
-		// too, so it pins "cancellation is honoured" and not the branch order.
+		// whole point of the phrase: a cancelled capture is discarded as
+		// run_cancelled and never as producer_failed, and the only way a
+		// scenario can be false against that "never" is for the producer to
+		// have a non-success outcome the plane could confuse it with.
 		brine.DefineMap[FinishWitnessed, FinishWitnessed](
-			"the step is cancelled before Stage 2",
+			"the capture is cancelled before it is sealed",
 			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
 				in.Cancelled = true
 
@@ -466,34 +379,21 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The absence: a handoff cancelled with no hold ever acknowledged.
-		//
-		// It still RESERVED, because a reservation exists before the producing
-		// Pod does -- so there is a directory on a node to release, and the
-		// scenario above is its control. The reservation is taken here rather
-		// than in a Given because this is the one chain where the control init
-		// never runs.
+		// The absence: a capture cancelled with no hold ever made. The row
+		// exists -- it is inserted when the step is admitted, before the Pod
+		// -- and the control init never ran, so there is no marker on the
+		// node to release. The scenario above is its control.
 		brine.DefineMap[CaptureDraft, FinishWitnessed](
-			"the handoff is cancelled with no acknowledged hold",
+			"the capture is cancelled with no hold",
 			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
-				reserving := in.Daemon.capture("reserve-incarnation",
-					"/capture/v1/reserve-incarnation", in.Admission.Execution, in.Admission)
-				reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
-				if err != nil {
-					return FinishWitnessed{}, fmt.Errorf("reserving the incarnation: %w", err)
-				}
-
 				source := HeldSource{
 					Draft: HeldDraft{
-						Handle: string(in.Admission.HandoffID),
+						Handle: string(in.Admission.Execution.ExecutionID),
 						Output: in.Output,
 						Daemon: in.Daemon,
 					},
 					DaemonURL:   in.Daemon.Output.URL,
 					StorageRoot: in.Daemon.Output.Root,
-					Incarnation: reserved.Incarnation,
-					Reserved:    reserved,
-					Fence:       hangaroutput.CaptureFence(in.Admission.Execution.Fence),
 					Execution:   in.Admission.Execution,
 					Admission:   in.Admission,
 					PodUID:      in.PodUID,
@@ -541,24 +441,23 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 
 		CheckThat[HeldSource]("the hold acknowledgement is the one the first hold returned",
 			func(in HeldSource) error {
-				if in.Repeated.Signature == "" {
-					// The repeat was refused, so the statement in force is
-					// whatever the daemon still says it is. Ask it.
-					answer := in.Draft.Daemon.capture("inspect-hold", "/capture/v1/hold/inspect",
-						in.Execution, holdInspection{
-							Execution: in.Execution,
-							HandoffID: in.Admission.HandoffID,
-						})
-					current, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
+				if in.Repeated.Kind == "" {
+					// The repeat was refused, so the marker in force is
+					// whatever the daemon still says it is. Ask it the only
+					// way the protocol allows: the original hold, replayed,
+					// is idempotent and answers the marker it holds.
+					answer := in.Draft.Daemon.capture("hold", "/capture/v1/hold", in.Execution,
+						holdBody(in.Execution, in.Admission.Output, in.PodUID))
+					current, err := decodeControl[hangaroutput.CaptureHoldAcknowledgement](answer)
 					if err != nil {
 						return fmt.Errorf("asking which hold is in force: %w", err)
 					}
 					in.Repeated = current
 				}
-				if in.Repeated.Signature != in.Acknowledgement.Signature {
-					return fmt.Errorf("the hold in force is a different statement from the one "+
-						"the first hold returned:\n first: %s\n  now: %s",
-						abbrev(in.Acknowledgement.Signature), abbrev(in.Repeated.Signature))
+				if in.Repeated.Marker != in.Acknowledgement.Marker {
+					return fmt.Errorf("the hold in force is a different marker from the one "+
+						"the first hold returned:\n first: %+v\n  now: %+v",
+						in.Acknowledgement.Marker, in.Repeated.Marker)
 				}
 
 				return nil
@@ -568,12 +467,12 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// that is still there is an outcome, not a call count.
 		CheckThat[HeldSource]("the source is still held on the node",
 			func(in HeldSource) error {
-				info, err := os.Lstat(in.incarnationRoot())
+				info, err := os.Lstat(in.stepRoot())
 				if err != nil {
-					return fmt.Errorf("the source incarnation is gone from the node: %v", err)
+					return fmt.Errorf("the step directory is gone from the node: %v", err)
 				}
 				if !info.IsDir() {
-					return fmt.Errorf("the source incarnation is a %s, not a directory", info.Mode().Type())
+					return fmt.Errorf("the step directory is a %s, not a directory", info.Mode().Type())
 				}
 
 				return nil
@@ -584,7 +483,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// So this asks the two questions separately, and both of them are
 		// outcomes: the gate the hold held open is closed -- the daemon says
 		// the execution is destructively cleanup-eligible, which it refuses
-		// while any hold stands -- and the incarnation directory is still
+		// while any hold stands -- and the step directory is still
 		// there, because it is the step's own output, aliased read-only at the
 		// ordinary path, and Req 2 keeps a failed producer's output for the
 		// build's lifetime. Deletion is reclamation by policy, not a side
@@ -601,10 +500,10 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("the hold's gate is still open after a release: %s "+
 						"(open gates %v)", answer.WithheldReason, answer.OpenExtensionGates)
 				}
-				if _, err := os.Lstat(in.incarnationRoot()); err != nil {
+				if _, err := os.Lstat(in.stepRoot()); err != nil {
 					return fmt.Errorf("the release deleted the step's output at %s: %v; a "+
 						"release closes the hold and leaves the bytes to the artifact daemon's "+
-						"ordinary lifecycle", in.incarnationRoot(), err)
+						"ordinary lifecycle", in.stepRoot(), err)
 				}
 
 				return nil
@@ -649,8 +548,8 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 
 		CheckThat[FinishWitnessed]("the source is still there after the stop",
 			func(in FinishWitnessed) error {
-				if _, err := os.Lstat(in.Source.incarnationRoot()); err != nil {
-					return fmt.Errorf("a source-preserving stop removed the incarnation: %v", err)
+				if _, err := os.Lstat(in.Source.stepRoot()); err != nil {
+					return fmt.Errorf("a source-preserving stop removed the step directory: %v", err)
 				}
 
 				return nil
@@ -689,31 +588,19 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 	}
 }
 
-// holdBody is the capture control init's request: the admission the
-// reservation was made for, the incarnation the daemon answered with, and the
-// Pod UID the container read off the Downward API.
+// holdBody is the capture control init's request: the execution, the declared
+// output, and the Pod UID the container read off the Downward API.
 //
-// The incarnation is not a path and not a choice. It is four server-issued
-// identity fields, and presenting them is how an init container proves it is
-// running in the Pod the reservation was made for.
-//
-// The Pod UID is here and not on the admission because the admission and the
-// reservation both happen before the Pod exists. This is the first message in
-// the protocol sent from INSIDE the Pod, so it is the first one that can name
-// it, and the daemon binds it once.
-func holdBody(admission hangaroutput.CaptureAdmission,
-	incarnation hangaroutput.SourceIncarnation,
-	pod executioncontrol.PodUID) map[string]any {
-	return map[string]any{
-		"protocol_version":    admission.ProtocolVersion,
-		"execution":           admission.Execution,
-		"activation_epoch":    admission.ActivationEpoch,
-		"handoff_id":          admission.HandoffID,
-		"source_hold_id":      admission.SourceHoldID,
-		"output":              admission.Output,
-		"capture_deadline_at": admission.CaptureDeadline,
-		"incarnation":         incarnation,
-		"pod_uid":             pod,
+// The Pod UID is the first fact in the protocol sent from INSIDE the Pod, so
+// this is the first message that can name it, and the daemon binds the held
+// marker to it once.
+func holdBody(execution executioncontrol.Identity, output hangaroutput.OutputName,
+	pod executioncontrol.PodUID) hangaroutput.CaptureHoldRequest {
+	return hangaroutput.CaptureHoldRequest{
+		ProtocolVersion: hangaroutput.ProtocolVersion,
+		Execution:       execution,
+		Output:          output,
+		PodUID:          pod,
 	}
 }
 
@@ -735,12 +622,6 @@ func identifiedBy(id executioncontrol.Identity) identifiedExecution {
 		ExecutionID:     id.ExecutionID,
 		Fence:           id.Fence,
 	}
-}
-
-// holdInspection names ids and nothing else.
-type holdInspection struct {
-	Execution executioncontrol.Identity `json:"execution"`
-	HandoffID hangaroutput.HandoffID    `json:"handoff_id"`
 }
 
 // witness plays the supervisor's two writes and then reads the answer back.
@@ -810,27 +691,36 @@ func (source HeldSource) recordWitness(kind executioncontrol.AcknowledgementKind
 	return witnessed, nil
 }
 
-// sealRequest and publicationRequest re-derive their identities from the
-// admission. No scenario supplies one, which is why neither takes a parameter.
-func (source HeldSource) sealRequest() hangaroutput.SealRequest {
-	return hangaroutput.SealRequest{
+// placeholderDigest is a well-formed digest for a request that is refused
+// before any digest is compared: the refusal scenarios are about a facet or a
+// caller-chosen location, never about which bytes.
+var placeholderDigest = hangar.Digest("sha256:" + strings.Repeat("0", 64))
+
+// sealRequest, publishRequest and release re-derive their identities from the
+// admission. No scenario supplies one, which is why none takes an identity.
+func (source HeldSource) sealRequest() hangaroutput.CaptureSealRequest {
+	return hangaroutput.CaptureSealRequest{
 		ProtocolVersion: hangaroutput.ProtocolVersion,
 		Execution:       source.Execution,
-		ActivationEpoch: source.Admission.ActivationEpoch,
-		HandoffID:       source.Admission.HandoffID,
-		Incarnation:     source.Incarnation,
-		CaptureFence:    hangaroutput.CaptureFence(source.Execution.Fence),
-		DeadlineAt:      source.Admission.CaptureDeadline,
+		Output:          source.Admission.Output,
+		PodUID:          source.PodUID,
 	}
 }
 
-func (source HeldSource) publicationRequest() hangaroutput.PublicationRequest {
-	return hangaroutput.PublicationRequest{
+func (source HeldSource) publishRequest(digest hangar.Digest) hangaroutput.CapturePublishRequest {
+	return hangaroutput.CapturePublishRequest{
 		ProtocolVersion: hangaroutput.ProtocolVersion,
 		Execution:       source.Execution,
-		ActivationEpoch: source.Admission.ActivationEpoch,
-		HandoffID:       source.Admission.HandoffID,
-		ReservationID:   hangaroutput.ReservationID(source.ReservationID),
-		CaptureFence:    hangaroutput.CaptureFence(source.Execution.Fence),
+		Output:          source.Admission.Output,
+		Digest:          digest,
 	}
+}
+
+func (source HeldSource) release() controlAnswer {
+	return source.Draft.Daemon.capture("release", "/capture/v1/release", source.Execution,
+		hangaroutput.CaptureReleaseRequest{
+			ProtocolVersion: hangaroutput.ProtocolVersion,
+			Execution:       source.Execution,
+			Output:          source.Admission.Output,
+		})
 }

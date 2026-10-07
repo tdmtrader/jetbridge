@@ -88,7 +88,7 @@ func exerciseRunExecutionAdmission(in RunOutputStart, mode string) error {
 			return err
 		}
 		in.Record = record
-		req.HandoffID = record.HandoffID
+		req.Capture = record.Key
 	}
 	if mode == "cancellation first" {
 		if _, err := acceptRunCancellation(in, "owner", nil, false); err != nil {

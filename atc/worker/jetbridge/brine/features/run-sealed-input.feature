@@ -4,7 +4,6 @@ Feature: Sealed input grants authorize first admission without becoming retained
   Scenario Outline: Sealed sources are scoped and replayed by stable identity
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"

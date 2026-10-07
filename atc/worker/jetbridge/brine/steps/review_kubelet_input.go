@@ -58,13 +58,9 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		return err
 	}
 	admitter.SetSealedInputAuthority(authority)
-	verifier, err := inputPublicationVerifier(in.Start.Daemon)
-	if err != nil {
-		return err
-	}
 	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
 		publisher, uid, err := source.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
-		return runs.InputUploadNode{UID: uid, Publisher: publisher, Verifier: verifier}, err
+		return runs.InputUploadNode{UID: uid, Publisher: publisher}, err
 	}})
 	archive, err := durableTarOfOneFile("manifest.json", "sealed review input")
 	if err != nil {

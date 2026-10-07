@@ -471,7 +471,7 @@ func refuseValidationHandoff(ctx context.Context, run submittedRun, client *impl
 		return fmt.Errorf("a credential handoff to the validation producer was not refused: %v", err)
 	}
 	rows, err := run.Runtime.Start.DB.Conn.QueryContext(ctx, `SELECT s.result_name FROM pipeline_run_credential_handoffs h
- JOIN pipeline_run_output_starts s USING(handoff_id) WHERE h.run_id=$1`, run.RunID)
+ JOIN pipeline_run_captures s USING(execution_id, output_name) WHERE h.run_id=$1`, run.RunID)
 	if err != nil {
 		return err
 	}

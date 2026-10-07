@@ -255,7 +255,7 @@ func readCancellationSnapshot(in RunOutputStart) ([]byte, error) {
 }
 func readCancellationWork(in RunOutputStart) ([]byte, error) {
 	var body []byte
-	err := in.DB.Conn.QueryRow(`SELECT jsonb_build_object('builds',(SELECT jsonb_agg(jsonb_build_array(id,status,aborted,completed) ORDER BY id) FROM builds WHERE pipeline_run_id=r.id),'starts',(SELECT count(*) FROM pipeline_run_output_starts WHERE run_id=r.id),'debt',(SELECT jsonb_agg(jsonb_build_array(j.id,j.schedule_requested,j.last_scheduled) ORDER BY j.id) FROM jobs j JOIN pipelines p ON p.id=j.pipeline_id WHERE p.pipeline_run_id=r.id)) FROM pipeline_runs r WHERE id=$1`, in.Creation.Run.ID()).Scan(&body)
+	err := in.DB.Conn.QueryRow(`SELECT jsonb_build_object('builds',(SELECT jsonb_agg(jsonb_build_array(id,status,aborted,completed) ORDER BY id) FROM builds WHERE pipeline_run_id=r.id),'starts',(SELECT count(*) FROM pipeline_run_captures WHERE run_id=r.id),'debt',(SELECT jsonb_agg(jsonb_build_array(j.id,j.schedule_requested,j.last_scheduled) ORDER BY j.id) FROM jobs j JOIN pipelines p ON p.id=j.pipeline_id WHERE p.pipeline_run_id=r.id)) FROM pipeline_runs r WHERE id=$1`, in.Creation.Run.ID()).Scan(&body)
 	return body, err
 }
 func checkNoCancellation(in RunOutputStart) error {

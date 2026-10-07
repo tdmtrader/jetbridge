@@ -195,12 +195,12 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 		if err != nil {
 			return err
 		}
-		selected, found, err := factory.OutputTask(ctx, tx, buildID, task.TaskID)
+		selected, found, err := factory.RunCaptureTask(ctx, tx, buildID, task.TaskID)
 		db.Rollback(tx)
-		if err != nil || !found || !selected.Record.Source.Reserved() {
-			return fmt.Errorf("engine task did not retain its reserved result source: %v", err)
+		if err != nil || !found {
+			return fmt.Errorf("engine task did not retain its result capture: %v", err)
 		}
-		expected := filepath.Join(config.ArtifactDaemonHostPath, "steps", selected.Record.Source.Directory)
+		expected := filepath.Join(config.ArtifactDaemonHostPath, "steps", selected.Key().Directory())
 		count := 0
 		for _, volume := range pod.Spec.Volumes {
 			if volume.HostPath != nil && volume.HostPath.Path == expected {
@@ -208,7 +208,7 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 			}
 		}
 		if count != 1 {
-			return fmt.Errorf("engine task does not mount its one reserved result source")
+			return fmt.Errorf("engine task does not mount its one capture step directory")
 		}
 	}
 	return verifyRunInputPod(ctx, in, handle, pod, task)

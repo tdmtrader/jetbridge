@@ -18,9 +18,7 @@ Feature: Registering an uploaded input before granting ownership
       | "registration rollback"      |
       | "registration replay"        |
       | "changed nonce"              |
-      | "changed generation"         |
       | "changed node"               |
-      | "changed signature"          |
       | "expired reservation"        |
       | "pending adoption shield"    |
       | "pending reclaim shield"     |
@@ -28,5 +26,5 @@ Feature: Registering an uploaded input before granting ownership
       | "commit after deadline"      |
       | "reservation late commit"    |
       | "database nonce mutation"    |
-      | "database receipt mutation"  |
+      | "database publication mutation" |
       | "storage integrity at risk"             |

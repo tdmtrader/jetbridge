@@ -28,26 +28,17 @@ Feature: Cancellation publishes one quiescent aborted Run
     Then its aborted Run is immutable and has no public results
 
   @core-review
-  Scenario: A lost source reservation reply blocks build abort and publication
-    Given a Run producer and a ready output node
-    And its source is dispatched but the database reply is lost
-    When cancellation workers settle its remaining "unresolved source"
-    Then its unresolved source prevents an aborted publication
-
-  @core-review
-  Scenario: Aborted publication releases the hidden candidate claim atomically
+  Scenario: Aborted publication releases the published capture's claim atomically
     Given a Run producer and a ready output node
     And its Run runtime prepares the producer
     And its runtime producer publishes a successful review
-    And its Run records the published source release
     When cancellation workers settle its hidden review
     Then its aborted Run is immutable and has no public results
 
   @core-review
-  Scenario: A refused terminal commit preserves the hidden claim for recovery
+  Scenario: A refused terminal commit preserves the capture's claim for recovery
     Given a Run producer and a ready output node
     And its Run runtime prepares the producer
     And its runtime producer publishes a successful review
-    And its Run records the published source release
     When cancellation recovers from a refused publication commit
     Then its aborted Run is immutable and has no public results

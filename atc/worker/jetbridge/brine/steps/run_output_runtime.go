@@ -31,7 +31,6 @@ type RunOutputRuntime struct {
 	Config          jetbridge.Config
 	Spec            runtime.ContainerSpec
 	Control, Replay *runtime.ExecutionControl
-	Reserved        output.ReservedIncarnation
 	Err             error
 	OutcomeReader   jetbridge.PodExecutor
 }
@@ -73,8 +72,8 @@ func RunOutputRuntimeDefinitions() []brine.StepDefinition {
 			in.Control, in.Replay = controls[0], controls[1]
 			return in, nil
 		}),
-		CheckThat[RunOutputRuntime]("its runtime control names the retained daemon source", checkRuntimeSource),
-		brine.DefineCheck[RunOutputRuntime]("its runtime grant establishes a signed source hold", func(in RunOutputRuntime, _ brine.Params, rec *brine.Recorder) error {
+		CheckThat[RunOutputRuntime]("its runtime control names the retained capture", checkRuntimeSource),
+		brine.DefineCheck[RunOutputRuntime]("its runtime grant holds the capture's step directory", func(in RunOutputRuntime, _ brine.Params, rec *brine.Recorder) error {
 			return checkRuntimeGrant(in, rec)
 		}),
 		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("its runtime input overlaps the selected output", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (RunOutputRuntime, error) {
@@ -86,8 +85,8 @@ func RunOutputRuntimeDefinitions() []brine.StepDefinition {
 				return err
 			}
 			a, b := in.Control, in.Replay
-			if b == nil || a.Identity != b.Identity || a.Capture.HandoffID != b.Capture.HandoffID || a.Capture.ReservedIncarnation != b.Capture.ReservedIncarnation || a.Capture.ReservedDirectory != b.Capture.ReservedDirectory {
-				return fmt.Errorf("reconnect changed the execution or source")
+			if b == nil || a.Identity != b.Identity || a.Capture.Key() != b.Capture.Key() || a.Capture.Node != b.Capture.Node || a.Capture.NodeUID != b.Capture.NodeUID {
+				return fmt.Errorf("reconnect changed the execution or its capture")
 			}
 			if a.Capability == b.Capability || a.Capture.SourceControlGrant == b.Capture.SourceControlGrant {
 				return fmt.Errorf("reconnect reused one-shot grants")
@@ -108,50 +107,11 @@ func RunOutputRuntimeDefinitions() []brine.StepDefinition {
 			_, err := in.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, in.Start.Creation.EntryBuilds[0].ID())
 			return in, err
 		}),
-		CheckThat[RunOutputRuntime]("runtime preparation is refused without a start token", func(in RunOutputRuntime) error {
+		CheckThat[RunOutputRuntime]("runtime preparation is refused without a capture", func(in RunOutputRuntime) error {
 			if in.Err == nil || in.Replay != nil {
 				return fmt.Errorf("unadmitted runtime got control")
 			}
 			return checkNoRunOutputStart(in.Start)
-		}),
-		CheckThat[RunOutputRuntime]("the cancelled producer receives no runtime control", func(in RunOutputRuntime) error {
-			if in.Err == nil || in.Replay != nil {
-				return fmt.Errorf("cancelled producer got runtime authority")
-			}
-			return nil
-		}),
-		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("its source dispatch stops before contacting the daemon", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (RunOutputRuntime, error) {
-			return in.dispatch(false)
-		}),
-		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("its source is dispatched but the database reply is lost", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (RunOutputRuntime, error) {
-			return in.dispatch(true)
-		}),
-		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("a new Run runtime reconciles pending sources", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (RunOutputRuntime, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			return in, in.starter().Run(ctx)
-		}),
-		CheckThat[RunOutputRuntime]("the original source is recorded without starting the producer", func(in RunOutputRuntime) error {
-			r, err := in.readSource()
-			if err != nil {
-				return err
-			}
-			if !r.Source.Reserved() || r.Execution != in.Start.Record.Execution || r.Source.Locator != in.Node.Name || string(r.Source.Incarnation.NodeUID) != string(in.Node.UID) {
-				return fmt.Errorf("recovery lost the original source")
-			}
-			if in.Reserved.Directory != "" && (r.Source.Incarnation != in.Reserved.Incarnation || r.Source.Directory != in.Reserved.Directory) {
-				return fmt.Errorf("recovery replaced the daemon's original reservation")
-			}
-			pods, err := in.Client.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{})
-			if err != nil {
-				return err
-			}
-			for _, pod := range pods.Items {
-				if pod.Spec.NodeName == in.Node.Name {
-					return fmt.Errorf("recovery created a producing Pod")
-				}
-			}
-			return nil
 		}),
 		brine.DefineMap[RunOutputRuntime, RunOutputRuntime]("its output node is replaced", func(in RunOutputRuntime, _ brine.Params, _ *brine.Recorder) (RunOutputRuntime, error) {
 			ctx := context.Background()
@@ -171,8 +131,8 @@ func RunOutputRuntimeDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return err
 			}
-			if r.Source.Incarnation != in.Control.Capture.ReservedIncarnation {
-				return fmt.Errorf("replacement node changed the retained source")
+			if r.Key != in.Control.Capture.Key() || string(r.NodeUID) != string(in.Control.Capture.NodeUID) {
+				return fmt.Errorf("replacement node changed the retained capture")
 			}
 			return nil
 		}),
@@ -192,18 +152,12 @@ func (in RunOutputRuntime) prepare() (*runtime.ExecutionControl, error) {
 	defer cancel()
 	return in.starter().Prepare(ctx, in.Start.Creation.EntryBuilds[0].ID(), in.Start.Plan, in.Spec)
 }
-func (in RunOutputRuntime) readSource() (output.HandoffRecord, error) {
-	tx, err := in.Start.DB.Conn.Begin()
-	if err != nil {
-		return output.HandoffRecord{}, err
-	}
-	defer db.Rollback(tx)
-	inDB, found, err := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory).OutputTask(context.Background(), tx, in.Start.Creation.EntryBuilds[0].ID(), in.Start.Plan.TaskID)
-	if err == nil && !found {
-		err = fmt.Errorf("runtime source is not retained")
-	}
-	return inDB.Record, err
+
+// readSource is the producer's capture as the Run retains it.
+func (in RunOutputRuntime) readSource() (runCaptureRecord, error) {
+	return in.Start.readCapture()
 }
+
 func checkRuntimeSource(in RunOutputRuntime) error {
 	if in.Err != nil {
 		return in.Err
@@ -219,75 +173,65 @@ func checkRuntimeSource(in RunOutputRuntime) error {
 		return err
 	}
 	c := in.Control.Capture
-	if r.Execution != in.Control.Identity || r.HandoffID != c.HandoffID || r.Source.Incarnation != c.ReservedIncarnation || r.Source.Directory != c.ReservedDirectory || r.Source.Locator != c.ReservingNode || string(r.Source.Incarnation.NodeUID) != string(in.Node.UID) {
-		return fmt.Errorf("runtime differs from retained daemon source")
+	if r.State != output.CapturePending || r.Execution != in.Control.Identity || r.Key != c.Key() ||
+		r.Node != c.Node || r.Node != in.Node.Name || string(r.NodeUID) != string(c.NodeUID) ||
+		string(r.NodeUID) != string(in.Node.UID) {
+		return fmt.Errorf("runtime control differs from the retained capture")
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, r.ActivationEpoch)
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
 	_, err = client.Classify(context.Background(), r.Execution)
 	return err
 }
 
+// checkRuntimeGrant plays the capture control init: from a real Pod on the
+// capture's node, it presents the runtime's own hold grant at the hold route
+// and requires the held marker to name exactly that capture and that Pod.
 func checkRuntimeGrant(in RunOutputRuntime, rec *brine.Recorder) error {
+	_, err := holdRuntimeCapture(in, rec)
+	return err
+}
+
+func holdRuntimeCapture(in RunOutputRuntime, rec *brine.Recorder) (output.CaptureHoldAcknowledgement, error) {
 	ctx := context.Background()
 	pod, err := in.Client.CoreV1().Pods("default").Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "run-hold-"},
 		Spec:       corev1.PodSpec{NodeName: in.Node.Name, RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{Name: "main", Image: "busybox"}}},
 	}, metav1.CreateOptions{})
 	if err != nil {
-		return err
+		return output.CaptureHoldAcknowledgement{}, err
 	}
 	TrackDisposer(rec, "the run hold pod "+pod.Name, func() error {
 		zero := int64(0)
 		return releasedIfGone(in.Client.CoreV1().Pods("default").Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: &zero}))
 	})
 	c := in.Control.Capture
-	body, err := json.Marshal(holdBody(output.CaptureAdmission{
-		ProtocolVersion: output.ProtocolVersion, Execution: c.Identity, ActivationEpoch: c.ActivationEpoch,
-		HandoffID: c.HandoffID, SourceHoldID: c.SourceHoldID, Output: output.OutputName(c.Output), CaptureDeadline: output.NewTimestamp(c.CaptureDeadline),
-	}, c.ReservedIncarnation, executioncontrol.PodUID(pod.UID)))
+	body, err := json.Marshal(holdBody(c.Identity, output.OutputName(c.Output), executioncontrol.PodUID(pod.UID)))
 	if err != nil {
-		return err
+		return output.CaptureHoldAcknowledgement{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, in.Control.Endpoint+"/capture/v1/hold", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return output.CaptureHoldAcknowledgement{}, err
 	}
 	request.Header.Set(jetbridge.CapabilityHeaderName, string(c.SourceControlGrant))
 	response, err := in.Start.Daemon.HTTP.Do(request)
 	if err != nil {
-		return err
+		return output.CaptureHoldAcknowledgement{}, err
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
-	ack, err := decodeControl[output.CaptureAcknowledgement](controlAnswer{Status: response.StatusCode, Body: answer, Err: err})
+	ack, err := decodeControl[output.CaptureHoldAcknowledgement](controlAnswer{Status: response.StatusCode, Body: answer, Err: err})
 	if err != nil {
-		return err
+		return ack, err
 	}
-	if ack.Execution != c.Identity || ack.Incarnation != c.ReservedIncarnation || string(ack.PodUID) != string(pod.UID) {
-		return fmt.Errorf("runtime grant held another producer")
+	if err := ack.Validate(); err != nil {
+		return ack, err
 	}
-	return output.VerifyCaptureAcknowledgement(ack, in.Start.Daemon.ControlPublic)
-}
-
-// Interrupt at the actual DB/network boundary. All operations are production
-// operations; the fixture omits recording the reply to model controller loss.
-func (in RunOutputRuntime) dispatch(contact bool) (RunOutputRuntime, error) {
-	var err error
-	in.Start.Record, err = in.Start.start(in.Start.Plan, int64(hangarEpoch), in.Node.Name, string(in.Node.UID), false)
-	if err != nil {
-		return in, err
+	if ack.Marker.Key() != c.Key() || string(ack.Marker.PodUID) != string(pod.UID) ||
+		string(ack.Marker.Node) != string(in.Node.UID) || ack.Marker.State != output.StepHeld {
+		return ack, fmt.Errorf("runtime grant held another producer: %+v", ack.Marker)
 	}
-	if err := (RunOutputFinish{Start: in.Start}).requestSource(); err != nil {
-		return in, err
-	}
-	if !contact {
-		return in, nil
-	}
-	r := in.Start.Record
-	in.Reserved, err = in.source().ReserveSource(context.Background(), in.Node.Name, string(in.Node.UID), output.CaptureAdmission{
-		ProtocolVersion: output.ProtocolVersion, Execution: r.Execution, ActivationEpoch: r.ActivationEpoch, HandoffID: r.HandoffID, SourceHoldID: r.SourceHoldID, Output: r.Output, CaptureDeadline: r.CaptureDeadline,
-	})
-	return in, err
+	return ack, nil
 }
 
 func newRunOutputRuntime(rec *brine.Recorder, res brine.Resources, checks bool) (RunOutputRuntime, error) {

@@ -199,7 +199,6 @@ func kubeletProvisionalSourceSurvives(in KubeletRun) error {
 	if _, err = acceptRunCancellation(in.Start, "owner", nil, false); err != nil {
 		return err
 	}
-	handoff := string(in.Control.Capture.HandoffID)
 	worker := cancellationSourceWorker(in.RunOutputRuntime)
 	// The node cannot be reached, so a pass that tries it must say so. A
 	// failed operation is backed off, so later passes may find nothing due;
@@ -219,31 +218,27 @@ func kubeletProvisionalSourceSurvives(in KubeletRun) error {
 		return fmt.Errorf("no cancellation pass reported the unreachable node daemon")
 	}
 	// Without this the facts below would also hold for a worker that never
-	// reached the source: the classification must have been tried against
-	// the node and left as open, retryable debt.
+	// reached the node: the execution's closure must have been tried against
+	// it and left as open, retryable debt. The capture itself is the
+	// database's to discard and asks the node nothing.
 	var tried bool
 	if err = in.Start.DB.Conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_cancellation_operations
  WHERE run_id=$1 AND kind=$2 AND subject=$3 AND attempt_count>0 AND completed_at IS NULL AND debt IN ('unavailable','timeout'))`,
-		a.RunID, string(db.CancelHandoff), handoff).Scan(&tried); err != nil {
+		a.RunID, string(db.CancelExecution), executionSubject(a.Identity)).Scan(&tried); err != nil {
 		return err
 	}
 	if !tried {
-		return fmt.Errorf("cancellation never tried to classify the provisional source against the node")
+		return fmt.Errorf("cancellation never tried to close the producer's execution against the node")
 	}
-	var facts int
 	var closed bool
 	var status string
 	if err = in.Start.DB.Conn.QueryRowContext(ctx, `SELECT
- (SELECT count(*) FROM pipeline_run_output_cancellation_classifications WHERE handoff_id=$1)+
- (SELECT count(*) FROM pipeline_run_output_cancellation_evidence WHERE handoff_id=$1)+
- (SELECT count(*) FROM pipeline_run_output_finishes WHERE handoff_id=$1)+
- (SELECT count(*) FROM pipeline_run_output_releases WHERE handoff_id=$1),
- EXISTS(SELECT 1 FROM pipeline_run_execution_closures WHERE execution_id=$2 AND execution_fence=$3),
- (SELECT status FROM pipeline_runs WHERE id=$4)`, handoff, string(a.Identity.ExecutionID), int64(a.Identity.Fence), a.RunID).Scan(&facts, &closed, &status); err != nil {
+ EXISTS(SELECT 1 FROM pipeline_run_execution_closures WHERE execution_id=$1 AND execution_fence=$2),
+ (SELECT status FROM pipeline_runs WHERE id=$3)`, string(a.Identity.ExecutionID), int64(a.Identity.Fence), a.RunID).Scan(&closed, &status); err != nil {
 		return err
 	}
-	if facts != 0 || closed || status != "running" {
-		return fmt.Errorf("an unreachable node yielded conclusions: %d source facts, execution closed=%t, Run %s", facts, closed, status)
+	if closed || status != "running" {
+		return fmt.Errorf("an unreachable node yielded conclusions: execution closed=%t, Run %s", closed, status)
 	}
 	current, err := in.Client.CoreV1().Pods(in.Config.Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil || current.UID != pod.UID || current.DeletionTimestamp != nil {

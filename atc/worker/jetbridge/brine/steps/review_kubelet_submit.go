@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,13 +82,9 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 		return err
 	}
 	admitter.SetSealedInputAuthority(authority)
-	verifier, err := inputPublicationVerifier(in.Start.Daemon)
-	if err != nil {
-		return err
-	}
 	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
 		publisher, uid, err := source.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
-		return runs.InputUploadNode{UID: uid, Publisher: publisher, Verifier: verifier}, err
+		return runs.InputUploadNode{UID: uid, Publisher: publisher}, err
 	}})
 	admitter.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{Source: source, Helper: "/usr/local/bin/jb-review-worker", Socket: "/dev/shm/jb-review/auth.sock", Lifetime: 3 * time.Minute, WorkerImages: []string{image}})
 	oldEnabled := atc.PipelineRunActivationEpoch
@@ -254,7 +249,7 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 	if err = kubeletProbe(ctx, executor, config.Namespace, name, `test -s /workspace/result/review.json; test -s /workspace/result/review.md; test -z "$(find /dev/shm/jb-review -name 'auth.json*' -print)"`); err != nil {
 		return fmt.Errorf("worker failed to publish or clean credentials: %w", err)
 	}
-	if err = settleLiveReview(ctx, in, controls, keys); err != nil {
+	if err = settleLiveReview(ctx, in); err != nil {
 		return err
 	}
 	if err = readCompletedSubmission(ctx, auth, change, options, ready.result, surface); err != nil {
@@ -273,54 +268,34 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 	return nil
 }
 
-func settleLiveReview(ctx context.Context, in RunOutputRuntime, controls jetbridge.OutputControlResolver, keys hangaroutput.ControlKeyRing) error {
+func settleLiveReview(ctx context.Context, in RunOutputRuntime) error {
 	r, err := in.readSource()
 	if err != nil {
 		return err
 	}
-	finish := RunOutputFinish{Start: in.Start}
-	finish.Start.Record = r
-	repository := finish.repository()
-	receipts := hangaroutput.ReceiptKeyRing{ActiveKeyID: hangarReceiptKeyID, ActivationEpoch: r.ActivationEpoch, Keys: []hangaroutput.ReceiptKeyEntry{{ID: hangarReceiptKeyID, Epoch: r.ActivationEpoch, PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ReceiptPublic)}}}
-	verifier, err := receipts.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
-	if err != nil {
-		return err
-	}
-	drain := &jetbridge.OutputDrain{Client: in.Client, Controls: controls, Namespace: in.Config.Namespace}
-	coordinator := &hangaroutput.Coordinator{Transactor: brineTransactor{conn: in.Start.DB.Conn}, Repository: repository, Dialer: hangaroutput.SourceDialerFunc(func(node string) (hangaroutput.SourceControl, error) {
-		return controls.ForNode(ctx, node)
-	}), Drain: drain, Verifier: verifier, HoldVerifier: keys, Announcer: hangaroutput.AnnouncerFunc(repository.RecordAnnouncement), OwnerID: freshUUID(), ReceiptKeyID: hangarReceiptKeyID}
+	coordinator := runOutputCoordinator(in)
 	for {
-		// The production recoverer asks again while kubelet closes the Pod.
-		// A single advance must not fabricate synchronous termination evidence.
-		if _, err = coordinator.Advance(ctx, r.HandoffID); err != nil && !errors.Is(err, output.ErrSealUnconfirmed) {
+		// The production coordinator asks again while kubelet closes the
+		// Pod: a seal answers "not yet" until every container has stopped,
+		// and nothing here fabricates that it has.
+		if err = coordinator.Advance(ctx, r.Key); err != nil {
 			return err
 		}
 		r, err = in.readSource()
 		if err != nil {
 			return err
 		}
-		if r.State == output.CaptureStateRegistered && r.Receipt != nil {
+		if r.State == output.CapturePublished && r.Released() {
 			break
 		}
-		if r.State == output.CaptureStateFailed {
-			return fmt.Errorf("live result capture failed: %s", r.TerminalFailure)
+		if r.State == output.CaptureFailed || r.State == output.CaptureDiscarded {
+			return fmt.Errorf("live result capture is %s: %s", r.State, r.Error)
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("live result capture remained %s: %w", r.State, ctx.Err())
 		case <-time.After(200 * time.Millisecond):
 		}
-	}
-	finish.Release, err = finish.daemonRelease()
-	if err != nil {
-		return err
-	}
-	if err = drain.ReleaseDrain(ctx, in.Node.Name, r.Execution, r.HandoffID); err != nil {
-		return err
-	}
-	if err = finish.recordRelease(finish.Release, false); err != nil {
-		return err
 	}
 	if err = in.Start.Creation.EntryBuilds[0].Finish(db.BuildStatusSucceeded); err != nil {
 		return err

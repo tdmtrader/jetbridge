@@ -4,7 +4,6 @@ Feature: The worker delivers each retained Run input under an exact lease
   Scenario Outline: The actual container receives only admitted managed inputs
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
-    And its Run records the published source release
     And its published producer finishes as "succeeded"
     And its aggregate Run result is inspected
     And its other Run jobs finish as "succeeded"

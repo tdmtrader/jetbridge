@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/util"
-	"github.com/concourse/concourse/hangar/output"
 )
 
 type RunCheckAdmission struct {
@@ -98,20 +97,9 @@ func RunCancellationBoundaryDefinitions() []brine.StepDefinition {
 			}
 			return nil
 		}),
-		brine.DefineMap[RunOutputFinish, RunOutputFinish]("the whole Run is cancelled before capture selection", func(in RunOutputFinish, _ brine.Params, _ *brine.Recorder) (RunOutputFinish, error) {
+		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("the whole Run is cancelled after publication", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
 			_, err := acceptRunCancellation(in.Start, "first-owner", nil, false)
 			return in, err
-		}),
-		brine.DefineMap[RunOutputCandidate, RunOutputCandidate]("the whole Run is cancelled after publication", func(in RunOutputCandidate, _ brine.Params, _ *brine.Recorder) (RunOutputCandidate, error) {
-			_, err := acceptRunCancellation(in.Finish.Start, "first-owner", nil, false)
-			return in, err
-		}),
-		CheckThat[RunOutputCandidate]("the cancelled Run retains a discard without a candidate claim", func(in RunOutputCandidate) error {
-			claims, record, err := in.claims()
-			if err != nil {
-				return err
-			}
-			return assertCancelledDiscard(in.Finish.Start.DB.Conn, record, claims)
 		}),
 		CheckThat[RunCancellation]("direct changes cannot remove or replace the cancellation request", func(in RunCancellation) error {
 			if in.Err != nil {
@@ -125,25 +113,6 @@ func RunCancellationBoundaryDefinitions() []brine.StepDefinition {
 			return nil
 		}),
 	}
-}
-
-// assertCancelledDiscard proves a cancelled Run's settled capture became a
-// run_cancelled discard: no candidate and no claim on its generation.
-func assertCancelledDiscard(conn db.DbConn, record output.HandoffRecord, claims []output.ClaimRecord) error {
-	var candidates int
-	var reason string
-	err := conn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_output_candidates WHERE handoff_id=$1),
- coalesce((SELECT reason FROM pipeline_run_output_discards WHERE handoff_id=$1),'')`, string(record.HandoffID)).Scan(&candidates, &reason)
-	if err != nil {
-		return err
-	}
-	if len(claims) != 0 || candidates != 0 || !record.Settled {
-		return fmt.Errorf("cancelled Run retained %d candidates and %d claims, settled=%t", candidates, len(claims), record.Settled)
-	}
-	if reason != "run_cancelled" {
-		return fmt.Errorf("discard lost its Run cancellation reason: %q", reason)
-	}
-	return nil
 }
 
 func requestRunCheck(in RunOutputStart, kind string) (RunCheckAdmission, error) {
