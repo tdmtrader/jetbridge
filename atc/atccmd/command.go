@@ -253,7 +253,6 @@ type RunCommand struct {
 		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
 		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the output daemon output-timeout; read leases and transports cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
-		OutputSealDeadline                 time.Duration `long:"kubernetes-hangar-output-seal-deadline"     default:"5m" description:"How long a seal may take before it is unconfirmed. Configurable from 30s to 30m."`
 		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
 		OutputLeaseRenewInterval           time.Duration `long:"kubernetes-hangar-output-lease-renew-interval" default:"1m" description:"How often a held lease is renewed. At most one minute: a longer interval is a lease that expires under its own owner."`
 		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
@@ -3003,9 +3002,6 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	}
 	if err := output.ValidateMaterializationTimeout(cmd.Kubernetes.OutputOperationTimeout); err != nil {
 		return fmt.Errorf("--kubernetes-hangar-output-operation-timeout: %w", err)
-	}
-	if err := output.ValidateSealDeadline(cmd.Kubernetes.OutputSealDeadline); err != nil {
-		return fmt.Errorf("--kubernetes-hangar-output-seal-deadline: %w", err)
 	}
 	if err := output.ValidateCaptureDeadline(cmd.Kubernetes.OutputCaptureDeadline); err != nil {
 		return fmt.Errorf("--kubernetes-hangar-output-capture-deadline: %w", err)

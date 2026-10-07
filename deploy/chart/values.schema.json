@@ -803,7 +803,9 @@
         "sharedBucketPrefixOnlyIsolation": {},
         "endpoint": {},
         "captureDeadline": {},
-        "sealDeadline": {},
+        "sealDeadline": {
+          "$ref": "#/definitions/removed"
+        },
         "publicationGrace": {},
         "leaseTerm": {},
         "leaseRenewInterval": {},

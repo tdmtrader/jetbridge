@@ -539,7 +539,6 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 		cmd.Kubernetes.ArtifactDaemonTLSKey = filepath.Join(dir, "tls.key")
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = filepath.Join(dir, "ca.crt")
 		cmd.Kubernetes.OutputOperationTimeout = 15 * time.Minute
-		cmd.Kubernetes.OutputSealDeadline = 30 * time.Minute
 		cmd.Kubernetes.OutputCaptureDeadline = 2 * time.Hour
 		cmd.Kubernetes.OutputLeaseTerm = 15 * time.Minute
 		cmd.Kubernetes.OutputLeaseRenewInterval = 30 * time.Second

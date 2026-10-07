@@ -211,16 +211,12 @@
 {{- define "concourse.hangarOutput.validateDurations" -}}
 {{- $output := .Values.hangarOutput -}}
 {{- $capture := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.captureDeadline" "value" $output.captureDeadline)) -}}
-{{- $seal := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.sealDeadline" "value" $output.sealDeadline)) -}}
 {{- $grace := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.publicationGrace" "value" $output.publicationGrace)) -}}
 {{- $lease := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.leaseTerm" "value" $output.leaseTerm)) -}}
 {{- $renew := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.leaseRenewInterval" "value" $output.leaseRenewInterval)) -}}
 
 {{- if or (lt $capture 3600) (gt $capture 604800) -}}
 {{- fail (printf "hangarOutput.captureDeadline is %s; it is configurable from 1h to 168h. Below an hour a legitimate slow capture is terminalised; above a week a lost capture pins its correlation for longer than anybody will look." $output.captureDeadline) -}}
-{{- end -}}
-{{- if or (lt $seal 30) (gt $seal 1800) -}}
-{{- fail (printf "hangarOutput.sealDeadline is %s; it is configurable from 30s to 30m." $output.sealDeadline) -}}
 {{- end -}}
 {{- if gt $grace 2592000 -}}
 {{- fail (printf "hangarOutput.publicationGrace is %s; the maximum is 720h (30 days)." $output.publicationGrace) -}}

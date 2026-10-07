@@ -30,16 +30,6 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
-  {{- if and (.Values.hangarOutput.executionControl.enabled | default false) (.Values.hangarOutput.enabled | default false) }}
-  # The output facet's capture seal waits for EVERY container of the producing
-  # Pod -- init, regular and ephemeral -- to terminate before it reads the
-  # tree, so no writer is still writing. It lists this node's own Pods
-  # (fieldSelector spec.nodeName) to see that. Read-only: a seal waits for
-  # writers to stop and never deletes or changes a Pod to get there.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -56,3 +46,41 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "concourse.fullname" . }}-artifact-daemon
     namespace: {{ .Release.Namespace }}
+{{- if and (.Values.hangarOutput.executionControl.enabled | default false) (.Values.hangarOutput.enabled | default false) }}
+---
+# The output facet's capture seal waits for EVERY container of the producing
+# Pod -- init, regular and ephemeral -- to terminate before it reads the tree,
+# so no writer is still writing. It lists this node's Pods (fieldSelector
+# spec.nodeName) in the task namespace, and only there: a namespaced Role, not
+# a cluster-wide read. Read-only: a seal waits for writers to stop and never
+# deletes or changes a Pod to get there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon-pods
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon-pods
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "concourse.fullname" . }}-artifact-daemon-pods
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "concourse.fullname" . }}-artifact-daemon
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -851,8 +851,6 @@ func TestTheDeadlineGraceAndLeaseRelationshipsAreEnforced(t *testing.T) {
 		{[]string{"hangarOutput.publicationGrace=744h"}, "publicationGrace"},
 		{[]string{"hangarOutput.captureDeadline=30m"}, "captureDeadline"},
 		{[]string{"hangarOutput.captureDeadline=200h"}, "captureDeadline"},
-		{[]string{"hangarOutput.sealDeadline=10s"}, "sealDeadline"},
-		{[]string{"hangarOutput.sealDeadline=45m"}, "sealDeadline"},
 		{[]string{"hangarOutput.leaseTerm=5m"}, "leaseTerm"},
 		{[]string{"hangarOutput.leaseRenewInterval=5m"}, "leaseRenewInterval"},
 	} {
@@ -1102,28 +1100,64 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 // Pods the list is forbidden and no capture ever seals. The grant is read-only
 // and belongs to the output facet alone: a base-only daemon seals nothing.
 func TestTheCaptureSealCanObserveItsNodesPods(t *testing.T) {
-	podVerbs := func(out string) []string {
+	clusterPodVerbs := func(out string) []string {
 		var role rbacv1.ClusterRole
 		decodeNamed(t, out, "ClusterRole", objectNamed(t, out, "ClusterRole", "-"+outputDaemonComponent).name, &role)
 		var verbs []string
 		for _, rule := range role.Rules {
-			if slices.Contains(rule.Resources, "pods") && slices.Contains(rule.APIGroups, "") {
+			if slices.Contains(rule.Resources, "pods") {
 				verbs = append(verbs, rule.Verbs...)
 			}
 		}
-		sort.Strings(verbs)
 		return verbs
 	}
+	podRoles := func(out string) []rbacv1.Role {
+		var roles []rbacv1.Role
+		for _, document := range strings.Split(out, "\n---") {
+			if !strings.Contains("\n"+document+"\n", "\nkind: Role\n") || !strings.Contains(document, "-artifact-daemon-pods") {
+				continue
+			}
+			var role rbacv1.Role
+			if err := yaml.Unmarshal([]byte(document), &role); err != nil {
+				t.Fatalf("decoding the daemon's pod Role: %v", err)
+			}
+			roles = append(roles, role)
+		}
+		return roles
+	}
 
-	if verbs := podVerbs(renderOutput(t)); !slices.Equal(verbs, []string{"get", "list"}) {
-		t.Errorf("with the output facet the daemon's ClusterRole grants %v on pods, want "+
-			"exactly get and list: the seal lists its node's Pods and changes none", verbs)
+	out := renderOutput(t)
+	if verbs := clusterPodVerbs(out); len(verbs) != 0 {
+		t.Errorf("the daemon's ClusterRole grants %v on pods; Pod reads are namespaced", verbs)
 	}
-	if verbs := podVerbs(renderBaseControl(t)); len(verbs) != 0 {
-		t.Errorf("a base-control-only daemon is granted %v on pods; it seals no capture", verbs)
+	roles := podRoles(out)
+	if len(roles) != 1 {
+		t.Fatalf("with the output facet the daemon has %d pod Roles, want 1", len(roles))
 	}
-	if verbs := podVerbs(render(t)); len(verbs) != 0 {
-		t.Errorf("the default render grants the artifact daemon %v on pods", verbs)
+	role := roles[0]
+	if role.Namespace == "" {
+		t.Errorf("the daemon's pod Role names no namespace")
+	}
+	var verbs []string
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "pods") && slices.Contains(rule.APIGroups, "") {
+			verbs = append(verbs, rule.Verbs...)
+		}
+	}
+	sort.Strings(verbs)
+	if !slices.Equal(verbs, []string{"get", "list"}) {
+		t.Errorf("the daemon's pod Role grants %v, want exactly get and list: the seal lists its "+
+			"node's Pods and changes none", verbs)
+	}
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(daemon.body, "--pod-terminations-namespace="+role.Namespace) {
+		t.Errorf("the daemon does not read Pods in the namespace its Role covers (%s)", role.Namespace)
+	}
+
+	for name, out := range map[string]string{"base control only": renderBaseControl(t), "default": render(t)} {
+		if roles := podRoles(out); len(roles) != 0 || len(clusterPodVerbs(out)) != 0 {
+			t.Errorf("%s: the artifact daemon is granted pod reads; it seals no capture", name)
+		}
 	}
 }
 

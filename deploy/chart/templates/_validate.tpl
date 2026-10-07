@@ -30,6 +30,7 @@ template first, so these rules run before anything else in the chart.
   (list "hangarOutput.receipt" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key, ring or referenced epoch to declare. Remove the value and its Secret.")
   (list "hangarOutput.activation.job.facet" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
   (list "hangarOutput.activation.job.mode" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
+  (list "hangarOutput.sealDeadline" "a capture seal is asynchronous on the node and bounded by the capture deadline (hangarOutput.captureDeadline); there is no separate seal deadline. Remove the value.")
   (list "hangarOutput.activation.receiptKeyLifetime" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key to age out. Remove the value.")
   (list "rbac.brineLive" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")

@@ -25,12 +25,6 @@ const (
 	MinCaptureDeadline     = time.Hour
 	MaxCaptureDeadline     = 7 * 24 * time.Hour
 
-	// DefaultSealDeadline bounds writer drain and the container-status proof.
-	// An unconfirmed drain is ErrSealUnconfirmed and publishes no receipt.
-	DefaultSealDeadline = 5 * time.Minute
-	MinSealDeadline     = 30 * time.Second
-	MaxSealDeadline     = 30 * time.Minute
-
 	// DefaultPublicationGrace is how long a marked, unregistered object is left
 	// alone before inventory may treat it as an orphan. Grace reduces work and
 	// provides recovery margin; it is never the claim/reclaim mutex.
@@ -93,23 +87,6 @@ func ValidateCaptureDeadline(deadline time.Duration) error {
 	if deadline < MinCaptureDeadline || deadline > MaxCaptureDeadline {
 		return fmt.Errorf("%w: capture deadline %s is outside %s..%s",
 			ErrIncomplete, deadline, MinCaptureDeadline, MaxCaptureDeadline)
-	}
-
-	return nil
-}
-
-// ValidateSealDeadline is Req 17's range, applied at the only site a seal
-// deadline can be configured from.
-//
-// It was deferred for a round with the reason "Req 17's bound has no
-// operator-facing flag to refuse", and the reason named the wrong thing: there
-// is no flag, but Coordinator.SealDeadline is an exported field on an exported
-// struct, it is the only place the value comes from, and it accepted anything.
-// "No operator-facing flag" is not "no configuration site".
-func ValidateSealDeadline(deadline time.Duration) error {
-	if deadline < MinSealDeadline || deadline > MaxSealDeadline {
-		return fmt.Errorf("%w: seal deadline %s is outside %s..%s",
-			ErrIncomplete, deadline, MinSealDeadline, MaxSealDeadline)
 	}
 
 	return nil

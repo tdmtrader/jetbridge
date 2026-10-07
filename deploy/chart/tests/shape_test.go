@@ -150,6 +150,7 @@ var removedKeys = []string{
 	"hangarOutput.activation.job.facet",
 	"hangarOutput.activation.job.mode",
 	"hangarOutput.activation.receiptKeyLifetime",
+	"hangarOutput.sealDeadline",
 	"hangarOutput.daemon",
 	"hangarOutput.readControlCA",
 	"hangarOutput.readControlURL",

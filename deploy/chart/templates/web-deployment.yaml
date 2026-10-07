@@ -224,7 +224,6 @@ spec:
             # artifact daemon's client certificate above.
             - --kubernetes-hangar-output-warrant-key=/etc/concourse/hangar-output/capability/capability.key
             - --kubernetes-hangar-output-operation-timeout={{ .Values.hangarOutput.operationTimeout }}
-            - --kubernetes-hangar-output-seal-deadline={{ .Values.hangarOutput.sealDeadline }}
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
             - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}

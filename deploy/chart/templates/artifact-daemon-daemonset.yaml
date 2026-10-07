@@ -167,6 +167,7 @@ spec:
             - --output-scratch-dir={{ .Values.artifactDaemon.outputScratch.path }}
             - --publish-concurrency={{ int .Values.artifactDaemon.outputScratch.concurrency }}
             {{- if $capture }}
+            - --pod-terminations-namespace={{ include "concourse.kubernetesNamespace" . }}
             {{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-output-disk") | nindent 12 }}
             {{- if $output.cacheBucket }}
             - --cache-bucket={{ $output.cacheBucket }}

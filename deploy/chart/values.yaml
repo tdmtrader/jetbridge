@@ -886,7 +886,6 @@ hangarOutput:
   # between them, because a grace that does not exceed the maximum capture
   # deadline can collect an object a capture is still allowed to register.
   captureDeadline: "24h"     # 1h .. 168h
-  sealDeadline: "5m"         # 30s .. 30m
   publicationGrace: "192h"   # >= captureDeadline + 1h, <= 720h
   leaseTerm: "15m"           # at least 15m
   leaseRenewInterval: "1m"   # at most 1m
