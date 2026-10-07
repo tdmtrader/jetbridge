@@ -68,7 +68,9 @@ var (
 func buildOutputDaemon() (string, error) {
 	outputDaemonBuild.Do(func() {
 		binary := filepath.Join(tempRoot, "artifact-daemon")
-		build := exec.Command("go", "build", "-o", binary, "./cmd/artifact-daemon")
+		// Stripped: one link per test process, and the artifact daemon links the
+		// cloud SDKs, so an unstripped binary per process is gigabytes of scratch.
+		build := exec.Command("go", "build", "-ldflags", "-s -w", "-o", binary, "./cmd/artifact-daemon")
 		build.Dir = repositoryRoot()
 		// The go tool's own work directory goes inside this package's root, so
 		// that a build killed by a signal leaves its `go-build*` where this

@@ -428,7 +428,9 @@ func buildDaemon() (string, error) {
 			return
 		}
 		daemonBinary = filepath.Join(cache, "artifact-daemon")
-		build := exec.Command("go", "build", "-o", daemonBinary, "./cmd/artifact-daemon")
+		// Stripped: one link per test process, and the artifact daemon links the
+		// cloud SDKs, so an unstripped binary per process is gigabytes of scratch.
+		build := exec.Command("go", "build", "-ldflags", "-s -w", "-o", daemonBinary, "./cmd/artifact-daemon")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
 			daemonErr = fmt.Errorf("building the artifact daemon: %w\n%s", err, out)
