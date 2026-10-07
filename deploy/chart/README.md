@@ -268,7 +268,7 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hangar.maxEntries` | `100000` | Maximum filesystem entries in one exact tree. |
 | `artifactDaemon.hangar.capabilityTTL` | `900s` | Shared web/daemon warrant TTL in positive whole seconds, at most 900s. |
 
-`artifactDaemon` also carries `mirror`, `preemption`, `tls` and `networkPolicy`
+`artifactDaemon` also carries `mirror`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
 
 Hangar names its own store, bucket, prefix and endpoint and shares nothing

@@ -66,6 +66,9 @@ func TestHangarEnabledRendersSharedBoundedConfiguration(t *testing.T) {
 		"--hangar-endpoint=http://gcs.test",
 		"--kubernetes-hangar-enabled", "--kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key",
 		"--kubernetes-hangar-warrant-ttl=420s", "concourse.dev/hangar-v1", "name: hangar-scratch",
+		// Web is named the strict-input namespace only so it can refuse one
+		// shared with the output namespace at startup.
+		"--kubernetes-hangar-input-bucket=hangar-bucket",
 		"mountPath: /private/hangar-scratch", "emptyDir: {}",
 	} {
 		if !strings.Contains(out, want) {

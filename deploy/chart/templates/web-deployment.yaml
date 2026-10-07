@@ -208,6 +208,9 @@ spec:
             - --kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
             {{- end }}
             - --kubernetes-hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            # Named only so web refuses to start when the strict-input
+            # namespace is also the output one (ADR-0002); web never reaches it.
+            - --kubernetes-hangar-input-bucket={{ .Values.artifactDaemon.hangar.bucket }}
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node mints control

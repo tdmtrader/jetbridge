@@ -676,16 +676,7 @@
           "$ref": "#/definitions/openList"
         },
         "preemption": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "budget": {
-              "$ref": "#/definitions/optionalGoDuration"
-            }
-          }
+          "$ref": "#/definitions/removed"
         },
         "mirror": {
           "type": "object",

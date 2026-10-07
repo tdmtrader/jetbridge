@@ -21,6 +21,7 @@ template first, so these rules run before anything else in the chart.
 {{- range $removed := list
   (list "artifactDaemon.durable" "the durable tier is not configurable from the chart. Remove the value.")
   (list "artifactDaemon.enabled" "the artifact daemon is always deployed. Remove the value.")
+  (list "artifactDaemon.preemption" "the GCP spot preemption watcher is gone; on SIGTERM the daemon drains in-flight mirror jobs before it exits. Remove the value.")
   (list "artifactDaemon.tls.enabled" "mTLS is always required. Set tls.source and remove the old value.")
   (list "hangarOutput.activation.job.facet" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
   (list "hangarOutput.activation.job.mode" "set hangarOutput.activation.target (off, base or output) and remove the old value.")

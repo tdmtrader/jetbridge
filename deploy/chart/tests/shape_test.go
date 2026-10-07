@@ -47,8 +47,9 @@ import (
 // kubernetes.podSchedulingTimeout, defaultTaskCPURequest and
 // preferredStepNode (web now derives --cookie-secure from an https
 // external URL, and the OTLP flags already had tracing.* and
-// otelMetrics.*), leaving 232.
-const maxValues = 232
+// otelMetrics.*), leaving 232. Removing the GCP preemption watcher took
+// artifactDaemon.preemption.enabled and .budget, leaving 230.
+const maxValues = 230
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -56,7 +57,6 @@ const maxValues = 232
 var allowedSwitches = []string{
 	"alertingRules.enabled",
 	"artifactDaemon.networkPolicy.enabled",
-	"artifactDaemon.preemption.enabled",
 	"ingress.enabled",
 	"kubernetes.credentialManager.enabled",
 	"kubernetes.stepPodGrants[].privileged",
@@ -143,6 +143,7 @@ var grandfathered = []string{
 var removedKeys = []string{
 	"artifactDaemon.durable",
 	"artifactDaemon.enabled",
+	"artifactDaemon.preemption",
 	"artifactDaemon.tls.enabled",
 	"hangarOutput.activation.job.facet",
 	"hangarOutput.activation.job.mode",
