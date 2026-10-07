@@ -336,6 +336,24 @@ func terminalPausePod(res brine.Resources, rec *brine.Recorder, daemon HangarDae
 	return replacement, nil
 }
 
+// outputPlaneConfig points a production Config at the fixture daemon's output
+// plane: the artifact daemon's port, and its client certificate, key and CA.
+// The fixture's server certificate names 127.0.0.1, which is what the ATC
+// dials, so no server name is set.
+func outputPlaneConfig(config *jetbridge.Config, daemonURL, certDir string) error {
+	port, err := hangarDaemonPort(daemonURL)
+	if err != nil {
+		return err
+	}
+	config.ArtifactDaemonPort = port
+	config.ArtifactDaemonTLSEnabled = true
+	config.ArtifactDaemonTLSCert = filepath.Join(certDir, "client.crt")
+	config.ArtifactDaemonTLSKey = filepath.Join(certDir, "client.key")
+	config.ArtifactDaemonTLSCACert = filepath.Join(certDir, "ca.crt")
+
+	return nil
+}
+
 // daemonPort reads the port out of a daemon's base URL. The launcher binds a
 // free one, so nothing in this tree may assume a number.
 func hangarDaemonPort(base string) (int, error) {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -335,10 +334,6 @@ func newRunOutputRuntime(rec *brine.Recorder, res brine.Resources, checks bool) 
 	}
 	in.Start.DB.Conn.SetMaxOpenConns(1)
 	in.Config = jetbridge.NewConfig("default", "")
-	in.Config.OutputDaemonPort, err = hangarDaemonPort(in.Start.Daemon.Output.URL)
-	in.Config.OutputDaemonTLSCert = filepath.Join(in.Start.Daemon.CertDir, "client.crt")
-	in.Config.OutputDaemonTLSKey = filepath.Join(in.Start.Daemon.CertDir, "client.key")
-	in.Config.OutputDaemonTLSCACert = filepath.Join(in.Start.Daemon.CertDir, "ca.crt")
-	in.Config.OutputDaemonTLSServerName = "artifact-daemon"
+	err = outputPlaneConfig(&in.Config, in.Start.Daemon.Output.URL, in.Start.Daemon.CertDir)
 	return in, err
 }

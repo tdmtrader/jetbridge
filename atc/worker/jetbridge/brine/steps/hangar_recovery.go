@@ -260,16 +260,10 @@ func attemptRealDrain(in CaptureDraft, state string, client kubernetes.Interface
 			}
 		}
 	}
-	port, err := hangarDaemonPort(in.Daemon.Output.URL)
-	if err != nil {
+	cfg := jetbridge.NewConfig("default", "")
+	if err := outputPlaneConfig(&cfg, in.Daemon.Output.URL, in.Daemon.CertDir); err != nil {
 		return DrainAttempt{}, err
 	}
-	cfg := jetbridge.NewConfig("default", "")
-	cfg.OutputDaemonPort = port
-	cfg.OutputDaemonTLSCert = filepath.Join(in.Daemon.CertDir, "client.crt")
-	cfg.OutputDaemonTLSKey = filepath.Join(in.Daemon.CertDir, "client.key")
-	cfg.OutputDaemonTLSCACert = filepath.Join(in.Daemon.CertDir, "ca.crt")
-	cfg.OutputDaemonTLSServerName = "artifact-daemon"
 	controls := jetbridge.NewOutputControls(cfg, jetbridge.NewNodeIPResolver(client), in.Daemon.Minter, in.Admission.ActivationEpoch)
 	drain := &jetbridge.OutputDrain{Client: client, Controls: controls, Namespace: "default"}
 	drained, drainErr := drain.ConfirmDrain(ctx, node.Name, started)

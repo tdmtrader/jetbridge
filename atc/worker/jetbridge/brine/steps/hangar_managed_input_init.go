@@ -35,7 +35,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 	config.ArtifactDaemonHostPath = daemon.Output.Root
 	config.OutputPlaneEnabled = true
 	config.HangarEnabled = true
-	config.OutputDaemonPort = port
+	config.ArtifactDaemonPort = port
 	backend := jetbridge.NewDaemonSetBackend(config, nil, nil, nil)
 	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}
 	// Before the new runtime field exists this same payload loses its read
@@ -125,7 +125,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 		return nil
 	}
 	err = run()
-	if mode == "released" || mode == "forged" {
+	if mode == "expired" || mode == "forged" {
 		if err == nil || !strings.Contains(err.Error(), "managed input materialization was refused") {
 			return fmt.Errorf("%s lease did not produce the expected authorization refusal: %v", mode, err)
 		}

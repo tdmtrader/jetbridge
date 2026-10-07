@@ -1,9 +1,10 @@
 package steps
 
 import (
+	"context"
 	"fmt"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -11,31 +12,20 @@ import (
 
 func ExecutionStopDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-		brine.DefineMap[HeldSource, HeldSource]("the output daemon restarts with the same control ledger", func(in HeldSource, _ brine.Params, rec *brine.Recorder) (HeldSource, error) {
-			old := in.Draft.Daemon.Output
-			if err := old.stop(); err != nil {
+		brine.DefineMap[HeldSource, HeldSource]("the output daemon restarts with the same control ledger", func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
+			// The output plane is mounted in the artifact daemon: restarting it
+			// is restarting that one process, over the same storage root, keys
+			// and address, so the control ledger it reloads is the one it wrote.
+			daemon := in.Draft.Daemon.Output
+			if err := daemon.crash(); err != nil {
 				return in, err
 			}
-			scheme := strings.SplitN(old.URL, ":", 2)[0]
-			// Reuse the existing keys and ledger, but bind a fresh listener so the
-			// old process's asynchronous reap cannot race the new listener.
-			next, err := startNamedDaemonInRoot("hangar-output-daemon", old.Root, scheme, func(url string) error {
-				response, err := in.Draft.Daemon.HTTP.Get(url + "/readyz")
-				if err != nil {
-					return err
-				}
-				defer response.Body.Close()
-				if response.StatusCode != http.StatusOK {
-					return fmt.Errorf("restarted daemon is not ready")
-				}
-				return nil
-			}, old.cmd.Args[1+len(addressableArgs("hangar-output-daemon", "ignored", 1, old.Root)):]...)
-			if err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := daemon.restart(ctx, in.Draft.Daemon.HTTP); err != nil {
 				return in, err
 			}
-			TrackDisposer(rec, "the restarted output daemon", next.stop)
-			in.Draft.Daemon.Output = next
-			in.DaemonURL = next.URL
+			in.DaemonURL = daemon.URL
 			return in, nil
 		}),
 		brine.DefineMap[HeldSource, HeldSource]("the daemon accepts stop before the first start", func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {

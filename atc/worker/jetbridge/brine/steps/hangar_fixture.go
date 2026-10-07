@@ -43,22 +43,13 @@ package steps
 // before EVERY scenario in the corpus, and a daemon registered that way cost
 // 70 seconds to serve five scenarios.
 //
-// THE OUTPUT PLANE IS A SECOND DAEMON, and this fixture now starts both.
-//
-// It has to be two processes and not two roles in one. A Kubernetes service
-// account is Pod-wide, so giving the artifact daemon an output-bucket role
-// would give its cache and strict-input identity the same role, and Req 20
-// forbids the output bucket ever being the durable cache bucket or the
-// caller-published strict-input one. The isolation is a second Pod with a
-// second service account, which means a second binary -- so a fixture that ran
-// one daemon could not express the thing under test.
-//
-// The artifact daemon here serves the STRICT-INPUT surface, which is what the
-// proving sentences at the bottom of this file exercise end to end against the
-// emulator. The output daemon serves the capture control API and the publish
+// THE OUTPUT PLANE IS MOUNTED IN THE SAME DAEMON. One artifact daemon process
+// serves the STRICT-INPUT surface, which is what the proving sentences at the
+// bottom of this file exercise end to end against the emulator, and -- given
+// a control key -- the output plane: the capture control API and the publish
 // route, against ITS OWN bucket, under its own control and receipt keys.
-// hangarOutputDaemonFlags below is where that separation is stated, and a
-// fixture that pointed both at one bucket would be testing a deployment the
+// hangarOutputDaemonFlags below is where the bucket separation is stated, and
+// a fixture that pointed both at one bucket would be testing a deployment the
 // daemon refuses to be.
 
 import (
@@ -127,7 +118,7 @@ type HangarDaemon struct {
 	Published hangar.TreeAttributes
 	Err       error
 
-	// CertDir holds the one small PKI both daemons were started with. The ATC
+	// CertDir holds the one small PKI the daemon was started with. The ATC
 	// dials the artifact daemon with the client half of it, so a step that
 	// drives production ATC code needs the paths rather than the assembled
 	// client.
@@ -138,8 +129,8 @@ type HangarDaemon struct {
 	// daemon did.
 	Pending []byte
 
-	// Output is the second daemon: the output plane's own process, its own
-	// bucket, its own keys. OutputBucket is deliberately not Bucket -- Req 20
+	// Output is the daemon that serves the output plane: the same process as
+	// Daemon, which mounts it. OutputBucket is deliberately not Bucket -- Req 20
 	// is that they are never the same one, and this state could not express a
 	// violation of it if it held one field.
 	Output       *realDaemon
@@ -156,12 +147,11 @@ type HangarDaemon struct {
 	// rather than against a string a step wrote.
 	ControlPublic ed25519.PublicKey
 	ReceiptPublic ed25519.PublicKey
-	OutputTLS     bool
 	NodeUID       string
 }
 
-// hangarOutputDaemonFlags is the output daemon's whole argv beyond the address
-// and state flags the launcher supplies.
+// hangarOutputDaemonFlags is the output plane's whole argv beyond the address,
+// state and TLS flags the artifact daemon already has.
 //
 // It names a DIFFERENT bucket from the artifact daemon's, which is the point:
 // the two buckets are the trust boundary between the planes.
@@ -201,11 +191,15 @@ const (
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
 // bucket, mints the mTLS material every Hangar route requires, and starts the
 // real daemon against all of it.
+//
+// The output plane is always served over the daemon's TLS; outputTLS is what
+// callers that dialed a once-separate output daemon over TLS asked for, and is
+// now always true.
 func startHangarDaemon(rec *brine.Recorder, outputTLS ...bool) (HangarDaemon, error) {
-	return startHangarDaemonOnNode(rec, hangarNodeUID, len(outputTLS) > 0 && outputTLS[0])
+	return startHangarDaemonOnNode(rec, hangarNodeUID, true)
 }
 
-func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, outputTLS bool) (HangarDaemon, error) {
+func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (HangarDaemon, error) {
 	ctx := context.Background()
 
 	endpoint, err := hangarEmulatorEndpoint(rec)
@@ -301,120 +295,111 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, outputTLS bool
 		}},
 	}
 
+	state := HangarDaemon{
+		Ctx:      ctx,
+		Endpoint: endpoint,
+		Bucket:   bucket,
+		Client:   client,
+		HTTP:     httpClient,
+		CertDir:  certDir,
+		NodeUID:  nodeUID,
+	}
+	outputFlags, err := prepareOutputPlane(rec, &state, certDir)
+	if err != nil {
+		return HangarDaemon{}, err
+	}
+
+	// ONE node, ONE storage root, ONE process. The artifact daemon mounts the
+	// output plane: the control ledger it writes is under the storage root it
+	// serves, and its read-only classifier is what reads it before anything
+	// destructive happens.
 	daemon, err := startRealDaemonProbed("https", func(url string) error {
-		resp, err := httpClient.Get(url + "/healthz")
+		resp, err := httpClient.Get(url + "/readyz")
 		if err != nil {
 			return err
 		}
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("the daemon's output plane is not ready: %d", resp.StatusCode)
+		}
 		return nil
-	}, args...)
+	}, append(args, outputFlags...)...)
 	if err != nil {
 		return HangarDaemon{}, err
 	}
 	TrackDisposer(rec, "the Hangar artifact daemon", daemon.stop)
+	state.Daemon = daemon
+	state.Output = daemon
 
-	state := HangarDaemon{
-		Daemon:    daemon,
-		Ctx:       ctx,
-		Endpoint:  endpoint,
-		Bucket:    bucket,
-		Client:    client,
-		HTTP:      httpClient,
-		CertDir:   certDir,
-		OutputTLS: outputTLS,
-		NodeUID:   nodeUID,
-	}
-
-	return startOutputDaemon(rec, state, certDir)
+	return state, nil
 }
 
-// startOutputDaemon brings up the second binary: its own bucket, its own two
-// Ed25519 keys, its own capability secret.
+// prepareOutputPlane creates the output plane's own bucket and mints its two
+// Ed25519 keys and its capability secret, and returns the flags that mount it.
 //
 // The bucket is created here and named by the fixture, never by a feature file
 // -- convention 3 applied to the fixture itself -- and it is a different bucket
-// from the artifact daemon's, which is the whole reason there are two daemons.
-func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) (HangarDaemon, error) {
+// from the strict-input one.
+func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string) ([]string, error) {
 	state.OutputBucket = uniqueBucketName()
 	if err := createOutputBucket(state.Ctx, state.Endpoint, state.OutputBucket,
 		hangarBucketCreateAttempts, hangarBucketCreateTimeout,
 		func(attemptCtx context.Context) error {
 			return state.Client.Bucket(state.OutputBucket).Create(attemptCtx, "brine-hangar-output", nil)
 		}); err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 
 	receiptKey, receiptPublic, err := writeEd25519Key(certDir, "receipt.pem")
 	if err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 	controlKey, controlPublic, err := writeEd25519Key(certDir, "control.pem")
 	if err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 	state.ReceiptPublic, state.ControlPublic = receiptPublic, controlPublic
 
 	capabilitySecret := make([]byte, executioncontrol.CapabilityKeyBytes)
 	if _, err := rand.Read(capabilitySecret); err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 	capabilityFile := filepath.Join(certDir, "capability-control.key")
 	if err := os.WriteFile(capabilityFile, capabilitySecret, 0o600); err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 	// The output read-warrant key, which is the SAME material the consumer-side
 	// fixture mints warrants with (brineReadWarrantKey): one key on both sides is
 	// what makes a warrant this fixture signs one the daemon can verify.
 	materializeFile := filepath.Join(certDir, "materialize.key")
 	if err := os.WriteFile(materializeFile, brineReadWarrantKey, 0o600); err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 
 	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret, time.Minute,
 		func() time.Time { return time.Now().UTC() })
 	if err != nil {
-		return HangarDaemon{}, err
+		return nil, err
 	}
 	state.Minter = minter
 
-	// ONE node, ONE storage root. The output daemon is started in the artifact
-	// daemon's root, which is what a real node looks like: the control
-	// directory the output daemon writes is under the hostPath the artifact
-	// daemon serves, and the artifact daemon's read-only classifier is what
-	// reads it before anything destructive happens. Two roots made the
-	// classifier answer "unmanaged" about every held source, because it was
-	// reading a directory the other daemon never wrote to.
-	scheme := "http"
+	// The output plane's canonicalization scratch must be absolute and outside
+	// the storage root; the daemon checks both.
+	scratch, err := AttributedTempDir("brine-hangar-output-scratch-*")
+	if err != nil {
+		return nil, err
+	}
+	TrackDisposer(rec, "the output plane's scratch directory", func() error { return os.RemoveAll(scratch) })
+	scratch, err = filepath.EvalSymlinks(scratch)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the output scratch directory: %w", err)
+	}
+
 	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
 		receiptKey, controlKey, capabilityFile, materializeFile, state.NodeUID)
-	if state.OutputTLS {
-		scheme = "https"
-		flags = append(flags, "--tls-cert", filepath.Join(certDir, "server.crt"),
-			"--tls-key", filepath.Join(certDir, "server.key"), "--tls-ca-cert", filepath.Join(certDir, "ca.crt"))
-	}
-	output, err := startNamedDaemonInRoot("hangar-output-daemon", state.Daemon.Root, scheme,
-		func(url string) error {
-			resp, err := state.HTTP.Get(url + "/readyz")
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			_, _ = io.Copy(io.Discard, resp.Body)
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("the output daemon is not ready: %d", resp.StatusCode)
-			}
 
-			return nil
-		}, flags...)
-	if err != nil {
-		return HangarDaemon{}, err
-	}
-	TrackDisposer(rec, "the Hangar output daemon", output.stop)
-	state.Output = output
-
-	return state, nil
+	return append(flags, "--output-scratch-dir", scratch), nil
 }
 
 // writeEd25519Key mints one key pair and writes the private half where the

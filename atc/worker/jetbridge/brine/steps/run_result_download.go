@@ -3,19 +3,14 @@ package steps
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
@@ -158,44 +153,25 @@ func configureRunReadPlane(in RunResultPublication, rec *brine.Recorder, res bri
 
 func configureRunReadPlaneForClient(in RunResultPublication, rec *brine.Recorder, client kubernetes.Interface, config jetbridge.Config) (*jetbridge.OutputSource, *output.ReadWarrantSigner, jetbridge.Config, error) {
 	daemon := in.Start.Daemon
-	clock := output.ClockFunc(func() time.Time { return time.Now().UTC() })
 	signer, err := output.NewReadWarrantSigner(brineReadWarrantKey)
 	if err != nil {
 		return nil, nil, jetbridge.Config{}, err
 	}
-	verifier, err := output.NewReadWarrantVerifier(brineReadWarrantKey, clock)
-	if err != nil {
-		return nil, nil, jetbridge.Config{}, err
-	}
-	control := &hangaroutput.LeaseControl{Transactor: brineTransactor{conn: in.Start.DB.Conn}, Leases: db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()), Warrants: verifier, Minter: signer, Clock: clock}
-	server := httptest.NewUnstartedServer(control.Handler())
-	cert, err := tls.LoadX509KeyPair(filepath.Join(daemon.CertDir, "server.crt"), filepath.Join(daemon.CertDir, "server.key"))
-	if err != nil {
-		return nil, nil, jetbridge.Config{}, err
-	}
-	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	server.StartTLS()
-	TrackDisposer(rec, "the result-download TLS server", func() error { server.Close(); return nil })
+	// The node daemon verifies the warrant and asks the web nothing; the web
+	// gives the read lease back itself when its read ends. The daemon is
+	// restarted so arguments a caller appended (an operation timeout) apply.
 	if err = daemon.Output.crash(); err != nil {
 		return nil, nil, jetbridge.Config{}, err
 	}
-	daemon.Output.cmd.Args = append(daemon.Output.cmd.Args, "--read-control-url", server.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err = daemon.Output.restart(ctx, daemon.HTTP); err != nil {
 		return nil, nil, jetbridge.Config{}, err
 	}
-	config.OutputDaemonPort, err = hangarDaemonPort(daemon.Output.URL)
-	if err != nil {
+	if err = outputPlaneConfig(&config, daemon.Output.URL, daemon.CertDir); err != nil {
 		return nil, nil, jetbridge.Config{}, err
 	}
-	config.OutputDaemonTLSCert = filepath.Join(daemon.CertDir, "client.crt")
-	config.OutputDaemonTLSKey = filepath.Join(daemon.CertDir, "client.key")
-	config.OutputDaemonTLSCACert = filepath.Join(daemon.CertDir, "ca.crt")
-	config.OutputDaemonTLSServerName = "artifact-daemon"
 	source := jetbridge.NewOutputSource(client, config, daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
-	control.Keys = &hangaroutput.ReadNodeKeys{Nodes: source, Membership: db.OutputNodeKeys{Conn: in.Start.DB.Conn}, Ring: hangaroutput.ControlKeyRing{
-		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(daemon.ControlPublic)}}}}
 
 	return source, signer, config, nil
 }

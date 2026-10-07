@@ -21,8 +21,8 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 )
 
-// Runs the production artifact-daemon (and the Hangar output daemon) as a
-// subprocess with an owned storage root and a free port. HTTP and HTTPS
+// Runs the production artifact-daemon (with, for the Hangar fixtures, its
+// output plane mounted) as a subprocess with an owned storage root and a free port. HTTP and HTTPS
 // fixtures share this lifecycle, and so do the multi-daemon peer fixtures:
 // the binary supports --kubeconfig and --listen-address, so two real daemons
 // on one host can bind two loopback addresses at the same DaemonSet port and
@@ -125,11 +125,8 @@ var builtBinaries sync.Map // command name -> *builtBinary
 // reuses it. The build is ~10s cold and instant warm, which is why it is not
 // per scenario.
 //
-// It takes the command name because there are two daemons now. The output
-// plane is a SEPARATE BINARY -- Req 20 forbids it sharing a bucket with the
-// cache, and a Kubernetes service account is Pod-wide, so the isolation has to
-// be a second process -- and a fixture that could only build one would be a
-// fixture that could not express the thing under test.
+// It takes the command name so a fixture can build any of the repository's
+// commands; the daemons are all cmd/artifact-daemon.
 //
 // BRINE_ARTIFACT_DAEMON_BINARY names a prebuilt artifact-daemon instead. The
 // private-network runner builds outside the namespace, where dependency
@@ -452,15 +449,7 @@ func startNamedDaemonProbed(command, scheme string, ready func(url string) error
 }
 
 // startNamedDaemonInRoot is the same launcher with the node's storage root
-// chosen by the caller.
-//
-// The output daemon is started in the ARTIFACT daemon's root, because on a real
-// node there is one hostPath and both daemons are on it: the output daemon's
-// control directory lives under it, and the artifact daemon's read-only ledger
-// classifier is what reads that directory before it destroys anything. Two
-// roots made every "a capture holds this" question unanswerable -- the
-// classifier looked in a directory the other daemon never wrote to -- and a
-// guard asked over two roots can only ever answer "unmanaged".
+// chosen by the caller; an empty root is a fresh one this launcher owns.
 func startNamedDaemonInRoot(command, root, scheme string, ready func(url string) error,
 	extraArgs ...string) (*realDaemon, error) {
 	return launchDaemon(command, root, scheme, ready, daemonOptions{}, extraArgs...)
@@ -517,9 +506,7 @@ func launchDaemon(command, root, scheme string, ready func(url string) error,
 	host := options.Host
 	if host == "" {
 		host = "127.0.0.1"
-	} else if command != "hangar-output-daemon" {
-		// The output daemon has no --listen-address; addressableArgs writes the
-		// address into its --listen instead.
+	} else {
 		extraArgs = append(extraArgs, "--listen-address", host)
 	}
 
@@ -745,23 +732,9 @@ func (d *realDaemon) restart(ctx context.Context, client *http.Client) error {
 	}
 }
 
-// addressableArgs is each daemon's own spelling of "listen here, keep your
-// state there". Two daemons, two flag names, one launcher.
-//
-// The host is passed rather than assumed: the artifact daemon takes its address
-// as a separate --listen-address, but the output daemon's --listen carries
-// both, and spelling 127.0.0.1 into it while the launcher had been told to bind
-// something else would have put the daemon on an address nobody was probing.
+// addressableArgs is the daemon's spelling of "listen here, keep your state
+// there".
 func addressableArgs(command, host string, port int, root string) []string {
-	if command == "hangar-output-daemon" {
-		return []string{
-			"--listen", net.JoinHostPort(host, fmt.Sprint(port)),
-			"--control-dir", root,
-			"--steps-dir", filepath.Join(root, "steps"),
-			"--scratch-dir", filepath.Join(root, "scratch"),
-		}
-	}
-
 	return []string{"--port", fmt.Sprint(port), "--storage-path", root}
 }
 

@@ -12,7 +12,7 @@ Feature: A managed output is read through its authorized node service
     Then the consumer can inspect only the exact output through an authenticated daemon
 
   @HOP-35 @HOP-36 @HOP-37
-  Scenario Outline: Only a live read lease permits a verified output download
+  Scenario Outline: Only a live, unspent read warrant permits a verified output download
     Given a Hangar output daemon accepting authenticated TLS connections
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
@@ -25,7 +25,7 @@ Feature: A managed output is read through its authorized node service
     Examples:
       | lease    |
       | live     |
-      | released |
-      | missing  |
+      | spent    |
+      | expired  |
       | forged   |
       | limited  |

@@ -107,16 +107,3 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     Then the binding is not visible
     When the binding is verified
     Then the binding is visible
-
-  @core-review @HOP-36
-  Scenario: Losing a read lease stops the work it was protecting
-    Given a real artifact daemon publishing to a Hangar output bucket
-    And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    And the step finishes and the daemon witnesses it
-    And the capture settles
-    And the published tree is read back from the output bucket
-    And the consumer binds the output inside its own transaction
-    And the binding is verified
-    When a live read lease is released while its work waits
-    Then the read work stops on renewal refusal without waiting for its own timeout

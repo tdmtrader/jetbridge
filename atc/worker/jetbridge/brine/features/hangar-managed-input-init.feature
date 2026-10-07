@@ -14,7 +14,7 @@ Feature: A managed input is verified before the task starts
     Examples:
       | condition                    |
       | live                         |
-      | released                     |
+      | expired                      |
       | forged                       |
       | lost success response        |
       | conflicting sealed receipt   |

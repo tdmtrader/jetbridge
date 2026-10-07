@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -99,14 +98,9 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 	in.Config.OutputPlaneEnabled = true
 	in.Config.ArtifactHelperImage = "busybox:1.37"
 	in.Config.OutputActivationEpoch = int64(hangarEpoch)
-	in.Config.OutputDaemonPort, err = hangarDaemonPort(d.URL)
-	if err != nil {
+	if err = outputPlaneConfig(&in.Config, d.URL, in.Start.Daemon.CertDir); err != nil {
 		return in, nil, err
 	}
-	in.Config.OutputDaemonTLSCert = filepath.Join(in.Start.Daemon.CertDir, "client.crt")
-	in.Config.OutputDaemonTLSKey = filepath.Join(in.Start.Daemon.CertDir, "client.key")
-	in.Config.OutputDaemonTLSCACert = filepath.Join(in.Start.Daemon.CertDir, "ca.crt")
-	in.Config.OutputDaemonTLSServerName = "artifact-daemon"
 	executor := jetbridge.NewSPDYExecutor(client, cfg)
 	in.OutcomeReader = executor
 	return in, executor, nil

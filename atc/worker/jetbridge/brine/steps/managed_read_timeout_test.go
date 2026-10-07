@@ -26,8 +26,9 @@ import (
 )
 
 // This composes the existing local PostgreSQL, envtest, GCS emulator and daemon
-// fixtures. The daemon independently checks the lease before serving bytes, so
-// the old one-minute admission fails even though this small tree reads quickly.
+// fixtures. The daemon independently checks the warrant's remaining window --
+// its lease's -- before serving bytes, so the old one-minute admission fails
+// even though this small tree reads quickly.
 func TestRunManagedReadsProtectTheConfiguredOperationBudget(t *testing.T) {
 	RegisterGomegaFailHandler()
 	var resources []brine.ResourceDefinition
@@ -222,8 +223,10 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 		if err := conn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_read_leases WHERE read_lease_id=$1`, string(claims.ReadLeaseID)).Scan(&released); err != nil {
 			return err
 		}
-		if !released {
-			return fmt.Errorf("materialized input retained its read lease")
+		// The node gave nothing back: it holds no client for the web. An input's
+		// read lease closes at the end of its term, by the web's cleaner.
+		if released {
+			return fmt.Errorf("the node daemon released the input's read lease")
 		}
 		initialized++
 	}

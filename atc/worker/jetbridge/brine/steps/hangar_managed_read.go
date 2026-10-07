@@ -3,16 +3,12 @@ package steps
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -99,38 +95,14 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	daemon := in.Tree.Outcome.Source.Draft.Daemon
 	plane := in.Tree.Outcome.Plane
 	clock := output.ClockFunc(func() time.Time { return time.Now().UTC() })
-	verifier, err := output.NewReadWarrantVerifier(brineReadWarrantKey, clock)
-	if err != nil {
-		return in, err
-	}
 	signer, err := output.NewReadWarrantSigner(brineReadWarrantKey)
 	if err != nil {
 		return in, err
 	}
-	control := &hangaroutput.LeaseControl{Transactor: brineTransactor{conn: plane.DB.Conn}, Leases: plane.Repository, Warrants: verifier, Minter: signer, Clock: clock,
-		Keys: hangaroutput.NodeKeysFunc(func(node executioncontrol.NodeUID, key string) (ed25519.PublicKey, error) {
-			if string(node) != daemon.NodeUID || key != hangarControlKeyID {
-				return nil, output.ErrUnauthorized
-			}
-			return daemon.ControlPublic, nil
-		})}
-	server := httptest.NewUnstartedServer(control.Handler())
-	cert, err := tls.LoadX509KeyPair(filepath.Join(daemon.CertDir, "server.crt"), filepath.Join(daemon.CertDir, "server.key"))
-	if err != nil {
-		return in, err
-	}
-	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	server.StartTLS()
-	TrackDisposer(rec, "the managed-read TLS server", func() error { server.Close(); return nil })
-	if err = daemon.Output.crash(); err != nil {
-		return in, err
-	}
-	daemon.Output.cmd.Args = append(daemon.Output.cmd.Args, "--read-control-url", server.URL)
+	// The node daemon verifies the warrant itself -- binding, window, and that
+	// it was not already spent on this node -- and asks the web nothing.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err = daemon.Output.restart(ctx, daemon.HTTP); err != nil {
-		return in, err
-	}
 	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
 	stat, ok := any(node).(hangaroutput.ExactStat)
 	if !ok {
@@ -145,24 +117,13 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	if err != nil {
 		return in, err
 	}
-	if mode == "released" {
-		tx, err := plane.DB.Conn.Begin()
-		if err != nil {
-			return in, err
-		}
-		defer tx.Rollback()
-		if err = plane.Repository.ReleaseReadLease(ctx, tx, warrant.Lease); err != nil {
-			return in, err
-		}
-		if err = tx.Commit(); err != nil {
-			return in, err
-		}
-	}
-	if mode == "missing" {
-		// A valid signature is insufficient: this lease was never stored.
-		absent := warrant.Lease
-		absent.ReadLeaseID = output.ReadLeaseID(freshUUID())
-		warrant.Token, err = signer.Sign(absent, warrant.Record.Destination, warrant.Record.WarrantNonce)
+	if mode == "expired" {
+		// A valid signature is insufficient: the warrant's window, which is its
+		// lease's, has passed.
+		expired := warrant.Lease
+		expired.GrantedAt = output.NewTimestamp(time.Now().UTC().Add(-time.Hour))
+		expired.ExpiresAt = output.NewTimestamp(time.Now().UTC().Add(-time.Minute))
+		warrant.Token, err = signer.Sign(expired, warrant.Record.Destination, warrant.Record.WarrantNonce)
 		if err != nil {
 			return in, err
 		}
@@ -179,6 +140,19 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	limit := int64(16 << 20)
 	if mode == "limited" {
 		limit = 1
+	}
+	if mode == "spent" {
+		// One whole read under the warrant first; the second is the one
+		// refused below.
+		archive, _, err := node.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}, limit)
+		if err != nil {
+			return in, fmt.Errorf("the first read under the warrant: %w", err)
+		}
+		_, err = io.Copy(io.Discard, archive)
+		err = errors.Join(err, archive.Close())
+		if err != nil {
+			return in, fmt.Errorf("the first read under the warrant: %w", err)
+		}
 	}
 	archive, attributes, err := node.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}, limit)
 	if mode != "live" {
@@ -217,8 +191,10 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 		return in, err
 	}
 	defer tx.Rollback()
-	if _, err = plane.Repository.LoadReadLease(ctx, tx, warrant.Lease.ReadLeaseID); !errors.Is(err, output.ErrConflict) {
-		return in, fmt.Errorf("verified download did not release its lease: %v", err)
+	// The node gave nothing back: it holds no client for the web. The lease is
+	// the web's to release when its read ends, and it is still live here.
+	if _, err = plane.Repository.LoadReadLease(ctx, tx, warrant.Lease.ReadLeaseID); err != nil {
+		return in, fmt.Errorf("the node changed the lease it read under: %v", err)
 	}
 	return in, nil
 }

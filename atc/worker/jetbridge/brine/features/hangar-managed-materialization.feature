@@ -14,8 +14,7 @@ Feature: Managed Run inputs materialize through live read authority
     Examples:
       | lease                   |
       | live                    |
-      | released                |
-      | missing                 |
+      | expired                 |
       | forged                  |
       | wrong destination       |
       | wrong generation        |
