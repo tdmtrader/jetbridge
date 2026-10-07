@@ -59,14 +59,14 @@ var _ = Describe("The landing queue commands", func() {
 	It("set-landing-queue refuses a config with an unknown key before sending it, and reports created or updated", func() {
 		dir := GinkgoT().TempDir()
 		path := filepath.Join(dir, "queue.yml")
-		Expect(os.WriteFile(path, []byte("repository: r\ntrunk: core\ncompose: c\nland: l\nbranch: x\n"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(path, []byte("repository: https://r\ntrunk: core\ncompose: c\nland: l\nbranch: x\n"), 0o644)).To(Succeed())
 		client := &recordingLandingClient{created: true}
 		command := &SetLandingQueueCommand{Queue: "trunk", Config: atc.PathFlag(path)}
 		err := command.run(client, nil, &bytes.Buffer{})
 		Expect(err).To(MatchError(ContainSubstring("branch")))
 		Expect(client.configs).To(BeEmpty())
 
-		Expect(os.WriteFile(path, []byte("repository: r\ntrunk: core\ncompose: c\nland: l\n"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(path, []byte("repository: https://r\ntrunk: core\ncompose: c\nland: l\n"), 0o644)).To(Succeed())
 		out := &bytes.Buffer{}
 		Expect(command.run(client, nil, out)).To(Succeed())
 		Expect(client.configs).To(HaveLen(1))
