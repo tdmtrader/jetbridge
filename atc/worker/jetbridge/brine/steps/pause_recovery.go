@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -294,7 +295,15 @@ func stopPausePod(w WorkerReady, executor jetbridge.PodExecutor, handle, cause s
 		wantPhase, wantExit = corev1.PodFailed, 137
 	} else {
 		var stderr bytes.Buffer
-		if err := executor.ExecInPod(w.Ctx, w.Namespace, handle, "main", []string{"sh", "-c", "kill -TERM 1"}, nil, nil, &stderr, false, jetbridge.ExecAttrs{Purpose: "pause-signal"}); err != nil {
+		err := executor.ExecInPod(w.Ctx, w.Namespace, handle, "main", []string{"sh", "-c", "kill -TERM 1"}, nil, nil, &stderr, false, jetbridge.ExecAttrs{Purpose: "pause-signal"})
+		// The signalling shell runs inside the container it stops. When PID 1
+		// exits before the exec reports, the runtime SIGKILLs the shell with
+		// the rest of the container and the exec answers 137 (live brine
+		// build 89, one attempt of the second-death row). That is the signal
+		// landing, not failing; the terminal phase and exit below are the
+		// premise, and they are still required exactly.
+		var exit *jetbridge.ExecExitError
+		if err != nil && !(errors.As(err, &exit) && exit.ExitCode == 137) {
 			return fmt.Errorf("signal owned pause process: %w: %s", err, stderr.String())
 		}
 	}
