@@ -202,9 +202,10 @@ func (s *Server) promoteToDurable(ctx context.Context, key string, loc RelKey) {
 // advertiseDurableTier tells the caller this daemon can serve a warm.
 //
 // Called before any status is written, on every path including errors, because
-// it describes the daemon rather than the key.
+// it describes the daemon rather than the key. A tier still connecting to its
+// store is not advertised: the ATC would only be sent to warm from it and miss.
 func (s *Server) advertiseDurableTier(w http.ResponseWriter) {
-	if s.durable != nil {
+	if s.durable.Ready() {
 		w.Header().Set(DurableTierHeader, "enabled")
 	}
 }

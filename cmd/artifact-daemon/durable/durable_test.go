@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"github.com/concourse/concourse/hangar/disk"
 	"github.com/concourse/concourse/hangar/diskserver"
 	"github.com/concourse/concourse/hangar/gcstest"
+	"github.com/concourse/concourse/hangar/objectstore"
 )
 
 const cacheBucket = "caches"
@@ -74,14 +77,11 @@ func diskStore(t *testing.T, limit int64) durable.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = objects.Close() })
-	tokens := map[string]string{
-		"input": strings.Repeat("i", 32), "publisher": strings.Repeat("p", 32),
-		"inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32),
-		"cache": strings.Repeat("c", 32),
-	}
+	// A dedicated cache-only store, the only shape the disk server accepts
+	// for a cache.
+	tokens := map[string]string{"cache": strings.Repeat("c", 32)}
 	handler, err := diskserver.New(objects, diskserver.Config{
-		StoreID: "cache-store", InputNamespace: "inputs", OutputNamespace: "outputs",
-		CacheNamespace: cacheBucket, Credentials: tokens, MaxConcurrent: 8,
+		StoreID: "cache-store", CacheNamespace: cacheBucket, Credentials: tokens, MaxConcurrent: 8,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestGetOfAbsentKeyIsAMissNotAnError(t *testing.T) {
 	// must be able to tell "not stored" from "store is broken" without
 	// parsing an error.
 	eachStore(t, func(t *testing.T, store durable.Store) {
-		body, found, err := store.Get(context.Background(), "rc-404")
+		body, _, found, err := store.Get(context.Background(), "rc-404")
 		if err != nil {
 			t.Fatalf("Get of absent key returned an error: %v", err)
 		}
@@ -155,11 +155,14 @@ func TestPutThenGetRoundTrips(t *testing.T) {
 			t.Fatalf("Stat reported version %q, want the object's positive generation", attrs.Version)
 		}
 
-		body, found, err := store.Get(ctx, "rc-1")
+		body, read, found, err := store.Get(ctx, "rc-1")
 		if err != nil || !found {
 			t.Fatalf("Get after Put = (%v, %v), want (true, nil)", found, err)
 		}
 		defer body.Close()
+		if read.Version != attrs.Version {
+			t.Fatalf("Get read version %q, Stat reported %q", read.Version, attrs.Version)
+		}
 
 		got, err := io.ReadAll(body)
 		if err != nil {
@@ -222,6 +225,53 @@ func TestDeleteIsIdempotent(t *testing.T) {
 	})
 }
 
+// DeleteVersion removes exactly the generation named, and never a newer
+// object written at the same key since.
+//
+// Not run against fake-gcs-server: v1.52.3 ignores ifGenerationMatch on
+// delete (it deletes whatever is current), so that substrate cannot express
+// the property. Real GCS honours the precondition, and the memory and disk
+// substrates enforce it.
+func TestDeleteVersionNeverRemovesANewerObject(t *testing.T) {
+	for name, open := range map[string]func(*testing.T, int64) durable.Store{"memory": memoryStore, "disk": diskStore} {
+		t.Run(name, func(t *testing.T) { deleteVersionKeepsNewer(t, open(t, 0)) })
+	}
+}
+
+func deleteVersionKeepsNewer(t *testing.T, store durable.Store) {
+	{
+		ctx := context.Background()
+		if err := store.Put(ctx, "rc-v", strings.NewReader("first")); err != nil {
+			t.Fatal(err)
+		}
+		first, _, _ := store.Stat(ctx, "rc-v")
+		if err := store.Delete(ctx, "rc-v"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(ctx, "rc-v", strings.NewReader("second")); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteVersion(ctx, "rc-v", first.Version); err != nil {
+			t.Fatalf("DeleteVersion of a gone generation: %v", err)
+		}
+		if _, found, _ := store.Stat(ctx, "rc-v"); !found {
+			t.Fatal("DeleteVersion of an old generation removed the newer object")
+		}
+		current, _, _ := store.Stat(ctx, "rc-v")
+		if err := store.DeleteVersion(ctx, "rc-v", current.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, _ := store.Stat(ctx, "rc-v"); found {
+			t.Fatal("DeleteVersion of the current generation left it")
+		}
+		for _, bad := range []string{"", "0", "-1", "x"} {
+			if err := store.DeleteVersion(ctx, "rc-v", bad); err == nil {
+				t.Errorf("DeleteVersion(%q) was accepted", bad)
+			}
+		}
+	}
+}
+
 func TestACacheWithoutADeleteCapabilityCannotDelete(t *testing.T) {
 	memory := gcstest.NewMemory()
 	memory.CreateBucket(cacheBucket)
@@ -258,7 +308,7 @@ func TestKeysThatAreNotACacheObjectNameAreRejected(t *testing.T) {
 			if err := store.Put(ctx, key, strings.NewReader("x")); err == nil {
 				t.Errorf("Put(%q) was accepted; it must be rejected", key)
 			}
-			if _, _, err := store.Get(ctx, key); err == nil {
+			if _, _, _, err := store.Get(ctx, key); err == nil {
 				t.Errorf("Get(%q) was accepted; it must be rejected", key)
 			}
 			if _, _, err := store.Stat(ctx, key); err == nil {
@@ -397,5 +447,51 @@ func TestConfigRefusesWhatCannotBeACache(t *testing.T) {
 		if err := config.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// A disk cache store that accepts a connection and never answers costs the
+// probe timeout at startup, not the five-minute transfer timeout, and reads as
+// unavailable (retried) rather than misconfigured (exit).
+func TestAnUnansweringDiskStoreIsUnavailableWithinTheProbeTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close() // hold it open, say nothing
+		}
+	}()
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("c", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, _, err = durable.Open(context.Background(), durable.Config{
+		Kind: "disk", Bucket: cacheBucket, Endpoint: "https://" + listener.Addr().String(),
+		StoreID: "cache-store", TokenFile: token, Timeout: 5 * time.Minute, ProbeTimeout: 300 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("an unanswering store opened")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Open took %s; the probe is not bounded", elapsed)
+	}
+	if !durable.IsUnavailable(err) {
+		t.Fatalf("an unanswering store is not unavailable: %v", err)
+	}
+}
+
+func TestARefusalIsNotUnavailable(t *testing.T) {
+	if durable.IsUnavailable(fmt.Errorf("%w: 403", objectstore.ErrUnauthorized)) ||
+		durable.IsUnavailable(fmt.Errorf("%w: identity", objectstore.ErrConflict)) {
+		t.Fatal("a refusal was classified as unavailable")
 	}
 }

@@ -309,7 +309,7 @@ type countingGetStore struct {
 func (c *countingGetStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
 	return c.inner.Stat(ctx, key)
 }
-func (c *countingGetStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+func (c *countingGetStore) Get(ctx context.Context, key string) (io.ReadCloser, durable.Attributes, bool, error) {
 	c.gets.Add(1)
 	time.Sleep(50 * time.Millisecond)
 
@@ -317,6 +317,9 @@ func (c *countingGetStore) Get(ctx context.Context, key string) (io.ReadCloser, 
 }
 func (c *countingGetStore) Put(ctx context.Context, key string, body io.Reader) error {
 	return c.inner.Put(ctx, key, body)
+}
+func (c *countingGetStore) DeleteVersion(ctx context.Context, key, version string) error {
+	return c.inner.DeleteVersion(ctx, key, version)
 }
 func (c *countingGetStore) Delete(ctx context.Context, key string) error {
 	return c.inner.Delete(ctx, key)

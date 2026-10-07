@@ -13,6 +13,9 @@ import (
 	"github.com/concourse/concourse/hangar/objectstore"
 )
 
+// DefaultProbeTimeout bounds the startup identity probe of a disk cache.
+const DefaultProbeTimeout = 5 * time.Second
+
 // listPageSize is one listing page. It is the disk store's maximum, and GCS
 // pages at most this many per RPC anyway.
 const listPageSize = 1000
@@ -37,6 +40,11 @@ type Config struct {
 
 	// Timeout bounds one disk-store request.
 	Timeout time.Duration
+
+	// ProbeTimeout bounds the disk store's identity probe at Open, so an
+	// unreachable store costs seconds at startup rather than Timeout. Zero
+	// means DefaultProbeTimeout.
+	ProbeTimeout time.Duration
 
 	// Limit bounds a single object in bytes; zero or less is unbounded.
 	Limit int64
@@ -70,7 +78,11 @@ func Open(ctx context.Context, c Config) (Store, func() error, error) {
 		return nil, nil, err
 	}
 	if c.Kind == "disk" {
-		client := disk.ClientConfig{Endpoint: c.Endpoint, StoreID: c.StoreID, TokenFile: c.TokenFile, CACert: c.CACert, Timeout: c.Timeout}
+		probe := c.ProbeTimeout
+		if probe <= 0 {
+			probe = DefaultProbeTimeout
+		}
+		client := disk.ClientConfig{Endpoint: c.Endpoint, StoreID: c.StoreID, TokenFile: c.TokenFile, CACert: c.CACert, Timeout: c.Timeout, ProbeTimeout: probe}
 		objects, err := disk.NewClient(client)
 		if err != nil {
 			return nil, nil, fmt.Errorf("durable: disk cache client: %w", err)
@@ -94,6 +106,21 @@ func Open(ctx context.Context, c Config) (Store, func() error, error) {
 	return New(objects, deleter, c.Bucket, c.Limit), func() error {
 		return errors.Join(closeObjects(), closeDeleter())
 	}, nil
+}
+
+// IsUnavailable reports whether an Open failed because the store could not be
+// reached right now -- a transport failure or a probe that ran out of time --
+// rather than because the configuration is wrong. Only the first is worth
+// retrying; a refused credential, a store answering with another identity, or
+// an unreadable token file is a configuration error.
+func IsUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, objectstore.ErrUnauthorized) || errors.Is(err, objectstore.ErrConflict) {
+		return false
+	}
+	return errors.Is(err, objectstore.ErrInfrastructure) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // New wraps an object client as the cache. A nil deleter is a cache that can
@@ -134,26 +161,26 @@ func (s *objectStore) Stat(ctx context.Context, key string) (Attributes, bool, e
 
 // Get reads the current generation, pinned: a stat then an exact open, so an
 // object expired and recreated between the two is read as a miss rather than
-// as a mixture.
-func (s *objectStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+// as a mixture. The attributes name the generation that was opened.
+func (s *objectStore) Get(ctx context.Context, key string) (io.ReadCloser, Attributes, bool, error) {
 	if err := ValidateKey(key); err != nil {
-		return nil, false, err
+		return nil, Attributes{}, false, err
 	}
 	attrs, err := s.objects.StatCurrent(ctx, s.bucket, key)
 	if errors.Is(err, objectstore.ErrNotFound) {
-		return nil, false, nil
+		return nil, Attributes{}, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, Attributes{}, false, err
 	}
 	body, err := s.objects.OpenExact(ctx, s.bucket, key, attrs.Generation)
 	if errors.Is(err, objectstore.ErrNotFound) {
-		return nil, false, nil
+		return nil, Attributes{}, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, Attributes{}, false, err
 	}
-	return body, true, nil
+	return body, attributesOf(attrs), true, nil
 }
 
 // Put creates the object if it is absent.
@@ -200,7 +227,27 @@ func (s *objectStore) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	err = s.deleter.DeleteExact(ctx, s.bucket, key, attrs.Generation)
+	return s.deleteGeneration(ctx, key, attrs.Generation)
+}
+
+// DeleteVersion deletes exactly one generation, named by the caller from what
+// it read. It never re-stats the key: a newer object there is kept.
+func (s *objectStore) DeleteVersion(ctx context.Context, key, version string) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
+	generation, err := strconv.ParseInt(version, 10, 64)
+	if err != nil || generation <= 0 {
+		return fmt.Errorf("durable: invalid version %q", version)
+	}
+	return s.deleteGeneration(ctx, key, generation)
+}
+
+func (s *objectStore) deleteGeneration(ctx context.Context, key string, generation int64) error {
+	if s.deleter == nil {
+		return errors.New("durable: this cache holds no delete capability")
+	}
+	err := s.deleter.DeleteExact(ctx, s.bucket, key, generation)
 	if errors.Is(err, objectstore.ErrNotFound) || errors.Is(err, objectstore.ErrPreconditionFailed) {
 		return nil
 	}

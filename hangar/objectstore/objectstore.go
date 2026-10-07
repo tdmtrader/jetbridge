@@ -25,6 +25,14 @@ var (
 	// ErrInfrastructure is everything else the transport reported.
 	ErrInfrastructure = hangar.ErrInfrastructure
 
+	// ErrCorrupt is a stored object whose bytes or record the store itself
+	// found inconsistent while serving it.
+	ErrCorrupt = hangar.ErrCorrupt
+
+	// ErrConflict is a store answering as a different identity than the one
+	// the client was configured to reach.
+	ErrConflict = hangar.ErrConflict
+
 	// ErrPreconditionFailed is 412: the object's generation or metageneration
 	// is not the one the operation named. For a create-if-absent it means
 	// something is already at the key, which is a collision candidate and

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -42,36 +43,100 @@ func validateStorageNamespaces(cache, input, output string) error {
 	return objectstore.Namespaces{Cache: cache, Input: input, Output: output}.Validate()
 }
 
+// openDurableStore is durable.Open, replaceable in tests.
+var openDurableStore = durable.Open
+
+// Reconnection backoff for a cache store unreachable at startup.
+var (
+	durableConnectInitialBackoff = 5 * time.Second
+	durableConnectMaxBackoff     = 5 * time.Minute
+)
+
 // buildDurableTier turns the flags into a tier, or (nil, nil) when the operator
 // did not ask for one.
 //
 // A misconfiguration is an error rather than a silent fallback to disabled.
 // Getting a cold cache for months because a bucket name had a typo is a much
-// worse failure than refusing to start.
+// worse failure than refusing to start. That includes a store that ANSWERS
+// and refuses: a rejected credential or a store reporting another identity is
+// configuration, and the daemon exits on it.
 //
-// A store that is configured correctly but unreachable at startup is NOT an
-// error: the disk adapter proves its credential against the store when it is
-// built, and a cache outage must never stop the daemon serving builds. The tier
-// is left off, said out loud, and the next restart tries again.
-func buildDurableTier(ctx context.Context, logger lager.Logger, m *metrics, opts durableOptions) (*DurableTier, func() error, error) {
+// A store that is configured correctly but cannot be reached at startup is NOT
+// an error: the tier is fail-open, and a cache outage must never stop the
+// daemon serving builds. The tier is returned unconnected (every operation a
+// miss, not advertised to the ATC) and connects in the background, retrying
+// with backoff until ctx is done. onConnect runs once the store is live -- the
+// caller starts its retention pass there. The returned closer closes whatever
+// store ends up connected.
+func buildDurableTier(ctx context.Context, logger lager.Logger, m *metrics, opts durableOptions, onConnect func(*DurableTier)) (*DurableTier, func() error, error) {
+	noop := func() error { return nil }
 	if opts.kind == "" {
-		return nil, func() error { return nil }, nil
+		return nil, noop, nil
 	}
 	config := opts.config()
 	if err := config.Validate(); err != nil {
 		return nil, nil, err
 	}
 
-	store, closeStore, err := durable.Open(ctx, config)
-	if err != nil {
-		logger.Error("durable-store-unavailable", err, lager.Data{
-			"note": "the resource cache tier is off until the daemon restarts; builds re-download instead",
-		})
-		m.recordDurable("open", "error")
-		return nil, func() error { return nil }, nil
+	tier := NewDurableTier(logger, nil, m, opts.timeout)
+	var closeMu sync.Mutex
+	closeStore := noop
+	closer := func() error {
+		closeMu.Lock()
+		defer closeMu.Unlock()
+		return closeStore()
+	}
+	install := func(store durable.Store, closeIt func() error) {
+		closeMu.Lock()
+		closeStore = closeIt
+		closeMu.Unlock()
+		tier.connect(store)
+		if onConnect != nil {
+			onConnect(tier)
+		}
 	}
 
-	return NewDurableTier(logger, store, m, opts.timeout), closeStore, nil
+	store, closeIt, err := openDurableStore(ctx, config)
+	if err == nil {
+		install(store, closeIt)
+		return tier, closer, nil
+	}
+	if !durable.IsUnavailable(err) {
+		return nil, nil, err
+	}
+
+	logger.Error("durable-store-unavailable", err, lager.Data{
+		"note": "the resource cache tier is off and retrying in the background; builds re-download meanwhile",
+	})
+	m.recordDurable("open", "error")
+	go func() {
+		backoff := durableConnectInitialBackoff
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			store, closeIt, err := openDurableStore(ctx, config)
+			if err == nil {
+				logger.Info("durable-store-connected")
+				install(store, closeIt)
+				return
+			}
+			if !durable.IsUnavailable(err) {
+				// It answered and refused. Startup would have exited on this;
+				// mid-run the cache simply stays off, loudly.
+				logger.Error("durable-store-refused", err, lager.Data{
+					"note": "the cache store answered and refused this configuration; the tier stays off",
+				})
+				return
+			}
+			m.recordDurable("open", "error")
+			backoff = min(backoff*2, durableConnectMaxBackoff)
+		}
+	}()
+
+	return tier, closer, nil
 }
 
 // hangarInputNamespace is the strict-input namespace this daemon will use, or

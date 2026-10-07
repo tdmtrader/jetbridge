@@ -29,8 +29,9 @@ import (
 //     (Reqs 20, 59) The cache shares the object interface and backends with
 //     this plane but never a namespace: the daemon and web refuse to start
 //     with the cache bucket equal to the output or input one
-//     (objectstore.Namespaces), which replaced the old guarantee that a cache
-//     object name was one segment too shallow to address an output key. The
+//     (objectstore.Namespaces). Until Track 1 hands the artifact daemon the
+//     output bucket to compare, durable_reach_test.go keeps the interim
+//     guarantee that a cache key is too shallow to spell an output key. The
 //     other direction -- the cache tier importing hangar/output -- is the root
 //     architecture_test.go's TestDurableTierAndHangarAreSeparateStores.
 //  4. The privilege split between the three roles. Each role is one binary and

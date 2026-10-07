@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -38,8 +39,11 @@ import (
 // build. Callers get a bool, not an error, so there is no error to accidentally
 // propagate.
 type DurableTier struct {
-	logger  lager.Logger
-	store   durable.Store
+	logger lager.Logger
+	// store is the connected backing store, or nil while the tier is still
+	// connecting (a store unreachable at startup is retried in the
+	// background). Every method treats "not connected" as a miss.
+	store   atomic.Pointer[storeRef]
 	metrics *metrics
 	timeout time.Duration
 
@@ -56,14 +60,41 @@ func NewDurableTier(logger lager.Logger, store durable.Store, m *metrics, timeou
 		timeout = 5 * time.Minute
 	}
 
-	return &DurableTier{
+	tier := &DurableTier{
 		logger:   logger.Session("durable"),
-		store:    store,
 		metrics:  m,
 		timeout:  timeout,
 		inFlight: map[string]struct{}{},
 	}
+	tier.connect(store)
+
+	return tier
 }
+
+type storeRef struct{ durable.Store }
+
+// connect installs the backing store. It is how a tier built while its store
+// was unreachable becomes live without the daemon restarting.
+func (d *DurableTier) connect(store durable.Store) {
+	if store != nil {
+		d.store.Store(&storeRef{store})
+	}
+}
+
+// backing is the connected store, or nil.
+func (d *DurableTier) backing() durable.Store {
+	if d == nil {
+		return nil
+	}
+	if ref := d.store.Load(); ref != nil {
+		return ref.Store
+	}
+	return nil
+}
+
+// Ready reports whether the tier has a connected store. A daemon advertises
+// the tier to the ATC only once it is.
+func (d *DurableTier) Ready() bool { return d.backing() != nil }
 
 // Has reports whether the durable store holds the key.
 //
@@ -77,7 +108,12 @@ func (d *DurableTier) Has(ctx context.Context, key string) bool {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 
-	_, found, err := d.store.Stat(ctx, key)
+	store := d.backing()
+	if store == nil {
+		d.metrics.recordDurable("has", "miss")
+		return false
+	}
+	_, found, err := store.Stat(ctx, key)
 	if err != nil {
 		d.logger.Error("stat-failed", err, lager.Data{"key": key})
 		d.metrics.recordDurable("has", "error")
@@ -105,7 +141,12 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 
-	body, found, err := d.store.Get(ctx, key)
+	store := d.backing()
+	if store == nil {
+		d.metrics.recordDurable("restore", "miss")
+		return false
+	}
+	body, read, found, err := store.Get(ctx, key)
 	if err != nil {
 		logger.Error("get-failed", err)
 		d.metrics.recordDurable("restore", "error")
@@ -135,7 +176,9 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 	if err != nil {
 		logger.Error("extract-failed", err)
 		d.metrics.recordDurable("restore", "error")
-		d.expireUnusable(ctx, logger, key)
+		if isCorruptObject(err) {
+			d.expireUnusable(ctx, logger, key, read.Version)
+		}
 		return false
 	}
 	cleanup := func() { parent.RemoveAll(tmpDir) }
@@ -166,7 +209,8 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 // It is synchronous; callers that must not block should run it in a goroutine.
 // Concurrent calls for the same key collapse to one upload.
 func (d *DurableTier) Store(ctx context.Context, key string, tar func(io.Writer) error) {
-	if d == nil {
+	store := d.backing()
+	if store == nil {
 		return
 	}
 
@@ -189,7 +233,7 @@ func (d *DurableTier) Store(ctx context.Context, key string, tar func(io.Writer)
 	}()
 	defer pr.Close()
 
-	if err := d.store.Put(ctx, key, pr); err != nil {
+	if err := store.Put(ctx, key, pr); err != nil {
 		logger.Error("put-failed", err)
 		d.metrics.recordDurable("store", "error")
 		return
@@ -199,25 +243,29 @@ func (d *DurableTier) Store(ctx context.Context, key string, tar func(io.Writer)
 	d.metrics.recordDurable("store", "ok")
 }
 
-// expireUnusable removes an object that could not be restored.
+// expireUnusable removes exactly the generation a restore read and found
+// unusable.
 //
 // Objects are immutable, so a truncated, corrupt or hostile object is not
 // healed by the next producer's upload the way an overwrite once healed it: the
 // create-if-absent finds the key taken and succeeds without writing. Removing
-// the object is what lets the next producer put a good copy back. A cache entry
-// is re-derivable, so deleting a good one by mistake costs a re-download and
-// nothing else. A restore that failed because its own deadline ran out says
-// nothing about the object, and is left alone.
-func (d *DurableTier) expireUnusable(ctx context.Context, logger lager.Logger, key string) {
-	if ctx.Err() != nil {
+// the object is what lets the next producer put a good copy back. The delete is
+// of the generation that was read and never a re-stat of the current one, so a
+// good copy written since is kept.
+func (d *DurableTier) expireUnusable(ctx context.Context, logger lager.Logger, key, version string) {
+	if ctx.Err() != nil || version == "" {
 		return
 	}
-	if err := d.store.Delete(ctx, key); err != nil {
+	store := d.backing()
+	if store == nil {
+		return
+	}
+	if err := store.DeleteVersion(ctx, key, version); err != nil {
 		logger.Error("expire-unusable-failed", err)
 		d.metrics.recordDurable("delete", "error")
 		return
 	}
-	logger.Info("expired-unusable-object")
+	logger.Info("expired-unusable-object", lager.Data{"version": version})
 	d.metrics.recordDurable("delete", "ok")
 }
 
@@ -228,23 +276,20 @@ func (d *DurableTier) expireUnusable(ctx context.Context, logger lager.Logger, k
 // store rather than proxying List because the reporter's whole job is to walk
 // it, and a proxy would only be a longer way to say the same thing.
 func (d *DurableTier) ObjectStore() durable.Store {
-	if d == nil {
-		return nil
-	}
-
-	return d.store
+	return d.backing()
 }
 
 // Delete removes the durable copy. Used by the retention pass.
 func (d *DurableTier) Delete(ctx context.Context, key string) bool {
-	if d == nil {
+	store := d.backing()
+	if store == nil {
 		return false
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 
-	if err := d.store.Delete(ctx, key); err != nil {
+	if err := store.Delete(ctx, key); err != nil {
 		d.logger.Error("delete-failed", err, lager.Data{"key": key})
 		d.metrics.recordDurable("delete", "error")
 		return false

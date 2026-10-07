@@ -236,7 +236,11 @@ func main() {
 	}
 
 	closeDurable := func() error { return nil }
-	if tier, closeTier, err := buildDurableTier(context.Background(), logger, server.Metrics(), durableOptions{
+	startRetention := func(tier *DurableTier) {
+		maintainer := NewStoreMaintainer(logger, tier, server.Metrics(), *durableMaintenanceInterval, durableRetention)
+		go maintainer.Run(maintenanceCtx)
+	}
+	if tier, closeTier, err := buildDurableTier(maintenanceCtx, logger, server.Metrics(), durableOptions{
 		kind:      *durableStore,
 		bucket:    *durableBucket,
 		endpoint:  *durableEndpoint,
@@ -245,7 +249,7 @@ func main() {
 		caCert:    *durableCACert,
 		timeout:   *durableTimeout,
 		maxBytes:  *durableMaxBytes,
-	}); err != nil {
+	}, startRetention); err != nil {
 		// Misconfiguration is worth failing on: an operator who asked for a
 		// durable store and silently did not get one would discover it as a
 		// mysteriously cold cache months later.
@@ -257,10 +261,7 @@ func main() {
 	} else if tier != nil {
 		closeDurable = closeTier
 		server.SetDurableTier(tier)
-		logger.Info("durable-store-enabled", lager.Data{"backend": *durableStore})
-
-		maintainer := NewStoreMaintainer(logger, tier, server.Metrics(), *durableMaintenanceInterval, durableRetention)
-		go maintainer.Run(maintenanceCtx)
+		logger.Info("durable-store-enabled", lager.Data{"backend": *durableStore, "connected": tier.Ready()})
 
 		if len(durableRetention) == 0 {
 			// Not an error -- an operator may genuinely want to keep

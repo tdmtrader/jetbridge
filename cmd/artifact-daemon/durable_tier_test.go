@@ -127,8 +127,11 @@ type brokenStore struct{}
 func (brokenStore) Stat(context.Context, string) (durable.Attributes, bool, error) {
 	return durable.Attributes{}, false, errors.New("bucket unreachable")
 }
-func (brokenStore) Get(context.Context, string) (io.ReadCloser, bool, error) {
-	return nil, false, errors.New("bucket unreachable")
+func (brokenStore) Get(context.Context, string) (io.ReadCloser, durable.Attributes, bool, error) {
+	return nil, durable.Attributes{}, false, errors.New("bucket unreachable")
+}
+func (brokenStore) DeleteVersion(context.Context, string, string) error {
+	return errors.New("bucket unreachable")
 }
 func (brokenStore) Put(context.Context, string, io.Reader) error {
 	return errors.New("bucket unreachable")
@@ -212,7 +215,7 @@ type countingStore struct {
 func (c *countingStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
 	return c.inner.Stat(ctx, key)
 }
-func (c *countingStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+func (c *countingStore) Get(ctx context.Context, key string) (io.ReadCloser, durable.Attributes, bool, error) {
 	return c.inner.Get(ctx, key)
 }
 func (c *countingStore) Put(ctx context.Context, key string, body io.Reader) error {
@@ -221,6 +224,9 @@ func (c *countingStore) Put(ctx context.Context, key string, body io.Reader) err
 	time.Sleep(50 * time.Millisecond)
 
 	return c.inner.Put(ctx, key, body)
+}
+func (c *countingStore) DeleteVersion(ctx context.Context, key, version string) error {
+	return c.inner.DeleteVersion(ctx, key, version)
 }
 func (c *countingStore) Delete(ctx context.Context, key string) error {
 	return c.inner.Delete(ctx, key)

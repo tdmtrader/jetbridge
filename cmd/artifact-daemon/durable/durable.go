@@ -91,10 +91,12 @@ type Store interface {
 	// download the caller discards.
 	Stat(ctx context.Context, key string) (Attributes, bool, error)
 
-	// Get opens the object. A miss is (nil, false, nil).
+	// Get opens the object's current generation and reports its attributes,
+	// whose Version is the generation being read. A miss is (nil, {}, false,
+	// nil).
 	//
 	// The caller owns the returned ReadCloser and must close it.
-	Get(ctx context.Context, key string) (io.ReadCloser, bool, error)
+	Get(ctx context.Context, key string) (io.ReadCloser, Attributes, bool, error)
 
 	// Put writes the object if the key is absent.
 	//
@@ -106,6 +108,11 @@ type Store interface {
 	// Delete removes the object. Deleting an absent key is not an error, so a
 	// reclaim pass can be re-run without tracking what it already removed.
 	Delete(ctx context.Context, key string) error
+
+	// DeleteVersion removes exactly the version (generation) a Get or Stat
+	// reported, and never a newer object at the same key. Absent, or already
+	// replaced, is not an error.
+	DeleteVersion(ctx context.Context, key, version string) error
 
 	// List calls fn for every object in the store, in unspecified order,
 	// stopping early if fn returns an error and returning it.
@@ -132,6 +139,10 @@ var ErrTooLarge = errors.New("durable: object exceeds size limit")
 var segmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
 
 // maxKeySegments: a key is one segment, or a retention class and one segment.
+//
+// hangar/output/durable_reach_test.go reads this constant: until the daemon
+// validates the cache bucket against the output bucket as well as the input
+// one, this bound is what keeps a cache key from spelling an output object key.
 const maxKeySegments = 2
 
 // ValidateKey rejects keys that are not a cache object name.

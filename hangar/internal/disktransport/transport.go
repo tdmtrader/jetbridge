@@ -30,6 +30,11 @@ type Config struct {
 	TokenFile string
 	CACert    string
 	Timeout   time.Duration
+	// ProbeTimeout bounds the identity probe New makes. Zero means Timeout.
+	// A caller that must not stall startup on an unreachable store -- the
+	// fail-open cache -- sets it to seconds while keeping a long Timeout for
+	// object transfers.
+	ProbeTimeout time.Duration
 }
 
 type Transport struct {
@@ -77,7 +82,13 @@ func New(config Config) (*Transport, error) {
 	transport := &Transport{endpoint: strings.TrimSuffix(config.Endpoint, "/"), id: config.StoreID, token: token, client: client}
 	// Readiness must prove that the configured credential reaches this exact
 	// initialized store, not merely that the endpoint string parses.
-	response, err := transport.Request(context.Background(), http.MethodGet, "identity", nil, nil, nil)
+	probe := config.ProbeTimeout
+	if probe <= 0 || probe > config.Timeout {
+		probe = config.Timeout
+	}
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), probe)
+	defer cancelProbe()
+	response, err := transport.Request(probeCtx, http.MethodGet, "identity", nil, nil, nil)
 	if err != nil {
 		httpTransport.CloseIdleConnections()
 		return nil, err

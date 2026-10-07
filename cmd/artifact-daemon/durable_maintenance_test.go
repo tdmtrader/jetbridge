@@ -263,11 +263,14 @@ func (s *noTimestampStore) Stat(ctx context.Context, key string) (durable.Attrib
 
 	return a, found, err
 }
-func (s *noTimestampStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+func (s *noTimestampStore) Get(ctx context.Context, key string) (io.ReadCloser, durable.Attributes, bool, error) {
 	return s.inner.Get(ctx, key)
 }
 func (s *noTimestampStore) Put(ctx context.Context, key string, body io.Reader) error {
 	return s.inner.Put(ctx, key, body)
+}
+func (s *noTimestampStore) DeleteVersion(ctx context.Context, key, version string) error {
+	return s.inner.DeleteVersion(ctx, key, version)
 }
 func (s *noTimestampStore) Delete(ctx context.Context, key string) error {
 	return s.inner.Delete(ctx, key)
@@ -289,11 +292,14 @@ type failDeleteStore struct {
 func (s *failDeleteStore) Stat(ctx context.Context, key string) (durable.Attributes, bool, error) {
 	return s.inner.Stat(ctx, key)
 }
-func (s *failDeleteStore) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+func (s *failDeleteStore) Get(ctx context.Context, key string) (io.ReadCloser, durable.Attributes, bool, error) {
 	return s.inner.Get(ctx, key)
 }
 func (s *failDeleteStore) Put(ctx context.Context, key string, body io.Reader) error {
 	return s.inner.Put(ctx, key, body)
+}
+func (s *failDeleteStore) DeleteVersion(ctx context.Context, key, version string) error {
+	return s.inner.DeleteVersion(ctx, key, version)
 }
 func (s *failDeleteStore) Delete(ctx context.Context, key string) error {
 	if key == s.fail {
