@@ -164,8 +164,8 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 				plan.RunResult.Name = "other"
 			case "output":
 				plan.RunResult.Output = "other"
-			case "epoch":
-				epoch++
+			case "no generation":
+				epoch = 0
 			case "job":
 				in.Creation.EntryBuilds = []db.Build{in.Creation.EntryBuilds[1]}
 			case "completed Run":
