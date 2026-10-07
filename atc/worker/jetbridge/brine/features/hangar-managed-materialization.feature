@@ -2,9 +2,9 @@ Feature: Managed Run inputs materialize through live read authority
 
   @HOP-35 @HOP-36 @HOP-37
   Scenario Outline: The authenticated node installs only the exact leased input
-    Given a Hangar output daemon accepting authenticated TLS connections
+    Given an artifact daemon serving the output plane over authenticated TLS
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket

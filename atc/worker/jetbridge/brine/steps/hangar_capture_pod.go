@@ -72,13 +72,13 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// WHAT IT BUILDS IS AN ADMISSION, not a Pod. Everything these
 		// scenarios need from this sentence is what the capture row carries
 		// before anything may run -- the exact execution, the declared output
-		// and the activation epoch -- and none of that is a Pod fact. The
+		// and the control epoch -- and none of that is a Pod fact. The
 		// Pod-shaped assertions still enter through `the capture pod is built`.
 		//
 		// The identities are MINTED HERE, not named by the feature file. A
 		// scenario that could choose an execution could make two scenarios
-		// collide on one node's markers, and a scenario that could choose an
-		// activation epoch would be choosing which key signs its statements.
+		// collide on one node's markers, and a scenario that could choose a
+		// control epoch would be choosing which control plane admitted it.
 		brine.DefineMap[HangarDaemon, CaptureDraft](
 			"a capture-selected task {string} built from image {string} declares the output {string}",
 			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
@@ -141,11 +141,11 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 
 		// The scheduling refinements. They REBUILD the worker, because what
 		// they describe is a fact about the deployment rather than about this
-		// step: which facets this cohort serves is configuration the worker was
-		// started with, and a phrase that only recorded an intention on the
+		// step: which ready labels its nodes carry is configuration the worker
+		// was started with, and a phrase that only recorded an intention on the
 		// draft would be a sentence with nothing behind it.
 		brine.DefineMapUsing[CaptureDraft, CaptureDraft](
-			"the worker's cohort is ready for {string}",
+			"the worker's nodes are ready for {string}",
 			[]string{"jetbridge-db", "real-cluster"},
 			func(in CaptureDraft, p brine.Params, rec *brine.Recorder, res brine.Resources) (CaptureDraft, error) {
 				facet, ok := p.GetString(0)
@@ -153,33 +153,31 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 					return CaptureDraft{}, fmt.Errorf("expected a facet parameter")
 				}
 
-				return withCohort(in, res, rec, facet, int64(hangarEpoch))
+				return withReadyLabels(in, res, rec, facet, int64(hangarEpoch))
 			},
 		),
 
 		// A ready label is a HINT and never authority.
 		//
-		// A node can carry the output label while its daemons speak for another
-		// activation epoch -- a rolling upgrade, a half-finished rotation, a
-		// node back from a long drain -- and a capture admitted against that
-		// cohort would be signed by a key this control plane does not pin. So
-		// the un-handshaked cohort is spelled as exactly that: the label is
-		// there, and the epoch does not match.
-		Refine[CaptureDraft]("the daemon cohort has not handshaked",
+		// A node can carry the output label while the step was admitted by a
+		// control plane configured with another control epoch -- a rolling
+		// upgrade, a node back from a long drain. So this is spelled as
+		// exactly that: the label is there, and the epoch does not match.
+		Refine[CaptureDraft]("the step was admitted under another control epoch",
 			func(in CaptureDraft, _ Args) CaptureDraft {
 				// The ADMISSION moves, not the worker. The node carries the
 				// ready label -- the phrase above put it there -- and what is
-				// missing is the handshake behind it: this capture was admitted
-				// by a control plane speaking for a DIFFERENT activation epoch,
-				// which is the state a rolling upgrade, a half-finished
-				// rotation or a node back from a long drain produces.
+				// missing is the matching epoch behind it: this capture was
+				// admitted by a control plane configured with a DIFFERENT
+				// control epoch, which is the state a rolling upgrade or a
+				// node back from a long drain produces.
 				//
 				// Moving the worker instead would rebuild it, and the rebuild
 				// would need a second team; that is a fixture collision wearing
 				// the costume of a production refusal, which is the worst shape
 				// a green can have. It cost one, and this is the fix.
 				in.Admission.ActivationEpoch = executioncontrol.ActivationEpoch(hangarEpoch) + 1
-				in.CohortHandshaked = false
+				in.ControlEpochMatches = false
 
 				return in
 			}),
@@ -269,12 +267,12 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// The node pin, declared here in Phase 5 and executed in Phase 8, per
 		// the Phase 4 round-2 ruling 3. It is a stub beside its two affinity
 		// siblings rather than a live step above them, because the scenarios
-		// that exercise a cohort are Phase 8's and splitting the family is
+		// that exercise ready labels are Phase 8's and splitting the family is
 		// what the ruling declined. The production half exists and is red
 		// under M8 in Go
 		// (TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot).
 		// The node pin. A step directory is a directory on ONE node's disk,
-		// named by the capture row before this Pod existed, so a cohort-wide
+		// named by the capture row before this Pod existed, so a label-wide
 		// placement lets the scheduler land the producer on a node the row
 		// does not name -- where the daemon writes no marker the control plane
 		// will ever ask about. Requiring the node turns that
@@ -303,12 +301,12 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"the same worker still builds an ordinary pod for a step that captures nothing",
 			sameWorkerStillBuildsAnOrdinaryPod),
 
-		// The handshake scenario's own control. "a ready label without a
-		// matching handshake admits nothing" passes on a worker that admits
-		// nothing at all, so the same worker is asked for a capture whose epoch
-		// DOES match its cohort, and must build one.
+		// The epoch scenario's own control. "a ready label without a matching
+		// control epoch admits nothing" passes on a worker that admits nothing
+		// at all, so the same worker is asked for a capture whose epoch DOES
+		// match its own, and must build one.
 		CheckThat[CapturePodCreated](
-			"the same worker admits a capture whose epoch matches its cohort",
+			"the same worker admits a capture under its own control epoch",
 			sameWorkerAdmitsAMatchingEpoch),
 
 		CheckContains[CapturePodCreated]("the pod build is refused saying {string}",
@@ -581,7 +579,7 @@ func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
 		values[env.Name] = env
 	}
 
-	// The base handshake: the protocol this cohort speaks, the exact identity
+	// The base handshake: the protocol the node speaks, the exact identity
 	// and its fence, the epoch it was admitted under, and where to ask.
 	for name, want := range map[string]string{
 		"HANGAR_PROTOCOL_VERSION": hangaroutput.ProtocolVersion,
@@ -726,18 +724,18 @@ func captureResolvedMountCount(in CapturePodCreated) (int, error) {
 // The scheduling block
 // ---------------------------------------------------------------------------
 
-// withCohort rebuilds the worker for a named facet and one activation epoch.
+// withReadyLabels rebuilds the worker for one ready label and one control epoch.
 //
-// A REBUILD rather than a mutation, because which facets a cohort serves is
+// A REBUILD rather than a mutation, because which labels its nodes carry is
 // configuration the worker was started with. The draft is a description at this
 // point -- no container has been created -- so replacing the cluster under it is
 // safe, and it is what makes the phrase a construction rather than a note.
-func withCohort(in CaptureDraft, res brine.Resources, rec *brine.Recorder,
+func withReadyLabels(in CaptureDraft, res brine.Resources, rec *brine.Recorder,
 	facet string, epoch int64) (CaptureDraft, error) {
 	outputFacet := false
 	switch facet {
 	case executioncontrol.ReadyLabel:
-		// The BASE facet alone. A base-only cohort is a real deployment -- it
+		// The BASE label alone. A base-only worker is a real deployment -- it
 		// is the one the sibling exact_execution_control track schedules onto.
 	case hangaroutput.ReadyLabel, "hangar-output-v1":
 		outputFacet = true
@@ -750,14 +748,14 @@ func withCohort(in CaptureDraft, res brine.Resources, rec *brine.Recorder,
 	// name: two rebuilds sharing one would be the second redefining the first's
 	// registration rather than standing beside it.
 	//
-	// The EPOCH is in the name and not only the facet: the handshake scenario
-	// rebuilds twice for the SAME facet -- once ready, once speaking for another
-	// epoch -- and a name keyed on the facet alone made the second rebuild land
+	// The EPOCH is in the name and not only the label: the epoch scenario
+	// rebuilds twice for the SAME label -- once matching, once admitted under
+	// another epoch -- and a name keyed on the label alone made the second rebuild land
 	// on the first's row rather than on anything the phrase is about. That is a
 	// fixture collision wearing the costume of a production refusal, which is
 	// the worst shape a green can have.
 	ready, err := newWorkerReady(res, rec,
-		fmt.Sprintf("k8s-worker-cohort-%s-%d",
+		fmt.Sprintf("k8s-worker-ready-%s-%d",
 			strings.TrimPrefix(facet, "concourse.dev/"), epoch), "",
 		func(cfg *jetbridge.Config) {
 			cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
@@ -779,7 +777,7 @@ func withCohort(in CaptureDraft, res brine.Resources, rec *brine.Recorder,
 	// against a team row is the one thing in this chain that reads it.
 	in.Draft.TeamID = ready.TeamID
 	in.ReadyFacets = append(in.ReadyFacets, facet)
-	in.CohortHandshaked = true
+	in.ControlEpochMatches = true
 
 	return in, nil
 }
@@ -868,7 +866,7 @@ func capturePodRequiredNode(in CapturePodCreated) (string, error) {
 	}
 
 	return "", fmt.Errorf("the capture pod is not pinned to any node. The two ready labels pick " +
-		"a COHORT; the capture row is narrower than that, so a cohort-wide placement lets the " +
+		"a set of nodes; the capture row is narrower than that, so a label-wide placement lets the " +
 		"scheduler land the producer on a node the row does not name")
 }
 
@@ -920,27 +918,27 @@ func sameWorkerStillBuildsAnOrdinaryPod(in CapturePodCreated) error {
 	return nil
 }
 
-// sameWorkerAdmitsAMatchingEpoch is the handshake scenario's positive half.
+// sameWorkerAdmitsAMatchingEpoch is the epoch scenario's positive half.
 //
-// "a ready label without a matching handshake admits nothing" passes on a worker
-// that admits nothing at all -- a broken image, a missing volume, a refusal for
-// some other reason entirely. So the same worker is handed the same capture with
-// the epoch its cohort actually speaks for, and must build a pod.
+// "a ready label without a matching control epoch admits nothing" passes on a
+// worker that admits nothing at all -- a broken image, a missing volume, a
+// refusal for some other reason entirely. So the same worker is handed the same
+// capture with the epoch it is configured with, and must build a pod.
 func sameWorkerAdmitsAMatchingEpoch(in CapturePodCreated) error {
 	matching := in.Draft
 	matching.Draft.Handle = matching.Draft.Handle + "-matching"
-	// The epoch the worker's cohort actually speaks for, which is the fixture's
+	// The epoch the worker is configured with, which is the fixture's
 	// one epoch. The refusal above was an admission from another one.
 	matching.Admission.ActivationEpoch = executioncontrol.ActivationEpoch(hangarEpoch)
-	matching.CohortHandshaked = true
+	matching.ControlEpochMatches = true
 
 	built, err := buildCapturePod(matching)
 	if err != nil {
 		return fmt.Errorf("building the matching-epoch control: %w", err)
 	}
 	if built.Pod == nil {
-		return fmt.Errorf("the same worker refused a capture whose epoch matches its cohort "+
-			"as well, so the refusal above says nothing about the handshake: %v", built.Err)
+		return fmt.Errorf("the same worker refused a capture under its own control epoch "+
+			"as well, so the refusal above says nothing about the epoch: %v", built.Err)
 	}
 
 	return nil

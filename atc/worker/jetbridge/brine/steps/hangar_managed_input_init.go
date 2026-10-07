@@ -140,11 +140,11 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 	if err := verifyManagedMaterialization(in, root); err != nil {
 		return err
 	}
-	if mode == "lost success response" || mode == "conflicting sealed receipt" {
+	if mode == "lost success response" || mode == "conflicting materialization receipt" {
 		if err := daemon.Output.crash(); err != nil {
 			return err
 		}
-		if mode == "conflicting sealed receipt" {
+		if mode == "conflicting materialization receipt" {
 			receipt := filepath.Join(root, ".hangar-materialized")
 			if err := os.Chmod(receipt, 0644); err != nil {
 				return err
@@ -157,7 +157,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 			}
 		}
 		err := run()
-		if mode == "conflicting sealed receipt" {
+		if mode == "conflicting materialization receipt" {
 			if err == nil {
 				return fmt.Errorf("a conflicting receipt let initialization finish")
 			}

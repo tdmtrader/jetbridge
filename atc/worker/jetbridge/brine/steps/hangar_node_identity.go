@@ -14,7 +14,7 @@ import (
 
 func HangarNodeIdentityDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-		brine.DefineMapUsing[RunOutputRuntime, RunOutputRuntime]("its output daemon restarts with {string} Kubernetes identity", []string{"real-cluster"}, func(in RunOutputRuntime, p brine.Params, rec *brine.Recorder, res brine.Resources) (RunOutputRuntime, error) {
+		brine.DefineMapUsing[RunOutputRuntime, RunOutputRuntime]("its artifact daemon restarts with {string} Kubernetes identity", []string{"real-cluster"}, func(in RunOutputRuntime, p brine.Params, rec *brine.Recorder, res brine.Resources) (RunOutputRuntime, error) {
 			mode, _ := p.GetString(0)
 			cluster, err := getRealCluster(res)
 			if err != nil {
@@ -55,7 +55,7 @@ func HangarNodeIdentityDefinitions() []brine.StepDefinition {
 			}
 			return in, nil
 		}),
-		CheckThat[RunOutputRuntime]("its output daemon refuses the wrong Kubernetes identity", func(in RunOutputRuntime) error {
+		CheckThat[RunOutputRuntime]("its artifact daemon refuses the wrong Kubernetes identity", func(in RunOutputRuntime) error {
 			if in.Err == nil {
 				return fmt.Errorf("daemon accepted an identity different from the real Node")
 			}

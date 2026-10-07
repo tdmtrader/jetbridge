@@ -125,7 +125,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		// Phase 5's `the capture settles` will add the control plane's Stage 2
 		// transaction on top of exactly this.
 		brine.DefineMap[FinishWitnessed, CaptureOutcome](
-			"the daemon seals and publishes the source",
+			"the daemon seals and publishes the step directory",
 			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (CaptureOutcome, error) {
 				return sealAndPublish(in)
 			},
@@ -272,7 +272,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		// Checks over the outcome.
 		// The publication is asserted WHOLE, and against the SERVER-DERIVED
 		// scope -- which is why the sentence cannot name one. The scope is an
-		// opaque per-tenant, per-epoch hash; a feature file that could spell it
+		// opaque hash of the domain, tenant and store; a feature file that could spell it
 		// would be a feature file choosing where an object goes.
 		CheckThat[CaptureOutcome]("the publication names the server-derived scope and the sealed digest at a store-assigned generation",
 			func(in CaptureOutcome) error {
@@ -354,7 +354,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		// The DATABASE half of the whole chain, and the last line of it: the
 		// lifecycle row a settled capture left behind is about the exact
 		// generation the store assigned, not about the logical (scope, digest)
-		// the reservation resolved to.
+		// the capture row's digest names.
 		//
 		// It is written against the row rather than against a repository read
 		// because what is under test is what the row CONTAINS. A registration

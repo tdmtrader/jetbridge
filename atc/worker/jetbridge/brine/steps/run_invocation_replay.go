@@ -56,7 +56,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			if err = openActivationEpoch(jdb); err != nil {
+			if err = putOutputPlaneInService(jdb); err != nil {
 				return in, err
 			}
 			if _, err = db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(hangarEpoch)); err != nil {

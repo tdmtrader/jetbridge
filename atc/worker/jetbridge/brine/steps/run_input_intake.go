@@ -56,7 +56,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	if !ok {
 		return fmt.Errorf("Run admission has no authenticated input intake")
 	}
-	if err := openActivationEpoch(jdb); err != nil {
+	if err := putOutputPlaneInService(jdb); err != nil {
 		return err
 	}
 	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(hangarEpoch)); err != nil {

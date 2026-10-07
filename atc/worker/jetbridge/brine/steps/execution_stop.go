@@ -12,7 +12,7 @@ import (
 
 func ExecutionStopDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-		brine.DefineMap[HeldSource, HeldSource]("the output daemon restarts with the same control ledger", func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
+		brine.DefineMap[HeldSource, HeldSource]("the artifact daemon restarts with the same control ledger", func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 			// The output plane is mounted in the artifact daemon: restarting it
 			// is restarting that one process, over the same storage root, keys
 			// and address, so the control ledger it reloads is the one it wrote.

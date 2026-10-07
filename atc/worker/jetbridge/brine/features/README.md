@@ -5,7 +5,7 @@
 `n` is the requirement number in the Hangar output publication spec
 (`hearth/tracks/20260826T2224_hangar_output_publication_and_claims/spec.md`).
 Tags go **on the scenario**, not only on the feature, and a scenario may carry
-several — `@HOP-23 @HOP-25` is a scenario about dedup *and* about receipts.
+several — `@HOP-23 @HOP-25` is a scenario about dedup *and* about object markers.
 
 The rule exists because traceability, not coverage, was the measured problem:
 of the 143 archived requirement IDs, 98 are greppable as tags in this directory

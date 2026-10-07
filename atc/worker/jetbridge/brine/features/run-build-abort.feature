@@ -1,7 +1,7 @@
 Feature: Aborting a Run build closes that build's own work
 
   Aborting one build of a v2 Run is scoped to that build. An aborted build
-  that cannot finish over its open execution or unsettled output handoff
+  that cannot finish over its open execution or unsettled capture
   records a build closure, and the cancellation worker closes that work
   through the node protocol. The Run keeps running and nothing asks for its
   cancellation.

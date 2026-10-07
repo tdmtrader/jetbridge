@@ -10,27 +10,32 @@ Feature: What a consuming step's Pod says about a published output
   The consumer's pod is the existing PodCreated state, so every existing mount
   and volume check composes with the three new ones below.
 
+  The receipt here is the MATERIALIZATION receipt: the exact TreeRef the init
+  container expects the node to have installed, checked against the
+  .hangar-materialized file the daemon seals beside the tree. It is not a
+  capture receipt; captures have none, and the capture row is the record.
+
   # Reddened by: BuildFetchInitContainers base64-encoding a receipt whose
   # Generation has been zeroed before it reaches the init command — the exact
   # receipt line reddens and the mount scenarios stay green.
   @HOP-26 @HOP-35
-  Scenario: The consumer's Hangar init verifies exactly the receipt for its TreeRef
+  Scenario: The consumer's Hangar init verifies exactly the materialization receipt for its TreeRef
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
     And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
     When the consumer's pod is built
-    Then the consumer's Hangar init verifies exactly the receipt for its tree
+    Then the consumer's Hangar init verifies exactly the materialization receipt for its tree
 
   # A mount COUNT plus ReadOnly, not membership (convention 8).
   @HOP-26 @HOP-37
   Scenario: Each verified tree gets one fixed read-only verification mount
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -44,26 +49,26 @@ Feature: What a consuming step's Pod says about a published output
   Scenario: A user-controlled destination never enters the verification command
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
     And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
     When the consumer's pod is built
-    Then the consumer's Hangar init verifies exactly the receipt for its tree
+    Then the consumer's Hangar init verifies exactly the materialization receipt for its tree
     And no user-controlled destination enters the verification command
 
   @HOP-35 @HOP-37
-  Scenario: A consumer pod asks for exactly the receipt's tree
+  Scenario: A consumer pod asks for exactly the materialization receipt's tree
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
     And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
     When the consumer's pod is built
-    Then the consumer's pod asks for exactly the receipt's tree
+    Then the consumer's pod asks for exactly the materialization receipt's tree
     And the step sees a volume mounted at "/tmp/build/from-earlier"
 
   # Control first: the granted read is the line above the refusal, because a
@@ -72,7 +77,7 @@ Feature: What a consuming step's Pod says about a published output
   Scenario: Without an active claim the consumer's read is refused, while the same read with a claim succeeds
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket

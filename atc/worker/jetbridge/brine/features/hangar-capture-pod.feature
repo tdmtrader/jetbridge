@@ -12,12 +12,12 @@ Feature: What a capture-selected task's Pod says
   regression twin instead of writing a second copy.
 
   The scheduling block below arrived in Phase 8, which is where a worker can be
-  told which facets its cohort serves; the strict-input twin at the end arrived
-  in Phase 9, and the note above it records what running it found out about the
-  shape it was drafted in.
+  told which ready labels its nodes carry; the strict-input twin at the end
+  arrived in Phase 9, and the note above it records what running it found out
+  about the shape it was drafted in.
 
   @HOP-1 @HOP-3 @HOP-12
-  Scenario: Selecting capture for a declared output puts the hold init container before every writer
+  Scenario: Selecting capture for a declared output puts the held-marker init container before every writer
     Given a jetbridge worker with an artifact store and the output plane on
     And the worker prepares task "build" from image "busybox"
     And it takes an input at "/tmp/build/src"
@@ -116,9 +116,9 @@ Feature: What a capture-selected task's Pod says
 
   # ----------------------------------------------------------------------
   # The scheduling block. A ready label is a HINT and never authority: the
-  # authenticated handshake and the activation epoch row are. What a label buys
-  # is that the pod does not land somewhere the hold could never be
-  # acknowledged.
+  # authenticated handshake and the pending capture row are. What a label buys
+  # is that the pod does not land somewhere the held marker could never be
+  # written.
   # ----------------------------------------------------------------------
 
   # Reddened by: BuildAffinity emitting only concourse.dev/hangar-output-v1 and
@@ -126,9 +126,10 @@ Feature: What a capture-selected task's Pod says
   # SECOND line (the count falls to 1) while the ordinary-pod control above
   # stays green.
   #
-  # The node line is the Phase 4 round-2 ruling 3: a reservation is issued by
-  # ONE daemon and the directory it named exists on ONE node, so a capture pod
-  # that lands anywhere else mounts an empty hostPath.
+  # The node line is the Phase 4 round-2 ruling 3: a pending capture row names
+  # ONE node and its step directory exists on that node only, so a capture pod
+  # that lands anywhere else mounts an empty hostPath -- where no held marker
+  # was ever written.
   #
   # Reddened by, for the node line's own vector: BuildAffinity dropping the
   # kubernetes.io/hostname expression — the two label lines above it stay green.
@@ -139,7 +140,7 @@ Feature: What a capture-selected task's Pod says
     And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
-    And the worker's cohort is ready for "concourse.dev/hangar-output-v1"
+    And the worker's nodes are ready for "concourse.dev/hangar-output-v1"
     When the capture pod is built
     Then the capture pod requires 2 ready labels
     And the capture pod is admitted only by a node carrying "concourse.dev/hangar-execution-control-v1"
@@ -151,50 +152,50 @@ Feature: What a capture-selected task's Pod says
   #
   # The refusal is at ADMISSION and not an omission in the Pod. A worker that
   # quietly built the ordinary pod would produce a step that ran, succeeded and
-  # captured nothing, leaving the predeclared handoff unresolved until its
-  # deadline — and there is no cache-tier fallback to degrade into.
+  # captured nothing, leaving the pending capture row to fail at its deadline —
+  # and there is no cache-tier fallback to degrade into.
   #
   # Reddened by: Container.buildPod dropping the OutputPlaneEnabled arm, so a
-  # base-only cohort builds the capture pod anyway — the refusal line reddens
+  # base-only worker builds the capture pod anyway — the refusal line reddens
   # and the ordinary-pod control stays green.
   @HOP-58 @HOP-59
-  Scenario: A worker whose output facet is not enabled builds no capture pod, while the base-only cohort still builds an ordinary one
+  Scenario: A worker whose output plane is not enabled builds no capture pod, while the same worker still builds an ordinary one
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the worker keeps artifacts under "/var/concourse/artifacts"
     And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
-    And the worker's cohort is ready for "concourse.dev/hangar-execution-control-v1"
+    And the worker's nodes are ready for "concourse.dev/hangar-execution-control-v1"
     When the capture pod is built
     Then the pod build is refused saying "output facet is not enabled"
     And no capture pod is built
     And the same worker still builds an ordinary pod for a step that captures nothing
 
-  # A node can carry the output label while its daemons speak for another
-  # activation epoch — a rolling upgrade, a half-finished rotation, a node back
-  # from a long drain. A capture admitted against that cohort would be signed by
-  # a key this control plane does not pin, so the label alone admits nothing.
+  # A node can carry the output label while the step was admitted by a control
+  # plane configured with a different control epoch
+  # (--kubernetes-hangar-output-activation-epoch) — a rolling upgrade, a node
+  # back from a long drain. The label alone admits nothing.
   #
   # Control LAST here rather than first, because brine stops at the first red
   # step: the refusal's text is what distinguishes "refused for the epoch" from
   # "refused for anything", and the matching-epoch control is what distinguishes
   # it from "this worker admits nothing at all".
   #
-  # Reddened by: Container.buildPod dropping the activation-epoch arm — the
+  # Reddened by: Container.buildPod dropping the control-epoch arm — the
   # refusal line reddens and the matching-epoch control stays green.
   @HOP-58
-  Scenario: A ready label without a matching handshake admits nothing, while the handshaken cohort admits
+  Scenario: A ready label without a matching control epoch admits nothing, while the matching epoch admits
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the worker keeps artifacts under "/var/concourse/artifacts"
     And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
-    And the worker's cohort is ready for "concourse.dev/hangar-output-v1"
-    And the daemon cohort has not handshaked
+    And the worker's nodes are ready for "concourse.dev/hangar-output-v1"
+    And the step was admitted under another control epoch
     When the capture pod is built
     Then the pod build is refused saying "speaks for epoch"
     And no capture pod is built
-    And the same worker admits a capture whose epoch matches its cohort
+    And the same worker admits a capture under its own control epoch
 
   # The AC 20 twin that is not a pod shape: turning the output plane on must
   # change nothing about a strict INPUT.

@@ -4,7 +4,7 @@ package steps
 //
 // Everything under it is production. The capture rows are atc/db's, over the
 // scenario's own real PostgreSQL. The node half is jetbridge's own
-// OutputControlClient against the real output daemon this fixture started. The
+// OutputControlClient against the real artifact daemon this fixture started. The
 // coordinator is atc/hangaroutput's, and it takes exactly the steps it would
 // take in a deployment -- seal, publish, release -- and the fixture chooses
 // none of them.
@@ -76,7 +76,7 @@ func oneDaemonDialer(daemon HangarDaemon) func(context.Context, string, executio
 const brineCaptureNode = "brine-node"
 
 // newSettlementPlane wires the coordinator over a scenario's database and
-// daemon, and opens the activation epoch the daemon is already attested for.
+// daemon, and puts the output plane in service.
 func newSettlementPlane(daemon HangarDaemon, res brine.Resources) (settlementPlane, error) {
 	jdb, err := jetbridgeDBFrom(res)
 	if err != nil {
@@ -89,7 +89,7 @@ func newSettlementPlane(daemon HangarDaemon, res brine.Resources) (settlementPla
 	}
 	repository := db.NewHangarOutputRepository(prefix)
 
-	if err := openActivationEpoch(jdb); err != nil {
+	if err := putOutputPlaneInService(jdb); err != nil {
 		return settlementPlane{}, err
 	}
 
@@ -200,14 +200,13 @@ func jetbridgeDBFrom(res brine.Resources) (JetbridgeDB, error) {
 	return jdb, nil
 }
 
-// openActivationEpoch puts the output plane in service, as the web's startup
-// write does: the hangar_enabled row admission takes FOR SHARE.
+// putOutputPlaneInService puts the output plane in service, as the web's
+// startup write does: the hangar_enabled row admission takes FOR SHARE.
 //
-// Without it, nothing admits anything -- which is the held state a fresh
-// database starts in, and is why this is a fixture step rather than a default.
-// The cohort argument is accepted and ignored: there is no cohort attestation
-// any more.
-func openActivationEpoch(jdb JetbridgeDB, _ ...string) error {
+// Without it, nothing admits anything -- which is the out-of-service state a
+// fresh database starts in, and is why this is a fixture step rather than a
+// default.
+func putOutputPlaneInService(jdb JetbridgeDB) error {
 	if _, err := db.SetHangarEnabled(context.Background(), jdb.Conn, true); err != nil {
 		return fmt.Errorf("putting the output plane in service: %w", err)
 	}

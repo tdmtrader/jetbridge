@@ -225,7 +225,7 @@ func runOutputFixtureOnNode(rec *brine.Recorder, res brine.Resources, activation
 	return runOutputFixtureConfig(rec, res, activation, nodeUID, false)
 }
 
-func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation, nodeUID string, checks bool, cohort ...string) (RunOutputStart, error) {
+func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation, nodeUID string, checks bool) (RunOutputStart, error) {
 	jdb, err := jetbridgeDBFrom(res)
 	if err != nil {
 		return RunOutputStart{}, err
@@ -252,7 +252,7 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 	opts := db.RunCreationOpts{}
 	opts.ActivationEpoch = int64(hangarEpoch)
 	opts.HangarEpoch = int64(hangarEpoch)
-	if err := openActivationEpoch(jdb, cohort...); err != nil {
+	if err := putOutputPlaneInService(jdb); err != nil {
 		return in, err
 	}
 	epoch := int64(hangarEpoch)

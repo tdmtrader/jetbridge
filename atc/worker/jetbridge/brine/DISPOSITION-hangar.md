@@ -1,5 +1,17 @@
 # Per-scenario mutation evidence: the Hangar output family
 
+> **Historical record (Phase 9).** The rows below describe the Hangar output
+> family as it stood when they were measured: handoffs, reservations, source
+> incarnations, receipts and activation epochs. None of those exist any more.
+> A capture is now one `hangar_captures` row (pending, publishing, published,
+> discarded, failed) and one marker file per step directory (held, sealed,
+> released); the web runs the reclaim pass and the orphan sweep. The files
+> were renamed with it: `hangar-daemon-handoff.feature` is
+> `hangar-capture-marker.feature` and `hangar-disposition.feature` is
+> `hangar-capture-row.feature`, and phrases such as `the daemon holds the
+> source` are now `the daemon writes the held marker`. The mutations are not
+> re-measured against the new names.
+
 The legend and the columns are `DISPOSITION-jetbridge.md`'s (`:11-27`), turned
 around. That file records what evidence killed a DELETED Go test. This one
 records, for each of the 58 scenarios in the six `hangar-*.feature` files plus

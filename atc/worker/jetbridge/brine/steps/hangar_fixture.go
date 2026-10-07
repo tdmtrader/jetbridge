@@ -102,7 +102,7 @@ type HangarDaemon struct {
 	Endpoint string
 	Bucket   string
 
-	// Client reads the bucket back the way inventory will: through the same
+	// Client reads the bucket back the way the orphan sweep does: through the same
 	// unauthenticated emulator profile the daemon uses.
 	Client *storage.Client
 
@@ -201,8 +201,8 @@ func hangarOutputDaemonFlags(endpoint, bucket, controlKey, capabilityKey,
 }
 
 // The identities the fixture mints. They are constants rather than parameters
-// because no scenario may choose one: an activation epoch a feature file could
-// set would be a feature file choosing which key signs its statements.
+// because no scenario may choose one: a control epoch a feature file could set
+// would be a feature file choosing which control plane admitted it.
 const (
 	// The read-warrant key's id. A key of its own: a warrant must not be
 	// signable by anything that signs a control statement.
@@ -629,7 +629,7 @@ func HangarFixtureDefinitions() []brine.StepDefinition {
 		// The same fixture, named for what the managed-read families need of
 		// it: every route but the node-local hold is behind mutual TLS.
 		brine.DefineMap[brine.Empty, HangarDaemon](
-			"a Hangar output daemon accepting authenticated TLS connections",
+			"an artifact daemon serving the output plane over authenticated TLS",
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (HangarDaemon, error) {
 				return startHangarDaemon(rec, true)
 			},
@@ -640,7 +640,7 @@ func HangarFixtureDefinitions() []brine.StepDefinition {
 		// They used to take a key -- `the output bucket already holds
 		// "hangar/v1/scopes/build/trees/sha256/deadbeef.tar.zst" ...` -- and
 		// that key is not one production would ever choose: the scope is an
-		// opaque per-tenant, per-epoch hash and the digest is over bytes this
+		// opaque hash of the domain, tenant and store and the digest is over bytes this
 		// process did not canonicalize. A scenario seeded at a key like that
 		// collides with nothing, and would have gone green against a collision
 		// that never happened.

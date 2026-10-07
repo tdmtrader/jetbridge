@@ -5,15 +5,15 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   database is the real scenario-scoped PostgreSQL the estate already runs
   (../../steps/resources.go), reached by the fixture rather than by a phrase.
 
-  Lease fencing under concurrent takeover, both crash halves of every commit,
-  and the 15-minute lease stay in Go: brine has no way to say two of these at
-  once, and no injectable clock.
+  Concurrent acquisitions racing on one claim, both crash halves of every
+  commit, and read-lease expiry stay in Go: brine has no way to say two of
+  these at once, and no injectable clock.
 
   @HOP-30
   Scenario: A consumer binds the output and acquires its claim in one transaction
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -27,7 +27,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   Scenario: A rolled-back consumer transaction leaves no claim behind, while the committed one leaves exactly one
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -43,7 +43,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   Scenario: Releasing the claim twice is idempotent and the tombstone is permanent
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -59,7 +59,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   Scenario: Re-acquiring a released claim ID is a typed conflict, and a fresh ID still succeeds
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -74,7 +74,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   Scenario: A hidden-to-published transition keeps the same candidate claim ID
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -86,7 +86,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   Scenario: A claim for an unregistered tree ref is refused, and the registered one is granted
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -99,7 +99,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   Scenario: The binding is not visible before verification, and is visible after
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket

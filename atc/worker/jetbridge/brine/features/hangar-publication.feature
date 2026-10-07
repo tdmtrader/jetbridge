@@ -1,9 +1,9 @@
 Feature: What a sealed source becomes, and what the bucket then holds
 
   The store is the emulated OUTPUT bucket the fixture created — never the
-  artifact daemon's, which is a different bucket served by a different binary
-  under a different service account — read back through the same client the
-  daemon uses. There is no request log on the fixture, so "holds exactly one
+  cache's or the strict input's: the one artifact daemon serves all three
+  namespaces and refuses to start if any two coincide — read back through the
+  same client the daemon uses. There is no request log on the fixture, so "holds exactly one
   object" is an outcome; dedup is told from overwrite by seeding the key with a
   DIFFERENT variant and naming which bytes are there afterwards, which is the
   device ../daemon-durable.feature:100-109 uses.
@@ -12,18 +12,18 @@ Feature: What a sealed source becomes, and what the bucket then holds
   capture row; what these scenarios say is the node's half — seal the step
   directory once its Pod has stopped, then publish exactly the sealed digest.
 
-  # The control is asserted FIRST: the hold with no caller-supplied location is
+  # The control is asserted FIRST: the held marker, with no caller-supplied location, is
   # served, and only then does a publish carrying a bucket field get refused.
   #
   # Reddened by: the publish handler reading the request's `bucket` field
-  # instead of the namespace resolved from the active epoch — one step reddens,
+  # instead of the server-derived namespace — one step reddens,
   # the refusal line, and the control line above it stays green.
   @HOP-7 @HOP-20 @HOP-23
   Scenario: A caller-supplied bucket, scope or object key is refused, and the server-derived one is served
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    Then the Hangar daemon answers 200, holding the source
+    And the daemon writes the held marker
+    Then the Hangar daemon answers 200, the marker held
     When the publish request also carries a caller-chosen "bucket"
     Then the daemon's refusal says "server-derived"
     When the publish request also carries a caller-chosen "scope"
@@ -37,16 +37,16 @@ Feature: What a sealed source becomes, and what the bucket then holds
   # `contains`, which is convention 8 and what the GAP rows warn about.
   #
   # The scope cannot be spelled here, and that is the assertion rather than a
-  # gap in it: it is an opaque per-tenant, per-epoch hash, so a feature file
+  # gap in it: it is an opaque hash of the domain, tenant and store, so a feature file
   # that could name one would be a feature file choosing where an object goes.
 
   @HOP-21 @HOP-22 @HOP-25
   Scenario: A sealed source publishes one marked object naming its scope, digest and generation
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
-    When the daemon seals and publishes the source
+    When the daemon seals and publishes the step directory
     Then the publication names the server-derived scope and the sealed digest at a store-assigned generation
     When the published tree is read back from the output bucket
     Then the output bucket holds exactly one object, marked "hangar-output-v1"
@@ -59,9 +59,9 @@ Feature: What a sealed source becomes, and what the bucket then holds
   Scenario: Publishing identical canonical bytes twice deduplicates to one object
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
-    And the daemon seals and publishes the source
+    And the daemon seals and publishes the step directory
     When the published tree is read back from the output bucket
     And the same canonical bytes are captured again
     Then the output bucket holds exactly one object, marked "hangar-output-v1"
@@ -76,20 +76,20 @@ Feature: What a sealed source becomes, and what the bucket then holds
   Scenario: The same key holding a DIFFERENT variant is a typed collision, never an overwrite
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the output bucket's key for this tree already holds a different variant
-    When the daemon seals and publishes the source
+    When the daemon seals and publishes the step directory
     Then the capture is refused as "collision"
 
   @HOP-22 @HOP-23
   Scenario: An object at the key with no marker is a typed collision, and the marked one still deduplicates
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the output bucket's key for this tree already holds an object with no marker
-    When the daemon seals and publishes the source
+    When the daemon seals and publishes the step directory
     Then the capture is refused as "marker"
 
   # The whole chain, end to end: the control plane's capture row, published.
@@ -100,7 +100,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   Scenario: A settled capture becomes a marked object and a registered tree ref
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     When the published tree is read back from the output bucket
@@ -115,7 +115,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   Scenario: Two in-sequence captures of identical bytes share one object
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
@@ -133,7 +133,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   #
   # It does NOT pin the second half of Req 38, "a caller may recapture and
   # claim a newly published generation". The replacement is published through
-  # the DAEMON -- `captureAgain` admits, holds, seals and publishes,
+  # the DAEMON -- `captureAgain` admits, writes the held marker, seals and publishes,
   # and stops there -- so nothing settles it and no lifecycle row exists for
   # the new generation to read back. Asserting the registration a second time
   # here reddens, correctly, because there is nothing to find. Closing it means
@@ -153,7 +153,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   Scenario: An exact replacement generation supersedes the old one, and the old ref no longer resolves
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket

@@ -1,4 +1,4 @@
-Feature: What the output daemon answers
+Feature: What the artifact daemon answers about a capture's marker
 
   Driven against the real binary through the fixture in
   ../../steps/hangar_fixture.go, for the reason ../../steps/realdaemon.go
@@ -6,14 +6,15 @@ Feature: What the output daemon answers
   RIGHT, and here half of what an operation does is a change to a node's
   filesystem that no response shows.
 
-  There are TWO daemons in this fixture, and there have to be. A Kubernetes
-  service account is Pod-wide, so an output-bucket role on the artifact daemon
-  would give its cache and strict-input identity the same role, and Req 20
-  forbids the output bucket ever being either of those. The isolation is a
-  second Pod, a second service account and a second binary.
+  There is ONE daemon per node: the artifact daemon serves the output plane's
+  capture routes beside its cache and strict-input routes. A capture's only
+  node-local state is one marker file in its step directory, and the marker is
+  held, sealed or released (a tombstone). The output namespace is never the
+  cache's or the strict input's; the daemon refuses to start if any two
+  coincide.
 
   NOTHING HERE COUNTS A REQUEST. The scenarios that mean "the daemon was not
-  called" say instead that the source is still held.
+  called" say instead that the held step directory is still on the node.
 
   # Reddened by: the hold handler writing no held marker before creating the
   # step directory — the acknowledgement line reddens.
@@ -21,15 +22,15 @@ Feature: What the output daemon answers
   Scenario: The daemon acknowledges a hold for the capture's step directory
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    When the daemon holds the source
-    Then the Hangar daemon answers 200, holding the source
-    And the source is still held on the node
+    When the daemon writes the held marker
+    Then the Hangar daemon answers 200, the marker held
+    And the held step directory is still on the node
 
   @HOP-4 @HOP-5
   Scenario: The daemon witnesses a natural finish, and the witness is what the step reports
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     When the step finishes and the daemon witnesses it
     Then the witnessed exit status is 0
     And the witness is what the step reports
@@ -41,13 +42,13 @@ Feature: What the output daemon answers
   Scenario: Destructive cleanup is permitted once the witness and the release both exist
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     When destructive cleanup is requested
     Then destructive cleanup is permitted
 
   # The scenario above is this one's control: it is the already-eligible case,
-  # and without it "the source is still there" would pass on a daemon that
+  # and without it "the step directory is still there" would pass on a daemon that
   # destroys nothing because it does nothing.
   #
   # Assertion ORDER is part of the assertion. brine stops at the first red step,
@@ -56,16 +57,16 @@ Feature: What the output daemon answers
   # never evaluated on a run where the stop went wrong.
   #
   # Reddened by: RequestSourcePreservingStop removing the step directory
-  # as part of the stop — the source line reddens while the acknowledgement line
+  # as part of the stop — the step-directory line reddens while the acknowledgement line
   # above it stays green.
   @HOP-14 @HOP-16
   Scenario: A source-preserving stop leaves the pod's artifact path in place
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    When the step is stopped without destroying its source
+    And the daemon writes the held marker
+    When the step is stopped without destroying its step directory
     Then the witness is what the step reports
-    And the source is still there after the stop
+    And the step directory is still there after the stop
 
   # Reddened by: DestructiveCleanupEligible returning true whenever the
   # execution record exists, instead of requiring the finish acknowledgement —
@@ -81,8 +82,8 @@ Feature: What the output daemon answers
   Scenario: Destructive cleanup is refused until the finish witness exists
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    Then the source is still held on the node
+    And the daemon writes the held marker
+    Then the held step directory is still on the node
     When destructive cleanup is requested before any witness
     Then destructive cleanup is refused
 
@@ -90,20 +91,20 @@ Feature: What the output daemon answers
   Scenario: A stale fence is refused while the current fence is served
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    Then the Hangar daemon answers 200, holding the source
-    When the owner's lease is taken over
+    And the daemon writes the held marker
+    Then the Hangar daemon answers 200, the marker held
+    When the execution is taken over under a newer fence
     And a stale fence is presented
     Then the daemon's refusal says "fence"
-    And the source is still held on the node
+    And the held step directory is still on the node
 
   @HOP-6
   Scenario: A repeated hold with the same identity returns the same acknowledgement
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    When the same hold is repeated with the same identity
-    Then the hold acknowledgement is the one the first hold returned
+    And the daemon writes the held marker
+    When the held marker is requested again with the same identity
+    Then the held marker is the one the first request wrote
 
   # Convention 6. "Repeating the hold returns the same marker" passes for a
   # daemon that ignores the Pod entirely, so the twin has to show that a hold
@@ -116,11 +117,11 @@ Feature: What the output daemon answers
   Scenario: A repeated hold from a different pod is a typed conflict, and the first hold still stands
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    When the same hold is repeated for a different pod
+    And the daemon writes the held marker
+    When the held marker is requested again for a different pod
     Then the daemon's refusal says "conflict"
-    And the hold acknowledgement is the one the first hold returned
-    And the source is still held on the node
+    And the held marker is the one the first request wrote
+    And the held step directory is still on the node
 
   # Reddened by: the hold route accepting a field it does not declare -- a
   # caller-chosen location silently dropped is one an operator never hears
@@ -129,18 +130,18 @@ Feature: What the output daemon answers
   Scenario: A hold request naming a path instead of a step is refused
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    Then the Hangar daemon answers 200, holding the source
-    When the hold request names a path instead of a step
+    And the daemon writes the held marker
+    Then the Hangar daemon answers 200, the marker held
+    When the held-marker request names a path instead of a step
     Then the daemon's refusal says "path"
 
   @HOP-8
-  Scenario: A symlink swapped under the source path is refused, and the unswapped path is not
+  Scenario: A symlink swapped in for the step directory is refused, and the unswapped path is not
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    Then the source is still held on the node
-    When the source path is replaced by a symlink to "/etc"
+    And the daemon writes the held marker
+    Then the held step directory is still on the node
+    When the step directory is replaced by a symlink to "/etc"
     Then the daemon's refusal says "not a directory"
 
   # Reddened by: the capability middleware checking that a token is VALID
@@ -151,9 +152,9 @@ Feature: What the output daemon answers
   Scenario: A base control capability cannot hold, seal or publish
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     When a base control capability is used to "classify"
-    Then the Hangar daemon answers 200, holding the source
+    Then the Hangar daemon answers 200, the marker held
     When a base control capability is used to "hold"
     Then the daemon's refusal says "facet"
     When a base control capability is used to "seal"
@@ -187,28 +188,31 @@ Feature: What the output daemon answers
   # consulting the ledger classifier -- this scenario reddens on `the pause pod
   # is not recreated` and the control scenario above stays green.
   @HOP-12 @HOP-16
-  Scenario: Pause pod recreation for a capture-held source is refused, and an ordinary one still recreates
+  Scenario: Pause pod recreation over a held step directory is refused, and an ordinary one still recreates
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     When its pause pod reaches a terminal state
     Then the pause pod is not recreated
     And the runtime's refusal says "durable output capture holds the source"
 
   # A takeover is the only concurrency this runner can say, and it says it
-  # sequentially: the epoch is bumped, and the old owner's fence is then stale.
+  # sequentially: the execution is admitted again under the next fence, and
+  # the old owner's fence is then stale.
   @HOP-10
-  Scenario: A lease takeover bumps the epoch, and the previous owner's fence stops being served
+  Scenario: A takeover advances the fence, and the previous owner's fence stops being served
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    When the owner's lease is taken over
-    Then the Hangar daemon answers 200, holding the source
+    And the daemon writes the held marker
+    When the execution is taken over under a newer fence
+    Then the Hangar daemon answers 200, the marker held
     When a stale fence is presented
     Then the daemon's refusal says "fence"
-  # "The hold is gone" needs its presence half, and the release is the only
-  # thing that makes it gone: the scenario asserts the source is held, releases
-  # it, and asserts it is not.
+
+  # "The marker is released" needs its presence half, and the release is the
+  # only thing that turns a held marker into a released tombstone: the scenario
+  # asserts the step directory is held, releases the marker, and asserts the
+  # hold's gate is closed while the bytes stay.
   #
   # The FAILING producer between them is not decoration. The control plane
   # releases a capture whose row is terminal, and a row is terminal only after
@@ -216,14 +220,14 @@ Feature: What the output daemon answers
   # for a state production cannot reach.
   #
   # Reddened by: the release route leaving the hold's gate open -- the first
-  # check, the presence half, stays green and only "the source has been
-  # released" reddens.
+  # check, the presence half, stays green and only "the marker is released and
+  # the step directory remains" reddens.
   @HOP-9 @HOP-11
-  Scenario: A released hold is gone from the node, and a held one is not
+  Scenario: A released marker closes the hold's gate, and a held one does not
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
-    Then the source is still held on the node
+    And the daemon writes the held marker
+    Then the held step directory is still on the node
     When the step fails
-    And the hold is released
-    Then the source has been released
+    And the daemon releases the marker
+    Then the marker is released and the step directory remains

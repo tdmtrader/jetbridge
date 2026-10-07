@@ -26,7 +26,7 @@ Feature: Run ownership is enforced at the real worker boundary
     Then that worker refuses an unadmitted command
 
   @core-review
-  Scenario Outline: Cancellation reconciles an execution without an output handoff
+  Scenario Outline: Cancellation reconciles an execution without an output capture
     Given a Run with resource checks and a ready output node
     When its real worker admits a "cancel <state>" execution
     Then cancellation closes only its exact execution

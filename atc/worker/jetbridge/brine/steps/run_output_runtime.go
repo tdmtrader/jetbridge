@@ -269,7 +269,7 @@ func newRunOutputRuntime(rec *brine.Recorder, res brine.Resources, checks bool) 
 	if err != nil {
 		return in, err
 	}
-	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(in.Node.UID), checks, in.Node.Name)
+	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(in.Node.UID), checks)
 	if err != nil {
 		return in, err
 	}

@@ -43,7 +43,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 	if !ok {
 		return fmt.Errorf("Hangar has no transactional input publication registration")
 	}
-	if err := openActivationEpoch(jdb); err != nil {
+	if err := putOutputPlaneInService(jdb); err != nil {
 		return err
 	}
 	if mode == "expired reservation" || mode == "commit after deadline" || mode == "reservation late commit" {

@@ -136,11 +136,11 @@ type CaptureDraft struct {
 	// start.
 	Admission captureAdmission
 
-	// ReadyFacets and CohortHandshaked are the scheduling refinements. A label
-	// is not authority — the authenticated handshake is — so they are two
+	// ReadyFacets and ControlEpochMatches are the scheduling refinements. A
+	// label is not authority — the matching control epoch is — so they are two
 	// fields and not one.
-	ReadyFacets      []string
-	CohortHandshaked bool
+	ReadyFacets         []string
+	ControlEpochMatches bool
 
 	// PausePodTerminal is the regression the ordinary path must keep: a
 	// terminal pause pod is recreated for an ordinary source and refused for a

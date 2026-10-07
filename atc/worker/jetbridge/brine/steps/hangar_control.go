@@ -1,6 +1,6 @@
 package steps
 
-// The client half of the output daemon's control API.
+// The client half of the artifact daemon's capture control API.
 //
 // The fixture plays two production roles here and it is worth naming which.
 // The ATC admits an execution and mints a capability per operation; the

@@ -1,6 +1,9 @@
 package steps
 
-// What the output daemon ANSWERS: holds, witnesses, refusals, containment.
+// What the artifact daemon ANSWERS about a capture's marker: the held marker,
+// witnesses, refusals, containment. The marker is a capture's only node-local
+// state -- held, sealed, or released (a tombstone) -- one file per step
+// directory.
 //
 // This family is driven against the real binary through the fixture in
 // hangar_fixture.go, for the reason realdaemon.go records -- a double can be
@@ -67,12 +70,12 @@ func (draft CaptureDraft) hold() controlAnswer {
 		holdBody(draft.Admission.Execution, draft.Admission.Output, draft.PodUID))
 }
 
-// HangarHandoffDefinitions is the daemon-handoff family.
-func HangarHandoffDefinitions() []brine.StepDefinition {
+// HangarCaptureMarkerDefinitions is the capture-marker family.
+func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		brine.DefineMap[CaptureDraft, HeldSource](
-			"the daemon holds the source",
+			"the daemon writes the held marker",
 			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				// The hold is the capture control init's request, made from
 				// inside the Pod before any writer starts. It names the
@@ -113,7 +116,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		),
 
 		brine.DefineMap[HeldSource, HeldSource](
-			"the same hold is repeated with the same identity",
+			"the held marker is requested again with the same identity",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				answer := in.Draft.Daemon.capture("hold", "/capture/v1/hold",
 					in.Execution, holdBody(in.Execution, in.Admission.Output, in.PodUID))
@@ -132,7 +135,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// typed conflict: a replacement Pod is a new writer and does not
 		// inherit a hold.
 		brine.DefineMap[HeldSource, HeldSource](
-			"the same hold is repeated for a different pod",
+			"the held marker is requested again for a different pod",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				return in.answered(in.Draft.Daemon.capture("hold", "/capture/v1/hold",
 					in.Execution, holdBody(in.Execution, in.Admission.Output,
@@ -153,8 +156,10 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// The base execution-control protocol's takeover: the execution is
+		// admitted again under the next fence, which makes the old one stale.
 		brine.DefineMap[HeldSource, HeldSource](
-			"the owner's lease is taken over",
+			"the execution is taken over under a newer fence",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				taken := in.Execution
 				taken.Fence++
@@ -181,7 +186,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// A path a hostile client really can send. It is a raw map because the
 		// whole point is a field no production type declares.
 		brine.DefineMap[HeldSource, HeldSource](
-			"the hold request names a path instead of a step",
+			"the held-marker request names a path instead of a step",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				return in.answered(in.Draft.Daemon.rawCapture("hold", "/capture/v1/hold",
 					in.Execution, map[string]any{
@@ -199,9 +204,9 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// to canonicalize it, so it is the one that must refuse: the bytes a
 		// capture seals are the ones the producer wrote there.
 		brine.DefineMap[HeldSource, HeldSource](
-			"the source path is replaced by a symlink to {string}",
+			"the step directory is replaced by a symlink to {string}",
 			func(in HeldSource, p brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				target, err := paramAt("the source path is replaced by a symlink to {string}", p, 0)
+				target, err := paramAt("the step directory is replaced by a symlink to {string}", p, 0)
 				if err != nil {
 					return in, err
 				}
@@ -292,10 +297,11 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// terminal only after the node's finish or stop.
 		//
 		// It returns the HeldSource so the two node-side checks either side of
-		// it -- the source is still held, the source has been released -- read
+		// it -- the held step directory is still on the node, the marker is
+		// released and the step directory remains -- read
 		// the same step directory on the same node.
 		brine.DefineMap[FinishWitnessed, HeldSource](
-			"the hold is released",
+			"the daemon releases the marker",
 			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				return in.Source.answered(in.Source.release()), nil
 			},
@@ -345,7 +351,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		),
 
 		brine.DefineMap[HeldSource, FinishWitnessed](
-			"the step is stopped without destroying its source",
+			"the step is stopped without destroying its step directory",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
 				if err := in.recordStart(); err != nil {
 					return FinishWitnessed{}, err
@@ -384,7 +390,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// -- and the control init never ran, so there is no marker on the
 		// node to release. The scenario above is its control.
 		brine.DefineMap[CaptureDraft, FinishWitnessed](
-			"the capture is cancelled with no hold",
+			"the capture is cancelled with no held marker",
 			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
 				source := HeldSource{
 					Draft: HeldDraft{
@@ -408,7 +414,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// "the daemon's answer is {int}": one pattern has exactly one input
 		// type, and the shadowing guard catches a second definition of a
 		// sentence that already exists.
-		CheckInt[HeldSource]("the Hangar daemon answers {int}, holding the source",
+		CheckInt[HeldSource]("the Hangar daemon answers {int}, the marker held",
 			"the daemon's status",
 			func(in HeldSource) (int, error) {
 				if in.Err != nil {
@@ -439,7 +445,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 			func(in HeldSource) string { return fmt.Sprintf("status %d", in.Status) }),
 
-		CheckThat[HeldSource]("the hold acknowledgement is the one the first hold returned",
+		CheckThat[HeldSource]("the held marker is the one the first request wrote",
 			func(in HeldSource) error {
 				if in.Repeated.Kind == "" {
 					// The repeat was refused, so the marker in force is
@@ -465,7 +471,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 
 		// An absence with a positive control on the line above it: a source
 		// that is still there is an outcome, not a call count.
-		CheckThat[HeldSource]("the source is still held on the node",
+		CheckThat[HeldSource]("the held step directory is still on the node",
 			func(in HeldSource) error {
 				info, err := os.Lstat(in.stepRoot())
 				if err != nil {
@@ -488,7 +494,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// ordinary path, and Req 2 keeps a failed producer's output for the
 		// build's lifetime. Deletion is reclamation by policy, not a side
 		// effect of a release.
-		CheckThat[HeldSource]("the source has been released",
+		CheckThat[HeldSource]("the marker is released and the step directory remains",
 			func(in HeldSource) error {
 				answer, err := decodeControl[executioncontrol.DestructiveCleanupEligibleResult](
 					in.Draft.Daemon.base("cleanup-eligible", "/execution/v1/cleanup-eligible",
@@ -546,7 +552,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				return in.Witness.Outcome.ExitCode, nil
 			}),
 
-		CheckThat[FinishWitnessed]("the source is still there after the stop",
+		CheckThat[FinishWitnessed]("the step directory is still there after the stop",
 			func(in FinishWitnessed) error {
 				if _, err := os.Lstat(in.Source.stepRoot()); err != nil {
 					return fmt.Errorf("a source-preserving stop removed the step directory: %v", err)
@@ -671,7 +677,7 @@ func (source HeldSource) recordWitness(kind executioncontrol.AcknowledgementKind
 	}
 	if err := executioncontrol.VerifyAcknowledgement(witness,
 		source.Draft.Daemon.ControlPublic); err != nil {
-		return witnessed, fmt.Errorf("the witness does not verify under the activation-pinned "+
+		return witnessed, fmt.Errorf("the witness does not verify under the daemon's control "+
 			"public key: %w", err)
 	}
 	witnessed.Witness = witness

@@ -78,7 +78,8 @@ Run it by hand from `live-multinode/` with the live tier's environment.
 ## Disposable-kubelet tier
 
 Scenarios that need a real kubelet *and* the Hangar output plane on its node
-(a node labelled into the ready cohort, a node-local output daemon) cannot run
+(a node carrying the output plane's ready labels, its artifact daemon serving
+the capture routes) cannot run
 in the live tier, which must not change the deployed cluster's nodes. They
 live in `features/kubelet/` and run against a single-node K3s cluster that a
 privileged CI task creates and destroys:

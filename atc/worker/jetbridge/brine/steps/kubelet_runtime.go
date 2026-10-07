@@ -70,7 +70,7 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 		return releasedIfGone(client.CoreV1().Namespaces().Delete(context.Background(), ns.Name, metav1.DeleteOptions{}))
 	})
 	in.Client, in.Node = client, node
-	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(node.UID), checks, node.Name)
+	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(node.UID), checks)
 	if err != nil {
 		return in, nil, err
 	}

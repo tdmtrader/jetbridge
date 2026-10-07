@@ -1,19 +1,19 @@
 package steps
 
-// Pause pod recreation over a capture-held source.
+// Pause pod recreation over a held step directory.
 //
-// This is the regression the whole writer-ticket rule exists to protect, and it
-// is the one destructive path with no execution identity to take a ticket with:
-// a pause pod that goes terminal before the step's command runs is REPLACED,
-// and a replacement is a new Pod UID getting a write-capable mount over the
-// step's tree. For a capture-selected step that tree is the reserved
-// incarnation, and Req 16 says a held incarnation may not receive one.
+// This is the regression the held marker exists to protect, and it is the one
+// destructive path with no execution identity to ask about: a pause pod that
+// goes terminal before the step's command runs is REPLACED, and a replacement
+// is a new Pod UID getting a write-capable mount over the step's tree. For a
+// capture-selected step that tree is the held step directory, and Req 16 says
+// a held step directory may not receive one.
 //
 // Everything here drives PRODUCTION code over a REAL artifact daemon. The
 // refusal comes out of Container.Run consulting DaemonSetBackend.CaptureClass,
 // which is an HTTPS call to the daemon's read-only classification route, which
-// reads the ledger record the OUTPUT daemon wrote when it reserved and held the
-// source. Three processes and one storage root, which is what a node is.
+// reads the held marker the artifact daemon wrote into the step directory. One
+// daemon and one storage root, which is what a node is.
 
 import (
 	"context"
@@ -153,7 +153,7 @@ func HangarPausePodDefinitions() []brine.StepDefinition {
 }
 
 // capturedControl rebuilds the envelope the control plane put on the step's
-// spec for the capture `the daemon holds the source` held. Nothing here
+// spec for the capture `the daemon writes the held marker` held. Nothing here
 // composes a path: the step directory is derived from the capture's key, the
 // same derivation the daemon made when it held it.
 func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {

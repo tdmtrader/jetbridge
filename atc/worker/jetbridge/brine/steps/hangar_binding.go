@@ -50,8 +50,8 @@ const (
 )
 
 // brineReadWarrantKey is the output plane's materialization key for this fixture.
-// It is exactly 32 raw bytes, which is what the signer requires and what makes
-// "an Ed25519 receipt key cannot sign a read warrant" true by construction.
+// It is exactly 32 raw bytes, which is what the signer requires: a key
+// of any other shape is refused at construction.
 var brineReadWarrantKey = []byte("0123456789abcdef0123456789abcdef")
 
 // freshReader is the randomness a nonce comes from. It is the real one: a
@@ -240,21 +240,27 @@ func consumerFor(tree PublishedTree) (neutralConsumer, error) {
 	return consumer, consumer.prepare()
 }
 
-// outputStat is the REAL publisher's exact-generation stat against the bucket
-// this scenario's output daemon published into.
-//
-// It goes through the same derived namespace the daemon derived, from the same
-// authenticated inputs the fixture started it with. A stand-in would have been
-// asserting the fixture's opinion of the object; requirement 35 is about the
-// object.
-func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, error) {
-	namespace, err := hangaroutputleaf.DeriveNamespace(hangaroutputleaf.NamespaceConfig{
+// brineOutputNamespace derives the output namespace this fixture's daemon was
+// started with, from the same inputs, without asking the daemon.
+func brineOutputNamespace(daemon HangarDaemon) (hangaroutputleaf.OutputNamespace, error) {
+	return hangaroutputleaf.DeriveNamespace(hangaroutputleaf.NamespaceConfig{
 		Store:            hangaroutputleaf.StoreGCS,
 		Bucket:           daemon.OutputBucket,
 		DeploymentPrefix: brineOutputPrefix,
 		TenantID:         brineOutputTenant,
 		ActivationEpoch:  executioncontrol.ActivationEpoch(hangarEpoch),
 	})
+}
+
+// outputStat is the REAL publisher's exact-generation stat against the bucket
+// this scenario's artifact daemon published into.
+//
+// It goes through the same derived namespace the daemon derived, from the same
+// authenticated inputs the fixture started it with. A stand-in would have been
+// asserting the fixture's opinion of the object; requirement 35 is about the
+// object.
+func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, error) {
+	namespace, err := brineOutputNamespace(daemon)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -281,6 +287,12 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 }
 
 func managedReadWarrant(in BoundOutput) (hangaroutput.ReadWarrant, error) {
+	return managedReadWarrantInto(in, "input-0")
+}
+
+// managedReadWarrantInto admits one read whose warrant names the given input
+// volume, so one consumer can hold two unspent warrants for one tree.
+func managedReadWarrantInto(in BoundOutput, volume string) (hangaroutput.ReadWarrant, error) {
 	plane := in.Tree.Outcome.Plane
 	if plane == nil {
 		return hangaroutput.ReadWarrant{}, fmt.Errorf("this chain never settled a capture")
@@ -313,7 +325,7 @@ func managedReadWarrant(in BoundOutput) (hangaroutput.ReadWarrant, error) {
 		WarrantNonce:           nonce,
 		ClaimID:                in.Acquisition.ClaimID,
 		Ref:                    in.Tree.Ref,
-		Destination:            hangaroutputleaf.ReadDestination{Handle: "consumer", Volume: "input-0"},
+		Destination:            hangaroutputleaf.ReadDestination{Handle: "consumer", Volume: volume},
 		ActivationEpoch:        executioncontrol.ActivationEpoch(hangarEpoch),
 		MaterializationTimeout: 10 * time.Minute,
 		NodeUID:                executioncontrol.NodeUID(in.Tree.Outcome.Source.Draft.Daemon.NodeUID),
@@ -782,7 +794,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 		// Checks over the consuming Pod. PodCreated is reused deliberately: a
 		// consumer's pod is a pod, and every existing mount and volume check
 		// already reads it.
-		CheckThat[PodCreated]("the consumer's Hangar init verifies exactly the receipt for its tree",
+		CheckThat[PodCreated]("the consumer's Hangar init verifies exactly the materialization receipt for its tree",
 			verifiesExactlyTheReceipt),
 
 		check[PodCreated]("the consumer's pod declares exactly {int} read-only verification mount per tree",
@@ -791,7 +803,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 		CheckThat[PodCreated]("no user-controlled destination enters the verification command",
 			noUserDestinationInTheVerificationCommand),
 
-		CheckThat[PodCreated]("the consumer's pod asks for exactly the receipt's tree",
+		CheckThat[PodCreated]("the consumer's pod asks for exactly the materialization receipt's tree",
 			asksForExactlyTheReceiptsTree),
 	}
 }

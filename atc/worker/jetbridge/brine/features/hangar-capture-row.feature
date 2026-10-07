@@ -6,7 +6,7 @@ Feature: What a finished producer's capture row becomes
 
   `the capture settles` is the CONTROL PLANE, driven as far as it goes: the
   real capture rows over this scenario's real PostgreSQL, the real coordinator,
-  and jetbridge's own client against the real output daemon. Nothing here
+  and jetbridge's own client against the real artifact daemon. Nothing here
   chooses a transition and nothing here counts a call.
 
   Kept in Go and cited rather than duplicated: the CAS conflicts (a race),
@@ -18,7 +18,7 @@ Feature: What a finished producer's capture row becomes
   Scenario: A successful finish publishes the capture and releases its marker
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     When the capture settles
     Then the capture row is "published"
@@ -32,14 +32,14 @@ Feature: What a finished producer's capture row becomes
   Scenario: A failed producer is discarded, and the same producer succeeding is published
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     When the step fails
     And the capture settles
     Then the capture row is "discarded"
     And the discard reason is "producer_failed"
     And the produced output is still on the node
     When a new build of the same step is admitted
-    And the daemon holds the source
+    And the daemon writes the held marker
     And the step finishes and the daemon witnesses it
     And the capture settles
     Then the capture row is "published"
@@ -52,7 +52,7 @@ Feature: What a finished producer's capture row becomes
   Scenario: Cancellation before the seal discards the capture as cancelled, never as a failed producer
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon holds the source
+    And the daemon writes the held marker
     When the step fails
     And the capture is cancelled before it is sealed
     And the capture settles
@@ -68,7 +68,7 @@ Feature: What a finished producer's capture row becomes
   Scenario: A capture cancelled with no hold is discarded and released
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
-    When the capture is cancelled with no hold
+    When the capture is cancelled with no held marker
     And the capture settles
     Then the capture row is "discarded"
     And the discard reason is "run_cancelled"
