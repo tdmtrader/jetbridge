@@ -54,7 +54,7 @@ func (config LandingQueueConfig) Validate() error {
 		return errors.New("landing queue config: trunk is a branch name: letters, digits, '.', '_', '-' and '/', not starting with '-' or 'refs/'")
 	}
 	if !validRepository(config.Repository) {
-		return errors.New("landing queue config: repository is a URL starting with https://, ssh://, git@, file:// or /")
+		return errors.New("landing queue config: repository is a URL starting with https://, ssh://, git@, file:/// or /")
 	}
 	if len(config.Gates) != 0 {
 		return errors.New("landing queue config: gates are not supported yet; set an empty list")
