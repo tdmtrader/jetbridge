@@ -57,8 +57,9 @@ var captureSites = map[string]string{
 		"capture pod requires BOTH labels and the node by name; the labels pick a cohort whose " +
 		"daemons could acknowledge a hold, and the node is where the capture's step directory " +
 		"actually is",
-	"process_control.go:capturing": "the supervisor's own question, which is what makes " +
-		"an exact finish or stop acknowledgement required rather than optional",
+	"process_control.go:releasesCapturedPod": "a capture-selected task's pause Pod is " +
+		"deleted gracefully once its outcome is acknowledged, so every container stops and " +
+		"the node's seal can read the tree",
 }
 
 func TestEveryCaptureAwarePathIsInventoried(t *testing.T) {

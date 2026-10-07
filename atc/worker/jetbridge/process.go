@@ -779,6 +779,13 @@ type execProcess struct {
 	// execution's remains may be destroyed. It starts false, which is the
 	// fail-closed direction: a Pod that is not proven disposable is kept.
 	exactCleanupEligible bool
+
+	// exactOutcomeAcknowledged records that the node's ledger durably holds
+	// this execution's outcome -- read back, not merely written. For a
+	// capture-selected execution it is what lets Wait end the pause Pod
+	// (process_control.go: releaseCapturedPod). Atomic because the stop
+	// callback observes from its own goroutine.
+	exactOutcomeAcknowledged atomic.Bool
 }
 
 func newExecProcess(
@@ -839,6 +846,12 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 
+	// A capture-selected execution whose outcome the node has acknowledged
+	// gives its pause Pod back, gracefully, on whichever path Wait returns.
+	// Registered first so it runs last: after the source-preserving stop
+	// below has had its say, and after the exit status is annotated.
+	defer p.releaseCapturedPod(logger)
+
 	// The pause Pod is normally left behind when Wait returns: the reaper
 	// collects it, and until it does, fly hijack can exec into it.
 	//
@@ -882,6 +895,13 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		}
 		p.exactCleanupEligible = eligible
 	}()
+
+	// A capture-selected task whose acknowledged outcome already released its
+	// Pod is answered from its node's ledger, never by waiting for that Pod.
+	if recovered, ok, err := p.recoverReleasedCapture(ctx); ok {
+		spanErr = err
+		return recovered, err
+	}
 
 	// Admit the exact identity as soon as the scheduler binds the Pod, which
 	// is BEFORE it is running: the capture control init is already retrying

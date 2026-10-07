@@ -28,6 +28,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/concourse/concourse/atc/runtime"
@@ -123,10 +124,6 @@ func (e *unresolvedOutcomeError) Unwrap() error { return ErrExactOutcomeUnresolv
 
 func detachedLedgerContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), exactLedgerBudget)
-}
-
-func (p *execProcess) capturing() bool {
-	return p.control.HasDurableOutputCapture()
 }
 
 // admitWhenScheduled admits the exact identity as soon as the scheduler has
@@ -383,6 +380,7 @@ func (p *execProcess) recordExactOutcome(ctx context.Context, outcome executionc
 	if err = p.recordRunWitness(ctx, *observed.Acknowledgement); err != nil {
 		return err
 	}
+	p.exactOutcomeAcknowledged.Store(true)
 
 	return nil
 }
@@ -429,6 +427,7 @@ func (p *execProcess) reportExactOutcomeWithoutRerunning(ctx context.Context) (r
 			return runtime.ProcessResult{}, unresolvedLedgerError(fmt.Errorf(
 				"retaining the node's outcome in the Run: %w", err))
 		}
+		p.exactOutcomeAcknowledged.Store(true)
 		exitCode := classified.Acknowledgement.Outcome.ExitCode
 		if err := p.exposeJournaledAnswer(ctx, *classified.Acknowledgement, exitCode); err != nil {
 			return runtime.ProcessResult{}, err
@@ -667,4 +666,109 @@ func (p *execProcess) stopPreservingSource(ctx context.Context) (bool, error) {
 	}
 
 	return eligible.Eligible, nil
+}
+
+// releasesCapturedPod is whether this process gives its pause Pod back once its
+// outcome is acknowledged: a capture-selected TASK, run by the step itself.
+//
+// A capture is one declared output of one finished task, so a task is the only
+// producer that selects one. The restriction is still spelled out, because a
+// resource command's answer is journaled inside its Pod and recovery reads it
+// from there (process_outcome_recovery.go: exposeJournaledAnswer): deleting
+// that Pod would lose an answer the ledger cannot give back. A looked-up
+// container is a hijack session on somebody else's Pod and never deletes it.
+func (p *execProcess) releasesCapturedPod() bool {
+	return p.control.HasDurableOutputCapture() && p.supervised() && !p.container.lookedUp
+}
+
+// recoverReleasedCapture answers for a capture-selected task whose pause Pod
+// is already gone because its acknowledged outcome released it.
+//
+// Every later Wait on the same execution -- a web that restarted and
+// re-attached, a replayed step -- would otherwise wait for a Pod that will not
+// come back, and a replacement Pod is a new incarnation the held source may
+// not take. The outcome lives on the capture's node, so it is read there and
+// reported without re-running anything. It answers recovered=false whenever
+// the Pod exists, or the node holds no acknowledged outcome: the ordinary path
+// then runs and says what is wrong, exactly as before.
+func (p *execProcess) recoverReleasedCapture(ctx context.Context) (runtime.ProcessResult, bool, error) {
+	if !p.releasedCaptureAcknowledged(ctx) {
+		return runtime.ProcessResult{}, false, nil
+	}
+	result, err := p.reportExactOutcomeWithoutRerunning(ctx)
+
+	return result, true, err
+}
+
+// releasedCaptureAcknowledged binds the execution to its capture node's ledger
+// when its Pod is gone and that ledger holds its acknowledged outcome.
+func (p *execProcess) releasedCaptureAcknowledged(ctx context.Context) bool {
+	if !p.releasesCapturedPod() || p.outputControls == nil {
+		return false
+	}
+	_, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+	if !apierrors.IsNotFound(err) {
+		return false
+	}
+	node := p.control.Capture.Node
+	client, err := p.outputControls.ForNode(ctx, node)
+	if err != nil {
+		return false
+	}
+	classified, err := client.Classify(ctx, p.control.Identity)
+	if err != nil || classified.Identity != p.control.Identity || !classified.Classification.Authoritative() ||
+		classified.Acknowledgement == nil || classified.Acknowledgement.Outcome == nil {
+		return false
+	}
+	p.exact = &exactExecution{control: p.control, client: client, nodeName: node}
+
+	return true
+}
+
+// capturedPodDeleteTimeout bounds the graceful delete of a captured execution's
+// pause Pod. Its own budget, because the step's context may already be done.
+const capturedPodDeleteTimeout = 10 * time.Second
+
+// releaseCapturedPod gives back the pause Pod of a capture-selected execution
+// once the node has acknowledged its outcome.
+//
+// The capture's seal waits until every container of the producing Pod has
+// terminated, or the Pod is gone. The pause container sleeps for a day and
+// nothing else ends it while the build is running -- the reaper keeps a
+// running build's Pods, and the build does not finish until its capture does --
+// so without this the seal sits out its deadline and the Run never finishes.
+//
+// Why here, and why it needs nothing more than the acknowledgement:
+//
+//   - A captured task has given up post-completion hijack (hangar/CONTEXT.md,
+//     "Capture"), so no reader is left for the Pod once its outcome is the
+//     node's. The outcome, not the transport's exit: a Pod deleted before the
+//     acknowledgement would make an unresolved outcome unrecoverable.
+//   - It is NOT gated on DestructiveCleanupEligible, which stays false while
+//     the hold is open. A Pod delete destroys no source: the selected output
+//     lives in the capture's step directory on the node's hostPath, which the
+//     daemon's held marker protects and no Pod deletion touches.
+//   - It is GRACEFUL: default DeleteOptions, never a zero grace period, never
+//     a force. The pause container's trap exits 0 on SIGTERM; the kubelet's
+//     own termination is what the seal then observes.
+//
+// A Pod already gone is success. A failed delete is logged and the step is not
+// failed; the reaper retries it on its next sweep (reaper.go,
+// releaseCapturedPods), from the exit-status annotation that only an
+// acknowledged outcome writes.
+func (p *execProcess) releaseCapturedPod(logger lager.Logger) {
+	if !p.releasesCapturedPod() || !p.exactOutcomeAcknowledged.Load() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), capturedPodDeleteTimeout)
+	defer cancel()
+
+	err := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
+	switch {
+	case err == nil, apierrors.IsNotFound(err):
+		logger.Info("released-captured-pod", lager.Data{"pod": p.podName})
+	default:
+		logger.Error("failed-to-release-captured-pod", err, lager.Data{"pod": p.podName})
+	}
 }

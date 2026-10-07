@@ -377,6 +377,18 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	// the Pod.
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 	if err != nil {
+		// A capture-selected task gives its Pod back once the node has
+		// acknowledged its outcome (process_control.go: releaseCapturedPod),
+		// so its result is recovered from that node's ledger rather than from
+		// a Pod annotation that went with the Pod. Falling through to Run
+		// would build a replacement Pod the held source may not take.
+		if c.executor != nil {
+			process := newExecProcess(processID, c.podName, c.clientset, c.config, c, c.executor,
+				runtime.ProcessSpec{}, io, c.storageBackend)
+			if process.releasedCaptureAcknowledged(ctx) {
+				return process, nil
+			}
+		}
 		logger.Error("failed-to-get-pod", err)
 		spanErr = err
 		return nil, fmt.Errorf("attach: pod %q not found: %w", c.podName, err)

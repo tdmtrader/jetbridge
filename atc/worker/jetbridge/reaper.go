@@ -120,6 +120,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 			}
 		}
 	}
+	r.releaseCapturedPods(ctx, logger, retained)
 	// A retained pod is still present in K8s, so it has to be reported as
 	// active below. Otherwise UpdateContainersMissingSince marks its
 	// container missing and RemoveDestroyingContainers drops the DB row
@@ -316,6 +317,30 @@ func (r *Reaper) deleteStepDir(ctx context.Context, logger lager.Logger, handle,
 		// knows where. Forgetting the key now would leave a source no
 		// sweep of ours can find again, so the next sweep retries.
 		return false
+	}
+}
+
+// releaseCapturedPods retries the graceful delete Wait owes a capture-selected
+// pause Pod (process_control.go: releaseCapturedPod), for Pods the sweep is
+// otherwise retaining because their build is still running.
+//
+// The exit-status annotation on a capture-selected Pod is written only after
+// the node acknowledged the outcome, so annotation plus capture step directory
+// is exactly "a captured execution that has finished". Its build cannot finish
+// until the capture's seal has observed this Pod terminate, so retaining it
+// would retain it forever. The delete is graceful -- default DeleteOptions --
+// and touches no source: the capture's step directory is on the node, held.
+// The Pod stays in the retained set for this sweep; once it is gone, the
+// next sweep finds no Pod, as it would after Wait's own delete.
+func (r *Reaper) releaseCapturedPods(ctx context.Context, logger lager.Logger, retained []metav1.ObjectMeta) {
+	for _, podMeta := range retained {
+		if podMeta.Annotations[captureStepAnnotation] == "" || podMeta.DeletionTimestamp != nil {
+			continue
+		}
+		err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, podMeta.Name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			logger.Error("failed-to-release-captured-pod", err, lager.Data{"pod": podMeta.Name})
+		}
 	}
 }
 

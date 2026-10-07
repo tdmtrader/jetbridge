@@ -53,7 +53,10 @@ its token-less state; only a grant's own ServiceAccount carries a token.
 
 **Pause pod**:
 A step pod started with a trap-and-sleep command so the web can exec the real
-command into it, and `fly intercept` can exec a shell later.
+command into it, and `fly intercept` can exec a shell later. A capture-selected
+task's pause pod is deleted gracefully once the node acknowledges its outcome,
+so the capture's seal sees it terminate; its result is then recovered from the
+node's ledger.
 
 **Pause-pod replacement**:
 Replacing a pause pod at most once if it dies before the step's command
@@ -112,7 +115,8 @@ _Avoid_: capture control init, hold init container
 
 **Reaper**:
 The periodic sweep that reports live pods, deletes pods marked destroying or
-left behind by builds that are no longer running, cleans cache volumes, and
+left behind by builds that are no longer running (and, gracefully, finished
+capture-selected pause pods whose build still runs), cleans cache volumes, and
 asks the artifact daemon to drop their artifacts.
 _Avoid_: GC sweep loop, k8s worker reaper (upstream's build reaper is a
 different thing)
