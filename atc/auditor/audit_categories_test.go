@@ -137,6 +137,9 @@ var auditCategories = map[string][]string{
 		atc.DestroyTeam,
 		atc.ListTeamBuilds,
 		atc.GetTeam,
+		atc.SetLandingQueue,
+		atc.SubmitLanding,
+		atc.GetLandingQueue,
 	},
 	"worker": {
 		atc.RegisterWorker,
