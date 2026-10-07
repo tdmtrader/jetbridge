@@ -17,11 +17,7 @@ import (
 // Its caller holds no transaction; notifications happen after commit.
 func (f *pipelineRunFactory) ExecuteCancellationFinality(ctx context.Context, lease RunCancellationLease, op RunCancellationOperation) (RunCancellationDebt, error) {
 	switch op.Kind {
-	case CancelBuild, CancelCandidate, CancelTerminalize, CancelHandoff:
-	case CancelCapture, CancelSourceHold:
-		// Kinds of the handoff era. Nothing discovers them any more; an
-		// operation recorded before the upgrade has nothing left to do.
-		return CancellationDone, nil
+	case CancelBuild, CancelCandidate, CancelTerminalize, CancelCapture:
 	default:
 		return CancellationUnavailable, ErrRunCancellationExternalWork
 	}
@@ -78,7 +74,7 @@ func (c *runCancellationCommit) perform(ctx context.Context) (bool, error) {
 			return false, output.ErrInvalidIdentity
 		}
 		ready, err = f.finalizeOutputRun(ctx, tx, op.RunID, c)
-	case CancelHandoff:
+	case CancelCapture:
 		ready, err = c.settleCapture(ctx, tx)
 	default:
 		ready, err = c.settleCandidate(ctx, tx)
@@ -138,7 +134,7 @@ func (c *runCancellationCommit) lockRun(ctx context.Context, tx Tx) error {
 			return output.ErrInvalidIdentity
 		}
 		id = parsed
-	case CancelHandoff:
+	case CancelCapture:
 		if err := tx.QueryRowContext(ctx, `SELECT build_id FROM pipeline_run_captures
  WHERE run_id=$1 AND execution_id::text||'/'||output_name=$2`, c.op.RunID, c.op.Subject).Scan(&id); err != nil {
 			return err

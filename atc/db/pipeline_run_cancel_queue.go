@@ -26,12 +26,7 @@ var cancellationSources = []struct {
 	query string
 }{
 	{CancelSchedulerDebt, `SELECT j.id::text||'/'||(extract(epoch FROM j.schedule_requested)*1000000)::bigint::text AS subject FROM jobs j JOIN pipelines p ON p.id=j.pipeline_id WHERE p.pipeline_run_id=$1 AND j.schedule_requested>j.last_scheduled`},
-	{CancelHandoff, runCaptureSubjects},
-	// The handoff era's capture and source-hold kinds discover nothing: a
-	// capture is one row, settled by CancelHandoff. They stay in the cycle
-	// so its persisted progress indices keep their meaning.
-	{CancelCapture, `SELECT NULL::text AS subject WHERE $1::bigint IS NULL`},
-	{CancelSourceHold, `SELECT NULL::text AS subject WHERE $1::bigint IS NULL`},
+	{CancelCapture, runCaptureSubjects},
 	{CancelBuild, `SELECT id::text AS subject FROM builds WHERE pipeline_run_id=$1`},
 	{CancelExecution, `SELECT execution_id::text||'/'||execution_fence::text AS subject FROM pipeline_run_executions WHERE run_id=$1`},
 	{CancelCandidate, `SELECT cl.claim_id::text AS subject FROM pipeline_run_captures s

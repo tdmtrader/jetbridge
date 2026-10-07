@@ -734,14 +734,14 @@ func cancellationWorkerOver(in RunOutputRuntime, source runs.CancellationSourceP
 
 // cancellationSourceWorker is the worker's source half without the Run's
 // finality: execution closures over the node, and the database-only capture
-// kinds, which are what replaced the source plane's node calls. Build, candidate
+// kind, which is what replaced the source plane's node calls. Build, candidate
 // and terminal operations are left to a worker that carries the finality.
 func cancellationSourceWorker(in RunOutputRuntime) runs.CancellationWorker {
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
 	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Verifier: closureControlKeys(in)}
 	captures := runs.CancellationActionFunc(func(ctx context.Context, lease db.RunCancellationLease, op db.RunCancellationOperation) (db.RunCancellationDebt, error) {
 		switch op.Kind {
-		case db.CancelHandoff, db.CancelCapture, db.CancelSourceHold:
+		case db.CancelCapture:
 			return factory.ExecuteCancellationFinality(ctx, lease, op)
 		}
 		return db.CancellationUnavailable, db.ErrRunCancellationExternalWork

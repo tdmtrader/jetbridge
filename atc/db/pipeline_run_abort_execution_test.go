@@ -503,7 +503,7 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 
 // An aborted Run build whose capture is unsettled -- its producer never
 // started, or is still executing -- is closed by its build closure: the
-// capture is discarded by the database-only CancelHandoff operation and the
+// capture is discarded by the database-only CancelCapture operation and the
 // capturing execution is closed through the generic execution closure, like
 // any other execution, for that build's own subjects only. The node is
 // closureNode, which answers as the exact node would.
@@ -521,11 +521,9 @@ var _ = Describe("Closing an aborted Run build's unsettled capture", func() {
 		f.abortReview()
 
 		operations := f.discover()
-		Expect(operations).To(HaveKeyWithValue(db.CancelHandoff, ConsistOf(review.Capture.String())))
+		Expect(operations).To(HaveKeyWithValue(db.CancelCapture, ConsistOf(review.Capture.String())))
 		Expect(operations).To(HaveKeyWithValue(db.CancelExecution, ConsistOf(executionSubject(review.Identity))))
 		Expect(operations).To(HaveKeyWithValue(db.CancelBuild, ConsistOf(strconv.Itoa(f.review.ID()))))
-		Expect(operations).NotTo(HaveKey(db.CancelCapture), "a capture is one row; nothing discovers a handoff-era capture kind")
-		Expect(operations).NotTo(HaveKey(db.CancelSourceHold), "a capture is one row; nothing discovers a handoff-era hold kind")
 		for kind, subjects := range operations {
 			Expect(subjects).NotTo(ContainElements(sibling.Capture.String(), executionSubject(sibling.Identity)),
 				"%s reached another build's live capture", kind)
@@ -533,8 +531,8 @@ var _ = Describe("Closing an aborted Run build's unsettled capture", func() {
 
 		// Each handler accepts its operation without Run cancellation.
 		lease := f.lease("worker")
-		handoff := f.claimed(lease, db.CancelHandoff, operations[db.CancelHandoff][0])
-		debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, handoff)
+		capture := f.claimed(lease, db.CancelCapture, operations[db.CancelCapture][0])
+		debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, capture)
 		Expect(err).NotTo(HaveOccurred(), "the build closure's capture operation was refused")
 		Expect(debt).To(Equal(db.CancellationDone))
 		execution := f.claimed(lease, db.CancelExecution, operations[db.CancelExecution][0])
@@ -543,14 +541,6 @@ var _ = Describe("Closing an aborted Run build's unsettled capture", func() {
 			return err
 		})).To(Succeed(), "the build closure's execution operation was refused")
 		Expect(f.cancellationRequested()).To(BeFalse())
-
-		// An operation of a handoff-era kind recorded before the upgrade has
-		// nothing left to do.
-		for _, kind := range []db.RunCancellationKind{db.CancelCapture, db.CancelSourceHold} {
-			debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, f.claimed(lease, kind, uuid.NewString()))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(debt).To(Equal(db.CancellationDone), "a %s operation was left owing work", kind)
-		}
 	})
 
 	It("discards a never-started producer's capture, and only then lets the Run complete aborted with every unselected claim released", func() {
@@ -611,7 +601,7 @@ var _ = Describe("Closing an aborted Run build's unsettled capture", func() {
 		f.discover()
 
 		lease := f.lease("worker")
-		op := f.claimed(lease, db.CancelHandoff, sibling.Capture.String())
+		op := f.claimed(lease, db.CancelCapture, sibling.Capture.String())
 		debt, err := f.factory.ExecuteCancellationFinality(f.ctx, lease, op)
 		Expect(err).To(MatchError(db.ErrRunCancellationProgressStale), "a build closure reached another build's capture")
 		Expect(debt).To(Equal(db.CancellationConflict))

@@ -8,9 +8,7 @@ type RunCancellationKind string
 
 const (
 	CancelSchedulerDebt RunCancellationKind = "scheduler_debt_close"
-	CancelHandoff       RunCancellationKind = "handoff_classify"
 	CancelCapture       RunCancellationKind = "capture_cancel_or_settle"
-	CancelSourceHold    RunCancellationKind = "source_hold_release"
 	CancelBuild         RunCancellationKind = "build_abort"
 	CancelExecution     RunCancellationKind = "executor_finish_or_stop_ack"
 	CancelCandidate     RunCancellationKind = "candidate_settle"

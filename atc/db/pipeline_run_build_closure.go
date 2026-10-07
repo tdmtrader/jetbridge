@@ -80,7 +80,7 @@ func closeOpenBuildClosures(ctx context.Context, tx Tx, runID int) error {
 func buildClosureSubjects(kind RunCancellationKind, builds string) (string, bool) {
 	var query string
 	switch kind {
-	case CancelHandoff:
+	case CancelCapture:
 		query = `SELECT s.execution_id::text||'/'||s.output_name AS subject FROM pipeline_run_captures s WHERE s.run_id=$1 AND s.build_id IN (%s)`
 	case CancelBuild:
 		query = `SELECT id::text AS subject FROM builds WHERE pipeline_run_id=$1 AND id IN (%s)`
@@ -101,7 +101,7 @@ const openBuildClosures = `SELECT build_id FROM pipeline_run_build_closures WHER
 // closure's operations completes last closes it.
 func closeBuildClosure(ctx context.Context, tx Tx, runID, buildID int) (bool, error) {
 	var pending []string
-	for _, kind := range []RunCancellationKind{CancelHandoff, CancelBuild, CancelExecution} {
+	for _, kind := range []RunCancellationKind{CancelCapture, CancelBuild, CancelExecution} {
 		subjects, _ := buildClosureSubjects(kind, `SELECT $2::integer`)
 		pending = append(pending, fmt.Sprintf(`SELECT 1 FROM pipeline_run_cancellation_operations op
  WHERE op.run_id=$1 AND op.kind='%s' AND op.completed_at IS NULL AND op.subject IN (%s)`, kind, subjects))
