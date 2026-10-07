@@ -296,6 +296,17 @@
 {{- if not (hasPrefix "/" (clean (toString $scratch.path))) -}}
 {{- fail "artifactDaemon.outputScratch.path must be absolute" -}}
 {{- end -}}
+{{- $path := clean (toString $scratch.path) -}}
+{{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") -}}
+{{- if or (eq $path $storage) (hasPrefix (printf "%s/" $storage) $path) (hasPrefix (printf "%s/" $path) $storage) -}}
+{{- fail "artifactDaemon.outputScratch.path and artifactDaemon.hostPath must be disjoint" -}}
+{{- end -}}
+{{- if .Values.artifactDaemon.hangar.enabled -}}
+{{- $strict := clean (toString .Values.artifactDaemon.hangar.scratchPath) -}}
+{{- if or (eq $path $strict) (hasPrefix (printf "%s/" $strict) $path) (hasPrefix (printf "%s/" $path) $strict) -}}
+{{- fail "artifactDaemon.outputScratch.path and artifactDaemon.hangar.scratchPath must be disjoint" -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{- define "concourse.web.runResultReads" -}}

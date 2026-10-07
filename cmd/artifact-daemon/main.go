@@ -323,6 +323,13 @@ func main() {
 		planeConfig.NodeName = *nodeName
 		planeConfig.ControlDir = *storagePath
 		planeConfig.StepsDir = filepath.Join(*storagePath, "steps")
+		if err := validateOutputScratch(planeConfig.ScratchDir, *storagePath, *hangarScratchDir, *hangarEnabled); err != nil {
+			logger.Error("output-scratch-invalid", err)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupCancel()
+			os.Exit(1)
+		}
 		if err := os.MkdirAll(planeConfig.StepsDir, 0755); err != nil {
 			logger.Error("failed-to-create-steps-path", err, lager.Data{"path": planeConfig.StepsDir})
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)

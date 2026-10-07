@@ -2036,3 +2036,21 @@ func TestTheControllersUseWebsDatabaseCredential(t *testing.T) {
 		})
 	}
 }
+
+// The output scratch is the plane's own directory: never the storage root the
+// artifact daemon's sweeper and registry own, nor the strict-input scratch.
+func TestTheOutputScratchIsDisjointFromTheStorageRootAndTheStrictInputScratch(t *testing.T) {
+	for name, sets := range map[string][]string{
+		"inside the storage root":  {"artifactDaemon.outputScratch.path=/var/concourse/artifacts/scratch"},
+		"holding the storage root": {"artifactDaemon.outputScratch.path=/var/concourse"},
+		"the strict-input scratch": {"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=gcs",
+			"artifactDaemon.hangar.bucket=jb-strict-input", "artifactDaemon.hangar.allowGeneratedKey=true",
+			"artifactDaemon.outputScratch.path=/var/concourse/hangar-scratch"},
+	} {
+		message := renderHangarError(t, append(append([]string{}, baseControlSets...), sets...)...)
+		if !strings.Contains(message, "must be disjoint") {
+			t.Errorf("%s: an overlapping output scratch was accepted:\n%s", name, message)
+		}
+	}
+	renderBaseControl(t)
+}

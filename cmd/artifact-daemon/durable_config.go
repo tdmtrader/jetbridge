@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -143,6 +146,29 @@ func buildDurableTier(ctx context.Context, logger lager.Logger, m *metrics, opts
 
 // hangarInputNamespace is the strict-input namespace this daemon will use, or
 // empty when strict inputs are off and the flag is inert.
+// validateOutputScratch refuses an output-plane scratch directory that
+// overlaps the storage root or, with strict inputs on, the strict-input
+// scratch. The plane sweeps its scratch of hangar-tree-* entries at startup,
+// and the storage root's sweeper and registry own everything beneath it; two
+// owners of one directory are two sets of rules deleting each other's files.
+func validateOutputScratch(scratch, storage, hangarScratch string, hangarEnabled bool) error {
+	if scratch == "" {
+		return nil
+	}
+	overlaps := func(a, b string) bool {
+		a, b = filepath.Clean(a), filepath.Clean(b)
+		return a == b || strings.HasPrefix(a, b+string(filepath.Separator)) ||
+			strings.HasPrefix(b, a+string(filepath.Separator))
+	}
+	if overlaps(scratch, storage) {
+		return fmt.Errorf("--output-scratch-dir %q and --storage-path %q must be disjoint", scratch, storage)
+	}
+	if hangarEnabled && overlaps(scratch, hangarScratch) {
+		return fmt.Errorf("--output-scratch-dir %q and --hangar-scratch-dir %q must be disjoint", scratch, hangarScratch)
+	}
+	return nil
+}
+
 // outputNamespace is the output plane's bucket or disk namespace, or "" when
 // this daemon mounts no output plane or the plane carries base control only.
 func outputNamespace(config outputplane.Config) string {

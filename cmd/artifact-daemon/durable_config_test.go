@@ -159,3 +159,25 @@ func withOpen(t *testing.T, open func(context.Context, durable.Config) (durable.
 	openDurableStore = open
 	t.Cleanup(func() { openDurableStore = previous })
 }
+
+func TestTheOutputScratchIsDisjointFromTheStorageRootAndTheStrictInputScratch(t *testing.T) {
+	for name, row := range map[string]struct {
+		scratch, storage, hangar string
+		hangarEnabled, ok        bool
+	}{
+		"disjoint":                          {"/var/output-scratch", "/var/artifacts", "/var/hangar-scratch", true, true},
+		"unset":                             {"", "/var/artifacts", "/var/hangar-scratch", true, true},
+		"the storage root":                  {"/var/artifacts", "/var/artifacts", "/var/hangar-scratch", false, false},
+		"inside the storage root":           {"/var/artifacts/scratch", "/var/artifacts", "/var/hangar-scratch", false, false},
+		"holding the storage root":          {"/var", "/var/artifacts", "/var/hangar-scratch", false, false},
+		"the strict-input scratch":          {"/var/hangar-scratch", "/var/artifacts", "/var/hangar-scratch", true, false},
+		"the strict-input scratch, unused":  {"/var/hangar-scratch", "/var/artifacts", "/var/hangar-scratch", false, true},
+		"a sibling sharing a string prefix": {"/var/artifacts-scratch", "/var/artifacts", "/var/hangar-scratch", true, true},
+	} {
+		err := validateOutputScratch(row.scratch, row.storage, row.hangar, row.hangarEnabled)
+		if (err == nil) != row.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
