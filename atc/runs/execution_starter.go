@@ -105,15 +105,22 @@ func (s *ExecutionStarter) RecordWitness(ctx context.Context, owner db.Container
 	if !isBuild {
 		return nil
 	}
+	recorded := false
 	err := s.transaction(ctx, func(tx db.Tx) error {
 		_, owned, err := s.Factory.RunExecutionOwner(ctx, tx, buildID)
 		if err != nil || !owned {
 			return err
 		}
-		return s.Factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, witness, s.Verifier)
+		if err := s.Factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, witness, s.Verifier); err != nil {
+			return err
+		}
+		recorded = true
+		return nil
 	})
-	if err == nil && witness.Kind == executioncontrol.AcknowledgementStart {
-		s.releaseInputReads(ctx, buildID, planID)
+	if err == nil && recorded && witness.Kind == executioncontrol.AcknowledgementStart {
+		// Off the start path: the release takes Hangar suffix locks, and
+		// contention on them must not delay the command's exec.
+		go s.releaseInputReads(context.WithoutCancel(ctx), buildID, planID)
 	}
 	return err
 }

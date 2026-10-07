@@ -4,7 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"fmt"
 	"time"
+
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -116,6 +120,9 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 // Best effort, one transaction per lease: a failed release is not the start's
 // failure, and an unreleased lease still closes at its expiry.
 func (s *ExecutionStarter) releaseInputReads(ctx context.Context, buildID int, planID atc.PlanID) {
+	logger := lagerctx.FromContext(ctx).Session("release-input-reads", lager.Data{
+		"build": buildID, "plan": string(planID),
+	})
 	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if s.Conn == nil {
@@ -127,43 +134,58 @@ func (s *ExecutionStarter) releaseInputReads(ctx context.Context, buildID int, p
 		  JOIN containers c ON c.handle = r.destination_handle
 		 WHERE c.build_id = $1 AND c.plan_id = $2 AND r.released_at IS NULL`, buildID, string(planID))
 	if err != nil {
+		logger.Error("query-leases", err)
 		return
 	}
 	var ids []output.ReadLeaseID
 	for rows.Next() {
 		var id string
-		if rows.Scan(&id) == nil {
-			ids = append(ids, output.ReadLeaseID(id))
+		if err := rows.Scan(&id); err != nil {
+			logger.Error("scan-lease", err)
+			continue
 		}
+		ids = append(ids, output.ReadLeaseID(id))
+	}
+	if err := rows.Err(); err != nil {
+		logger.Error("iterate-leases", err)
 	}
 	_ = rows.Close()
 	if len(ids) == 0 {
 		return
 	}
+	// The token is minted without a consumer prefix lock: the release
+	// transaction takes only suffix locks (the logical, exact and read-lease
+	// rows ReleaseReadLease names), so there is no prefix for it to hold.
 	prefix, err := db.HangarConsumerPrefixHeld("pipeline-run-input-read")
 	if err != nil {
+		logger.Error("prefix", err)
 		return
 	}
 	leases := db.NewHangarOutputRepository(prefix)
 	for _, id := range ids {
-		releaseInputRead(release, s.Conn, leases, id)
+		if err := releaseInputRead(release, s.Conn, leases, id); err != nil {
+			logger.Error("release-lease", err, lager.Data{"read-lease": string(id)})
+		}
 	}
 }
 
-func releaseInputRead(ctx context.Context, conn db.DbConn, leases *db.HangarOutputRepository, id output.ReadLeaseID) {
+func releaseInputRead(ctx context.Context, conn db.DbConn, leases *db.HangarOutputRepository, id output.ReadLeaseID) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return
+		return fmt.Errorf("begin: %w", err)
 	}
 	defer db.Rollback(tx)
 	record, err := leases.LoadReadLease(ctx, db.HangarOutputTx{Tx: tx}, id)
 	if err != nil {
-		return
+		return fmt.Errorf("load: %w", err)
 	}
 	if err := leases.ReleaseReadLease(ctx, db.HangarOutputTx{Tx: tx}, record.Lease); err != nil {
-		return
+		return fmt.Errorf("release: %w", err)
 	}
-	_ = tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }
 
 type taskInputStat struct {

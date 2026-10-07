@@ -177,16 +177,24 @@ func observeRunTaskStart(ctx context.Context, in RunInputAdmission, starter *run
 	if err := starter.RecordWitness(ctx, owner, start); err != nil {
 		return fmt.Errorf("the Run did not retain the task's start: %w", err)
 	}
+	// The release runs off the start path, so it is awaited, bounded.
 	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
+	deadline := time.Now().Add(15 * time.Second)
 	for _, id := range leases {
-		tx, err := conn.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		_, loadErr := repository.LoadReadLease(ctx, tx, id)
-		db.Rollback(tx)
-		if !errors.Is(loadErr, output.ErrConflict) {
-			return fmt.Errorf("the task started and its materialized input kept a live read lease: %v", loadErr)
+		for {
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			_, loadErr := repository.LoadReadLease(ctx, tx, id)
+			db.Rollback(tx)
+			if errors.Is(loadErr, output.ErrConflict) {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("the task started and its materialized input kept a live read lease: %v", loadErr)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	return nil
