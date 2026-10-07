@@ -645,3 +645,75 @@ func TestAReadOnlyAliasOntoACaptureHeldSourceIsAdmittedAndAWriteCapableOneIsNot(
 		t.Errorf("a refused read-only remap moved the alias to %q", rel)
 	}
 }
+
+// A torn record is quarantined by the output plane at startup, and from then on
+// nobody can say whether it described a hold. Every destructive path must
+// refuse -- the sweeper, DELETE, stream-in and an alias remap -- for the held
+// source the record named AND for an unrelated one, because the ledger is the
+// only thing that could have said which is which.
+func TestAQuarantinedControlRecordRefusesEveryDestructivePath(t *testing.T) {
+	server, storage := capturedServer(t)
+	handler := server.Handler()
+
+	unheld := filepath.Join(storage, "steps", "unheld-handle", "out")
+	if _, err := server.registry.RegisterAlias("an-unheld-name", unheld); err != nil {
+		t.Fatalf("seeding the mapping: %v", err)
+	}
+
+	control := filepath.Join(storage, ledger.ControlDirName)
+	record := filepath.Join(control, "source-88888888-8888-4888-8888-888888888888.json")
+	if err := os.MkdirAll(filepath.Join(control, "quarantine"), 0o700); err != nil {
+		t.Fatalf("creating the quarantine: %v", err)
+	}
+	if err := os.WriteFile(record, []byte(`{"record_version":"hangar-output-control-record-v1","bo`), 0o600); err != nil {
+		t.Fatalf("tearing the record: %v", err)
+	}
+	if err := os.Rename(record, filepath.Join(control, "quarantine", filepath.Base(record))); err != nil {
+		t.Fatalf("quarantining the record: %v", err)
+	}
+
+	stale := time.Now().Add(-2 * time.Hour)
+	for _, dir := range []string{heldStepDir(), "unheld-handle"} {
+		if err := os.Chtimes(filepath.Join(storage, "steps", dir), stale, stale); err != nil {
+			t.Fatalf("ageing %s: %v", dir, err)
+		}
+	}
+	sweeper := NewSweeper(lagertest.NewTestLogger("sweep"), storage, time.Hour, time.Hour, server.registry)
+	sweeper.SetGuard(server.guard)
+	sweeper.SetSourceLedger(server.sourceLedger)
+	sweeper.SweepOnce()
+	stillThere(t, storage, heldIncarnation())
+	stillThere(t, storage, filepath.Join("unheld-handle", "out"))
+
+	for _, key := range []string{"steps/" + heldStepDir(), "steps/unheld-handle"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/artifacts/"+key, nil))
+		if recorder.Code != http.StatusConflict {
+			t.Errorf("DELETE %s answered %d with a quarantined record", key, recorder.Code)
+		}
+	}
+
+	for _, key := range []string{heldIncarnation(), "unheld-handle/out"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/stream-in/"+key,
+			bytes.NewReader(oneEntryTar(t, "artifact.txt", "somebody else's bytes"))))
+		if recorder.Code != http.StatusConflict {
+			t.Errorf("a stream-in over %s answered %d with a quarantined record", key, recorder.Code)
+		}
+	}
+
+	body, err := json.Marshal(artifactwire.RegisterRequest{Key: "an-unheld-name",
+		LocalPath: filepath.Join(storage, "steps", heldIncarnation())})
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body)))
+	if recorder.Code != http.StatusConflict {
+		t.Errorf("remapping an alias answered %d with a quarantined record", recorder.Code)
+	}
+
+	stillThere(t, storage, heldIncarnation())
+	stillThere(t, storage, filepath.Join("unheld-handle", "out"))
+}
+

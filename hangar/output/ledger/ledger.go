@@ -44,6 +44,9 @@ import (
 const ControlDirName = ".hangar-output-control"
 
 const (
+	// quarantineDirName must match the writer's: where records it could not
+	// read at startup are moved.
+	quarantineDirName  = "quarantine"
 	sourceRecordPrefix = "source-"
 	recordVersion      = "hangar-output-control-record-v1"
 )
@@ -249,6 +252,24 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 	held := map[string]Class{}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() == quarantineDirName {
+			// A quarantined record is one the writer could not read at
+			// startup. Whatever it said -- possibly that a source is held --
+			// is unknown, so nothing here may answer "unmanaged" until an
+			// operator resolves it.
+			quarantined, err := os.ReadDir(path.Join(classifier.dir, quarantineDirName))
+			if err != nil {
+				return nil, fmt.Errorf("reading the quarantine: %w", err)
+			}
+			for _, record := range quarantined {
+				if !record.IsDir() {
+					return nil, fmt.Errorf("%s/%s is a quarantined control record; a record "+
+						"nobody can read may be a hold this reader would miss",
+						quarantineDirName, record.Name())
+				}
+			}
+			continue
+		}
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), sourceRecordPrefix) ||
 			!strings.HasSuffix(entry.Name(), ".json") {
 			continue

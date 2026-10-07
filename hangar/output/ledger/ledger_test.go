@@ -128,6 +128,7 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 	for _, name := range []string{
 		"a record that is not JSON",
 		"a record from a newer daemon",
+		"a quarantined record",
 		"a directory that cannot be listed",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -173,6 +174,17 @@ func corruptIn(t *testing.T, dir, how string) {
 		if err := os.WriteFile(path,
 			[]byte(`{"record_version":"hangar-output-control-record-v2","body":{}}`), 0o600); err != nil {
 			t.Fatalf("writing: %v", err)
+		}
+	case "a quarantined record":
+		// The writer moves a record it could not read at startup aside. The
+		// hold it may have described is no longer where this reader looks, so
+		// its presence must refuse rather than read as "nothing is held".
+		quarantine := filepath.Join(dir, quarantineDirName)
+		if err := os.MkdirAll(quarantine, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.Rename(path, filepath.Join(quarantine, filepath.Base(path))); err != nil {
+			t.Fatalf("quarantining: %v", err)
 		}
 	case "a directory that cannot be listed":
 		// Mode bits do not apply to uid 0, and CI runs as root: chmod 000 there
