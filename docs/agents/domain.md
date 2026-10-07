@@ -35,9 +35,9 @@ If any of these files are missing on the branch you are on, proceed silently.
 
 Name a concept the way its context's glossary does, in issue titles, test
 names, hypotheses and proposals. Standing rulings: a build is never a "run";
-receipt, daemon, lease and hold are always qualified; Hangar's capability is a
-warrant, never a grant; `hangar/` and `atc/hangaroutput` may not use core's
-product words (a test scans for them).
+receipt, lease and hold are always qualified; the daemon is the artifact
+daemon; Hangar's capability is a warrant, never a grant; `hangar/` imports
+nothing from core (the two Hangar architecture tests check it).
 
 A concept missing from every glossary is a signal: either you are inventing
 language the project does not use, or there is a real gap for

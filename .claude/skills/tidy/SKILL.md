@@ -41,7 +41,7 @@ Every category:
 ```bash
 make test-quick
 go test .
-go test ./hangar/output/ -run 'Architecture|Vocabulary'
+go test ./hangar/...
 ```
 
 Then the card's `Gate` lines. A red gate means revert the change, append a

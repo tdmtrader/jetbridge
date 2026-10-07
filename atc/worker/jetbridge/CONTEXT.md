@@ -139,9 +139,10 @@ Kubernetes accessor.
 **Artifact daemon**:
 The per-node DaemonSet pod that stores step outputs and resource caches on a
 host path, mirrors them to peers and serves them to init containers. The
-authoritative artifact store. It is its own binary; the signed capability
-it accepts from init containers is a shared value type, owned by neither
-side.
+authoritative artifact store, and the only daemon on a node: Hangar's
+strict-input materialization and output plane are parts of it. It is its own
+binary; the signed capability it accepts from init containers is a shared
+value type, owned by neither side.
 _Avoid_: daemon (alone), DaemonSet (the deployment shape, not the thing),
 artifact-cache
 
@@ -175,7 +176,8 @@ Another node's artifact daemon.
 
 **Sweeper**:
 The daemon's TTL reaper of node-local step outputs. Resource caches are
-never swept from the node.
+never swept from the node, and a step directory the source ledger does not
+answer unmanaged is never swept.
 
 **Maintenance sweep**:
 The daemon's pass over the durable tier that deletes objects past their

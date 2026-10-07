@@ -16,7 +16,8 @@ result plane. Each has its own vocabulary and a checked boundary.
   the brine behavioral contract.
 - [Hangar](./hangar/CONTEXT.md): exact immutable trees, strict inputs, and
   the output plane that captures a task's output into one. Includes the
-  control-plane coordinator in `atc/hangaroutput`.
+  web's capture coordinator, reclaim pass and orphan sweep in
+  `atc/hangaroutput`.
 
 ## Models
 
@@ -33,16 +34,14 @@ context, under `docs/architecture/`: [core](./docs/architecture/core-model.md),
   artifact to store; the runtime reports back a synthetic worker and pod
   outcomes. Core owns "build" and "job"; the runtime owns "pod", "volume"
   and "artifact key".
-- **Runtime → Hangar**: a step pod's control init takes a source hold and a
-  materialization warrant; the artifact daemon hosts strict-input
-  materialization and consults the source ledger before destroying a held
-  path.
-- **Core → Hangar**: only through the coordinator, which passes opaque
-  locators and handoff ids. Hangar and the coordinator must not use core's
-  product words (run, workflow, ticket, agent, anvil, playbook; for the
-  coordinator also build, job, check). A test in `hangar/output` scans every
-  Hangar package and the coordinator, on imports, exported fields and wire
-  spellings.
+- **Runtime → Hangar**: a step pod's control init writes the step marker
+  (a source hold) and carries a materialization warrant; the artifact daemon
+  hosts strict-input materialization and the output plane's capture routes,
+  and consults the source ledger before destroying a held path.
+- **Core → Hangar**: a Run inserts and reads capture rows and claims through
+  a caller-owned transaction; the coordinator drives each row with the node
+  the row names. Hangar is a leaf: `hangar/` imports nothing from core
+  (`hangar/architecture_test.go`, `hangar/output/architecture_test.go`).
 - **Agentic → Core**: the agentic context reaches core only through the run
   admission port, the wrapped API and shared value types, never the
   database. Core never imports it.
@@ -56,14 +55,13 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
 ## Collisions to watch
 
 - **Receipt** is always qualified: materialization receipt (Hangar strict
-  input), publication receipt (Hangar output plane) or invocation receipt
-  (agentic Run client).
+  input) or invocation receipt (agentic Run client).
 - **Detached** is core's alone: a detached build belongs to a reclaimed run.
   A Run an agent submits is a workload's Run, never a detached Run.
-- **Daemon** is always qualified: artifact daemon (runtime) or output daemon
-  (Hangar).
-- **Lease** and **hold** are always qualified: source hold, read lease,
-  operation lease.
+- **Daemon** is the artifact daemon, one per node. Hangar's output plane is
+  a part of it, never a daemon of its own; `hangar-store` is the disk
+  store's service, not a daemon.
+- **Lease** and **hold** are always qualified: source hold, read lease.
 - **Reclamation** destroys a pipeline run's payload in core and deletes a
   published object in Hangar. Context makes it clear; do not coin a third
   word.
@@ -74,16 +72,17 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
   the daemon capturing a tree in Hangar. Qualify it when both are near.
 - **Scope** is a resource config scope in core, an MCP grant's scope in the
   agentic context, and the namespace component of a tree ref in Hangar.
-- **Principal** is a caller's verified claims in core and a cloud-permission
-  persona in Hangar.
-- **Operation** is an exposed application action in the agentic context and
-  a unit of background work in Hangar.
-- **Facet** is an activation state machine in Hangar's coordinator and,
-  separately, a capability signing domain in its execution control.
+- **Principal** is a caller's verified claims in core and a storage
+  identity in Hangar.
+- **Operation** is an exposed application action in the agentic context.
+- **Facet** is a capability signing domain in Hangar's execution control,
+  and nothing else.
 - **Run** is a pipeline run in core. A build is never called a run. The
   prototype `run:` step is a step, and is named as such.
-- **Transition** is a Hangar handoff step and, separately, a brine step's
-  state change.
+- **Transition** is a brine step's state change. A capture row moves by
+  compare-and-set; call it a step of the coordinator.
+- **Pending** and **published** are capture row states in Hangar; a
+  pipeline run's own status is core's. Qualify when both are near.
 - **Node** is only ever a Kubernetes node. A plan element is a step; a step
   asking for a child run is a composition call.
 
