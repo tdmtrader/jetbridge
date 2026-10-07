@@ -8,7 +8,7 @@ package steps
 //   2. storage_daemonset_durable_test.go — the durable resource-cache tier
 //   3. artifact_locator_test.go       — the in-memory artifact index
 //
-// Cache scenarios use production daemons and a real filesystem durable store.
+// Cache scenarios use production daemons and a real cache bucket on a GCS emulator.
 // Whole-step execution and typed eviction are covered by the live features.
 //
 // Prefix note: every exported identifier here is `Closing*` because other

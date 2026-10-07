@@ -3,12 +3,11 @@ package steps
 // The fixture the whole Hangar output family stands on: a REAL artifact-daemon
 // process whose Hangar store is a GCS emulator this process controls.
 //
-// Why an emulator and not the filesystem store daemon-durable.feature uses.
-// Requirement 19 admits only the strict native-GCS profile for Hangar, and the
-// daemon enforces it: validateHangarOptions refuses --hangar-enabled unless
-// --durable-store=gcs (cmd/artifact-daemon/hangar.go). So the filesystem store
-// that made "the bucket" an ordinary directory is not available here, and the
-// choice is between a GCS stand-in over HTTP and no real daemon at all.
+// Why an emulator. Hangar's strict stores are native GCS or the disk store, and
+// the daemon enforces it: validateHangarOptions refuses --hangar-enabled
+// without --hangar-store=gcs|disk (cmd/artifact-daemon/hangar.go). The choice
+// is between a GCS stand-in over HTTP and a real disk store, and this fixture
+// takes the GCS one.
 //
 // The stand-in is github.com/fsouza/fake-gcs-server, reached on the same
 // endpoint convention the production code uses: a non-empty endpoint goes to
@@ -20,7 +19,7 @@ package steps
 // caller holding one holds an arbitrary object delete. This fixture needs a raw
 // client for the one operation no role has permission for (creating a bucket),
 // so it builds its own with the SDK and says so. Nothing in the daemon is
-// modified or stubbed to make this work; the daemon's own --durable-endpoint
+// modified or stubbed to make this work; the daemon's own --hangar-endpoint
 // flag is the whole seam, and the daemon validates the bucket at boot, so a
 // fixture pointing at nothing is reported as a daemon that exited during
 // startup rather than as a scenario failure later.
@@ -275,9 +274,9 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, outputTLS bool
 		"--hangar-enabled",
 		"--hangar-scratch-dir", scratch,
 		"--hangar-warrant-key", filepath.Join(certDir, "capability.key"),
-		"--durable-store", "gcs",
-		"--durable-bucket", bucket,
-		"--durable-endpoint", endpoint,
+		"--hangar-store", "gcs",
+		"--hangar-bucket", bucket,
+		"--hangar-endpoint", endpoint,
 		"--tls-cert", filepath.Join(certDir, "server.crt"),
 		"--tls-key", filepath.Join(certDir, "server.key"),
 		"--tls-ca-cert", filepath.Join(certDir, "ca.crt"),

@@ -31,7 +31,7 @@ type WarmRollPlan struct {
 	Nodes        []string
 	Daemons      []*realDaemon
 	Kubeconfig   string
-	StorePath    string
+	Store        *cacheEmulator
 	Expected     map[string]string
 	Client       *jetbridge.DaemonClient
 	Backend      *jetbridge.DaemonSetBackend
@@ -74,13 +74,10 @@ func newWarmRollPlan(res brine.Resources, rec *brine.Recorder) (WarmRollPlan, er
 			return p, err
 		}
 	}
-	p.StorePath, err = AttributedTempDir("brine-warm-durable-")
+	p.Store, err = startCacheEmulator(rec)
 	if err != nil {
 		return p, err
 	}
-	storePath := p.StorePath
-	TrackDisposer(rec, "the warm durable store "+storePath,
-		func() error { return os.RemoveAll(storePath) })
 	p.Kubeconfig, err = daemonKubeconfig(api, rec)
 	if err != nil {
 		return p, err
@@ -129,9 +126,8 @@ func (p *WarmRollPlan) startDaemons(rec *brine.Recorder) error {
 		func(i int, host string, port int) (*realDaemon, error) {
 			return startConfiguredDaemon("http", http.DefaultClient,
 				daemonOptions{Host: host, Port: port},
-				"--kubeconfig", p.Kubeconfig, "--namespace", p.Namespace,
-				"--node-name", p.Nodes[i], "--durable-store=filesystem",
-				"--durable-path", p.StorePath)
+				append([]string{"--kubeconfig", p.Kubeconfig, "--namespace", p.Namespace,
+					"--node-name", p.Nodes[i]}, p.Store.daemonArgs()...)...)
 		})
 	if err != nil {
 		return err
@@ -244,14 +240,8 @@ func daemonWarmDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				// Seed a real FS-store object; the daemon performs validation and restore.
-				path := filepath.Join(in.StorePath, key)
-				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-					return in, err
-				}
-				if err := os.WriteFile(path, body, 0600); err != nil {
-					return in, err
-				}
+				// Seed a real cache-bucket object; the daemon performs validation and restore.
+				in.Store.put(key, body, time.Now())
 				in.Expected[a.String(0)] = a.String(1)
 				return in, nil
 			}),

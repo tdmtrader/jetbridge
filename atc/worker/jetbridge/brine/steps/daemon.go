@@ -413,18 +413,16 @@ func DaemonDefinitions() []brine.StepDefinition {
 		// A separate Given rather than a refinement of the one above, because
 		// the durable tier is a boot flag: --durable-store decides it before
 		// the first request, and a running daemon cannot acquire one. The
-		// store is a directory of its own so the node's storage root stays
-		// what the node holds.
+		// store is a cache bucket of its own (cache_emulator.go) so the node's
+		// storage root stays what the node holds.
 		brine.DefineMap[brine.Empty, DaemonPlan](
 			"an artifact daemon with a durable tier",
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
-				store, err := AttributedTempDir("brine-durable-store-*")
+				store, err := startCacheEmulator(rec)
 				if err != nil {
-					return DaemonPlan{}, fmt.Errorf("create durable store: %w", err)
+					return DaemonPlan{}, err
 				}
-				TrackDisposer(rec, "the durable store directory",
-					func() error { return os.RemoveAll(store) })
-				return startDaemonPlan(rec, "--durable-store=filesystem", "--durable-path", store)
+				return startDaemonPlan(rec, store.daemonArgs()...)
 			},
 		),
 

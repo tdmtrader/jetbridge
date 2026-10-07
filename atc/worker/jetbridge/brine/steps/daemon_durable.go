@@ -32,12 +32,12 @@ import (
 // behind — none of those are visible in a response, and the double had no
 // filesystem to get them wrong on.
 //
-// So these run the real binary with --durable-store=filesystem --durable-path,
-// which makes the "bucket" an ordinary directory this file can seed and
-// inspect. That is what turns "the store was not touched" from a call count
-// into an outcome: give the store DIFFERENT bytes from the node's copy, and
-// the assertion names which bytes arrived. Nothing here counts a request and
-// nothing here records one.
+// So these run the real binary with --durable-store=gcs against a bucket on an
+// in-process GCS emulator (cache_emulator.go) that this file seeds and
+// inspects server-side. That is what turns "the store was not touched" from a
+// call count into an outcome: give the store DIFFERENT bytes from the node's
+// copy, and the assertion names which bytes arrived. Nothing here counts a
+// request and nothing here records one.
 //
 // No Kubernetes is involved and no scenario passes --node-name: the daemon
 // builds a Kubernetes client the moment it is given one, and os.Exit(1)s
@@ -51,15 +51,14 @@ import (
 // one-time `go build ./cmd/artifact-daemon` that this file shares with
 // realdaemon.go through its sync.Once.
 
-// DurableDaemon is a running daemon, the directory standing in for its bucket,
-// and the last answer it gave.
+// DurableDaemon is a running daemon, the bucket behind its cache, and the last
+// answer it gave.
 type DurableDaemon struct {
 	Daemon *realDaemon
 
-	// StorePath is the durable store's root. A filesystem store maps a key
-	// straight onto a path under it, so seeding and inspection are ordinary
-	// file operations rather than an interface a test had to implement.
-	StorePath string
+	// Store is the cache bucket, seeded and inspected on the emulator's own
+	// side rather than through an interface a test had to implement.
+	Store *cacheEmulator
 
 	// Snapshot is what the storage root held when the daemon started, so a
 	// scenario can assert that a refused request added nothing to it.
@@ -119,23 +118,21 @@ func (s DurableDaemon) restoreAnswer() (restoreAnswer, error) {
 }
 
 // startDurableDaemon brings up one daemon over its own storage root and its
-// own store directory, and arranges for both to be cleaned up whether the
+// own cache bucket, and arranges for both to be cleaned up whether the
 // scenario passes, fails or is interrupted.
 func startDurableDaemon(rec *brine.Recorder, extra ...string) (DurableDaemon, error) {
-	store, err := AttributedTempDir("brine-durable-store-*")
+	store, err := startCacheEmulator(rec)
 	if err != nil {
 		return DurableDaemon{}, err
 	}
-	TrackDisposer(rec, "the durable store directory", func() error { return os.RemoveAll(store) })
 
-	args := append([]string{"--durable-store", "filesystem", "--durable-path", store}, extra...)
-	d, err := startRealDaemon(args...)
+	d, err := startRealDaemon(append(store.daemonArgs(), extra...)...)
 	if err != nil {
 		return DurableDaemon{}, err
 	}
 	TrackDisposer(rec, "the durable artifact daemon", d.stop)
 
-	return DurableDaemon{Daemon: d, StorePath: store, Snapshot: rootEntries(d.Root)}, nil
+	return DurableDaemon{Daemon: d, Store: store, Snapshot: rootEntries(d.Root)}, nil
 }
 
 // rootEntries lists the storage root and its steps/ directory, which together
@@ -175,49 +172,9 @@ func stepEntries(root string) ([]string, error) {
 	return names, nil
 }
 
-// storeKeys lists the objects in the store, the way the daemon's own
-// enumeration does: one optional class-prefix directory deep, skipping the
-// dot-prefixed temporary files an upload in flight leaves beside its object.
-func storeKeys(storePath string) ([]string, error) {
-	var keys []string
-	top, err := os.ReadDir(storePath)
-	if err != nil {
-		return nil, fmt.Errorf("read the durable store: %w", err)
-	}
-	for _, entry := range top {
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		if !entry.IsDir() {
-			keys = append(keys, entry.Name())
-			continue
-		}
-		nested, err := os.ReadDir(filepath.Join(storePath, entry.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("read the durable store's %q prefix: %w", entry.Name(), err)
-		}
-		for _, child := range nested {
-			if child.IsDir() || strings.HasPrefix(child.Name(), ".") {
-				continue
-			}
-			keys = append(keys, entry.Name()+"/"+child.Name())
-		}
-	}
-	sort.Strings(keys)
-	return keys, nil
-}
-
-func writeStoreObject(storePath, key string, body []byte) error {
-	full := filepath.Join(storePath, filepath.FromSlash(key))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return fmt.Errorf("create the store's prefix for %q: %w", key, err)
-	}
-	return os.WriteFile(full, body, 0o644)
-}
-
 // durableTarOfOneFile builds what a promotion of a one-file directory produces:
 // an UNCOMPRESSED tar whose member carries the path it had inside the
-// directory. The durable store holds plain tars — the restore path hands the
+// directory. The cache bucket holds plain tars — the restore path hands the
 // object straight to the tar reader — so this must not be gzipped, unlike the
 // stream-in archives in tarhelp.go.
 func durableTarOfOneFile(name, content string) ([]byte, error) {
@@ -275,8 +232,8 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Seeding the store directly is the whole reason the filesystem
-		// backend is used here. An object in a bucket got there from some
+		// Seeding the bucket server-side is the whole reason the emulator
+		// is in-process here. An object in a bucket got there from some
 		// other node on some other day, and that is the state a warm exists
 		// for; producing it through this daemon's own upload path would make
 		// every restore scenario depend on the promote path being right.
@@ -300,7 +257,8 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				return in, writeStoreObject(in.StorePath, key, archive)
+				in.Store.put(key, archive, time.Now())
+				return in, nil
 			},
 		),
 
@@ -327,7 +285,8 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				return in, writeStoreObject(in.StorePath, key, archive)
+				in.Store.put(key, archive, time.Now())
+				return in, nil
 			},
 		),
 
@@ -345,12 +304,8 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				if err := writeStoreObject(in.StorePath, key, []byte("an object")); err != nil {
-					return in, err
-				}
-				when := time.Now().Add(-time.Duration(hours) * time.Hour)
-				full := filepath.Join(in.StorePath, filepath.FromSlash(key))
-				return in, os.Chtimes(full, when, when)
+				in.Store.put(key, []byte("an object"), time.Now().Add(-time.Duration(hours)*time.Hour))
+				return in, nil
 			},
 		),
 
@@ -408,7 +363,8 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 				}
 
 				in.Victim = victim
-				return in, writeStoreObject(in.StorePath, key, buf.Bytes())
+				in.Store.put(key, buf.Bytes(), time.Now())
+				return in, nil
 			},
 		),
 
@@ -529,16 +485,15 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				full := filepath.Join(in.StorePath, filepath.FromSlash(key))
 				deadline := time.Now().Add(20 * time.Second)
 				for time.Now().Before(deadline) {
-					if _, err := os.Stat(full); err == nil {
+					if in.Store.has(key) {
 						time.Sleep(300 * time.Millisecond)
 						return in, nil
 					}
 					time.Sleep(25 * time.Millisecond)
 				}
-				held, _ := storeKeys(in.StorePath)
+				held, _ := in.Store.keys()
 				return in, fmt.Errorf("the durable store never received %q; it holds %v", key, held)
 			},
 		),
@@ -554,15 +509,14 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				full := filepath.Join(in.StorePath, filepath.FromSlash(key))
 				deadline := time.Now().Add(30 * time.Second)
 				for time.Now().Before(deadline) {
-					if _, err := os.Stat(full); os.IsNotExist(err) {
+					if !in.Store.has(key) {
 						return in, nil
 					}
 					time.Sleep(50 * time.Millisecond)
 				}
-				held, _ := storeKeys(in.StorePath)
+				held, _ := in.Store.keys()
 				return in, fmt.Errorf("%q was still in the durable store after 30s; it holds %v", key, held)
 			},
 		),
@@ -664,7 +618,7 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 		CheckString[DurableDaemon]("the durable store holds exactly {string}",
 			"what the durable store holds",
 			func(in DurableDaemon) (string, error) {
-				keys, err := storeKeys(in.StorePath)
+				keys, err := in.Store.keys()
 				if err != nil {
 					return "", err
 				}
@@ -673,7 +627,7 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 
 		CheckMember[DurableDaemon]("the durable store still holds {string}",
 			"the objects in the durable store",
-			func(in DurableDaemon) ([]string, error) { return storeKeys(in.StorePath) }),
+			func(in DurableDaemon) ([]string, error) { return in.Store.keys() }),
 
 		CheckString[DurableDaemon]("the file it tried to escape to still reads {string}",
 			"the file outside the restore destination",

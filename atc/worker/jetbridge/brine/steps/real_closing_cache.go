@@ -25,7 +25,7 @@ type closingCacheRuntime struct {
 	api       *realCluster
 	rec       *brine.Recorder
 	namespace string
-	store     string
+	store     *cacheEmulator
 	port      int
 	addresses []string
 	nodes     []string
@@ -58,16 +58,10 @@ func (p ClosingCachePlan) ensureCache() error {
 		return err
 	}
 	r.namespace = ns.Name
-	r.store, err = AttributedTempDir("brine-cache-durable-")
+	r.store, err = startCacheEmulator(r.rec)
 	if err != nil {
 		return err
 	}
-	TrackDisposer(r.rec, "the cache durable store "+r.store, func() error {
-		if err := os.Chmod(r.store, 0700); err != nil {
-			return err
-		}
-		return os.RemoveAll(r.store)
-	})
 	for key, content := range p.CacheDurable {
 		if !filepath.IsLocal(key) {
 			return fmt.Errorf("durable key escapes owned store: %q", key)
@@ -76,19 +70,13 @@ func (p ClosingCachePlan) ensureCache() error {
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(r.store, key)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, raw, 0600); err != nil {
-			return err
-		}
+		r.store.put(key, raw, time.Now())
 	}
 	// Standalone data-plane daemons have no daemon-side peer resolver. The
 	// ATC's discovery/client must provide the fallback under test.
 	var args []string
 	if p.CacheCapable {
-		args = []string{"--durable-store=filesystem", "--durable-path", r.store}
+		args = r.store.daemonArgs()
 	}
 	// Discovery uses endpoint IPs directly. Standalone daemons do not label
 	// nodes, so no Node object or reported Node address is needed here. The
@@ -131,12 +119,9 @@ func (p ClosingCachePlan) ensureCache() error {
 		}
 	}
 	if !p.CacheReachable {
-		if err := os.Chmod(r.store, 0); err != nil {
-			return err
-		}
-		if _, err := os.ReadDir(r.store); !os.IsPermission(err) {
-			return fmt.Errorf("durable-store fault did not deny real filesystem access: %v", err)
-		}
+		// The bucket goes away under daemons configured for it: every cache
+		// request now fails at the transport.
+		r.store.stop()
 	}
 	slice, err := r.api.Clientset.DiscoveryV1().EndpointSlices(r.namespace).Create(p.CacheCtx, p.cacheEndpoints(false), metav1.CreateOptions{})
 	if err != nil {
@@ -251,8 +236,8 @@ func closingRegister(p ClosingCachePlan, key, durableKey string) error {
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		raw, err := os.ReadFile(filepath.Join(r.store, object))
-		if err == nil {
+		raw, found := r.store.get(object)
+		if found {
 			if durableKey == "" {
 				return fmt.Errorf("registration without a content key filed durable object %q", object)
 			}
@@ -264,9 +249,6 @@ func closingRegister(p ClosingCachePlan, key, durableKey string) error {
 				return fmt.Errorf("uploaded durable object contains unexpected files: %v", files)
 			}
 			return nil
-		}
-		if !os.IsNotExist(err) {
-			return err
 		}
 		select {
 		case <-p.CacheCtx.Done():

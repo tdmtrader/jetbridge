@@ -15,9 +15,10 @@ Feature: The durable tier, against the daemon that implements it
   them wrong on.
 
   Here the daemon is the actual binary from cmd/artifact-daemon, run as a
-  process with `--durable-store=filesystem --durable-path`. That makes the
-  "bucket" an ordinary directory these scenarios seed and inspect, which is
-  what turns "the store was not touched" from a call count into an outcome:
+  process with `--durable-store=gcs` against its own cache bucket on an
+  in-process GCS emulator, which these scenarios seed and inspect on the
+  emulator's side. That is what turns "the store was not touched" from a call
+  count into an outcome:
   the store is given DIFFERENT bytes from the node's copy, and the assertion
   names which bytes arrived. Nothing below counts a request or records one.
 
@@ -255,10 +256,10 @@ Feature: The durable tier, against the daemon that implements it
 
   # DISPOSITION — TestABrokenStoreDegradesInsteadOfPropagating and
   # TestANilTierIsSafe. Both inject a store: one that fails every operation,
-  # and a nil tier reached through a possibly-nil pointer. A daemon
-  # configured from flags cannot be given either — a filesystem store that
-  # cannot be reached is not something --durable-path can express — and the
-  # nil case is a Go-level property of the pointer, not a behaviour a build
+  # and a nil tier reached through a possibly-nil pointer. A store that fails
+  # every operation is reachable from flags now (an emulator taken away —
+  # step-closing's unreachable-cache scenarios do exactly that), but the
+  # Go test asserts a metric the daemon does not expose; and the nil case is a Go-level property of the pointer, not a behaviour a build
   # can experience.
 
   # DISPOSITION — TestDurableRestoreWithoutATierIs501 and
@@ -284,10 +285,10 @@ Feature: The durable tier, against the daemon that implements it
   #
   #   - "no timestamp". A store that reports no write time is what would empty
   #     a bucket, since the zero value reads as 1970 and every object looks
-  #     ancient. A filesystem store always has an mtime, so the state cannot
-  #     be produced through --durable-store=filesystem at all.
+  #     ancient. Both real backends always report a creation time, so the
+  #     state cannot be produced through a daemon configured from flags.
   #   - "flat key spelling a configured class". The object is literally named
   #     "resource-caches", with no prefix, and it is the case the no-prefix
   #     check uniquely covers. In a real store it cannot coexist with the
-  #     "resource-caches/" prefix the same scenario needs: one name cannot be
-  #     both a file and a directory.
+  #     "resource-caches/" prefix the same scenario needs: it is a separate
+  #     table row, not worth a daemon.

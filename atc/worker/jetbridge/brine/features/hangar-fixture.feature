@@ -1,10 +1,9 @@
 Feature: The fixture the Hangar output family stands on
 
-  Requirement 19 admits only the strict native-GCS profile for Hangar, and the
-  daemon enforces it: --hangar-enabled is refused without --durable-store=gcs.
-  So the filesystem store that let ../features/daemon-durable.feature treat "the
-  bucket" as an ordinary directory is not available to this family, and the
-  real daemon has to be pointed at a GCS stand-in over HTTP instead.
+  Hangar's strict stores are native GCS or the disk store, and the daemon
+  enforces it: --hangar-enabled is refused without --hangar-store=gcs|disk, and
+  the strict-input bucket is never the cache bucket. The real daemon is pointed
+  at a GCS stand-in over HTTP through its own --hangar-* flags.
 
   It can be, through a seam the production code already has:
   hangar/gcs.NewStorageClient passes a non-empty endpoint to

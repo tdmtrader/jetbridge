@@ -106,7 +106,6 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 	"daemon.mtls":              func(d *liveDeployment) string { return onOff(d.daemonFlag("tls-cert")) },
 	"daemon.resolveCapability": func(d *liveDeployment) string { return onOff(d.daemonFlag("resolve-capability-key")) },
 	"daemon.hangar":            func(d *liveDeployment) string { return onOff(d.daemonFlag("hangar-enabled")) },
-	"daemon.preemption":        func(d *liveDeployment) string { return onOff(d.daemonFlag("preemption-watch")) },
 	// The output plane's own DaemonSet, and the disk store behind both
 	// namespaces: workloads, not flags, so they are read by presence.
 	"daemon.hangarOutput": func(d *liveDeployment) string { return onOff("", d.outputDaemons > 0) },
