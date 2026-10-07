@@ -1,11 +1,14 @@
 package tests
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -68,11 +72,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.tenant=tenant-a",
 	"hangarOutput.cacheBucket=jb-cache",
 	"hangarOutput.strictInputBucket=jb-strict-input",
-	"hangarOutput.receipt.keyID=receipt-7",
-	"hangarOutput.receipt.privateKeySecret=op-receipt-private",
-	"hangarOutput.receipt.publicKeys[0].id=receipt-7",
-	"hangarOutput.receipt.publicKeys[0].epoch=7",
-	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
 	// The four Workload Identity annotations. The output facet requires them:
 	// the policy attestor compares the bucket's IAM policy against these four
@@ -191,7 +190,7 @@ func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
 		}
 	}
 	for _, unexpected := range []string{
-		"--output-bucket", "--receipt-key-file", "--control-key-file",
+		"--output-bucket", "--materialization-key-file", "--control-key-file",
 		"concourse.dev/hangar-output-v1", "concourse.dev/hangar-execution-control-v1",
 		"hangar-output-scratch",
 	} {
@@ -217,8 +216,8 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 	if strings.Contains(daemon.body, "--output-bucket") {
 		t.Error("a base-control-only daemon is configured with an output bucket")
 	}
-	if strings.Contains(daemon.body, "--receipt-key-file") {
-		t.Error("a base-control-only daemon mounts the receipt private key; it signs no receipts")
+	if strings.Contains(daemon.body, "--materialization-key-file") {
+		t.Error("a base-control-only daemon mounts the read-warrant key; it serves no reads")
 	}
 	if !strings.Contains(daemon.body, "--control-key-file") {
 		t.Error("a base-control-only daemon has no control key; an unsigned acknowledgement " +
@@ -254,7 +253,7 @@ func TestTheWebNodeIsGivenTheActivationEpochUnderTheBaseFacet(t *testing.T) {
 	// moved one line, and a test that only asked for the epoch would pass
 	// against a base render that had quietly gained all of them.
 	for _, captureOnly := range []string{
-		"--kubernetes-hangar-output-receipt-keys=",
+		"--kubernetes-hangar-output-control-keys=",
 		"--kubernetes-hangar-output-materialization-key=",
 		"--kubernetes-hangar-output-bucket=",
 	} {
@@ -655,10 +654,10 @@ func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 
 	// The read-warrant key legitimately reaches the control plane -- web MINTS
 	// grants -- so the rule is per secret and not "anything with the word
-	// output in it". What must not leave the daemon is the RECEIPT PRIVATE key
-	// and the bucket itself.
+	// output in it". What must not leave the daemon is the node CONTROL private
+	// key and the bucket itself.
 	allowed := map[string][]string{
-		"op-receipt-private":    {outputDaemonComponent},
+		"op-control-key":        {outputDaemonComponent},
 		"op-output-materialize": {outputDaemonComponent, "-web"},
 	}
 	for secret, carriers := range allowed {
@@ -700,111 +699,124 @@ func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 // Key material
 // ---------------------------------------------------------------------------
 
-// Req 24. The receipt private key is mounted in exactly one Pod: the artifact
-// daemon's, which serves the output plane.
-func TestTheReceiptPrivateKeyIsMountedOnlyInTheOutputDaemon(t *testing.T) {
+// Req 24. The node control private key is mounted in exactly one Pod: the
+// artifact daemon's, which serves the output plane. Publication receipts were
+// removed in T3, so the control key is the only private signing key the plane
+// has.
+func TestTheControlPrivateKeyIsMountedOnlyInTheOutputDaemon(t *testing.T) {
 	out := renderOutput(t)
 
 	carriers := []string{}
 	for _, subject := range documentsIn(t, out) {
-		if !strings.Contains(subject.body, "op-receipt-private") {
+		if !strings.Contains(subject.body, "op-control-key") {
 			continue
 		}
 		carriers = append(carriers, subject.kind+"/"+subject.name)
 	}
 	if len(carriers) == 0 {
-		t.Fatal("nothing references the receipt private key Secret; this rule would pass " +
+		t.Fatal("nothing references the control private key Secret; this rule would pass " +
 			"vacuously")
 	}
 	for _, carrier := range carriers {
 		if !strings.HasSuffix(carrier, "-"+outputDaemonComponent) {
-			t.Errorf("%s references the receipt private key. The control plane, the web node, "+
+			t.Errorf("%s references the control private key. The control plane, the web node, "+
 				"the controllers, the control init container, the task and the sidecar hold "+
-				"the public key and the key id only.", carrier)
+				"the public key only.", carrier)
 		}
 	}
 }
 
-// The control plane gets the versioned public ring and nothing that can sign.
+// The control plane gets the versioned public control ring and nothing that
+// can sign: one ConfigMap holding control-keys.json, mounted by web at the
+// path its --kubernetes-hangar-output-control-keys flag names.
 func TestTheControlPlaneGetsOnlyTheVersionedPublicRing(t *testing.T) {
 	out := renderOutput(t)
 
-	ring := objectNamed(t, out, "ConfigMap", "-hangar-output-receipt-keys")
-	if !strings.Contains(ring.body, "receipt-7") {
-		t.Error("the receipt public key ring does not carry the active key id")
+	ringDoc := objectNamed(t, out, "ConfigMap", "-hangar-output-control-keys")
+	var ring corev1.ConfigMap
+	decodeNamed(t, out, "ConfigMap", ringDoc.name, &ring)
+	files := slices.Sorted(maps.Keys(ring.Data))
+	if !slices.Equal(files, []string{"control-keys.json"}) {
+		t.Errorf("the public ring ConfigMap holds %v, want only control-keys.json", files)
 	}
-	if strings.Contains(ring.body, "PRIVATE KEY") {
-		t.Error("the receipt public key ring contains private key material")
+	var control struct {
+		ActivationEpoch int64 `json:"activation_epoch"`
+		Keys            []struct {
+			Epoch     int64  `json:"epoch"`
+			PublicKey string `json:"public_key"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal([]byte(ring.Data["control-keys.json"]), &control); err != nil {
+		t.Fatalf("control-keys.json does not decode: %v", err)
+	}
+	if control.ActivationEpoch != 7 || len(control.Keys) != 1 || control.Keys[0].Epoch != 7 {
+		t.Errorf("the control ring is %+v, want epoch 7 with its one key", control)
+	}
+	if strings.Contains(ringDoc.body, "PRIVATE KEY") {
+		t.Error("the public control ring contains private key material")
 	}
 
-	web := objectNamed(t, out, "Deployment", "-web")
-	if !strings.Contains(web.body, "hangar-output-receipt-keys") {
-		t.Error("the web pod does not mount the receipt public key ring; it verifies every " +
-			"receipt before registration")
+	var web appsv1.Deployment
+	decodeNamed(t, out, "Deployment", objectNamed(t, out, "Deployment", "-web").name, &web)
+	pod := web.Spec.Template.Spec
+	mountedAt := ""
+	for _, volume := range pod.Volumes {
+		if volume.ConfigMap != nil && volume.ConfigMap.Name == ring.Name {
+			for _, mount := range pod.Containers[0].VolumeMounts {
+				if mount.Name == volume.Name {
+					mountedAt = mount.MountPath
+				}
+			}
+		}
 	}
-	if strings.Contains(web.body, "op-receipt-private") {
-		t.Error("the web pod mounts the receipt private key")
+	if mountedAt == "" {
+		t.Fatal("the web pod does not mount the public control ring; it verifies node " +
+			"statements with it")
+	}
+	want := "--kubernetes-hangar-output-control-keys=" + mountedAt + "/control-keys.json"
+	if !slices.Contains(pod.Containers[0].Args, want) && !slices.Contains(pod.Containers[0].Command, want) {
+		t.Errorf("web does not read the control ring at %s", want)
+	}
+	for _, container := range pod.Containers {
+		for _, arg := range append(append([]string{}, container.Command...), container.Args...) {
+			if strings.Contains(arg, "receipt") {
+				t.Errorf("web container %s is passed %s; publication receipts were removed", container.Name, arg)
+			}
+		}
+	}
+	webDoc := objectNamed(t, out, "Deployment", "-web")
+	if strings.Contains(webDoc.body, "op-control-key") {
+		t.Error("the web pod mounts the control private key")
 	}
 }
 
-// Rotation creates a new epoch. A key id whose ring entry names a different
-// epoch is an in-place replacement, which the receipt-key rule forbids: an old
-// private key is retained while its epoch still has an unsettled capture.
-func TestAReceiptKeyIsNeverReplacedInPlace(t *testing.T) {
-	message := renderHangarError(t, append(append([]string{}, outputSets...),
-		"hangarOutput.receipt.publicKeys[0].epoch=6",
-	)...)
-	if !strings.Contains(message, "epoch") {
-		t.Errorf("a key id bound to a different epoch than the active one was accepted:\n%s",
-			message)
-	}
-
-	// The same id appearing twice with two different keys is the same defect
-	// spelled the other way.
-	message = renderOutputError(t,
-		"hangarOutput.receipt.publicKeys[1].id=receipt-7",
-		"hangarOutput.receipt.publicKeys[1].epoch=8",
-		"hangarOutput.receipt.publicKeys[1].key=YW5vdGhlci1wdWJsaWMta2V5",
-	)
-	if !strings.Contains(message, "receipt-7") {
-		t.Errorf("one key id with two different public keys was accepted:\n%s", message)
+// A values ring with no key for the active epoch is refused: source hold
+// recovery verifies node statements against it.
+func TestTheControlRingMustCarryTheActiveEpoch(t *testing.T) {
+	message := renderOutputError(t, "hangarOutput.executionControl.publicKeys[0].epoch=6")
+	if !strings.Contains(message, "no key for the active epoch") {
+		t.Errorf("a control ring without the active epoch was accepted, or refused for "+
+			"another reason:\n%s", message)
 	}
 }
 
-// An unknown or retired active key is refused: a receipt names the key that can
-// check it, and a verifier with no entry for it cannot.
-func TestTheActiveReceiptKeyMustBeInTheRingAndNotRetired(t *testing.T) {
-	message := renderOutputError(t, "hangarOutput.receipt.keyID=receipt-9")
-	if !strings.Contains(message, "receipt-9") {
-		t.Errorf("an active key id absent from the ring was accepted:\n%s", message)
-	}
-
-	message = renderOutputError(t, "hangarOutput.receipt.publicKeys[0].retired=true")
-	if !strings.Contains(message, "retired") {
-		t.Errorf("a retired key was accepted as the active one:\n%s", message)
-	}
-}
-
-// Public verification material is retained while any durable state references
-// its epoch. The chart cannot read the database, so the operator declares the
-// referenced epochs and the chart refuses to drop one.
-func TestAPublicKeyIsNotRemovedWhileAnEpochStillReferencesIt(t *testing.T) {
-	message := renderOutputError(t, "hangarOutput.receipt.referencedEpochs[0]=5")
-	if !strings.Contains(message, "5") {
-		t.Errorf("a referenced epoch with no verification key was accepted:\n%s", message)
-	}
-
-	// With the entry present it renders, and the retired key stays in the ring.
-	out := renderOutput(t,
-		"hangarOutput.receipt.referencedEpochs[0]=5",
-		"hangarOutput.receipt.publicKeys[1].id=receipt-5",
-		"hangarOutput.receipt.publicKeys[1].epoch=5",
-		"hangarOutput.receipt.publicKeys[1].retired=true",
-		"hangarOutput.receipt.publicKeys[1].key=b2xkLXB1YmxpYy1rZXk=",
-	)
-	ring := objectNamed(t, out, "ConfigMap", "-hangar-output-receipt-keys")
-	if !strings.Contains(ring.body, "receipt-5") {
-		t.Error("the retired key was dropped from the ring while its epoch is still referenced")
+// Publication receipts were removed in T3: their values are refused with a
+// message that says so, rather than ignored.
+func TestTheRemovedReceiptValuesAreRefused(t *testing.T) {
+	for _, set := range []string{
+		"hangarOutput.receipt.keyID=receipt-7",
+		"hangarOutput.receipt.privateKeySecret=op-receipt-private",
+		"hangarOutput.activation.receiptKeyLifetime=43800h",
+	} {
+		key := set[:strings.Index(set, "=")]
+		if strings.HasPrefix(key, "hangarOutput.receipt.") {
+			key = "hangarOutput.receipt"
+		}
+		message := renderOutputError(t, set)
+		if !strings.Contains(message, key+" has been removed") ||
+			!strings.Contains(message, "publication receipts were removed") {
+			t.Errorf("%s rendered, or was refused without naming the removal:\n%s", set, message)
+		}
 	}
 }
 
@@ -812,7 +824,7 @@ func TestAPublicKeyIsNotRemovedWhileAnEpochStillReferencesIt(t *testing.T) {
 // Secret serving two of them means rotating either rotates both.
 func TestTheKeyRolesAreDistinctSecrets(t *testing.T) {
 	for _, collapse := range [][]string{
-		{"hangarOutput.executionControl.keySecret=op-receipt-private"},
+		{"hangarOutput.executionControl.keySecret=op-capability-key"},
 		{"hangarOutput.materializationKeySecret=op-control-key"},
 		{"hangarOutput.capabilityKeySecret=op-output-materialize"},
 	} {
@@ -869,11 +881,6 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 		"hangarOutput.bucket=jb-output",
 		"hangarOutput.tenant=tenant-a",
 		"hangarOutput.activationEpoch=7",
-		"hangarOutput.receipt.keyID=receipt-7",
-		"hangarOutput.receipt.privateKeySecret=op-receipt-private",
-		"hangarOutput.receipt.publicKeys[0].id=receipt-7",
-		"hangarOutput.receipt.publicKeys[0].epoch=7",
-		"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 		"hangarOutput.materializationKeySecret=op-output-materialize",
 		"hangarOutput.database.existingSecret=op-activation-db",
 		"artifactDaemon.outputScratch.sizeLimit=",
@@ -1086,6 +1093,41 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The capture seal's Pod observation
+// ---------------------------------------------------------------------------
+
+// A capture seal waits for every container of the producing Pod to terminate,
+// and in-cluster the daemon learns that by listing its own node's Pods
+// (cmd/artifact-daemon/outputplane/pod_terminations.go). Without get/list on
+// Pods the list is forbidden and no capture ever seals. The grant is read-only
+// and belongs to the output facet alone: a base-only daemon seals nothing.
+func TestTheCaptureSealCanObserveItsNodesPods(t *testing.T) {
+	podVerbs := func(out string) []string {
+		var role rbacv1.ClusterRole
+		decodeNamed(t, out, "ClusterRole", objectNamed(t, out, "ClusterRole", "-"+outputDaemonComponent).name, &role)
+		var verbs []string
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.Resources, "pods") && slices.Contains(rule.APIGroups, "") {
+				verbs = append(verbs, rule.Verbs...)
+			}
+		}
+		sort.Strings(verbs)
+		return verbs
+	}
+
+	if verbs := podVerbs(renderOutput(t)); !slices.Equal(verbs, []string{"get", "list"}) {
+		t.Errorf("with the output facet the daemon's ClusterRole grants %v on pods, want "+
+			"exactly get and list: the seal lists its node's Pods and changes none", verbs)
+	}
+	if verbs := podVerbs(renderBaseControl(t)); len(verbs) != 0 {
+		t.Errorf("a base-control-only daemon is granted %v on pods; it seals no capture", verbs)
+	}
+	if verbs := podVerbs(render(t)); len(verbs) != 0 {
+		t.Errorf("the default render grants the artifact daemon %v on pods", verbs)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Both node labels
 // ---------------------------------------------------------------------------
 
@@ -1128,8 +1170,9 @@ func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
 			t.Fatalf("%s: parsing the daemon ClusterRole: %v", name, err)
 		}
 		// The artifact daemon's role: its own node's labels (get, patch), and
-		// read access to its peers' EndpointSlices. The output plane adds
-		// nothing to it.
+		// read access to its peers' EndpointSlices. The output facet adds read
+		// access to Pods (TestTheCaptureSealCanObserveItsNodesPods); nothing
+		// adds to nodes.
 		nodes := 0
 		for _, rule := range parsed.Rules {
 			if strings.Join(rule.Resources, ",") != "nodes" {
@@ -1149,17 +1192,17 @@ func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
 	}
 
 	// The output facet is what the output label attests, and a base-only daemon
-	// has none of it: no bucket, no receipt key, no publisher. It therefore
+	// has none of it: no bucket, no read-warrant key, no publisher. It therefore
 	// cannot advertise the output label however the code is written, which is a
 	// stronger statement than a render asserting the string is absent.
 	base := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
-	for _, absent := range []string{"--output-bucket", "--receipt-key-file", "--materialization-key-file"} {
+	for _, absent := range []string{"--output-bucket", "--materialization-key-file"} {
 		if strings.Contains(base.body, absent) {
 			t.Errorf("a base-control-only daemon carries %s", absent)
 		}
 	}
 	full := objectNamed(t, renderOutput(t), "DaemonSet", "-"+outputDaemonComponent)
-	for _, present := range []string{"--output-bucket", "--receipt-key-file", "--materialization-key-file"} {
+	for _, present := range []string{"--output-bucket", "--materialization-key-file"} {
 		if !strings.Contains(full.body, present) {
 			t.Errorf("the output daemon does not carry %s", present)
 		}
@@ -1695,13 +1738,11 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 // different private keys under one Secret name report one id. Base attestation
 // collects `control_key_id` into the evidence bundle and the digest, so a
 // cohort half-way through a control-key rollout attests as homogeneous on the
-// base facet's ONLY key material -- and the in-place replacement that the
-// receipt key's ring rules refuse was unguarded for the control key precisely
-// because the id could not move.
+// base facet's ONLY key material -- and an in-place key replacement was
+// unguarded for the control key precisely because the id could not move.
 //
-// `receipt.keyID` has been a value of its own since Phase 8, with the ring rule
-// that a key id is never reused for different material and rotation creates a
-// new epoch. The control key now gets the same shape.
+// The control key id is a value of its own, with the rule that a key id is
+// never reused for different material and rotation creates a new epoch.
 func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
 	daemon := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
 
@@ -1737,12 +1778,12 @@ func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
 }
 
 // An id shared across key ROLES is the same ambiguity one level up: a control
-// statement and a receipt say different things, and "which key checks this" has
-// to have one answer per id.
-func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadWarrantKeys(t *testing.T) {
+// statement and a read warrant say different things, and "which key checks
+// this" has to have one answer per id.
+func TestAKeyIdIsNotSharedBetweenTheControlAndReadWarrantKeys(t *testing.T) {
 	for _, collision := range []string{
-		"hangarOutput.executionControl.keyID=receipt-7",
-		"hangarOutput.materializationKeyID=receipt-7",
+		"hangarOutput.executionControl.keyID=output-materialize-1",
+		"hangarOutput.materializationKeyID=control-key-7",
 	} {
 		message := renderOutputError(t, collision)
 		if !strings.Contains(message, "key id") {

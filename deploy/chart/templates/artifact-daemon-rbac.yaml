@@ -30,6 +30,16 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
+  {{- if and (.Values.hangarOutput.executionControl.enabled | default false) (.Values.hangarOutput.enabled | default false) }}
+  # The output facet's capture seal waits for EVERY container of the producing
+  # Pod -- init, regular and ephemeral -- to terminate before it reads the
+  # tree, so no writer is still writing. It lists this node's own Pods
+  # (fieldSelector spec.nodeName) to see that. Read-only: a seal waits for
+  # writers to stop and never deletes or changes a Pod to get there.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

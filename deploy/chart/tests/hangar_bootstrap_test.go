@@ -37,8 +37,6 @@ var bootstrapSets = []string{
 	"hangarOutput.webEnabled=true",
 	"hangarOutput.tenant=tenant-a",
 	"hangarOutput.bucket=outputs",
-	"hangarOutput.receipt.keyID=receipt-1",
-	"hangarOutput.receipt.privateKeySecret=op-receipt-private",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
 	"hangarOutput.database.existingSecret=op-activation-db",
 	"hangarOutput.activation.target=off",
@@ -79,14 +77,12 @@ func TestTheBootstrapRendersWithEveryFeatureOff(t *testing.T) {
 		"hangarBootstrap.enabled=true",
 		"hangarOutput.activationEpoch=1",
 		"hangarOutput.executionControl.keySecret=op-control-key",
-		"hangarOutput.receipt.privateKeySecret=op-receipt-private",
-		"hangarOutput.receipt.keyID=receipt-1",
 		"hangarStorage.disk.tls.existingSecret=storage-tls",
 		"hangarStorage.disk.credentials.existingSecret=storage-credentials",
 		"artifactDaemon.hangar.keySecret=op-hangar-key",
 	)
 	inv := renderedInventory(t, out)
-	if len(inv.Entries) < 6 {
+	if len(inv.Entries) < 5 {
 		t.Errorf("the inventory has %d entries, want every named Secret", len(inv.Entries))
 	}
 }
@@ -281,22 +277,82 @@ func TestTheBootstrapRendersNoPrivateValue(t *testing.T) {
 	}
 }
 
-// The value-built rings are off in bootstrap mode, and a ring declared in
+// The value-built ring is off in bootstrap mode, and a ring declared in
 // values beside the bootstrap's is refused.
-func TestTheBootstrapOwnsTheRings(t *testing.T) {
+func TestTheBootstrapOwnsTheRing(t *testing.T) {
 	out := render(t, bootstrapSets...)
-	if strings.Contains(out, "jb-concourse-jetbridge-hangar-output-receipt-keys") {
-		t.Error("the value-built receipt key ConfigMap is rendered in bootstrap mode")
+	for _, doc := range documentsIn(t, out) {
+		if doc.kind == "ConfigMap" && strings.HasSuffix(doc.name, "-hangar-output-control-keys") {
+			t.Errorf("the value-built control key ConfigMap %s is rendered in bootstrap mode", doc.name)
+		}
 	}
 	if !strings.Contains(webDeployment(t, out), "secretName: "+ringName(t, renderedInventory(t, out))) {
 		t.Error("web does not mount the bootstrap's ring Secret")
 	}
 	msg := renderHangarError(t, append(append([]string{}, bootstrapSets...),
-		"hangarOutput.receipt.publicKeys[0].id=receipt-1",
-		"hangarOutput.receipt.publicKeys[0].epoch=1",
-		"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==")...)
-	if !strings.Contains(msg, "hangarBootstrap composes the verification rings") {
+		"hangarOutput.executionControl.publicKeys[0].epoch=1",
+		"hangarOutput.executionControl.publicKeys[0].key=cHVibGljLWtleS1ieXRlcy1wYWRkZWQtdG8tMzI=")...)
+	if !strings.Contains(msg, "hangarBootstrap composes the verification ring") {
 		t.Errorf("a values ring beside the bootstrap's rendered: %s", firstLines(msg, 3))
+	}
+}
+
+// The ring the bootstrap composes holds control-keys.json and nothing else,
+// and that is the file web's control-keys flag names under the ring's mount.
+func TestTheRingIsTheControlRingWebReads(t *testing.T) {
+	out := render(t, bootstrapSets...)
+	inv := renderedInventory(t, out)
+	store := &chartTestStore{secrets: map[string]bootstrap.Secret{}}
+	if err := bootstrap.Reconcile(context.Background(), inv, store, nil); err != nil {
+		t.Fatalf("the bootstrap refused the chart's own inventory: %v", err)
+	}
+	ring := ringName(t, inv)
+	var files []string
+	for file := range store.secrets[ring].Data {
+		files = append(files, file)
+	}
+	if strings.Join(files, ",") != "control-keys.json" {
+		t.Errorf("the ring %s holds %v, want only control-keys.json", ring, files)
+	}
+	for _, entry := range inv.Entries {
+		if entry.Kind == bootstrap.KindEd25519 && entry.Ring != bootstrap.ControlRing {
+			t.Errorf("inventory key %s joins ring %q; the control ring is the only one", entry.Name, entry.Ring)
+		}
+	}
+
+	var web appsv1.Deployment
+	decodeNamed(t, out, "Deployment", "jb-concourse-jetbridge-web", &web)
+	pod := web.Spec.Template.Spec
+	mountedAt := ""
+	for _, volume := range pod.Volumes {
+		if volume.Secret != nil && volume.Secret.SecretName == ring {
+			for _, mount := range pod.Containers[0].VolumeMounts {
+				if mount.Name == volume.Name {
+					mountedAt = mount.MountPath
+				}
+			}
+		}
+	}
+	if mountedAt == "" {
+		t.Fatalf("web does not mount the ring %s", ring)
+	}
+	want := "--kubernetes-hangar-output-control-keys=" + mountedAt + "/control-keys.json"
+	if !slices.Contains(pod.Containers[0].Args, want) && !slices.Contains(pod.Containers[0].Command, want) {
+		t.Errorf("web does not read the control ring at %s", want)
+	}
+}
+
+// Publication receipts are gone, and an earlier epoch's entry that still
+// names its receipt key is refused rather than silently ignored.
+func TestAReferencedKeysReceiptFieldIsRefused(t *testing.T) {
+	for _, field := range []string{"receiptSecret", "receiptKeyID"} {
+		msg := renderHangarError(t, append(append([]string{}, bootstrapSets...),
+			"hangarBootstrap.referencedKeys[0].epoch=1",
+			"hangarBootstrap.referencedKeys[0].controlSecret=op-control-key-e0",
+			"hangarBootstrap.referencedKeys[0]."+field+"=op-old")...)
+		if !strings.Contains(msg, "hangarBootstrap.referencedKeys[0]."+field+" has been removed") {
+			t.Errorf("a referencedKeys entry naming %s rendered or failed for another reason: %s", field, firstLines(msg, 3))
+		}
 	}
 }
 
@@ -497,10 +553,13 @@ func TestTheActivationWalkIsAPostSyncHookAfterTheDatabaseStep(t *testing.T) {
 	daemon := "jb-concourse-jetbridge-artifact-daemon"
 	args := strings.Join(walk.Spec.Template.Spec.Containers[0].Command, " ")
 	for _, want := range []string{"--mode=walk", "--target=output", "--daemonset-name=" + daemon,
-		"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--tls-server-name=", "--receipt-key-lifetime="} {
+		"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--tls-server-name="} {
 		if !strings.Contains(args, want) {
 			t.Errorf("the walk Job's command lacks %s: %s", want, args)
 		}
+	}
+	if strings.Contains(args, "--receipt-key-lifetime") {
+		t.Errorf("the walk Job passes a flag the command no longer has: %s", args)
 	}
 	if strings.Contains(args, "--facet") {
 		t.Errorf("the walk Job names a facet: %s", args)

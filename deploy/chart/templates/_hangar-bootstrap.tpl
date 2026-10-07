@@ -30,9 +30,9 @@ Secret rather than a refusal to replace the old one.
 {{- printf "%s-hangar-rings-e%d-%s" (include "concourse.fullname" .) (int .Values.hangarOutput.activationEpoch) $digest | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{/* Whether the ring exists: it needs both an active control key and an active receipt key. */}}
+{{/* Whether the ring exists: it needs an active control key. */}}
 {{- define "concourse.hangarBootstrap.ringEnabled" -}}
-{{- if and .Values.hangarBootstrap.enabled .Values.hangarOutput.executionControl.keySecret .Values.hangarOutput.receipt.privateKeySecret -}}true{{- end -}}
+{{- if and .Values.hangarBootstrap.enabled .Values.hangarOutput.executionControl.keySecret -}}true{{- end -}}
 {{- end -}}
 
 {{- define "concourse.hangarBootstrap.inventory" -}}
@@ -72,12 +72,6 @@ Secret rather than a refusal to replace the old one.
   "consumers" (list "web" "artifact-daemon")) -}}
 {{- end -}}
 
-{{- with $out.receipt.privateKeySecret -}}
-{{- $entries = append $entries (dict "name" . "kind" "ed25519" "key" "receipt.key" "ring" "receipt" "epoch" $epoch "keyID" $out.receipt.keyID
-  "purposes" (dict "receipt.key" "publication receipt signing key for this activation epoch")
-  "consumers" (list "artifact-daemon")) -}}
-{{- end -}}
-
 {{- with $out.materializationKeySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "random32" "key" "materialize.key"
   "purposes" (dict "materialize.key" "output read warrant key")
@@ -89,17 +83,14 @@ Secret rather than a refusal to replace the old one.
   "consumers" (list "web")) -}}
 
 {{- range $earlier := .Values.hangarBootstrap.referencedKeys -}}
-{{- $entries = append $entries (dict "name" $earlier.receiptSecret "kind" "ed25519" "key" "receipt.key" "ring" "receipt" "epoch" (int $earlier.epoch) "keyID" $earlier.receiptKeyID "required" true
-  "purposes" (dict "receipt.key" "an earlier activation epoch's publication receipt key, read for its public half")
-  "consumers" (list)) -}}
 {{- $entries = append $entries (dict "name" $earlier.controlSecret "kind" "ed25519" "key" "control.key" "ring" "control" "epoch" (int $earlier.epoch) "required" true
   "purposes" (dict "control.key" "an earlier activation epoch's node-control key, read for its public half")
   "consumers" (list)) -}}
 {{- end -}}
 
 {{- if include "concourse.hangarBootstrap.ringEnabled" $ -}}
-{{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.ringName" $) "kind" "ring" "activeEpoch" $epoch "activeKeyID" $out.receipt.keyID
-  "purposes" (dict "receipt-keys.json" "public publication receipt verification ring" "control-keys.json" "public node-control verification ring")
+{{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.ringName" $) "kind" "ring" "activeEpoch" $epoch
+  "purposes" (dict "control-keys.json" "public node-control verification ring")
   "consumers" (list "web")) -}}
 {{- end -}}
 

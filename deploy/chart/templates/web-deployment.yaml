@@ -214,8 +214,10 @@ spec:
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node mints control
-            # capabilities and verifies receipts; it holds NO receipt private
-            # key, no GCS credential and no role on the output bucket.
+            # capabilities and verifies node control statements; it holds no
+            # daemon private key, no GCS credential and no role on the output
+            # bucket. A capture is one database row: the daemon's word reaches
+            # web over mTLS and nothing signs it.
             - --kubernetes-hangar-output-enabled
             # The output plane is served by the artifact daemon on its one
             # port, over its one TLS configuration: the web reaches it with the
@@ -236,13 +238,12 @@ spec:
             # switch: the value was demanded and then not passed on.
             - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             {{- if .Values.hangarOutput.enabled }}
-            - --kubernetes-hangar-output-receipt-keys=/etc/concourse/hangar-output/receipt-keys/receipt-keys.json
-            - --kubernetes-hangar-output-control-keys=/etc/concourse/hangar-output/receipt-keys/control-keys.json
+            - --kubernetes-hangar-output-control-keys=/etc/concourse/hangar-output/control-keys/control-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
             # The bucket and tenant reach web so the operator STATUS surface can
             # key a cursor by the same bucket the sweep does. They are server
             # configuration and never a request field: no task, consumer, path
-            # parameter or receipt can select or broaden them.
+            # parameter or request can select or broaden them.
             - --kubernetes-hangar-output-bucket={{ .Values.hangarOutput.bucket }}
             - --kubernetes-hangar-output-tenant={{ .Values.hangarOutput.tenant }}
             {{- if .Values.hangarOutput.webEnabled }}
@@ -382,8 +383,8 @@ spec:
               mountPath: /etc/concourse/hangar-output/capability
               readOnly: true
             {{- if .Values.hangarOutput.enabled }}
-            - name: hangar-output-receipt-keys
-              mountPath: /etc/concourse/hangar-output/receipt-keys
+            - name: hangar-output-control-keys
+              mountPath: /etc/concourse/hangar-output/control-keys
               readOnly: true
             - name: hangar-output-materialize
               mountPath: /etc/concourse/hangar-output/materialize
@@ -456,7 +457,7 @@ spec:
           secret:
             secretName: {{ .Values.hangarOutput.capabilityKeySecret }}
         {{- if .Values.hangarOutput.enabled }}
-        - name: hangar-output-receipt-keys
+        - name: hangar-output-control-keys
           {{- if include "concourse.hangarBootstrap.ringEnabled" . }}
           secret:
             # The bootstrap's ring Secret: PUBLIC verification material it
@@ -468,13 +469,14 @@ spec:
             # PUBLIC verification material only. The private half is mounted in
             # the output daemon Pod and nowhere else; a public key cannot sign,
             # which is what makes this a ConfigMap rather than a Secret.
-            name: {{ include "concourse.hangarOutput.receiptKeysName" . }}
+            name: {{ include "concourse.hangarOutput.controlKeysName" . }}
           {{- end }}
         - name: hangar-output-materialize
           secret:
             # The read-warrant key. The control plane MINTS warrants, so it holds
             # this one -- and it is a different key and a different domain from
-            # the receipt key, so holding it does not let web sign a receipt.
+            # the node control key, so holding it does not let web sign a node
+            # statement.
             secretName: {{ .Values.hangarOutput.materializationKeySecret }}
         {{- end }}
         {{- end }}

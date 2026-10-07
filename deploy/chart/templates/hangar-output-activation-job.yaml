@@ -29,9 +29,9 @@ The Job mounts the database Secret and the web's CLIENT certificate for the
 artifact daemon, which serves the output plane -- client.crt, client.key and
 ca.crt projected out of the artifact daemon's TLS Secret, and never tls.key,
 the key the daemon SERVES with: an exploit of this Job would otherwise obtain
-the material to impersonate the daemon to the ATC. It mounts NO receipt
-private key either: the activation identity signs nothing, and a key in a Pod
-that cannot need it is a key an exploit of that Pod gets for free.
+the material to impersonate the daemon to the ATC. It mounts NO node private
+key either: the activation identity signs nothing, and a key in a Pod that
+cannot need it is a key an exploit of that Pod gets for free.
 */}}
 {{- /*
 The target has no default. The walk runs on every sync and drains every facet
@@ -166,7 +166,6 @@ spec:
             # The cohort is dialed by pod IP; the certificate names the
             # daemon's headless Service, so verification is against that.
             - --tls-server-name={{ include "concourse.artifactDaemonServiceName" . }}.{{ .Release.Namespace }}.svc
-            - --receipt-key-lifetime={{ .Values.hangarOutput.activation.receiptKeyLifetime }}
             {{- if .Values.hangarOutput.activation.job.finalize }}
             - --finalize
             {{- end }}

@@ -17,8 +17,8 @@
 {{- end }}
 
 
-{{- define "concourse.hangarOutput.receiptKeysName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-receipt-keys") }}
+{{- define "concourse.hangarOutput.controlKeysName" -}}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-control-keys") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.activationName" -}}
@@ -159,42 +159,36 @@
 
 {{- define "concourse.hangarOutput.validateKeys" -}}
 {{- $output := .Values.hangarOutput -}}
-{{- if not $output.receipt.keyID -}}
-{{- fail "hangarOutput.receipt.keyID is required: a receipt names the key that can check it." -}}
-{{- end -}}
-{{- if not $output.receipt.privateKeySecret -}}
-{{- fail "hangarOutput.receipt.privateKeySecret is required: the output daemon is the only process that holds the private half." -}}
-{{- end -}}
 {{- if not $output.materializationKeySecret -}}
-{{- fail "hangarOutput.materializationKeySecret is required: output read warrants use their own key and their own domain, never the receipt key." -}}
+{{- fail "hangarOutput.materializationKeySecret is required: output read warrants use their own key and their own domain, never the node control key." -}}
 {{- end -}}
 
 {{- $ids := dict -}}
-{{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "receipt.keyID" $output.receipt.keyID "materializationKeyID" $output.materializationKeyID -}}
+{{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "materializationKeyID" $output.materializationKeyID -}}
 {{- if $id -}}
 {{- if hasKey $ids $id -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and an activation epoch pins the three separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and an activation epoch pins them separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
 {{- end -}}
 {{- $_ := set $ids $id $role -}}
 {{- end -}}
 {{- end -}}
 
 {{- $secrets := dict -}}
-{{- range $role, $secret := dict "executionControl.keySecret" $output.executionControl.keySecret "capabilityKeySecret" $output.capabilityKeySecret "receipt.privateKeySecret" $output.receipt.privateKeySecret "materializationKeySecret" $output.materializationKeySecret -}}
+{{- range $role, $secret := dict "executionControl.keySecret" $output.executionControl.keySecret "capabilityKeySecret" $output.capabilityKeySecret "materializationKeySecret" $output.materializationKeySecret -}}
 {{- if $secret -}}
 {{- if hasKey $secrets $secret -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a receipt says an object exists in a bucket, a control statement says a process on a node did something, a read warrant authorizes one staged read -- and an activation epoch pins them separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a control statement says a process on a node did something, a control capability authorizes one operation, a read warrant authorizes one staged read -- and an activation epoch pins them separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
 {{- end -}}
 {{- $_ := set $secrets $secret $role -}}
 {{- end -}}
 {{- end -}}
 
 {{- if include "concourse.hangarBootstrap.ringEnabled" . -}}
-{{- /* The bootstrap composes the rings from the keys' public halves; a ring
+{{- /* The bootstrap composes the ring from the keys' public halves; a ring
        also declared in values would be a second answer to "which key checks
        this". */ -}}
-{{- if or $output.executionControl.publicKeys $output.receipt.publicKeys $output.receipt.referencedEpochs -}}
-{{- fail "hangarBootstrap composes the verification rings: leave hangarOutput.executionControl.publicKeys, hangarOutput.receipt.publicKeys and hangarOutput.receipt.referencedEpochs empty, and list earlier activation epochs in hangarBootstrap.referencedKeys" -}}
+{{- if $output.executionControl.publicKeys -}}
+{{- fail "hangarBootstrap composes the verification ring: leave hangarOutput.executionControl.publicKeys empty, and list earlier activation epochs in hangarBootstrap.referencedKeys" -}}
 {{- end -}}
 {{- if not $output.executionControl.keyID -}}
 {{- fail "hangarOutput.executionControl.keyID is required: the cohort reports it over the attestation handshake." -}}
@@ -210,40 +204,6 @@
 {{- end -}}
 {{- if not (hasKey $controlEpochs (toString $output.activationEpoch)) -}}
 {{- fail "hangarOutput.executionControl.publicKeys has no key for the active epoch; source hold recovery cannot verify node statements" -}}
-{{- end -}}
-
-{{- $active := dict -}}
-{{- $byID := dict -}}
-{{- $epochs := dict -}}
-{{- range $index, $entry := $output.receipt.publicKeys -}}
-{{- if not $entry.id -}}{{- fail (printf "hangarOutput.receipt.publicKeys[%d] has no id" $index) -}}{{- end -}}
-{{- if not $entry.key -}}{{- fail (printf "hangarOutput.receipt.publicKeys[%d] (%s) has no key" $index $entry.id) -}}{{- end -}}
-{{- if or (not (hasKey $entry "epoch")) (kindIs "string" $entry.epoch) -}}{{- fail (printf "hangarOutput.receipt.publicKeys[%d] (%s) has no integer epoch" $index $entry.id) -}}{{- end -}}
-{{- if hasKey $byID $entry.id -}}
-{{- if ne (get $byID $entry.id) $entry.key -}}
-{{- fail (printf "hangarOutput.receipt.publicKeys declares the key id %q twice with two different public keys. A receipt key is never replaced IN PLACE: rotation creates a new activation epoch with a new key id, because an old private key is retained while its epoch still has an unsettled capture, and two keys under one id makes \"which key checks this receipt\" unanswerable." $entry.id) -}}
-{{- end -}}
-{{- end -}}
-{{- $_ := set $byID $entry.id $entry.key -}}
-{{- $_ := set $epochs (toString $entry.epoch) $entry.id -}}
-{{- if eq $entry.id $output.receipt.keyID -}}
-{{- $_ := set $active "entry" $entry -}}
-{{- end -}}
-{{- end -}}
-{{- if not (hasKey $active "entry") -}}
-{{- fail (printf "hangarOutput.receipt.keyID is %q and no entry in hangarOutput.receipt.publicKeys declares it. A receipt names the key that can check it; a control plane with no entry for the active key cannot verify a single one." $output.receipt.keyID) -}}
-{{- end -}}
-{{- $entry := get $active "entry" -}}
-{{- if $entry.retired -}}
-{{- fail (printf "hangarOutput.receipt.keyID is %q and its ring entry is retired. A retired key verifies old receipts; it does not sign new ones." $output.receipt.keyID) -}}
-{{- end -}}
-{{- if ne (int $entry.epoch) (int $output.activationEpoch) -}}
-{{- fail (printf "hangarOutput.receipt.keyID %q is declared for epoch %d and hangarOutput.activationEpoch is %d. Rotation creates a NEW epoch rather than replacing a key in place, so the active key's entry names the active epoch; reusing one id across epochs is the in-place replacement the receipt-key rule forbids." $output.receipt.keyID (int $entry.epoch) (int $output.activationEpoch)) -}}
-{{- end -}}
-{{- range $referenced := $output.receipt.referencedEpochs -}}
-{{- if not (hasKey $epochs (toString $referenced)) -}}
-{{- fail (printf "hangarOutput.receipt.referencedEpochs names epoch %v and hangarOutput.receipt.publicKeys has no entry for it. Public verification material is retained while any durable state references its epoch -- a reservation, a receipt, a recovery row -- and dropping it makes those receipts unverifiable forever rather than merely unusable." $referenced) -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

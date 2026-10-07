@@ -808,7 +808,9 @@
         "leaseTerm": {},
         "leaseRenewInterval": {},
         "operationTimeout": {},
-        "receipt": {},
+        "receipt": {
+          "$ref": "#/definitions/removed"
+        },
         "materializationKeySecret": {},
         "materializationKeyID": {},
         "readControlURL": {

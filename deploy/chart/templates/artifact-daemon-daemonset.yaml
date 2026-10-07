@@ -174,8 +174,6 @@ spec:
             {{- if $output.strictInputBucket }}
             - --strict-input-bucket={{ $output.strictInputBucket }}
             {{- end }}
-            - --receipt-key-id={{ $output.receipt.keyID }}
-            - --receipt-key-file=/etc/concourse/hangar-output/receipt/receipt.key
             - --materialization-key-id={{ $output.materializationKeyID }}
             - --materialization-key-file=/etc/concourse/hangar-output/materialize/materialize.key
             {{- end }}
@@ -268,9 +266,6 @@ spec:
               mountPath: /etc/concourse/hangar-output/capability
               readOnly: true
             {{- if $capture }}
-            - name: output-receipt-key
-              mountPath: /etc/concourse/hangar-output/receipt
-              readOnly: true
             - name: output-materialize-key
               mountPath: /etc/concourse/hangar-output/materialize
               readOnly: true
@@ -337,13 +332,6 @@ spec:
           secret:
             secretName: {{ $output.capabilityKeySecret }}
         {{- if $capture }}
-        - name: output-receipt-key
-          secret:
-            # The private half of the receipt key, mounted HERE and nowhere
-            # else. Web, the controllers, the activation Jobs, the control init
-            # container, the task and the sidecar hold the public key and the
-            # key id.
-            secretName: {{ $output.receipt.privateKeySecret }}
         - name: output-materialize-key
           secret:
             secretName: {{ $output.materializationKeySecret }}

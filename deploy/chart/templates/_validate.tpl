@@ -27,8 +27,10 @@ template first, so these rules run before anything else in the chart.
   (list "hangarOutput.daemon" "the output plane is served by the artifact daemon: its scratch moved to artifactDaemon.outputScratch, its publisher identity's annotations to artifactDaemon.serviceAccount.annotations, its port and TLS are the artifact daemon's, and its control and steps directories are the artifact daemon's hostPath and its steps/. Remove the value.")
   (list "hangarOutput.readControlCA" "the daemon no longer calls the web; read leases are given back by the web. Remove the value.")
   (list "hangarOutput.readControlURL" "the daemon no longer calls the web; read leases are given back by the web. Remove the value.")
+  (list "hangarOutput.receipt" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key, ring or referenced epoch to declare. Remove the value and its Secret.")
   (list "hangarOutput.activation.job.facet" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
   (list "hangarOutput.activation.job.mode" "set hangarOutput.activation.target (off, base or output) and remove the old value.")
+  (list "hangarOutput.activation.receiptKeyLifetime" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key to age out. Remove the value.")
   (list "rbac.brineLive" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "secrets.create" "name a Secret holding session_signing_key in secrets.signingKeySecret, which every web pod mounts. Remove the value.")
@@ -47,6 +49,16 @@ template first, so these rules run before anything else in the chart.
 {{- end -}}
 {{- if $present -}}
 {{- fail (printf "%s has been removed; %s" $key (index $removed 1)) -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  Removed fields of list entries, which the table above cannot address.
+*/ -}}
+{{- range $index, $earlier := .Values.hangarBootstrap.referencedKeys -}}
+{{- range $field := list "receiptSecret" "receiptKeyID" -}}
+{{- if and (kindIs "map" $earlier) (hasKey $earlier $field) -}}
+{{- fail (printf "hangarBootstrap.referencedKeys[%d].%s has been removed; publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so an earlier epoch keeps only its controlSecret. Remove the field." $index $field) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if eq .Values.artifactDaemon.tls.source "existingSecret" -}}

@@ -254,7 +254,6 @@ func TestTheActivationWalkJobHasOneFixedName(t *testing.T) {
 	jobNameFor := func(epoch string, extra ...string) string {
 		sets := append(append([]string{}, outputSets...),
 			"hangarOutput.activationEpoch="+epoch,
-			"hangarOutput.receipt.publicKeys[0].epoch="+epoch,
 			"hangarOutput.executionControl.publicKeys[0].epoch="+epoch)
 
 		return objectNamed(t, render(t, append(sets, extra...)...), "Job", "").name

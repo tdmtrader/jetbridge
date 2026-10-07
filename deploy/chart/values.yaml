@@ -774,7 +774,7 @@ artifactDaemon:
 # -- The Hangar bootstrap: a Job at the start of every Argo sync that creates
 # the absent Secrets of the bootstrap inventory and never changes one.
 # An entry joins the inventory once its values key names a Secret (for
-# example hangarOutput.receipt.privateKeySecret), so the operator turns each
+# example hangarOutput.executionControl.keySecret), so the operator turns each
 # Secret on by naming it. Off renders nothing.
 #
 # Trusted readers (proposal amendments M-4 and M-5): the inventory's
@@ -789,9 +789,8 @@ hangarBootstrap:
     # Set web.runInputSigningKeySecret to this name once
     # hangarOutput.webEnabled is on.
     runInputSigningKey: ""
-  # -- Earlier activation epochs whose publication receipt and node-control
-  # keys the rings must keep: [{epoch, receiptSecret, receiptKeyID,
-  # controlSecret}]. The bootstrap reads them and never creates one.
+  # -- Earlier activation epochs whose node-control keys the ring must keep:
+  # [{epoch, controlSecret}]. The bootstrap reads them and never creates one.
   referencedKeys: []
   database:
     # -- Create the activation database role and its connection-string
@@ -821,8 +820,8 @@ hangarOutput:
     enabled: false
     # -- Existing Secret holding control.key: a PKCS#8 PEM Ed25519 private key
     # the node signs execution and source ledger statements with. Required.
-    # It is NOT the receipt key and NOT the read-warrant key; an activation epoch
-    # pins the three separately so rotating one does not rotate the others.
+    # It is NOT the read-warrant key and NOT the capability key; an activation
+    # epoch pins them separately so rotating one does not rotate the others.
     keySecret: ""
     # -- Key id of the control key above, and the id every node in the cohort
     # reports over the attestation handshake. Required whenever enabled.
@@ -831,7 +830,7 @@ hangarOutput:
     # NAME, so two nodes holding different private keys under one Secret name
     # reported one id and a cohort half-way through a control-key rollout
     # attested as homogeneous on the base facet's only key material. Move this
-    # value when you move the key, exactly as receipt.keyID is moved.
+    # value when you move the key.
     keyID: ""
 
     # -- Public node-control verification keys, required for output capture.
@@ -857,7 +856,7 @@ hangarOutput:
   # caller-published strict-input bucket. Required when enabled.
   bucket: ""
   # -- Authenticated deployment key prefix inside that bucket. Server
-  # configuration; no task, consumer, path parameter or receipt can select or
+  # configuration; no task, consumer, path parameter or request can select or
   # broaden it.
   prefix: ""
   # -- Authenticated deployment/tenant identity the opaque scope is derived
@@ -894,28 +893,10 @@ hangarOutput:
   # Shared by the output plane, managed-read leases and caller deadlines.
   operationTimeout: "1m"
 
-  receipt:
-    # -- Key id of the ACTIVE Ed25519 receipt signing key. A receipt names it so
-    # a verifier knows which activation-pinned public key can check it.
-    keyID: ""
-    # -- Existing Secret holding receipt.key: the PKCS#8 PEM Ed25519 PRIVATE
-    # half. It is mounted in the artifact daemon Pod and nowhere else -- not web,
-    # not the controllers, not the activation Jobs, not tasks.
-    privateKeySecret: ""
-    # -- The versioned PUBLIC verification ring the control plane holds. Each
-    # entry is {id, epoch, key (base64), retired}. Rotation ADDS an entry under
-    # a new epoch; a retired entry stays while any durable state still
-    # references its epoch.
-    publicKeys: []
-    # -- Epochs that durable state still references, declared by the operator
-    # (activation reports them). The chart refuses to render a ring that has
-    # dropped the verification key for one of them.
-    referencedEpochs: []
-
   # -- Existing Secret holding materialize.key: the exact raw 32 bytes output
   # READ WARRANTS are signed with, under the hangar-output-materialize-v1 domain.
-  # A third key: a read warrant must not be signable by anything that can mint a
-  # publication receipt, and it is never the foundation's strict-input
+  # Its own key: a read warrant must not be signable by anything that can sign
+  # a node control statement, and it is never the foundation's strict-input
   # materialization key either.
   materializationKeySecret: ""
   # -- Key id for the above.
@@ -986,10 +967,6 @@ hangarOutput:
       # BeforeHookCreation), so this only bounds how long a finished walk's
       # logs stay readable between syncs. Empty or 0 keeps it until then.
       ttlSecondsAfterFinished: 86400
-    # -- How long an attested output facet's publication receipt key is valid.
-    # Receipts outside the window are refused, and there is no rotation path
-    # yet (spark hangar_receipt_key_rotation), so the default is five years.
-    receiptKeyLifetime: 43800h
 
   networkPolicy:
     # -- Enable NetworkPolicies for the output workloads.

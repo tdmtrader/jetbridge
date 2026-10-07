@@ -1,0 +1,36 @@
+{{/*
+The control plane's public node-control verification ring.
+
+A ConfigMap and not a Secret, deliberately: everything in it is public
+verification material, and putting it in a Secret would suggest the private half
+is somewhere nearby. The private half is an operator-provided Secret mounted in
+the output daemon Pod alone.
+
+Entries are retained while any durable state references their epoch -- a source
+hold, a recovery row -- because dropping one makes those node statements
+unverifiable forever rather than merely unusable. Rotation ADDS an entry under a
+new activation epoch; it never replaces a key in place.
+*/}}
+{{- if and .Values.hangarOutput.enabled (not (include "concourse.hangarBootstrap.ringEnabled" .)) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "concourse.hangarOutput.controlKeysName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output
+data:
+  control-keys.json: |
+    {
+      "activation_epoch": {{ int .Values.hangarOutput.activationEpoch }},
+      "keys": [
+      {{- range $index, $entry := .Values.hangarOutput.executionControl.publicKeys }}
+        {{ if $index }},{{ end }}{
+          "epoch": {{ int $entry.epoch }},
+          "public_key": {{ $entry.key | quote }}
+        }
+      {{- end }}
+      ]
+    }
+{{- end }}
