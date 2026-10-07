@@ -252,40 +252,9 @@ type Config struct {
 	// runtime built before the output plane existed (Req 59).
 	OutputPlaneEnabled bool
 
-	// OutputDaemonPort is the control port of the node-local output daemon.
-	// It is a different daemon from the artifact daemon on a different port,
-	// because Req 20 forbids the two sharing a bucket and a Kubernetes service
-	// account is Pod-wide, so the isolation is a second Pod.
-	OutputDaemonPort int
-
-	// OutputOperationTimeout matches the output daemon budget; managed-read
+	// OutputOperationTimeout matches the output plane's budget; managed-read
 	// leases and their callers must cover that same operation.
 	OutputOperationTimeout time.Duration
-
-	// OutputDaemonTLSCert, OutputDaemonTLSKey and OutputDaemonTLSCACert are
-	// the OUTPUT plane's client credential and trust root, and they are not
-	// the artifact daemon's.
-	//
-	// The two daemons are separate processes under separate identities on
-	// separate buckets, and they are separate trust domains for the same
-	// reason. The output daemon's control routes refuse any operation whose
-	// request carries no verified peer certificate, and its ClientCAs pool is
-	// loaded from its own Secret, so a certificate issued by the artifact
-	// daemon's CA handshakes and is then refused by every route.
-	OutputDaemonTLSCert   string
-	OutputDaemonTLSKey    string
-	OutputDaemonTLSCACert string
-
-	// OutputDaemonTLSServerName is the DNS name the output daemon's server
-	// certificate carries, and the name the ATC verifies it against.
-	//
-	// The daemon is reached at `<node InternalIP>:<port>` and has no Service.
-	// A node IP cannot be a SAN in a certificate issued before that node
-	// existed, so verification is against a name the operator puts in the
-	// certificate and the chart hands to both halves. Empty falls back to the
-	// dial host, which for a node IP means the handshake fails -- loudly,
-	// which is the right failure for material that does not match.
-	OutputDaemonTLSServerName string
 
 	// OutputActivationEpoch is the epoch this control plane speaks for.
 	//

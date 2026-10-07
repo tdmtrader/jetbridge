@@ -5,6 +5,12 @@ metadata:
   labels:
     {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-daemon
+  {{- with .Values.artifactDaemon.serviceAccount.annotations }}
+  # The output plane's publisher identity, when the output facet is on: GCS
+  # Workload Identity is bound to this service account.
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

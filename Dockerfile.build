@@ -76,11 +76,12 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       -o /artifact-daemon \
       ./cmd/artifact-daemon
 
-# Build the three isolated output roles, activation command and disk owner.
-# Publisher, inventory and reclaimer use separate runtime identities; sharing
-# an image does not share credentials. The disk owner is deployed only for the
-# optional disk profile. Chart tests check that every rendered command ships.
-RUN for command in hangar-output-daemon hangar-output-inventory \
+# Build the inventory and reclaimer roles, activation command and disk owner.
+# The publisher role is the artifact daemon's output plane. Inventory and
+# reclaimer use separate runtime identities; sharing an image does not share
+# credentials. The disk owner is deployed only for the optional disk profile.
+# Chart tests check that every rendered command ships.
+RUN for command in hangar-output-inventory \
                    hangar-output-reclaimer hangar-store \
                    hangar-output-activate; do \
       echo "=== Building ${command} ==="; \
@@ -120,7 +121,6 @@ RUN apt-get update && \
 
 COPY --from=backend /concourse /usr/local/concourse/bin/concourse
 COPY --from=backend /artifact-daemon /usr/local/concourse/bin/artifact-daemon
-COPY --from=backend /hangar-output-daemon /usr/local/concourse/bin/hangar-output-daemon
 COPY --from=backend /hangar-output-inventory /usr/local/concourse/bin/hangar-output-inventory
 COPY --from=backend /hangar-output-reclaimer /usr/local/concourse/bin/hangar-output-reclaimer
 COPY --from=backend /hangar-store /usr/local/concourse/bin/hangar-store

@@ -55,9 +55,9 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 	if err != nil {
 		return empty, err
 	}
-	port := b.config.OutputDaemonPort
+	port := b.config.ArtifactDaemonPort
 	if port == 0 {
-		port = 7781
+		port = defaultArtifactDaemonPort
 	}
 	allowEscalation := false
 	return corev1.Container{

@@ -293,17 +293,10 @@ func NewReadWarrantVerifier(material []byte, clock Clock) (*ReadWarrantVerifier,
 	return verifier, nil
 }
 
-// Sign mints the warrant for an already-committed lease.
-//
-// The lease is the parameter rather than a pile of fields because every dated
-// and fenced value in the token must come from the committed row: a signature
-// over a caller's idea of the lease would be a signature over a lease that may
-// never have existed.
-func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestination, nonce string) (string, error) {
-	if err := lease.Validate(); err != nil {
-		return "", err
-	}
-	claims := ReadWarrantClaims{
+// WarrantClaimsFor is everything a read warrant over one committed lease binds:
+// every dated and fenced value comes from the lease row itself.
+func WarrantClaimsFor(lease ReadLease, destination ReadDestination, nonce string) ReadWarrantClaims {
+	return ReadWarrantClaims{
 		Domain:          MaterializeDomain,
 		Version:         readWarrantVersion,
 		ReadLeaseID:     lease.ReadLeaseID,
@@ -315,6 +308,19 @@ func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestinati
 		ExpiresAt:       lease.ExpiresAt,
 		Nonce:           nonce,
 	}
+}
+
+// Sign mints the warrant for an already-committed lease.
+//
+// The lease is the parameter rather than a pile of fields because every dated
+// and fenced value in the token must come from the committed row: a signature
+// over a caller's idea of the lease would be a signature over a lease that may
+// never have existed.
+func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestination, nonce string) (string, error) {
+	if err := lease.Validate(); err != nil {
+		return "", err
+	}
+	claims := WarrantClaimsFor(lease, destination, nonce)
 
 	canonical, err := CanonicalReadWarrantBytes(claims)
 	if err != nil {
@@ -342,8 +348,7 @@ func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestinati
 //
 // It answers ErrUnauthorized and nothing more specific. A verifier that said
 // which field failed would tell a caller holding a forged token exactly which
-// byte to change next; the operator's diagnosis comes from the lease-control
-// answer, which is authenticated.
+// byte to change next; the operator's diagnosis comes from the lease row.
 //
 // It is the BINDING plus the token's own window, and it is what the DAEMON
 // calls: nothing is opened under a token whose window has passed, and that
@@ -444,34 +449,4 @@ func sameRef(left, right hangar.TreeRef) bool {
 
 func constantTimeEqual(left, right string) bool {
 	return hmac.Equal([]byte(left), []byte(right))
-}
-
-// DecodeReadWarrantClaims reads a warrant's claims WITHOUT checking anything.
-//
-// It exists for exactly one caller: a verifier that needs to know which ref and
-// destination a token names before it can check the token against them. That is
-// not a weakening -- the destination in a managed read is the warrant's, never the
-// caller's (requirement 7: no API accepts a caller-chosen path), so there is no
-// second opinion to compare it with, and the MAC over the canonical form is what
-// decides. Nothing else may use it: the name says unverified, and the result is
-// data until Verify has run.
-func DecodeReadWarrantClaims(token string, claims *ReadWarrantClaims) error {
-	if claims == nil {
-		return fmt.Errorf("%w: nowhere to decode a read warrant into", ErrIncomplete)
-	}
-	if len(token) == 0 || len(token) > MaxReadWarrantBytes {
-		return fmt.Errorf("%w: the read warrant is %d bytes", ErrUnauthorized, len(token))
-	}
-	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
-	if err != nil || len(raw) <= sha256.Size {
-		return fmt.Errorf("%w: the read warrant is not a payload and a MAC", ErrUnauthorized)
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(raw[:len(raw)-sha256.Size]))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(claims); err != nil {
-		return fmt.Errorf("%w: the read warrant's claims do not decode", ErrUnauthorized)
-	}
-
-	return nil
 }

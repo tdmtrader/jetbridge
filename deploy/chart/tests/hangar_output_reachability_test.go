@@ -12,7 +12,8 @@ import (
 //
 // Every other rule in this directory reads one object. This one reads two and
 // compares them, because the defect it exists for is invisible in either alone:
-// the output DaemonSet declared a `containerPort` and no `hostPort`, which is a
+// the output daemon's DaemonSet (since folded into the artifact daemon's)
+// declared a `containerPort` and no `hostPort`, which is a
 // perfectly well-formed Pod, while the ATC dials the NODE IP -- the resolver at
 // atc/worker/jetbridge/output_control.go composes
 // `scheme://<node InternalIP>:<port>` and the capture control init dials
@@ -25,8 +26,12 @@ import (
 // chart does not render; the chart's DaemonSet is applied by no tier at all.
 //
 // The port is read out of the WEB pod's own flag rather than written here.
-// Typing 7781 into this file would pin the chart to a constant instead of to
+// Typing 7780 into this file would pin the chart to a constant instead of to
 // the thing that matters, which is that the two halves of one render agree.
+//
+// There is one node-dialed daemon: the artifact daemon serves the output plane
+// on its own port, so the output plane's reachability is the artifact daemon's
+// in every mode the plane can be in.
 
 // nodeDialedDaemons are the DaemonSets the ATC addresses by node IP, and the
 // web flag that tells it which port to use. A daemon in this list must publish
@@ -39,16 +44,16 @@ var nodeDialedDaemons = []struct {
 	{
 		component: "artifact-daemon",
 		portFlag:  "--kubernetes-artifact-daemon-port=",
+		sets:      nil,
+	},
+	{
+		component: outputDaemonComponent,
+		portFlag:  "--kubernetes-artifact-daemon-port=",
 		sets:      baseControlSets,
 	},
 	{
 		component: outputDaemonComponent,
-		portFlag:  "--kubernetes-hangar-output-daemon-port=",
-		sets:      baseControlSets,
-	},
-	{
-		component: outputDaemonComponent,
-		portFlag:  "--kubernetes-hangar-output-daemon-port=",
+		portFlag:  "--kubernetes-artifact-daemon-port=",
 		sets:      outputSets,
 	},
 }
@@ -146,25 +151,13 @@ func formatPort(port int32) string {
 // The scheme the ATC dials, and the trust it dials with
 // ---------------------------------------------------------------------------
 //
-// The output daemon's control API is HTTPS-only: its --tls-* flags render
-// unconditionally and cmd/hangar-output-daemon's buildControlTLSConfig has no
-// plaintext branch. The ATC's scheme used to be derived from
-// `artifactDaemon.tls.enabled` -- a switch belonging to a DIFFERENT daemon,
-// serving a different bucket under a different identity, and false by default
-// -- so under the chart's own documented values the ATC dialed `http://` at an
-// HTTPS listener and the base facet was unreachable a second way.
-//
-// Behind that was a trust defect with no rendered evidence at all: even with
-// that switch on, the ATC presented `client.crt`/`client.key` out of the
-// ARTIFACT daemon's Secret while the output daemon's ClientCAs pool came from
-// its own, and the control routes refuse any operation whose request carries no
-// verified peer certificate. Two independently-provisioned Secrets handshake
-// and then refuse every call.
-//
-// The shape this pins: the output plane has its own trust domain -- its own
-// client Secret, its own CA, its own server name -- and exactly one supported
-// mode, because the daemon can serve exactly one. Artifact daemon certificate
-// ownership is varied below: the output plane's trust must not move with it.
+// The output plane is served by the artifact daemon, over the artifact
+// daemon's TLS: one listener, one server certificate, one client certificate.
+// It is TLS-only -- its off-node routes refuse any operation whose request
+// carries no verified peer certificate -- so the daemon must render its three
+// TLS flags and HTTPS probes, and the web must render the artifact daemon's
+// client certificate and nothing of a second trust domain. Artifact daemon
+// certificate ownership is varied below: the output plane moves with it.
 
 var outputTLSModes = []struct {
 	name string
@@ -182,7 +175,7 @@ var outputTLSModes = []struct {
 	},
 }
 
-func TestTheSchemeTheATCDialsIsTheSchemeTheOutputDaemonServes(t *testing.T) {
+func TestTheOutputPlaneIsServedOverTheArtifactDaemonsTLS(t *testing.T) {
 	for _, mode := range outputTLSModes {
 		t.Run(mode.name, func(t *testing.T) {
 			out := render(t, mode.sets...)
@@ -190,46 +183,37 @@ func TestTheSchemeTheATCDialsIsTheSchemeTheOutputDaemonServes(t *testing.T) {
 			// The server half: the daemon is given a certificate, a key and a
 			// client CA, and both probes speak HTTPS.
 			daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
-			for _, flag := range []string{"--tls-cert=", "--tls-key=", "--tls-ca-cert="} {
+			for _, flag := range []string{"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--control-key-file="} {
 				if !strings.Contains(daemon.body, flag) {
-					t.Errorf("the output daemon renders no %s; its control API has no "+
-						"plaintext branch, so it would not start", flag)
+					t.Errorf("the artifact daemon renders no %s with the output plane on", flag)
 				}
 			}
 			if strings.Count(daemon.body, "scheme: HTTPS") != 2 {
-				t.Errorf("the output daemon's liveness and readiness probes do not both " +
+				t.Errorf("the artifact daemon's liveness and readiness probes do not both " +
 					"speak HTTPS; the kubelet would be talking plaintext to a TLS listener")
 			}
 
-			// The client half: the ATC is given the OUTPUT plane's client
-			// certificate, its CA, and the name to verify the daemon by.
+			// The client half: the ATC presents the artifact daemon's client
+			// certificate, and no second output-plane credential exists.
 			web := objectNamed(t, out, "Deployment", "-web")
 			for _, flag := range []string{
-				"--kubernetes-hangar-output-tls-cert=",
-				"--kubernetes-hangar-output-tls-key=",
-				"--kubernetes-hangar-output-tls-ca-cert=",
-				"--kubernetes-hangar-output-tls-server-name=",
+				"--kubernetes-artifact-daemon-tls-cert=",
+				"--kubernetes-artifact-daemon-tls-key=",
+				"--kubernetes-artifact-daemon-tls-ca-cert=",
 			} {
 				if !strings.Contains(web.body, flag) {
-					t.Errorf("the web pod renders no %s, so the ATC dials the output daemon "+
-						"with no client certificate of its own. The daemon's control routes "+
-						"refuse every operation whose request carries no verified peer "+
-						"certificate: the plane handshakes and then does nothing.", flag)
+					t.Errorf("the web pod renders no %s, so the ATC dials the output plane "+
+						"with no client certificate: its off-node routes refuse every "+
+						"operation whose request carries no verified peer certificate", flag)
 				}
 			}
-
-			// And the material is the output plane's own, not the artifact
-			// daemon's. Two planes that may not share a bucket or a client do
-			// not share a certificate authority either.
-			if strings.Contains(web.body, "/etc/concourse/daemon-tls/client.crt") &&
-				!strings.Contains(web.body, "--kubernetes-artifact-daemon-tls-cert=") {
-				t.Error("the web pod takes output-plane client material out of the artifact " +
-					"daemon's Secret")
-			}
-			if !strings.Contains(web.body, "op-output-daemon-client-tls") {
-				t.Error("the web pod does not mount hangarOutput.daemon.tls.clientSecret; " +
-					"its client certificate has to be issued in the output plane's own " +
-					"trust domain, because that is the CA the daemon verifies against")
+			for _, gone := range []string{
+				"--kubernetes-hangar-output-tls-", "--kubernetes-hangar-output-daemon-port",
+			} {
+				if strings.Contains(web.body, gone) {
+					t.Errorf("the web pod renders %s; the output plane has no transport of "+
+						"its own any more", gone)
+				}
 			}
 		})
 	}
@@ -237,47 +221,35 @@ func TestTheSchemeTheATCDialsIsTheSchemeTheOutputDaemonServes(t *testing.T) {
 
 // The daemon's SERVER key is private to the daemon Pod.
 //
-// The attest Job mounted `hangarOutput.daemon.tls.existingSecret` -- tls.crt,
-// tls.key AND ca.crt -- and passed them as its client certificate. The
-// template's own header called it "the daemon control API's client
-// certificate", but it is the Secret the daemon SERVES with: an exploit of the
-// activation Job obtained the material to impersonate the output daemon to the
-// ATC. The existing "private key absent from web/controllers/tasks" rule does
-// not cover tls.key.
-func TestTheOutputDaemonsServerKeyIsMountedInTheDaemonPodAndNowhereElse(t *testing.T) {
-	modes := append(append([]struct {
-		name string
-		sets []string
-	}{}, outputTLSModes...), struct {
-		name string
-		sets []string
-	}{
-		name: "the activation walk Job, which mounts a client certificate",
-		sets: append([]string{}, outputSets...),
-	})
-
-	for _, mode := range modes {
+// The activation walk Job dials the cohort with a client certificate, and the
+// web does too. Both take it out of the artifact daemon's TLS Secret, which
+// also holds tls.key -- the key the daemon SERVES with -- so each projects the
+// client material and the CA and never tls.key: whatever held it could
+// impersonate the daemon to the ATC.
+func TestTheDaemonsServerKeyIsMountedInTheDaemonPodAndNowhereElse(t *testing.T) {
+	for _, mode := range outputTLSModes {
 		t.Run(mode.name, func(t *testing.T) {
 			out := render(t, mode.sets...)
 
-			carriers := []string{}
+			carriers := 0
 			for _, subject := range documentsIn(t, out) {
-				if !strings.Contains(subject.body, "op-output-daemon-tls") {
+				if !strings.Contains(subject.body, "artifact-daemon-tls") &&
+					!strings.Contains(subject.body, "test-daemon-tls") {
 					continue
 				}
-				carriers = append(carriers, subject.kind+"/"+subject.name)
-			}
-			if len(carriers) == 0 {
-				t.Fatal("nothing references the output daemon's server TLS Secret; this " +
-					"rule would pass vacuously")
-			}
-			for _, carrier := range carriers {
-				if !strings.Contains(carrier, outputDaemonComponent) {
-					t.Errorf("%s references %q, the Secret the output daemon SERVES with. "+
-						"It holds tls.key: whatever holds it can impersonate the daemon to "+
-						"the ATC. A client needs a client certificate, which is a different "+
-						"Secret in the same trust domain.", carrier, "op-output-daemon-tls")
+				if subject.kind == "Secret" || subject.kind == "ConfigMap" ||
+					(subject.kind == "DaemonSet" && strings.HasSuffix(subject.name, "-artifact-daemon")) {
+					continue
 				}
+				carriers++
+				if strings.Contains(subject.body, "key: tls.key") {
+					t.Errorf("%s/%s mounts tls.key out of the artifact daemon's TLS Secret, "+
+						"the key the daemon SERVES with", subject.kind, subject.name)
+				}
+			}
+			if carriers == 0 {
+				t.Fatal("nothing but the daemon references its TLS Secret; the web's client " +
+					"certificate is missing and this rule would pass vacuously")
 			}
 		})
 	}

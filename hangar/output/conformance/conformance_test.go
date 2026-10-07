@@ -745,16 +745,7 @@ func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 		t.Fatalf("publishing: %v", err)
 	}
 
-	lease := output.ReadLease{
-		ProtocolVersion: output.ProtocolVersion,
-		ReadLeaseID:     "77777777-7777-4777-8777-777777777777",
-		ClaimID:         "66666666-6666-4666-8666-666666666666",
-		Ref:             object.Attributes.Ref,
-		ActivationEpoch: testEpoch,
-		LeaseFence:      1,
-		GrantedAt:       output.NewTimestamp(testsupport.FixedInstant),
-		ExpiresAt:       output.NewTimestamp(testsupport.FixedInstant.Add(20 * time.Minute)),
-	}
+	lease := testsupport.Warrant(t, object.Attributes.Ref, testEpoch)
 
 	// The control: a whole read returns the whole object.
 	body, _, err := role.OpenExactObject(ctx, object.Attributes.Ref, lease)
@@ -789,7 +780,7 @@ func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 			"not fire, so this case is asserting nothing")
 	}
 
-	// A read that a lease does not cover is refused before the store is
+	// A read that a warrant does not cover is refused before the store is
 	// reached at all.
 	otherRef := object.Attributes.Ref
 	otherRef.Generation++

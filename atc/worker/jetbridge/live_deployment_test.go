@@ -44,9 +44,8 @@ type liveDeployment struct {
 	tlsDir     string
 	resolveKey []byte
 
-	// outputDaemons is how many Hangar output daemon DaemonSets the release
-	// namespace runs, and diskStorePods how many running disk store pods.
-	outputDaemons int
+	// diskStorePods is how many running disk store pods the release
+	// namespace runs.
 	diskStorePods int
 
 	// daemonNodes is how many nodes the artifact daemon is deployed across;
@@ -182,16 +181,9 @@ func discoverDeployment(ctx context.Context, clientset kubernetes.Interface, nam
 		return nil, fmt.Errorf("resolve capability secret %s/%s has no %s", namespace, keySecret, keyName)
 	}
 
-	// The Hangar workloads other than the artifact daemon: present only once
-	// the rollout has created them, so absence is "off", not an error. The
-	// store is read through its pods, which the live tier's identity may list.
-	outputDaemons, err := clientset.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/component=hangar-output-daemon",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing Hangar output daemons in %s: %w", namespace, err)
-	}
-	d.outputDaemons = len(outputDaemons.Items)
+	// The disk store: present only once the rollout has created it, so
+	// absence is "off", not an error. It is read through its pods, which the
+	// live tier's identity may list.
 	storePods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/component=hangar-store",
 	})

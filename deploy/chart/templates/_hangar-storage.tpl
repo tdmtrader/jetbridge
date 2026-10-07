@@ -12,8 +12,18 @@
   mountPath: /etc/concourse/hangar-disk
   readOnly: true
 {{- end }}
+{{/*
+The output plane's publisher credential, in the artifact daemon Pod beside the
+strict-input one: its own volume at its own path, so the two roles' tokens are
+never one file.
+*/}}
+{{- define "concourse.hangarStorage.outputClientMount" -}}
+- name: hangar-output-disk-client
+  mountPath: /etc/concourse/hangar-output-disk
+  readOnly: true
+{{- end }}
 {{- define "concourse.hangarStorage.clientVolume" -}}
-- name: hangar-disk-client
+- name: {{ .name | default "hangar-disk-client" }}
   projected:
     sources:
       - secret:

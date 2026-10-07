@@ -828,6 +828,11 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 	}, nil
 }
 
+// Deferred: the read-lease control protocol that asked this of the web is
+// deleted: the node daemon verifies a read warrant against its own window and
+// never calls the web. The row semantics this method pins stay specified until
+// the read rows are rewritten with the capture row
+//
 // RenewReadLease extends the reader's authority while work continues. Work may
 // only begin, or continue, with enough of the lease left to finish inside it.
 //
@@ -1138,6 +1143,11 @@ func (repository *HangarOutputRepository) LoadReadLease(ctx context.Context, tx 
 	}, nil
 }
 
+// Deferred: the read-lease control protocol that asked this of the web is
+// deleted: the node daemon verifies a read warrant against its own window and
+// never calls the web. The row semantics this method pins stay specified until
+// the read rows are rewritten with the capture row
+//
 // ValidateReadLease answers the materializing daemon's independent question.
 //
 // Every field the warrant carried is compared against the committed row, and the

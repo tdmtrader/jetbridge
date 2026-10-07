@@ -596,9 +596,9 @@ var hangarGCSImporters = map[string]string{
 		"object adapter, against its own dedicated cache bucket and its own client",
 	"hangar/treestore": "TEST-ONLY: regression fixtures verify strict tree behavior against the real GCS adapter; production imports only objectstore",
 
-	"cmd/hangar-output-daemon": "the output daemon is the only process that talks to the output " +
-		"bucket, under its own service account; a Kubernetes service account is Pod-wide, so this " +
-		"is a second binary precisely so the first one's identity gains no output role",
+	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher: it " +
+		"opens the output bucket's object client through hangar/gcs, which hands back an " +
+		"interface with no delete on it",
 	"cmd/hangar-output-inventory": "the inventory controller is the list/get principal, and the " +
 		"only workload in this system whose cloud identity holds bucket-wide list",
 	"cmd/hangar-output-reclaimer": "the reclaimer constructs the exact-delete client, " +
@@ -640,7 +640,9 @@ var outputRolePackages = []string{
 // outputRoleImporters are the packages allowed to link one, with the reason.
 var outputRoleImporters = map[string]string{
 	"hangar/diskserver":           "TEST-ONLY: real TLS integration tests exercise publication through the disk adapter; production server code links no output role",
-	"cmd/hangar-output-daemon":    "the output daemon is the publisher principal",
+	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher " +
+		"principal: one node daemon, whose identity holds the publisher role beside the cache " +
+		"and strict-input ones, and never inventory or reclaim",
 	"cmd/hangar-output-inventory": "the inventory controller is the inventory principal",
 	"cmd/hangar-output-reclaimer": "the reclaimer is the reclaimer principal",
 	"hangar/output/conformance": "the shared conformance suite drives all three roles against " +
@@ -1335,7 +1337,7 @@ func assertSharedHandleHasNoDelete(t *testing.T) {
 					t.Errorf("objectstore.Client declares Delete.\n\nEvery root that takes an "+
 						"object adapter then holds the delete capability, whatever role it "+
 						"links -- which is exactly the state a live objects.delete was "+
-						"demonstrated from cmd/hangar-output-daemon in. Deletion belongs on "+
+						"demonstrated from the output daemon in. Deletion belongs on "+
 						"objectstore.DeleteClient, whose only implementation over a real cloud "+
 						"client is %s.", outputDeleteCapability)
 				}
@@ -1413,7 +1415,7 @@ func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
 	const prefix = "github.com/concourse/concourse/hangar/output/"
 
 	expected := map[string]string{
-		"./cmd/hangar-output-daemon":    prefix + "publisher",
+		"./cmd/artifact-daemon":         prefix + "publisher",
 		"./cmd/hangar-output-inventory": prefix + "inventory",
 		"./cmd/hangar-output-reclaimer": prefix + "reclaimer",
 	}
@@ -1611,7 +1613,7 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 // cloudStorageSDKs are every import path that IS a Cloud Storage SDK.
 //
 // The second entry is the reason this is a list at all. Round 3 demonstrated
-// `rawstorage "google.golang.org/api/storage/v1"` in cmd/hangar-output-daemon
+// `rawstorage "google.golang.org/api/storage/v1"` in the output daemon
 // with `svc.Objects.Delete(bucket, key).Do()` -- an arbitrary, unconditional,
 // key-only delete, with no go.mod change (google.golang.org/api is already
 // required) and with `cloud.google.com/go/storage` appearing nowhere in the
@@ -1669,7 +1671,7 @@ var cloudStorageSDKImporters = map[string]string{
 // TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK is the
 // repository-wide arm.
 //
-// It reads IMPORTS and not text: cmd/hangar-output-daemon and
+// It reads IMPORTS and not text: the output plane and
 // cmd/hangar-output-reclaimer both mention `cloud.google.com/go/storage` in a
 // comment explaining why they do not import it, and a textual rule would either
 // fail on those or be written to skip comments -- which is a parser with extra
@@ -2273,8 +2275,7 @@ func TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
 	// And the roots, so a green says it was checked at the level that decides:
 	// no output root links it, however many intermediaries it went through.
 	for _, root := range []string{
-		"./cmd/hangar-output-daemon", "./cmd/hangar-output-inventory",
-		"./cmd/hangar-output-reclaimer",
+		"./cmd/hangar-output-inventory", "./cmd/hangar-output-reclaimer",
 		"./cmd/hangar-output-activate", "./cmd/concourse",
 	} {
 		if linksPackage(t, root, modulePrefix+durableCacheTier) {

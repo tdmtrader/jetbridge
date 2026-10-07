@@ -173,8 +173,6 @@ type RunCommand struct {
 	runAdmitter                  runs.Admitter
 	runInputAuthority            *runinput.Authority
 	outputReadSigner             *output.ReadWarrantSigner
-	outputReadVerifier           *output.ReadWarrantVerifier
-	outputLeaseHandler           http.Handler
 	runCancellationSource        runs.CancellationSourcePlane
 
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
@@ -248,14 +246,9 @@ type RunCommand struct {
 		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
 		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
-		OutputDaemonPort                   int           `long:"kubernetes-hangar-output-daemon-port" default:"7781" description:"Control port of the node-local Hangar output daemon. It is a different daemon on a different port from the artifact daemon, because the two may not share a bucket and a Kubernetes service account is Pod-wide."`
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputWarrantKey                   string        `long:"kubernetes-hangar-output-warrant-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
 		OutputWarrantKeyLegacy             string        `long:"kubernetes-hangar-output-capability-key" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-output-warrant-key."`
-		OutputDaemonTLSCert                string        `long:"kubernetes-hangar-output-tls-cert"          description:"Path to the ATC's CLIENT certificate for the Hangar output daemon's control API. It is the output plane's own credential, issued in the same trust domain as the daemon's server Secret: the artifact daemon's is a different daemon, a different bucket and a different identity, and a certificate from its CA handshakes and is then refused by every control route."`
-		OutputDaemonTLSKey                 string        `long:"kubernetes-hangar-output-tls-key"           description:"Path to the private key for --kubernetes-hangar-output-tls-cert."`
-		OutputDaemonTLSCACert              string        `long:"kubernetes-hangar-output-tls-ca-cert"       description:"Path to the CA certificate the Hangar output daemon's SERVER certificate is verified against."`
-		OutputDaemonTLSServerName          string        `long:"kubernetes-hangar-output-tls-server-name"   description:"DNS name the output daemon's server certificate carries. The daemon is dialed at <node IP> and has no Service, and a node IP cannot be a SAN in a certificate issued before that node existed, so verification is against this name."`
 		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
 		OutputControlKeys                  string        `long:"kubernetes-hangar-output-control-keys" description:"Path to the epoch-pinned node CONTROL public keys used to verify source hold recovery. Retain old epochs while their handoffs remain unsettled."`
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a warrant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
@@ -1570,11 +1563,6 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 	k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 	k8sCfg.OutputOperationTimeout = cmd.Kubernetes.OutputOperationTimeout
-	k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
-	k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
-	k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
-	k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
-	k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
 	if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 		k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 			Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -2658,11 +2646,6 @@ func (cmd *RunCommand) constructHTTPHandler(
 	// particular an MCP 401 must not clear an unrelated web login's cookies.
 	routes := http.NewServeMux()
 	routes.Handle("/", auth.WebAuthHandler{Handler: webMux, Middleware: middleware})
-	// Signed node requests authenticate at the lease-control boundary. They
-	// carry no browser cookies and do not pass through browser CSRF handling.
-	if cmd.outputLeaseHandler != nil {
-		routes.Handle("/read-lease/v1/", cmd.outputLeaseHandler)
-	}
 
 	if cmd.mcpHandler != nil {
 		for _, path := range []string{"/api/v1/mcp", "/mcp/oauth/", "/.well-known/oauth-authorization-server/mcp/oauth", "/.well-known/oauth-protected-resource/api/v1/mcp"} {
@@ -3059,15 +3042,15 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 		return fmt.Errorf("--kubernetes-hangar-output-warrant-key: %w", err)
 	}
 	cmd.hangarOutputCapabilityMinter = minter
-	// The output plane's transport is TLS, and only TLS: the daemon's control
-	// API has no plaintext branch and its routes refuse an operation whose
+	// The output plane's transport is TLS, and only TLS: it is served by the
+	// artifact daemon, whose off-node output routes refuse an operation whose
 	// request carries no VERIFIED peer certificate. A partially-configured or
 	// absent client credential is therefore not a weaker deployment, it is one
 	// that fails at the first capture instead of at startup.
-	if err := jetbridge.ValidateOutputDaemonTLSFlags(
-		cmd.Kubernetes.OutputDaemonTLSCert,
-		cmd.Kubernetes.OutputDaemonTLSKey,
-		cmd.Kubernetes.OutputDaemonTLSCACert,
+	if err := jetbridge.ValidateOutputPlaneTLS(
+		cmd.Kubernetes.ArtifactDaemonTLSCert,
+		cmd.Kubernetes.ArtifactDaemonTLSKey,
+		cmd.Kubernetes.ArtifactDaemonTLSCACert,
 	); err != nil {
 		return err
 	}
@@ -3160,10 +3143,6 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 		return fmt.Errorf("read output materialization key: %w", err)
 	}
 	cmd.outputReadSigner, err = output.NewReadWarrantSigner(key)
-	if err != nil {
-		return err
-	}
-	cmd.outputReadVerifier, err = output.NewReadWarrantVerifier(key, output.ClockFunc(func() time.Time { return time.Now().UTC() }))
 	if err != nil {
 		return err
 	}

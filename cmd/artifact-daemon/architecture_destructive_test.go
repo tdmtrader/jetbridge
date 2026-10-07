@@ -18,7 +18,7 @@ import (
 // held source. They cannot prove anything about a path nobody drove, and the
 // classifier landed wired into exactly one of eleven such paths. This guard is
 // the other half: it reads the SOURCE, finds every Remove/RemoveAll/Rename in
-// cmd/artifact-daemon and cmd/hangar-output-daemon, and requires each one to be
+// cmd/artifact-daemon and its outputplane package, and requires each one to be
 // either admitted by a named guard or listed as exempt with the reason.
 //
 // It is deliberately not clever. There is no reachability analysis and no
@@ -189,15 +189,15 @@ var destructiveInventory = map[string]struct {
 	//
 	// The two entries left are record management: neither touches a source.
 
-	"hangar-output-daemon/control_store.go | controlStore.put | store.root.Rename(temp)": {1, admission{
+	"outputplane/control_store.go | controlStore.put | store.root.Rename(temp)": {1, admission{
 		why: "the ledger's own atomic record replacement. This IS the writer authority the " +
 			"artifact daemon's read-only classifier reads; it touches no source.",
 	}},
-	"hangar-output-daemon/control_store.go | controlStore.quarantineRecord | store.root.Rename(name)": {1, admission{
+	"outputplane/control_store.go | controlStore.quarantineRecord | store.root.Rename(name)": {1, admission{
 		why: "moves a torn or unsupported record aside so an operator can read it. It touches " +
 			"no source, and the daemon stays unready until it is resolved.",
 	}},
-	"hangar-output-daemon/config.go | Config.PrepareScratch | os.RemoveAll(filepath.Join())": {1, admission{
+	"outputplane/config.go | Config.PrepareScratch | os.RemoveAll(filepath.Join())": {1, admission{
 		why: "sweeps what a KILLED canonicalization left in the scratch volume, at startup, " +
 			"before the listener exists. It touches no source: the scratch directory is the " +
 			"canonicalizer's own temporary parent, it holds assembled canonical.tar copies and " +
@@ -220,7 +220,7 @@ func scanDestructiveCalls(t *testing.T, dirs ...string) (map[string]int, map[str
 	for _, dir := range dirs {
 		// The label is the package DIRECTORY's name, resolved absolutely: this
 		// test runs with "." as its own package, and a key that read "./" for
-		// one daemon and "hangar-output-daemon/" for the other would name the
+		// the daemon and "outputplane/" for its output plane would name the
 		// same kind of thing two ways.
 		absolute, err := filepath.Abs(dir)
 		if err != nil {
@@ -305,7 +305,7 @@ func exprText(expr ast.Expr) string {
 }
 
 func TestArchitecture_EveryDestructiveCallIsAdmittedByANamedGuardOrPinnedAsExempt(t *testing.T) {
-	found, bodies := scanDestructiveCalls(t, ".", filepath.Join("..", "hangar-output-daemon"))
+	found, bodies := scanDestructiveCalls(t, ".", "outputplane")
 
 	total := 0
 	for _, count := range found {

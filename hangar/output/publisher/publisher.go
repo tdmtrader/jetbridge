@@ -335,20 +335,20 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	return publisher.classify(attrs, output.ObjectMarker{Digest: ref.Digest}, sizeUnknown)
 }
 
-// Deferred: the publisher's read under a lease is the daemon end of the
-// managed read, and the managed read has no consumer yet: the lease it would
-// open under is acquired by the ATC before the Pod is built, and that
-// acquisition is the half of the managed-read box this phase did not land
-
-// OpenExactObject reads the bytes, under an active read lease.
-func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, lease output.ReadLease) (io.ReadCloser, output.PublishedObject, error) {
-	if err := lease.Validate(); err != nil {
+// OpenExactObject reads the bytes, under a verified read warrant.
+//
+// The warrant is the read's authority: it binds one lease's tree ref and window
+// and was verified by the caller (output.ReadWarrantVerifier.Verify). What is
+// checked again here is that it is a whole set of claims and that it names the
+// ref being opened, so a warrant for one object never opens another.
+func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, warrant output.ReadWarrantClaims) (io.ReadCloser, output.PublishedObject, error) {
+	if err := warrant.Validate(); err != nil {
 		return nil, output.PublishedObject{}, err
 	}
-	if lease.Ref != ref {
-		return nil, output.PublishedObject{}, fmt.Errorf("%w: the lease is for %s/%s/%d and the "+
+	if warrant.Ref != ref {
+		return nil, output.PublishedObject{}, fmt.Errorf("%w: the warrant is for %s/%s/%d and the "+
 			"read is of %s/%s/%d", output.ErrUnauthorized,
-			lease.Ref.Scope, lease.Ref.Digest, lease.Ref.Generation,
+			warrant.Ref.Scope, warrant.Ref.Digest, warrant.Ref.Generation,
 			ref.Scope, ref.Digest, ref.Generation)
 	}
 

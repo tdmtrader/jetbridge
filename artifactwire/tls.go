@@ -33,6 +33,11 @@ func (t TLS) Configured() bool {
 	return t.CertPath != "" && t.KeyPath != "" && t.CACertPath != ""
 }
 
+// ClientConfig is the tls.Config that presents the client certificate and
+// trusts the daemon CA, for a caller that dials one of the daemon's routes
+// with its own http.Client -- the output plane's control client.
+func (t TLS) ClientConfig() (*tls.Config, error) { return t.load() }
+
 // load builds the tls.Config that presents the client certificate and trusts
 // the daemon CA.
 func (t TLS) load() (*tls.Config, error) {

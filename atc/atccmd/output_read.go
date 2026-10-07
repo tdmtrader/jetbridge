@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 )
 
 // runResultScratchChild is the private directory result reads spool into,
@@ -82,10 +79,5 @@ func (cmd *RunCommand) configureOutputReads(conn db.DbConn, source *jetbridge.Ou
 		Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
 			return source.ForResultRead(ctx, epoch)
 		}}
-	control := &hangaroutput.LeaseControl{Transactor: hangarOutputTransactor{conn: conn},
-		Leases:   db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
-		Warrants: cmd.outputReadVerifier, Minter: cmd.outputReadSigner, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
-		Keys: &hangaroutput.ReadNodeKeys{Nodes: source, Membership: db.OutputNodeKeys{Conn: conn}, Ring: cmd.hangarOutputControlKeys}}
-	cmd.outputLeaseHandler = control.Handler()
 	return nil
 }

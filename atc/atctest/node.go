@@ -21,7 +21,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,9 +50,8 @@ const (
 	receiptLifetime = 24 * time.Hour
 )
 
-// node is the one output node: the real hangar-output-daemon over a GCS
-// emulator, the web node's signed read-lease endpoint it calls back, and a
-// stand-in for the node's Kubernetes half.
+// node is the one output node: the real artifact daemon, with its output plane
+// mounted, over a GCS emulator, and a stand-in for the node's Kubernetes half.
 //
 // The Kubernetes half is stood in for here, as three answers, each the
 // smallest a cluster would give for this one node. These tests are about the
@@ -80,7 +78,6 @@ type node struct {
 	dir           string
 	process       *exec.Cmd
 	emulator      *fakestorage.Server
-	leases        *httptest.Server
 	client        *jetbridge.OutputControlClient
 	http          *http.Client
 	minter        *executioncontrol.CapabilityMinter
@@ -108,14 +105,16 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 	if dir, err = filepath.EvalSymlinks(dir); err != nil {
 		return nil, err
 	}
-	n = &node{uid: executioncontrol.NodeUID(uuid.NewString()), dir: dir, steps: filepath.Join(dir, "steps"),
+	// The daemon's storage root holds its control ledger and its steps/; the
+	// scratch, TLS and result directories stay outside it.
+	n = &node{uid: executioncontrol.NodeUID(uuid.NewString()), dir: dir, steps: filepath.Join(dir, "storage", "steps"),
 		delivered: map[int][]byte{}, attempts: map[int]int{}, refused: func(int) bool { return false }}
 	defer func() {
 		if err != nil {
 			n.stop()
 		}
 	}()
-	for _, sub := range []string{"control", "steps", "scratch", "tls", "results"} {
+	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch", "tls", "results"} {
 		if err = os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return n, err
 		}
@@ -171,19 +170,6 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 		return n, err
 	}
 
-	// The web node's read-lease endpoint, which the daemon calls back over
-	// TLS before it streams any managed output.
-	verifier, err := output.NewReadWarrantVerifier(warrant, clock)
-	if err != nil {
-		return n, err
-	}
-	leases := &hangaroutput.LeaseControl{Transactor: transactor{conn}, Leases: db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
-		Warrants: verifier, Minter: n.warrants, Clock: clock,
-		Keys: &hangaroutput.ReadNodeKeys{Nodes: n, Membership: db.OutputNodeKeys{Conn: conn}, Ring: n.control}}
-	n.leases = httptest.NewUnstartedServer(leases.Handler())
-	n.leases.TLS = &tls.Config{Certificates: []tls.Certificate{pki.server}, MinVersion: tls.VersionTLS12}
-	n.leases.StartTLS()
-
 	bucket := "atctest-output"
 	n.emulator, err = fakestorage.NewServerWithOptions(fakestorage.Options{Scheme: "http", Host: "127.0.0.1"})
 	if err != nil {
@@ -198,12 +184,11 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 		"--capability-key", filepath.Join(tlsDir, "capability.key"),
 		"--materialization-key-id", materializeKey, "--materialization-key-file", filepath.Join(tlsDir, "materialize.key"),
 		"--node-uid", string(n.uid), "--activation-epoch", strconv.Itoa(Epoch),
-		"--control-dir", filepath.Join(dir, "control"), "--steps-dir", n.steps, "--scratch-dir", filepath.Join(dir, "scratch"),
+		"--storage-path", filepath.Join(dir, "storage"), "--output-scratch-dir", filepath.Join(dir, "scratch"),
 		// The daemon binds a port of its own choosing and reports it, so no
 		// other process can take it between a probe and the bind.
-		"--listen", "127.0.0.1:0",
+		"--listen-address", "127.0.0.1", "--port", "0",
 		"--tls-cert", filepath.Join(tlsDir, "server.crt"), "--tls-key", filepath.Join(tlsDir, "server.key"), "--tls-ca-cert", filepath.Join(tlsDir, "ca.crt"),
-		"--read-control-url", n.leases.URL,
 	)
 	var logs bytes.Buffer
 	logged := &lockedWriter{w: &logs}
@@ -222,7 +207,7 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 }
 
 func (n *node) awaitReady(logs *lockedWriter) error {
-	const announced = "hangar-output-daemon listening on "
+	const announced = "artifact-daemon listening on "
 	deadline := time.Now().Add(60 * time.Second)
 	probe := &http.Client{Timeout: 5 * time.Second, Transport: n.http.Transport}
 	for time.Now().Before(deadline) {
@@ -244,7 +229,7 @@ func (n *node) awaitReady(logs *lockedWriter) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return errors.New("the output daemon never became ready")
+	return errors.New("the artifact daemon's output plane never became ready")
 }
 
 // activate brings the epoch into service through the activation protocol's
@@ -313,14 +298,6 @@ func (n *node) get(ctx context.Context, path string, into any) error {
 		return fmt.Errorf("%s answered %d", path, response.StatusCode)
 	}
 	return json.NewDecoder(response.Body).Decode(into)
-}
-
-// ReadNodeName is the node resolver's answer: this node's name for its UID.
-func (n *node) ReadNodeName(_ context.Context, uid executioncontrol.NodeUID) (string, error) {
-	if uid != n.uid {
-		return "", output.ErrUnauthorized
-	}
-	return nodeName, nil
 }
 
 // ConfirmDrain stands for the producing Pod's terminated containers. The
@@ -406,9 +383,6 @@ func (n *node) stop() {
 		_ = n.process.Process.Kill()
 		_, _ = n.process.Process.Wait()
 	}
-	if n.leases != nil {
-		n.leases.Close()
-	}
 	if n.emulator != nil {
 		n.emulator.Stop()
 	}
@@ -440,7 +414,7 @@ var (
 	daemonErr    error
 )
 
-// buildDaemon builds cmd/hangar-output-daemon once per test binary.
+// buildDaemon builds cmd/artifact-daemon once per test binary.
 func buildDaemon() (string, error) {
 	daemonOnce.Do(func() {
 		root, err := repositoryRoot()
@@ -453,11 +427,11 @@ func buildDaemon() (string, error) {
 			daemonErr = err
 			return
 		}
-		daemonBinary = filepath.Join(cache, "hangar-output-daemon")
-		build := exec.Command("go", "build", "-o", daemonBinary, "./cmd/hangar-output-daemon")
+		daemonBinary = filepath.Join(cache, "artifact-daemon")
+		build := exec.Command("go", "build", "-o", daemonBinary, "./cmd/artifact-daemon")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
-			daemonErr = fmt.Errorf("building the output daemon: %w\n%s", err, out)
+			daemonErr = fmt.Errorf("building the artifact daemon: %w\n%s", err, out)
 		}
 	})
 	return daemonBinary, daemonErr
@@ -469,7 +443,7 @@ func repositoryRoot() (string, error) {
 		return "", err
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "cmd", "hangar-output-daemon")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "cmd", "artifact-daemon")); err == nil {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)

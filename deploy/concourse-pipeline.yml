@@ -688,10 +688,9 @@ jobs:
           # deploy/chart/tests/image_parity_test.go reads this file's heredoc
           # below for exactly that reason.
           #
-          # Three isolated output roles, activation command and disk owner.
-          # Separate runtime credentials enforce authority; the image is shared.
-          echo "=== Building hangar-output-daemon binary ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-daemon-linux-amd64 ./cmd/hangar-output-daemon
+          # Two isolated output roles, activation command and disk owner (the
+          # publisher is the artifact daemon's output plane). Separate runtime
+          # credentials enforce authority; the image is shared.
           echo "=== Building hangar-output-inventory binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-inventory-linux-amd64 ./cmd/hangar-output-inventory
           echo "=== Building hangar-output-reclaimer binary ==="
@@ -805,7 +804,7 @@ jobs:
           echo "=== Copying binaries to builder pod ==="
           kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
           kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
-          for command in hangar-output-daemon hangar-output-inventory \
+          for command in hangar-output-inventory \
                          hangar-output-reclaimer hangar-store \
                          hangar-output-activate; do
             kubectl cp "${command}-linux-amd64" "cicd/${BUILDER_POD}:/tmp/${command}-linux-amd64"
@@ -847,7 +846,6 @@ jobs:
           FROM ${BASE_IMAGE}
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
-          COPY hangar-output-daemon-linux-amd64 /usr/local/concourse/bin/hangar-output-daemon
           COPY hangar-output-inventory-linux-amd64 /usr/local/concourse/bin/hangar-output-inventory
           COPY hangar-output-reclaimer-linux-amd64 /usr/local/concourse/bin/hangar-output-reclaimer
           COPY hangar-store-linux-amd64 /usr/local/concourse/bin/hangar-store
@@ -961,7 +959,7 @@ jobs:
 
           # The Hangar workloads run web's image too. Each exists only once the
           # Hangar rollout has created it, so a missing one is skipped.
-          for workload in deployment/concourse-hangar-store daemonset/concourse-hangar-output-daemon \
+          for workload in deployment/concourse-hangar-store \
               deployment/concourse-hangar-output-inventory deployment/concourse-hangar-output-reclaimer; do
             if kubectl get "${workload}" -n cicd >/dev/null 2>&1; then
               kubectl set image "${workload}" '*='"${IMAGE}" -n cicd
@@ -1072,7 +1070,6 @@ jobs:
           # first, since a rolling pod still Running on the old image would
           # otherwise be sampled.
           for workload in deployment/concourse-hangar-store:hangar-store \
-              daemonset/concourse-hangar-output-daemon:hangar-output-daemon \
               deployment/concourse-hangar-output-inventory:hangar-output-inventory \
               deployment/concourse-hangar-output-reclaimer:hangar-output-reclaimer; do
             name=${workload%%:*}; component=${workload#*:}
@@ -1464,7 +1461,7 @@ jobs:
 
           # The Hangar workloads run web's image too. Each exists only once the
           # Hangar rollout has created it, so a missing one is skipped.
-          for workload in deployment/concourse-hangar-store daemonset/concourse-hangar-output-daemon \
+          for workload in deployment/concourse-hangar-store \
               deployment/concourse-hangar-output-inventory deployment/concourse-hangar-output-reclaimer; do
             if kubectl get "${workload}" -n cicd >/dev/null 2>&1; then
               kubectl set image "${workload}" '*='"${IMAGE}" -n cicd

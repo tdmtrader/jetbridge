@@ -56,8 +56,6 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":ReadWarrantClaims":               "read-warrant-claims.json",
 	outputPackageDir + ":ManagedReadRequest":              "managed-read-request.json",
 	outputPackageDir + ":ReadDestination":                 "read-warrant-claims.json",
-	outputPackageDir + ":LeaseQuestion":                   "lease-question.json",
-	outputPackageDir + ":LeaseAnswer":                     "lease-answer.json",
 	outputPackageDir + ":DeletePrecondition":              "delete-precondition.json",
 	outputPackageDir + ":InventoryCursor":                 "inventory-cursor.json",
 	outputPackageDir + ":InventoryDebt":                   "inventory-debt.json",

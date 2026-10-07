@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/concourse/concourse/artifactcap"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 
 	"code.cloudfoundry.org/lager/v3"
 	"k8s.io/client-go/kubernetes"
@@ -81,6 +83,13 @@ func main() {
 	flag.DurationVar(hangarWarrantTTL, "hangar-capability-ttl", 15*time.Minute, "Deprecated alias for --hangar-warrant-ttl")
 	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
 	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
+
+	// The output plane: exact execution control, and with --output-bucket the
+	// durable-capture extension. Mounted on this daemon's listener when
+	// --control-key-file is given; its control and steps directories are this
+	// daemon's storage root and its steps/ beneath it.
+	var planeConfig outputplane.Config
+	outputplane.BindFlags(flag.CommandLine, &planeConfig)
 
 	flag.Parse()
 
@@ -307,6 +316,35 @@ func main() {
 		closeHangar = hangarClose
 	}
 
+	var plane *outputplane.Plane
+	if planeConfig.ControlKeyFile != "" {
+		planeConfig.NodeName = *nodeName
+		planeConfig.ControlDir = *storagePath
+		planeConfig.StepsDir = filepath.Join(*storagePath, "steps")
+		if err := os.MkdirAll(planeConfig.StepsDir, 0755); err != nil {
+			logger.Error("failed-to-create-steps-path", err, lager.Data{"path": planeConfig.StepsDir})
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupCancel()
+			os.Exit(1)
+		}
+		var nodes kubernetes.Interface
+		if *nodeName != "" {
+			nodes = k8sClient
+		}
+		plane, err = outputplane.Open(context.Background(), planeConfig, nodes, tlsEnabled, os.Stdout)
+		if err != nil {
+			logger.Error("output-plane-config-invalid", err)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupCancel()
+			os.Exit(1)
+		}
+		server.SetOutputPlane(plane.Handler())
+		closeStrict := closeHangar
+		closeHangar = func() error { return errors.Join(closeStrict(), plane.Close()) }
+	}
+
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
 	sweeper.SetSourceLedger(server.SourceLedger())
@@ -430,6 +468,27 @@ func main() {
 	if readinessLabeler != nil {
 		logger.Info("hangar-node-labeled", lager.Data{"node": *nodeName, "label": HangarReadyLabel})
 	}
+	// The bound address, as a plain line: --port=0 asks the kernel for a port,
+	// and a harness that started the daemon that way learns it from here
+	// rather than from a probe that another process could answer.
+	fmt.Fprintf(os.Stdout, "artifact-daemon listening on %s\n", listener.Addr())
+	// The output plane's facet labels go on last, after the listener exists:
+	// a label advertised before the daemon can answer is a pod scheduled onto
+	// a node whose hold is refused on arrival.
+	if plane != nil {
+		advertiseCtx, advertiseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := plane.Advertise(advertiseCtx)
+		advertiseCancel()
+		if err != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cleanupErr := cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, func() error {
+				return errors.Join(plane.Withdraw(cleanupCtx), listener.Close())
+			}, closeHangar)
+			cleanupCancel()
+			logger.Error("failed-to-advertise-output-plane", errors.Join(err, cleanupErr))
+			os.Exit(1)
+		}
+	}
 
 	// One slot per server, so the one that fails second never blocks on a
 	// send nobody receives.
@@ -487,7 +546,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cleanupErr := cleanupDaemonServices(ctx, hangarLabeler, labeler, func() error {
-		err := httpServer.Shutdown(ctx)
+		// The output plane's labels come off before the listener closes: a
+		// node that still advertises a facet it has stopped serving is where
+		// the scheduler sends the next capture.
+		var err error
+		if plane != nil {
+			err = plane.Withdraw(ctx)
+		}
+		err = errors.Join(err, httpServer.Shutdown(ctx))
 		if metricsServer != nil {
 			err = errors.Join(err, metricsServer.Shutdown(ctx))
 		}

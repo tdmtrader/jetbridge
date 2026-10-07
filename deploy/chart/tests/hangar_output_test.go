@@ -33,7 +33,7 @@ import (
 // what the annotation claims, and nothing here pretends otherwise.
 
 const (
-	outputDaemonComponent    = "hangar-output-daemon"
+	outputDaemonComponent    = "artifact-daemon"
 	outputInventoryComponent = "hangar-output-inventory"
 	outputReclaimerComponent = "hangar-output-reclaimer"
 	outputAttestorComponent  = "hangar-output-policy-attestor"
@@ -47,12 +47,10 @@ var baseControlSets = []string{
 	"hangarOutput.executionControl.keySecret=op-control-key",
 	"hangarOutput.executionControl.keyID=control-key-7",
 	"hangarOutput.capabilityKeySecret=op-capability-key",
-	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
-	"hangarOutput.daemon.tls.clientSecret=op-output-daemon-client-tls",
 	"hangarOutput.activationEpoch=7",
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
-	"hangarOutput.daemon.scratch.sizeLimit=32Gi",
+	"artifactDaemon.outputScratch.sizeLimit=32Gi",
 	// Required under the BASE switch too: the activation walk Job renders with
 	// execution control, and it runs as the activation database role.
 	"hangarOutput.database.existingSecret=op-activation-db",
@@ -80,7 +78,7 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	// the policy attestor compares the bucket's IAM policy against these four
 	// members, so a plane that does not declare them can attest nothing. See
 	// hangar_output_principals_test.go.
-	`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
+	`artifactDaemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
 	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com`,
 	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com`,
 )
@@ -183,9 +181,10 @@ func hasObject(t *testing.T, out, kind, suffix string) bool {
 func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
 	out := render(t)
 
+	// The artifact daemon always renders; it is the output plane's flags and
+	// the controllers that are opt-in.
 	for _, component := range []string{
-		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent,
+		outputInventoryComponent, outputReclaimerComponent,
 	} {
 		if strings.Contains(out, component) {
 			t.Errorf("the default render mentions %q; the output plane is opt-in", component)
@@ -427,7 +426,7 @@ func TestTheOutputEndpointReachesOnlyItsOwnFlag(t *testing.T) {
 
 func TestTheOutputPrincipalsHaveDistinctServiceAccounts(t *testing.T) {
 	out := renderOutput(t,
-		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
+		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
 		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
 	)
@@ -484,7 +483,7 @@ func TestTheOutputPrincipalsHaveDistinctServiceAccounts(t *testing.T) {
 // operator would try to express one.
 func TestASharedCloudPrincipalIsRefused(t *testing.T) {
 	message := renderOutputError(t,
-		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
+		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
 	)
 	if !strings.Contains(message, "principal") {
@@ -598,7 +597,7 @@ func TestTheWebIdentityMayNotBeNamedAfterAnOutputRole(t *testing.T) {
 func TestAPreProvisionedWebAccountNamedAfterAnOutputRoleIsAlsoRefused(t *testing.T) {
 	message := renderOutputError(t,
 		"serviceAccount.create=false",
-		"serviceAccount.name=jb-concourse-jetbridge-hangar-output-daemon",
+		"serviceAccount.name=jb-concourse-jetbridge-artifact-daemon",
 	)
 	if !strings.Contains(message, "service account") {
 		t.Errorf("serviceAccount.create=false let the web pod run as the publisher's identity:\n%s",
@@ -648,9 +647,10 @@ func TestEveryOutputNetworkPolicyNamesItsOwnComponent(t *testing.T) {
 	}
 }
 
-// The existing identities gain nothing. This is the whole reason there is a
-// second daemon binary at all.
-func TestNoExistingIdentityGainsAnOutputRole(t *testing.T) {
+// Only the output principals gain an output role. The artifact daemon serves
+// the output plane, so it is the publisher; web, task and the controllers'
+// other identities gain nothing.
+func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 	out := renderOutput(t)
 
 	// The read-warrant key legitimately reaches the control plane -- web MINTS
@@ -686,19 +686,13 @@ func TestNoExistingIdentityGainsAnOutputRole(t *testing.T) {
 	}
 
 	for _, subject := range documentsIn(t, out) {
-		if strings.Contains(subject.name, "hangar-output") {
+		if strings.Contains(subject.name, "hangar-output") ||
+			strings.HasSuffix(subject.name, "-"+outputDaemonComponent) {
 			continue
 		}
 		if strings.Contains(subject.body, "--output-bucket") {
 			t.Errorf("%s %s is configured with the output bucket", subject.kind, subject.name)
 		}
-	}
-
-	// And the artifact daemon's own KSA is untouched: it still exists, and it
-	// is not one of the four.
-	daemonAccount := objectNamed(t, out, "ServiceAccount", "-artifact-daemon")
-	if strings.Contains(daemonAccount.name, "hangar-output") {
-		t.Errorf("the artifact daemon's service account is an output one: %s", daemonAccount.name)
 	}
 }
 
@@ -706,7 +700,8 @@ func TestNoExistingIdentityGainsAnOutputRole(t *testing.T) {
 // Key material
 // ---------------------------------------------------------------------------
 
-// Req 24. The receipt private key is mounted in exactly one Pod.
+// Req 24. The receipt private key is mounted in exactly one Pod: the artifact
+// daemon's, which serves the output plane.
 func TestTheReceiptPrivateKeyIsMountedOnlyInTheOutputDaemon(t *testing.T) {
 	out := renderOutput(t)
 
@@ -722,10 +717,10 @@ func TestTheReceiptPrivateKeyIsMountedOnlyInTheOutputDaemon(t *testing.T) {
 			"vacuously")
 	}
 	for _, carrier := range carriers {
-		if !strings.Contains(carrier, outputDaemonComponent) {
+		if !strings.HasSuffix(carrier, "-"+outputDaemonComponent) {
 			t.Errorf("%s references the receipt private key. The control plane, the web node, "+
-				"the existing artifact daemon, the controllers, the control init container, "+
-				"the task and the sidecar hold the public key and the key id only.", carrier)
+				"the controllers, the control init container, the task and the sidecar hold "+
+				"the public key and the key id only.", carrier)
 		}
 	}
 }
@@ -881,7 +876,7 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 		"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 		"hangarOutput.materializationKeySecret=op-output-materialize",
 		"hangarOutput.database.existingSecret=op-activation-db",
-		"hangarOutput.daemon.scratch.sizeLimit=",
+		"artifactDaemon.outputScratch.sizeLimit=",
 	)...)
 	if !strings.Contains(message, "sizeLimit") {
 		t.Errorf("an unbounded output scratch emptyDir was accepted:\n%s", message)
@@ -896,9 +891,9 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 	// The bound only holds if concurrency times the content limit stays under
 	// it. Two concurrent 10 GiB trees do not fit in 16 GiB.
 	message = renderOutputError(t,
-		"hangarOutput.daemon.scratch.sizeLimit=16Gi",
-		"hangarOutput.daemon.scratch.concurrency=2",
-		"hangarOutput.daemon.scratch.maxContentBytes=10737418240",
+		"artifactDaemon.outputScratch.sizeLimit=16Gi",
+		"artifactDaemon.outputScratch.concurrency=2",
+		"artifactDaemon.outputScratch.maxContentBytes=10737418240",
 	)
 	if !strings.Contains(message, "concurrency") {
 		t.Errorf("a concurrency whose product exceeds the sizeLimit was accepted:\n%s", message)
@@ -929,7 +924,7 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 // thing an operator reads once.
 func TestTheOutputScratchVolumeIsBoundedInBaseControlOnlyModeToo(t *testing.T) {
 	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
-		"hangarOutput.daemon.scratch.sizeLimit=",
+		"artifactDaemon.outputScratch.sizeLimit=",
 	)...)
 	if !strings.Contains(message, "sizeLimit") {
 		t.Errorf("an unbounded scratch emptyDir was accepted in base-control-only mode:\n%s",
@@ -1102,8 +1097,8 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 // here would be a second spelling of a value the daemon already holds. What it
 // decides is whether the daemon can advertise at all, and which facets it has
 // to advertise. So that is what this asserts, and
-// cmd/hangar-output-daemon/labels_test.go owns the order the two go on and come
-// off in.
+// cmd/artifact-daemon/outputplane/labels_test.go owns the order the two go on
+// and come off in.
 func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
 	for name, out := range map[string]string{
 		"base control only": renderBaseControl(t),
@@ -1132,26 +1127,25 @@ func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(role.body), &parsed); err != nil {
 			t.Fatalf("%s: parsing the daemon ClusterRole: %v", name, err)
 		}
-		if len(parsed.Rules) != 1 {
-			t.Errorf("%s: the daemon's ClusterRole has %d rules; its only API business is its "+
-				"own node's labels", name, len(parsed.Rules))
+		// The artifact daemon's role: its own node's labels (get, patch), and
+		// read access to its peers' EndpointSlices. The output plane adds
+		// nothing to it.
+		nodes := 0
+		for _, rule := range parsed.Rules {
+			if strings.Join(rule.Resources, ",") != "nodes" {
+				continue
+			}
+			nodes++
+			if verbs := strings.Join(rule.Verbs, ","); verbs != "get,patch" {
+				t.Errorf("%s: the daemon's ClusterRole grants %q on nodes; get and patch are "+
+					"what a label needs, and a node-local daemon with list or watch over every "+
+					"node is a cluster-wide reach it has no use for", name, verbs)
+			}
+		}
+		if nodes != 1 {
+			t.Errorf("%s: the daemon's ClusterRole has %d rules over nodes, want one", name, nodes)
+		}
 
-			continue
-		}
-		if got := strings.Join(parsed.Rules[0].Resources, ","); got != "nodes" {
-			t.Errorf("%s: the daemon's ClusterRole covers %q and not just nodes", name, got)
-		}
-		verbs := strings.Join(parsed.Rules[0].Verbs, ",")
-		if verbs != "get,patch" {
-			t.Errorf("%s: the daemon's ClusterRole grants %q; get and patch are what a label "+
-				"needs, and a node-local daemon with list or watch over every node is a "+
-				"cluster-wide reach it has no use for", name, verbs)
-		}
-
-		if strings.Contains(daemon.body, "concourse.dev/hangar-v1") {
-			t.Errorf("%s: the output daemon claims the strict-input capability, which attests "+
-				"inputs and belongs to the existing artifact daemon", name)
-		}
 	}
 
 	// The output facet is what the output label attests, and a base-only daemon
@@ -1599,7 +1593,7 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	// it is the fifth identity in this namespace and the easiest one to point
 	// at the wrong account by copy-paste.
 	out := renderOutput(t,
-		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
+		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
 		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
 	)
@@ -1676,7 +1670,7 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 			runAs = append(runAs, document.source)
 		}
 	}
-	if templates < 7 {
+	if templates < 6 {
 		t.Fatalf("only %d Pod templates were decoded out of the render; the walk failed and "+
 			"this rule would pass vacuously", templates)
 	}

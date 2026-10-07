@@ -6,8 +6,9 @@ package jetbridge
 // RIGHT: half of what these operations do is a durable record on a node's
 // filesystem that no response shows, and the ordering this phase is about --
 // gate before record, start before child, outcome before result -- is exactly
-// the half a double would invent. So these specs run `cmd/hangar-output-daemon`
-// itself, one process per spec with its own control directory on a free port.
+// the half a double would invent. So these specs run `cmd/artifact-daemon`,
+// its output plane mounted, one process per spec with its own storage root on a
+// free port.
 //
 // No bucket is involved. The control API touches none: it admits executions,
 // records starts and outcomes, holds sources and issues writer tickets, and
@@ -66,8 +67,8 @@ var (
 // and instant warm, which is why it is not per spec.
 func buildOutputDaemon() (string, error) {
 	outputDaemonBuild.Do(func() {
-		binary := filepath.Join(tempRoot, "hangar-output-daemon")
-		build := exec.Command("go", "build", "-o", binary, "./cmd/hangar-output-daemon")
+		binary := filepath.Join(tempRoot, "artifact-daemon")
+		build := exec.Command("go", "build", "-o", binary, "./cmd/artifact-daemon")
 		build.Dir = repositoryRoot()
 		// The go tool's own work directory goes inside this package's root, so
 		// that a build killed by a signal leaves its `go-build*` where this
@@ -75,7 +76,7 @@ func buildOutputDaemon() (string, error) {
 		// directory forever.
 		build.Env = append(os.Environ(), "TMPDIR="+tempRoot)
 		if out, err := build.CombinedOutput(); err != nil {
-			outputDaemonBuildErr = fmt.Errorf("building the output daemon: %w\n%s", err, out)
+			outputDaemonBuildErr = fmt.Errorf("building the artifact daemon: %w\n%s", err, out)
 
 			return
 		}
@@ -91,7 +92,7 @@ func repositoryRoot() string {
 		return "."
 	}
 	for i := 0; i < 8; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "cmd", "hangar-output-daemon")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "cmd", "artifact-daemon")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -108,7 +109,7 @@ func repositoryRoot() string {
 // client already bound to it.
 func startOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemonWith(false) }
 
-// startTLSOutputDaemon is the same daemon with J6's three control-TLS flags set.
+// startTLSOutputDaemon is the same daemon with its three TLS flags set.
 //
 // It exists because the node-local capture-hold exemption is a CLIENT
 // CERTIFICATE exemption and not a plaintext port: the one listener is wrapped
@@ -130,7 +131,7 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, sub := range []string{"control", "steps", "scratch"} {
+	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			return nil, err
 		}
@@ -191,10 +192,10 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--materialization-key-file", materializeKey,
 		"--node-uid", harnessNodeUID,
 		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
-		"--control-dir", filepath.Join(dir, "control"),
-		"--steps-dir", filepath.Join(dir, "steps"),
-		"--scratch-dir", filepath.Join(dir, "scratch"),
-		"--listen", fmt.Sprintf("127.0.0.1:%d", port),
+		"--storage-path", filepath.Join(dir, "storage"),
+		"--output-scratch-dir", filepath.Join(dir, "scratch"),
+		"--listen-address", "127.0.0.1",
+		"--port", fmt.Sprint(port),
 	)
 	transport := &http.Client{Timeout: 10 * time.Second}
 	var pki *harnessControlPKI
@@ -227,7 +228,7 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 
 	return &outputDaemonHarness{
 		Endpoint: endpoint,
-		StepsDir: filepath.Join(dir, "steps"),
+		StepsDir: filepath.Join(dir, "storage", "steps"),
 		Minter:   minter,
 		PKI:      pki,
 		Client:   NewOutputControlClient(endpoint, transport, minter, harnessEpoch),

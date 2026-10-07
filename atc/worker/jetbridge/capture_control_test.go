@@ -36,7 +36,6 @@ func capturePodConfig(outputPlane bool) Config {
 		ArtifactHelperImage:    "busybox:latest",
 		ArtifactDaemonPort:     7780,
 		OutputPlaneEnabled:     outputPlane,
-		OutputDaemonPort:       7781,
 	}
 }
 
@@ -281,17 +280,17 @@ func TestTheGeneratedCaptureScriptsAreSyntacticallyPOSIX(t *testing.T) {
 
 // The header the control init presents is the header the daemon reads.
 //
-// cmd/hangar-output-daemon is package main, so the constant cannot be
-// imported. Reading its source is the honest alternative to writing the string
+// The daemon's output plane lives under cmd/artifact-daemon, which the ATC
+// does not import. Reading its source is the honest alternative to writing the string
 // twice and hoping: a rename on either side fails here.
 func TestTheControlInitPresentsTheHeaderTheOutputDaemonReads(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "..", "cmd", "hangar-output-daemon", "routes.go"))
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "cmd", "artifact-daemon", "outputplane", "routes.go"))
 	if err != nil {
 		t.Fatalf("reading the daemon's route table: %v", err)
 	}
 	want := `const CapabilityHeader = "` + CapabilityHeaderName + `"`
 	if !strings.Contains(string(source), want) {
-		t.Errorf("cmd/hangar-output-daemon/routes.go does not declare %s; the control init "+
+		t.Errorf("cmd/artifact-daemon/outputplane/routes.go does not declare %s; the control init "+
 			"presents a header the daemon does not read", want)
 	}
 
@@ -745,7 +744,7 @@ func TestTheControlInitDialsHTTPSWhateverTheArtifactDaemonsTLSSwitchSays(t *test
 		}
 	}
 
-	if got := outputDaemonURLScheme(); got != "https" {
-		t.Errorf("outputDaemonURLScheme is %q", got)
+	if got := outputPlaneURLScheme(); got != "https" {
+		t.Errorf("outputPlaneURLScheme is %q", got)
 	}
 }

@@ -18,7 +18,7 @@ var diskSets = []string{
 	"artifactDaemon.hangar.enabled=true",
 	"artifactDaemon.hangar.store=disk",
 	"artifactDaemon.hangar.bucket=inputs",
-	`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
+	`artifactDaemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
 	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
 	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
 }
@@ -28,7 +28,13 @@ func TestDiskStorageRendersWithoutGCSAndProjectsOnlyEachRolesCredential(t *testi
 	if strings.Contains(out, "policy-attestor") || strings.Contains(out, "--output-store=gcs") {
 		t.Fatal("disk render requires GCS or retired attestation")
 	}
-	roles := map[string]string{"artifact-daemon": "input", outputDaemonComponent: "publisher", outputInventoryComponent: "inventory", outputReclaimerComponent: "reclaimer"}
+	// The artifact daemon holds two roles' credentials, each in its own
+	// volume: the strict-input one and, for its output plane, the publisher.
+	roles := map[string]map[string]string{
+		"artifact-daemon":        {"hangar-disk-client": "input", "hangar-output-disk-client": "publisher"},
+		outputInventoryComponent: {"hangar-disk-client": "inventory"},
+		outputReclaimerComponent: {"hangar-disk-client": "reclaimer"},
+	}
 	found := 0
 	for _, doc := range documentsIn(t, out) {
 		var pod corev1.PodSpec
@@ -48,10 +54,10 @@ func TestDiskStorageRendersWithoutGCSAndProjectsOnlyEachRolesCredential(t *testi
 		default:
 			continue
 		}
-		role := ""
+		var volumes map[string]string
 		for component, r := range roles {
 			if strings.HasSuffix(doc.name, "-"+component) {
-				role = r
+				volumes = r
 			}
 		}
 		for _, c := range pod.Containers {
@@ -67,30 +73,32 @@ func TestDiskStorageRendersWithoutGCSAndProjectsOnlyEachRolesCredential(t *testi
 				}
 			}
 		}
-		if role == "" {
+		if volumes == nil {
 			continue
 		}
 		found++
-		hasCredential := false
-		for _, v := range pod.Volumes {
-			if v.Name != "hangar-disk-client" {
-				continue
-			}
-			if v.Projected == nil {
-				t.Fatalf("%s credential volume is not projected", doc.name)
-			}
-			for _, source := range v.Projected.Sources {
-				if source.Secret == nil || source.Secret.Name != "storage-credentials" {
+		for volume, role := range volumes {
+			hasCredential := false
+			for _, v := range pod.Volumes {
+				if v.Name != volume {
 					continue
 				}
-				hasCredential = true
-				if len(source.Secret.Items) != 1 || source.Secret.Items[0].Key != role {
-					t.Errorf("%s can access other roles: %+v", doc.name, source.Secret.Items)
+				if v.Projected == nil {
+					t.Fatalf("%s credential volume %s is not projected", doc.name, volume)
+				}
+				for _, source := range v.Projected.Sources {
+					if source.Secret == nil || source.Secret.Name != "storage-credentials" {
+						continue
+					}
+					hasCredential = true
+					if len(source.Secret.Items) != 1 || source.Secret.Items[0].Key != role {
+						t.Errorf("%s's %s can access other roles: %+v", doc.name, volume, source.Secret.Items)
+					}
 				}
 			}
-		}
-		if !hasCredential {
-			t.Errorf("%s missing %s credential", doc.name, role)
+			if !hasCredential {
+				t.Errorf("%s missing %s credential", doc.name, role)
+			}
 		}
 	}
 	if found != len(roles) {

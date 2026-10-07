@@ -31,10 +31,8 @@ var bootstrapSets = []string{
 	"hangarOutput.executionControl.keySecret=op-control-key",
 	"hangarOutput.executionControl.keyID=control-key-1",
 	"hangarOutput.capabilityKeySecret=op-capability-key",
-	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
-	"hangarOutput.daemon.tls.clientSecret=op-output-daemon-client-tls",
 	"hangarOutput.activationEpoch=1",
-	"hangarOutput.daemon.scratch.sizeLimit=32Gi",
+	"artifactDaemon.outputScratch.sizeLimit=32Gi",
 	"hangarOutput.enabled=true",
 	"hangarOutput.webEnabled=true",
 	"hangarOutput.tenant=tenant-a",
@@ -494,7 +492,9 @@ func TestTheActivationWalkIsAPostSyncHookAfterTheDatabaseStep(t *testing.T) {
 			"the role the database step creates, so it needs a later wave", wave(walk), wave(database))
 	}
 
-	daemon := "jb-concourse-jetbridge-hangar-output-daemon"
+	// The artifact daemon serves the output plane, so the walk attests its
+	// cohort and waits on its DaemonSet.
+	daemon := "jb-concourse-jetbridge-artifact-daemon"
 	args := strings.Join(walk.Spec.Template.Spec.Containers[0].Command, " ")
 	for _, want := range []string{"--mode=walk", "--target=output", "--daemonset-name=" + daemon,
 		"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--tls-server-name=", "--receipt-key-lifetime="} {

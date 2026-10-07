@@ -25,6 +25,7 @@ import (
 	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
@@ -42,13 +43,19 @@ type Server struct {
 	durable       *DurableTier
 	hangar        *HangarService
 
-	// sourceLedger is the READ-ONLY view of the output daemon's source ledger.
+	// outputPlane serves the output plane's routes (outputplane.Patterns) on
+	// this daemon's listener. nil keeps them absent.
+	outputPlane http.Handler
+
+	// sourceLedger is the READ-ONLY view of the output plane's source ledger.
 	//
-	// The two daemons are two authorities over one node's disk: that one owns
-	// which sources a capture holds, and this one owns everything else. This
-	// field is how the second respects the first without being able to change
-	// it -- the package it comes from has no mutator at all, and its own guard
-	// keeps that true.
+	// The output plane is mounted in this same process (outputPlane below),
+	// and its source ledger writes its durable records -- fsync and rename --
+	// under this daemon's storage root. Every destructive path here reads
+	// those same records directly, in process, before it destroys anything:
+	// there is no call to make, over HTTP or otherwise. The package it comes
+	// from has no mutator at all, and its own guard keeps that true, so the
+	// paths that destroy cannot also change what the ledger says.
 	//
 	// It fails CLOSED. A ledger this daemon cannot read is not a ledger that
 	// says nothing is held; it is a daemon that does not know, and destroying
@@ -259,6 +266,13 @@ func (s *Server) SetDurableTier(tier *DurableTier) {
 	s.durable = tier
 }
 
+// SetOutputPlane mounts the output plane's routes on this daemon's handler.
+// The plane does its own per-route client-certificate check, because some of
+// its routes are node-local and others are not.
+func (s *Server) SetOutputPlane(plane http.Handler) {
+	s.outputPlane = plane
+}
+
 // SetHangarService enables strict immutable-tree routes. A nil service keeps
 // the routes absent, so disabled daemons retain their pre-Hangar 404 surface.
 func (s *Server) SetHangarService(service *HangarService) {
@@ -423,6 +437,15 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	handle(artifactwire.DurableRestore, s.handleDurableRestore)
 	handle(artifactwire.HeadResourceCache, s.handleHeadResourceCache)
 	handle(artifactwire.GetResourceCache, s.handleGetResourceCache)
+	if s.outputPlane != nil {
+		for _, pattern := range outputplane.Patterns {
+			mux.Handle(pattern, s.outputPlane)
+		}
+	} else {
+		// A daemon without the output plane is ready when it serves; the
+		// plane's own /readyz is what reports a quarantined ledger.
+		mux.HandleFunc("GET /readyz", s.handleHealthz)
+	}
 	if s.hangar != nil {
 		handle(artifactwire.HangarPublish, s.handleHangarPublish)
 		// Exempt: each item carries its own signed grant.

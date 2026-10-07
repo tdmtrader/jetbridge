@@ -330,8 +330,8 @@ var (
 
 func buildDaemon() (string, error) {
 	daemonBuild.Do(func() {
-		binary := filepath.Join(tempRoot, "hangar-output-daemon")
-		build := exec.Command("go", "build", "-o", binary, "./cmd/hangar-output-daemon")
+		binary := filepath.Join(tempRoot, "artifact-daemon")
+		build := exec.Command("go", "build", "-o", binary, "./cmd/artifact-daemon")
 		build.Dir = repositoryRoot()
 		// The go tool's own work directory goes inside this package's root, so
 		// that a build killed by a signal leaves its `go-build*` where this
@@ -339,7 +339,7 @@ func buildDaemon() (string, error) {
 		// directory forever.
 		build.Env = append(os.Environ(), "TMPDIR="+tempRoot)
 		if out, err := build.CombinedOutput(); err != nil {
-			daemonBuildErr = fmt.Errorf("building the output daemon: %w\n%s", err, out)
+			daemonBuildErr = fmt.Errorf("building the artifact daemon: %w\n%s", err, out)
 
 			return
 		}
@@ -355,7 +355,7 @@ func repositoryRoot() string {
 		return "."
 	}
 	for i := 0; i < 8; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "cmd", "hangar-output-daemon")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "cmd", "artifact-daemon")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -391,7 +391,7 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 	// t.TempDir, so the spec's own directory goes when the spec goes and a
 	// failing run leaves nothing to sweep up by hand.
 	dir := t.TempDir()
-	for _, sub := range []string{"control", "steps", "scratch"} {
+	for _, sub := range []string{"storage", filepath.Join("storage", "steps"), "scratch"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
@@ -436,10 +436,10 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--materialization-key-file", materializeKey,
 		"--node-uid", harnessNode,
 		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
-		"--control-dir", filepath.Join(dir, "control"),
-		"--steps-dir", filepath.Join(dir, "steps"),
-		"--scratch-dir", filepath.Join(dir, "scratch"),
-		"--listen", fmt.Sprintf("127.0.0.1:%d", port),
+		"--storage-path", filepath.Join(dir, "storage"),
+		"--output-scratch-dir", filepath.Join(dir, "scratch"),
+		"--listen-address", "127.0.0.1",
+		"--port", fmt.Sprint(port),
 	}
 
 	minter, err := executioncontrol.NewCapabilityMinter(secret, time.Minute, time.Now)
@@ -460,7 +460,7 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 
 	process := &daemonProcess{
 		Endpoint:      base,
-		StepsDir:      filepath.Join(dir, "steps"),
+		StepsDir:      filepath.Join(dir, "storage", "steps"),
 		Dir:           dir,
 		ReceiptPublic: receiptPublic,
 		KeyRing:       ring,

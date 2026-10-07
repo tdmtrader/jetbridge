@@ -13,7 +13,7 @@ package jetbridge
 //
 // So the script is RUN here. `sh` executes the generated text with the
 // environment the init container is given, and the daemon on the other end is
-// `cmd/hangar-output-daemon` itself. The only thing the test supplies is a
+// `cmd/artifact-daemon` itself. The only thing the test supplies is a
 // `wget` -- BusyBox has one and macOS does not -- and the shim is transport
 // only: it re-spells the flags for curl and passes the body through byte for
 // byte from a file it never parses.

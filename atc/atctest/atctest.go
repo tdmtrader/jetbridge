@@ -4,8 +4,8 @@
 //
 // The web node is the production API handler, wrapper chain, Run admission
 // port, result reader and Dex issuer over a migrated PostgreSQL. The output
-// node is the real hangar-output-daemon binary over a GCS emulator, brought
-// into service through the real activation protocol. What a runtime does to a
+// node is the real artifact-daemon binary, its output plane mounted, over a GCS
+// emulator, brought into service through the real activation protocol. What a runtime does to a
 // Run -- start a result producer, publish what it wrote, finish its builds --
 // is driven through the database, daemon and coordinator calls the runtime
 // makes (see Producer).

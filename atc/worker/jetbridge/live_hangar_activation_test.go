@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -266,16 +267,24 @@ func (cluster *liveCluster) assertWalkVerifiesTheDaemonCertificate(sets []string
 	t := cluster.t
 	t.Helper()
 	names := cluster.names
-	block, _ := pem.Decode(cluster.secret(names.outputTLS).Data["tls.crt"])
+	// The artifact daemon serves the output plane. Its certificate names its
+	// headless Service and the node IP; the walk dials pod IPs, which it
+	// names nowhere.
+	block, _ := pem.Decode(cluster.secret(names.daemonTLS).Data["tls.crt"])
 	if block == nil {
-		t.Fatalf("Secret %s holds no certificate", names.outputTLS)
+		t.Fatalf("Secret %s holds no certificate", names.daemonTLS)
 	}
 	certificate, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(certificate.IPAddresses) != 0 || len(certificate.DNSNames) != 1 || certificate.DNSNames[0] != names.outputDaemonServerName() {
-		t.Fatalf("the output daemon's certificate names %v and %v; want only %s", certificate.DNSNames, certificate.IPAddresses, names.outputDaemonServerName())
+	if !slices.Contains(certificate.DNSNames, names.outputPlaneServerName()) {
+		t.Fatalf("the artifact daemon's certificate names %v; want %s among them", certificate.DNSNames, names.outputPlaneServerName())
+	}
+	for _, address := range certificate.IPAddresses {
+		if address.String() != cluster.nodeIP {
+			t.Fatalf("the artifact daemon's certificate names %v; the walk dials pod IPs, and only the node IP may be named", certificate.IPAddresses)
+		}
 	}
 
 	var job *unstructured.Unstructured

@@ -180,7 +180,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
-                values: [artifact-daemon, hangar-output-daemon, hangar-output-inventory, hangar-output-reclaimer]
+                values: [artifact-daemon, hangar-output-inventory, hangar-output-reclaimer]
       ports:
         - protocol: TCP
           port: 7783

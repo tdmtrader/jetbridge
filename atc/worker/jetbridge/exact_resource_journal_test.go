@@ -205,10 +205,11 @@ var _ = Describe("A Run-owned resource command's exit journal", func() {
 
 		config = NewConfig("test-ns", "")
 		config.OutputPlaneEnabled = true
-		config.OutputDaemonPort = port
-		config.OutputDaemonTLSCert = harness.PKI.clientCert
-		config.OutputDaemonTLSKey = harness.PKI.clientKey
-		config.OutputDaemonTLSCACert = harness.PKI.caCert
+		config.ArtifactDaemonPort = port
+		config.ArtifactDaemonTLSEnabled = true
+		config.ArtifactDaemonTLSCert = harness.PKI.clientCert
+		config.ArtifactDaemonTLSKey = harness.PKI.clientKey
+		config.ArtifactDaemonTLSCACert = harness.PKI.caCert
 
 		starts = nil
 		container = &Container{
@@ -508,10 +509,11 @@ var _ = Describe("An exact command whose start was never delivered", func() {
 
 		config = NewConfig("test-ns", "")
 		config.OutputPlaneEnabled = true
-		config.OutputDaemonPort = port
-		config.OutputDaemonTLSCert = harness.PKI.clientCert
-		config.OutputDaemonTLSKey = harness.PKI.clientKey
-		config.OutputDaemonTLSCACert = harness.PKI.caCert
+		config.ArtifactDaemonPort = port
+		config.ArtifactDaemonTLSEnabled = true
+		config.ArtifactDaemonTLSCert = harness.PKI.clientCert
+		config.ArtifactDaemonTLSKey = harness.PKI.clientKey
+		config.ArtifactDaemonTLSCACert = harness.PKI.caCert
 
 		starts = nil
 		container = &Container{

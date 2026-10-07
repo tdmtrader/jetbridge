@@ -604,7 +604,7 @@ artifactDaemon:
     # whole tree here, and an emptyDir that fills the disk evicts every Pod on
     # the node rather than only this one. It defaults to empty because setting
     # a limit on an existing install is a behaviour change for trees that were
-    # already fitting; the output daemon's equivalent value is REQUIRED, which
+    # already fitting; the output plane's equivalent value is REQUIRED, which
     # is the shape a new volume can afford.
     scratchSizeLimit: ""
     # -- Maximum regular-file content admitted in one immutable tree.
@@ -618,6 +618,33 @@ artifactDaemon:
   # -- Override the headless service name. When set, used verbatim.
   # Default (when empty): <release-fullname>-artifact-daemon
   serviceName: ""
+  serviceAccount:
+    # -- Annotations on the daemon's service account. With the output facet
+    # on, this is the output plane's PUBLISHER identity -- the daemon serves
+    # the output plane -- e.g. the GCS Workload Identity binding:
+    #   iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
+    # Disk uses projected role credentials and needs no GCP identity.
+    annotations: {}
+  # -- The output plane's canonicalization scratch, mounted when
+  # hangarOutput.executionControl.enabled is true.
+  outputScratch:
+    # -- Absolute canonicalization scratch directory, disjoint from the
+    # storage root.
+    path: /var/concourse/hangar-output-scratch
+    # -- REQUIRED whenever hangarOutput.executionControl.enabled is true --
+    # that is, in base-control-only mode as well as with the output facet on.
+    # An emptyDir with no sizeLimit is bounded only by the node's disk:
+    # filling it evicts every Pod on the node, not only this one.
+    # Use Kubernetes quantity syntax, e.g. "32Gi".
+    sizeLimit: ""
+    # -- Largest regular-file content admitted in one captured tree.
+    maxContentBytes: 10737418240
+    # -- Largest number of filesystem entries admitted in one captured tree.
+    maxEntries: 100000
+    # -- How many trees may be spooled to scratch at once. concurrency times
+    # maxContentBytes must fit inside sizeLimit; the chart refuses a product
+    # that does not.
+    concurrency: 1
   # -- Resource requests and limits for the DaemonSet pods
   resources:
     requests:
@@ -695,7 +722,7 @@ artifactDaemon:
 # Pod-wide: a process that holds a role has that role for everything else it
 # does. The minimum roles are
 #
-#   output daemon (publisher/materializer)
+#   artifact daemon output plane (publisher/materializer)
 #     storage.objects.create, storage.objects.get
 #   inventory
 #     storage.objects.list, storage.objects.get
@@ -756,9 +783,6 @@ artifactDaemon:
 hangarBootstrap:
   enabled: false
   secretNames:
-    # -- The output-plane CA, kept so an interrupted run can still issue a
-    # missing leaf. Default <fullname>-hangar-output-ca.
-    outputCA: ""
     # -- The Run input signing key. Default <fullname>-run-input-signing-key.
     # Set web.runInputSigningKeySecret to this name once
     # hangarOutput.webEnabled is on.
@@ -810,7 +834,7 @@ hangarOutput:
 
     # -- Public node-control verification keys, required for output capture.
     # One base64 Ed25519 public key per epoch. Retain old epochs while their
-    # handoffs remain unsettled. The private key stays on the output daemon.
+    # handoffs remain unsettled. The private key stays on the artifact daemon.
     # Example: [{epoch: 7, key: "<base64-public-key>"}]
     publicKeys: []
 
@@ -865,7 +889,7 @@ hangarOutput:
   publicationGrace: "192h"   # >= captureDeadline + 1h, <= 720h
   leaseTerm: "15m"           # at least 15m
   leaseRenewInterval: "1m"   # at most 1m
-  # Shared by the output daemon, managed-read leases and caller deadlines.
+  # Shared by the output plane, managed-read leases and caller deadlines.
   operationTimeout: "1m"
 
   receipt:
@@ -873,7 +897,7 @@ hangarOutput:
     # a verifier knows which activation-pinned public key can check it.
     keyID: ""
     # -- Existing Secret holding receipt.key: the PKCS#8 PEM Ed25519 PRIVATE
-    # half. It is mounted in the output daemon Pod and nowhere else -- not web,
+    # half. It is mounted in the artifact daemon Pod and nowhere else -- not web,
     # not the controllers, not the activation Jobs, not tasks.
     privateKeySecret: ""
     # -- The versioned PUBLIC verification ring the control plane holds. Each
@@ -894,96 +918,6 @@ hangarOutput:
   materializationKeySecret: ""
   # -- Key id for the above.
   materializationKeyID: "output-materialize-1"
-  # -- HTTPS URL of the web API, reachable from output daemons, for signed
-  # read-lease validation/release. Required to download retained Run results.
-  # The server certificate must chain to the system or output-daemon TLS CA.
-  # Empty leaves archive downloads disabled while capture remains available.
-  readControlURL: ""
-  # -- A ConfigMap holding the CA readControlURL's certificate chains to, when
-  # the system roots do not cover it (concourse.home's local CA). Mounted into
-  # the output daemon, and SSL_CERT_FILE points at it.
-  readControlCA:
-    configMap: ""
-    key: ""
-
-  daemon:
-    # -- Control API port.
-    port: 7781
-    # -- The control API's TLS, which is the OUTPUT plane's own trust domain.
-    #
-    # This daemon is TLS-only. Its listener is wrapped unconditionally and its
-    # control routes refuse any operation whose request carries no VERIFIED
-    # peer certificate, so there is no plaintext mode to fall back to and no
-    # switch to turn it off. The artifact daemon has a separate certificate
-    # configuration and trust domain; it has nothing to say about this plane.
-    #
-    # WHAT AN OPERATOR MUST PROVISION, and the chart cannot check any of it:
-    #
-    #   * one certificate authority for the output plane. `existingSecret`'s
-    #     ca.crt must verify `clientSecret`'s certificate and vice versa. Two
-    #     independently-issued Secrets complete a handshake and are then
-    #     refused by every control route, which looks like an authorization bug
-    #     and is a trust-domain one;
-    #   * the SERVER certificate in `existingSecret` must carry `serverName`
-    #     below as a DNS SAN. The ATC dials this daemon at <node IP> -- there is
-    #     no Service -- and a node IP cannot be a SAN in a certificate issued
-    #     before the node existed, so the ATC verifies against that name
-    #     instead;
-    #   * the CLIENT certificate in `clientSecret` is what the ATC and the
-    #     `attest` activation Job present. It is a separate Secret because
-    #     `existingSecret` holds tls.key, the key this daemon SERVES with:
-    #     whatever holds it can impersonate the daemon to the ATC.
-    tls:
-      # -- Existing Secret with tls.crt/tls.key/ca.crt: the certificate this
-      # daemon SERVES with. Mounted in the output daemon Pod and nowhere else.
-      # Required whenever executionControl.enabled is true.
-      existingSecret: ""
-      # -- Existing Secret with tls.crt/tls.key/ca.crt: the CLIENT certificate
-      # the ATC and the attest Job present to this daemon. Issued by the same
-      # CA as existingSecret, and never the same Secret. Required whenever
-      # executionControl.enabled is true.
-      clientSecret: ""
-      # -- DNS name the server certificate above carries, and the name the ATC
-      # verifies it against. Empty derives
-      # <fullname>-hangar-output-daemon.<namespace>.svc; it need not resolve,
-      # it only has to be in the certificate.
-      serverName: ""
-    # -- Private control directory, inside the managed artifact hostPath. It
-    # holds the execution and source ledgers and is excluded from every sweep.
-    controlPath: /var/concourse/artifacts/hangar-output-control
-    # -- Managed steps directory holding source incarnations.
-    stepsPath: /var/concourse/artifacts/hangar-output-steps
-    scratch:
-      # -- Absolute canonicalization scratch directory, disjoint from the
-      # storage root.
-      path: /var/concourse/hangar-output-scratch
-      # -- REQUIRED whenever hangarOutput.executionControl.enabled is true --
-      # that is, in base-control-only mode as well as with the output facet on.
-      # The DaemonSet, this emptyDir and --scratch-dir all render under the BASE
-      # switch, and an emptyDir with no sizeLimit is bounded only by the node's
-      # disk: filling it evicts every Pod on the node, not only this one.
-      # Use Kubernetes quantity syntax, e.g. "32Gi".
-      sizeLimit: ""
-      # -- Largest regular-file content admitted in one captured tree.
-      maxContentBytes: 10737418240
-      # -- Largest number of filesystem entries admitted in one captured tree.
-      maxEntries: 100000
-      # -- How many trees may be spooled to scratch at once. concurrency times
-      # maxContentBytes must fit inside sizeLimit; the chart refuses a product
-      # that does not.
-      concurrency: 1
-    serviceAccount:
-      # -- Override the rendered name. Leave empty for
-      # <fullname>-hangar-output-daemon.
-      name: ""
-      # -- Optional GCS Workload Identity annotation. Provision its binding externally.
-      #   iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
-      # Disk uses projected role credentials and needs no GCP identity.
-      annotations: {}
-    resources: {}
-    nodeSelector: {}
-    tolerations: []
-
   inventory:
     # -- Disabling a controller while the output facet is on is refused: an
     # activation epoch attests recovery, inventory and reclaim workers, and a

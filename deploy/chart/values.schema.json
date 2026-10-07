@@ -625,6 +625,36 @@
             }
           }
         },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "annotations": {
+              "$ref": "#/definitions/openMap"
+            }
+          }
+        },
+        "outputScratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sizeLimit": {
+              "$ref": "#/definitions/quantity"
+            },
+            "maxContentBytes": {
+              "type": "integer"
+            },
+            "maxEntries": {
+              "type": "integer"
+            },
+            "concurrency": {
+              "type": "integer"
+            }
+          }
+        },
         "hangar": {
           "type": "object",
           "additionalProperties": false,
@@ -781,9 +811,15 @@
         "receipt": {},
         "materializationKeySecret": {},
         "materializationKeyID": {},
-        "readControlURL": {},
-        "readControlCA": {},
-        "daemon": {},
+        "readControlURL": {
+          "$ref": "#/definitions/removed"
+        },
+        "readControlCA": {
+          "$ref": "#/definitions/removed"
+        },
+        "daemon": {
+          "$ref": "#/definitions/removed"
+        },
         "inventory": {},
         "reclaimer": {},
         "database": {},

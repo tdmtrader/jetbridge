@@ -44,11 +44,12 @@ var flagSurfaces = []flagSurface{
 	{template: "web-deployment.yaml", pkg: "./cmd/concourse"},
 	{template: "artifact-daemon-daemonset.yaml", pkg: "./cmd/artifact-daemon"},
 
-	// The output plane's four workloads. Each controller has its own template
-	// rather than sharing one, precisely so this rule can attribute its flags
-	// to its binary: three binaries' flags in one file is a file no single
-	// binary accepts, and the rule would go either vacuous or permanently red.
-	{template: "hangar-output-daemon.yaml", pkg: "./cmd/hangar-output-daemon"},
+	// The output plane's workloads. Its node half is the artifact daemon's
+	// output plane, rendered in artifact-daemon-daemonset.yaml above. Each
+	// controller has its own template rather than sharing one, precisely so
+	// this rule can attribute its flags to its binary: three binaries' flags in
+	// one file is a file no single binary accepts, and the rule would go either
+	// vacuous or permanently red.
 	{template: "hangar-output-inventory.yaml", pkg: "./cmd/hangar-output-inventory"},
 	{template: "hangar-store.yaml", pkg: "./cmd/hangar-store"},
 	{template: "hangar-output-reclaimer.yaml", pkg: "./cmd/hangar-output-reclaimer"},
@@ -63,7 +64,7 @@ var flagSurfaces = []flagSurface{
 // what it covers -- and the drift it exists to catch is exactly the kind that
 // arrives with "this template moved". A count that must not fall makes the
 // deletion a decision somebody writes down.
-const expectedFlagSurfaces = 8
+const expectedFlagSurfaces = 7
 
 var (
 	// "- --flag", "- --flag=value", "- --flag={{ .Values.x }}"

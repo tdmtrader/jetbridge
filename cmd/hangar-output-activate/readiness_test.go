@@ -14,7 +14,7 @@ import (
 
 func daemonSet(desired, updated, ready, available int32) appsv1.DaemonSet {
 	return appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "concourse-hangar-output-daemon"},
+		ObjectMeta: metav1.ObjectMeta{Name: "concourse-artifact-daemon"},
 		Status: appsv1.DaemonSetStatus{
 			DesiredNumberScheduled: desired,
 			UpdatedNumberScheduled: updated,
@@ -39,7 +39,7 @@ func TestTheDaemonSetCountsAreTheDesiredUpdatedAndReadyOnes(t *testing.T) {
 	// Available is deliberately different from every other count: it adds
 	// minReadySeconds, a pacing knob, and must not stand in for ready.
 	readiness := daemonSetReadiness(daemonSet(3, 2, 1, 0), nil)
-	if readiness.Name != "concourse-hangar-output-daemon" {
+	if readiness.Name != "concourse-artifact-daemon" {
 		t.Errorf("the readiness names %q", readiness.Name)
 	}
 	if readiness.Desired != 3 || readiness.Updated != 2 || readiness.Ready != 1 {

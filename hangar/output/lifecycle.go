@@ -253,6 +253,11 @@ func (validation ReadLeaseValidation) Validate() error {
 	return nil
 }
 
+// Deferred: the read-lease control protocol that asked this of the web is
+// deleted: the node daemon verifies a read warrant against its own window and
+// never calls the web. The row semantics this method pins stay specified until
+// the read rows are rewritten with the capture row
+//
 // ReadWarrantFor is the validation a warrant's own claims imply.
 //
 // It exists so the daemon cannot compose a different question from the one the

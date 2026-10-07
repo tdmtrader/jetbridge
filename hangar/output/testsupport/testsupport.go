@@ -114,6 +114,20 @@ func Lease(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEp
 	return lease
 }
 
+// Warrant is a fixture read warrant's claims over Lease's lease.
+func Warrant(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ReadWarrantClaims {
+	t.Helper()
+
+	claims := output.WarrantClaimsFor(Lease(t, ref, epoch),
+		output.ReadDestination{Handle: "fixture-handle", Volume: "fixture-volume"},
+		"AAAAAAAAAAAAAAAAAAAAAA")
+	if err := claims.Validate(); err != nil {
+		t.Fatalf("the fixture warrant does not validate: %v", err)
+	}
+
+	return claims
+}
+
 // RecordedMemory is the tier-1 store with its bucket created, behind a
 // recorder, so a test can say which RPCs a role issued.
 func RecordedMemory(bucket string) (*gcstest.Memory, *gcstest.Recorder) {

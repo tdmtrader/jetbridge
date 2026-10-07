@@ -101,19 +101,22 @@ var typedModes = []struct {
 		),
 		floor: 25,
 	},
+	// The walk floors fell by four when the output daemon's DaemonSet, service
+	// account, ClusterRole, binding and PDB folded into the artifact daemon's
+	// (which gained a PDB).
 	{
 		name: "activation walk Job, target=off",
 		sets: append(append([]string{}, outputSets...),
 			"hangarOutput.activation.target=off",
 		),
-		floor: 27,
+		floor: 26,
 	},
 	{
 		name: "activation walk Job, target=base",
 		sets: append(append([]string{}, outputSets...),
 			"hangarOutput.activation.target=base",
 		),
-		floor: 27,
+		floor: 26,
 	},
 	{
 		name: "activation walk Job, target=output with finalize",
@@ -121,7 +124,7 @@ var typedModes = []struct {
 			"hangarOutput.activation.target=output",
 			"hangarOutput.activation.job.finalize=true",
 		),
-		floor: 27,
+		floor: 26,
 	},
 }
 

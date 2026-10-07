@@ -82,7 +82,7 @@ func TestEveryCommandTheChartRunsIsInTheImage(t *testing.T) {
 		}
 	}
 
-	if len(wanted) < 6 {
+	if len(wanted) < 5 {
 		t.Fatalf("found only %d commands across the chart's templates (%v), which is fewer "+
 			"than this chart runs; the scan failed and this rule would pass vacuously",
 			len(wanted), sortedCommandNames(wanted))

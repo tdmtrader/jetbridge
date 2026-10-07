@@ -42,7 +42,7 @@ func TestEachModeIsAcceptedWhenItIsComplete(t *testing.T) {
 		"attest": {"--mode=attest", "--facet=output", "--epoch=7",
 			"--database=postgres://x", "--namespace=cicd"},
 		"walk": {"--mode=walk", "--target=output", "--epoch=7", "--database=postgres://x",
-			"--namespace=cicd", "--daemonset-name=concourse-hangar-output-daemon"},
+			"--namespace=cicd", "--daemonset-name=concourse-artifact-daemon"},
 	} {
 		if _, err := parse(t, arguments...); err != nil {
 			t.Errorf("a complete %s invocation was refused: %v", name, err)

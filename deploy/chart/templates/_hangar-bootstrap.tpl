@@ -16,11 +16,6 @@ Secret, so the operator turns each Secret on by naming it.
 concourse-hangar-bootstrap
 {{- end -}}
 
-{{/* The output-plane CA: its own Secret, so an interrupted run can still issue the missing leaf. */}}
-{{- define "concourse.hangarBootstrap.outputCAName" -}}
-{{- .Values.hangarBootstrap.secretNames.outputCA | default (printf "%s-hangar-output-ca" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-") -}}
-{{- end -}}
-
 {{- define "concourse.hangarBootstrap.runInputKeyName" -}}
 {{- .Values.hangarBootstrap.secretNames.runInputSigningKey | default (printf "%s-run-input-signing-key" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-") -}}
 {{- end -}}
@@ -56,51 +51,37 @@ Secret rather than a refusal to replace the old one.
 {{- $entries = append $entries (dict "name" . "kind" "tls-bundle" "commonName" "hangar disk store"
   "dnsNames" (list (printf "%s.%s.svc" (include "concourse.hangarStorage.name" $) $.Release.Namespace))
   "purposes" (dict "tls.crt" "disk store server certificate" "tls.key" "disk store server key" "ca.crt" "disk store CA, for clients")
-  "consumers" (list "hangar-store" "artifact-daemon" "hangar-output-daemon" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
+  "consumers" (list "hangar-store" "artifact-daemon" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
 {{- end -}}
 
 {{- with .Values.hangarStorage.disk.credentials.existingSecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "store-tokens"
   "purposes" (dict "input" "strict-input principal token" "publisher" "output publisher token" "inventory" "inventory principal token" "reclaimer" "reclaimer principal token" "server.json" "the store's principal-to-token map")
-  "consumers" (list "hangar-store" "artifact-daemon" "hangar-output-daemon" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
+  "consumers" (list "hangar-store" "artifact-daemon" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
 {{- end -}}
 
 {{- with $out.executionControl.keySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "ed25519" "key" "control.key" "ring" "control" "epoch" $epoch
   "purposes" (dict "control.key" "node-control signing key for this activation epoch")
-  "consumers" (list "hangar-output-daemon")) -}}
+  "consumers" (list "artifact-daemon")) -}}
 {{- end -}}
 
 {{- with $out.capabilityKeySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "random32" "key" "capability.key"
   "purposes" (dict "capability.key" "output control warrant key")
-  "consumers" (list "web" "hangar-output-daemon")) -}}
-{{- end -}}
-
-{{- if and $out.daemon.tls.existingSecret $out.daemon.tls.clientSecret -}}
-{{- $ca := include "concourse.hangarBootstrap.outputCAName" $ -}}
-{{- $entries = append $entries (dict "name" $ca "kind" "ca" "commonName" "hangar output plane"
-  "purposes" (dict "ca.crt" "output-plane CA certificate" "ca.key" "output-plane CA key, kept only to issue a missing leaf")
-  "consumers" (list)) -}}
-{{- $entries = append $entries (dict "name" $out.daemon.tls.existingSecret "kind" "tls-server" "ca" $ca "commonName" "hangar output daemon"
-  "dnsNames" (list (include "concourse.hangarOutput.daemonTLSServerName" $))
-  "purposes" (dict "tls.crt" "output daemon server certificate" "tls.key" "output daemon server key" "ca.crt" "output-plane CA")
-  "consumers" (list "hangar-output-daemon")) -}}
-{{- $entries = append $entries (dict "name" $out.daemon.tls.clientSecret "kind" "tls-client" "ca" $ca "commonName" "concourse web"
-  "purposes" (dict "tls.crt" "control-plane client certificate" "tls.key" "control-plane client key" "ca.crt" "output-plane CA")
-  "consumers" (list "web" "hangar-output-activation")) -}}
+  "consumers" (list "web" "artifact-daemon")) -}}
 {{- end -}}
 
 {{- with $out.receipt.privateKeySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "ed25519" "key" "receipt.key" "ring" "receipt" "epoch" $epoch "keyID" $out.receipt.keyID
   "purposes" (dict "receipt.key" "publication receipt signing key for this activation epoch")
-  "consumers" (list "hangar-output-daemon")) -}}
+  "consumers" (list "artifact-daemon")) -}}
 {{- end -}}
 
 {{- with $out.materializationKeySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "random32" "key" "materialize.key"
   "purposes" (dict "materialize.key" "output read warrant key")
-  "consumers" (list "web" "hangar-output-daemon")) -}}
+  "consumers" (list "web" "artifact-daemon")) -}}
 {{- end -}}
 
 {{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.runInputKeyName" $) "kind" "random32" "key" "input.key"

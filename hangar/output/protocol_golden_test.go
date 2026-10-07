@@ -254,15 +254,11 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"claim-record.json":         func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
 	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
 	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
-	"lease-question.json":       func(t *testing.T, raw []byte) { roundTrip[LeaseQuestion](t, raw) },
-	"lease-answer.json":         func(t *testing.T, raw []byte) { roundTrip[LeaseAnswer](t, raw) },
 
 	"dispositions.json":                  assertClosedDispositions,
 	"capture-acknowledgement-kinds.json": assertClosedCaptureAcknowledgementKinds,
 	"no-capture-reasons.json":            assertClosedNoCaptureReasons,
 	"debt-reasons.json":                  assertClosedDebtReasons,
-	"lease-operations.json":              assertClosedLeaseOperations,
-	"lease-refusals.json":                assertClosedLeaseRefusals,
 
 	"refusal-unknown-disposition.json": func(t *testing.T, raw []byte) {
 		refuse[NoCaptureDisposition](t, raw)
@@ -306,14 +302,6 @@ func assertClosedNoCaptureReasons(t *testing.T, raw []byte) {
 
 func assertClosedDebtReasons(t *testing.T, raw []byte) {
 	assertClosedEnum(t, raw, DebtReasons(), "DebtReasons()")
-}
-
-func assertClosedLeaseOperations(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, LeaseOperations(), "LeaseOperations()")
-}
-
-func assertClosedLeaseRefusals(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, LeaseRefusals(), "LeaseRefusals()")
 }
 
 func TestProtocolGoldens(t *testing.T) {

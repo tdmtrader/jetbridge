@@ -272,8 +272,8 @@ func NewReceiptKeyRing(keys ...EpochKey) (*ReceiptKeyRing, error) {
 // Deferred: the consumer-side verification half needs a consumer: these
 // five verify a receipt or a key id some process read BACK, and the process
 // that does that is the ATC's receipt registration. Three names this reason
-// once covered -- ValidateLease, RenewLease, ReleaseLease -- are now spent
-// by hangar/output.LeaseReadProfile and are off the list
+// once covered -- ValidateLease, RenewLease, ReleaseLease -- went with the
+// read-lease control protocol and are off the list
 //
 // KeyIDs is what the ring holds, sorted, so that a drain predicate can say
 // which epochs are still verifiable.
@@ -497,8 +497,8 @@ func (verifier *ReceiptSignatureVerifier) bind(receipt Receipt, challenge StatCh
 // Deferred: the consumer-side verification half needs a consumer: these
 // five verify a receipt or a key id some process read BACK, and the process
 // that does that is the ATC's receipt registration. Three names this reason
-// once covered -- ValidateLease, RenewLease, ReleaseLease -- are now spent
-// by hangar/output.LeaseReadProfile and are off the list
+// once covered -- ValidateLease, RenewLease, ReleaseLease -- went with the
+// read-lease control protocol and are off the list
 //
 // ReceiptEnvelopeIsUnaltered is the tamper check over the wire form.
 //
@@ -546,8 +546,8 @@ func ReceiptEnvelopeIsUnaltered(body []byte) (Receipt, error) {
 // Deferred: the consumer-side verification half needs a consumer: these
 // five verify a receipt or a key id some process read BACK, and the process
 // that does that is the ATC's receipt registration. Three names this reason
-// once covered -- ValidateLease, RenewLease, ReleaseLease -- are now spent
-// by hangar/output.LeaseReadProfile and are off the list
+// once covered -- ValidateLease, RenewLease, ReleaseLease -- went with the
+// read-lease control protocol and are off the list
 //
 // ConstantTimeKeyIDEqual compares two key ids without leaking which byte
 // differed. It is small, but a key id is compared before a signature is

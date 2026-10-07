@@ -159,14 +159,11 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 
 	cfg.Namespace = namespace
 	cfg.ArtifactDaemonHostPath = hostRoot
-	// The artifact daemon's port. Nothing listens on it and nothing in this Pod
-	// dials it -- cleanup-stale, its only consumer, is not emitted for a fresh
-	// handle -- but the config field is what the pod builder reads, so it is
-	// set to something that is not the output daemon's.
-	cfg.ArtifactDaemonPort = 31782
+	// The artifact daemon's port, which is where its output plane listens:
+	// the capture control init dials it.
+	cfg.ArtifactDaemonPort = liveCapturePort
 	cfg.ArtifactHelperImage = "busybox:latest"
 	cfg.OutputPlaneEnabled = true
-	cfg.OutputDaemonPort = liveCapturePort
 	cfg.OutputActivationEpoch = 9
 
 	// The reservation, as the daemon would have answered it. Nothing here

@@ -211,7 +211,7 @@ var _ = Describe("An execProcess under exact control", func() {
 
 		config := NewConfig("test-ns", "")
 		config.OutputPlaneEnabled = true
-		config.OutputDaemonPort = 7781
+		config.ArtifactDaemonPort = 7780
 		container = &Container{
 			handle:   "capture-handle",
 			podName:  "capture-pod",

@@ -8,10 +8,6 @@
 {{- printf "%s-%s" (include "concourse.fullname" .root | trunc $budget | trimSuffix "-") $suffix -}}
 {{- end }}
 
-{{- define "concourse.hangarOutput.daemonName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-daemon") }}
-{{- end }}
-
 {{- define "concourse.hangarOutput.inventoryName" -}}
 {{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-inventory") }}
 {{- end }}
@@ -29,10 +25,6 @@
 {{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-activation") }}
 {{- end }}
 
-{{- define "concourse.hangarOutput.daemonServiceAccount" -}}
-{{- default (include "concourse.hangarOutput.daemonName" .) .Values.hangarOutput.daemon.serviceAccount.name }}
-{{- end }}
-
 {{- define "concourse.hangarOutput.inventoryServiceAccount" -}}
 {{- default (include "concourse.hangarOutput.inventoryName" .) .Values.hangarOutput.inventory.serviceAccount.name }}
 {{- end }}
@@ -44,10 +36,6 @@
 
 {{- define "concourse.hangarOutput.activationServiceAccount" -}}
 {{- default (include "concourse.hangarOutput.activationName" .) .Values.hangarOutput.activation.serviceAccount.name }}
-{{- end }}
-
-{{- define "concourse.hangarOutput.daemonTLSServerName" -}}
-{{- default (printf "%s.%s.svc" (include "concourse.hangarOutput.daemonName" .) .Release.Namespace) .Values.hangarOutput.daemon.tls.serverName }}
 {{- end }}
 
 {{- define "concourse.durationSeconds" -}}
@@ -93,13 +81,6 @@
 {{- end }}
 
 {{- define "concourse.hangarOutput.validate" -}}
-{{- with .Values.hangarOutput.readControlURL -}}
-{{- $url := urlParse . -}}
-{{- if or (ne $url.scheme "https") (empty $url.host) (not (empty $url.userinfo)) (not (empty $url.query)) (not (empty $url.fragment)) -}}
-{{- fail "hangarOutput.readControlURL must be an HTTPS web API URL without credentials, query or fragment" -}}
-{{- end -}}
-{{- end -}}
-
 {{- $output := .Values.hangarOutput -}}
 {{- $base := $output.executionControl.enabled | default false -}}
 {{- $capture := $output.enabled | default false -}}
@@ -133,15 +114,6 @@
 {{- end -}}
 {{- if not $output.capabilityKeySecret -}}
 {{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key." -}}
-{{- end -}}
-{{- if not $output.daemon.tls.existingSecret -}}
-{{- fail "hangarOutput.daemon.tls.existingSecret is required: the ATC calls this daemon's control API from another node, and a bearer capability over plaintext off-node is interceptable inside its TTL." -}}
-{{- end -}}
-{{- if not $output.daemon.tls.clientSecret -}}
-{{- fail "hangarOutput.daemon.tls.clientSecret is required: this daemon's control API is TLS-only and refuses every operation whose request carries no VERIFIED peer certificate, so an ATC with no client certificate of its own can hold no source, issue no writer ticket, seal nothing, publish nothing and issue no read warrant. It is the OUTPUT plane's credential, separate from artifactDaemon.tls: that configuration belongs to a different daemon on a different bucket under a different identity, and a certificate from its CA handshakes here and is then refused by every route." -}}
-{{- end -}}
-{{- if eq $output.daemon.tls.clientSecret $output.daemon.tls.existingSecret -}}
-{{- fail (printf "hangarOutput.daemon.tls.clientSecret and hangarOutput.daemon.tls.existingSecret are both %q. existingSecret holds tls.key -- the key this daemon SERVES with -- and it is mounted in the daemon Pod and nowhere else: whatever else held it could impersonate the output daemon to the ATC. A client needs a CLIENT certificate, issued by the same CA and kept in its own Secret." $output.daemon.tls.existingSecret) -}}
 {{- end -}}
 {{- if kindIs "string" $output.activationEpoch -}}
 {{- fail "hangarOutput.activationEpoch must be an integer, not a string" -}}
@@ -308,21 +280,21 @@
 {{- end }}
 
 {{- define "concourse.hangarOutput.validateScratch" -}}
-{{- $scratch := .Values.hangarOutput.daemon.scratch -}}
+{{- $scratch := .Values.artifactDaemon.outputScratch -}}
 {{- if not $scratch.sizeLimit -}}
-{{- fail "hangarOutput.daemon.scratch.sizeLimit is required. The output daemon canonicalizes and spools whole trees into an emptyDir, and an emptyDir with no sizeLimit is bounded only by the node's disk: filling it evicts every Pod on the node rather than only this one. Set it to at least concurrency times maxContentBytes." -}}
+{{- fail "artifactDaemon.outputScratch.sizeLimit is required. The artifact daemon's output plane canonicalizes and spools whole trees into an emptyDir, and an emptyDir with no sizeLimit is bounded only by the node's disk: filling it evicts every Pod on the node rather than only this one. Set it to at least concurrency times maxContentBytes." -}}
 {{- end -}}
-{{- $limit := atoi (include "concourse.quantityBytes" (dict "name" "hangarOutput.daemon.scratch.sizeLimit" "value" $scratch.sizeLimit)) -}}
+{{- $limit := atoi (include "concourse.quantityBytes" (dict "name" "artifactDaemon.outputScratch.sizeLimit" "value" $scratch.sizeLimit)) -}}
 {{- $concurrency := int $scratch.concurrency -}}
 {{- if lt $concurrency 1 -}}
-{{- fail "hangarOutput.daemon.scratch.concurrency must be at least 1; zero would admit no capture at all." -}}
+{{- fail "artifactDaemon.outputScratch.concurrency must be at least 1; zero would admit no capture at all." -}}
 {{- end -}}
 {{- $needed := mul $concurrency (int64 $scratch.maxContentBytes) -}}
 {{- if gt (int64 $needed) (int64 $limit) -}}
-{{- fail (printf "hangarOutput.daemon.scratch.concurrency is %d and maxContentBytes is %v, so %v bytes may be spooled at once -- more than the sizeLimit %s (%v bytes). Either raise the limit or lower the concurrency: the bound only holds if their product fits." $concurrency $scratch.maxContentBytes $needed $scratch.sizeLimit $limit) -}}
+{{- fail (printf "artifactDaemon.outputScratch.concurrency is %d and maxContentBytes is %v, so %v bytes may be spooled at once -- more than the sizeLimit %s (%v bytes). Either raise the limit or lower the concurrency: the bound only holds if their product fits." $concurrency $scratch.maxContentBytes $needed $scratch.sizeLimit $limit) -}}
 {{- end -}}
 {{- if not (hasPrefix "/" (clean (toString $scratch.path))) -}}
-{{- fail "hangarOutput.daemon.scratch.path must be absolute" -}}
+{{- fail "artifactDaemon.outputScratch.path must be absolute" -}}
 {{- end -}}
 {{- end }}
 
@@ -379,9 +351,6 @@
 
 {{- define "concourse.hangarOutput.validatePrincipals" -}}
 {{- $subjects := list
-  (dict "path" "hangarOutput.daemon"
-        "name" (include "concourse.hangarOutput.daemonServiceAccount" .)
-        "annotations" .Values.hangarOutput.daemon.serviceAccount.annotations)
   (dict "path" "hangarOutput.inventory"
         "name" (include "concourse.hangarOutput.inventoryServiceAccount" .)
         "annotations" .Values.hangarOutput.inventory.serviceAccount.annotations)
@@ -404,7 +373,7 @@
 {{- $subjects = append $subjects (dict
       "path" "artifactDaemon"
       "name" (printf "%s-artifact-daemon" (include "concourse.fullname" .))
-      "annotations" dict) -}}
+      "annotations" (.Values.artifactDaemon.serviceAccount.annotations | default dict)) -}}
 
 {{- $accounts := dict -}}
 {{- range $subject := $subjects -}}
@@ -428,18 +397,23 @@
 {{- end }}
 
 {{- define "concourse.hangarOutput.namespaceFlags" -}}
-- --output-store={{ .Values.hangarOutput.store }}
-- --output-bucket={{ .Values.hangarOutput.bucket }}
-- --output-prefix={{ .Values.hangarOutput.prefix }}
-- --output-tenant={{ .Values.hangarOutput.tenant }}
-- --activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
-{{- if eq .Values.hangarOutput.store "disk" }}
-- --output-endpoint={{ include "concourse.hangarStorage.endpoint" . }}
-- --output-store-id={{ .Values.hangarStorage.disk.storeID }}
-- --output-token-file=/etc/concourse/hangar-disk/token
-- --output-ca-cert=/etc/concourse/hangar-disk/ca.crt
-{{- else if .Values.hangarOutput.endpoint }}
-- --output-endpoint={{ .Values.hangarOutput.endpoint }}
+{{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-disk") }}
+{{- end }}
+
+{{- define "concourse.hangarOutput.namespaceFlagsAt" -}}
+{{- $root := .root -}}
+- --output-store={{ $root.Values.hangarOutput.store }}
+- --output-bucket={{ $root.Values.hangarOutput.bucket }}
+- --output-prefix={{ $root.Values.hangarOutput.prefix }}
+- --output-tenant={{ $root.Values.hangarOutput.tenant }}
+- --activation-epoch={{ int $root.Values.hangarOutput.activationEpoch }}
+{{- if eq $root.Values.hangarOutput.store "disk" }}
+- --output-endpoint={{ include "concourse.hangarStorage.endpoint" $root }}
+- --output-store-id={{ $root.Values.hangarStorage.disk.storeID }}
+- --output-token-file={{ .disk }}/token
+- --output-ca-cert={{ .disk }}/ca.crt
+{{- else if $root.Values.hangarOutput.endpoint }}
+- --output-endpoint={{ $root.Values.hangarOutput.endpoint }}
 {{- end }}
 {{- end }}
 

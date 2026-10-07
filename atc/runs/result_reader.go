@@ -63,9 +63,10 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	if err != nil {
 		return nil, err
 	}
+	leases := db.NewHangarOutputRepository(prefix)
 	admission := hangaroutput.ReadAdmission{
 		Transactor: resultReadTransaction{ctx: ctx, conn: r.Conn, runID: runID, name: name, selected: selected},
-		Leases:     db.NewHangarOutputRepository(prefix), Stat: source, Minter: r.Minter,
+		Leases:     leases, Stat: source, Minter: r.Minter,
 		Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 	}
 	destination := output.ReadDestination{Handle: id.String(), Volume: "result"}
@@ -77,13 +78,19 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 		return nil, err
 	}
 	archive, attributes, err := source.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: selected.Binding.Ref, Destination: destination, Warrant: warrant.Token}, maxResultArchiveBytes)
-	// If the transport failed, the node may still be staging. Its release or the
-	// existing abandoned-lease cleaner owns closure; guessing would end protection.
+	// If the transport failed, the node may still be staging under this lease.
+	// The abandoned-lease cleaner closes it at expiry; releasing it now would
+	// end protection a read in progress may still need.
 	if err != nil {
 		return nil, err
 	}
 	tree, err := (hangar.Canonicalizer{TempDir: r.Scratch, MaxContentBytes: maxResultArchiveBytes}).Capture(ctx, io.LimitReader(archive, maxResultArchiveBytes+1))
 	err = errors.Join(err, archive.Close())
+	// The archive is consumed: the node's read of the object is over, so this
+	// read's protection is given back here, by the web that holds it. The node
+	// daemon has no client for the web and never releases a lease. A failed
+	// release is not the read's failure -- the lease still closes at expiry.
+	r.releaseLease(ctx, leases, warrant.Lease)
 	if err == nil && (tree.Digest != selected.Binding.Ref.Digest || tree.ByteSize != attributes.LogicalBytes) {
 		err = output.ErrCorrupt
 	}
@@ -94,6 +101,28 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 		return nil, err
 	}
 	return tree, nil
+}
+
+// releaseLease gives one read lease back in its own transaction. Best effort:
+// an unreleased lease is bounded by its term and closed by the abandoned-lease
+// cleaner.
+func (r *ResultReader) releaseLease(ctx context.Context, leases resultLeaseReleaser, lease output.ReadLease) {
+	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	tx, err := r.Conn.BeginTx(release, nil)
+	if err != nil {
+		return
+	}
+	defer db.Rollback(tx)
+	if err := leases.ReleaseReadLease(release, db.HangarOutputTx{Tx: tx}, lease); err != nil {
+		return
+	}
+	_ = tx.Commit()
+}
+
+// resultLeaseReleaser is the one repository method the release needs.
+type resultLeaseReleaser interface {
+	ReleaseReadLease(context.Context, output.Tx, output.ReadLease) error
 }
 
 type resultReadTransaction struct {

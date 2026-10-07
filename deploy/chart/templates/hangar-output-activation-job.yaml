@@ -14,7 +14,7 @@ database Job has created the activation role and its Secret. It is an Argo
 PostSync hook in a wave after that Job, and a Helm post-install/post-upgrade
 hook for a plain `helm upgrade`, weighted after the database Job's hook. Helm
 waits for each hook Job to finish within --timeout, and the walk can wait up
-to its readiness timeout (10m) for the output DaemonSet before each attest, so
+to its readiness timeout (10m) for the artifact daemon DaemonSet before each attest, so
 a plain Helm install or upgrade needs a --timeout above that; Helm's default
 is 5m. BeforeHookCreation deletes the previous run before the next, which is
 what the per-mode, per-epoch Job name used to do: a Job's pod template is
@@ -25,13 +25,13 @@ cohort handshake, enables through the facet's preconditions, refuses a mixed
 cohort, and output can never be enabled while base is not -- all of which live
 in the command and the schema, not in this template.
 
-The Job mounts the database Secret and the output plane's CLIENT certificate --
-hangarOutput.daemon.tls.clientSecret, and never the daemon's own server Secret,
-which holds the key the daemon SERVES with: an exploit of this Job would
-otherwise obtain the material to impersonate the output daemon to the ATC. It
-mounts NO receipt private key either: the activation identity signs nothing,
-and a key in a Pod that cannot need it is a key an exploit of that Pod gets for
-free.
+The Job mounts the database Secret and the web's CLIENT certificate for the
+artifact daemon, which serves the output plane -- client.crt, client.key and
+ca.crt projected out of the artifact daemon's TLS Secret, and never tls.key,
+the key the daemon SERVES with: an exploit of this Job would otherwise obtain
+the material to impersonate the daemon to the ATC. It mounts NO receipt
+private key either: the activation identity signs nothing, and a key in a Pod
+that cannot need it is a key an exploit of that Pod gets for free.
 */}}
 {{- /*
 The target has no default. The walk runs on every sync and drains every facet
@@ -87,12 +87,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
-  # The walk waits on the output DaemonSet's rollout before each attestation.
-  # One verb on one name: the DaemonSet is read through a namespaced get, and
-  # this Role reads no other workload.
+  # The walk waits on the artifact daemon DaemonSet's rollout -- it serves the
+  # output plane -- before each attestation. One verb on one name: the
+  # DaemonSet is read through a namespaced get, and this Role reads no other
+  # workload.
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
-    resourceNames: [{{ include "concourse.hangarOutput.daemonName" . | quote }}]
+    resourceNames: [{{ printf "%s-artifact-daemon" (include "concourse.fullname" .) | quote }}]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -156,14 +157,15 @@ spec:
             - --target={{ $target }}
             - --epoch={{ int .Values.hangarOutput.activationEpoch }}
             - --namespace={{ .Release.Namespace }}
-            - --daemon-port={{ .Values.hangarOutput.daemon.port }}
-            - --daemonset-name={{ include "concourse.hangarOutput.daemonName" . }}
-            - --tls-cert=/etc/concourse/hangar-output/tls/tls.crt
-            - --tls-key=/etc/concourse/hangar-output/tls/tls.key
+            - --daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
+            - --daemon-selector=app.kubernetes.io/component=artifact-daemon
+            - --daemonset-name={{ include "concourse.fullname" . }}-artifact-daemon
+            - --tls-cert=/etc/concourse/hangar-output/tls/client.crt
+            - --tls-key=/etc/concourse/hangar-output/tls/client.key
             - --tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
             # The cohort is dialed by pod IP; the certificate names the
-            # daemon's DNS name, so verification is against that.
-            - --tls-server-name={{ include "concourse.hangarOutput.daemonTLSServerName" . }}
+            # daemon's headless Service, so verification is against that.
+            - --tls-server-name={{ include "concourse.artifactDaemonServiceName" . }}.{{ .Release.Namespace }}.svc
             - --receipt-key-lifetime={{ .Values.hangarOutput.activation.receiptKeyLifetime }}
             {{- if .Values.hangarOutput.activation.job.finalize }}
             - --finalize
@@ -186,5 +188,12 @@ spec:
       volumes:
         - name: daemon-tls
           secret:
-            secretName: {{ .Values.hangarOutput.daemon.tls.clientSecret }}
+            secretName: {{ .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
+            items:
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key
+              - key: ca.crt
+                path: ca.crt
 {{- end }}

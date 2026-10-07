@@ -58,20 +58,3 @@ func (s *OutputSource) outputNode(ctx context.Context, epoch executioncontrol.Ac
 	}
 	return nil, "", fmt.Errorf("%w: no ready output node", output.ErrInfrastructure)
 }
-
-// ReadNodeName rejects removed/replaced nodes before resolving cohort keys.
-func (s *OutputSource) ReadNodeName(ctx context.Context, uid executioncontrol.NodeUID) (string, error) {
-	if uid == "" {
-		return "", output.ErrUnauthorized
-	}
-	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", err
-	}
-	for _, node := range nodes.Items {
-		if executioncontrol.NodeUID(node.UID) == uid && node.DeletionTimestamp == nil {
-			return node.Name, nil
-		}
-	}
-	return "", output.ErrUnauthorized
-}

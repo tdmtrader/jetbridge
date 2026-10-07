@@ -116,9 +116,9 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 	}
 	capture := control.Capture
 
-	port := c.config.OutputDaemonPort
+	port := c.config.ArtifactDaemonPort
 	if port == 0 {
-		port = defaultOutputDaemonPort
+		port = defaultArtifactDaemonPort
 	}
 
 	allowEscalation := false
@@ -126,7 +126,7 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 	return &corev1.Container{
 		Name:  controlInitName,
 		Image: c.helperImage(),
-		Command: []string{"sh", "-c", captureHoldScript(outputDaemonURLScheme(),
+		Command: []string{"sh", "-c", captureHoldScript(outputPlaneURLScheme(),
 			outputWgetTLSOptions())},
 		Env: append([]corev1.EnvVar{
 			{Name: captureEnvProtocol, Value: output.ProtocolVersion},
@@ -252,12 +252,22 @@ exit 1
 
 // CapabilityHeaderName is the header the output daemon reads an attenuated
 // control capability from. It is restated here rather than imported because
-// cmd/hangar-output-daemon is package main; capture_control_test.go pins the
+// the ATC does not import cmd/artifact-daemon; capture_control_test.go pins the
 // two spellings against each other so they cannot drift.
 const CapabilityHeaderName = "Hangar-Control-Capability"
 
-// defaultOutputDaemonPort is the output daemon's control port.
-const defaultOutputDaemonPort = 7781
+// outputWgetTLSOptions are the BusyBox wget options the capture control init
+// needs to reach its node's output plane.
+//
+// --no-check-certificate, always: the init container dials its own node by IP
+// from the Downward API, and an IP is not a certificate SAN, so server
+// authentication cannot succeed however correctly the deployment is
+// provisioned. What the transport buys the hold is confidentiality for the
+// one-shot capability it carries in a header. The AUTHORIZATION is that
+// signed, facet-scoped, single-use warrant, verified by the daemon.
+func outputWgetTLSOptions() string {
+	return "--no-check-certificate"
+}
 
 func (c *Container) helperImage() string {
 	if c.config.ArtifactHelperImage != "" {

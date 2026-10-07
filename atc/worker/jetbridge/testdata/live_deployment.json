@@ -48,7 +48,7 @@
     },
     "daemon.hangarOutput": {
       "expect": "off",
-      "note": "The Hangar output daemon DaemonSet is created by rollout step S6 of hangar_stores_enabled_in_cluster; see web.hangarOutput."
+      "note": "The output plane is mounted in the artifact daemon (its --control-key-file) from rollout step S6 of hangar_stores_enabled_in_cluster; see web.hangarOutput."
     },
     "store.disk": {
       "expect": "off",

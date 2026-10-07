@@ -35,8 +35,9 @@ import (
 )
 
 // mintingFiles is every file in this package that reaches a warrant signer.
-// read.go admits a read; leasecontrol.go re-mints the warrant a renewal produces.
-var mintingFiles = []string{"read.go", "leasecontrol.go"}
+// read.go admits a read. (leasecontrol.go re-minted a renewed warrant; it went
+// with the read-lease control protocol.)
+var mintingFiles = []string{"read.go"}
 
 func TestNoFunctionBothOpensATransactionAndSigns(t *testing.T) {
 	totalScanned, totalTransacting, totalSigning := 0, 0, 0

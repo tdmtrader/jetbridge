@@ -131,16 +131,10 @@ var deferredEntryPoints = []deferredEntryPoint{
 
 	{name: "Rotate", pkg: "atc/hangaroutput/activation", why: rotationHasNoOperatorPath},
 
-	// The managed read's daemon half. It is composed in specs against the real
-	// control plane and the real materializer, and nothing in production builds
-	// one yet: a managed read reaches a consumer pod through a lease acquired
-	// by the ATC before the Pod is built, and that acquisition is the piece
-	// this phase did not land.
-	{name: "Renew", pkg: "hangar/output", why: managedReadHasNoConsumer},
-	// The publisher's read-under-lease is the daemon end of the same half. It
-	// used to be credited through the leaf's Publisher interface, which no
-	// production code held; the interface is gone and the credit with it.
-	{name: "OpenExactObject", pkg: "hangar/output/publisher", why: readUnderLeaseHasNoConsumer},
+	// The web-side answers to the deleted read-lease control protocol.
+	{name: "RenewReadLease", pkg: "atc/db", why: leaseControlDeleted},
+	{name: "ValidateReadLease", pkg: "atc/db", why: leaseControlDeleted},
+	{name: "ReadWarrantFor", pkg: "hangar/output", why: leaseControlDeleted},
 	{name: "ObserveExactAbsence", why: separateAbsenceStat},
 	{name: "Holds", why: runnerBeliefIsNotAuthority},
 
@@ -161,7 +155,7 @@ const (
 	consumerHalf = "the consumer-side verification half needs a consumer: these five verify a " +
 		"receipt or a key id some process read BACK, and the process that does that is the " +
 		"ATC's receipt registration. Three names this reason once covered -- ValidateLease, " +
-		"RenewLease, ReleaseLease -- are now spent by hangar/output.LeaseReadProfile and are " +
+		"RenewLease, ReleaseLease -- went with the read-lease control protocol and are " +
 		"off the list"
 	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
 		"does not return; Phase 8, with the activation verification"
@@ -172,21 +166,13 @@ const (
 		"carries both, and it belongs with the first rotation rather than ahead of the first " +
 		"activation: this plane ships dormant, and an epoch nobody has enabled has nothing to " +
 		"rotate off"
+	leaseControlDeleted = "the read-lease control protocol that asked this of the web is deleted: the node daemon verifies a read warrant against its own window and never calls the web. The row semantics this method pins stay specified until the read rows are rewritten with the capture row"
 	separateAbsenceStat = "the delete pass's own answer already reports absence; a separate " +
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
 	runnerBeliefIsNotAuthority = "Holds is read by the liveness specs and by the Phase 8 " +
 		"status surface; no running process decides anything from it, and a runner that " +
 		"decided from its own belief rather than from the lease would be the stale owner " +
 		"every fence in this plane exists to stop"
-	readUnderLeaseHasNoConsumer = "the publisher's read under a lease is the daemon end of the " +
-		"managed read, and the managed read has no consumer yet: the lease it would open " +
-		"under is acquired by the ATC before the Pod is built, and that acquisition is the " +
-		"half of the managed-read box this phase did not land"
-	managedReadHasNoConsumer = "a managed read reaches a consumer pod through a read lease " +
-		"the ATC acquires before the Pod is built, and that acquisition -- the claim, the " +
-		"lease transaction and the init-container route -- is the half of the Phase 8 " +
-		"managed-read box this phase did not land. The profile itself is composed against " +
-		"the real control plane and the real materializer in atc/hangaroutput"
 )
 
 func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T) {
@@ -620,11 +606,8 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 
 	// The read-lease ports, split so a holder of one cannot use the other.
-	"AcquireReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore"},
-	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
-	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
-	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
-	"Admitted":          {pkg: "atc/db", port: "atc/hangaroutput.ReadNodeMembership"},
+	"AcquireReadLease": {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore"},
+	"ReleaseReadLease": {pkg: "atc/db", port: "atc/runs.resultLeaseReleaser"},
 
 	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
 	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},

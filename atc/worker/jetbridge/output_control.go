@@ -26,9 +26,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -441,18 +443,16 @@ func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName 
 	if err != nil {
 		return nil, fmt.Errorf("resolving node %s: %w", nodeName, err)
 	}
-	port := controls.config.OutputDaemonPort
+	port := controls.config.ArtifactDaemonPort
 	if port == 0 {
-		port = defaultOutputDaemonPort
+		port = defaultArtifactDaemonPort
 	}
 
-	// The OUTPUT plane's scheme and the OUTPUT plane's client. Not the
-	// artifact daemon's: that predicate is a switch on a different daemon
-	// serving a different bucket under a different identity, and its client
-	// certificate is issued by a CA this daemon does not trust.
+	// The output plane is mounted in the artifact daemon: one endpoint, one
+	// TLS configuration, one client certificate.
 	client := NewOutputControlClient(
-		fmt.Sprintf("%s://%s:%d", outputDaemonURLScheme(), nodeIP, port),
-		newOutputDaemonHTTPClient(controls.config, 30*time.Second),
+		fmt.Sprintf("%s://%s:%d", outputPlaneURLScheme(), nodeIP, port),
+		newOutputPlaneHTTPClient(controls.config, 30*time.Second),
 		controls.minter, controls.epoch)
 	client.readTimeout = controls.config.OutputOperationTimeout
 	return client, nil
@@ -560,4 +560,47 @@ func (client *OutputControlClient) AcknowledgeRelease(ctx context.Context,
 		intent.Execution, intent, &ack)
 
 	return ack, err
+}
+
+// outputPlaneURLScheme is the scheme every ATC-side caller of the output plane
+// uses. The output plane is TLS-only: ValidateOutputPlaneTLS refuses at startup
+// an output plane over an artifact daemon the ATC does not speak mTLS to, so
+// there is no configuration under which the answer is "http".
+func outputPlaneURLScheme() string {
+	return "https"
+}
+
+// ValidateOutputPlaneTLS refuses at STARTUP an output plane whose artifact
+// daemon client credential is missing or partial. The plane's off-node routes
+// refuse every request that carries no verified client certificate, so an ATC
+// without one would fail at the first capture rather than at startup.
+func ValidateOutputPlaneTLS(certPath, keyPath, caCertPath string) error {
+	if DaemonTLSConfigured(certPath, keyPath, caCertPath) {
+		return nil
+	}
+	if err := ValidateDaemonTLSFlags(certPath, keyPath, caCertPath); err != nil {
+		return err
+	}
+
+	return errors.New("the Hangar output plane is enabled and the artifact daemon's TLS is not " +
+		"configured. The output plane is served by the artifact daemon and is TLS-only: its " +
+		"off-node routes refuse every request that carries no verified client certificate, so " +
+		"--kubernetes-artifact-daemon-tls-cert, -tls-key and -tls-ca-cert are required")
+}
+
+// newOutputPlaneHTTPClient returns the *http.Client the ATC calls the output
+// plane with: the artifact daemon's client certificate, CA and server name.
+func newOutputPlaneHTTPClient(cfg Config, timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if triple := wireTLS(cfg); triple.Configured() {
+		tlsConfig, err := triple.ClientConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"WARNING: output plane mTLS: %v — every control call will be refused\n", err)
+		} else {
+			transport.TLSClientConfig = tlsConfig
+		}
+	}
+
+	return &http.Client{Timeout: timeout, Transport: transport}
 }

@@ -560,7 +560,7 @@ jobs:
           go mod download
           go test -c -tags hangar_live -o /dev/null ./atc/worker/jetbridge/
           mkdir -p ${IMAGE_DIR}
-          for command in concourse artifact-daemon hangar-store hangar-output-daemon \
+          for command in concourse artifact-daemon hangar-store \
                          hangar-output-inventory hangar-output-reclaimer hangar-output-activate; do
             echo "--- building ${command}"
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o ${IMAGE_DIR}/${command} ./cmd/${command}
@@ -597,7 +597,7 @@ jobs:
           mkdir -p ${IMAGE_DIR}/fly-assets
           printf '%s\n' \
             'FROM busybox:latest' \
-            'COPY concourse artifact-daemon hangar-store hangar-output-daemon hangar-output-inventory hangar-output-reclaimer hangar-output-activate /usr/local/concourse/bin/' \
+            'COPY concourse artifact-daemon hangar-store hangar-output-inventory hangar-output-reclaimer hangar-output-activate /usr/local/concourse/bin/' \
             'COPY fly-assets /usr/local/concourse/fly-assets' \
             'ENV PATH=/usr/local/concourse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
             'ENTRYPOINT ["/usr/local/concourse/bin/concourse"]' \

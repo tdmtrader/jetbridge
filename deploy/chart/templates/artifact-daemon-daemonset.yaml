@@ -37,6 +37,18 @@
     {{- fail "artifactDaemon.hangar.capabilityTTL must be no greater than 900s" }}
   {{- end }}
 {{- end }}
+{{- /*
+The output plane is mounted in this daemon when exact execution control is on:
+its control ledger is this daemon's storage root, its steps are steps/ beneath
+it, and it is served on this daemon's port under this daemon's TLS. The
+validation runs unconditionally, because the refusal an operator most needs is
+the one for a configuration that renders nothing.
+*/}}
+{{- include "concourse.hangarOutput.validate" . }}
+{{- $output := .Values.hangarOutput }}
+{{- $base := $output.executionControl.enabled | default false }}
+{{- $capture := and $base ($output.enabled | default false) }}
+{{- $outputDisk := and $capture (eq $output.store "disk") }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
 {{- /*
    Resolve mirror.replicas: numbers pass through (including the explicit
@@ -74,7 +86,9 @@ spec:
     spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
-      terminationGracePeriodSeconds: 30
+      # Longer with the output plane mounted: long enough for its facet labels
+      # to come off and the in-flight publish to finish.
+      terminationGracePeriodSeconds: {{ if $base }}60{{ else }}30{{ end }}
       # NOTE: Daemon runs as root — it manages a shared hostPath volume where task
       # containers (running as arbitrary UIDs) write artifacts with varying permissions.
       # K8s does not apply fsGroup to hostPath, so non-root cannot reliably read/clean
@@ -135,6 +149,33 @@ spec:
             - --mirror-replicas={{ $mirrorReplicas }}
             - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
             - --mirror-timeout={{ .Values.artifactDaemon.mirror.timeout | default "5m" }}
+            {{- if $base }}
+            # The output plane: exact execution control, and with the output
+            # facet the durable-capture extension.
+            # The key's id, not its Secret's name. Two nodes holding
+            # different material under one Secret name reported one id, and
+            # base attestation compares ids.
+            - --control-key-id={{ $output.executionControl.keyID }}
+            - --control-key-file=/etc/concourse/hangar-output/control/control.key
+            - --capability-key=/etc/concourse/hangar-output/capability/capability.key
+            - --activation-epoch={{ int $output.activationEpoch }}
+            - --output-timeout={{ $output.operationTimeout }}
+            - --output-scratch-dir={{ .Values.artifactDaemon.outputScratch.path }}
+            - --publish-concurrency={{ int .Values.artifactDaemon.outputScratch.concurrency }}
+            {{- if $capture }}
+            {{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-output-disk") | nindent 12 }}
+            {{- if $output.cacheBucket }}
+            - --cache-bucket={{ $output.cacheBucket }}
+            {{- end }}
+            {{- if $output.strictInputBucket }}
+            - --strict-input-bucket={{ $output.strictInputBucket }}
+            {{- end }}
+            - --receipt-key-id={{ $output.receipt.keyID }}
+            - --receipt-key-file=/etc/concourse/hangar-output/receipt/receipt.key
+            - --materialization-key-id={{ $output.materializationKeyID }}
+            - --materialization-key-file=/etc/concourse/hangar-output/materialize/materialize.key
+            {{- end }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
@@ -163,8 +204,11 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
+            # Readiness is not liveness. A daemon whose output control ledger
+            # is quarantined is alive and must STAY alive so an operator can
+            # read the quarantine; /readyz is what says it is not ready.
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
               scheme: HTTPS
             initialDelaySeconds: 2
@@ -202,6 +246,27 @@ spec:
             {{- if $hangarEnabled }}
             - name: hangar-scratch
               mountPath: {{ .Values.artifactDaemon.hangar.scratchPath }}
+            {{- end }}
+            {{- if $base }}
+            {{- if $outputDisk }}
+            {{- include "concourse.hangarStorage.outputClientMount" . | nindent 12 }}
+            {{- end }}
+            - name: output-scratch
+              mountPath: {{ .Values.artifactDaemon.outputScratch.path }}
+            - name: output-control-key
+              mountPath: /etc/concourse/hangar-output/control
+              readOnly: true
+            - name: output-capability-key
+              mountPath: /etc/concourse/hangar-output/capability
+              readOnly: true
+            {{- if $capture }}
+            - name: output-receipt-key
+              mountPath: /etc/concourse/hangar-output/receipt
+              readOnly: true
+            - name: output-materialize-key
+              mountPath: /etc/concourse/hangar-output/materialize
+              readOnly: true
+            {{- end }}
             {{- end }}
       volumes:
         {{- if and $hangarEnabled (eq .Values.artifactDaemon.hangar.store "disk") }}
@@ -247,6 +312,35 @@ spec:
           secret:
             secretName: {{ . }}
         {{- end }}
+        {{- if $base }}
+        {{- if $outputDisk }}
+        {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "publisher" "name" "hangar-output-disk-client") | nindent 8 }}
+        {{- end }}
+        - name: output-scratch
+          emptyDir:
+            # REQUIRED, and validated against the content limit and the publish
+            # concurrency. An emptyDir with no sizeLimit is bounded by the
+            # node's disk: filling it evicts every Pod on the node.
+            sizeLimit: {{ .Values.artifactDaemon.outputScratch.sizeLimit }}
+        - name: output-control-key
+          secret:
+            secretName: {{ $output.executionControl.keySecret }}
+        - name: output-capability-key
+          secret:
+            secretName: {{ $output.capabilityKeySecret }}
+        {{- if $capture }}
+        - name: output-receipt-key
+          secret:
+            # The private half of the receipt key, mounted HERE and nowhere
+            # else. Web, the controllers, the activation Jobs, the control init
+            # container, the task and the sidecar hold the public key and the
+            # key id.
+            secretName: {{ $output.receipt.privateKeySecret }}
+        - name: output-materialize-key
+          secret:
+            secretName: {{ $output.materializationKeySecret }}
+        {{- end }}
+        {{- end }}
       {{- with .Values.artifactDaemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -259,3 +353,22 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- if $base }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+spec:
+  # A node's source incarnations live on that node's disk and nowhere else, so
+  # evicting a daemon that serves the output plane is taking the only
+  # authority for its holds away. One at a time.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: artifact-daemon
+{{- end }}

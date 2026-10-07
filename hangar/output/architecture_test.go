@@ -734,7 +734,7 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 
 // principalBinaries are the three cmd/ roots and the one role each may link.
 var principalBinaries = map[string]role{
-	"cmd/hangar-output-daemon":    publisherRole,
+	"cmd/artifact-daemon":         publisherRole,
 	"cmd/hangar-output-inventory": inventoryRole,
 	"cmd/hangar-output-reclaimer": reclaimerRole,
 }
@@ -1238,13 +1238,13 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			t.Fatal("the principal rule passed over an empty listing")
 		}
 		listing := map[string][]string{
-			"cmd/hangar-output-daemon":    {rolePackagePrefix + "publisher", rolePackagePrefix + "reclaimer"},
+			"cmd/artifact-daemon":         {rolePackagePrefix + "publisher", rolePackagePrefix + "reclaimer"},
 			"cmd/hangar-output-inventory": {"fmt"},
 			"cmd/hangar-output-reclaimer": {rolePackagePrefix + "reclaimer"},
 		}
 		joined := strings.Join(checkEachPrincipalLinksExactlyItsRole(listing), "\n")
 		for _, expected := range []string{
-			"cmd/hangar-output-daemon links " + rolePackagePrefix + "reclaimer as well as its own role",
+			"cmd/artifact-daemon links " + rolePackagePrefix + "reclaimer as well as its own role",
 			"cmd/hangar-output-inventory does not link " + rolePackagePrefix + "inventory",
 		} {
 			if !strings.Contains(joined, expected) {

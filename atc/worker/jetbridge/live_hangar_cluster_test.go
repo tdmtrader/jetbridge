@@ -71,7 +71,7 @@ import (
 
 // liveClusterImageEnv names the image every JetBridge container in the chart
 // runs: concourse (web, the bootstrap Jobs, its ENTRYPOINT), artifact-daemon,
-// hangar-store, hangar-output-daemon, hangar-output-inventory,
+// hangar-store, hangar-output-inventory,
 // hangar-output-reclaimer and hangar-output-activate under
 // /usr/local/concourse/bin, plus a shell. It must already be loaded into the
 // cluster's container runtime (the chart is rendered with
@@ -218,9 +218,9 @@ type liveClusterNames struct {
 	release, namespace string
 
 	warrant, storeTLS, storeCredentials, control, capability     string
-	outputTLS, outputClient, receipt, materialize, dsn, runInput string
+	receipt, materialize, dsn, runInput string
 
-	daemonTLS, resolve, postgres, readControlCA, signingKey string
+	daemonTLS, resolve, postgres, signingKey string
 }
 
 func newLiveClusterNames(release, namespace string) liveClusterNames {
@@ -231,20 +231,16 @@ func newLiveClusterNames(release, namespace string) liveClusterNames {
 		storeCredentials: release + "-hangar-store-credentials",
 		control:          release + "-hangar-control-key-e1",
 		capability:       release + "-hangar-capability-key",
-		outputTLS:        release + "-hangar-output-tls",
-		outputClient:     release + "-hangar-output-client-tls",
 		receipt:          release + "-hangar-receipt-key-e1",
 		materialize:      release + "-hangar-materialize-key",
 		dsn:              release + "-hangar-activation-dsn",
 		runInput:         release + "-run-input-signing-key",
 		// Operator-owned, outside the bootstrap inventory: the artifact
 		// daemon's pinned TLS Secret and resolve key, the database password
-		// the bundled PostgreSQL and web share, the read-control CA, and
-		// web's session signing key.
+		// the bundled PostgreSQL and web share, and web's session signing key.
 		daemonTLS:     release + "-artifact-daemon-tls",
 		resolve:       release + "-artifact-daemon-resolve",
 		postgres:      release + "-postgresql-connection",
-		readControlCA: release + "-read-control-ca",
 		signingKey:    release + "-session-signing-key",
 	}
 }
@@ -253,8 +249,10 @@ func (names liveClusterNames) storeService() string { return names.release + "-h
 func (names liveClusterNames) storeDNS() string {
 	return names.storeService() + "." + names.namespace + ".svc"
 }
-func (names liveClusterNames) outputDaemonServerName() string {
-	return names.release + "-hangar-output-daemon." + names.namespace + ".svc"
+// outputPlaneServerName is the artifact daemon's server name: it serves the
+// output plane.
+func (names liveClusterNames) outputPlaneServerName() string {
+	return daemonServerName(names.release+"-artifact-daemon", names.namespace)
 }
 
 // liveCluster is one release of the chart in its own namespace on a disposable
@@ -359,8 +357,7 @@ func newLiveCluster(t *testing.T, release string, budget time.Duration) *liveClu
 
 // createOperatorObjects makes what an operator provides outside the bootstrap
 // inventory, as concourse.home does: the artifact daemon's pinned TLS Secret
-// and resolve key, the database password Secret, web's session signing key,
-// and the CA the output daemon trusts for its read-control URL.
+// and resolve key, the database password Secret and web's session signing key.
 func (cluster *liveCluster) createOperatorObjects() {
 	t, names := cluster.t, cluster.names
 	cluster.ca = newLiveDiskCA(t)
@@ -386,11 +383,6 @@ func (cluster *liveCluster) createOperatorObjects() {
 		if _, err := cluster.client.CoreV1().Secrets(names.namespace).Create(cluster.ctx, secret, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create operator Secret %s: %v", name, err)
 		}
-	}
-	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: names.readControlCA, Namespace: names.namespace},
-		Data: map[string]string{"ca.crt": string(cluster.ca.certPEM)}}
-	if _, err := cluster.client.CoreV1().ConfigMaps(names.namespace).Create(cluster.ctx, configMap, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create the read-control CA ConfigMap: %v", err)
 	}
 }
 
@@ -452,8 +444,6 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 			"hangarOutput.executionControl.keySecret=" + names.control,
 			"hangarOutput.executionControl.keyID=" + liveClusterControlKeyID,
 			"hangarOutput.capabilityKeySecret=" + names.capability,
-			"hangarOutput.daemon.tls.existingSecret=" + names.outputTLS,
-			"hangarOutput.daemon.tls.clientSecret=" + names.outputClient,
 			"hangarOutput.receipt.keyID=" + liveClusterReceiptKeyID,
 			"hangarOutput.receipt.privateKeySecret=" + names.receipt,
 			"hangarOutput.materializationKeySecret=" + names.materialize,
@@ -473,16 +463,13 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 		return []string{"artifactDaemon.hangar.webEnabled=true"}
 	case "S6":
 		// The walk's target has no default; a plane not yet activated is off.
-		return []string{"hangarOutput.executionControl.enabled=true", "hangarOutput.daemon.scratch.sizeLimit=32Gi",
+		return []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi",
 			"hangarOutput.activation.target=off"}
 	case "S7":
 		return []string{"hangarOutput.activation.target=base"}
 	case "S10":
-		// The read-control URL is never dialed here: no read is served.
 		return []string{
-			"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=" + liveClusterTenant,
-			"hangarOutput.readControlURL=https://" + names.release + "-web." + names.namespace + ".svc",
-			"hangarOutput.readControlCA.configMap=" + names.readControlCA, "hangarOutput.readControlCA.key=ca.crt"}
+			"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=" + liveClusterTenant}
 	case "S11":
 		return []string{"hangarOutput.activation.target=output"}
 	case "S13":
@@ -503,10 +490,8 @@ func (cluster *liveCluster) through(ids ...string) []string {
 		"artifactDaemon.resolveCapability.existingSecret=" + names.resolve,
 		"secrets.signingKeySecret=" + names.signingKey,
 		// Per release, so a second contract on this node never opens the
-		// first one's output control ledger.
+		// first one's output control ledger: it lives in the storage root.
 		"artifactDaemon.hostPath=" + cluster.hostPath,
-		"hangarOutput.daemon.controlPath=" + cluster.hostPath + "/hangar-output-control",
-		"hangarOutput.daemon.stepsPath=" + cluster.hostPath + "/hangar-output-steps",
 		"postgresql.existingSecret=" + names.postgres, "postgresql.passwordSecretKey=POSTGRES_PASSWORD",
 		// The chart's PostgreSQL runs as uid 999 on a subPath, and a
 		// local-path volume's subPath is created root-owned, so initdb cannot
@@ -1375,22 +1360,23 @@ func (cluster *liveCluster) assertWebLoadedRings(inventory []liveInventoryEntry)
 	}
 }
 
-// outputDaemonClient presents web's control-plane client certificate, from
-// the Secret web mounts, and verifies the output daemon's server certificate
-// against the name the chart hands both halves.
+// outputDaemonClient presents web's client certificate for the artifact
+// daemon, from the Secret web mounts, and verifies the daemon's server
+// certificate against its headless Service name. The artifact daemon serves the
+// output plane.
 func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Client {
 	t := cluster.t
 	t.Helper()
-	secret := cluster.secret(cluster.names.outputClient)
+	secret := cluster.secret(cluster.names.daemonTLS)
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(secret.Data["ca.crt"]) {
-		t.Fatalf("Secret %s's ca.crt holds no certificate", cluster.names.outputClient)
+		t.Fatalf("Secret %s's ca.crt holds no certificate", cluster.names.daemonTLS)
 	}
-	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: cluster.names.outputDaemonServerName()}
+	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: cluster.names.outputPlaneServerName()}
 	if withCertificate {
-		certificate, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
+		certificate, err := tls.X509KeyPair(secret.Data["client.crt"], secret.Data["client.key"])
 		if err != nil {
-			t.Fatalf("Secret %s is not a key pair: %v", cluster.names.outputClient, err)
+			t.Fatalf("Secret %s is not a key pair: %v", cluster.names.daemonTLS, err)
 		}
 		config.Certificates = []tls.Certificate{certificate}
 	}
@@ -1407,7 +1393,7 @@ func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Clien
 func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
 	t := cluster.t
 	t.Helper()
-	handshakeURL := fmt.Sprintf("https://%s:7781/capture/v1/handshake", cluster.nodeIP)
+	handshakeURL := fmt.Sprintf("https://%s:7780/capture/v1/handshake", cluster.nodeIP)
 	body, status := liveGet(t, cluster.ctx, cluster.outputDaemonClient(true), handshakeURL)
 	if status != http.StatusOK {
 		t.Fatalf("the output daemon refused web's client certificate on the capture handshake: %d %s", status, body)

@@ -876,7 +876,6 @@ func normalizeExclusion(pkg string) string {
 func TestThePipelineKeepsTheHangarWorkloadsOnWebsImage(t *testing.T) {
 	workloads := []string{
 		"deployment/concourse-hangar-store",
-		"daemonset/concourse-hangar-output-daemon",
 		"deployment/concourse-hangar-output-inventory",
 		"deployment/concourse-hangar-output-reclaimer",
 	}

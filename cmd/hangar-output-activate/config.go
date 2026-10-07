@@ -131,14 +131,14 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.BoolVar(&config.Finalize, "finalize", false,
 		"Let a drain, or a walk to a lower target, take a facet to the terminal `disabled` state. Without it a drain stops new admission and reports what is still live; unsafe removal is blocked rather than promised after a finite drain.")
 	flags.StringVar(&config.Namespace, "namespace", "",
-		"Kubernetes namespace the output daemon runs in. Attestation enumerates the cohort from the API and never from node labels.")
+		"Kubernetes namespace the artifact daemon (which serves the output plane) runs in. Attestation enumerates the cohort from the API and never from node labels.")
 	flags.StringVar(&config.DaemonSelector, "daemon-selector",
-		"app.kubernetes.io/component=hangar-output-daemon",
-		"Label selector for the output daemon's pods.")
-	flags.IntVar(&config.DaemonPort, "daemon-port", 7781,
-		"Control port of the node-local output daemon.")
+		"app.kubernetes.io/component=artifact-daemon",
+		"Label selector for the artifact daemon's pods, which serve the output plane.")
+	flags.IntVar(&config.DaemonPort, "daemon-port", 7780,
+		"Port of the node-local artifact daemon, which serves the output plane.")
 	flags.StringVar(&config.DaemonSetName, "daemonset-name", "",
-		"For walk: the output daemon's DaemonSet, read through a namespaced get. Each attestation waits until its updated, ready and desired counts are equal and every member pod is Ready.")
+		"For walk: the artifact daemon's DaemonSet, read through a namespaced get. Each attestation waits until its updated, ready and desired counts are equal and every member pod is Ready.")
 	flags.DurationVar(&config.ReadinessTimeout, "readiness-timeout", 10*time.Minute,
 		"For walk: how long an attestation waits for the output DaemonSet to settle before the walk fails.")
 	flags.StringVar(&config.TLSCert, "tls-cert", "",

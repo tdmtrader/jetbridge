@@ -173,25 +173,25 @@ func TestStatExactObjectRefusesARefOutsideItsNamespace(t *testing.T) {
 	testsupport.ExpectNoRPC(t, recorder)
 }
 
-func TestOpenExactObjectRefusesALeaseForAnotherRefBeforeTheStoreIsReached(t *testing.T) {
+func TestOpenExactObjectRefusesAWarrantForAnotherRefBeforeTheStoreIsReached(t *testing.T) {
 	ctx := context.Background()
 	namespace := namespaceFor(t, "tenant-a")
 	built, recorder := role(t, namespace)
 
 	ref := namespace.Ref(testsupport.Digest("ef"), 1)
-	lease := testsupport.Lease(t, ref, epoch)
+	warrant := testsupport.Warrant(t, ref, epoch)
 
 	another := ref
 	another.Generation++
-	if _, _, err := built.OpenExactObject(ctx, another, lease); !errors.Is(err, output.ErrUnauthorized) {
-		t.Errorf("a read outside the lease was answered with %v, expected ErrUnauthorized", err)
+	if _, _, err := built.OpenExactObject(ctx, another, warrant); !errors.Is(err, output.ErrUnauthorized) {
+		t.Errorf("a read outside the warrant was answered with %v, expected ErrUnauthorized", err)
 	}
 	testsupport.ExpectNoRPC(t, recorder)
 
-	unleased := lease
-	unleased.LeaseFence = 0
-	if _, _, err := built.OpenExactObject(ctx, ref, unleased); err == nil {
-		t.Error("a lease that does not validate authorized a read")
+	incomplete := warrant
+	incomplete.Nonce = ""
+	if _, _, err := built.OpenExactObject(ctx, ref, incomplete); err == nil {
+		t.Error("a warrant that does not validate authorized a read")
 	}
 	testsupport.ExpectNoRPC(t, recorder)
 }

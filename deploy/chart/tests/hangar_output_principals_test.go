@@ -126,7 +126,7 @@ func TestEveryServiceAccountValueTheChartRendersIsRefusedWhenItCollides(t *testi
 
 	const (
 		reclaimer = "jb-concourse-jetbridge-hangar-output-reclaimer"
-		daemon    = "jb-concourse-jetbridge-hangar-output-daemon"
+		daemon    = "jb-concourse-jetbridge-artifact-daemon"
 	)
 
 	for _, path := range paths {
@@ -151,7 +151,7 @@ func TestEveryServiceAccountValueTheChartRendersIsRefusedWhenItCollides(t *testi
 
 func TestGCSDoesNotRequireDeclaredCloudIdentities(t *testing.T) {
 	out := renderOutput(t,
-		`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
+		`artifactDaemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
 		`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
 		`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`)
 	if strings.Contains(out, "hangar-output-policy-attestor") {
