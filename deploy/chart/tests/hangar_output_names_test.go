@@ -24,13 +24,13 @@ import (
 // except by renaming the release. The fullname is `<release>-concourse-jetbridge`,
 // so the threshold was a 28-character release name; Helm permits 53.
 //
-// The second is worse because it does not fail. Three of the output
-// NetworkPolicies derived their component label by trimming the fullname prefix
-// off the already-truncated workload name, while the Deployments set the same
-// label from a literal. Once truncation bit, the two disagreed and the
-// podSelector matched nothing -- and a NetworkPolicy that selects no pod is not
-// an error and is not a deny. The controllers simply had no policy, silently,
-// from a render that looks right.
+// The second is worse because it does not fail. Three of the (since removed)
+// output controller NetworkPolicies derived their component label by trimming
+// the fullname prefix off the already-truncated workload name, while the
+// Deployments set the same label from a literal. Once truncation bit, the two
+// disagreed and the podSelector matched nothing -- and a NetworkPolicy that
+// selects no pod is not an error and is not a deny. The controllers simply had
+// no policy, silently, from a render that looks right.
 
 // releaseNameLengths spans what Helm permits. 20 and 27 are where the
 // NetworkPolicy labels used to start disagreeing, 28 is where the render used
@@ -62,7 +62,10 @@ func TestTheOutputPlaneRendersAtEveryReleaseNameHelmPermits(t *testing.T) {
 		release := releaseNameOfLength(length)
 
 		t.Run(release[:1]+"…"+string(rune('0'+length/10))+string(rune('0'+length%10)), func(t *testing.T) {
-			out, err := renderRelease(t, release, append(append([]string{}, outputSets...),
+			// On the disk store, so the store's Deployment, Service, volume
+			// claim and NetworkPolicy -- named by the same composition -- are
+			// in the render as well.
+			out, err := renderRelease(t, release, append(append(append([]string{}, outputSets...), diskSets...),
 				"hangarOutput.networkPolicy.enabled=true")...)
 			if err != nil {
 				t.Fatalf("the output facet does not render at a %d-character release name, "+
@@ -92,12 +95,12 @@ func TestTheOutputPlaneRendersAtEveryReleaseNameHelmPermits(t *testing.T) {
 						"are one object, and apply order decides which", key, len(sources), sources)
 				}
 			}
-			// Only the output plane's own objects: the chart's pre-existing
+			// Only the Hangar plane's own objects: the chart's pre-existing
 			// Services are too long at these lengths on core as well, and that
 			// is a separate follow-up.
 			for key := range names {
 				name := key[strings.Index(key, "/")+1:]
-				if !strings.Contains(name, "hangar-output") {
+				if !strings.Contains(name, "hangar-output") && !strings.Contains(name, "hangar-store") {
 					continue
 				}
 				if len(name) > 63 {
@@ -126,7 +129,7 @@ func TestEverySelectorInTheChartsOwnVocabularySelectsARenderedPod(t *testing.T) 
 		release := releaseNameOfLength(length)
 
 		t.Run(release[:1]+"…", func(t *testing.T) {
-			out, err := renderRelease(t, release, append(append([]string{}, outputSets...),
+			out, err := renderRelease(t, release, append(append(append([]string{}, outputSets...), diskSets...),
 				"networkPolicy.enabled=true",
 				"hangarOutput.networkPolicy.enabled=true",
 				"artifactDaemon.networkPolicy.enabled=true",
@@ -187,7 +190,9 @@ func TestEverySelectorInTheChartsOwnVocabularySelectsARenderedPod(t *testing.T) 
 				}
 			}
 
-			if len(selectors) < 8 || len(templates) < 5 {
+			// Four pod templates: web, the artifact daemon, the database and
+			// the disk store. The output controllers that made it five are gone.
+			if len(selectors) < 8 || len(templates) < 4 {
 				t.Fatalf("found %d selectors and %d pod templates; the scan failed and this "+
 					"rule would pass vacuously", len(selectors), len(templates))
 			}
@@ -238,46 +243,4 @@ func selects(selector, labels map[string]string) bool {
 	}
 
 	return true
-}
-
-// The activation walk Job has one fixed name, whatever the epoch, target or
-// finalize flag.
-//
-// The step Jobs carried their mode and epoch in the name, because a Job's
-// `spec.template` is immutable and the `--epoch=` argument lives inside it: one
-// name for two epochs made the second `helm upgrade` fail with
-// `Job.batch … field is immutable`. The walk is a hook with BeforeHookCreation
-// instead, so the previous run is deleted before the next is created, and an
-// image bump, a new epoch or a finalize all reuse the one name. A name that
-// still varied would leave a finished walk behind for every value it ever had.
-func TestTheActivationWalkJobHasOneFixedName(t *testing.T) {
-	jobNameFor := func(epoch string, extra ...string) string {
-		sets := append(append([]string{}, outputSets...),
-			"hangarOutput.activationEpoch="+epoch,
-			"hangarOutput.executionControl.publicKeys[0].epoch="+epoch)
-
-		return objectNamed(t, render(t, append(sets, extra...)...), "Job", "").name
-	}
-
-	const want = "jb-concourse-jetbridge-hangar-output-walk"
-	for _, name := range []string{
-		jobNameFor("7"),
-		jobNameFor("8"),
-		jobNameFor("7", "hangarOutput.activation.job.finalize=true"),
-		jobNameFor("8", "hangarOutput.activation.target=output",
-			"hangarOutput.activation.job.finalize=true"),
-	} {
-		if name != want {
-			t.Errorf("the activation walk Job is named %q, not %q", name, want)
-		}
-	}
-}
-
-// A finished walk is deleted after its TTL, and the next sync recreates it.
-func TestCompletedActivationJobsExpire(t *testing.T) {
-	job := objectNamed(t, renderOutput(t), "Job", "")
-	if !strings.Contains(job.body, "ttlSecondsAfterFinished:") {
-		t.Error("the activation walk Job sets no ttlSecondsAfterFinished; a finished walk " +
-			"stays until the next sync's BeforeHookCreation deletes it")
-	}
 }

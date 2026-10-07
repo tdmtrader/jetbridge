@@ -875,9 +875,9 @@ func normalizeExclusion(pkg string) string {
 // Hangar Run tests log in with.
 func TestThePipelineKeepsTheHangarWorkloadsOnWebsImage(t *testing.T) {
 	workloads := []string{
+		// The disk store owner is the one Hangar workload with a Deployment of
+		// its own: the output plane's reclaim and orphan sweep run in web.
 		"deployment/concourse-hangar-store",
-		"deployment/concourse-hangar-output-inventory",
-		"deployment/concourse-hangar-output-reclaimer",
 	}
 	root := repoRoot(t)
 	pipeline := loadPipeline(t, filepath.Join(root, "deploy", "concourse-pipeline.yml"))

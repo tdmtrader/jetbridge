@@ -180,7 +180,10 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
-                values: [artifact-daemon, hangar-output-inventory, hangar-output-reclaimer]
+                # The daemon publishes strict inputs and outputs; the web lists,
+                # stats and deletes in the output namespace (reclaim and the
+                # orphan sweep).
+                values: [artifact-daemon, web]
       ports:
         - protocol: TCP
           port: 7783

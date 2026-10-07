@@ -401,7 +401,12 @@ rbac:
 serviceAccount:
   # -- Create a ServiceAccount for the web pod
   create: true
-  # -- Annotations to add to the ServiceAccount
+  # -- Annotations to add to the ServiceAccount. With hangarOutput.enabled on
+  # GCS, this is the output plane's RECLAIM identity -- the web runs reclaim
+  # and the orphan sweep -- e.g. the GCS Workload Identity binding:
+  #   iam.gke.io/gcp-service-account: reclaim@project.iam.gserviceaccount.com
+  # It must not be the artifact daemon's (publisher) principal; the chart
+  # refuses one principal on both.
   annotations: {}
 
 # -- OpenTelemetry tracing configuration.
@@ -715,37 +720,37 @@ artifactDaemon:
 #
 # WHAT THE CHART DOES NOT DO. It never creates a bucket, a bucket lifecycle
 # rule, a cloud service account, a Workload Identity binding or an IAM policy.
-# Those are an operator or Terraform concern, and activation is what proves they
-# exist and are what they claim -- the chart renders identities and refuses
-# configurations, it enforces nothing in the cloud.
+# Those are an operator or Terraform concern; a missing or wrong one surfaces as
+# a recorded runtime integrity failure, never as a render error -- the chart
+# renders identities and refuses configurations, it enforces nothing in the
+# cloud.
 #
-# THE HONEST PERMISSION MATRIX. Three workloads, three Kubernetes service
-# accounts, three cloud principals, because a Kubernetes service account is
+# THE HONEST PERMISSION MATRIX. Two workloads, two Kubernetes service
+# accounts, two cloud principals, because a Kubernetes service account is
 # Pod-wide: a process that holds a role has that role for everything else it
 # does. The minimum roles are
 #
 #   artifact daemon output plane (publisher/materializer)
 #     storage.objects.create, storage.objects.get
-#   inventory
-#     storage.objects.list, storage.objects.get
-#   reclaimer
-#     storage.objects.get, storage.objects.delete
+#   web (reclaim and orphan sweep)
+#     storage.objects.list, storage.objects.get, storage.objects.delete
 #
 # and three of those grants are weaker than they read, so they are written down
 # here rather than discovered:
 #
 #   * storage.objects.get is BODY-CAPABLE. GCS has no metadata-only object
 #     permission: a principal that can stat an object can download it. The
-#     inventory and reclaim code paths perform metadata-only requests, but IAM
-#     is not what makes that true -- code is, and the dedicated bucket is the
+#     reclaim and sweep code paths perform metadata-only requests, but IAM is
+#     not what makes that true -- code is, and the dedicated bucket is the
 #     boundary.
 #   * storage.objects.list is BUCKET-WIDE. There is no caller-visible prefix
-#     boundary in list authority, so "inventory only lists its own prefix" is an
-#     application-level property and not an IAM one. That is why inventory is
-#     the only workload granted list at all, and why the output bucket contains
-#     nothing but output-plane objects.
+#     boundary in list authority, so "the orphan sweep only lists its own
+#     prefix" is an application-level property and not an IAM one. That is why
+#     the web is the only workload granted list at all, and why the output
+#     bucket contains nothing but output-plane objects.
 #   * Replacing an existing object requires BOTH storage.objects.create and
-#     storage.objects.delete. The publisher holds only create/get. Its
+#     storage.objects.delete. The publisher holds only create/get, and the web
+#     holds no create: no one principal can overwrite. The publisher's
 #     create-if-absent precondition additionally protects against overwrite.
 #
 # PERMISSIONS NO RUNTIME PRINCIPAL HOLDS. An absent grant is a promise, and a
@@ -759,12 +764,14 @@ artifactDaemon:
 #     that can be rewritten is not evidence of who created an object. It is
 #     forbidden to all runtime principals -- including the publisher, which is the
 #     one that would want it -- and note that roles/storage.objectAdmin and
-#     roles/storage.objectUser GRANT it, so "the reclaimer just has objectAdmin"
+#     roles/storage.objectUser GRANT it, so "the web just has objectAdmin"
 #     is not a compatible binding.
 #   storage.objects.delete
-#     Held by the reclaimer alone. It is the only destructive permission in the
-#     plane and the entire reason the reclaimer is a separate Pod under a
-#     separate identity.
+#     Held by the web alone, which deletes only an exact generation under a
+#     precondition (reclaim) or an object whose marker names this store with no
+#     lifecycle row (the orphan sweep). It is the only destructive permission
+#     in the plane and the reason the web and the publisher are separate
+#     identities.
 #   storage.buckets.update, storage.buckets.setIamPolicy
 #     Bucket lifecycle and IAM administration belong to operators.
 #
@@ -789,13 +796,10 @@ hangarBootstrap:
     # Set web.runInputSigningKeySecret to this name once
     # hangarOutput.webEnabled is on.
     runInputSigningKey: ""
-  # -- Earlier activation epochs whose node-control keys the ring must keep:
-  # [{epoch, controlSecret}]. The bootstrap reads them and never creates one.
+  # -- Earlier control-key generations (hangarOutput.activationEpoch) whose
+  # node-control keys the ring must keep: [{epoch, controlSecret}]. The
+  # bootstrap reads them and never creates one.
   referencedKeys: []
-  database:
-    # -- Create the activation database role and its connection-string
-    # Secret (hangar_activation_db_role), as a PostSync Job.
-    enabled: false
 
 hangarOutput:
   # -- Object storage profile: gcs or disk.
@@ -811,8 +815,9 @@ hangarOutput:
   # output facet passes as well, the same daemon adds
   # `concourse.dev/hangar-output-v1`. A capture-selected pod's affinity requires
   # BOTH, and neither alone admits it. Neither is authority -- the authenticated
-  # daemon handshake and the activation epoch row are -- so a label buys only
-  # that the pod does not land somewhere its hold could never be acknowledged.
+  # daemon handshake and the web's hangar_enabled row are -- so a label buys
+  # only that the pod does not land somewhere its hold could never be
+  # acknowledged.
   #
   # `concourse.dev/hangar-v1` is a THIRD label and is not this plane's: it
   # attests strict INPUTS and belongs to the existing artifact daemon.
@@ -820,8 +825,8 @@ hangarOutput:
     enabled: false
     # -- Existing Secret holding control.key: a PKCS#8 PEM Ed25519 private key
     # the node signs execution and source ledger statements with. Required.
-    # It is NOT the read-warrant key and NOT the capability key; an activation
-    # epoch pins them separately so rotating one does not rotate the others.
+    # It is NOT the read-warrant key and NOT the capability key; they are
+    # separate Secrets so replacing one does not replace the others.
     keySecret: ""
     # -- Key id of the control key above, and the id every node in the cohort
     # reports over the attestation handshake. Required whenever enabled.
@@ -847,8 +852,11 @@ hangarOutput:
   # -- The OUTPUT facet: durable capture, claims and reclamation.
   # Requires executionControl.enabled. Never the other way round.
   enabled: false
-  # -- Enable web-side capture selection and checkpoint emission. Requires
-  # enabled, and an activation epoch whose output facet is enabled.
+  # -- Whether the output plane is IN SERVICE. The web writes it into its
+  # hangar_enabled row at startup; with it on, web selects captures and emits
+  # checkpoints. Requires enabled. To drain: set it false, wait for
+  # `fly hangar-status` to report zero residue, then turn the daemon's output
+  # plane off. There is no activation step and nothing to rotate.
   webEnabled: false
 
   # -- The dedicated output bucket. Externally provisioned, contains only
@@ -862,8 +870,10 @@ hangarOutput:
   # -- Authenticated deployment/tenant identity the opaque scope is derived
   # from. It is never rendered into an object key. Required when enabled.
   tenant: ""
-  # -- The activation epoch every workload speaks for. Rotation creates a NEW
-  # epoch rather than replacing a key in place. Required when enabled.
+  # -- The control-key generation: capabilities are minted, and the
+  # control-keys ring is keyed, under it. It is not a lifecycle state -- in
+  # service is webEnabled -- and nothing rotates it. Required (positive) with
+  # executionControl.enabled.
   activationEpoch: 0
 
   # -- The two buckets this plane may not be, named so the daemon can refuse to
@@ -872,8 +882,8 @@ hangarOutput:
   strictInputBucket: ""
   # -- Declare that trust domains are separated by key prefix inside one shared
   # bucket. It is REFUSED: object-level permission is not expressible in a
-  # bucket policy, so prefix-only IAM is not an activation-compatible
-  # substitute for a dedicated bucket.
+  # bucket policy, so prefix-only IAM is not a substitute for a dedicated
+  # bucket.
   sharedBucketPrefixOnlyIsolation: false
 
   # -- Endpoint override for the OUTPUT bucket's store. Empty means real GCS;
@@ -884,7 +894,8 @@ hangarOutput:
 
   # -- Deadlines, grace and leases. The chart enforces the relationships
   # between them, because a grace that does not exceed the maximum capture
-  # deadline can collect an object a capture is still allowed to register.
+  # deadline can reclaim an object a capture is still allowed to register.
+  # publicationGrace is one of the web's reclaim admission preconditions.
   captureDeadline: "24h"     # 1h .. 168h
   publicationGrace: "192h"   # >= captureDeadline + 1h, <= 720h
   leaseTerm: "15m"           # at least 15m
@@ -900,75 +911,26 @@ hangarOutput:
   materializationKeySecret: ""
   # -- Key id for the above.
   materializationKeyID: "output-materialize-1"
-  inventory:
-    # -- Disabling a controller while the output facet is on is refused: an
-    # activation epoch attests recovery, inventory and reclaim workers, and a
-    # plane with no reclaimer keeps every published object forever while
-    # claiming it does not.
-    enabled: true
-    # -- Exactly one. There is one durable cursor and one renewable lease owner
-    # per bucket and epoch; a second replica is a second cursor owner.
-    replicas: 1
+  # -- The web's reclaim pass: admission, conditional delete, finalization.
+  # It runs in every web node with the output plane enabled; a database lock
+  # keeps passes from overlapping.
+  reclaim:
     interval: "1m"
-    serviceAccount:
-      name: ""
-      annotations: {}
-    resources: {}
-
-  reclaimer:
-    enabled: true
-    replicas: 1
-    interval: "1m"
-    # -- How long one conditional delete may take. The lease term is derived
-    # from it, and work begins only with the timeout plus two minutes of lease
-    # remaining.
+    # -- How long one conditional delete may take.
     deleteTimeout: "2m"
-    # -- How many jobs one pass may admit or advance.
+    # -- How many generations one pass admits, and jobs it advances.
     batch: 10
-    serviceAccount:
-      name: ""
-      annotations: {}
-    resources: {}
 
-  # -- The activation/downgrade Jobs' own identity (decision F4). They do NOT
-  # inherit the web pod's database credential: the architecture guard saying
-  # only the activation command writes hangar_output_activation_epochs is
-  # enforceable only while that command has a PostgreSQL role of its own.
-  database:
-    # -- Existing Secret with the activation role's connection string under the
-    # key `dsn`. Required with execution control on, because the activation
-    # walk Job renders there and runs as this role.
-    existingSecret: ""
-  activation:
-    serviceAccount:
-      name: ""
-      annotations: {}
-    # -- Where the activation walk takes hangarOutput.activationEpoch: off,
-    # base or output. Required with hangarOutput.executionControl.enabled, and
-    # deliberately without a default: set it to the plane's current live state
-    # before upgrading, because the walk runs as a PostSync hook on every sync,
-    # makes only the transitions the epoch's row still needs, and drains every
-    # facet above its target. base needs execution control, and output needs
-    # hangarOutput.enabled as well. A drained facet never comes back: raising
-    # activationEpoch is the re-enable after a drain, once the other epoch is
-    # finalized. No single value enables a capability: the walk attests the
-    # cohort and checks every enable precondition, and the epoch row's
-    # constraints do the rest. Quote "off": unquoted, YAML reads it as false.
-    target: ""
-    job:
-      # -- Let a walk to a lower target take a drained facet to the terminal
-      # disabled state. Without it a drain stops new admission and reports
-      # what is still live; with it the facet reaches disabled only if the
-      # live tables say it holds nothing.
-      finalize: false
-      # -- How long a finished walk Job is kept before Kubernetes deletes it.
-      # The next sync deletes and recreates the hook anyway (one fixed name,
-      # BeforeHookCreation), so this only bounds how long a finished walk's
-      # logs stay readable between syncs. Empty or 0 keeps it until then.
-      ttlSecondsAfterFinished: 86400
+  # -- The web's orphan sweep. It lists the output namespace and deletes only
+  # an object whose marker names this store, that has no lifecycle row, and
+  # that is older than twice captureDeadline. Everything else is counted and
+  # left alone.
+  orphanSweep:
+    interval: "1h"
 
   networkPolicy:
-    # -- Enable NetworkPolicies for the output workloads.
+    # -- Enable the output plane's NetworkPolicies: the artifact daemon's and,
+    # on the disk store, the store's.
     enabled: false
 
 # -- Authenticated MCP is always available. Registration grants no user permissions;
@@ -996,7 +958,9 @@ hangarStorage:
       # tls.crt/tls.key for the storage Service DNS name; ca.crt for clients.
       existingSecret: ""
     credentials:
-      # input, publisher, inventory, reclaimer, server.json (role-to-token JSON).
+      # input and publisher (artifact daemon), inventory and reclaimer (web:
+      # orphan-sweep listing, and reclaim deletes), server.json (role-to-token
+      # JSON, the store's).
       existingSecret: ""
     maxObjectBytes: 17179869184
     maxConcurrent: 4

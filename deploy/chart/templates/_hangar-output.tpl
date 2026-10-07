@@ -8,34 +8,8 @@
 {{- printf "%s-%s" (include "concourse.fullname" .root | trunc $budget | trimSuffix "-") $suffix -}}
 {{- end }}
 
-{{- define "concourse.hangarOutput.inventoryName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-inventory") }}
-{{- end }}
-
-{{- define "concourse.hangarOutput.reclaimerName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-reclaimer") }}
-{{- end }}
-
-
 {{- define "concourse.hangarOutput.controlKeysName" -}}
 {{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-control-keys") }}
-{{- end }}
-
-{{- define "concourse.hangarOutput.activationName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-activation") }}
-{{- end }}
-
-{{- define "concourse.hangarOutput.inventoryServiceAccount" -}}
-{{- default (include "concourse.hangarOutput.inventoryName" .) .Values.hangarOutput.inventory.serviceAccount.name }}
-{{- end }}
-
-{{- define "concourse.hangarOutput.reclaimerServiceAccount" -}}
-{{- default (include "concourse.hangarOutput.reclaimerName" .) .Values.hangarOutput.reclaimer.serviceAccount.name }}
-{{- end }}
-
-
-{{- define "concourse.hangarOutput.activationServiceAccount" -}}
-{{- default (include "concourse.hangarOutput.activationName" .) .Values.hangarOutput.activation.serviceAccount.name }}
 {{- end }}
 
 {{- define "concourse.durationSeconds" -}}
@@ -119,7 +93,7 @@
 {{- fail "hangarOutput.activationEpoch must be an integer, not a string" -}}
 {{- end -}}
 {{- if le (int $output.activationEpoch) 0 -}}
-{{- fail "hangarOutput.activationEpoch is required and must be positive: a stale or absent epoch authorizes nothing, and zero is the absence." -}}
+{{- fail "hangarOutput.activationEpoch is required and must be positive: it is the control-key generation every capability is minted under, and zero is the absence." -}}
 {{- end -}}
 {{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- end -}}
@@ -129,12 +103,7 @@
 {{- include "concourse.hangarOutput.validateIntervals" . -}}
 {{- include "concourse.hangarOutput.validateKeys" . -}}
 {{- include "concourse.hangarOutput.validateDurations" . -}}
-{{- include "concourse.hangarOutput.validateControllers" . -}}
 {{- include "concourse.hangarOutput.validatePrincipals" . -}}
-
-{{- if not $output.database.existingSecret -}}
-{{- fail "hangarOutput.database.existingSecret is required: the activation and drain Jobs use a PostgreSQL role of their own, distinct from the web pod's, which is what makes \"only the activation command writes hangar_output_activation_epochs\" enforceable rather than aspirational." -}}
-{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -147,10 +116,10 @@
 {{- fail "hangarOutput.tenant is required: the opaque output scope is derived from authenticated deployment/tenant identity, and an empty one would make every deployment's scope the same." -}}
 {{- end -}}
 {{- if $output.sharedBucketPrefixOnlyIsolation -}}
-{{- fail "hangarOutput.sharedBucketPrefixOnlyIsolation is refused. Object-level permission is not expressible in a bucket policy, and storage.objects.list authority has no caller-visible prefix boundary, so prefix-only IAM inside a shared bucket is not an activation-compatible substitute for a dedicated one." -}}
+{{- fail "hangarOutput.sharedBucketPrefixOnlyIsolation is refused. Object-level permission is not expressible in a bucket policy, and storage.objects.list authority has no caller-visible prefix boundary, so prefix-only IAM inside a shared bucket is not a substitute for a dedicated one." -}}
 {{- end -}}
 {{- if and $output.cacheBucket (eq $output.bucket $output.cacheBucket) -}}
-{{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.cacheBucket. The output plane needs a DEDICATED bucket: the cache tier is fail-open, name-keyed and re-derivable, and mixing the two puts objects with no ownership marker in the namespace inventory sweeps." $output.bucket) -}}
+{{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.cacheBucket. The output plane needs a DEDICATED bucket: the cache tier is fail-open, name-keyed and re-derivable, and mixing the two puts objects with no ownership marker in the namespace the orphan sweep lists." $output.bucket) -}}
 {{- end -}}
 {{- if and $output.strictInputBucket (eq $output.bucket $output.strictInputBucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published and attests inputs." $output.bucket) -}}
@@ -167,7 +136,7 @@
 {{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "materializationKeyID" $output.materializationKeyID -}}
 {{- if $id -}}
 {{- if hasKey $ids $id -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and an activation epoch pins them separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and the two are pinned separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
 {{- end -}}
 {{- $_ := set $ids $id $role -}}
 {{- end -}}
@@ -177,7 +146,7 @@
 {{- range $role, $secret := dict "executionControl.keySecret" $output.executionControl.keySecret "capabilityKeySecret" $output.capabilityKeySecret "materializationKeySecret" $output.materializationKeySecret -}}
 {{- if $secret -}}
 {{- if hasKey $secrets $secret -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a control statement says a process on a node did something, a control capability authorizes one operation, a read warrant authorizes one staged read -- and an activation epoch pins them separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a control statement says a process on a node did something, a control capability authorizes one operation, a read warrant authorizes one staged read -- and they are pinned separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
 {{- end -}}
 {{- $_ := set $secrets $secret $role -}}
 {{- end -}}
@@ -188,7 +157,7 @@
        also declared in values would be a second answer to "which key checks
        this". */ -}}
 {{- if $output.executionControl.publicKeys -}}
-{{- fail "hangarBootstrap composes the verification ring: leave hangarOutput.executionControl.publicKeys empty, and list earlier activation epochs in hangarBootstrap.referencedKeys" -}}
+{{- fail "hangarBootstrap composes the verification ring: leave hangarOutput.executionControl.publicKeys empty, and list earlier control-key epochs in hangarBootstrap.referencedKeys" -}}
 {{- end -}}
 {{- if not $output.executionControl.keyID -}}
 {{- fail "hangarOutput.executionControl.keyID is required: the cohort reports it over the attestation handshake." -}}
@@ -222,7 +191,7 @@
 {{- fail (printf "hangarOutput.publicationGrace is %s; the maximum is 720h (30 days)." $output.publicationGrace) -}}
 {{- end -}}
 {{- if lt $grace (add $capture 3600) -}}
-{{- fail (printf "hangarOutput.publicationGrace is %s and hangarOutput.captureDeadline is %s. Grace must exceed the maximum capture deadline by at least an hour: below that, inventory can treat as an orphan an object whose capture is still entitled to register it, and the object is deleted out from under a live capture." $output.publicationGrace $output.captureDeadline) -}}
+{{- fail (printf "hangarOutput.publicationGrace is %s and hangarOutput.captureDeadline is %s. Grace must exceed the maximum capture deadline by at least an hour: below that, reclaim can admit an object whose capture is still entitled to register it, and the object is deleted out from under a live capture." $output.publicationGrace $output.captureDeadline) -}}
 {{- end -}}
 {{- if lt $lease 900 -}}
 {{- fail (printf "hangarOutput.leaseTerm is %s; the minimum is 15m. A shorter term makes expiry -- rather than a fence -- the thing a worker races." $output.leaseTerm) -}}
@@ -297,36 +266,24 @@
 {{- end -}}
 {{- end }}
 
-{{- define "concourse.hangarOutput.validateControllers" -}}
-{{- $output := .Values.hangarOutput -}}
-{{- range $name, $controller := dict "inventory" $output.inventory "reclaimer" $output.reclaimer -}}
-{{- if not $controller.enabled -}}
-{{- fail (printf "hangarOutput.%s.enabled is false while hangarOutput.enabled is true. An activation epoch attests compatible migrations AND the recovery, inventory and reclaim workers: a controller that is not deployed is a facet that cannot be attested, and a plane with no reclaimer keeps every published object forever while its status says it does not." $name) -}}
-{{- end -}}
-{{- if ne (int $controller.replicas) 1 -}}
-{{- fail (printf "hangarOutput.%s.replicas is %d. There is exactly one durable cursor and one renewable lease owner per dedicated output bucket and activation epoch: a second replica is a second owner racing for the same lease, and parallel cursor owners are forbidden by construction rather than mitigated." $name (int $controller.replicas)) -}}
-{{- end -}}
-{{- end -}}
-{{- end }}
-
 {{- define "concourse.hangarOutput.validateIntervals" -}}
 {{- $output := .Values.hangarOutput -}}
-{{- $_ := include "concourse.durationSeconds" (dict "name" "hangarOutput.inventory.interval" "value" $output.inventory.interval) -}}
-{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.interval" "value" $output.reclaimer.interval) -}}
-{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.deleteTimeout" "value" $output.reclaimer.deleteTimeout) -}}
+{{- $_ := include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaim.interval" "value" $output.reclaim.interval) -}}
+{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaim.deleteTimeout" "value" $output.reclaim.deleteTimeout) -}}
+{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.orphanSweep.interval" "value" $output.orphanSweep.interval) -}}
+{{- if lt (int $output.reclaim.batch) 1 -}}
+{{- fail (printf "hangarOutput.reclaim.batch is %d; one pass must admit at least one generation, or nothing is ever reclaimed." (int $output.reclaim.batch)) -}}
+{{- end -}}
 {{- end }}
 
+{{- /*
+The web and the artifact daemon are the output plane's two principals: the
+daemon publishes (create, get), and the web reclaims and sweeps (list, get,
+delete). A service account is Pod-wide, so the two -- and the task pods' --
+must be distinct Kubernetes accounts bound to distinct cloud principals.
+*/ -}}
 {{- define "concourse.hangarOutput.validatePrincipals" -}}
 {{- $subjects := list
-  (dict "path" "hangarOutput.inventory"
-        "name" (include "concourse.hangarOutput.inventoryServiceAccount" .)
-        "annotations" .Values.hangarOutput.inventory.serviceAccount.annotations)
-  (dict "path" "hangarOutput.reclaimer"
-        "name" (include "concourse.hangarOutput.reclaimerServiceAccount" .)
-        "annotations" .Values.hangarOutput.reclaimer.serviceAccount.annotations)
-  (dict "path" "hangarOutput.activation"
-        "name" (include "concourse.hangarOutput.activationServiceAccount" .)
-        "annotations" .Values.hangarOutput.activation.serviceAccount.annotations)
   (dict "path" "serviceAccount"
         "name" (include "concourse.serviceAccountName" .)
         "annotations" (ternary (.Values.serviceAccount.annotations | default dict) dict (.Values.serviceAccount.create | default false | not | not)))
@@ -346,7 +303,7 @@
 {{- range $subject := $subjects -}}
 {{- $name := $subject.name -}}
 {{- if hasKey $accounts $name -}}
-{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher must not be able to list or delete; the reclaimer must not be able to create; and web, task, cache and strict-input identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
+{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher (the artifact daemon) must not be able to list or delete; the web, which reclaims and sweeps, must not be able to create; and task, cache and strict-input identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
 {{- end -}}
 {{- $_ := set $accounts $name $subject.path -}}
 {{- end -}}
@@ -356,15 +313,11 @@
 {{- $principal := get ($subject.annotations | default dict) "iam.gke.io/gcp-service-account" -}}
 {{- if $principal -}}
 {{- if hasKey $principals $principal -}}
-{{- fail (printf "%s and %s are annotated with the same cloud principal %q. Shared Workload Identity principals are an activation failure: the whole separation is distinct cloud identities with disjoint grants, and one principal bound to two Kubernetes service accounts has the union of both." (get $principals $principal) $subject.path $principal) -}}
+{{- fail (printf "%s and %s are annotated with the same cloud principal %q. Shared Workload Identity principals are refused: the whole separation is distinct cloud identities with disjoint grants, and one principal bound to two Kubernetes service accounts has the union of both." (get $principals $principal) $subject.path $principal) -}}
 {{- end -}}
 {{- $_ := set $principals $principal $subject.path -}}
 {{- end -}}
 {{- end -}}
-{{- end }}
-
-{{- define "concourse.hangarOutput.namespaceFlags" -}}
-{{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-disk") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.namespaceFlagsAt" -}}

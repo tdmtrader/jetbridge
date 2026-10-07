@@ -502,11 +502,11 @@ jobs:
           kill $DOCKERD_PID 2>/dev/null || true
           exit "${STATUS}"
 
-# The Hangar bootstrap and activation on a real API server
-# (live_hangar_cluster_test.go). The contract renders the WHOLE chart from this
-# checkout -- bundled PostgreSQL, web, the bootstrap's admission policy, RBAC,
-# Sync-hook Job and PostSync database Job, the disk store, the artifact daemon,
-# the output daemon and both output controllers -- and applies each runbook
+# The Hangar bootstrap on a real API server (live_hangar_cluster_test.go). The
+# contract renders the WHOLE chart from this checkout -- bundled PostgreSQL,
+# web (which runs the output plane's reclaim and orphan sweep), the
+# bootstrap's admission policy, RBAC, Sync-hook Job, the disk store and the
+# artifact daemon with its output plane -- and applies each runbook
 # step the way an automated Argo sync does: waves ascending, hooks recreated
 # every sync, PostSync after Healthy, pruning what a render drops. It checks
 # that the bootstrap's Secrets and admission objects survive every re-sync
@@ -521,7 +521,7 @@ jobs:
 #
 # The image is built here: every binary the chart runs, static, on busybox at
 # /usr/local/concourse/bin, with concourse as its ENTRYPOINT (web and the
-# bootstrap Jobs pass only args). It is imported into the cluster's containerd
+# bootstrap Job pass only args). It is imported into the cluster's containerd
 # with postgres:16 (the bundled database), alpine (the materialization init)
 # and busybox (the step pod's main container). The contract reads the image
 # name from HANGAR_CLUSTER_IMAGE and renders the chart with
@@ -560,8 +560,7 @@ jobs:
           go mod download
           go test -c -tags hangar_live -o /dev/null ./atc/worker/jetbridge/
           mkdir -p ${IMAGE_DIR}
-          for command in concourse artifact-daemon hangar-store \
-                         hangar-output-inventory hangar-output-reclaimer hangar-output-activate; do
+          for command in concourse artifact-daemon hangar-store; do
             echo "--- building ${command}"
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o ${IMAGE_DIR}/${command} ./cmd/${command}
           done
@@ -597,7 +596,7 @@ jobs:
           mkdir -p ${IMAGE_DIR}/fly-assets
           printf '%s\n' \
             'FROM busybox:latest' \
-            'COPY concourse artifact-daemon hangar-store hangar-output-inventory hangar-output-reclaimer hangar-output-activate /usr/local/concourse/bin/' \
+            'COPY concourse artifact-daemon hangar-store /usr/local/concourse/bin/' \
             'COPY fly-assets /usr/local/concourse/fly-assets' \
             'ENV PATH=/usr/local/concourse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
             'ENTRYPOINT ["/usr/local/concourse/bin/concourse"]' \
@@ -651,19 +650,16 @@ jobs:
 
           echo "=== Running the Hangar cluster contracts ==="
           # A renamed test silently matches nothing and `go test` exits 0.
-          # Both contracts, in ONE cluster stand-up; each runs its own release
-          # in its own namespace and waits for the other's to go.
-          FOUND=$(grep -c -E 'func (TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt|TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp)\(' \
-            atc/worker/jetbridge/live_hangar_cluster_test.go atc/worker/jetbridge/live_hangar_activation_test.go \
-            | awk -F: '{s+=$2} END {print s}')
-          if [ "${FOUND}" -ne 2 ]; then
-            echo "the -run regex names two contracts and ${FOUND} were found; a rename went one way" >&2
+          FOUND=$(grep -c -E 'func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt\(' \
+            atc/worker/jetbridge/live_hangar_cluster_test.go)
+          if [ "${FOUND}" -ne 1 ]; then
+            echo "the -run regex names one contract and ${FOUND} were found; a rename went one way" >&2
             exit 1
           fi
 
           STATUS=0
           go test -tags hangar_live -v -count=1 -timeout 100m \
-            -run '^TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt$|^TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp$' \
+            -run '^TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt$' \
             ./atc/worker/jetbridge/ || STATUS=1
 
           if [ "${STATUS}" -ne 0 ]; then

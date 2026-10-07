@@ -21,7 +21,8 @@ concourse-hangar-bootstrap
 {{- end -}}
 
 {{/*
-The ring Secret is named by its composition: the active activation epoch and a
+The ring Secret is named by its composition: the active control-key epoch
+(hangarOutput.activationEpoch) and a
 digest of the earlier epochs' keys it retains. A change to those yields a new
 Secret rather than a refusal to replace the old one.
 */}}
@@ -51,18 +52,18 @@ Secret rather than a refusal to replace the old one.
 {{- $entries = append $entries (dict "name" . "kind" "tls-bundle" "commonName" "hangar disk store"
   "dnsNames" (list (printf "%s.%s.svc" (include "concourse.hangarStorage.name" $) $.Release.Namespace))
   "purposes" (dict "tls.crt" "disk store server certificate" "tls.key" "disk store server key" "ca.crt" "disk store CA, for clients")
-  "consumers" (list "hangar-store" "artifact-daemon" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
+  "consumers" (list "hangar-store" "artifact-daemon" "web")) -}}
 {{- end -}}
 
 {{- with .Values.hangarStorage.disk.credentials.existingSecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "store-tokens"
-  "purposes" (dict "input" "strict-input principal token" "publisher" "output publisher token" "inventory" "inventory principal token" "reclaimer" "reclaimer principal token" "server.json" "the store's principal-to-token map")
-  "consumers" (list "hangar-store" "artifact-daemon" "hangar-output-inventory" "hangar-output-reclaimer")) -}}
+  "purposes" (dict "input" "strict-input principal token" "publisher" "output publisher token" "inventory" "list-and-stat token the web's orphan sweep lists with" "reclaimer" "stat-and-delete token the web's reclaim pass and orphan sweep delete with" "server.json" "the store's principal-to-token map")
+  "consumers" (list "hangar-store" "artifact-daemon" "web")) -}}
 {{- end -}}
 
 {{- with $out.executionControl.keySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "ed25519" "key" "control.key" "ring" "control" "epoch" $epoch
-  "purposes" (dict "control.key" "node-control signing key for this activation epoch")
+  "purposes" (dict "control.key" "node-control signing key for this control-key epoch")
   "consumers" (list "artifact-daemon")) -}}
 {{- end -}}
 
@@ -84,7 +85,7 @@ Secret rather than a refusal to replace the old one.
 
 {{- range $earlier := .Values.hangarBootstrap.referencedKeys -}}
 {{- $entries = append $entries (dict "name" $earlier.controlSecret "kind" "ed25519" "key" "control.key" "ring" "control" "epoch" (int $earlier.epoch) "required" true
-  "purposes" (dict "control.key" "an earlier activation epoch's node-control key, read for its public half")
+  "purposes" (dict "control.key" "an earlier control-key epoch's node-control key, read for its public half")
   "consumers" (list)) -}}
 {{- end -}}
 
@@ -92,14 +93,6 @@ Secret rather than a refusal to replace the old one.
 {{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.ringName" $) "kind" "ring" "activeEpoch" $epoch
   "purposes" (dict "control-keys.json" "public node-control verification ring")
   "consumers" (list "web")) -}}
-{{- end -}}
-
-{{- if .Values.hangarBootstrap.database.enabled -}}
-{{- with $out.database.existingSecret -}}
-{{- $entries = append $entries (dict "name" . "kind" "dsn"
-  "purposes" (dict "dsn" "the activation database role's connection string")
-  "consumers" (list "hangar-output-activation")) -}}
-{{- end -}}
 {{- end -}}
 
 {{- toJson (dict "labels" (dict "app.kubernetes.io/managed-by" (include "concourse.hangarBootstrap.labelValue" $)) "entries" $entries) -}}

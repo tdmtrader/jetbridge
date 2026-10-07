@@ -9,23 +9,22 @@ import (
 	"testing"
 )
 
-// Every service-account-shaped value the chart renders is a route to the
-// reclaimer's cloud identity, and the validation has to enumerate them rather
-// than list them.
+// Every service-account-shaped value the chart renders is a route to one of
+// the output plane's two cloud identities -- the artifact daemon's, which may
+// create, and the web's, which may delete -- and the validation has to
+// enumerate them rather than list them.
 //
-// `validatePrincipals` has now been extended four times, each time by someone
-// finding the next override nobody had thought of: the activation account's
-// name, its Workload Identity annotation, the top-level `serviceAccount.name`
-// -- and `kubernetes.serviceAccount`, the TASK pod's account, which Req 54
-// names in its own words ("task credentials are activation failures") and which
-// pointed at the reclaimer's KSA rendered happily. Task pods are arbitrary
-// user-supplied code and the reclaimer holds the only `storage.objects.delete`
-// on the output bucket.
+// `validatePrincipals` was extended four times, each time by someone finding
+// the next override nobody had thought of -- the last was
+// `kubernetes.serviceAccount`, the TASK pod's account, which Req 54 names in
+// its own words ("task credentials are activation failures") and which,
+// pointed at a delete-holding KSA, rendered happily. Task pods are arbitrary
+// user-supplied code.
 //
 // A hand-maintained list is the wrong shape for that. This rule reads the
 // TEMPLATES for every `.Values.…serviceAccount[.name]` the chart actually
 // consults, points each one in turn at another workload's rendered account, and
-// requires the render to be refused. A fifth override cannot be added without
+// requires the render to be refused. A new override cannot be added without
 // either being covered or turning this red, because adding it means writing
 // `.Values.something.serviceAccount` into a template.
 
@@ -117,43 +116,44 @@ func valuesPathIsAString(t *testing.T, path string) bool {
 func TestEveryServiceAccountValueTheChartRendersIsRefusedWhenItCollides(t *testing.T) {
 	paths := serviceAccountNamePaths(t)
 
-	// Five output roles, the web pod's, and the task pods'. A floor rather than
-	// an exact list, so a new one joins the rule instead of replacing it.
-	if len(paths) == 0 {
+	// The web pod's and the task pods'. A floor rather than an exact list, so
+	// a new one joins the rule instead of replacing it.
+	if len(paths) < 2 {
 		t.Fatalf("found only %d service-account values across the chart's templates (%v); "+
 			"the scan failed and this rule would pass vacuously", len(paths), paths)
 	}
 
 	const (
-		reclaimer = "jb-concourse-jetbridge-hangar-output-reclaimer"
-		daemon    = "jb-concourse-jetbridge-artifact-daemon"
+		daemon = "jb-concourse-jetbridge-artifact-daemon"
+		web    = "jb-concourse-jetbridge-web"
 	)
 
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			// Point it at a DIFFERENT workload's rendered account. The
-			// reclaimer's, because it is the one principal in the system
-			// holding storage.objects.delete on the output bucket -- except
-			// for the reclaimer's own value, where that is not a collision.
-			collidesWith := reclaimer
-			if strings.Contains(path, "reclaimer") {
-				collidesWith = daemon
-			}
-
-			message := renderOutputError(t, path+"="+collidesWith)
+			// Point it at a DIFFERENT workload's rendered account: the
+			// publisher's, which holds create on the output bucket -- except
+			// for a value that names the web's own account, which would be no
+			// collision; that one is pointed at the publisher too, so the
+			// web and the publisher would be one identity.
+			message := renderOutputError(t, path+"="+daemon)
 			if !strings.Contains(message, "service account") {
 				t.Errorf("setting %s to %s was refused, but not by the service-account "+
-					"rule:\n%s", path, collidesWith, message)
+					"rule:\n%s", path, daemon, message)
 			}
 		})
+	}
+
+	// And the task pods' account may not be the web's, which holds delete.
+	message := renderOutputError(t, "kubernetes.serviceAccount="+web)
+	if !strings.Contains(message, "service account") {
+		t.Errorf("the task pods were allowed to run as the web's delete-holding account:\n%s", message)
 	}
 }
 
 func TestGCSDoesNotRequireDeclaredCloudIdentities(t *testing.T) {
 	out := renderOutput(t,
 		`artifactDaemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
-		`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
-		`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`)
+		`serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`)
 	if strings.Contains(out, "hangar-output-policy-attestor") {
 		t.Fatal("retired policy attestor rendered")
 	}

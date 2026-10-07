@@ -44,16 +44,12 @@ var flagSurfaces = []flagSurface{
 	{template: "web-deployment.yaml", pkg: "./cmd/concourse"},
 	{template: "artifact-daemon-daemonset.yaml", pkg: "./cmd/artifact-daemon"},
 
-	// The output plane's workloads. Its node half is the artifact daemon's
-	// output plane, rendered in artifact-daemon-daemonset.yaml above. Each
-	// controller has its own template rather than sharing one, precisely so
-	// this rule can attribute its flags to its binary: three binaries' flags in
-	// one file is a file no single binary accepts, and the rule would go either
-	// vacuous or permanently red.
-	{template: "hangar-output-inventory.yaml", pkg: "./cmd/hangar-output-inventory"},
+	// The output plane's node half is the artifact daemon's output plane,
+	// rendered in artifact-daemon-daemonset.yaml above, and its reclaim and
+	// orphan sweep run in web, so their flags are web's and are checked against
+	// `concourse web` above. The disk store owner and the bootstrap are the
+	// remaining surfaces.
 	{template: "hangar-store.yaml", pkg: "./cmd/hangar-store"},
-	{template: "hangar-output-reclaimer.yaml", pkg: "./cmd/hangar-output-reclaimer"},
-	{template: "hangar-output-activation-job.yaml", pkg: "./cmd/hangar-output-activate"},
 	{template: "hangar-bootstrap-job.yaml", pkg: "./cmd/concourse"},
 }
 
@@ -64,7 +60,11 @@ var flagSurfaces = []flagSurface{
 // what it covers -- and the drift it exists to catch is exactly the kind that
 // arrives with "this template moved". A count that must not fall makes the
 // deletion a decision somebody writes down.
-const expectedFlagSurfaces = 7
+//
+// It fell from 7 to 4 when the output plane's inventory, reclaimer and
+// activation commands were deleted: their templates went with their binaries,
+// and the work moved into web, whose template is still the first surface.
+const expectedFlagSurfaces = 4
 
 var (
 	// "- --flag", "- --flag=value", "- --flag={{ .Values.x }}"

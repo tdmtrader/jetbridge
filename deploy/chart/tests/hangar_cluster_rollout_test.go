@@ -17,13 +17,12 @@ var rolloutSteps = []struct {
 }{
 	{"S0 pre-flight", nil},
 	{"S1 bootstrap", []string{
-		"hangarBootstrap.enabled=true", "hangarBootstrap.database.enabled=true",
+		"hangarBootstrap.enabled=true",
 		"hangarOutput.activationEpoch=1",
 		"hangarOutput.executionControl.keySecret=concourse-hangar-control-key-e1",
 		"hangarOutput.executionControl.keyID=control-1",
 		"hangarOutput.capabilityKeySecret=concourse-hangar-capability-key",
 		"hangarOutput.materializationKeySecret=concourse-hangar-materialize-key",
-		"hangarOutput.database.existingSecret=concourse-hangar-activation-dsn",
 		"hangarStorage.disk.tls.existingSecret=concourse-hangar-store-tls",
 		"hangarStorage.disk.credentials.existingSecret=concourse-hangar-store-credentials",
 		"artifactDaemon.hangar.keySecret=concourse-hangar-warrant-key",
@@ -34,12 +33,9 @@ var rolloutSteps = []struct {
 	{"S4 strict inputs on the daemon", []string{"artifactDaemon.hangar.enabled=true",
 		"artifactDaemon.hangar.store=disk", "artifactDaemon.hangar.bucket=inputs"}},
 	{"S5 strict inputs on web", []string{"artifactDaemon.hangar.webEnabled=true"}},
-	{"S6 base workloads", []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi",
-		"hangarOutput.activation.target=off"}},
-	{"S7 walk to base", []string{"hangarOutput.activation.target=base"}},
+	{"S6 base workloads", []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi"}},
 	{"S10 output workloads", []string{
 		"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=concourse-home"}},
-	{"S11 walk to output", []string{"hangarOutput.activation.target=output"}},
 	{"S13 capture and Run results", []string{
 		"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=concourse-run-input-signing-key"}},
 }
@@ -60,26 +56,19 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 			t.Fatalf("%s does not render: %v\n%s", step.name, err, firstLines(string(raw), 5))
 		}
 		out := string(raw)
-		// The walk Job renders from S6, where execution control comes on, and
-		// not before: every later step changes only its target.
-		walking := currentValue(sets, "hangarOutput.executionControl.enabled=") == "true"
-		target := currentValue(sets, "hangarOutput.activation.target=")
-
-		jobs := 0
+		// No step renders an activation step: in service is
+		// hangarOutput.webEnabled (S13), which the web writes itself.
 		for _, doc := range documentsIn(t, out) {
-			if doc.kind != "Job" || !strings.Contains(doc.body, "hangar-output-activate") {
-				continue
-			}
-			jobs++
-			if !strings.Contains(doc.body, "ttlSecondsAfterFinished: 86400") {
-				t.Errorf("%s: the activation walk Job renders without its TTL", step.name)
-			}
-			if !strings.Contains(doc.body, "--target="+target) {
-				t.Errorf("%s: the activation walk Job does not walk to %s", step.name, target)
+			if doc.kind == "Job" && strings.Contains(doc.body, "hangar-output-activate") {
+				t.Errorf("%s: %s renders the deleted activation command", step.name, doc.name)
 			}
 		}
-		if want := map[bool]int{true: 1, false: 0}[walking]; jobs != want {
-			t.Errorf("%s: %d activation walk Jobs rendered, want %d", step.name, jobs, want)
+		// From S10 the web reclaims and sweeps the disk store's output
+		// namespace with the store's own tokens.
+		output := currentValue(sets, "hangarOutput.enabled=") == "true"
+		web := webDeployment(t, out)
+		if reclaims := strings.Contains(web, "--kubernetes-hangar-output-delete-token-file="); reclaims != output {
+			t.Errorf("%s: web holds the disk store's delete token = %v, want %v", step.name, reclaims, output)
 		}
 
 		if index >= 2 && (!strings.Contains(out, "kind: PersistentVolumeClaim") || !strings.Contains(out, "concourse-home-1")) {
@@ -107,7 +96,6 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 			t.Errorf("%s: capture and Run-result flags rendered = %v", step.name, capture)
 		}
 
-		web := webDeployment(t, out)
 		for _, user := range []string{"--main-team-local-user=admin", "--main-team-local-user=live-tests"} {
 			if !strings.Contains(web, user) {
 				t.Errorf("%s: web lacks %s", step.name, user)

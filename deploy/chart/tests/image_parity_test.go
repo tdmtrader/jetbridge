@@ -18,9 +18,10 @@ import (
 // go vet are all satisfied, because nothing in this repository otherwise reads
 // the Dockerfile and the chart together.
 //
-// The output plane made this real rather than theoretical: it adds five commands
-// at once, across two Dockerfiles, one of which is referenced by no build script
-// in the tree and is therefore exactly the one that would be left behind.
+// The output plane made this real rather than theoretical: it once added five
+// commands at once, across two Dockerfiles, one of which is referenced by no
+// build script in the tree and is therefore exactly the one that would be left
+// behind.
 
 // commandPath matches an absolute path into the image's bin directory, wherever
 // it appears -- a `command:` entry, an init container, an args list.
@@ -82,7 +83,10 @@ func TestEveryCommandTheChartRunsIsInTheImage(t *testing.T) {
 		}
 	}
 
-	if len(wanted) < 5 {
+	// Two: the artifact daemon and the disk store owner. The output plane's
+	// controllers and activation command were removed, and their work moved
+	// into web, which runs from the image's ENTRYPOINT rather than a path.
+	if len(wanted) < 2 {
 		t.Fatalf("found only %d commands across the chart's templates (%v), which is fewer "+
 			"than this chart runs; the scan failed and this rule would pass vacuously",
 			len(wanted), sortedCommandNames(wanted))

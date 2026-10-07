@@ -70,9 +70,7 @@ import (
 
 // liveClusterImageEnv names the image every JetBridge container in the chart
 // runs: concourse (web, the bootstrap Jobs, its ENTRYPOINT), artifact-daemon,
-// hangar-store, hangar-output-inventory,
-// hangar-output-reclaimer and hangar-output-activate under
-// /usr/local/concourse/bin, plus a shell. It must already be loaded into the
+// and hangar-store under /usr/local/concourse/bin, plus a shell. It must already be loaded into the
 // cluster's container runtime (the chart is rendered with
 // image.pullPolicy=Never) and carry a tag other than latest.
 const liveClusterImageEnv = "HANGAR_CLUSTER_IMAGE"
@@ -92,33 +90,17 @@ const (
 // own render, with the bootstrap and every Hangar consumer on, applied the way
 // Argo applies it -- sync waves ascending, the bootstrap Job a Sync hook at its
 // wave that is deleted and recreated on every sync (BeforeHookCreation), and
-// the database step a PostSync hook run only once everything is healthy.
+// and every consumer started once the runbook reaches it.
 //
 // It cannot be ONE first sync with everything on, and that is a property of the
 // product rather than of this test. A fresh install with every consumer on
 // never becomes Healthy: the artifact daemon proves its disk credential against
 // the store at startup and exits while the store's initialize render holds it
 // at zero replicas, and disk initialisation is its own explicit step (ADR-0005).
-// The activation epoch row is not what holds it back: the inventory and
-// reclaimer controllers wait as non-owners while their epoch has no row, and
-// the activation walk that begins it is a PostSync hook a wave after the
-// database step that writes the connection-string Secret it runs with. So the
-// contract syncs the runbook's order (hangar_stores_enabled_in_cluster S1-S7,
-// then S10 and S13), and every sync after the first is a re-run of the
-// bootstrap.
-//
-// S7 is the walk to `base`, so from the S4-S7 sync on this contract runs under
-// an ENABLED base facet, where it used to run with both facets `initial`, and
-// every later sync re-runs the walk, which makes no transition. That was
-// re-checked against what S10 and S13 assert. Web loading its rings is a
-// property of its startup and its Ready status, and neither reads the facet.
-// The output daemon reads no epoch row at all, and the handshake below is made
-// with web's client Secret by the contract itself. The inventory's sweep and
-// the reclaimer's passes hold their leases at the epoch whatever its facets,
-// and what an enabled base adds -- admission of an execution under it -- is
-// exercised by nothing here: no build runs, and the node-key membership and
-// the capture locks web would consult both require the output facet enabled
-// as well, which this contract never is.
+// So the contract syncs the runbook's order (hangar_stores_enabled_in_cluster
+// S1-S6, then S10 and S13), and every sync after the first is a re-run of the
+// bootstrap. There is no activation walk: in service is the hangar_enabled row
+// web writes at startup from hangarOutput.webEnabled (S13).
 //
 // It proves:
 //
@@ -138,9 +120,10 @@ const (
 //     on a route that requires one; the artifact daemon publishes into the
 //     disk store as `input` and verifies a materialization warrant signed with
 //     the generated warrant key; the disk store serves `publisher` a create
-//     and a read, the inventory controller's first sweep records as debt the
-//     foreign-marked object that create left, the reclaimer controller's passes run, and
-//     `reclaimer` stats and deletes the object.
+//     and a read; web puts the plane in service, its orphan sweep lists the
+//     output namespace with the `inventory` token and counts -- and leaves --
+//     the foreign-marked object that create left; and `reclaimer` stats and
+//     deletes the object.
 func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T) {
 	cluster := newLiveCluster(t, "hc", 40*time.Minute)
 	names := cluster.names
@@ -186,12 +169,12 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 	}
 
 	resync("S3 store up", cluster.through("S1", "S2", "S3"))
-	resync("S4-S7 strict inputs, base workloads, walk to base", cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S7"))
+	resync("S4-S6 strict inputs, base workloads", cluster.through("S1", "S2", "S3", "S4", "S5", "S6"))
 
-	// Before the controllers exist, so their FIRST sweep is what finds it.
+	// Before the output plane is on, so the web's FIRST sweep is what finds it.
 	probe := cluster.storePublisherRoundTrip()
 
-	everything := cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S10", "S13")
+	everything := cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S10", "S13")
 	resync("S10+S13 every consumer on", everything)
 
 	cluster.assertRingsArePublicHalves(inventory)
@@ -212,7 +195,7 @@ type liveClusterNames struct {
 	release, namespace string
 
 	warrant, storeTLS, storeCredentials, control, capability string
-	materialize, dsn, runInput                               string
+	materialize, runInput                                    string
 
 	daemonTLS, resolve, postgres, signingKey string
 }
@@ -226,7 +209,6 @@ func newLiveClusterNames(release, namespace string) liveClusterNames {
 		control:          release + "-hangar-control-key-e1",
 		capability:       release + "-hangar-capability-key",
 		materialize:      release + "-hangar-materialize-key",
-		dsn:              release + "-hangar-activation-dsn",
 		runInput:         release + "-run-input-signing-key",
 		// Operator-owned, outside the bootstrap inventory: the artifact
 		// daemon's pinned TLS Secret and resolve key, the database password
@@ -433,13 +415,12 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 	switch id {
 	case "S1":
 		return []string{
-			"hangarBootstrap.enabled=true", "hangarBootstrap.database.enabled=true",
+			"hangarBootstrap.enabled=true",
 			fmt.Sprintf("hangarOutput.activationEpoch=%d", liveClusterEpoch),
 			"hangarOutput.executionControl.keySecret=" + names.control,
 			"hangarOutput.executionControl.keyID=" + liveClusterControlKeyID,
 			"hangarOutput.capabilityKeySecret=" + names.capability,
 			"hangarOutput.materializationKeySecret=" + names.materialize,
-			"hangarOutput.database.existingSecret=" + names.dsn,
 			"hangarStorage.disk.tls.existingSecret=" + names.storeTLS,
 			"hangarStorage.disk.credentials.existingSecret=" + names.storeCredentials,
 			"artifactDaemon.hangar.keySecret=" + names.warrant,
@@ -454,16 +435,10 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 	case "S5":
 		return []string{"artifactDaemon.hangar.webEnabled=true"}
 	case "S6":
-		// The walk's target has no default; a plane not yet activated is off.
-		return []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi",
-			"hangarOutput.activation.target=off"}
-	case "S7":
-		return []string{"hangarOutput.activation.target=base"}
+		return []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi"}
 	case "S10":
 		return []string{
 			"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=" + liveClusterTenant}
-	case "S11":
-		return []string{"hangarOutput.activation.target=output"}
 	case "S13":
 		return []string{
 			"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=" + names.runInput}
@@ -1311,7 +1286,7 @@ func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Clien
 
 // assertOutputDaemonAcceptsWebClient dials the output daemon where web does,
 // the node's IP on its host port. Web itself makes this call only for an
-// execution under an enabled base facet. The base facet is enabled from S7 on,
+// execution under the base protocol, which is on from S6,
 // but this contract runs no execution, so the contract presents web's mounted
 // client Secret itself.
 func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
@@ -1394,12 +1369,9 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 }
 
 // liveStoreProbe is the object the publisher round trip leaves in the output
-// namespace for the inventory controller's first sweep to find. It carries a
-// marker of a version this cohort does not accept, which the sweep must
-// record as marker_mismatch debt. An object with no marker at all would be
-// the obvious probe, but the sweep records nothing for one: classify returns
-// it as an unmanaged object, not as unmanaged_object debt, so its sighting
-// leaves no durable trace to observe.
+// namespace for web's orphan sweep to find. It carries a marker of a version
+// this cohort does not accept, which the sweep counts as unmarked and never
+// deletes.
 type liveStoreProbe struct {
 	key        string
 	generation int64
@@ -1518,74 +1490,38 @@ func (cluster *liveCluster) outputNamespace() output.OutputNamespace {
 	return namespace
 }
 
-// assertControllersSwept: the inventory controller's first sweep listed the
-// output namespace as `inventory` and recorded the probe as debt; the
-// reclaimer's admission and delete passes ran under their leases. The
-// reclaimer's passes make no store call when nothing is admitted, so the
-// probe is then stat'd and deleted as `reclaimer`.
+// assertControllersSwept: web put the plane in service, and its orphan sweep
+// listed the output namespace with the `inventory` token and counted the
+// foreign-marked probe as unmarked -- and left it. The probe is then stat'd and
+// deleted as `reclaimer`, the token the web's reclaim pass deletes with.
 func (cluster *liveCluster) assertControllersSwept(probe liveStoreProbe) {
 	t := cluster.t
 	t.Helper()
 	db, stop := cluster.database()
 	defer stop()
+
+	var enabled bool
+	if err := db.QueryRowContext(cluster.ctx, `SELECT enabled FROM hangar_enabled`).Scan(&enabled); err != nil {
+		t.Fatalf("read the in-service row: %v", err)
+	}
+	if !enabled {
+		t.Fatal("web runs with hangarOutput.webEnabled and the in-service row says false")
+	}
+
 	deadline := time.Now().Add(4 * time.Minute)
-	for {
-		var reason string
-		err := db.QueryRowContext(cluster.ctx, `SELECT reason FROM hangar_inventory_debt WHERE activation_epoch = $1 AND object_key = $2`, liveClusterEpoch, probe.key).Scan(&reason)
-		if err == nil {
-			if reason != string(output.DebtMarkerMismatch) {
-				t.Fatalf("the inventory recorded the foreign-marked probe as %q, want %q", reason, output.DebtMarkerMismatch)
-			}
-			break
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("read inventory debt: %v", err)
-		}
+	for !liveClusterSweepCounted(cluster.deploymentLogs("web"), "unmarked") {
 		if time.Now().After(deadline) {
-			t.Fatalf("the inventory controller's sweep never recorded the probe object\n%s", cluster.deploymentLogs("hangar-output-inventory"))
+			t.Fatalf("web's orphan sweep never counted the foreign-marked probe\n%s", cluster.deploymentLogs("web"))
 		}
-		liveDiskPause(t, cluster.ctx, "the inventory controller's first sweep")
+		liveDiskPause(t, cluster.ctx, "web's first orphan sweep")
 	}
-	for {
-		rows, err := db.QueryContext(cluster.ctx, `SELECT kind FROM hangar_operation_leases WHERE activation_epoch = $1`, liveClusterEpoch)
-		if err != nil {
-			t.Fatalf("read operation leases: %v", err)
-		}
-		held := map[string]bool{}
-		for rows.Next() {
-			var kind string
-			if err := rows.Scan(&kind); err != nil {
-				t.Fatal(err)
-			}
-			held[kind] = true
-		}
-		rows.Close()
-		if held[string(output.OperationInventory)] && held[string(output.OperationReclaimAdmission)] && held[string(output.OperationReclaimDelete)] {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("operation leases held at epoch %d: %v; want inventory, reclaim admission and reclaim delete\n%s", liveClusterEpoch, held, cluster.deploymentLogs("hangar-output-reclaimer"))
-		}
-		liveDiskPause(t, cluster.ctx, "the reclaimer controller's first passes")
-	}
-	for component, kinds := range map[string][]output.OperationKind{
-		"hangar-output-inventory": {output.OperationInventory},
-		"hangar-output-reclaimer": {output.OperationReclaimAdmission, output.OperationReclaimDelete},
-	} {
-		logs := cluster.deploymentLogs(component)
-		for _, kind := range kinds {
-			if !liveClusterPassLogged(logs, kind) {
-				t.Fatalf("%s logged no successful %s pass:\n%s", component, kind, logs)
-			}
-		}
-		cluster.assertNoRestarts(component)
-	}
+	cluster.assertNoRestarts("web")
 
 	store := cluster.store()
 	defer store.shutdown()
 	query := url.Values{"bucket": {"outputs"}, "key": {probe.key}, "generation": {strconv.FormatInt(probe.generation, 10)}}
 	if status, body := store.do("reclaimer", http.MethodGet, "stat", query, nil); status != http.StatusOK {
-		t.Fatalf("stat as reclaimer: %d %s", status, body)
+		t.Fatalf("the sweep removed an object it does not own, or stat as reclaimer failed: %d %s", status, body)
 	}
 	if status, body := store.do("reclaimer", http.MethodDelete, "delete", query, nil); status != http.StatusNoContent {
 		t.Fatalf("delete as reclaimer: %d %s", status, body)
@@ -1595,21 +1531,21 @@ func (cluster *liveCluster) assertControllersSwept(probe liveStoreProbe) {
 	}
 }
 
-// liveClusterPassLogged finds a controller's `hangar-output-pass` line for the
-// kind with class ok. The line is a lager JSON record.
-func liveClusterPassLogged(logs string, kind output.OperationKind) bool {
+// liveClusterSweepCounted finds web's `hangar-output-orphan-sweep` line with a
+// nonzero count for class. The line is a lager JSON record.
+func liveClusterSweepCounted(logs, class string) bool {
 	for _, line := range strings.Split(logs, "\n") {
 		var record struct {
-			Message string `json:"message"`
-			Data    struct {
-				Kind  string `json:"kind"`
-				Class string `json:"class"`
-			} `json:"data"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data"`
 		}
 		if json.Unmarshal([]byte(strings.TrimSpace(line)), &record) != nil {
 			continue
 		}
-		if strings.HasSuffix(record.Message, "hangar-output-pass") && record.Data.Kind == string(kind) && record.Data.Class == "ok" {
+		if !strings.HasSuffix(record.Message, "hangar-output-orphan-sweep") {
+			continue
+		}
+		if count, ok := record.Data[class].(float64); ok && count > 0 {
 			return true
 		}
 	}

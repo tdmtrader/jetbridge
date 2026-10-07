@@ -110,59 +110,43 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
         # The Hangar output plane. Requirement 52 asks the plane to ALERT when
         # its lifetime-policy trust cannot be proved safe, and these are that
         # alert: the ATC publishes the plane's operational state on the existing
-        # scrape path every minute, and these rules are what make an at-risk
-        # epoch and a stalled sweep visible without reading the database.
+        # scrape path every minute, and these rules make an at-risk plane, a
+        # stuck capture, a stalled reclaim or sweep, and drain residue visible
+        # without reading the database.
         - alert: HangarOutputPlaneAtRisk
           # `for` is deliberately short. At-risk is FAIL-CLOSED: from detection
           # onward the plane blocks new captures, claim acquires, managed-output
-          # warrants, orphan adoption and reclaim admission. Waiting five minutes
-          # to say so would be five minutes of refused builds with no alert.
+          # warrants and reclaim admission. Waiting five minutes to say so would
+          # be five minutes of refused builds with no alert.
           expr: concourse_hangar_output_at_risk > 0
           for: 1m
           labels:
             severity: critical
           annotations:
             summary: "The Hangar output plane is at risk and has stopped admitting new work"
-            description: "The output plane has unresolved runtime integrity failures ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants, orphan adoption and reclaim admission are all blocked; releases and diagnosis still work. Reconcile missing objects or denied runtime operations before explicitly resolving the recorded findings."
-        - alert: HangarOutputInventorySweepStalled
-          # The cursor's cycle counter is what moves. A sweep that stopped shows
-          # a flat counter, and `changes(...) == 0` over an hour is that
-          # statement -- 100 objects a pass at a one-minute wake means an hour
-          # with no cycle change is a sweep doing nothing rather than a sweep
-          # working through a large bucket.
-          expr: changes(concourse_hangar_output_inventory_cycle[1h]) == 0 and concourse_hangar_output_plane_inventory{kind="live_generations"} > 0
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            summary: "The Hangar output bucket sweep has stopped making progress"
-            description: "The inventory cursor's cycle counter has not moved in an hour while the plane holds live generations. Orphaned objects are not being adopted and nothing is becoming eligible for reclamation."
-        - alert: HangarOutputInventoryDebtGrowing
-          expr: sum(concourse_hangar_output_inventory_debt) > 0
+            description: "The output plane has unresolved runtime integrity failures ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants and reclaim admission are all blocked; releases and diagnosis still work. Reconcile missing objects or denied runtime operations before explicitly resolving the recorded findings."
+        - alert: HangarOutputCapturesStuckPublishing
+          # A capture is publishing from the moment its daemon starts the upload
+          # until the web records the published generation. That is minutes,
+          # not half an hour; one still publishing is a daemon that stopped
+          # answering or a publication the web never heard about.
+          expr: concourse_hangar_output_plane_inventory{kind="publishing_captures"} > 0
           for: 30m
           labels:
             severity: warning
           annotations:
-            summary: "The Hangar output sweep has unresolved debt"
-            description: "{{ `{{ $value }}` }} object(s) could not be disposed of by the sweep. Debt is committed before the cursor advances, so nothing is lost -- but nothing revisits it either until an operator looks."
-        - alert: HangarOutputOperationLeaseUnheld
-          # -1 is "no owner at all", which the publisher emits deliberately
-          # rather than 0 or an absent series: zero reads as "expired right now"
-          # and absence reads as "not scraped".
-          #
-          # The series exists only for the operation kinds a workload in this
-          # chart actually takes a lease for. Five of the schema's nine kinds
-          # have no leased worker -- see atc/hangaroutput/leaseowners.go -- and
-          # emitting -1 for those made this rule fire five permanent warnings
-          # ten minutes after a clean install, each blaming a controller that
-          # does not exist.
-          expr: concourse_hangar_output_operation_lease_remaining_seconds == -1
-          for: 10m
+            summary: "Hangar output captures are stuck publishing"
+            description: "{{ `{{ $value }}` }} capture(s) have been publishing for at least thirty minutes. Each pins its generation and its node's scratch until the capture deadline terminalises it."
+        - alert: HangarOutputCapturesUnreleased
+          # A terminal capture whose generation was never released holds back
+          # reclamation of everything it pinned.
+          expr: concourse_hangar_output_plane_inventory{kind="unreleased_captures"} > 0
+          for: 1h
           labels:
             severity: warning
           annotations:
-            summary: "No worker holds the {{ `{{ $labels.kind }}` }} lease"
-            description: "The {{ `{{ $labels.kind }}` }} operation has had no lease owner for ten minutes. Its controller is not running, or it cannot reach the database."
+            summary: "Hangar output captures are not being released"
+            description: "{{ `{{ $value }}` }} terminal capture(s) have not been released for an hour; nothing they hold can be reclaimed until they are."
         - alert: HangarOutputReclaimBacklog
           expr: concourse_hangar_output_plane_inventory{kind="unfinalized_reclaim_jobs"} > 0
           for: 1h
@@ -170,6 +154,30 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
             severity: warning
           annotations:
             summary: "Hangar output reclaim jobs are not finalizing"
-            description: "{{ `{{ $value }}` }} admitted conditional delete(s) have no outcome after an hour. Every one of them is an object whose disposition is unknown: the delete may have happened and the answer may have been lost."
+            description: "{{ `{{ $value }}` }} admitted conditional delete(s) have no outcome after an hour. Every one of them is an object whose disposition is unknown: the delete may have happened and the answer may have been lost. The web runs the reclaim pass; look at its logs."
+        - alert: HangarOutputOrphanSweepStalled
+          # The web's orphan sweep counts every pass it completes. A counter
+          # that has not moved in three hours -- three times the default
+          # interval -- while the plane is in service is a sweep that is not
+          # running or cannot list the output namespace.
+          expr: changes(concourse_hangar_output_orphan_sweep_passes_total[3h]) == 0 and on() concourse_hangar_output_enabled == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The Hangar output orphan sweep has stopped completing passes"
+            description: "No orphan sweep pass has completed in three hours while the output plane is in service. Objects no capture registered are not being removed from the output namespace."
+        - alert: HangarOutputDrainResidue
+          # Drain is: set hangarOutput.webEnabled false, wait for residue to
+          # reach zero (`fly hangar-status`), then remove the daemon. Residue
+          # that sits for a day out of service is a drain that is not
+          # finishing, and removing the daemon now would strand it.
+          expr: concourse_hangar_output_plane_inventory{kind="residue"} > 0 and on() concourse_hangar_output_enabled == 0
+          for: 24h
+          labels:
+            severity: info
+          annotations:
+            summary: "The drained Hangar output plane still holds residue"
+            description: "The output plane has been out of service for a day and still holds {{ `{{ $value }}` }} live item(s). Do not remove the artifact daemon's output plane until `fly hangar-status` reports zero residue."
 {{- end }}
 {{- end }}

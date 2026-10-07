@@ -14,34 +14,51 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
 
 // The output plane's rendered surface.
 //
-// Every workload here exists because a Kubernetes service account is Pod-wide.
-// The publisher may create and get objects; inventory may list and get
-// bucket-wide; the reclaimer may get and delete; the attestor reads bucket
-// lifecycle and IAM and holds no object permission at all. Those are four
-// disjoint cloud identities, so they are four Pods with four KSAs, and the
+// A Kubernetes service account is Pod-wide, so the plane's two cloud
+// identities are two Pods with two KSAs: the artifact daemon publishes (create
+// and get), and the web reclaims and sweeps (list, get and delete). The
 // chart's job is to render that separation and to refuse the configurations
 // that quietly collapse it.
 //
 // The chart does NOT create buckets, lifecycle rules or GCP IAM. It renders
-// explicit identities and names what an operator must provision; activation is
-// what proves the provisioning is real. A render test can say a KSA exists and
-// that no other workload mounts a private key. It cannot say an IAM binding is
-// what the annotation claims, and nothing here pretends otherwise.
+// explicit identities and names what an operator must provision. A render test
+// can say a KSA exists and that no other workload mounts a private key. It
+// cannot say an IAM binding is what the annotation claims, and nothing here
+// pretends otherwise.
 
 const (
-	outputDaemonComponent    = "artifact-daemon"
-	outputInventoryComponent = "hangar-output-inventory"
-	outputReclaimerComponent = "hangar-output-reclaimer"
-	outputAttestorComponent  = "hangar-output-policy-attestor"
+	outputDaemonComponent = "artifact-daemon"
+	webComponent          = "web"
 )
+
+// webReclaimFlags are the flags the web's reclaim pass and orphan sweep are
+// configured by. They render with the capture facet and with nothing less.
+var webReclaimFlags = []string{
+	"--kubernetes-hangar-output-store=",
+	"--kubernetes-hangar-output-prefix=",
+	"--kubernetes-hangar-output-publication-grace=",
+	"--kubernetes-hangar-output-reclaim-interval=",
+	"--kubernetes-hangar-output-reclaim-batch=",
+	"--kubernetes-hangar-output-delete-timeout=",
+	"--kubernetes-hangar-output-orphan-sweep-interval=",
+}
+
+// webDiskFlags render only on the disk store.
+var webDiskFlags = []string{
+	"--kubernetes-hangar-output-endpoint=",
+	"--kubernetes-hangar-output-store-id=",
+	"--kubernetes-hangar-output-store-ca-cert=",
+	"--kubernetes-hangar-output-list-token-file=",
+	"--kubernetes-hangar-output-delete-token-file=",
+}
 
 // baseControlSets turn on the BASE exact-execution-control facet and nothing
 // else. It is a real deployment on its own: the sibling `exact_execution_control`
@@ -55,11 +72,6 @@ var baseControlSets = []string{
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
 	"artifactDaemon.outputScratch.sizeLimit=32Gi",
-	// Required under the BASE switch too: the activation walk Job renders with
-	// execution control, and it runs as the activation database role.
-	"hangarOutput.database.existingSecret=op-activation-db",
-	// And so is the walk's target, which has no default: a fresh plane is off.
-	"hangarOutput.activation.target=off",
 }
 
 // outputSets add the OUTPUT capture facet on top of the base one.
@@ -73,13 +85,12 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.cacheBucket=jb-cache",
 	"hangarOutput.strictInputBucket=jb-strict-input",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
-	// The four Workload Identity annotations. The output facet requires them:
-	// the policy attestor compares the bucket's IAM policy against these four
-	// members, so a plane that does not declare them can attest nothing. See
-	// hangar_output_principals_test.go.
+	// The two Workload Identity annotations: the publisher's on the artifact
+	// daemon, and the reclaim principal's on the web. Not required (see
+	// hangar_output_principals_test.go), but declared, so the rules over
+	// distinct principals have something to compare.
 	`artifactDaemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
-	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com`,
-	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com`,
+	`serviceAccount.annotations.iam\.gke\.io/gcp-service-account=web@p.iam.gserviceaccount.com`,
 )
 
 func renderBaseControl(t *testing.T, extra ...string) string {
@@ -180,20 +191,13 @@ func hasObject(t *testing.T, out, kind, suffix string) bool {
 func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
 	out := render(t)
 
-	// The artifact daemon always renders; it is the output plane's flags and
-	// the controllers that are opt-in.
-	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent,
-	} {
-		if strings.Contains(out, component) {
-			t.Errorf("the default render mentions %q; the output plane is opt-in", component)
-		}
-	}
-	for _, unexpected := range []string{
+	// The artifact daemon always renders; it is the output plane's flags, and
+	// the web's reclaim and orphan sweep, that are opt-in.
+	for _, unexpected := range append([]string{
 		"--output-bucket", "--materialization-key-file", "--control-key-file",
 		"concourse.dev/hangar-output-v1", "concourse.dev/hangar-execution-control-v1",
-		"hangar-output-scratch",
-	} {
+		"hangar-output-scratch", "hangar-output-list", "hangar-output-delete",
+	}, webReclaimFlags...) {
 		if strings.Contains(out, unexpected) {
 			t.Errorf("the default render contains %q", unexpected)
 		}
@@ -223,25 +227,24 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 		t.Error("a base-control-only daemon has no control key; an unsigned acknowledgement " +
 			"is not proof")
 	}
-	for _, controller := range []string{
-		outputInventoryComponent, outputReclaimerComponent,
-	} {
-		if hasObject(t, out, "Deployment", "-"+controller) {
-			t.Errorf("base control alone rendered %s; the controllers belong to the output "+
-				"facet and have nothing to sweep", controller)
+	web := objectNamed(t, out, "Deployment", "-"+webComponent)
+	for _, flag := range webReclaimFlags {
+		if strings.Contains(web.body, flag) {
+			t.Errorf("base control alone gave web %s; reclaim and the orphan sweep belong to "+
+				"the output facet and have nothing to sweep", flag)
 		}
 	}
 }
 
 // THE WEB NODE'S EPOCH RENDERED ONLY UNDER THE CAPTURE FACET.
 //
-// Every control capability the ATC mints -- base or capture -- carries the
-// activation epoch in its claims, and a capability claiming zero is refused
-// before it is signed. This chart's own validation has always required
-// hangarOutput.activationEpoch under the BASE switch, and then passed it to the
-// web node only when the capture facet was on: a base-only deployment rendered
-// a control plane whose every call to the daemon would fail at mint time. The
-// value was demanded and not handed over.
+// hangarOutput.activationEpoch is the control-key generation: every control
+// capability the ATC mints -- base or capture -- is minted under it, and a
+// capability claiming zero is refused before it is signed. This chart's own
+// validation has always required it under the BASE switch, and once passed it
+// to the web node only when the capture facet was on: a base-only deployment
+// rendered a control plane whose every call to the daemon would fail at mint
+// time.
 func TestTheWebNodeIsGivenTheActivationEpochUnderTheBaseFacet(t *testing.T) {
 	web := objectNamed(t, renderBaseControl(t), "Deployment", "-web")
 
@@ -252,11 +255,11 @@ func TestTheWebNodeIsGivenTheActivationEpochUnderTheBaseFacet(t *testing.T) {
 	// And the capture facet's own flags are still the capture facet's: this
 	// moved one line, and a test that only asked for the epoch would pass
 	// against a base render that had quietly gained all of them.
-	for _, captureOnly := range []string{
+	for _, captureOnly := range append([]string{
 		"--kubernetes-hangar-output-control-keys=",
 		"--kubernetes-hangar-output-materialization-key=",
 		"--kubernetes-hangar-output-bucket=",
-	} {
+	}, webReclaimFlags...) {
 		if strings.Contains(web.body, captureOnly) {
 			t.Errorf("a base-control-only web node is given %s, which belongs to capture",
 				captureOnly)
@@ -274,70 +277,6 @@ func TestOutputEnablementRequiresBaseControl(t *testing.T) {
 	)
 	if !strings.Contains(message, "hangarOutput.executionControl.enabled") {
 		t.Errorf("the refusal does not name the base facet:\n%s", message)
-	}
-}
-
-// The activation target needs what it walks to, and the refusal names both
-// values. A target past what the chart renders would otherwise be a walk Job
-// that fails every sync, or no walk Job at all and a target silently ignored.
-func TestTheActivationTargetNeedsWhatItWalksTo(t *testing.T) {
-	// The controls: each target renders where what it walks to is on, and
-	// without execution control the target may stay unset.
-	renderBaseControl(t, "hangarOutput.activation.target=base")
-	renderOutput(t, "hangarOutput.activation.target=output")
-	if strings.Contains(render(t, "hangarOutput.activation.target="), "hangar-output-walk") {
-		t.Error("an unset target without execution control rendered a walk Job")
-	}
-
-	for name, probe := range map[string]struct {
-		sets  []string
-		names []string
-	}{
-		"output without the output plane": {
-			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=output"),
-			names: []string{"hangarOutput.activation.target", "hangarOutput.enabled"},
-		},
-		"base without execution control": {
-			sets:  []string{"hangarOutput.activation.target=base"},
-			names: []string{"hangarOutput.activation.target", "hangarOutput.executionControl.enabled"},
-		},
-		"output without execution control": {
-			sets:  []string{"hangarOutput.activation.target=output"},
-			names: []string{"hangarOutput.activation.target", "hangarOutput.executionControl.enabled"},
-		},
-		// No default: an upgrade must not walk a live plane down to one.
-		"execution control with the target unset": {
-			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target="),
-			names: []string{"hangarOutput.activation.target is required", "hangarOutput.executionControl.enabled", "live state"},
-		},
-		"an unquoted off, which YAML reads as false": {
-			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=false"),
-			names: []string{"hangarOutput.activation.target", "Quote it"},
-		},
-		"a target that is not one": {
-			sets:  append(append([]string{}, baseControlSets...), "hangarOutput.activation.target=all"),
-			names: []string{"hangarOutput.activation.target", "off, base or output"},
-		},
-	} {
-		message := renderHangarError(t, probe.sets...)
-		for _, named := range probe.names {
-			if !strings.Contains(message, named) {
-				t.Errorf("%s: the refusal does not name %s:\n%s", name, named, message)
-			}
-		}
-	}
-}
-
-// With execution control the walk Job always renders, and it runs as the
-// activation database role, so that role's Secret is required with the base
-// facet and not only with capture.
-func TestExecutionControlRequiresTheActivationDatabaseSecret(t *testing.T) {
-	sets := append(append([]string{}, baseControlSets...), "hangarOutput.database.existingSecret=")
-	message := renderHangarError(t, sets...)
-	for _, named := range []string{"hangarOutput.database.existingSecret", "hangarOutput.executionControl.enabled"} {
-		if !strings.Contains(message, named) {
-			t.Errorf("the refusal does not name %s:\n%s", named, message)
-		}
 	}
 }
 
@@ -372,48 +311,47 @@ func TestPrefixOnlyIsolationInAMixedBucketIsRefused(t *testing.T) {
 	}
 }
 
-// The prefix and the tenant are server configuration handed to every output
-// workload, and they are the same values everywhere: a controller sweeping a
-// namespace the daemon does not publish into would find every object orphaned.
+// The prefix, the tenant, the bucket and the control-key generation are server
+// configuration handed to both halves of the plane, and they are the same
+// values in both: an orphan sweep listing a namespace the daemon does not
+// publish into would find every object orphaned, and one listing the wrong
+// prefix would find nothing.
 func TestEveryOutputWorkloadIsGivenTheSameDerivedNamespace(t *testing.T) {
 	out := renderOutput(t)
 
-	workloads := []document{
-		objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent),
-		objectNamed(t, out, "Deployment", "-"+outputInventoryComponent),
-		objectNamed(t, out, "Deployment", "-"+outputReclaimerComponent),
-	}
-	for _, workload := range workloads {
-		for _, flag := range []string{
-			"--output-bucket=jb-output",
-			"--activation-epoch=7",
-		} {
-			if !strings.Contains(workload.body, flag) {
-				t.Errorf("%s does not carry %s", workload.name, flag)
-			}
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	web := objectNamed(t, out, "Deployment", "-"+webComponent)
+	for _, pair := range []struct{ daemon, web string }{
+		{"--output-bucket=jb-output", "--kubernetes-hangar-output-bucket=jb-output"},
+		{"--output-prefix=cluster-a", "--kubernetes-hangar-output-prefix=cluster-a"},
+		{"--output-tenant=tenant-a", "--kubernetes-hangar-output-tenant=tenant-a"},
+		{"--output-store=gcs", "--kubernetes-hangar-output-store=gcs"},
+		{"--activation-epoch=7", "--kubernetes-hangar-output-activation-epoch=7"},
+	} {
+		if !strings.Contains(daemon.body, pair.daemon) {
+			t.Errorf("the artifact daemon does not carry %s", pair.daemon)
 		}
-	}
-	// The attestor reads the bucket's policy and has no namespace inside it,
-	// so prefix and tenant are asserted over the three that do.
-	for _, workload := range workloads[:3] {
-		for _, flag := range []string{"--output-prefix=cluster-a", "--output-tenant=tenant-a"} {
-			if !strings.Contains(workload.body, flag) {
-				t.Errorf("%s does not carry %s", workload.name, flag)
-			}
+		if !strings.Contains(web.body, pair.web) {
+			t.Errorf("the web does not carry %s", pair.web)
 		}
 	}
 }
 
-// Decision F3. The output plane's endpoint override is its own value and its
-// own flag: it reaches --output-endpoint and no other endpoint flag.
+// Decision F3. The output plane's endpoint override is its own value: it
+// reaches the daemon's --output-endpoint and the web's
+// --kubernetes-hangar-output-endpoint, the two clients of the output store, and
+// no other endpoint flag.
 func TestTheOutputEndpointReachesOnlyItsOwnFlag(t *testing.T) {
 	const endpoint = "http://fake-gcs.cicd.svc:4443"
 	out := renderOutput(t, "hangarOutput.endpoint="+endpoint)
-	if !strings.Contains(out, "--output-endpoint="+endpoint) {
-		t.Error("hangarOutput.endpoint did not reach --output-endpoint")
+	for _, flag := range []string{"--output-endpoint=", "--kubernetes-hangar-output-endpoint="} {
+		if !strings.Contains(out, flag+endpoint) {
+			t.Errorf("hangarOutput.endpoint did not reach %s", flag)
+		}
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "-endpoint="+endpoint) && !strings.Contains(line, "--output-endpoint=") {
+		if strings.Contains(line, "-endpoint="+endpoint) && !strings.Contains(line, "--output-endpoint=") &&
+			!strings.Contains(line, "--kubernetes-hangar-output-endpoint=") {
 			t.Errorf("hangarOutput.endpoint reached another endpoint flag: %s", strings.TrimSpace(line))
 		}
 	}
@@ -424,38 +362,22 @@ func TestTheOutputEndpointReachesOnlyItsOwnFlag(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTheOutputPrincipalsHaveDistinctServiceAccounts(t *testing.T) {
-	out := renderOutput(t,
-		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
-		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
-		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-	)
+	out := renderOutput(t)
 
-	names := map[string]bool{}
-	for _, component := range []string{
-		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent,
-	} {
-		account := objectNamed(t, out, "ServiceAccount", "-"+component)
-		if names[account.name] {
-			t.Errorf("%s reuses the ServiceAccount name %s. A service account is Pod-wide: "+
-				"two workloads sharing one are one cloud identity holding both sets of "+
-				"permissions.", component, account.name)
-		}
-		names[account.name] = true
-	}
-	if len(names) == 0 {
-		t.Fatalf("expected four distinct output service accounts, got %d: %v", len(names), names)
-	}
-
-	// The Workload Identity annotations are four distinct cloud principals too.
-	// The chart cannot verify the binding -- activation does -- but it can
-	// refuse to render one principal into two roles.
+	// The Workload Identity annotations are two distinct cloud principals too.
+	// The chart cannot verify the binding, but it can refuse to render one
+	// principal into two roles.
+	names := map[string]string{}
 	principals := map[string]string{}
-	for _, component := range []string{
-		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent,
-	} {
+	for _, component := range []string{outputDaemonComponent, webComponent} {
 		account := objectNamed(t, out, "ServiceAccount", "-"+component)
+		if other, seen := names[account.name]; seen {
+			t.Errorf("%s and %s share the ServiceAccount %s. A service account is Pod-wide: "+
+				"two workloads sharing one are one cloud identity holding both sets of "+
+				"permissions.", component, other, account.name)
+		}
+		names[account.name] = component
+
 		var parsed struct {
 			Metadata struct {
 				Annotations map[string]string `json:"annotations"`
@@ -476,6 +398,9 @@ func TestTheOutputPrincipalsHaveDistinctServiceAccounts(t *testing.T) {
 		}
 		principals[principal] = component
 	}
+	if len(names) != 2 {
+		t.Fatalf("expected two distinct output service accounts, got %d: %v", len(names), names)
+	}
 }
 
 // Shared identities are an activation failure, and the chart is where an
@@ -483,7 +408,7 @@ func TestTheOutputPrincipalsHaveDistinctServiceAccounts(t *testing.T) {
 func TestASharedCloudPrincipalIsRefused(t *testing.T) {
 	message := renderOutputError(t,
 		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
-		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
+		"serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
 	)
 	if !strings.Contains(message, "principal") {
 		t.Errorf("two roles sharing one cloud principal were accepted:\n%s", message)
@@ -492,8 +417,8 @@ func TestASharedCloudPrincipalIsRefused(t *testing.T) {
 
 func TestASharedKubernetesServiceAccountIsRefused(t *testing.T) {
 	message := renderOutputError(t,
-		"hangarOutput.inventory.serviceAccount.name=shared",
-		"hangarOutput.reclaimer.serviceAccount.name=shared",
+		"serviceAccount.name=shared",
+		"kubernetes.serviceAccount=shared",
 	)
 	if !strings.Contains(message, "service account") {
 		t.Errorf("two roles sharing one Kubernetes service account were accepted:\n%s", message)
@@ -501,92 +426,36 @@ func TestASharedKubernetesServiceAccountIsRefused(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Seven service accounts, not four
+// Every service account the chart renders
 // ---------------------------------------------------------------------------
 //
-// Phase 8 review R2-F1. The validation above used to cover the four output
-// ROLES, and the chart renders seven service accounts: those four, the
-// activation Job's, the artifact daemon's, and the top-level (web) one. Each of
-// the three it did not cover was reachable by a values override, and each of
-// the three was ACCEPTED at cc1d77ad5e -- measured, not inferred:
-//
-//	helm template ... --set hangarOutput.activation.serviceAccount.name=<reclaimer>
-//	  -> rendered TWO ServiceAccount objects named jb-...-hangar-output-reclaimer
-//	helm template ... --set <activation annotation>=<the reclaimer's principal>
-//	  -> rendered the delete-holding cloud identity on two Kubernetes accounts
-//	helm template ... --set serviceAccount.name=<reclaimer>
-//	  -> rendered the WEB Deployment with
-//	     serviceAccountName: jb-...-hangar-output-reclaimer
-//
-// The third is the one that matters most and reads the most innocuous: Req 54
-// says web/control-plane, task, cache and strict-input identities have no role
-// on the output bucket, and that override gives web the delete grant. The first
-// is the quieter outage -- two objects, one name, and whichever the apply leaves
-// standing decides whether the reclaimer still carries its Workload Identity
-// annotation. A reclaimer without it deletes nothing, so the plane keeps every
-// published object forever while its status says it reclaims.
-//
-// No shipped configuration was ever in any of these states.
-//
-// These are three separate tests rather than a table because each one names a
-// different consequence, and a table would report "a refusal happened".
+// Phase 8 review R2-F1. The validation once covered only the output ROLES'
+// accounts, and every other account the chart renders was reachable by a values
+// override that collapsed it onto an output role. The plane now has two
+// principals, the artifact daemon's and the web's, and the validation covers
+// both, the task pods' account, and anything else that names one.
 
-// The positive control for all three: the ordinary render, with the activation
-// Job present, still succeeds. Asserted FIRST, because a refusal assertion
-// passes on a chart that refuses everything.
-func TestTheOrdinaryRenderWithAnActivationJobIsAccepted(t *testing.T) {
+// The positive control: the ordinary render succeeds. Asserted FIRST, because a
+// refusal assertion passes on a chart that refuses everything.
+func TestTheOrdinaryRenderIsAccepted(t *testing.T) {
 	out := renderOutput(t)
 
-	for _, suffix := range []string{
-		"-" + outputDaemonComponent, "-" + outputInventoryComponent,
-		"-" + outputReclaimerComponent,
-		"-hangar-output-activation", "-artifact-daemon", "-web",
-	} {
+	for _, suffix := range []string{"-" + outputDaemonComponent, "-" + webComponent} {
 		if !hasObject(t, out, "ServiceAccount", suffix) {
-			t.Errorf("the ordinary render has no ServiceAccount ending %q; this chart renders "+
-				"seven and the validation below covers whatever it renders", suffix)
+			t.Errorf("the ordinary render has no ServiceAccount ending %q", suffix)
 		}
 	}
 }
 
-// The activation Job's account is a distinct identity (decision F4). Naming it
-// after the reclaimer's renders two objects with one name.
-func TestTheActivationAccountMayNotBeNamedAfterTheReclaimers(t *testing.T) {
-	message := renderOutputError(t,
-		"hangarOutput.activation.serviceAccount.name=jb-concourse-jetbridge-hangar-output-reclaimer",
-	)
-	if !strings.Contains(message, "service account") {
-		t.Errorf("the activation Job was allowed to render a second ServiceAccount object with "+
-			"the reclaimer's name. Which object the apply leaves standing decides whether the "+
-			"reclaimer keeps its Workload Identity annotation, and a reclaimer without one "+
-			"keeps every published object forever:\n%s", message)
-	}
-}
-
-// The same union-of-grants defect the four-role check refuses, one account over.
-func TestTheActivationAccountMayNotCarryTheReclaimersPrincipal(t *testing.T) {
-	message := renderOutputError(t,
-		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-		"hangarOutput.activation.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-	)
-	if !strings.Contains(message, "principal") {
-		t.Errorf("the activation identity was allowed to carry the reclaimer's cloud principal. "+
-			"The activation command signs nothing and touches no object; giving it delete is "+
-			"the union-of-grants failure Req 54 calls an activation failure:\n%s", message)
-	}
-}
-
-// Req 54, the sharpest form: web has no role on the output bucket, and this is
-// the one override that gives it every one of them.
+// Req 54, the sharpest form: the web holds delete and the publisher holds
+// create, and one account for both is a principal that can overwrite.
 func TestTheWebIdentityMayNotBeNamedAfterAnOutputRole(t *testing.T) {
 	message := renderOutputError(t,
-		"serviceAccount.name=jb-concourse-jetbridge-hangar-output-reclaimer",
+		"serviceAccount.name=jb-concourse-jetbridge-artifact-daemon",
 	)
 	if !strings.Contains(message, "service account") {
-		t.Errorf("the top-level service account was allowed to take the reclaimer's name, so the "+
-			"WEB Deployment runs as the delete-holding identity. Req 54: web/control-plane, "+
-			"task, cache and strict-input identities have no role on the output bucket:\n%s",
-			message)
+		t.Errorf("the top-level service account was allowed to take the publisher's name, so "+
+			"one identity holds create AND delete on the output bucket:\n%s", message)
 	}
 }
 
@@ -604,51 +473,61 @@ func TestAPreProvisionedWebAccountNamedAfterAnOutputRoleIsAlsoRefused(t *testing
 	}
 }
 
-// Phase 8 review R2-F3. `concourse.labels` appends component: web, so the three
-// controller NetworkPolicies described themselves as governing the web pod. The
-// label selects nothing -- no controller selects a NetworkPolicy -- so this is a
-// label an operator reads, and the render is the thing an operator reads.
+// Phase 8 review R2-F3. `concourse.labels` appends component: web, so a policy
+// built from it describes itself as governing the web pod. The output plane's
+// own policy is the artifact daemon's, and it names its own component.
 func TestEveryOutputNetworkPolicyNamesItsOwnComponent(t *testing.T) {
 	out := renderOutput(t, "hangarOutput.networkPolicy.enabled=true")
 
-	found := 0
-	for _, subject := range documentsIn(t, out) {
-		if subject.kind != "NetworkPolicy" || !strings.Contains(subject.name, "hangar-output") {
-			continue
-		}
-		found++
+	policy := objectNamed(t, out, "NetworkPolicy", "-"+outputDaemonComponent)
+	var parsed struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(policy.body), &parsed); err != nil {
+		t.Fatalf("parsing %s: %v", policy.name, err)
+	}
+	if component := parsed.Metadata.Labels["app.kubernetes.io/component"]; component != outputDaemonComponent {
+		t.Errorf("NetworkPolicy %s is labelled component=%q, which is not the workload it "+
+			"selects", policy.name, component)
+	}
+}
 
-		var parsed struct {
-			Metadata struct {
-				Name   string            `json:"name"`
-				Labels map[string]string `json:"labels"`
-			} `json:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(subject.body), &parsed); err != nil {
-			t.Fatalf("parsing %s: %v", subject.name, err)
-		}
+// On the disk store, the store's policy admits exactly the two output
+// principals' pods: the artifact daemon, which publishes, and the web, which
+// lists and deletes. The inventory and reclaimer pods it used to admit are
+// gone, and a policy still naming only them would cut the web's reclaim off
+// from the store with no error anywhere.
+func TestTheDiskStoreAdmitsTheDaemonAndTheWeb(t *testing.T) {
+	out := renderOutput(t, append(append([]string{}, diskSets...),
+		"hangarOutput.networkPolicy.enabled=true")...)
 
-		component := parsed.Metadata.Labels["app.kubernetes.io/component"]
-		if component == "web" {
-			t.Errorf("NetworkPolicy %s is labelled component=web. It governs an output "+
-				"workload; an operator filtering component=web to see what constrains the "+
-				"web pod is shown a policy that constrains something else.", subject.name)
-		}
-		if !strings.HasSuffix(subject.name, component) {
-			t.Errorf("NetworkPolicy %s is labelled component=%q, which is not the workload "+
-				"it selects", subject.name, component)
+	var policy networkingv1.NetworkPolicy
+	decodeNamed(t, out, "NetworkPolicy", objectNamed(t, out, "NetworkPolicy", "-hangar-store").name, &policy)
+	var admitted []string
+	for _, rule := range policy.Spec.Ingress {
+		for _, peer := range rule.From {
+			if peer.PodSelector == nil {
+				continue
+			}
+			for _, expression := range peer.PodSelector.MatchExpressions {
+				if expression.Key == "app.kubernetes.io/component" {
+					admitted = append(admitted, expression.Values...)
+				}
+			}
 		}
 	}
-
-	if found == 0 {
-		t.Fatalf("the output plane renders %d NetworkPolicies, not four; this guard is looking "+
-			"at the wrong render", found)
+	sort.Strings(admitted)
+	if !slices.Equal(admitted, []string{outputDaemonComponent, webComponent}) {
+		t.Errorf("the disk store's NetworkPolicy admits components %v, want exactly %v",
+			admitted, []string{outputDaemonComponent, webComponent})
 	}
 }
 
 // Only the output principals gain an output role. The artifact daemon serves
-// the output plane, so it is the publisher; web, task and the controllers'
-// other identities gain nothing.
+// the output plane, so it is the publisher, and web mints read warrants; no
+// other identity gains anything.
 func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 	out := renderOutput(t)
 
@@ -720,7 +599,7 @@ func TestTheControlPrivateKeyIsMountedOnlyInTheOutputDaemon(t *testing.T) {
 	for _, carrier := range carriers {
 		if !strings.HasSuffix(carrier, "-"+outputDaemonComponent) {
 			t.Errorf("%s references the control private key. The control plane, the web node, "+
-				"the controllers, the control init container, the task and the sidecar hold "+
+				"the control init container, the task and the sidecar hold "+
 				"the public key only.", carrier)
 		}
 	}
@@ -801,12 +680,13 @@ func TestTheControlRingMustCarryTheActiveEpoch(t *testing.T) {
 }
 
 // Publication receipts were removed in T3: their values are refused with a
-// message that says so, rather than ignored.
+// message that says so, rather than ignored. (The receipt key's lifetime lived
+// under hangarOutput.activation, which went with the activation walk, and is
+// refused as part of it: TestTheRemovedControllerAndActivationValuesAreRefused.)
 func TestTheRemovedReceiptValuesAreRefused(t *testing.T) {
 	for _, set := range []string{
 		"hangarOutput.receipt.keyID=receipt-7",
 		"hangarOutput.receipt.privateKeySecret=op-receipt-private",
-		"hangarOutput.activation.receiptKeyLifetime=43800h",
 	} {
 		key := set[:strings.Index(set, "=")]
 		if strings.HasPrefix(key, "hangarOutput.receipt.") {
@@ -880,7 +760,6 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 		"hangarOutput.tenant=tenant-a",
 		"hangarOutput.activationEpoch=7",
 		"hangarOutput.materializationKeySecret=op-output-materialize",
-		"hangarOutput.database.existingSecret=op-activation-db",
 		"artifactDaemon.outputScratch.sizeLimit=",
 	)...)
 	if !strings.Contains(message, "sizeLimit") {
@@ -962,82 +841,123 @@ func TestTheArtifactDaemonScratchVolumeIsBoundedToo(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Controllers
+// Reclaim and the orphan sweep, in web
 // ---------------------------------------------------------------------------
 
-// Req 57. Output enablement without every controller is refused: an activation
-// epoch attests recovery, inventory and reclaim workers, and a plane with no
-// reclaimer keeps every published object forever while claiming it does not.
-func TestOutputEnablementRequiresEveryController(t *testing.T) {
-	for _, missing := range []string{
-		"hangarOutput.inventory.enabled=false",
-		"hangarOutput.reclaimer.enabled=false",
+// The inventory and reclaimer controllers are gone; the web runs reclaim and
+// the orphan sweep, and each of their values reaches the web's own flag.
+func TestTheWebRunsReclaimAndTheOrphanSweep(t *testing.T) {
+	defaults := objectNamed(t, renderOutput(t), "Deployment", "-"+webComponent)
+	for _, flag := range []string{
+		"--kubernetes-hangar-output-store=gcs",
+		"--kubernetes-hangar-output-prefix=cluster-a",
+		"--kubernetes-hangar-output-publication-grace=192h",
+		"--kubernetes-hangar-output-reclaim-interval=1m",
+		"--kubernetes-hangar-output-reclaim-batch=10",
+		"--kubernetes-hangar-output-delete-timeout=2m",
+		"--kubernetes-hangar-output-orphan-sweep-interval=1h",
 	} {
-		message := renderOutputError(t, missing)
-		if !strings.Contains(message, "controller") {
-			t.Errorf("%s was accepted:\n%s", missing, message)
+		if !strings.Contains(defaults.body, flag) {
+			t.Errorf("the default output render does not give web %s", flag)
+		}
+	}
+	// GCS: the web reaches the bucket with its ambient credential. No disk
+	// flag, and neither disk token volume.
+	for _, absent := range append(append([]string{}, webDiskFlags...), "name: hangar-output-list", "name: hangar-output-delete") {
+		if strings.Contains(defaults.body, absent) {
+			t.Errorf("a GCS output render gives web %s, which is the disk store's", absent)
+		}
+	}
+
+	tuned := objectNamed(t, renderOutput(t,
+		"hangarOutput.reclaim.interval=90s",
+		"hangarOutput.reclaim.deleteTimeout=3m",
+		"hangarOutput.reclaim.batch=25",
+		"hangarOutput.orphanSweep.interval=2h",
+		"hangarOutput.publicationGrace=200h",
+	), "Deployment", "-"+webComponent)
+	for _, flag := range []string{
+		"--kubernetes-hangar-output-reclaim-interval=90s",
+		"--kubernetes-hangar-output-delete-timeout=3m",
+		"--kubernetes-hangar-output-reclaim-batch=25",
+		"--kubernetes-hangar-output-orphan-sweep-interval=2h",
+		"--kubernetes-hangar-output-publication-grace=200h",
+	} {
+		if !strings.Contains(tuned.body, flag) {
+			t.Errorf("the tuned render does not give web %s", flag)
+		}
+	}
+
+	// Capture off is not drain: the plane stays configured, and web keeps
+	// reclaiming what the plane still holds until residue reaches zero.
+	draining := objectNamed(t, renderOutput(t, "hangarOutput.webEnabled=false"), "Deployment", "-"+webComponent)
+	for _, flag := range webReclaimFlags {
+		if !strings.Contains(draining.body, flag) {
+			t.Errorf("with hangarOutput.webEnabled=false web loses %s; a drain needs reclaim "+
+				"to keep running until the residue is zero", flag)
 		}
 	}
 }
 
-func TestEachControllerRendersItsOwnDeploymentImageAndTimeouts(t *testing.T) {
-	out := renderOutput(t,
-		"hangarOutput.inventory.interval=90s",
-		"hangarOutput.reclaimer.deleteTimeout=3m",
-	)
+// On the disk store the web holds two of the store's role tokens, each in a
+// volume of its own and read at the path its flag names: the inventory token
+// the orphan sweep lists with, and the reclaimer token reclaim and the sweep
+// delete with. Neither is the publisher's, which only the artifact daemon holds.
+func TestOnTheDiskStoreTheWebHoldsTheListAndDeleteTokens(t *testing.T) {
+	out := renderOutput(t, diskSets...)
 
-	for _, expected := range []struct {
-		component string
-		command   string
-		flag      string
-	}{
-		{outputInventoryComponent, "/usr/local/concourse/bin/hangar-output-inventory", "--interval=90s"},
-		{outputReclaimerComponent, "/usr/local/concourse/bin/hangar-output-reclaimer", "--delete-timeout=3m"},
-	} {
-		deployment := objectNamed(t, out, "Deployment", "-"+expected.component)
-		if !strings.Contains(deployment.body, expected.command) {
-			t.Errorf("%s does not run %s", expected.component, expected.command)
-		}
-		if !strings.Contains(deployment.body, expected.flag) {
-			t.Errorf("%s does not carry %s", expected.component, expected.flag)
+	var web appsv1.Deployment
+	decodeNamed(t, out, "Deployment", objectNamed(t, out, "Deployment", "-"+webComponent).name, &web)
+	pod := web.Spec.Template.Spec
+	args := strings.Join(pod.Containers[0].Args, "\n")
+	for _, flag := range webDiskFlags {
+		if !strings.Contains(args, flag) {
+			t.Errorf("a disk output render does not give web %s", flag)
 		}
 	}
-}
-
-// Req 42: exactly one renewable lease owner per bucket and epoch. Two inventory
-// replicas are two cursor owners racing for one lease, which the plan forbids
-// by construction rather than by luck.
-func TestTheSingletonControllersRenderExactlyOneReplica(t *testing.T) {
-	out := renderOutput(t)
-
-	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent,
-	} {
-		deployment := objectNamed(t, out, "Deployment", "-"+component)
-		var parsed struct {
-			Spec struct {
-				Replicas *int32 `json:"replicas"`
-				Strategy struct {
-					Type string `json:"type"`
-				} `json:"strategy"`
-			} `json:"spec"`
-		}
-		if err := yaml.Unmarshal([]byte(deployment.body), &parsed); err != nil {
-			t.Fatalf("parsing %s: %v", component, err)
-		}
-		if parsed.Spec.Replicas == nil || *parsed.Spec.Replicas != 1 {
-			t.Errorf("%s renders %v replicas; there is one cursor and one lease owner per "+
-				"bucket and epoch", component, parsed.Spec.Replicas)
-		}
-		if parsed.Spec.Strategy.Type != "Recreate" {
-			t.Errorf("%s uses the %q strategy; a rolling update runs two owners at once",
-				component, parsed.Spec.Strategy.Type)
-		}
+	if !strings.Contains(args, "--kubernetes-hangar-output-endpoint=https://jb-concourse-jetbridge-hangar-store.") {
+		t.Errorf("web's output endpoint is not the disk store's Service:\n%s", args)
+	}
+	if !strings.Contains(args, "--kubernetes-hangar-output-store-id=store-1") {
+		t.Error("web is not given the disk store's id")
 	}
 
-	message := renderOutputError(t, "hangarOutput.inventory.replicas=2")
-	if !strings.Contains(message, "replica") {
-		t.Errorf("a second inventory replica was accepted:\n%s", message)
+	mounts := map[string]string{}
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		mounts[mount.Name] = mount.MountPath
+	}
+	for volume, want := range map[string]struct{ role, flag string }{
+		"hangar-output-list":   {"inventory", "--kubernetes-hangar-output-list-token-file="},
+		"hangar-output-delete": {"reclaimer", "--kubernetes-hangar-output-delete-token-file="},
+	} {
+		path, mounted := mounts[volume]
+		if !mounted {
+			t.Errorf("web does not mount %s", volume)
+
+			continue
+		}
+		if !slices.Contains(pod.Containers[0].Args, want.flag+path+"/token") {
+			t.Errorf("web's %s does not read %s/token", want.flag, path)
+		}
+		roles := []string{}
+		for _, candidate := range pod.Volumes {
+			if candidate.Name != volume || candidate.Projected == nil {
+				continue
+			}
+			for _, source := range candidate.Projected.Sources {
+				if source.Secret != nil && source.Secret.Name == "storage-credentials" {
+					for _, item := range source.Secret.Items {
+						roles = append(roles, item.Key)
+					}
+				}
+			}
+		}
+		if !slices.Equal(roles, []string{want.role}) {
+			t.Errorf("web's %s projects the store tokens %v, want only %s", volume, roles, want.role)
+		}
+	}
+	if !slices.Contains(pod.Containers[0].Args, "--kubernetes-hangar-output-store-ca-cert="+mounts["hangar-output-list"]+"/ca.crt") {
+		t.Error("web's store CA flag does not name the CA projected beside its list token")
 	}
 }
 
@@ -1055,13 +975,8 @@ func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
 		}
 	}
 
-	for _, component := range []string{
-		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent,
-	} {
-		if !hasObject(t, out, "NetworkPolicy", "-"+component) {
-			t.Errorf("%s has no NetworkPolicy", component)
-		}
+	if !hasObject(t, out, "NetworkPolicy", "-"+outputDaemonComponent) {
+		t.Errorf("%s has no NetworkPolicy", outputDaemonComponent)
 	}
 
 	if !hasObject(t, out, "PodDisruptionBudget", "-"+outputDaemonComponent) {
@@ -1069,9 +984,9 @@ func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
 	}
 }
 
-// The daemon owns node-local state; the controllers own none, and a controller
-// that mounted the managed hostPath would be a second writer to a directory one
-// daemon is the authority for.
+// The daemon owns node-local state; the web owns none, and a web that mounted
+// the managed hostPath would be a second writer to a directory one daemon is
+// the authority for.
 func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 	out := renderOutput(t)
 
@@ -1080,13 +995,8 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 		t.Fatal("the output daemon mounts no hostPath; it owns the source ledger and the " +
 			"step incarnations")
 	}
-	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent,
-	} {
-		deployment := objectNamed(t, out, "Deployment", "-"+component)
-		if strings.Contains(deployment.body, "hostPath") {
-			t.Errorf("%s mounts a hostPath; the node-local ledger has one writer", component)
-		}
+	if web := objectNamed(t, out, "Deployment", "-"+webComponent); strings.Contains(web.body, "hostPath") {
+		t.Error("web mounts a hostPath; the node-local ledger has one writer")
 	}
 }
 
@@ -1328,46 +1238,29 @@ func readChartFile(t *testing.T, name string) string {
 // large (a principal that can do something nobody wrote down).
 var roleOperations = map[string]map[string]string{
 	"publisher": {"CreateAbsent": "storage.objects.create", "OpenExact": "storage.objects.get", "StatCurrent": "storage.objects.get", "StatExact": "storage.objects.get"},
-	"inventory": {"List": "storage.objects.list", "StatExact": "storage.objects.get"},
-	"reclaimer": {"DeleteExact": "storage.objects.delete", "StatExact": "storage.objects.get"},
+	"web":       {"List": "storage.objects.list", "DeleteExact": "storage.objects.delete", "StatExact": "storage.objects.get"},
 }
 
-// roleCapabilitySource is where each principal's capability is DECLARED, and
-// what kind of declaration it is.
+// roleCapabilitySource is where each principal's capability is DECLARED: every
+// interface in each file is a view of the store that principal holds.
 //
-// Three roles are interfaces in their own package under hangar/output. The
-// attestor is a concrete type in hangar/gcs, because it holds a bucket handle
-// and not an object handle -- the difference the whole fourth identity exists
-// for. Both are read, so a new method on either is a permission somebody has
-// to have written down.
-var roleCapabilitySource = map[string]struct {
-	path     string
-	concrete string // empty means "every interface in the file"
-}{
-	"publisher": {path: "hangar/output/publisher/publisher.go"},
-	"inventory": {path: "hangar/output/inventory/inventory.go"},
-	"reclaimer": {path: "hangar/output/reclaimer/reclaimer.go"},
+// The publisher's is its own package under hangar/output. The web holds two
+// views: the reclaimer's store (stat and conditional delete), which reclaim and
+// the orphan sweep delete through, and the sweep's lister. Both are read, so a
+// new method on either is a permission somebody has to have written down.
+var roleCapabilitySource = map[string][]string{
+	"publisher": {"hangar/output/publisher/publisher.go"},
+	"web":       {"hangar/output/reclaimer/reclaimer.go", "atc/hangaroutput/reclaim/sweep.go"},
 }
 
-// documentedRolePermissions is what an operator must grant each workload, READ
-// FROM THE CODE THAT REQUIRES IT rather than copied here.
-//
-// It was three hand-written rows, and the fourth principal was not one of them:
-// the attestor's two bucket permissions were checked by a different test and
-// its capability by nothing, so "the documented IAM matrix" guarded three
-// quarters of the matrix. A role added to output.PrincipalRoles() inherited no
-// rule at all, silently -- the same shape as the defect this file exists for.
-//
-// The source of truth is policy.RequiredPermissions, which is what the ATTESTOR
-// compares a real IAM policy against. Deriving from it means the chart's prose,
-// the runtime conformance check and this guard cannot disagree: there is one
-// list, and values.yaml either names it or fails here.
+// documentedRolePermissions is what an operator must grant each workload. The
+// test below checks it both ways: values.yaml names every permission, and
+// every method the role's declared capability has maps to one of them.
 func documentedRolePermissions(t *testing.T) map[string][]string {
 	t.Helper()
 	return map[string][]string{
 		"publisher": {"storage.objects.create", "storage.objects.get"},
-		"inventory": {"storage.objects.list", "storage.objects.get"},
-		"reclaimer": {"storage.objects.get", "storage.objects.delete"},
+		"web":       {"storage.objects.list", "storage.objects.get", "storage.objects.delete"},
 	}
 }
 
@@ -1388,25 +1281,24 @@ func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 		// And the reverse: every method the role's own interfaces declare maps
 		// to a permission the documentation grants. A method with no mapping is
 		// a capability nobody wrote down.
-		source, declared := roleCapabilitySource[role]
+		sources, declared := roleCapabilitySource[role]
 		if !declared {
-			t.Errorf("%s is one of output.PrincipalRoles() and roleCapabilitySource does not "+
-				"say where its capability is declared, so nothing checks what it can actually "+
-				"do against what the chart tells an operator to grant", role)
+			t.Errorf("%s is a documented role and roleCapabilitySource does not say where its "+
+				"capability is declared, so nothing checks what it can actually do against "+
+				"what the chart tells an operator to grant", role)
 
 			continue
 		}
-		var methods map[string]bool
-		if source.concrete == "" {
-			methods = declaredRoleMethods(t, filepath.Join(root, filepath.FromSlash(source.path)))
-		} else {
-			methods = declaredMethodsOnType(t,
-				filepath.Join(root, filepath.FromSlash(source.path)), source.concrete)
+		methods := map[string]bool{}
+		for _, source := range sources {
+			for method := range declaredRoleMethods(t, filepath.Join(root, filepath.FromSlash(source))) {
+				methods[method] = true
+			}
 		}
 		if len(methods) < 2 {
-			t.Fatalf("parsed only %d methods out of the %s role's capability at %s; the "+
+			t.Fatalf("parsed only %d methods out of the %s role's capability at %v; the "+
 				"declaration moved and this rule would pass vacuously",
-				len(methods), role, source.path)
+				len(methods), role, sources)
 		}
 
 		granted := map[string]bool{}
@@ -1418,9 +1310,9 @@ func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 		// nobody has any more, while the one that replaced it goes unmapped.
 		for method := range roleOperations[role] {
 			if !methods[method] {
-				t.Errorf("roleOperations maps %s.%s to a permission and %s declares no such "+
+				t.Errorf("roleOperations maps %s.%s to a permission and %v declares no such "+
 					"method; the mapping outlived what it described",
-					role, method, source.path)
+					role, method, sources)
 			}
 		}
 
@@ -1502,42 +1394,6 @@ func declaredRoleMethods(t *testing.T, path string) map[string]bool {
 	return methods
 }
 
-// The attestor holds NO object permission at all, which is why its compromise
-// costs the assessment rather than the data. Its own interface is the statement.
-
-// declaredMethodsOnType reads the exported methods declared on one concrete
-// type in one file.
-func declaredMethodsOnType(t *testing.T, path, receiver string) map[string]bool {
-	t.Helper()
-
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-	if err != nil {
-		t.Fatalf("parsing %s: %v", path, err)
-	}
-
-	methods := map[string]bool{}
-	for _, declaration := range file.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Recv == nil || len(function.Recv.List) == 0 {
-			continue
-		}
-		name := function.Recv.List[0].Type
-		if star, isStar := name.(*ast.StarExpr); isStar {
-			name = star.X
-		}
-		ident, isIdent := name.(*ast.Ident)
-		if !isIdent || ident.Name != receiver {
-			continue
-		}
-		if !function.Name.IsExported() {
-			continue
-		}
-		methods[function.Name.Name] = true
-	}
-
-	return methods
-}
-
 // ---------------------------------------------------------------------------
 // The IAM half, made load-bearing
 // ---------------------------------------------------------------------------
@@ -1545,18 +1401,17 @@ func declaredMethodsOnType(t *testing.T, path, receiver string) map[string]bool 
 // Source guards cannot bound a credential holder: a Go program holding
 // application default credentials can delete an object with a raw HTTPS request,
 // a vendor CLI, or any SDK nobody thought to name, and no rule over imports
-// changes that. IAM is the control -- so the claim "only the reclaimer may
-// reach delete" is only as true as the grant, and the grant has to be asserted
+// changes that. IAM is the control -- so the claim "only the web may reach
+// delete" is only as true as the grant, and the grant has to be asserted
 // somewhere rather than described.
 //
 // This is that assertion, over the two artefacts an operator actually acts on:
 // the permission matrix generated into deploy/chart/values.yaml, which is what
 // they copy into Terraform, and the rendered Workload Identity annotations,
 // which are what bind a Pod to the cloud principal that holds it. Neither proves
-// a binding exists -- the chart creates no IAM and says so, and activation is
-// what attests the real policy (Req 54). What they prove is that the
-// documentation grants storage.objects.delete to exactly one principal and that
-// exactly one workload runs as it.
+// a binding exists -- the chart creates no IAM and says so. What they prove is
+// that the documentation grants storage.objects.delete to exactly one principal
+// and that exactly one workload runs as it.
 
 // documentedPermissionMatrix reads the matrix out of values.yaml rather than
 // restating it, because a matrix restated in a test is a second copy that drifts
@@ -1628,10 +1483,10 @@ func documentedPermissionMatrix(t *testing.T) map[string][]string {
 	return matrix
 }
 
-func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
+func TestOnlyTheWebPrincipalIsGrantedObjectDelete(t *testing.T) {
 	matrix := documentedPermissionMatrix(t)
 	if len(matrix) == 0 {
-		t.Fatalf("parsed %d workloads out of the documented permission matrix, not four: %v. "+
+		t.Fatalf("parsed %d workloads out of the documented permission matrix, not two: %v. "+
 			"The block's shape changed and every assertion below would pass over the wrong "+
 			"text.", len(matrix), matrix)
 	}
@@ -1647,7 +1502,7 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 		}
 	}
 	if total == 0 {
-		t.Fatalf("the documented matrix grants %d permissions across four workloads; it "+
+		t.Fatalf("the documented matrix grants %d permissions across two workloads; it "+
 			"collapsed", total)
 	}
 	sort.Strings(granted)
@@ -1655,29 +1510,21 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	if len(granted) != 1 {
 		t.Fatalf("deploy/chart/values.yaml grants storage.objects.delete to %d workloads (%v).\n\n"+
 			"IAM is the control here -- source guards cannot bound a process that holds "+
-			"credentials -- so exactly one principal may hold delete on the output bucket, and "+
-			"the whole isolation is that the reclaimer is a separate Pod because of it.",
+			"credentials -- so exactly one principal may hold delete on the output bucket.",
 			len(granted), granted)
 	}
-	if !strings.Contains(granted[0], "reclaimer") {
-		t.Fatalf("the documented matrix grants storage.objects.delete to %q, not to the "+
-			"reclaimer", granted[0])
+	if !strings.HasPrefix(granted[0], "web") {
+		t.Fatalf("the documented matrix grants storage.objects.delete to %q, not to the web",
+			granted[0])
 	}
 
 	// And the rendered side: the annotation that binds a Pod to that principal
-	// is on one ServiceAccount, and one workload runs as it. The render holds
-	// the activation walk Job, which execution control always renders, because
-	// it is the fifth identity in this namespace and the easiest one to point
-	// at the wrong account by copy-paste.
-	out := renderOutput(t,
-		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
-		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
-		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-	)
+	// is on one ServiceAccount, and one workload runs as it.
+	out := renderOutput(t)
 
-	const deletePrincipal = "reclaimer@p.iam.gserviceaccount.com"
+	const deletePrincipal = "web@p.iam.gserviceaccount.com"
 
-	reclaimerAccount := objectNamed(t, out, "ServiceAccount", "-"+outputReclaimerComponent).name
+	webAccount := objectNamed(t, out, "ServiceAccount", "-"+webComponent).name
 
 	accountsWithDelete := map[string]string{}
 	annotated := 0
@@ -1698,7 +1545,7 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 			accountsWithDelete[account.Name] = document.source
 		}
 	}
-	if annotated == 0 {
+	if annotated < 2 {
 		t.Fatalf("only %d rendered ServiceAccounts carry a Workload Identity annotation; the "+
 			"render changed shape and this rule is looking at nothing", annotated)
 	}
@@ -1708,56 +1555,35 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 			"is two Pods holding storage.objects.delete, whatever their code does.",
 			len(accountsWithDelete), deletePrincipal, accountsWithDelete)
 	}
-	if _, ok := accountsWithDelete[reclaimerAccount]; !ok {
-		t.Fatalf("the delete-holding principal %s is bound to %v, not to the reclaimer's "+
-			"ServiceAccount %s", deletePrincipal, accountsWithDelete, reclaimerAccount)
+	if _, ok := accountsWithDelete[webAccount]; !ok {
+		t.Fatalf("the delete-holding principal %s is bound to %v, not to the web's "+
+			"ServiceAccount %s", deletePrincipal, accountsWithDelete, webAccount)
 	}
 
 	// Finally: which workloads run as that account. Every Pod template in the
-	// render, not just the output ones -- web, the artifact daemon, postgres and
-	// the activation Job are all in this namespace.
+	// render, not just the output ones -- web, the artifact daemon and postgres
+	// are all in this namespace.
 	var runAs []string
 	templates := 0
 	for _, document := range documentsIn(t, out) {
-		var spec corev1.PodSpec
-		switch document.kind {
-		case "Deployment":
-			var object appsv1.Deployment
-			if err := yaml.UnmarshalStrict([]byte(document.body), &object); err != nil {
-				t.Fatalf("%s: %v", document.source, err)
-			}
-			spec = object.Spec.Template.Spec
-		case "DaemonSet":
-			var object appsv1.DaemonSet
-			if err := yaml.UnmarshalStrict([]byte(document.body), &object); err != nil {
-				t.Fatalf("%s: %v", document.source, err)
-			}
-			spec = object.Spec.Template.Spec
-		case "Job":
-			var object batchv1.Job
-			if err := yaml.UnmarshalStrict([]byte(document.body), &object); err != nil {
-				t.Fatalf("%s: %v", document.source, err)
-			}
-			spec = object.Spec.Template.Spec
-		default:
+		_, spec := podOf(t, document)
+		if document.kind != "Deployment" && document.kind != "DaemonSet" && document.kind != "Job" &&
+			document.kind != "StatefulSet" {
 			continue
 		}
 		templates++
-		if spec.ServiceAccountName == reclaimerAccount {
+		if spec.ServiceAccountName == webAccount {
 			runAs = append(runAs, document.source)
 		}
 	}
-	if templates < 6 {
+	if templates < 2 {
 		t.Fatalf("only %d Pod templates were decoded out of the render; the walk failed and "+
 			"this rule would pass vacuously", templates)
 	}
-	if len(runAs) != 1 {
-		t.Fatalf("%d Pod templates run as %s, the only account bound to a principal holding "+
-			"storage.objects.delete: %v", len(runAs), reclaimerAccount, runAs)
-	}
-	if !strings.Contains(runAs[0], "reclaimer") {
-		t.Fatalf("the account holding storage.objects.delete is used by %s, which is not the "+
-			"reclaimer", runAs[0])
+	if len(runAs) != 1 || !strings.HasSuffix(runAs[0], "web-deployment.yaml") {
+		t.Fatalf("the Pod templates running as %s, the only account bound to a principal "+
+			"holding storage.objects.delete, are %v; want the web Deployment alone",
+			webAccount, runAs)
 	}
 }
 
@@ -1905,7 +1731,7 @@ func TestTheMatrixForbidsRewritingTheOwnershipMarker(t *testing.T) {
 
 	granted := documentedPermissionMatrix(t)
 	if len(granted) == 0 {
-		t.Fatalf("parsed %d workloads out of the granted matrix, not four", len(granted))
+		t.Fatalf("parsed %d workloads out of the granted matrix, not two", len(granted))
 	}
 	for workload, permissions := range granted {
 		for _, permission := range permissions {
@@ -1973,143 +1799,73 @@ func TestTheOutputPlaneRefusesToRenderWithoutTheArtifactDaemon(t *testing.T) {
 	}
 }
 
-// Every other duration in this plane is checked at render time. The attestor's
-// interval was not, and it is the one whose bound has a consequence written
-// into the schema: policy evidence older than fifteen minutes is stale, and a
-// stale snapshot puts the plane at-risk, which blocks five kinds of admission.
-func TestTheControllerIntervalsAreValidated(t *testing.T) {
+// Every duration in this plane is checked at render time, and so is the reclaim
+// batch: zero admits nothing, and a plane that reclaims nothing keeps every
+// published object forever while its status says it reclaims.
+func TestTheReclaimAndSweepValuesAreValidated(t *testing.T) {
 	for _, bad := range []struct {
 		set, names string
 	}{
-		{"hangarOutput.inventory.interval=nope", "inventory.interval"},
-		{"hangarOutput.reclaimer.interval=nope", "reclaimer.interval"},
+		{"hangarOutput.reclaim.interval=nope", "reclaim.interval"},
+		{"hangarOutput.reclaim.deleteTimeout=nope", "reclaim.deleteTimeout"},
+		{"hangarOutput.reclaim.batch=0", "reclaim.batch"},
+		{"hangarOutput.orphanSweep.interval=nope", "orphanSweep.interval"},
 	} {
 		message := renderOutputError(t, bad.set)
 		if !strings.Contains(message, bad.names) {
 			t.Errorf("%s rendered, or was refused by something else:\n%s", bad.set, message)
 		}
 	}
+}
 
-	// And the default is accepted, so the rule is not simply "refuse".
+// The values of the deleted controllers, the activation walk and the
+// activation database role are refused by name, each with where its job went,
+// rather than silently ignored -- with the output plane off as well as on, so
+// an operator meets it before anything else.
+func TestTheRemovedControllerAndActivationValuesAreRefused(t *testing.T) {
+	for _, probe := range []struct {
+		set, key, says string
+	}{
+		{"hangarOutput.inventory.interval=1m", "hangarOutput.inventory", "hangarOutput.orphanSweep.interval"},
+		{"hangarOutput.inventory.serviceAccount.annotations.a=b", "hangarOutput.inventory", "serviceAccount.annotations"},
+		{"hangarOutput.reclaimer.deleteTimeout=2m", "hangarOutput.reclaimer", "hangarOutput.reclaim.interval"},
+		{"hangarOutput.reclaimer.serviceAccount.name=x", "hangarOutput.reclaimer", "serviceAccount.annotations"},
+		{"hangarOutput.database.existingSecret=op-activation-db", "hangarOutput.database", "web's own database user"},
+		{"hangarOutput.activation.target=output", "hangarOutput.activation", "hangarOutput.webEnabled"},
+		{"hangarOutput.activation.job.finalize=true", "hangarOutput.activation", "hangar_enabled"},
+		{"hangarOutput.activation.receiptKeyLifetime=43800h", "hangarOutput.activation", "hangar_enabled"},
+		{"hangarBootstrap.database.enabled=true", "hangarBootstrap.database", "hangar_enabled"},
+	} {
+		for name, message := range map[string]string{
+			"plane off": renderHangarError(t, probe.set),
+			"plane on":  renderOutputError(t, probe.set),
+		} {
+			if !strings.Contains(message, probe.key+" has been removed") || !strings.Contains(message, probe.says) {
+				t.Errorf("%s (%s) rendered, or was refused without naming %s's removal and %s:\n%s",
+					probe.set, name, probe.key, probe.says, firstLines(message, 3))
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
 // The low set
 // ---------------------------------------------------------------------------
 
-// The database credential does not reach argv.
-//
-// `--database=$(HANGAR_OUTPUT_DSN)` is expanded by the KUBELET, so the
-// connection string -- user, password and all -- ends up in
-// /proc/<pid>/cmdline, which is world-readable inside the container, while
-// /proc/<pid>/environ is readable only by the process's own uid. The commands
-// read the variable themselves instead.
-func TestTheDatabaseCredentialNeverReachesArgv(t *testing.T) {
-	out := renderOutput(t)
-
-	carriers := 0
-	for _, subject := range documentsIn(t, out) {
-		if !strings.Contains(subject.body, "HANGAR_OUTPUT_DSN") {
-			continue
-		}
-		carriers++
-		if strings.Contains(subject.body, "--database=$(HANGAR_OUTPUT_DSN)") {
-			t.Errorf("%s %s expands the DSN into its argv. The kubelet substitutes $(VAR) "+
-				"in args, so the credential lands in /proc/<pid>/cmdline, which is readable "+
-				"by anything in the container; the environment is not.",
-				subject.kind, subject.name)
-		}
-	}
-	if carriers == 0 {
-		t.Fatalf("only %d workloads take a DSN from the environment; this rule is looking at "+
-			"the wrong render", carriers)
-	}
-}
-
 // readOnlyRootFilesystem with nowhere to write is a runtime error waiting for
 // the first operation that wants a temp file -- on a Pod that passed every
-// render check. The GCS client library spools resumable uploads.
-func TestTheControllersHaveSomewhereToWrite(t *testing.T) {
+// render check. The web now holds the output store's clients, and the GCS
+// client library spools to a temp file.
+func TestTheWebHasSomewhereToWrite(t *testing.T) {
+	var web appsv1.Deployment
 	out := renderOutput(t)
-
-	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent,
-	} {
-		controller := objectNamed(t, out, "Deployment", "-"+component)
-
-		var object appsv1.Deployment
-		if err := yaml.UnmarshalStrict([]byte(controller.body), &object); err != nil {
-			t.Fatalf("%s: %v", controller.source, err)
-		}
-		spec := object.Spec.Template.Spec
-		if len(spec.Containers) == 0 || spec.Containers[0].SecurityContext == nil {
-			t.Fatalf("%s has no container security context; this rule is looking at nothing",
-				component)
-		}
-		readOnly := spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem
-		if readOnly == nil || !*readOnly {
-			continue // Nothing to guarantee.
-		}
-
-		writable := false
-		for _, mount := range spec.Containers[0].VolumeMounts {
-			if mount.MountPath == "/tmp" {
-				writable = true
-			}
-		}
-		if !writable {
-			t.Errorf("%s runs with readOnlyRootFilesystem and mounts nothing at /tmp. The "+
-				"GCS client spools resumable uploads to a temp file, and the failure would "+
-				"be a runtime error on a Pod that passed every render check.", component)
+	decodeNamed(t, out, "Deployment", objectNamed(t, out, "Deployment", "-"+webComponent).name, &web)
+	for _, mount := range web.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if mount.MountPath == "/tmp" {
+			return
 		}
 	}
-}
-
-// The inventory and reclaimer controllers run as web's database user, never
-// the activation database role (hangar_activation_db_role B2): their
-// connection string has no password, and PGPASSWORD comes from web's Secret
-// when there is one.
-func TestTheControllersUseWebsDatabaseCredential(t *testing.T) {
-	for name, sets := range map[string][]string{
-		"an existing Secret": {"postgresql.existingSecret=op-db-password"},
-		"bundled PostgreSQL": {},
-	} {
-		t.Run(name, func(t *testing.T) {
-			out := renderOutput(t, sets...)
-			found := 0
-			for _, doc := range documentsIn(t, out) {
-				component, pod := podOf(t, doc)
-				if component != outputInventoryComponent && component != outputReclaimerComponent {
-					continue
-				}
-				found++
-				env := map[string]corev1.EnvVar{}
-				for _, variable := range pod.Containers[0].Env {
-					env[variable.Name] = variable
-				}
-				dsn := env["HANGAR_OUTPUT_DSN"]
-				if dsn.ValueFrom != nil || strings.Contains(dsn.Value, "password") || !strings.Contains(dsn.Value, "user=") {
-					t.Errorf("%s's HANGAR_OUTPUT_DSN is %+v, want web's user and no password", component, dsn)
-				}
-				password, ok := env["PGPASSWORD"]
-				if !ok {
-					t.Errorf("%s has no PGPASSWORD", component)
-				}
-				if len(sets) > 0 && (password.ValueFrom == nil || password.ValueFrom.SecretKeyRef == nil ||
-					password.ValueFrom.SecretKeyRef.Name != "op-db-password") {
-					t.Errorf("%s's PGPASSWORD is %+v, want it from postgresql.existingSecret", component, password)
-				}
-				for _, volume := range pod.Volumes {
-					if volume.Secret != nil && volume.Secret.SecretName == "op-activation-db" {
-						t.Errorf("%s mounts the activation database role's Secret", component)
-					}
-				}
-			}
-			if found != 2 {
-				t.Fatalf("found %d controllers in the render, want the inventory and reclaimer", found)
-			}
-		})
-	}
+	t.Error("web mounts nothing at /tmp; the output store clients it holds have nowhere to spool")
 }
 
 // The output scratch is the plane's own directory: never the storage root the

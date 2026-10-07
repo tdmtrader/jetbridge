@@ -114,7 +114,7 @@ jobs:
       # fake-gcs-server already deployed in this namespace (deployment
       # hangar-fake-gcs, service fake-gcs on 4443). HANGAR_CI is what turns a
       # missing or unreachable endpoint into a FAILURE there rather than a
-      # skip: Req 41 gates epoch activation on that profile passing, and a
+      # skip: Req 41 makes that profile the store's conformance bar, and a
       # skipped run reported as conformance is worse than no run at all.
       #
       # The same variable is what the brine Hangar fixture reads instead of
@@ -358,8 +358,8 @@ jobs:
       # create a bucket there (build 873827). Unset, the fixture starts the
       # fake-gcs-server library in-process, inside the namespace. HANGAR_CI is
       # not here either -- that variable turns a missing endpoint into a
-      # FAILURE, which is the Go tier-2 suite's rule because Req 41 gates
-      # activation on it; the fixture has no fail-not-skip rule.
+      # FAILURE, which is the Go tier-2 suite's rule because Req 41 makes it
+      # the conformance bar; the fixture has no fail-not-skip rule.
       params:
         GITHUB_TOKEN: ((github-token))
         GOPRIVATE: github.com/MarkDucommun/*
@@ -680,26 +680,17 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
 
-          # The Hangar output plane's five commands. The chart runs every one of
-          # them by absolute path out of THIS image, and this task -- not
-          # Dockerfile.build, which no release path uses -- is what produces it.
-          # A command missing here is five CrashLoopBackOffs with "no such file
-          # or directory" on a Pod nobody is watching;
-          # deploy/chart/tests/image_parity_test.go reads this file's heredoc
-          # below for exactly that reason.
-          #
-          # Two isolated output roles, activation command and disk owner (the
-          # publisher is the artifact daemon's output plane). Separate runtime
-          # credentials enforce authority; the image is shared.
-          echo "=== Building hangar-output-inventory binary ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-inventory-linux-amd64 ./cmd/hangar-output-inventory
-          echo "=== Building hangar-output-reclaimer binary ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-reclaimer-linux-amd64 ./cmd/hangar-output-reclaimer
+          # The Hangar disk store owner. The chart runs it by absolute path out
+          # of THIS image, and this task -- not Dockerfile.build, which no
+          # release path uses -- is what produces it. A command missing here is
+          # a CrashLoopBackOff with "no such file or directory" on a Pod nobody
+          # is watching; deploy/chart/tests/image_parity_test.go reads this
+          # file's heredoc below for exactly that reason. The output plane's
+          # publisher is the artifact daemon, and its reclaim and orphan sweep
+          # run in web: neither has a binary of its own.
           echo "=== Building hangar-store binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-store-linux-amd64 ./cmd/hangar-store
-          echo "=== Building hangar-output-activate binary ==="
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-activate-linux-amd64 ./cmd/hangar-output-activate
-          ls -lh hangar-output-*-linux-amd64 hangar-store-linux-amd64
+          ls -lh hangar-store-linux-amd64
 
           # Every platform, in the RC image -- not deferred to release.
           #
@@ -804,11 +795,7 @@ jobs:
           echo "=== Copying binaries to builder pod ==="
           kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
           kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
-          for command in hangar-output-inventory \
-                         hangar-output-reclaimer hangar-store \
-                         hangar-output-activate; do
-            kubectl cp "${command}-linux-amd64" "cicd/${BUILDER_POD}:/tmp/${command}-linux-amd64"
-          done
+          kubectl cp hangar-store-linux-amd64 cicd/${BUILDER_POD}:/tmp/hangar-store-linux-amd64
           kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
 
           # The runtime base (ubuntu + ca-certificates + dumb-init) is built
@@ -846,10 +833,7 @@ jobs:
           FROM ${BASE_IMAGE}
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
-          COPY hangar-output-inventory-linux-amd64 /usr/local/concourse/bin/hangar-output-inventory
-          COPY hangar-output-reclaimer-linux-amd64 /usr/local/concourse/bin/hangar-output-reclaimer
           COPY hangar-store-linux-amd64 /usr/local/concourse/bin/hangar-store
-          COPY hangar-output-activate-linux-amd64 /usr/local/concourse/bin/hangar-output-activate
           COPY fly-assets /usr/local/concourse/fly-assets
           RUN chmod +x /usr/local/concourse/bin/*
           ENV PATH="/usr/local/concourse/bin:\${PATH}"
@@ -959,8 +943,7 @@ jobs:
 
           # The Hangar workloads run web's image too. Each exists only once the
           # Hangar rollout has created it, so a missing one is skipped.
-          for workload in deployment/concourse-hangar-store \
-              deployment/concourse-hangar-output-inventory deployment/concourse-hangar-output-reclaimer; do
+          for workload in deployment/concourse-hangar-store; do
             if kubectl get "${workload}" -n cicd >/dev/null 2>&1; then
               kubectl set image "${workload}" '*='"${IMAGE}" -n cicd
             fi
@@ -1069,9 +1052,7 @@ jobs:
           # None is required before it exists; each present one is waited on
           # first, since a rolling pod still Running on the old image would
           # otherwise be sampled.
-          for workload in deployment/concourse-hangar-store:hangar-store \
-              deployment/concourse-hangar-output-inventory:hangar-output-inventory \
-              deployment/concourse-hangar-output-reclaimer:hangar-output-reclaimer; do
+          for workload in deployment/concourse-hangar-store:hangar-store; do
             name=${workload%%:*}; component=${workload#*:}
             kubectl get "${name}" -n cicd >/dev/null 2>&1 || continue
             kubectl rollout status "${name}" -n cicd --timeout=180s
@@ -1461,8 +1442,7 @@ jobs:
 
           # The Hangar workloads run web's image too. Each exists only once the
           # Hangar rollout has created it, so a missing one is skipped.
-          for workload in deployment/concourse-hangar-store \
-              deployment/concourse-hangar-output-inventory deployment/concourse-hangar-output-reclaimer; do
+          for workload in deployment/concourse-hangar-store; do
             if kubectl get "${workload}" -n cicd >/dev/null 2>&1; then
               kubectl set image "${workload}" '*='"${IMAGE}" -n cicd
             fi

@@ -212,8 +212,7 @@ spec:
             # mirroring, caches) out of service. The output plane reports its
             # own readiness where its consumers look: /readyz, its two node
             # labels (withheld while the ledger is quarantined) and its
-            # handshakes (503 while quarantined), which the activation walk
-            # attests through.
+            # handshakes (503 while quarantined).
             httpGet:
               path: /healthz
               port: http

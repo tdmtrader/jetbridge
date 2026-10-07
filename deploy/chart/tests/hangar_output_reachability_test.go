@@ -221,11 +221,10 @@ func TestTheOutputPlaneIsServedOverTheArtifactDaemonsTLS(t *testing.T) {
 
 // The daemon's SERVER key is private to the daemon Pod.
 //
-// The activation walk Job dials the cohort with a client certificate, and the
-// web does too. Both take it out of the artifact daemon's TLS Secret, which
-// also holds tls.key -- the key the daemon SERVES with -- so each projects the
-// client material and the CA and never tls.key: whatever held it could
-// impersonate the daemon to the ATC.
+// The web dials the cohort with a client certificate. It takes it out of the
+// artifact daemon's TLS Secret, which also holds tls.key -- the key the daemon
+// SERVES with -- so it projects the client material and the CA and never
+// tls.key: whatever held it could impersonate the daemon to the ATC.
 func TestTheDaemonsServerKeyIsMountedInTheDaemonPodAndNowhereElse(t *testing.T) {
 	for _, mode := range outputTLSModes {
 		t.Run(mode.name, func(t *testing.T) {

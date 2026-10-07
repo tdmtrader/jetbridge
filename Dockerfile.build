@@ -76,18 +76,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       -o /artifact-daemon \
       ./cmd/artifact-daemon
 
-# Build the inventory and reclaimer roles, activation command and disk owner.
-# The publisher role is the artifact daemon's output plane. Inventory and
-# reclaimer use separate runtime identities; sharing an image does not share
-# credentials. The disk owner is deployed only for the optional disk profile.
-# Chart tests check that every rendered command ships.
-RUN for command in hangar-output-inventory \
-                   hangar-output-reclaimer hangar-store \
-                   hangar-output-activate; do \
-      echo "=== Building ${command} ==="; \
-      CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-        go build -ldflags "-s -w" -o "/${command}" "./cmd/${command}"; \
-    done
+# Build the disk owner, deployed only for the optional disk profile. The
+# output plane's publisher is the artifact daemon, and its reclaim and orphan
+# sweep run in web. Chart tests check that every rendered command ships.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -ldflags "-s -w" -o /hangar-store ./cmd/hangar-store
 
 # Cross-compile the fly CLI for common platforms. The web server serves
 # these archives at /api/v1/cli so users can download fly directly.
@@ -121,10 +114,7 @@ RUN apt-get update && \
 
 COPY --from=backend /concourse /usr/local/concourse/bin/concourse
 COPY --from=backend /artifact-daemon /usr/local/concourse/bin/artifact-daemon
-COPY --from=backend /hangar-output-inventory /usr/local/concourse/bin/hangar-output-inventory
-COPY --from=backend /hangar-output-reclaimer /usr/local/concourse/bin/hangar-output-reclaimer
 COPY --from=backend /hangar-store /usr/local/concourse/bin/hangar-store
-COPY --from=backend /hangar-output-activate /usr/local/concourse/bin/hangar-output-activate
 COPY --from=backend /fly-assets/ /usr/local/concourse/fly-assets/
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"

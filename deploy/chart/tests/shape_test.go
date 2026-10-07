@@ -48,8 +48,13 @@ import (
 // preferredStepNode (web now derives --cookie-secure from an https
 // external URL, and the OTLP flags already had tracing.* and
 // otelMetrics.*), leaving 232. Removing the GCP preemption watcher took
-// artifactDaemon.preemption.enabled and .budget, leaving 230.
-const maxValues = 230
+// artifactDaemon.preemption.enabled and .budget, leaving 230. Removing the
+// output plane's activation walk, inventory and reclaimer controllers and the
+// activation database role took 21 leaves (hangarOutput.inventory's 6,
+// .reclaimer's 8, .activation's 5, .database's 1, hangarBootstrap.database's
+// 1) and moved reclaim and the orphan sweep into web under 4
+// (hangarOutput.reclaim's 3, .orphanSweep's 1): 17 fewer, leaving 213.
+const maxValues = 213
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -146,15 +151,17 @@ var removedKeys = []string{
 	"artifactDaemon.enabled",
 	"artifactDaemon.preemption",
 	"artifactDaemon.tls.enabled",
+	"hangarBootstrap.database",
 	"hangarBootstrap.secretNames.outputCA",
-	"hangarOutput.activation.job.facet",
-	"hangarOutput.activation.job.mode",
-	"hangarOutput.activation.receiptKeyLifetime",
-	"hangarOutput.sealDeadline",
+	"hangarOutput.activation",
 	"hangarOutput.daemon",
+	"hangarOutput.database",
+	"hangarOutput.inventory",
 	"hangarOutput.readControlCA",
 	"hangarOutput.readControlURL",
 	"hangarOutput.receipt",
+	"hangarOutput.reclaimer",
+	"hangarOutput.sealDeadline",
 	"rbac.brineLive",
 	"rbac.brineLiveServiceAccount",
 	"secrets.create",
@@ -260,11 +267,11 @@ var shapeGuards = []shapeGuard{
 	},
 	{
 		name:  "a removed key in a deferred group stands only on an open ancestor",
-		names: "hangarOutput.activation.job.mode",
+		names: "hangarBootstrap.secretNames.outputCA",
 		check: checkSchemaEntries,
 		breakIt: func(t *testing.T, dir string) {
 			editSchema(t, dir, func(schema map[string]any) {
-				schemaProperties(schema, "hangarOutput")["activation"] = map[string]any{
+				schemaProperties(schema, "hangarBootstrap")["secretNames"] = map[string]any{
 					"type": "object", "additionalProperties": false,
 				}
 			})
@@ -846,26 +853,5 @@ func TestARemovedGroupFailsWhenItsChildrenAreSet(t *testing.T) {
 	out := renderHangarError(t, "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=cache")
 	if !strings.Contains(out, "artifactDaemon.durable has been removed") {
 		t.Fatalf("setting artifactDaemon.durable's children did not name its removal:\n%s", out)
-	}
-}
-
-// The activation step values are removed for the target, and a values file
-// that still drives a step is told which value replaces it -- with execution
-// control off as well as on, so the operator meets it before anything else.
-func TestTheActivationStepValuesNameTheTarget(t *testing.T) {
-	for _, probe := range []struct {
-		sets []string
-		says string
-	}{
-		{[]string{"hangarOutput.activation.job.mode=begin"}, "hangarOutput.activation.job.mode"},
-		{append(append([]string{}, baseControlSets...), "hangarOutput.activation.job.mode=enable"), "hangarOutput.activation.job.mode"},
-		{[]string{"hangarOutput.activation.job.facet=output"}, "hangarOutput.activation.job.facet"},
-		// Both set: whichever the table names first, it names the target.
-		{[]string{"hangarOutput.activation.job.mode=attest", "hangarOutput.activation.job.facet=base"}, "hangarOutput.activation.job."},
-	} {
-		out := renderHangarError(t, probe.sets...)
-		if !strings.Contains(out, probe.says) || !strings.Contains(out, "has been removed; set hangarOutput.activation.target") {
-			t.Errorf("%v did not name %s's removal and the target:\n%s", probe.sets, probe.says, firstLines(out, 3))
-		}
 	}
 }

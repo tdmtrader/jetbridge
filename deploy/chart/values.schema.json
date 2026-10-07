@@ -776,7 +776,9 @@
         "enabled": {},
         "secretNames": {},
         "referencedKeys": {},
-        "database": {}
+        "database": {
+          "$ref": "#/definitions/removed"
+        }
       }
     },
     "hangarOutput": {
@@ -815,6 +817,8 @@
         },
         "materializationKeySecret": {},
         "materializationKeyID": {},
+        "reclaim": {},
+        "orphanSweep": {},
         "readControlURL": {
           "$ref": "#/definitions/removed"
         },
@@ -824,10 +828,18 @@
         "daemon": {
           "$ref": "#/definitions/removed"
         },
-        "inventory": {},
-        "reclaimer": {},
-        "database": {},
-        "activation": {},
+        "inventory": {
+          "$ref": "#/definitions/removed"
+        },
+        "reclaimer": {
+          "$ref": "#/definitions/removed"
+        },
+        "database": {
+          "$ref": "#/definitions/removed"
+        },
+        "activation": {
+          "$ref": "#/definitions/removed"
+        },
         "networkPolicy": {}
       }
     },

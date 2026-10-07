@@ -6,10 +6,11 @@ verification material, and putting it in a Secret would suggest the private half
 is somewhere nearby. The private half is an operator-provided Secret mounted in
 the output daemon Pod alone.
 
-Entries are retained while any durable state references their epoch -- a source
-hold, a recovery row -- because dropping one makes those node statements
-unverifiable forever rather than merely unusable. Rotation ADDS an entry under a
-new activation epoch; it never replaces a key in place.
+Entries are keyed by control-key generation (hangarOutput.activationEpoch) and
+retained while any durable state references their generation -- a source hold,
+a recovery row -- because dropping one makes those node statements
+unverifiable forever rather than merely unusable. A new generation ADDS an
+entry; it never replaces a key in place.
 */}}
 {{- if and .Values.hangarOutput.enabled (not (include "concourse.hangarBootstrap.ringEnabled" .)) }}
 apiVersion: v1

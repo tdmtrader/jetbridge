@@ -215,9 +215,10 @@ spec:
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node mints control
             # capabilities and verifies node control statements; it holds no
-            # daemon private key, no GCS credential and no role on the output
-            # bucket. A capture is one database row: the daemon's word reaches
-            # web over mTLS and nothing signs it.
+            # daemon private key. A capture is one database row: the daemon's
+            # word reaches web over mTLS and nothing signs it. With the capture
+            # facet on (below) the web is also the plane's reclaimer, the one
+            # principal that may list and delete in the output namespace.
             - --kubernetes-hangar-output-enabled
             # The output plane is served by the artifact daemon on its one
             # port, over its one TLS configuration: the web reaches it with the
@@ -227,24 +228,43 @@ spec:
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
             - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}
-            # THE EPOCH BELONGS TO THE BASE FACET, and it used to render only
-            # under the capture one. Every capability this node mints -- base
-            # or capture -- carries the activation epoch in its claims, and a
-            # capability claiming epoch zero is refused before it is signed. So
-            # a base-only deployment rendered a control plane whose every call
-            # would fail at mint time, while this chart's own validation
-            # already required hangarOutput.activationEpoch under the base
-            # switch: the value was demanded and then not passed on.
+            # THE EPOCH BELONGS TO THE BASE FACET. It is the control-key
+            # generation: every capability this node mints -- base or capture
+            # -- is minted under it, and a capability claiming generation zero
+            # is refused before it is signed, so a base-only deployment needs
+            # it as much as a capturing one.
             - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             {{- if .Values.hangarOutput.enabled }}
             - --kubernetes-hangar-output-control-keys=/etc/concourse/hangar-output/control-keys/control-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
-            # The bucket and tenant reach web so the operator STATUS surface can
-            # key a cursor by the same bucket the sweep does. They are server
-            # configuration and never a request field: no task, consumer, path
-            # parameter or request can select or broaden them.
+            # The output namespace. Server configuration and never a request
+            # field: no task, consumer, path parameter or request can select or
+            # broaden it. The web is the plane's only reclaimer: its reclaim
+            # pass (admission, conditional delete, finalization) and its orphan
+            # sweep reach this namespace, and node daemons publish into it and
+            # never delete.
             - --kubernetes-hangar-output-bucket={{ .Values.hangarOutput.bucket }}
             - --kubernetes-hangar-output-tenant={{ .Values.hangarOutput.tenant }}
+            - --kubernetes-hangar-output-store={{ .Values.hangarOutput.store }}
+            - --kubernetes-hangar-output-prefix={{ .Values.hangarOutput.prefix }}
+            - --kubernetes-hangar-output-publication-grace={{ .Values.hangarOutput.publicationGrace }}
+            - --kubernetes-hangar-output-reclaim-interval={{ .Values.hangarOutput.reclaim.interval }}
+            - --kubernetes-hangar-output-reclaim-batch={{ int .Values.hangarOutput.reclaim.batch }}
+            - --kubernetes-hangar-output-delete-timeout={{ .Values.hangarOutput.reclaim.deleteTimeout }}
+            - --kubernetes-hangar-output-orphan-sweep-interval={{ .Values.hangarOutput.orphanSweep.interval }}
+            {{- if eq .Values.hangarOutput.store "disk" }}
+            # The disk store holds one token per role. The web holds two, each
+            # in its own volume: the list-and-stat one the orphan sweep lists
+            # with, and the stat-and-delete one reclaim and the sweep delete
+            # with. Neither can create.
+            - --kubernetes-hangar-output-endpoint={{ include "concourse.hangarStorage.endpoint" . }}
+            - --kubernetes-hangar-output-store-id={{ .Values.hangarStorage.disk.storeID }}
+            - --kubernetes-hangar-output-store-ca-cert=/etc/concourse/hangar-output-list/ca.crt
+            - --kubernetes-hangar-output-list-token-file=/etc/concourse/hangar-output-list/token
+            - --kubernetes-hangar-output-delete-token-file=/etc/concourse/hangar-output-delete/token
+            {{- else if .Values.hangarOutput.endpoint }}
+            - --kubernetes-hangar-output-endpoint={{ .Values.hangarOutput.endpoint }}
+            {{- end }}
             {{- if .Values.hangarOutput.webEnabled }}
             - --kubernetes-hangar-output-capture-enabled
             {{- include "concourse.web.validateRunResults" . }}
@@ -388,6 +408,14 @@ spec:
             - name: hangar-output-materialize
               mountPath: /etc/concourse/hangar-output/materialize
               readOnly: true
+            {{- if eq .Values.hangarOutput.store "disk" }}
+            - name: hangar-output-list
+              mountPath: /etc/concourse/hangar-output-list
+              readOnly: true
+            - name: hangar-output-delete
+              mountPath: /etc/concourse/hangar-output-delete
+              readOnly: true
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.web.runInputSigningKeySecret }}
@@ -477,6 +505,10 @@ spec:
             # the node control key, so holding it does not let web sign a node
             # statement.
             secretName: {{ .Values.hangarOutput.materializationKeySecret }}
+        {{- if eq .Values.hangarOutput.store "disk" }}
+        {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "inventory" "name" "hangar-output-list") | nindent 8 }}
+        {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "reclaimer" "name" "hangar-output-delete") | nindent 8 }}
+        {{- end }}
         {{- end }}
         {{- end }}
         {{- if .Values.web.runInputSigningKeySecret }}

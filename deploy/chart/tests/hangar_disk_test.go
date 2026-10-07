@@ -19,8 +19,7 @@ var diskSets = []string{
 	"artifactDaemon.hangar.store=disk",
 	"artifactDaemon.hangar.bucket=inputs",
 	`artifactDaemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
-	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
-	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
+	`serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
 }
 
 func TestDiskStorageRendersWithoutGCSAndProjectsOnlyEachRolesCredential(t *testing.T) {
@@ -30,10 +29,11 @@ func TestDiskStorageRendersWithoutGCSAndProjectsOnlyEachRolesCredential(t *testi
 	}
 	// The artifact daemon holds two roles' credentials, each in its own
 	// volume: the strict-input one and, for its output plane, the publisher.
+	// The web holds the other two, also one volume each: the inventory token
+	// its orphan sweep lists with, and the reclaimer token it deletes with.
 	roles := map[string]map[string]string{
-		"artifact-daemon":        {"hangar-disk-client": "input", "hangar-output-disk-client": "publisher"},
-		outputInventoryComponent: {"hangar-disk-client": "inventory"},
-		outputReclaimerComponent: {"hangar-disk-client": "reclaimer"},
+		"artifact-daemon": {"hangar-disk-client": "input", "hangar-output-disk-client": "publisher"},
+		webComponent:      {"hangar-output-list": "inventory", "hangar-output-delete": "reclaimer"},
 	}
 	found := 0
 	for _, doc := range documentsIn(t, out) {

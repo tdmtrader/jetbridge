@@ -36,11 +36,11 @@
     },
     "web.hangarOutput": {
       "expect": "off",
-      "note": "The Hangar output plane (publisher, reclaimer, execution control) is not deployed here; see web.hangar."
+      "note": "The Hangar output plane (the artifact daemon's publisher and execution control, and web's reclaim and orphan sweep) is not deployed here; see web.hangar."
     },
     "web.hangarOutputCapture": {
       "expect": "off",
-      "note": "Needs the output plane; see web.hangarOutput."
+      "note": "Needs the output plane; see web.hangarOutput. hangarOutput.webEnabled is also what puts the plane in service (web writes its hangar_enabled row from it); there is no activation step."
     },
     "web.runResults": {
       "expect": "off",

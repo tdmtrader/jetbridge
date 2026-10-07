@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -25,7 +24,6 @@ import (
 // bootstrap rather than from values.
 var bootstrapSets = []string{
 	"hangarBootstrap.enabled=true",
-	"hangarBootstrap.database.enabled=true",
 	"postgresql.existingSecret=op-db-password",
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
@@ -38,8 +36,6 @@ var bootstrapSets = []string{
 	"hangarOutput.tenant=tenant-a",
 	"hangarOutput.bucket=outputs",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
-	"hangarOutput.database.existingSecret=op-activation-db",
-	"hangarOutput.activation.target=off",
 	"hangarStorage.disk.enabled=true",
 	"hangarStorage.disk.storeID=store-1",
 	"hangarStorage.disk.tls.existingSecret=storage-tls",
@@ -88,8 +84,9 @@ func TestTheBootstrapRendersWithEveryFeatureOff(t *testing.T) {
 }
 
 // The rendered inventory is one the bootstrap accepts: it decodes strictly and
-// a reconcile over an empty store creates every entry but the database
-// credential, which is the database step's.
+// a reconcile over an empty store creates every entry. There is no database
+// credential entry any more: the activation database role went with the
+// activation walk.
 func TestTheRenderedInventoryReconciles(t *testing.T) {
 	inv := renderedInventory(t, render(t, bootstrapSets...))
 	store := &chartTestStore{secrets: map[string]bootstrap.Secret{}}
@@ -97,13 +94,34 @@ func TestTheRenderedInventoryReconciles(t *testing.T) {
 		t.Fatalf("the bootstrap refused the chart's own inventory: %v", err)
 	}
 	for _, entry := range inv.Entries {
-		_, created := store.secrets[entry.Name]
-		if entry.Kind == bootstrap.KindDatabaseCredential && created {
-			t.Errorf("the sync-start reconcile created %s", entry.Name)
-		}
-		if entry.Kind != bootstrap.KindDatabaseCredential && !created {
+		if _, created := store.secrets[entry.Name]; !created {
 			t.Errorf("the reconcile did not create %s", entry.Name)
 		}
+		if entry.Kind == "dsn" {
+			t.Errorf("the inventory still declares the activation database credential %s", entry.Name)
+		}
+	}
+}
+
+// The web reclaims and sweeps the disk store's output namespace, so it is a
+// consumer of the store's CA and tokens -- and the controllers that used to be
+// are not.
+func TestTheWebConsumesTheDiskStoreSecrets(t *testing.T) {
+	inv := renderedInventory(t, render(t, bootstrapSets...))
+	found := 0
+	for _, entry := range inv.Entries {
+		if entry.Name != "storage-tls" && entry.Name != "storage-credentials" {
+			continue
+		}
+		found++
+		consumers := append([]string{}, entry.Consumers...)
+		sort.Strings(consumers)
+		if strings.Join(consumers, ",") != "artifact-daemon,hangar-store,web" {
+			t.Errorf("%s lists consumers %v, want the artifact daemon, the store and web", entry.Name, consumers)
+		}
+	}
+	if found != 2 {
+		t.Fatalf("found %d disk store entries in the inventory, want the CA bundle and the tokens", found)
 	}
 }
 
@@ -440,158 +458,33 @@ func (store *chartTestStore) Create(_ context.Context, secret bootstrap.Secret) 
 	return nil
 }
 
-// The database step is a PostSync hook, reading web's password from its
-// Secret and never from a rendered value; off, it is not rendered at all.
-func TestTheDatabaseStepIsAPostSyncHookReadingWebsSecret(t *testing.T) {
-	if strings.Contains(render(t, "hangarBootstrap.enabled=true"), bootstrapName+"-database") {
-		t.Error("the database Job renders with hangarBootstrap.database off")
-	}
-
+// The bootstrap renders one Job, its Sync hook, and nothing runs after it: the
+// activation walk Job and the PostSync database step went with the activation
+// command and its database role.
+func TestTheBootstrapRendersOneJobAndNoActivationStep(t *testing.T) {
 	out := render(t, bootstrapSets...)
-	var job batchv1.Job
-	decodeNamed(t, out, "Job", bootstrapName+"-database", &job)
-	if job.Annotations["argocd.argoproj.io/hook"] != "PostSync" {
-		t.Errorf("the database Job is hook %q, want PostSync", job.Annotations["argocd.argoproj.io/hook"])
-	}
-	var password *corev1.EnvVar
-	for i, env := range job.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == "PGPASSWORD" {
-			password = &job.Spec.Template.Spec.Containers[0].Env[i]
-		}
-	}
-	if password == nil || password.ValueFrom == nil || password.ValueFrom.SecretKeyRef == nil ||
-		password.ValueFrom.SecretKeyRef.Name != "op-db-password" {
-		t.Errorf("PGPASSWORD is %+v, want it from postgresql.existingSecret", password)
-	}
 
-	msg := renderHangarError(t, "hangarBootstrap.enabled=true", "hangarBootstrap.database.enabled=true",
-		"hangarOutput.database.existingSecret=op-activation-db")
-	if !strings.Contains(msg, "requires postgresql.existingSecret") {
-		t.Errorf("the database step rendered without postgresql.existingSecret: %s", firstLines(msg, 3))
-	}
-}
-
-// The activation walk is one Job, a PostSync hook a wave after the database
-// step that creates the role and the Secret it runs as, and a Helm post-install
-// and post-upgrade hook for a plain `helm upgrade`. BeforeHookCreation is what
-// lets one fixed name survive an image bump or a new epoch: the previous run is
-// deleted before the next is created.
-func TestTheActivationWalkIsAPostSyncHookAfterTheDatabaseStep(t *testing.T) {
-	out := render(t, append(append([]string{}, bootstrapSets...),
-		"hangarOutput.activation.target=output")...)
-
-	var walks []string
+	var jobs []string
 	for _, doc := range documentsIn(t, out) {
-		if doc.kind != "Job" {
-			continue
+		if doc.kind == "Job" {
+			jobs = append(jobs, doc.name)
 		}
-		component, _ := podOf(t, doc)
-		if component == "hangar-output-activation" {
-			walks = append(walks, doc.name)
-		}
-	}
-	const walkName = "jb-concourse-jetbridge-hangar-output-walk"
-	if len(walks) != 1 || walks[0] != walkName {
-		t.Fatalf("the render holds activation Jobs %v, want exactly %s", walks, walkName)
-	}
-
-	var walk, database batchv1.Job
-	decodeNamed(t, out, "Job", walkName, &walk)
-	decodeNamed(t, out, "Job", bootstrapName+"-database", &database)
-	for annotation, want := range map[string]string{
-		"argocd.argoproj.io/hook":               "PostSync",
-		"argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation",
-		"helm.sh/hook":                          "post-install,post-upgrade",
-		"helm.sh/hook-delete-policy":            "before-hook-creation",
-	} {
-		if got := walk.Annotations[annotation]; got != want {
-			t.Errorf("the walk Job's %s is %q, want %q", annotation, got, want)
+		if strings.Contains(doc.body, "hangar-output-activate") || strings.Contains(doc.body, "PostSync") {
+			t.Errorf("%s %s still renders an activation step", doc.kind, doc.name)
 		}
 	}
-	// Argo ignores Helm's hook annotations while its own is present, so the
-	// database Job's Argo hook is what keeps its Argo behaviour unchanged.
-	if database.Annotations["argocd.argoproj.io/hook"] != "PostSync" {
-		t.Fatalf("the database Job is hook %q; the walk's ordering is stated against a "+
-			"PostSync database step", database.Annotations["argocd.argoproj.io/hook"])
+	if len(jobs) != 1 || jobs[0] != bootstrapName {
+		t.Errorf("the render holds Jobs %v, want exactly %s", jobs, bootstrapName)
 	}
-	// Under a plain Helm upgrade the database Job is a hook as well, weighted
-	// before the walk, so Helm runs and waits for it first.
-	for _, job := range []batchv1.Job{walk, database} {
-		if got := job.Annotations["helm.sh/hook"]; got != "post-install,post-upgrade" {
-			t.Errorf("%s's helm.sh/hook is %q, want post-install,post-upgrade", job.Name, got)
-		}
-	}
-	weight := func(job batchv1.Job) int {
-		parsed, err := strconv.Atoi(job.Annotations["helm.sh/hook-weight"])
-		if err != nil {
-			t.Fatalf("%s has helm.sh/hook-weight %q", job.Name, job.Annotations["helm.sh/hook-weight"])
-		}
-		return parsed
-	}
-	if weight(walk) <= weight(database) {
-		t.Errorf("the walk Job's Helm hook weight is %d and the database Job's %d; Helm "+
-			"would not run the database step first", weight(walk), weight(database))
-	}
-	wave := func(job batchv1.Job) int {
-		value := job.Annotations["argocd.argoproj.io/sync-wave"]
-		if value == "" {
-			return 0
-		}
-		parsed, err := strconv.Atoi(value)
-		if err != nil {
-			t.Fatalf("%s has sync-wave %q", job.Name, value)
-		}
-		return parsed
-	}
-	if wave(walk) <= wave(database) {
-		t.Errorf("the walk Job is at wave %d and the database Job at wave %d; the walk runs as "+
-			"the role the database step creates, so it needs a later wave", wave(walk), wave(database))
-	}
-
-	// The artifact daemon serves the output plane, so the walk attests its
-	// cohort and waits on its DaemonSet.
-	daemon := "jb-concourse-jetbridge-artifact-daemon"
-	args := strings.Join(walk.Spec.Template.Spec.Containers[0].Command, " ")
-	for _, want := range []string{"--mode=walk", "--target=output", "--daemonset-name=" + daemon,
-		"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--tls-server-name="} {
-		if !strings.Contains(args, want) {
-			t.Errorf("the walk Job's command lacks %s: %s", want, args)
-		}
-	}
-	if strings.Contains(args, "--receipt-key-lifetime") {
-		t.Errorf("the walk Job passes a flag the command no longer has: %s", args)
-	}
-	if strings.Contains(args, "--facet") {
-		t.Errorf("the walk Job names a facet: %s", args)
-	}
-	if strings.Contains(args, "--finalize") {
-		t.Errorf("the walk Job finalizes with hangarOutput.activation.job.finalize unset: %s", args)
-	}
-	finalizing := render(t, append(append([]string{}, bootstrapSets...),
-		"hangarOutput.activation.target=base", "hangarOutput.activation.job.finalize=true")...)
-	var finalized batchv1.Job
-	decodeNamed(t, finalizing, "Job", walkName, &finalized)
-	if command := finalized.Spec.Template.Spec.Containers[0].Command; !slices.Contains(command, "--finalize") {
-		t.Errorf("the walk Job does not pass --finalize with hangarOutput.activation.job.finalize=true: %v", command)
-	}
-
-	var role rbacv1.Role
-	decodeNamed(t, out, "Role", "jb-concourse-jetbridge-hangar-output-activation", &role)
-	var daemonsets []rbacv1.PolicyRule
-	for _, rule := range role.Rules {
-		if slices.Contains(rule.Resources, "daemonsets") {
-			daemonsets = append(daemonsets, rule)
-		}
-	}
-	if len(daemonsets) != 1 || strings.Join(daemonsets[0].APIGroups, ",") != "apps" ||
-		strings.Join(daemonsets[0].Verbs, ",") != "get" ||
-		strings.Join(daemonsets[0].ResourceNames, ",") != daemon {
-		t.Errorf("the activation Role's DaemonSet rules are %+v, want get on %s alone", daemonsets, daemon)
+	var job batchv1.Job
+	decodeNamed(t, out, "Job", bootstrapName, &job)
+	if args := job.Spec.Template.Spec.Containers[0].Args; slices.Contains(args, "--database") {
+		t.Errorf("the bootstrap Job passes --database, which the command no longer has: %v", args)
 	}
 }
 
-// The chart's own PostgreSQL reads the same Secret when it is set, so the
-// database step works on a fresh install with it.
+// The chart's own PostgreSQL reads the same Secret when it is set, so web and
+// the database agree on a fresh install with it.
 func TestTheBundledPostgreSQLReadsTheExistingSecret(t *testing.T) {
 	out := render(t, "postgresql.existingSecret=op-db-password")
 	var database appsv1.Deployment

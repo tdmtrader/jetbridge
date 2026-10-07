@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -21,7 +22,8 @@ import (
 // with three fields, or a `map[string]any`. All three are true of YAML the
 // Kubernetes API server refuses. A template whitespace chomp once glued `env:`
 // onto the last element of `command`, so `command` became a list of maps and
-// `env` ceased to exist, on all three output controller Deployments -- and the
+// `env` ceased to exist, on all three (since removed) output controller
+// Deployments -- and the
 // whole suite, the flag-drift guard and two CI jobs were green with the plane
 // undeployable. `kubectl create --dry-run=client` does not catch it either: it
 // round-trips through an unstructured decode and prints `env: null` back.
@@ -53,10 +55,14 @@ var typedModes = []struct {
 		sets:  baseControlSets,
 		floor: 14,
 	},
+	// The output modes' floors fell by seven when the inventory and reclaimer
+	// Deployments and service accounts, and the activation walk's service
+	// account, Role and RoleBinding, left the chart (its Job and the
+	// RoleBinding's twin were never in these modes' counts twice).
 	{
 		name:  "base control and the output facet",
 		sets:  outputSets,
-		floor: 25,
+		floor: 18,
 	},
 	{
 		name: "output facet with every optional surface on",
@@ -78,7 +84,7 @@ var typedModes = []struct {
 			"artifactDaemon.tls.source=generated",
 			"artifactDaemon.tls.existingSecret=",
 		),
-		floor: 34,
+		floor: 26,
 	},
 	{
 		// Web capture renders the result-download scratch volume, and Run
@@ -90,7 +96,7 @@ var typedModes = []struct {
 			"web.runCredentialWorkerImages[0]=registry.example/review-worker@sha256:"+
 				"abababababababababababababababababababababababababababababababab",
 		),
-		floor: 25,
+		floor: 18,
 	},
 	{
 		// The Run epoch is rendered beside, and independently of, the Hangar epoch.
@@ -99,32 +105,20 @@ var typedModes = []struct {
 			"hangarOutput.webEnabled=true",
 			"web.pipelineRunActivationEpoch=4",
 		),
-		floor: 25,
+		floor: 18,
 	},
-	// The walk floors fell by four when the output daemon's DaemonSet, service
-	// account, ClusterRole, binding and PDB folded into the artifact daemon's
-	// (which gained a PDB).
+	// The disk store with the bootstrap and a one-shot initialization: the
+	// web's two disk token volumes, the store's Deployment, its NetworkPolicy
+	// and its initialization Job, and the bootstrap's admission policy, RBAC
+	// and Sync-hook Job. The activation walk Job these modes used to render is
+	// gone, so this is where the Job kind is decoded.
 	{
-		name: "activation walk Job, target=off",
-		sets: append(append([]string{}, outputSets...),
-			"hangarOutput.activation.target=off",
+		name: "output on the disk store, initializing, with the bootstrap",
+		sets: append(append([]string{}, bootstrapSets...),
+			"hangarOutput.networkPolicy.enabled=true",
+			"hangarStorage.disk.initialize=true",
 		),
-		floor: 26,
-	},
-	{
-		name: "activation walk Job, target=base",
-		sets: append(append([]string{}, outputSets...),
-			"hangarOutput.activation.target=base",
-		),
-		floor: 26,
-	},
-	{
-		name: "activation walk Job, target=output with finalize",
-		sets: append(append([]string{}, outputSets...),
-			"hangarOutput.activation.target=output",
-			"hangarOutput.activation.job.finalize=true",
-		),
-		floor: 26,
+		floor: 30,
 	},
 }
 
@@ -163,6 +157,10 @@ func typedObjectFor(kind string) any {
 		return &corev1.Service{}
 	case "ServiceAccount":
 		return &corev1.ServiceAccount{}
+	case "ValidatingAdmissionPolicy":
+		return &admissionv1.ValidatingAdmissionPolicy{}
+	case "ValidatingAdmissionPolicyBinding":
+		return &admissionv1.ValidatingAdmissionPolicyBinding{}
 	}
 
 	return nil
@@ -201,6 +199,8 @@ var kindsCovered = []string{
 	"Service",
 	"ServiceAccount",
 	"ServiceMonitor",
+	"ValidatingAdmissionPolicy",
+	"ValidatingAdmissionPolicyBinding",
 }
 
 func TestEveryRenderedObjectDecodesAsTheKubernetesObjectItClaimsToBe(t *testing.T) {
@@ -304,8 +304,8 @@ func TestEveryRenderedObjectDecodesAsTheKubernetesObjectItClaimsToBe(t *testing.
 // against kindsCovered at the end, so a new kind lands in one list or the
 // other by decision.
 func TestEveryRenderedPodTemplateCarriesTheFieldsTheAPIServerRequires(t *testing.T) {
-	// Every mode, because the controllers only exist in some of them and the
-	// DaemonSet only in others.
+	// Every mode, because the disk store and the Jobs only exist in some of
+	// them.
 	walked := 0
 	walkedKinds := map[string]bool{}
 
@@ -462,7 +462,7 @@ func TestEveryRenderedPodTemplateCarriesTheFieldsTheAPIServerRequires(t *testing
 	}
 
 	// Seven modes; the smallest renders the web Deployment and the worker's,
-	// and the largest adds the DaemonSet, three controllers and a Job. Well
+	// and the largest adds the DaemonSet, the disk store and two Jobs. Well
 	// under the real number, and far above zero.
 	if walked < 20 {
 		t.Fatalf("this guard walked only %d pod templates across %d modes; it has stopped "+
@@ -498,6 +498,9 @@ var kindsWithoutPodTemplates = map[string]bool{
 	"Service":               true,
 	"ServiceAccount":        true,
 	"ServiceMonitor":        true,
+	// The bootstrap's admission policy and its binding.
+	"ValidatingAdmissionPolicy":        true,
+	"ValidatingAdmissionPolicyBinding": true,
 }
 
 // The specific shape that got past everything: a workload's `command` is a list
@@ -507,10 +510,10 @@ var kindsWithoutPodTemplates = map[string]bool{
 func TestEveryOutputWorkloadKeepsItsCommandAndItsEnvironment(t *testing.T) {
 	out := render(t, outputSets...)
 
+	// The output controllers this guarded are gone; the artifact daemon is
+	// the output plane's one workload with a command of its own.
 	wanted := map[string]bool{
-		outputDaemonComponent:    false,
-		outputInventoryComponent: false,
-		outputReclaimerComponent: false,
+		outputDaemonComponent: false,
 	}
 
 	for _, chunk := range splitDocuments(out) {
