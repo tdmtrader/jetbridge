@@ -36,22 +36,27 @@
     },
     "web.hangarOutput": {
       "expect": "off",
+      "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
       "note": "The Hangar output plane (the artifact daemon's publisher and execution control, and web's reclaim and orphan sweep) is not deployed here; see web.hangar."
     },
     "web.hangarOutputCapture": {
       "expect": "off",
-      "note": "Needs the output plane; see web.hangarOutput. hangarOutput.webEnabled is also what puts the plane in service (web writes its hangar_enabled row from it); there is no activation step."
+      "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
+      "note": "Needs the output plane; see web.hangarOutput. hangarOutput.webEnabled is also what puts the plane in service (web writes its hangar_enabled row from it); there is no activation step. With it on, the named tests run a managed-input Run, a review Run and an implement Run on the disk store and download and verify each result against its binding (hangar_one_daemon A8); the workload tests also need CONCOURSE_LIVE_REVIEW_WORKER_IMAGE (the review worker with the fixture codex, pinned in web.runCredentialWorkerImages) and CONCOURSE_LIVE_VALIDATE_IMAGE."
     },
     "web.runResults": {
       "expect": "off",
+      "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
       "note": "Rendered only with hangarOutput.webEnabled."
     },
     "daemon.hangarOutput": {
       "expect": "off",
+      "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
       "note": "The output plane is mounted in the artifact daemon (its --control-key-file) from rollout step S6 of hangar_stores_enabled_in_cluster; see web.hangarOutput."
     },
     "store.disk": {
       "expect": "off",
+      "coveredBy": ["TestLiveHangarStrictInputFromTheInputNamespace", "TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
       "note": "The Hangar disk store (hangarStorage.disk) is initialized at rollout step S2 and runs from S3; see web.hangar."
     },
     "daemon.mtls": {

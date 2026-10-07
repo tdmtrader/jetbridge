@@ -1,7 +1,7 @@
 // hangar_live only, never live: this contract creates a namespace, cluster
 // roles and bindings, a ValidatingAdmissionPolicy and its binding, impersonates
-// a ServiceAccount and runs the artifact daemon and output daemon on a node's
-// host ports -- cluster-scope work a namespaced live-tier account cannot do and
+// a ServiceAccount and runs the artifact daemon, which serves the output plane,
+// on a node's host port -- cluster-scope work a namespaced live-tier account cannot do and
 // must not do against the deployed cluster. Its CI home is the
 // hangar-cluster-contract job in deploy/k8s-e2e-pipeline.yml, which stands up a
 // throwaway K3s cluster, loads the image this contract names into it, and hands
@@ -116,8 +116,8 @@ const (
 //     web's own ring loader, and no ring holds a symmetric key;
 //  4. every consumer completes its first use of the generated Secrets: web
 //     starts with capture on (its startup refuses a ring it cannot load); the
-//     output daemon accepts web's control-plane client certificate over mTLS
-//     on a route that requires one; the artifact daemon publishes into the
+//     artifact daemon's output plane accepts web's control-plane client
+//     certificate over mTLS on a route that requires one; the artifact daemon publishes into the
 //     disk store as `input` and verifies a materialization warrant signed with
 //     the generated warrant key; the disk store serves `publisher` a create
 //     and a read; web puts the plane in service, its orphan sweep lists the
@@ -179,13 +179,13 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 
 	cluster.assertRingsArePublicHalves(inventory)
 	cluster.assertWebLoadedRings(inventory)
-	cluster.assertOutputDaemonAcceptsWebClient()
+	cluster.assertOutputPlaneAcceptsWebClient()
 	cluster.assertArtifactDaemonUsesWarrantKey()
 	cluster.assertControllersSwept(probe)
 
 	resync("re-sync 1", everything)
 	resync("re-sync 2", everything)
-	cluster.assertOutputDaemonAcceptsWebClient()
+	cluster.assertOutputPlaneAcceptsWebClient()
 }
 
 // liveClusterNames are the Secret and object names a release composes. The
@@ -310,7 +310,7 @@ func newLiveCluster(t *testing.T, release string, budget time.Duration) *liveClu
 		applied: map[string]liveArgoObject{},
 	}
 
-	// A previous contract on this cluster leaves its facet labels behind if
+	// A previous contract on this cluster leaves its readiness labels behind if
 	// its daemons were killed rather than stopped; a wait on a label must
 	// see this release's daemons write it.
 	cluster.clearNodeLabels()
@@ -376,7 +376,7 @@ func (cluster *liveCluster) clearNodeLabels() {
 	}
 	if changed {
 		if _, err := cluster.client.CoreV1().Nodes().Update(cluster.ctx, current, metav1.UpdateOptions{}); err != nil {
-			cluster.t.Fatalf("clear node %s's facet labels: %v", cluster.node, err)
+			cluster.t.Fatalf("clear node %s's readiness labels: %v", cluster.node, err)
 		}
 	}
 }
@@ -1259,11 +1259,11 @@ func (cluster *liveCluster) assertWebLoadedRings(inventory []liveInventoryEntry)
 	}
 }
 
-// outputDaemonClient presents web's client certificate for the artifact
+// outputPlaneClient presents web's client certificate for the artifact
 // daemon, from the Secret web mounts, and verifies the daemon's server
 // certificate against its headless Service name. The artifact daemon serves the
 // output plane.
-func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Client {
+func (cluster *liveCluster) outputPlaneClient(withCertificate bool) *http.Client {
 	t := cluster.t
 	t.Helper()
 	secret := cluster.secret(cluster.names.daemonTLS)
@@ -1284,18 +1284,18 @@ func (cluster *liveCluster) outputDaemonClient(withCertificate bool) *http.Clien
 	return &http.Client{Transport: transport, Timeout: 30 * time.Second}
 }
 
-// assertOutputDaemonAcceptsWebClient dials the output daemon where web does,
-// the node's IP on its host port. Web itself makes this call only for an
+// assertOutputPlaneAcceptsWebClient dials the artifact daemon's output plane
+// where web does, the node's IP on the daemon's host port. Web itself makes this call only for an
 // execution under the base protocol, which is on from S6,
 // but this contract runs no execution, so the contract presents web's mounted
 // client Secret itself.
-func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
+func (cluster *liveCluster) assertOutputPlaneAcceptsWebClient() {
 	t := cluster.t
 	t.Helper()
 	handshakeURL := fmt.Sprintf("https://%s:7780/capture/v1/handshake", cluster.nodeIP)
-	body, status := liveGet(t, cluster.ctx, cluster.outputDaemonClient(true), handshakeURL)
+	body, status := liveGet(t, cluster.ctx, cluster.outputPlaneClient(true), handshakeURL)
 	if status != http.StatusOK {
-		t.Fatalf("the output daemon refused web's client certificate on the capture handshake: %d %s", status, body)
+		t.Fatalf("the artifact daemon's output plane refused web's client certificate on the capture handshake: %d %s", status, body)
 	}
 	var handshake output.ExtensionHandshake
 	if err := json.Unmarshal(body, &handshake); err != nil {
@@ -1305,9 +1305,9 @@ func (cluster *liveCluster) assertOutputDaemonAcceptsWebClient() {
 		t.Fatalf("the capture handshake does not validate: %v", err)
 	}
 	if handshake.Base.ControlKeyID != liveClusterControlKeyID || handshake.Base.ActivationEpoch != liveClusterEpoch {
-		t.Fatalf("the output daemon reports %+v, want control key %s, epoch %d", handshake, liveClusterControlKeyID, liveClusterEpoch)
+		t.Fatalf("the artifact daemon's output plane reports %+v, want control key %s, epoch %d", handshake, liveClusterControlKeyID, liveClusterEpoch)
 	}
-	if body, status := liveGet(t, cluster.ctx, cluster.outputDaemonClient(false), handshakeURL); status != http.StatusUnauthorized {
+	if body, status := liveGet(t, cluster.ctx, cluster.outputPlaneClient(false), handshakeURL); status != http.StatusUnauthorized {
 		t.Fatalf("without a client certificate the capture handshake answered %d %s; it requires one, so the 200 above proves nothing about web's", status, body)
 	}
 }
@@ -1370,7 +1370,7 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 
 // liveStoreProbe is the object the publisher round trip leaves in the output
 // namespace for web's orphan sweep to find. It carries a marker of a version
-// this cohort does not accept, which the sweep counts as unmarked and never
+// this store does not write, which the sweep counts as unmarked and never
 // deletes.
 type liveStoreProbe struct {
 	key        string
@@ -1442,8 +1442,8 @@ func (store *liveStore) do(role, method, operation string, query url.Values, bod
 	return response.StatusCode, answer
 }
 
-// storePublisherRoundTrip creates the probe under the prefix the inventory
-// sweeps and reads it back, as `publisher`.
+// storePublisherRoundTrip creates the probe under the prefix web's orphan
+// sweep lists and reads it back, as `publisher`.
 func (cluster *liveCluster) storePublisherRoundTrip() liveStoreProbe {
 	t := cluster.t
 	t.Helper()
@@ -1451,7 +1451,7 @@ func (cluster *liveCluster) storePublisherRoundTrip() liveStoreProbe {
 	defer store.shutdown()
 	namespace := cluster.outputNamespace()
 	key := namespace.ListPrefix() + "hangar-cluster-contract/" + liveDiskRandomHex(t, 4)
-	content := []byte("an object under a foreign marker: the inventory owes it a disposition")
+	content := []byte("an object under a foreign marker: the orphan sweep counts it and leaves it")
 	metadata, err := json.Marshal(map[string]string{output.MarkerKeyVersion: "hangar-output-v0"})
 	if err != nil {
 		t.Fatal(err)

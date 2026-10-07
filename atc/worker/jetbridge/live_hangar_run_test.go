@@ -148,17 +148,7 @@ if touch /work/exact/must-not-write 2>/dev/null; then exit 91; fi
 // results must still download, and the new one again after the disk store
 // restarts when this identity may restart it.
 func TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult(t *testing.T) {
-	liveHangarRequire(t, "web.hangarOutputCapture", "web.runResults")
-	manifest := loadLiveManifest(t)
-	for _, feature := range []string{"daemon.hangarOutput", "web.hangarOutput", "store.disk"} {
-		if manifest.Features[feature].Expect != "on" {
-			t.Fatalf("the manifest expects Run results on but %s %q; a Run's result needs it", feature, manifest.Features[feature].Expect)
-		}
-	}
-	password := os.Getenv("CONCOURSE_LIVE_PASSWORD")
-	if password == "" {
-		t.Fatal("CONCOURSE_LIVE_PASSWORD is unset; the pipeline passes ((live-tests-password)) to the live tier")
-	}
+	password := liveHangarRequireRunResults(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
@@ -194,6 +184,27 @@ func TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult(t *testing.T) {
 	if !bytes.Equal(again, first) {
 		t.Fatalf("after the store restarted, Run %d's result downloads as %d bytes that differ from the %d before", run.Number, len(again), len(first))
 	}
+}
+
+// liveHangarRequireRunResults gates a check that runs a v2 Run to a published
+// result: it skips while web.hangarOutputCapture and web.runResults both
+// expect off, and once either expects on, every other feature a Run's result
+// needs must expect on too and the live-tests password must be set. It
+// returns the password.
+func liveHangarRequireRunResults(t *testing.T) string {
+	t.Helper()
+	liveHangarRequire(t, "web.hangarOutputCapture", "web.runResults")
+	manifest := loadLiveManifest(t)
+	for _, feature := range []string{"daemon.hangarOutput", "web.hangarOutput", "web.hangarOutputCapture", "web.runResults", "store.disk"} {
+		if manifest.Features[feature].Expect != "on" {
+			t.Fatalf("the manifest expects Run results on but %s %q; a Run's result needs it", feature, manifest.Features[feature].Expect)
+		}
+	}
+	password := os.Getenv("CONCOURSE_LIVE_PASSWORD")
+	if password == "" {
+		t.Fatal("CONCOURSE_LIVE_PASSWORD is unset; the pipeline passes ((live-tests-password)) to the live tier")
+	}
+	return password
 }
 
 // liveHangarRunTree is the managed input the template copies: a fixed tree,
@@ -332,7 +343,9 @@ func (daemon liveHangarDaemon) publish(t *testing.T, ctx context.Context, archiv
 }
 
 type liveHangarAPI struct {
-	base   string
+	base string
+	// token is the bearer the client sends, for a CLI's saved target.
+	token  string
 	http   *http.Client
 	client concourse.Client
 }
@@ -370,7 +383,7 @@ func liveHangarLogin(t *testing.T, ctx context.Context, password string) liveHan
 	httpClient := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
 	httpClient.Timeout = 2 * time.Minute
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return liveHangarAPI{base: base, http: httpClient, client: concourse.NewClient(base, httpClient, false)}
+	return liveHangarAPI{base: base, token: token.AccessToken, http: httpClient, client: concourse.NewClient(base, httpClient, false)}
 }
 
 // setTemplate sets and unpauses the template, updating it in place when an
@@ -402,24 +415,34 @@ jobs:
         path: /bin/sh
         args: [-ec, "mkdir -p result/nested && cat source/payload > result/payload && cat source/nested/second > result/nested/second"]
 `, liveHangarRunTaskID)
+	api.installTemplate(t, liveHangarRunPipeline, config)
+}
+
+// installTemplate sets and unpauses the named template in team main.
+func (api liveHangarAPI) installTemplate(t *testing.T, name, config string) {
+	t.Helper()
 	team := api.client.Team("main")
-	ref := atc.PipelineRef{Name: liveHangarRunPipeline}
+	ref := atc.PipelineRef{Name: name}
 	_, version, _, err := team.PipelineConfig(ref)
 	if err != nil {
-		t.Fatalf("read the %s template: %v", liveHangarRunPipeline, err)
+		t.Fatalf("read the %s template: %v", name, err)
 	}
 	if _, _, warnings, err := team.CreateOrUpdatePipelineConfig(ref, version, []byte(config), false); err != nil {
-		t.Fatalf("set the %s template: %v", liveHangarRunPipeline, err)
+		t.Fatalf("set the %s template: %v", name, err)
 	} else if len(warnings) > 0 {
-		t.Logf("set the %s template with warnings: %+v", liveHangarRunPipeline, warnings)
+		t.Logf("set the %s template with warnings: %+v", name, warnings)
 	}
 	if _, err := team.UnpausePipeline(ref); err != nil {
-		t.Fatalf("unpause the %s template: %v", liveHangarRunPipeline, err)
+		t.Fatalf("unpause the %s template: %v", name, err)
 	}
 }
 
 func (api liveHangarAPI) endpoint(version string) string {
-	return api.base + "/api/" + version + "/teams/main/pipelines/" + url.PathEscape(liveHangarRunPipeline)
+	return api.endpointOf(liveHangarRunPipeline, version)
+}
+
+func (api liveHangarAPI) endpointOf(template, version string) string {
+	return api.base + "/api/" + version + "/teams/main/pipelines/" + url.PathEscape(template)
 }
 
 // do sends the request and returns the body, failing on any status not in
@@ -484,7 +507,12 @@ func (api liveHangarAPI) createRun(t *testing.T, ctx context.Context, intent atc
 
 func (api liveHangarAPI) run(t *testing.T, ctx context.Context, number int) atc.PipelineRun {
 	t.Helper()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, api.endpoint("v1")+"/runs/"+strconv.Itoa(number), nil)
+	return api.runOf(t, ctx, liveHangarRunPipeline, number)
+}
+
+func (api liveHangarAPI) runOf(t *testing.T, ctx context.Context, template string, number int) atc.PipelineRun {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, api.endpointOf(template, "v1")+"/runs/"+strconv.Itoa(number), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,9 +526,14 @@ func (api liveHangarAPI) run(t *testing.T, ctx context.Context, number int) atc.
 
 func (api liveHangarAPI) waitForTerminal(t *testing.T, ctx context.Context, number int) atc.PipelineRun {
 	t.Helper()
+	return api.waitForRun(t, ctx, liveHangarRunPipeline, number)
+}
+
+func (api liveHangarAPI) waitForRun(t *testing.T, ctx context.Context, template string, number int) atc.PipelineRun {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Minute)
 	for {
-		run := api.run(t, ctx, number)
+		run := api.runOf(t, ctx, template, number)
 		if run.Status != atc.RunStatusRunning {
 			return run
 		}
@@ -533,9 +566,14 @@ func (api liveHangarAPI) succeededRuns(t *testing.T, ctx context.Context, limit 
 // its download slots are busy, which is retried for a bounded two minutes.
 func (api liveHangarAPI) downloadResult(t *testing.T, ctx context.Context, run atc.PipelineRun, name string) []byte {
 	t.Helper()
+	return api.downloadResultOf(t, ctx, liveHangarRunPipeline, run, name)
+}
+
+func (api liveHangarAPI) downloadResultOf(t *testing.T, ctx context.Context, template string, run atc.PipelineRun, name string) []byte {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, api.endpoint("v1")+"/runs/"+strconv.Itoa(run.Number)+"/results/"+url.PathEscape(name), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, api.endpointOf(template, "v1")+"/runs/"+strconv.Itoa(run.Number)+"/results/"+url.PathEscape(name), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -558,21 +596,7 @@ func (api liveHangarAPI) downloadResult(t *testing.T, ctx context.Context, run a
 // the input the template copied into it.
 func (api liveHangarAPI) requireResultTree(t *testing.T, run atc.PipelineRun, body []byte, marker string) {
 	t.Helper()
-	if run.Terminal == nil {
-		t.Fatalf("Run %d has no terminal result", run.Number)
-	}
-	binding, ok := run.Terminal.Results["copy"]
-	if !ok {
-		t.Fatalf("Run %d's terminal results %+v name no copy result", run.Number, run.Terminal.Results)
-	}
-	tree, err := (hangar.Canonicalizer{MaxContentBytes: 32 << 20, MaxEntries: 64, TempDir: t.TempDir()}).Capture(context.Background(), bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("Run %d's result is not a canonical tree: %v", run.Number, err)
-	}
-	defer tree.Close()
-	if tree.Digest != binding.Ref.Digest || tree.ByteSize != int64(len(body)) {
-		t.Fatalf("Run %d's result is %s (%d bytes); its binding is %s", run.Number, tree.Digest, tree.ByteSize, binding.Ref.Digest)
-	}
+	liveHangarRequireBoundResult(t, run, "copy", body)
 	files := map[string]string{}
 	reader := tar.NewReader(bytes.NewReader(body))
 	for {
@@ -594,6 +618,37 @@ func (api liveHangarAPI) requireResultTree(t *testing.T, run atc.PipelineRun, bo
 	if files["payload"] != "managed input "+marker || files["nested/second"] != "second" {
 		t.Fatalf("Run %d's result holds %v, want the managed input copied", run.Number, files)
 	}
+}
+
+// liveHangarRequireBoundResult checks a downloaded result against the Run's
+// terminal binding the way agent/runclient/result.go does before it trusts a
+// result: the body must canonicalize to exactly the bound digest, at the
+// downloaded size. The binding must also name the read claim that keeps the
+// tree from reclaim, and a tree in a scope.
+func liveHangarRequireBoundResult(t *testing.T, run atc.PipelineRun, name string, body []byte) atc.RunResultBinding {
+	t.Helper()
+	if run.Terminal == nil {
+		t.Fatalf("Run %d has no terminal result", run.Number)
+	}
+	binding, ok := run.Terminal.Results[name]
+	if !ok {
+		t.Fatalf("Run %d's terminal results %+v name no %s result", run.Number, run.Terminal.Results, name)
+	}
+	if err := binding.ClaimID.Validate(); err != nil {
+		t.Fatalf("Run %d's %s binding %+v holds no claim: %v", run.Number, name, binding, err)
+	}
+	if binding.Ref.Scope == "" || binding.Ref.Generation <= 0 {
+		t.Fatalf("Run %d's %s binding %+v names no stored tree", run.Number, name, binding)
+	}
+	tree, err := (hangar.Canonicalizer{MaxContentBytes: 32 << 20, MaxEntries: 64, TempDir: t.TempDir()}).Capture(context.Background(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("Run %d's %s result is not a canonical tree: %v", run.Number, name, err)
+	}
+	defer tree.Close()
+	if tree.Digest != binding.Ref.Digest || tree.ByteSize != int64(len(body)) {
+		t.Fatalf("Run %d's %s result is %s (%d bytes); its binding is %s", run.Number, name, tree.Digest, tree.ByteSize, binding.Ref.Digest)
+	}
+	return binding
 }
 
 // liveHangarRestartStore deletes the disk store's pod and waits for its

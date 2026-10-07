@@ -209,11 +209,20 @@ func TestLiveManifestNamesRealCoverage(t *testing.T) {
 var liveBehaviouralFeatures = map[string][]string{
 	"web.hangar":              {"TestLiveHangarStrictInputFromTheInputNamespace"},
 	"daemon.hangar":           {"TestLiveHangarStrictInputFromTheInputNamespace"},
-	"store.disk":              {"TestLiveHangarStrictInputFromTheInputNamespace", "TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
-	"web.hangarOutput":        {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
-	"web.hangarOutputCapture": {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
-	"web.runResults":          {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
-	"daemon.hangarOutput":     {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
+	"store.disk":              append([]string{"TestLiveHangarStrictInputFromTheInputNamespace"}, liveRunResultTests...),
+	"web.hangarOutput":        liveRunResultTests,
+	"web.hangarOutputCapture": liveRunResultTests,
+	"web.runResults":          liveRunResultTests,
+	"daemon.hangarOutput":     liveRunResultTests,
+}
+
+// liveRunResultTests run Runs to published results on the output plane: a
+// managed input copied to a result, and the review and implement workloads
+// (hangar_one_daemon A8).
+var liveRunResultTests = []string{
+	"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult",
+	"TestLiveHangarReviewRunPublishesAVerifiedReport",
+	"TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation",
 }
 
 // TestLiveBehaviouralFeaturesNameTheirTests holds the Hangar features to
