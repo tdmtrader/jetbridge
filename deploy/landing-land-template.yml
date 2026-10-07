@@ -56,10 +56,13 @@ jobs:
                 # $1 repository, $2 trunk; inputs manifest/ (compose's facts) and candidate/ (the tested tree)
                 repo=$1 trunk=$2
                 manifest=$PWD/manifest verdict=$PWD/verdict/verdict.json
-                val() { grep "^$1=" "$manifest/manifest.env" | head -1 | cut -d= -f2-; }
+                val() { grep "^$1=" "$manifest/manifest.env" 2>/dev/null | head -1 | cut -d= -f2-; }
                 esc() { printf '%s' "$1" | tr '\n' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
                 say() { printf '{"outcome":"%s","sha":"%s","reason":"%s"}\n' "$1" "$2" "$(esc "$3")" > "$verdict"; echo "land: $1 $2 $3"; }
                 base=$(val base) expected=$(val head) entries=$(val entries)
+                for key in base head entries; do
+                  [ -n "$(val "$key")" ] || { say failed "$expected" "manifest.env has no $key"; exit 1; }
+                done
                 say failed "$expected" "the rebuild did not finish"
                 export GIT_COMMITTER_NAME=landing-queue GIT_COMMITTER_EMAIL=landing-queue@jetbridge
                 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0

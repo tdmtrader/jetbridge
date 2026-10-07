@@ -237,6 +237,16 @@ var _ = Describe("The landing templates", func() {
 		Expect(git(remote, "rev-parse", "core")).To(Equal(moved))
 	})
 
+	It("land refuses a manifest with a key missing rather than reading it as moved", func() {
+		code, out, composed := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		Expect(code).To(Equal(0), out)
+		Expect(os.WriteFile(filepath.Join(composed, "manifest", "manifest.env"), []byte("entries=fix-1="+sha+"\n"), 0o644)).To(Succeed())
+		code, out, landed := runWith(land, composed, []string{"verdict"}, remote, "core")
+		Expect(code).To(Equal(1), out)
+		Expect(readVerdict(landed)["outcome"]).To(Equal("failed"))
+		Expect(readVerdict(landed)["reason"]).To(ContainSubstring("manifest.env has no base"))
+	})
+
 	It("land refuses a manifest whose head it cannot rebuild", func() {
 		code, out, composed := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
