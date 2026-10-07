@@ -1,6 +1,7 @@
 package atccmd_test
 
 import (
+	"errors"
 	"fmt"
 	"github.com/concourse/concourse/hangar"
 	"os"
@@ -53,6 +54,27 @@ func (s *CommandSuite) TestInvalidConcurrentRequestLimitAction() {
 		err.Error(),
 		fmt.Sprintf("action '%s' is not supported", atc.GetInfo),
 	)
+}
+
+// Two --main-team-local-user flags are two main-team owners, as the chart
+// renders one per entry of web.mainTeamLocalUser. Either missing locks that
+// user out of main, and a joined "local:admin,live-tests" locks out both.
+func (s *CommandSuite) TestMainTeamLocalUserRepeats() {
+	cmd := &atccmd.RunCommand{}
+	parser := flags.NewParser(cmd, flags.None)
+	parser.NamespaceDelimiter = "-"
+	_, err := parser.ParseArgs([]string{
+		"--main-team-local-user=admin",
+		"--main-team-local-user=live-tests",
+	})
+	// go-flags sets every value before it checks required flags, which this
+	// spec does not supply.
+	var flagErr *flags.Error
+	s.True(errors.As(err, &flagErr) && flagErr.Type == flags.ErrRequired, "parse: %v", err)
+
+	auth, err := cmd.Auth.MainTeamFlags.Format()
+	s.NoError(err)
+	s.Equal([]string{"local:admin", "local:live-tests"}, auth["owner"]["users"])
 }
 
 func (s *CommandSuite) TestKubernetesFlags() {
