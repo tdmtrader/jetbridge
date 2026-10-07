@@ -110,7 +110,8 @@ var _ = Describe("Hangar status API", func() {
 
 			id := strconv.FormatInt(status.Findings[0].ID, 10)
 			Expect(resolve(id).StatusCode).To(Equal(http.StatusNoContent))
-			Expect(resolve(id).StatusCode).To(Equal(http.StatusNotFound), "a finding is resolved once")
+			Expect(resolve(id).StatusCode).To(Equal(http.StatusNoContent), "resolving again is idempotent")
+			Expect(resolve("999999").StatusCode).To(Equal(http.StatusNotFound), "no such finding")
 			Expect(resolve("not-a-number").StatusCode).To(Equal(http.StatusBadRequest))
 
 			response = get()

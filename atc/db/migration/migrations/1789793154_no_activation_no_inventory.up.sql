@@ -9,7 +9,11 @@
 -- (the control-key generation a lifecycle, claim, lease or input was admitted
 -- under); only its reference to an epoch row goes, because there are no epoch
 -- rows any more. Nothing moves an epoch, and the output scope no longer derives
--- from one, so a different number never strands a published object.
+-- from one. The number still matters where a row is compared with the
+-- configured epoch: a Run input and an input publication bind the epoch they
+-- were admitted under (pipeline_run_inputs.go, hangar_input_publication.go),
+-- so changing hangarOutput.activationEpoch strands inputs in flight. Drain
+-- before changing it.
 
 ALTER TABLE hangar_exact_lifecycles DROP CONSTRAINT hangar_exact_lifecycles_activation_epoch_fkey;
 ALTER TABLE hangar_claims DROP CONSTRAINT hangar_claims_activation_epoch_fkey;

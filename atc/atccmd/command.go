@@ -156,6 +156,7 @@ type RunCommand struct {
 
 	hangarOutputControlKeys hangaroutput.ControlKeyRing
 	hangarOutputSource      *jetbridge.OutputSource
+	hangarOutputStoreClose  func() error
 
 	// hangarOutputCapabilityMinter mints the capability every control call on
 	// the output daemon presents. Built once during startup validation, from
@@ -848,6 +849,9 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 			closer.Close()
 		}
 		cmd.varSourcePool.Close()
+		if cmd.hangarOutputStoreClose != nil {
+			_ = cmd.hangarOutputStoreClose()
+		}
 	}
 
 	return run(grouper.NewParallel(os.Interrupt, members), onReady, onExit), nil
@@ -3100,7 +3104,8 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 // at risk" about a plane that does not exist is an alert rule that will never
 // fire looking exactly like coverage.
 func (cmd *RunCommand) hangarOutputStatusComponent(dbConn db.DbConn) *RunnableComponent {
-	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
+	// The same condition the admin status API answers on.
+	if !cmd.Kubernetes.OutputPlaneEnabled {
 		return nil
 	}
 

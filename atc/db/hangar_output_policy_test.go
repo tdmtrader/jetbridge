@@ -224,7 +224,9 @@ var _ = Describe("the storage-integrity admission gate", func() {
 			Expect(findings[0].BlocksAdmission).To(BeTrue())
 			Expect(repository.ResolveIntegrityFinding(ctx, tx, findings[0].ID)).To(Succeed())
 			Expect(repository.ResolveIntegrityFinding(ctx, tx, findings[0].ID)).
-				To(MatchError(output.ErrNotFound), "a resolved finding is resolved once")
+				To(Succeed(), "resolving a resolved finding again is idempotent")
+			Expect(repository.ResolveIntegrityFinding(ctx, tx, findings[0].ID+1000000)).
+				To(MatchError(output.ErrNotFound), "no such finding")
 		})
 		in(func(tx db.HangarOutputTx) {
 			findings, err := repository.OpenIntegrityFindings(ctx, tx)

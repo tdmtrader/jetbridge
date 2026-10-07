@@ -110,7 +110,7 @@ func (cmd *RunCommand) hangarOutputDeleteComponents(dbConn db.DbConn, locker loc
 	if err != nil {
 		return nil, fmt.Errorf("deriving the output namespace: %w", err)
 	}
-	lister, deletes, _, err := reclaim.OpenStore(context.Background(), reclaim.StoreConfig{
+	lister, deletes, closeStore, err := reclaim.OpenStore(context.Background(), reclaim.StoreConfig{
 		Store:           cmd.Kubernetes.OutputStore,
 		Endpoint:        cmd.Kubernetes.OutputEndpoint,
 		StoreID:         cmd.Kubernetes.OutputStoreID,
@@ -122,6 +122,7 @@ func (cmd *RunCommand) hangarOutputDeleteComponents(dbConn db.DbConn, locker loc
 	if err != nil {
 		return nil, fmt.Errorf("opening the output store: %w", err)
 	}
+	cmd.hangarOutputStoreClose = closeStore
 
 	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
 	transactor := hangarOutputTransactor{conn: dbConn}

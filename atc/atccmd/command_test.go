@@ -489,30 +489,16 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 	s.Empty(names(atccmd.HangarOutputComponentsForTest(off, nil)),
 		"a deployment that never opted into the output plane registers one of its components")
 
-	// The plane, with no activation epoch: the two that do the plane's work,
-	// and not the status surface, which has a plane to describe only once one
-	// has been activated.
+	// The plane: capture, read-lease cleanup and status -- the status surface
+	// on the same condition the admin status API answers on. Run cancellation
+	// is not among them; every web node registers it (runComponents).
 	on := &atccmd.RunCommand{}
 	on.Kubernetes.OutputPlaneEnabled = true
 	s.ElementsMatch([]string{
 		atc.ComponentHangarOutputCapture,
 		atc.ComponentHangarOutputReadLeaseCleanup,
-	}, names(atccmd.HangarOutputComponentsForTest(on, nil)))
-
-	// And with one, all three of the plane's own -- capture, read-lease
-	// cleanup and status -- without which the assertions above would pass
-	// against a plane that registers nothing at all. Run cancellation is not
-	// among them; every web node registers it (runComponents).
-	activated := &atccmd.RunCommand{}
-	activated.Kubernetes.OutputPlaneEnabled = true
-	activated.Kubernetes.OutputActivationEpoch = 7
-	activated.Kubernetes.OutputBucket = "output-bucket"
-	activated.Kubernetes.OutputTenant = "tenant-a"
-	s.ElementsMatch([]string{
-		atc.ComponentHangarOutputCapture,
-		atc.ComponentHangarOutputReadLeaseCleanup,
 		atc.ComponentHangarOutputStatus,
-	}, names(atccmd.HangarOutputComponentsForTest(activated, nil)))
+	}, names(atccmd.HangarOutputComponentsForTest(on, nil)))
 }
 
 // The web's two deleting passes -- reclaim and the orphan sweep -- register

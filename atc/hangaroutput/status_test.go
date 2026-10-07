@@ -104,8 +104,12 @@ func TestEveryRuntimeFindingClassPutsThePlaneAtRiskAndResolvesByID(t *testing.T)
 				t.Fatalf("resolving finding %d: %v", finding.ID, err)
 			}
 			if err := hangaroutput.ResolveFinding(context.Background(), h.Coordinator.Transactor,
-				h.Repository, finding.ID); !errors.Is(err, output.ErrNotFound) {
-				t.Errorf("resolving a resolved finding again answered %v, want not found", err)
+				h.Repository, finding.ID); err != nil {
+				t.Errorf("resolving a resolved finding again: %v, want idempotent success", err)
+			}
+			if err := hangaroutput.ResolveFinding(context.Background(), h.Coordinator.Transactor,
+				h.Repository, finding.ID+1000000); !errors.Is(err, output.ErrNotFound) {
+				t.Errorf("resolving no finding at all answered %v, want not found", err)
 			}
 
 			after := readStatus(t, h)

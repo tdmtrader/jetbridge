@@ -120,8 +120,9 @@ func (repository *HangarOutputRepository) OpenIntegrityFindings(ctx context.Cont
 //
 // It is one-way and the schema says so: a reopened finding is a resolution that
 // never happened, and an audit reading these rows has to be able to tell "this
-// was fixed" from "this was fixed, unfixed, and marked fixed again". A finding
-// already resolved, or no finding at all, is ErrNotFound.
+// was fixed" from "this was fixed, unfixed, and marked fixed again". Resolving
+// a finding already resolved succeeds and changes nothing; no finding at all
+// is ErrNotFound.
 func (repository *HangarOutputRepository) ResolveIntegrityFinding(ctx context.Context, tx output.Tx, id int64) error {
 	result, err := tx.ExecContext(ctx, `
 		UPDATE hangar_integrity_findings SET resolved_at = now()
@@ -134,7 +135,16 @@ func (repository *HangarOutputRepository) ResolveIntegrityFinding(ctx context.Co
 		return err
 	}
 	if closed == 0 {
-		return fmt.Errorf("%w: no open integrity finding %d", output.ErrNotFound, id)
+		// Already resolved is resolved: the operator's statement stands, and
+		// a retry of it succeeds. No finding at all is not found.
+		var exists int
+		if err := hangarQueryRow(ctx, tx, `SELECT count(*) FROM hangar_integrity_findings WHERE id = $1`,
+			[]any{id}, &exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return fmt.Errorf("%w: no integrity finding %d", output.ErrNotFound, id)
+		}
 	}
 
 	return nil

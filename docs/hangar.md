@@ -184,7 +184,9 @@ To remove the output plane (or replace its daemons):
 
 1. Set `hangarOutput.webEnabled: false` and roll the web. New admission stops;
    captures already pending carry on to completion, and the reclaim pass keeps
-   finalizing.
+   finalizing. Execution start is admission too: a running multi-step Run
+   whose next step needs the output plane fails at that step during a drain.
+   Drain when no Run you care about is mid-flight, or let them finish first.
 2. Watch the residue until it reaches zero:
 
    ```sh
@@ -195,8 +197,14 @@ To remove the output plane (or replace its daemons):
    publishing captures, captures whose step marker is not yet released, open
    claims, live read leases, unfinalized reclaim jobs and open integrity
    findings, and lists each open finding with its id. The plane is drained when
-   it says `out of service, drained`. Open claims belong to consumers (a running
-   Run, a retained result); release or let them finish.
+   it says `out of service, drained`. Open claims belong to consumers, and most
+   are Run results: a finished Run keeps its result claims until the Run is
+   reclaimed under its retention, so `open claims` may not reach zero on its
+   own. Read it against the other counts: once pending, publishing and
+   unreleased captures, live read leases and unfinalized reclaim jobs are all
+   zero, what remains is retained results. Removing the daemon then strands
+   no capture, but those results stay unreadable until the plane returns; wait
+   for retention (or reclaim the Runs) if they must stay readable.
 3. Only then remove the node daemons' output plane (`hangarOutput.enabled`).
 
 The same numbers are published continuously as
@@ -282,7 +290,8 @@ integrity findings (`out_of_band_absence`, `runtime_principal_denied`). They
 block new capture, claims, managed read warrants and reclaim admission;
 releases and diagnosis remain possible. Already-admitted exact deletes can
 finish. Repair the cause and investigate lost content before resolving one
-finding, as an admin, by the id `fly hangar-status` lists:
+finding, as an admin, by the id `fly hangar-status` lists (resolving one
+already resolved succeeds and changes nothing):
 
 ```sh
 fly -t <target> hangar-status --resolve-finding <id>
