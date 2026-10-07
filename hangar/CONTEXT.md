@@ -231,6 +231,12 @@ lists and deletes; strict inputs have their own. Delete exists only in the
 web.
 _Avoid_: role, persona
 
+**Control-key generation**:
+The number a node's control keys and the capabilities signed with them are
+minted under. Rotating keys raises it; it gates nothing else and the output
+scope does not derive from it.
+_Avoid_: activation epoch, epoch (alone)
+
 **Execution control**:
 The base protocol (classify, observe finish, request a source-preserving
 stop, may cleanup) that capture extends. A read of the node's stored,

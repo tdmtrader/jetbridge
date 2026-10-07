@@ -91,7 +91,7 @@ After validating TLS, storage access, the key, limits, and private scratch, each
 daemon adds `concourse.dev/hangar-v1=ready` to its node. Strict tasks require
 that label as well as the existing artifact-cache readiness label. A task init
 container requests the exact tree and the task and all sidecars receive the
-result as a read-only input. The local completion receipt records the exact
+result as a read-only input. The local materialization receipt records the exact
 scope, digest, and generation; the init verifies it before the task starts.
 
 Hangar is fail-closed. Absence, authorization failure, immutable-write
@@ -116,7 +116,7 @@ label.
 
 Node-IP TLS encrypts the init-to-daemon request, but the current init client
 does not verify the daemon's server identity. Do not describe this path as
-server-authenticated mTLS. The independently verified, read-only local receipt
+server-authenticated mTLS. The independently verified, read-only materialization receipt
 is the outcome proof that the exact requested tree was committed on the node.
 
 NetworkPolicy remains off by default. When the artifact-daemon policy is
@@ -127,7 +127,7 @@ refresh: standard/Calico on GKE 1.21 and later uses
 is not included. Policy enforcement and metadata routing are
 CNI/environment-dependent; non-GKE clusters may require different egress, and
 operators must validate the policy against their cluster. It is defense in
-depth and does not change the receipt or TLS identity model.
+depth and does not change the materialization receipt or TLS identity model.
 
 ## Rollout and downgrade
 
@@ -163,9 +163,10 @@ refs, and protects them with claims and read leases. The node's artifact
 daemon publishes; the web reclaims, through two components of its own --
 `hangar_reclaim` (admission, conditional delete, finalization) and
 `hangar_orphan_sweep` -- which share one PostgreSQL advisory lock across web
-replicas. It remains opt-in: `hangarOutput.executionControl.enabled` enables
-the base facet; `hangarOutput.enabled` enables the output facet; and
-`hangarOutput.webEnabled` puts the plane **in service**. Configure keys and
+replicas. It remains opt-in: `hangarOutput.executionControl.enabled` turns on the
+daemon's base execution-control protocol; `hangarOutput.enabled` mounts the
+output plane in the artifact daemon; and `hangarOutput.webEnabled` puts the
+plane **in service**. Configure keys and
 mutual TLS as described in `deploy/chart/values.yaml`. Changing the storage
 selector does not bypass these gates.
 
@@ -175,8 +176,9 @@ In service is one database row, `hangar_enabled`. The web writes it at
 startup from `hangarOutput.webEnabled`, and every admission that needs the
 output plane -- a new capture, a Run that declares results or takes inputs, an
 input upload -- reads it `FOR SHARE` in its own transaction and is refused
-while it says false. There are no activation epochs, facets or cohort
-attestations to walk: `hangarOutput.activationEpoch` is only the control-key
+while it says false. Nothing else is walked or attested (see
+[ADR-0009](adr/0009-one-node-daemon-one-capture-row.md)):
+`hangarOutput.activationEpoch` is only the control-key
 generation that capabilities and the control-key ring are minted under, and the
 output scope does not derive from it.
 
