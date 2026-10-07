@@ -1129,6 +1129,10 @@ jobs:
         # concourse-main/live-tests-password. The Hangar Run tests log in as
         # it; nothing else in the live tier authenticates.
         CONCOURSE_LIVE_PASSWORD: ((live-tests-password))
+        # The implement template's validate task image (hangar_one_daemon A8):
+        # /bin/sh, git, sha256sum, timeout, awk, sed and tr, as root. This task's
+        # own image, pinned by digest as deploy/implement-template.yml asks.
+        CONCOURSE_LIVE_VALIDATE_IMAGE: registry.home/concourse-test-runner@sha256:1e1fa432a1d399400bdc140452f610bd4efab8259eb989df2dfb0ea32fdb8fe3
       run:
         path: sh
         args:
@@ -1161,6 +1165,23 @@ jobs:
           echo "Kubeconfig created, testing: $(kubectl get pods -n concourse --no-headers 2>&1 | wc -l) pods visible"
 
           export K8S_TEST_NAMESPACE=concourse
+
+          # The A8 workload checks run the fixture review worker
+          # (hack/build-live-review-fixture-image), which web must pin for
+          # credential handoff. The pin in home-infra's
+          # web.runCredentialWorkerImages is the one place its digest is
+          # written: read it back from web's flags by its repository. Empty
+          # while web pins none; the checks skip until the output plane is in
+          # service, and fail naming the missing pin after.
+          # Pods, not the Deployment: this identity reads pods in cicd, as the
+          # suite does to find web (live_deployment_test.go).
+          CONCOURSE_LIVE_REVIEW_WORKER_IMAGE=$(kubectl -n cicd get pods \
+            -l app.kubernetes.io/component=web --field-selector=status.phase=Running \
+            -o jsonpath='{range .items[*].spec.containers[*].args[*]}{@}{"\n"}{end}' \
+            | sed -n 's|^--run-credential-worker-image=\(registry\.home/jb-review-worker-fixture@sha256:[0-9a-f]*\)$|\1|p' \
+            | head -n 1)
+          export CONCOURSE_LIVE_REVIEW_WORKER_IMAGE
+          echo "CONCOURSE_LIVE_REVIEW_WORKER_IMAGE=${CONCOURSE_LIVE_REVIEW_WORKER_IMAGE:-<web pins no fixture worker>}"
           echo "K8S_TEST_NAMESPACE=$K8S_TEST_NAMESPACE"
 
           echo "=== Cleaning up stale test pods from previous runs ==="

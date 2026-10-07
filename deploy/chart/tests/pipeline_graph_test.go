@@ -924,3 +924,35 @@ func TestThePipelineKeepsTheHangarWorkloadsOnWebsImage(t *testing.T) {
 			livePassword)
 	}
 }
+
+// TestTheLiveTierGetsTheWorkloadImages holds the A8 workload checks' inputs
+// (hangar_one_daemon): the validate image is pinned by digest, and the fixture
+// review worker is read back from web's credential pins rather than written a
+// second time.
+func TestTheLiveTierGetsTheWorkloadImages(t *testing.T) {
+	pipeline := loadPipeline(t, filepath.Join(repoRoot(t), "deploy", "concourse-pipeline.yml"))
+	found := false
+	for _, job := range pipeline.Jobs {
+		for _, step := range flattenPlan(job.Plan) {
+			if step.Task != "k8s-live-integration-tests" {
+				continue
+			}
+			found = true
+			if image := step.Config.Params["CONCOURSE_LIVE_VALIDATE_IMAGE"]; !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(image) {
+				t.Errorf("CONCOURSE_LIVE_VALIDATE_IMAGE=%q is not pinned by digest", image)
+			}
+			if _, set := step.Config.Params["CONCOURSE_LIVE_REVIEW_WORKER_IMAGE"]; set {
+				t.Error("CONCOURSE_LIVE_REVIEW_WORKER_IMAGE is a param; it must come from web's --run-credential-worker-image pin")
+			}
+			script := stripShellComments(strings.Join(step.Config.Run.Args, "\n"))
+			for _, want := range []string{"export CONCOURSE_LIVE_REVIEW_WORKER_IMAGE", "--run-credential-worker-image=", "jb-review-worker-fixture@sha256:"} {
+				if !strings.Contains(script, want) {
+					t.Errorf("the live tier's script lacks %q", want)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("task k8s-live-integration-tests was not found; this check would pass vacuously")
+	}
+}

@@ -1,0 +1,53 @@
+#!/bin/sh
+# Builds and pushes the live tier's fixture review worker: the deployable
+# deploy/Dockerfile.review-worker image with only its codex replaced by the
+# fixture provider (agent/review/testdata/provider), as hack/test-review-kubelet
+# builds it. concourse.home has no model, so the fixture's "finding" and "edit"
+# modes stand in for one in the A8 workload checks
+# (atc/worker/jetbridge/live_hangar_workload_test.go).
+#
+# It pushes $IMAGE (default registry.home/jb-review-worker-fixture:<tag>) and
+# prints its digest-qualified reference. Pin that reference in home-infra's
+# web.runCredentialWorkerImages; k8s-live-tests reads it back from web's
+# --run-credential-worker-image flags by its repository, so the pin is the one
+# place it is written. Rebuild when the worker or the fixture provider changes.
+#
+# Privileged: it owns its Docker daemon. TEST_COMPILER is a Go toolchain image.
+# Run from the CI cluster with the repo as input:
+#   fly -t home execute -p -c hack/build-live-review-fixture-image.yml -i repo=<git archive of a ref>
+# TAG (default: the UTC time) names the pushed tag; use the source sha.
+set -eu
+: "${TEST_COMPILER:?TEST_COMPILER names a Go toolchain image}"
+tag=${TAG:-$(date -u +%Y%m%dT%H%M%SZ)}
+IMAGE=${IMAGE:-registry.home/jb-review-worker-fixture:$tag}
+work=$(mktemp -d /tmp/review-fixture.XXXXXX)
+dockerd --host=unix:///var/run/docker.sock --data-root="$work/docker" --mtu=1450 \
+  --insecure-registry=registry.home --log-level=warn >"$work/docker.log" 2>&1 &
+dockerd_pid=$!
+trap 'kill "$dockerd_pid" 2>/dev/null || true; wait "$dockerd_pid" 2>/dev/null || true' EXIT
+for attempt in $(seq 1 60); do
+  if docker info >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+docker info >/dev/null
+docker build --build-arg TARGETARCH=amd64 -f repo/deploy/Dockerfile.review-worker \
+  -t review-worker:production repo
+version=$(docker run --rm --entrypoint /usr/local/bin/codex review-worker:production --version)
+test "$version" = "codex-cli $(cat repo/agent/session/codex-version)"
+mkdir -p "$work/fixture"
+docker run --rm -v "$(pwd)/repo:/workspace:ro" -v "$work/fixture:/fixture" \
+  -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=amd64 -w /workspace "$TEST_COMPILER" \
+  go build -buildvcs=false -o /fixture/codex ./agent/review/testdata/provider
+cat >"$work/fixture/Dockerfile" <<'DOCKERFILE'
+FROM review-worker:production
+COPY codex /usr/local/bin/codex
+DOCKERFILE
+docker build -t "$IMAGE" "$work/fixture"
+docker push "$IMAGE"
+digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
+case $digest in
+  *@sha256:*) ;;
+  *) echo "no repo digest for $IMAGE: $digest" >&2; exit 1 ;;
+esac
+echo "pushed $IMAGE"
+echo "pin: $digest"

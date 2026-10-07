@@ -1,0 +1,11 @@
+# A one-off task config for hack/build-live-review-fixture-image.
+platform: linux
+rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+inputs:
+- name: repo
+params:
+  TEST_COMPILER: registry.home/concourse-test-runner:v11
+  TAG: ""
+run:
+  path: sh
+  args: [repo/hack/build-live-review-fixture-image]
