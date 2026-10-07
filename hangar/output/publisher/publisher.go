@@ -258,8 +258,8 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 	// well. `objectstore.Attrs` carries no checksum, so this role cannot read
 	// one today -- but GCS reports one and so does the emulator.
 	//
-	// Round-2 review finding R2-F5 pointed this at "when the inventory role
-	// lands". The inventory role landed in Phase 7 and this did not move, for a
+	// Round-2 review finding R2-F5 pointed this at "when the list principal
+	// lands". The list principal landed in Phase 7 and this did not move, for a
 	// reason worth writing down: widening `Attrs` with a checksum changes the
 	// PUBLISHER's dedup comparison, which is reachable only from a capture, and
 	// the evidence that the value is what GCS actually returns is a real-store

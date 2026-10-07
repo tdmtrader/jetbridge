@@ -102,8 +102,8 @@ type Coordinator struct {
 	// plane in service, and every node-side step is refused.
 	Dial func(ctx context.Context, node string, uid executioncontrol.NodeUID) (SourceControl, error)
 
-	// ActivationEpoch is the epoch a published generation's lifecycle and
-	// claim are recorded under while epochs exist.
+	// ActivationEpoch is the control-key generation a published generation's
+	// lifecycle and claim are recorded under.
 	ActivationEpoch executioncontrol.ActivationEpoch
 
 	BatchSize int
