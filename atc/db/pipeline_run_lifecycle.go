@@ -18,6 +18,7 @@ import (
 // when no notification ever arrives.
 func announceRunCompletion(bus NotificationsBus) {
 	bus.Notify(atc.ComponentReclaimerPipelineRuns)
+	bus.Notify(atc.ComponentLandingQueue)
 	bus.Notify(atc.PipelineRunCompletedChannel)
 }
 

@@ -1323,6 +1323,9 @@ func (cmd *RunCommand) backendComponents(
 	}
 	components = append(components, deletes...)
 	components = append(components, cmd.runComponents(dbConn)...)
+	if landingQueue, ok := cmd.landingQueueComponent(logger, dbConn); ok {
+		components = append(components, landingQueue)
+	}
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
