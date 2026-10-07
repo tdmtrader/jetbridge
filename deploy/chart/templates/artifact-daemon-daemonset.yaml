@@ -86,8 +86,11 @@ spec:
     spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
-      # Longer with the output plane mounted: long enough for its facet labels
-      # to come off and the in-flight publish to finish.
+      # Longer with the output plane mounted. On SIGTERM the daemon takes its
+      # labels off, then gives in-flight requests -- a publish or a seal among
+      # them -- until --shutdown-timeout (five seconds under this) to finish,
+      # then drains mirror jobs with whatever is left. A publish still running
+      # at the deadline is cut off; the capture is retried under its fence.
       terminationGracePeriodSeconds: {{ if $base }}60{{ else }}30{{ end }}
       # NOTE: Daemon runs as root — it manages a shared hostPath volume where task
       # containers (running as arbitrary UIDs) write artifacts with varying permissions.
@@ -106,6 +109,7 @@ spec:
             - --port={{ .Values.artifactDaemon.port | default 7780 }}
             - --storage-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --ttl={{ .Values.artifactDaemon.ttl | default "2h" }}
+            - --shutdown-timeout={{ if $base }}55s{{ else }}25s{{ end }}
             - --node-name=$(NODE_NAME)
             # The daemon's OWN namespace, not kubernetes.namespace (where step
             # pods run): its headless Service, EndpointSlices and TLS

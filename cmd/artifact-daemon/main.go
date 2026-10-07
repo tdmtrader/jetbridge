@@ -30,6 +30,7 @@ func main() {
 	metricsPort := flag.Int("metrics-port", 0, "Port for a plain-HTTP listener that serves /metrics and nothing else, for a Prometheus scraper that cannot complete the mTLS port's handshake. 0 opens no listener. Bound on --listen-address, like --port.")
 	storagePath := flag.String("storage-path", "/var/concourse/artifacts", "Path to artifact storage directory")
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 25*time.Second, "How long SIGTERM may take: in-flight requests (an output-plane publish among them) drain first, then mirror jobs, within this. Keep it under the pod's terminationGracePeriodSeconds.")
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
 	peerDiscovery := flag.Bool("peer-discovery", false, "Enable EndpointSlice peer discovery without node labeling; this also enables outbound mirroring (--mirror-replicas, default 2); --node-name continues to enable both")
@@ -535,25 +536,14 @@ func main() {
 		serverFailure = err
 	}
 
-	// Drain mirror jobs before sweeping / shutting down. This is best-effort
-	// — Wait blocks until in-flight jobs complete (capped by per-peer timeout).
-	if mirror != nil {
-		mirror.Stop()
-	}
-
-	// Stop sweeper.
-	close(sweepDone)
-	maintenanceCancel()
-	if err := closeDurable(); err != nil {
-		logger.Error("durable-store-close-failed", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The grace budget goes to the requests in flight first -- an output-plane
+	// publish or seal among them -- and to the background work after, each
+	// bounded by what is left of it. The labels come off before the listener
+	// closes: a node that still advertises a facet it has stopped serving is
+	// where the scheduler sends the next capture.
+	ctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 	defer cancel()
 	cleanupErr := cleanupDaemonServices(ctx, hangarLabeler, labeler, func() error {
-		// The output plane's labels come off before the listener closes: a
-		// node that still advertises a facet it has stopped serving is where
-		// the scheduler sends the next capture.
 		var err error
 		if plane != nil {
 			err = plane.Withdraw(ctx)
@@ -564,6 +554,27 @@ func main() {
 		}
 		return err
 	}, closeHangar)
+
+	// Drain mirror jobs with what is left of the budget. Best-effort: Stop
+	// blocks until in-flight jobs complete, and an unfinished mirror is a
+	// peer that resolves the artifact from this node or the durable tier.
+	if mirror != nil {
+		stopped := make(chan struct{})
+		go func() { mirror.Stop(); close(stopped) }()
+		select {
+		case <-stopped:
+		case <-ctx.Done():
+			logger.Info("mirror-drain-abandoned", lager.Data{"reason": "shutdown budget spent"})
+		}
+	}
+
+	// Stop sweeper.
+	close(sweepDone)
+	maintenanceCancel()
+	if err := closeDurable(); err != nil {
+		logger.Error("durable-store-close-failed", err)
+	}
+
 	if cleanupErr != nil {
 		logger.Error("shutdown-error", cleanupErr)
 		os.Exit(1)
