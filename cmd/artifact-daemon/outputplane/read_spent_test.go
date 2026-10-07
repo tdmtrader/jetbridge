@@ -87,14 +87,28 @@ func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 		t.Errorf("a conflicted read left its warrant usable: %v", err)
 	}
 
+	// A read in flight is durable before it begins: a process that dies
+	// mid-read leaves the warrant used, not reusable.
+	crashed := readClaims("44444444-4444-4444-8444-444444444444", now.Add(time.Hour))
+	if err := restarted.begin(crashed); err != nil {
+		t.Fatal(err)
+	}
+	afterCrash, err := openSpentReads(store, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := afterCrash.begin(crashed); !errors.Is(err, output.ErrUnauthorized) {
+		t.Errorf("a warrant in flight at a crash was admitted again: %v", err)
+	}
+
 	// And an entry past its warrant's window is pruned on reopen.
 	later := func() time.Time { return now.Add(2 * time.Hour) }
 	pruned, err := openSpentReads(store, later)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pruned.spent) != 0 {
-		t.Errorf("expired spent warrants survived a reopen: %v", pruned.spent)
+	if len(pruned.used) != 0 {
+		t.Errorf("expired spent warrants survived a reopen: %v", pruned.used)
 	}
 }
 
@@ -151,8 +165,8 @@ func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Errorf("a warrant for another node answered %d", recorder.Code)
 	}
-	if len(server.reads.spent.spent) != 0 {
-		t.Errorf("a refused warrant was spent: %v", server.reads.spent.spent)
+	if len(server.reads.spent.used) != 0 {
+		t.Errorf("a refused warrant was spent: %v", server.reads.spent.used)
 	}
 
 	// The control: the same warrant minted for THIS node passes authorization
