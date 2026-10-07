@@ -563,6 +563,12 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, output.ErrSealed), errors.Is(err, output.ErrConflict),
 		errors.Is(err, output.ErrGenerationConflict), errors.Is(err, executioncontrol.ErrStaleFence):
 		status = http.StatusConflict
+	case errors.Is(err, output.ErrSealInProgress):
+		// Accepted: the seal is running in the background. The body names it
+		// so a caller can tell it from a completed seal.
+		writeJSON(w, http.StatusAccepted, map[string]string{"state": "sealing", "error": err.Error()})
+
+		return
 	case errors.Is(err, output.ErrSealUnconfirmed), errors.Is(err, output.ErrUnresolved):
 		status = http.StatusPreconditionFailed
 	case errors.Is(err, output.ErrIncomplete), errors.Is(err, output.ErrInvalidIdentity),

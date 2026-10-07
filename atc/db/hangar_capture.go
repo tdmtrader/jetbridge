@@ -320,6 +320,36 @@ func (repository *HangarOutputRepository) ListPublishingForRecovery(ctx context.
 		`created_at, execution_id, output_name`, limit)
 }
 
+// ListPublishingPastDeadline is every publishing row whose capture deadline,
+// plus margin, has passed on the database clock. Recovery has had that long
+// to complete it; a node that never answers in that time is not going to.
+func (repository *HangarOutputRepository) ListPublishingPastDeadline(ctx context.Context, tx output.Tx, margin time.Duration, limit int) ([]output.Capture, error) {
+	if limit <= 0 || margin < 0 {
+		return nil, fmt.Errorf("%w: a bounded pass with a non-negative margin", output.ErrIncomplete)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT `+hangarCaptureColumns+`
+		FROM hangar_captures
+		WHERE state = 'publishing' AND capture_deadline_at + $2::interval <= now()
+		ORDER BY capture_deadline_at, execution_id, output_name LIMIT $1`, limit, hangarInterval(margin))
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+	var captures []output.Capture
+	for rows.Next() {
+		capture, err := scanHangarCapture(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		captures = append(captures, capture)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, hangarConflict(err)
+	}
+
+	return captures, nil
+}
+
 // ListUnreleased is the release pass: terminal rows whose node marker has not
 // been cleared. It is retried forever; the sweeper refuses the directory
 // until it lands.

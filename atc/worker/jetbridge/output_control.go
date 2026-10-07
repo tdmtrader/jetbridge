@@ -222,6 +222,8 @@ func (refusal *OutputControlRefusal) Unwrap() error {
 		return output.ErrNotFound
 	case http.StatusConflict:
 		return output.ErrConflict
+	case http.StatusAccepted:
+		return output.ErrSealInProgress
 	case http.StatusPreconditionFailed:
 		return output.ErrSealUnconfirmed
 	case http.StatusBadRequest:

@@ -169,7 +169,7 @@ func TestACallerChosenNamespaceIsRefusedByThePublishPath(t *testing.T) {
 	held(t, fixture)
 	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "produced")
 	fixture.pods.stop(testPod)
-	sealed, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
+	sealed, err := sealNow(t, fixture)
 	if err != nil {
 		t.Fatal(err)
 	}

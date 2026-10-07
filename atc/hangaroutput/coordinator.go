@@ -19,7 +19,16 @@ package hangaroutput
 //
 // Recovery is the same sequence read from the row: a publishing row asks the
 // store what it holds for its digest and either completes step 5 or repeats
-// step 4; a pending row past its capture deadline fails.
+// step 4, and fails when the store holds nothing and the sealed step is gone
+// from its node; a pending row past its capture deadline fails, and so does a
+// publishing row past its deadline plus PublishingMargin. A terminal row whose
+// node is gone is released once FinishedAt is NodeGoneMargin old: the marker
+// went with the node.
+//
+// The seal is asynchronous on the node: step 2 is asked again on each pass
+// until it answers the digest, so no HTTP timeout bounds a slow Pod or a
+// large tree. Pending rows are advanced concurrently, at most Concurrency at
+// once.
 //
 // Two rules run through every method. No database lock is held across a
 // network call: each step reads in one short transaction, closes it, asks the
@@ -33,13 +42,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// DefaultBatchSize bounds each of a pass's four queries.
+// DefaultBatchSize bounds each of a pass's queries.
 const DefaultBatchSize = 100
+
+// DefaultConcurrency is how many pending captures one pass advances at once.
+const DefaultConcurrency = 8
+
+// DefaultPublishingMargin is how long past its capture deadline a publishing
+// row is recovered before it fails.
+const DefaultPublishingMargin = time.Hour
+
+// DefaultNodeGoneMargin is how long a terminal row on a node that no longer
+// exists waits before it is released without the node's acknowledgement.
+const DefaultNodeGoneMargin = time.Hour
 
 // Coordinator advances capture rows. It holds no state about any capture.
 type Coordinator struct {
@@ -52,6 +74,50 @@ type Coordinator struct {
 	ActivationEpoch executioncontrol.ActivationEpoch
 
 	BatchSize int
+
+	// Concurrency bounds the pending captures one pass advances at once.
+	// Zero means DefaultConcurrency.
+	Concurrency int
+
+	// PublishingMargin and NodeGoneMargin bound recovery; zero means the
+	// defaults.
+	PublishingMargin time.Duration
+	NodeGoneMargin   time.Duration
+
+	// Now is the clock NodeGoneMargin is measured on; nil means time.Now.
+	Now func() time.Time
+}
+
+func (coordinator *Coordinator) concurrency() int {
+	if coordinator.Concurrency <= 0 {
+		return DefaultConcurrency
+	}
+
+	return coordinator.Concurrency
+}
+
+func (coordinator *Coordinator) publishingMargin() time.Duration {
+	if coordinator.PublishingMargin <= 0 {
+		return DefaultPublishingMargin
+	}
+
+	return coordinator.PublishingMargin
+}
+
+func (coordinator *Coordinator) nodeGoneMargin() time.Duration {
+	if coordinator.NodeGoneMargin <= 0 {
+		return DefaultNodeGoneMargin
+	}
+
+	return coordinator.NodeGoneMargin
+}
+
+func (coordinator *Coordinator) now() time.Time {
+	if coordinator.Now == nil {
+		return time.Now()
+	}
+
+	return coordinator.Now()
 }
 
 func (coordinator *Coordinator) batch() int {
@@ -99,6 +165,35 @@ func (coordinator *Coordinator) Advance(ctx context.Context, key output.CaptureK
 	return nil
 }
 
+// Settle advances one capture until it is terminal and released, asking
+// again while the node's asynchronous seal is in progress, the way successive
+// passes do. It is for a caller that composes the sequence inline -- a test
+// harness, a single-process runtime -- and is bounded by wait.
+func (coordinator *Coordinator) Settle(ctx context.Context, key output.CaptureKey, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		if err := coordinator.Advance(ctx, key); err != nil {
+			return err
+		}
+		capture, err := coordinator.get(ctx, key)
+		if err != nil {
+			return err
+		}
+		if capture.State.Terminal() && capture.Released() {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: capture %s did not settle in %s; it is %s", output.ErrUnresolved,
+				key, wait, capture.State)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
 // Discard is the cancelled-or-no-output branch of step 3. A pending capture
 // becomes discarded; a publishing or published one is past the point a
 // cancellation may undo, and is reported as such rather than touched.
@@ -125,9 +220,12 @@ func (coordinator *Coordinator) Discard(ctx context.Context, key output.CaptureK
 // terminal one. A failure on one row is collected and never stops the others.
 func (coordinator *Coordinator) Run(ctx context.Context) error {
 	var errs []error
+	var mu sync.Mutex
 	collect := func(key output.CaptureKey, err error) {
 		if err != nil {
+			mu.Lock()
 			errs = append(errs, fmt.Errorf("capture %s: %w", key, err))
+			mu.Unlock()
 		}
 	}
 
@@ -137,6 +235,18 @@ func (coordinator *Coordinator) Run(ctx context.Context) error {
 	}
 	for _, capture := range expired {
 		collect(capture.Key, coordinator.expire(ctx, capture))
+	}
+
+	stale, err := coordinator.list(ctx, func(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error) {
+		return coordinator.Rows.ListPublishingPastDeadline(ctx, tx, coordinator.publishingMargin(), limit)
+	})
+	if err != nil {
+		return err
+	}
+	for _, capture := range stale {
+		_, err := coordinator.fail(ctx, capture.Key, "the capture deadline passed and recovery never "+
+			"completed the publication")
+		collect(capture.Key, err)
 	}
 
 	publishing, err := coordinator.list(ctx, coordinator.Rows.ListPublishingForRecovery)
@@ -152,11 +262,23 @@ func (coordinator *Coordinator) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	slots := make(chan struct{}, coordinator.concurrency())
+	var wg sync.WaitGroup
 	for _, capture := range pending {
 		if ctx.Err() != nil {
-			return errors.Join(append(errs, ctx.Err())...)
+			break
 		}
-		collect(capture.Key, coordinator.Advance(ctx, capture.Key))
+		slots <- struct{}{}
+		wg.Add(1)
+		go func(key output.CaptureKey) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			collect(key, coordinator.Advance(ctx, key))
+		}(capture.Key)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return errors.Join(append(errs, ctx.Err())...)
 	}
 
 	unreleased, err := coordinator.list(ctx, coordinator.Rows.ListUnreleased)
@@ -202,8 +324,11 @@ func (coordinator *Coordinator) seal(ctx context.Context, capture output.Capture
 		PodUID:          ack.PodUID,
 	})
 	switch {
-	case errors.Is(err, output.ErrUnresolved):
-		// A container of the Pod is still running. Ask again next pass.
+	case errors.Is(err, output.ErrSealInProgress), errors.Is(err, output.ErrUnresolved),
+		errors.Is(err, output.ErrSealUnconfirmed):
+		// The node is waiting for the Pod's containers to stop, or reading the
+		// tree, or a background seal ran out and the next ask starts another.
+		// Ask again next pass; the capture deadline is the bound.
 		return false, nil
 	case errors.Is(err, output.ErrNotFound):
 		// No held marker for this step on its node. Nothing is captured from
@@ -268,7 +393,10 @@ func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capt
 			// A collision at the key, or a sealed tree that is no longer the
 			// recorded digest. Never adopted, never overwritten.
 			return coordinator.fail(ctx, capture.Key, "publish conflict: "+err.Error())
-		case errors.Is(err, output.ErrNotFound) && !recovering:
+		case errors.Is(err, output.ErrNotFound):
+			// Not in the store (recovery asked first, or this is the first
+			// publish), and no sealed step to publish from: nothing can ever
+			// create it now.
 			return coordinator.fail(ctx, capture.Key, "the sealed step is gone from its node: "+err.Error())
 		case err != nil:
 			return false, err
@@ -299,6 +427,18 @@ func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capt
 func (coordinator *Coordinator) release(ctx context.Context, capture output.Capture) (bool, error) {
 	node, err := coordinator.Dialer.ForNode(ctx, capture.Node, capture.NodeUID)
 	if err != nil {
+		if nodeGone(err) && capture.FinishedAt != nil &&
+			coordinator.now().Sub(*capture.FinishedAt) >= coordinator.nodeGoneMargin() {
+			// The node the marker lived on is gone or was replaced; the
+			// marker went with it, and there is nothing left to clear.
+			err = coordinator.write(func(tx Transaction) error {
+				_, err := coordinator.Rows.SetReleased(ctx, tx, capture.Key)
+				return err
+			})
+
+			return err == nil, err
+		}
+
 		return false, err
 	}
 	ack, err := node.Release(ctx, output.CaptureReleaseRequest{
@@ -319,6 +459,12 @@ func (coordinator *Coordinator) release(ctx context.Context, capture output.Capt
 	})
 
 	return err == nil, err
+}
+
+// nodeGone is a dialer's answer that the node no longer exists, or that the
+// name now belongs to a different node.
+func nodeGone(err error) bool {
+	return errors.Is(err, output.ErrNotFound) || errors.Is(err, output.ErrInvalidIdentity)
 }
 
 func (coordinator *Coordinator) expire(ctx context.Context, capture output.Capture) error {

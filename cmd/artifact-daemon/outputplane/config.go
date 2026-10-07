@@ -87,9 +87,13 @@ type Config struct {
 	ActivationEpoch  uint64
 	OperationTimeout time.Duration
 
-	// SealWait bounds how long one seal call waits for the producing Pod's
-	// containers to terminate before answering "not yet".
+	// SealWait bounds one background seal: the wait for the producing Pod's
+	// containers to terminate and the canonicalization after it.
 	SealWait time.Duration
+
+	// PodTerminationsNamespace is the namespace task Pods run in. The daemon
+	// reads Pods there and nowhere else.
+	PodTerminationsNamespace string
 
 	// Terminations answers whether a Pod's containers have all stopped. Nil
 	// means the Kubernetes API, read for this node's own Pods; a test sets it.
@@ -133,8 +137,10 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. A control plane pins its public half per activation epoch.")
 	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
-	flags.DurationVar(&config.SealWait, "capture-seal-wait", 30*time.Second,
-		"How long one capture seal waits for every container of the producing Pod to terminate before answering that it has not yet; the control plane asks again. The seal never deletes a Pod to get there.")
+	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
+		"How long one background capture seal may run: the wait for every container of the producing Pod to terminate, and the canonicalization after it. The seal is asynchronous -- the control plane polls it -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
+	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
+		"The namespace task Pods run in. A capture seal reads this node's Pods in it, and only in it, to see that every container of the producing Pod has terminated. Required when the output plane reads Pods from Kubernetes.")
 	flags.StringVar(&config.PodTerminationsDir, "pod-terminations-dir", "",
 		"Standalone operation only, with no Kubernetes API to read Pods from: a directory in which a file named after a Pod UID declares that every container of that Pod has terminated. A capture seal waits for it. Ignored when the daemon reads Pods from Kubernetes.")
 	flags.IntVar(&config.PublishConcurrency, "publish-concurrency", 1,

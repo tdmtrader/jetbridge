@@ -128,7 +128,12 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		switch {
 		case terminations != nil:
 		case nodes != nil:
-			terminations = NewNodePodTerminations(nodes, config.NodeName)
+			if config.PodTerminationsNamespace == "" {
+				return nil, fmt.Errorf("%w: --pod-terminations-namespace is required: a capture seal "+
+					"reads the task namespace's Pods on this node, and no other namespace's",
+					output.ErrIncomplete)
+			}
+			terminations = NewNodePodTerminations(nodes, config.PodTerminationsNamespace, config.NodeName)
 		case config.PodTerminationsDir != "":
 			terminations = DeclaredPodTerminations(config.PodTerminationsDir)
 		}

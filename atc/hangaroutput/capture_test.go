@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,12 +28,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaimpass"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // capture is one capture, at whatever step the spec drove it to.
@@ -50,6 +54,12 @@ func (c *capture) Key() output.CaptureKey {
 // admit is step 1's control-plane half: the node admits the execution and the
 // pending row is inserted, both before any Pod exists.
 func (h *harness) admit(t *testing.T) *capture {
+	t.Helper()
+
+	return h.admitWithTerm(t, 24*time.Hour)
+}
+
+func (h *harness) admitWithTerm(t *testing.T, term time.Duration) *capture {
 	t.Helper()
 
 	ctx := context.Background()
@@ -74,7 +84,7 @@ func (h *harness) admit(t *testing.T) *capture {
 		Output:    admitted.Output,
 		Node:      harnessNodeName,
 		NodeUID:   harnessNode,
-		Term:      24 * time.Hour,
+		Term:      term,
 	}); err != nil {
 		t.Fatalf("inserting the pending capture: %v", err)
 	}
@@ -156,15 +166,43 @@ func (c *capture) produce(t *testing.T, content string) *capture {
 	return c.hold(t).write(t, "artifact.txt", content).finish(t, true).terminate(t)
 }
 
-// advance takes the capture as far as it goes and fails the spec on an error.
+// advance takes the capture as far as it goes, asking again while the node's
+// asynchronous seal is in progress, the way successive passes do, until the
+// row is terminal and released. An error fails the spec.
 func (c *capture) advance(t *testing.T) output.Capture {
 	t.Helper()
 
-	if err := c.harness.Coordinator.Advance(context.Background(), c.Key()); err != nil {
-		t.Fatalf("advancing %s: %v", c.Key(), err)
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if err := c.harness.Coordinator.Advance(context.Background(), c.Key()); err != nil {
+			t.Fatalf("advancing %s: %v", c.Key(), err)
+		}
+		record := c.record(t)
+		if record.State.Terminal() && record.Released() {
+			return record
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never settled: %s", c.Key(), record.State)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+}
 
-	return c.record(t)
+// advanceUntilError asks again until an Advance answers an error, and
+// returns it.
+func (c *capture) advanceUntilError(t *testing.T) error {
+	t.Helper()
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := c.harness.Coordinator.Advance(context.Background(), c.Key()); err != nil {
+			return err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s advanced for a minute without an error", c.Key())
+
+	return nil
 }
 
 func (c *capture) record(t *testing.T) output.Capture {
@@ -275,6 +313,29 @@ type injectingDialer struct {
 	gates map[string]chan struct{}
 	// arrived is signalled when a gated call reaches its gate.
 	arrived map[string]chan struct{}
+	// refuse fails the next n calls of op BEFORE they are made.
+	refuse map[string]int
+	// gone makes ForNode answer that the node no longer exists.
+	gone bool
+	// client, when set, replaces the daemon's own client.
+	client *jetbridge.OutputControlClient
+}
+
+// RefuseBefore fails the next n calls of op without making them.
+func (dialer *injectingDialer) RefuseBefore(op string, n int) {
+	dialer.mu.Lock()
+	defer dialer.mu.Unlock()
+	if dialer.refuse == nil {
+		dialer.refuse = map[string]int{}
+	}
+	dialer.refuse[op] = n
+}
+
+// NodeGone makes the node unreachable as a node that no longer exists.
+func (dialer *injectingDialer) NodeGone() {
+	dialer.mu.Lock()
+	defer dialer.mu.Unlock()
+	dialer.gone = true
 }
 
 var _ hangaroutput.SourceDialer = (*injectingDialer)(nil)
@@ -283,8 +344,17 @@ func (dialer *injectingDialer) ForNode(_ context.Context, name string, uid execu
 	if name != harnessNodeName || uid != harnessNode {
 		return nil, fmt.Errorf("%w: no daemon on node %s/%s", output.ErrInfrastructure, name, uid)
 	}
+	dialer.mu.Lock()
+	gone, client := dialer.gone, dialer.client
+	dialer.mu.Unlock()
+	if gone {
+		return nil, fmt.Errorf("%w: node %s is gone", output.ErrNotFound, name)
+	}
+	if client == nil {
+		client = dialer.daemon.Client
+	}
 
-	return &injectingSource{dialer: dialer, client: dialer.daemon.Client}, nil
+	return &injectingSource{dialer: dialer, client: client}, nil
 }
 
 // LoseAfter drops the answer to the next n calls of op, after they ran.
@@ -319,8 +389,14 @@ func (dialer *injectingDialer) Calls(op string) int {
 	return dialer.calls[op]
 }
 
-func (dialer *injectingDialer) before(op string) {
+func (dialer *injectingDialer) before(op string) error {
 	dialer.mu.Lock()
+	if dialer.refuse[op] > 0 {
+		dialer.refuse[op]--
+		dialer.mu.Unlock()
+
+		return fmt.Errorf("%w: %s refused before it was made", output.ErrInfrastructure, op)
+	}
 	if dialer.calls == nil {
 		dialer.calls = map[string]int{}
 	}
@@ -334,6 +410,8 @@ func (dialer *injectingDialer) before(op string) {
 	if gate != nil {
 		<-gate
 	}
+
+	return nil
 }
 
 func (dialer *injectingDialer) after(op string, err error) error {
@@ -357,31 +435,41 @@ type injectingSource struct {
 
 func (source *injectingSource) Observe(ctx context.Context, id executioncontrol.Identity,
 	wait time.Duration) (executioncontrol.ObserveFinishOrStopResult, error) {
-	source.dialer.before("observe")
+	if err := source.dialer.before("observe"); err != nil {
+		return executioncontrol.ObserveFinishOrStopResult{}, err
+	}
 	result, err := source.client.Observe(ctx, id, wait)
 	return result, source.dialer.after("observe", err)
 }
 
 func (source *injectingSource) Seal(ctx context.Context, request output.CaptureSealRequest) (output.CaptureSealResult, error) {
-	source.dialer.before("seal")
+	if err := source.dialer.before("seal"); err != nil {
+		return output.CaptureSealResult{}, err
+	}
 	result, err := source.client.Seal(ctx, request)
 	return result, source.dialer.after("seal", err)
 }
 
 func (source *injectingSource) Publish(ctx context.Context, request output.CapturePublishRequest) (output.CapturePublishResult, error) {
-	source.dialer.before("publish")
+	if err := source.dialer.before("publish"); err != nil {
+		return output.CapturePublishResult{}, err
+	}
 	result, err := source.client.Publish(ctx, request)
 	return result, source.dialer.after("publish", err)
 }
 
 func (source *injectingSource) Release(ctx context.Context, request output.CaptureReleaseRequest) (output.CaptureReleaseAcknowledgement, error) {
-	source.dialer.before("release")
+	if err := source.dialer.before("release"); err != nil {
+		return output.CaptureReleaseAcknowledgement{}, err
+	}
 	result, err := source.client.Release(ctx, request)
 	return result, source.dialer.after("release", err)
 }
 
 func (source *injectingSource) Stat(ctx context.Context, request output.CaptureStatRequest) (output.CapturePublishResult, error) {
-	source.dialer.before("stat")
+	if err := source.dialer.before("stat"); err != nil {
+		return output.CapturePublishResult{}, err
+	}
 	result, err := source.client.Stat(ctx, request)
 	return result, source.dialer.after("stat", err)
 }
@@ -427,8 +515,8 @@ func TestACaptureIsOneRowFromHoldToRelease(t *testing.T) {
 	if entries := h.treeEntries(t); entries["artifact.txt"] != "the bytes a producer wrote\n" {
 		t.Errorf("the published tree is not the bytes the producer wrote: %v", entries)
 	}
-	if _, found := c.marker(t); found {
-		t.Errorf("the marker survived the release")
+	if marker, _ := c.marker(t); !strings.Contains(marker, `"released"`) {
+		t.Errorf("the release left %q, want a released tombstone", marker)
 	}
 
 	var claims int
@@ -458,8 +546,8 @@ func TestAFailedProducerIsDiscardedAndReleased(t *testing.T) {
 	if keys := h.bucketKeys(t); len(keys) != 0 {
 		t.Errorf("a failed producer published %v", keys)
 	}
-	if _, found := c.marker(t); found {
-		t.Errorf("the marker survived the release")
+	if marker, _ := c.marker(t); !strings.Contains(marker, `"released"`) {
+		t.Errorf("the release left %q, want a released tombstone", marker)
 	}
 }
 
@@ -468,47 +556,38 @@ func TestAFailedProducerIsDiscardedAndReleased(t *testing.T) {
 // and the capture publishes.
 func TestA1ADaemonKilledBeforeCanonicalizingPublishesAfterItsRestart(t *testing.T) {
 	h := newHarness(t)
-	// The Pod has NOT terminated: the seal flips the marker and then waits,
-	// and the kill lands inside that wait, before any canonical read.
+	// The Pod has NOT terminated: the seal flips the marker and its
+	// background job waits, and the kill lands inside that wait, before any
+	// canonical read.
 	c := h.admit(t).hold(t).write(t, "artifact.txt", "survives a kill\n").finish(t, true)
 
-	arrived, release := h.Dialer.Gate("seal")
-	release()
-	done := make(chan error, 1)
-	go func() { done <- h.Coordinator.Advance(context.Background(), c.Key()) }()
-	<-arrived
-	// The marker is sealed on disk before the wait begins.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if marker, _ := c.marker(t); strings.Contains(marker, `"sealed"`) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the seal never wrote its marker")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := h.Coordinator.Advance(context.Background(), c.Key()); err != nil {
+		t.Fatalf("starting the seal: %v", err)
+	}
+	if marker, _ := c.marker(t); !strings.Contains(marker, `"sealed"`) {
+		t.Fatalf("the seal never wrote its marker: %q", marker)
+	}
+	if record := c.record(t); record.State != output.CapturePending {
+		t.Fatalf("the capture moved to %s before the seal answered", record.State)
 	}
 
 	h.Daemon.Kill()
-	if err := <-done; err == nil {
-		t.Fatalf("a seal answered by a killed daemon succeeded")
-	}
-	if record := c.record(t); record.State != output.CapturePending {
-		t.Fatalf("the capture moved to %s without a seal answer", record.State)
+	if err := h.Coordinator.Advance(context.Background(), c.Key()); err == nil {
+		t.Fatalf("a killed daemon answered")
 	}
 	if keys := h.bucketKeys(t); len(keys) != 0 {
 		t.Fatalf("something was published before the seal: %v", keys)
 	}
 
 	h.Daemon.Restart(t)
+	if marker, _ := c.marker(t); !strings.Contains(marker, `"sealed"`) {
+		t.Fatalf("the restarted daemon lost the sealed marker: %q", marker)
+	}
 	c.terminate(t)
 
-	ref := assertPublishedAndReleased(t, c.advance(t))
+	assertPublishedAndReleased(t, c.advance(t))
 	if entries := h.treeEntries(t); entries["artifact.txt"] != "survives a kill\n" {
 		t.Errorf("the restarted daemon published %v", entries)
-	}
-	if ref.Digest == "" {
-		t.Errorf("no digest")
 	}
 }
 
@@ -562,41 +641,15 @@ func TestA3NoHeldMarkerIsRefusedAndNothingIsPublished(t *testing.T) {
 	}
 }
 
-// A4: two identical trees captured concurrently while the reclaimer runs.
-// One object, two published rows, zero deletes: a generation whose digest a
-// live capture is about to join is never admitted for reclaim.
+// A4: a generation G is registered, unclaimed and past grace -- exactly what
+// reclaim collects. A new capture of the same tree is publishing when the
+// reclaimer runs. The pending|publishing exclusion is the ONLY thing that
+// stops G being admitted for delete; the capture then joins G. One object,
+// two published rows, zero deletes.
 func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.T) {
 	h := newHarness(t)
-	first := h.admit(t).produce(t, "identical\n")
-	second := h.admit(t).produce(t, "identical\n")
+	ctx := context.Background()
 
-	// Both seal concurrently; both rows record the same digest before any
-	// object exists.
-	arrived, release := h.Dialer.Gate("publish")
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i, c := range []*capture{first, second} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs[i] = h.Coordinator.Advance(context.Background(), c.Key())
-		}()
-	}
-	<-arrived
-	deadline := time.Now().Add(30 * time.Second)
-	for first.record(t).State != output.CapturePublishing || second.record(t).State != output.CapturePublishing {
-		if time.Now().After(deadline) {
-			t.Fatalf("both captures never reached publishing: %s, %s",
-				first.record(t).State, second.record(t).State)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if first.record(t).Digest != second.record(t).Digest {
-		t.Fatalf("identical trees sealed to different digests")
-	}
-
-	// The reclaimer runs, with grace elapsed, while both are publishing: there
-	// is nothing to admit yet, and nothing it may admit.
 	pass := &reclaimpass.AdmissionPass{
 		Repository: h.Repository,
 		Transactor: controllerTransactor{inner: &connTransactor{conn: h.Conn}},
@@ -605,52 +658,77 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 		OwnerID:    "harness-reclaimer",
 	}
 	lease := output.OperationLease{ActivationEpoch: harnessEpoch}
-	reclaim := func() {
-		if _, err := pass.Run(context.Background(), lease); err != nil {
-			t.Fatalf("the reclaim admission pass: %v", err)
-		}
-	}
-	reclaim()
-
-	release()
-	wg.Wait()
-	for i, err := range errs {
+	candidates := func() []db.HangarReclaimCandidate {
+		tx, err := h.Conn.Begin()
 		if err != nil {
-			t.Fatalf("capture %d: %v", i, err)
+			t.Fatal(err)
 		}
-	}
-	firstRef := assertPublishedAndReleased(t, first.record(t))
-	secondRef := assertPublishedAndReleased(t, second.record(t))
-	if firstRef != secondRef {
-		t.Errorf("identical trees published two generations: %v, %v", firstRef, secondRef)
-	}
-	if keys := h.bucketKeys(t); len(keys) != 1 {
-		t.Errorf("identical trees left %d objects: %v", len(keys), keys)
+		defer tx.Rollback()
+		found, err := h.Repository.ReclaimCandidates(ctx, tx, int64(harnessEpoch), time.Millisecond, 10)
+		if err != nil {
+			t.Fatalf("reclaim candidates: %v", err)
+		}
+		return found
 	}
 
-	// Release the first capture's claim and age the generation past grace.
-	// The second capture's claim still protects it.
+	// G: published, its capture's claim given back, grace elapsed.
+	first := h.admit(t).produce(t, "identical\n")
+	g := assertPublishedAndReleased(t, first.advance(t))
 	tx, err := h.Conn.Begin()
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := h.Repository.ReleaseClaim(context.Background(), tx, output.ClaimRelease{
-		ProtocolVersion: output.ProtocolVersion, ClaimID: first.Key().ClaimID(), Ref: firstRef,
+	if err := h.Repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+		ProtocolVersion: output.ProtocolVersion, ClaimID: first.Key().ClaimID(), Ref: g,
 		RequestedAt: output.NewTimestamp(time.Now()),
 	}); err != nil {
-		t.Fatalf("releasing the first claim: %v", err)
+		t.Fatalf("releasing G's claim: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	reclaim()
+	// The control: with nothing in flight, G IS a reclaim candidate.
+	if found := candidates(); len(found) != 1 || found[0].Ref != g {
+		t.Fatalf("an unclaimed generation past grace is not a reclaim candidate: %v", found)
+	}
 
+	// A second capture of the same tree, held at the publish.
+	second := h.admit(t).produce(t, "identical\n")
+	arrived, release := h.Dialer.Gate("publish")
+	defer release()
+	done := make(chan output.Capture, 1)
+	go func() { done <- second.advance(t) }()
+	<-arrived
+	if record := second.record(t); record.State != output.CapturePublishing || record.Digest != g.Digest {
+		t.Fatalf("the second capture is %s at %s, want publishing at G's digest", record.State, record.Digest)
+	}
+
+	// The reclaimer runs while it is publishing: G is excluded, and nothing
+	// else protects it.
+	if found := candidates(); len(found) != 0 {
+		t.Errorf("a generation a publishing capture is about to join is a reclaim candidate: %v", found)
+	}
+	if _, err := pass.Run(ctx, lease); err != nil {
+		t.Fatalf("the reclaim admission pass: %v", err)
+	}
 	if jobs := h.reclaimJobs(t); jobs != 0 {
-		t.Errorf("the reclaimer admitted %d deletes of a generation two captures published", jobs)
+		t.Fatalf("the reclaimer admitted %d deletes of a generation a capture was publishing onto", jobs)
+	}
+
+	release()
+	secondRef := assertPublishedAndReleased(t, <-done)
+	if secondRef != g {
+		t.Errorf("the identical tree published %v, not G %v", secondRef, g)
 	}
 	if keys := h.bucketKeys(t); len(keys) != 1 {
-		t.Errorf("the shared object is gone: %v", keys)
+		t.Errorf("identical trees left %d objects: %v", len(keys), keys)
+	}
+	if _, err := pass.Run(ctx, lease); err != nil {
+		t.Fatalf("the reclaim admission pass: %v", err)
+	}
+	if jobs := h.reclaimJobs(t); jobs != 0 {
+		t.Errorf("the reclaimer admitted %d deletes of a generation the second capture claims", jobs)
 	}
 }
 
@@ -662,7 +740,7 @@ func TestA5RecoveryAfterALostPublishCompletesWithoutASecondObject(t *testing.T) 
 	c := h.admit(t).produce(t, "created once\n")
 
 	h.Dialer.LoseAfter("publish", 1)
-	if err := h.Coordinator.Advance(context.Background(), c.Key()); err == nil {
+	if err := c.advanceUntilError(t); err == nil {
 		t.Fatalf("advancing past a lost publish answer succeeded")
 	}
 	if record := c.record(t); record.State != output.CapturePublishing {
@@ -769,7 +847,7 @@ func TestALostCommitAtAnyStepIsResolvedFromTheRow(t *testing.T) {
 
 			ambiguous := &ambiguousTransactor{inner: h.Coordinator.Transactor, LoseNext: true, Skip: skip}
 			h.Coordinator.Transactor = ambiguous
-			if err := h.Coordinator.Advance(context.Background(), c.Key()); !errors.Is(err, lostAnswer) {
+			if err := c.advanceUntilError(t); !errors.Is(err, lostAnswer) {
 				t.Fatalf("the lost %s commit was not reported: %v", step, err)
 			}
 
@@ -781,5 +859,145 @@ func TestALostCommitAtAnyStepIsResolvedFromTheRow(t *testing.T) {
 				t.Errorf("a lost %s commit left %d objects", step, len(keys))
 			}
 		})
+	}
+}
+
+// The seal is asynchronous: a Pod whose last writer stops long after the
+// coordinator's HTTP client would have timed out is still captured, by
+// asking again, and no single call waits for it.
+func TestASealSlowerThanTheClientTimeoutCompletesByPolling(t *testing.T) {
+	h := newHarness(t)
+	h.Dialer.client = h.Daemon.ClientWithTimeout(time.Second)
+	c := h.admit(t).hold(t).write(t, "artifact.txt", "main\n").finish(t, true)
+
+	go func() {
+		time.Sleep(3 * time.Second)
+		directory := filepath.Join(h.Daemon.StepsDir, c.Key().Directory())
+		_ = os.WriteFile(filepath.Join(directory, "late.txt"), []byte("three seconds later\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(h.Daemon.Terminations, string(c.Pod)), nil, 0o600)
+	}()
+
+	started := time.Now()
+	record := c.advance(t)
+	assertPublishedAndReleased(t, record)
+	if time.Since(started) < 3*time.Second {
+		t.Errorf("the capture settled in %s, before the Pod stopped", time.Since(started))
+	}
+	if entries := h.treeEntries(t); entries["late.txt"] != "three seconds later\n" {
+		t.Errorf("the published tree lost the late write: %v", entries)
+	}
+	if h.Dialer.Calls("seal") < 2 {
+		t.Errorf("the seal answered in one call; it was meant to be polled")
+	}
+}
+
+// A publishing row whose object is not in the store and whose sealed step is
+// gone from its node can never be completed: recovery fails it.
+func TestRecoveryFailsAPublishingRowWithNoObjectAndNoSource(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t).produce(t, "lost before publishing\n")
+
+	h.Dialer.RefuseBefore("publish", 1)
+	if err := c.advanceUntilError(t); err == nil {
+		t.Fatal("a refused publish succeeded")
+	}
+	if record := c.record(t); record.State != output.CapturePublishing {
+		t.Fatalf("the capture is %s, want publishing", record.State)
+	}
+	if err := os.RemoveAll(filepath.Join(h.Daemon.StepsDir, c.Key().Directory())); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(h.Daemon.Dir, "scratch", "staged")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Coordinator.Run(context.Background()); err != nil {
+		t.Fatalf("the recovery pass: %v", err)
+	}
+	record := c.record(t)
+	if record.State != output.CaptureFailed || !strings.Contains(record.Error, "gone") {
+		t.Fatalf("an unrecoverable publishing capture is %s (%s)", record.State, record.Error)
+	}
+	if keys := h.bucketKeys(t); len(keys) != 0 {
+		t.Errorf("recovery published %v", keys)
+	}
+}
+
+// A publishing row past its capture deadline plus the margin fails, whatever
+// its node is doing.
+func TestAPublishingRowPastItsDeadlineFails(t *testing.T) {
+	h := newHarness(t)
+	c := h.admitWithTerm(t, 2*time.Second).produce(t, "too late\n")
+
+	h.Dialer.RefuseBefore("publish", 1000)
+	if err := c.advanceUntilError(t); err == nil {
+		t.Fatal("a refused publish succeeded")
+	}
+	if record := c.record(t); record.State != output.CapturePublishing {
+		t.Fatalf("the capture is %s, want publishing", record.State)
+	}
+	time.Sleep(2500 * time.Millisecond)
+
+	h.Coordinator.PublishingMargin = time.Millisecond
+	_ = h.Coordinator.Run(context.Background())
+	record := c.record(t)
+	if record.State != output.CaptureFailed || !strings.Contains(record.Error, "deadline") {
+		t.Fatalf("a publishing capture past its deadline is %s (%s)", record.State, record.Error)
+	}
+}
+
+// A terminal row whose node is gone is released once it has been finished
+// for NodeGoneMargin: the marker went with the node. Before that it waits.
+func TestATerminalRowOnAGoneNodeIsReleasedAfterTheMargin(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t).hold(t).write(t, "artifact.txt", "x\n").finish(t, false).terminate(t)
+	h.Dialer.RefuseBefore("release", 1)
+	if err := c.advanceUntilError(t); err == nil {
+		t.Fatal("a refused release succeeded")
+	}
+	if record := c.record(t); record.State != output.CaptureDiscarded || record.Released() {
+		t.Fatalf("the capture is %s, released %v", record.State, record.Released())
+	}
+
+	h.Dialer.NodeGone()
+	h.Coordinator.NodeGoneMargin = time.Hour
+	_ = h.Coordinator.Run(context.Background())
+	if c.record(t).Released() {
+		t.Fatal("a terminal row on a gone node was released inside the margin")
+	}
+	h.Coordinator.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if err := h.Coordinator.Run(context.Background()); err != nil {
+		t.Fatalf("the release pass: %v", err)
+	}
+	if !c.record(t).Released() {
+		t.Fatal("a terminal row on a gone node was never released")
+	}
+}
+
+// A cancellation that wins the race with the producing Pod's control init:
+// the pending capture is discarded and released before any hold. The release
+// leaves a tombstone, so the late hold is refused -- the producer never
+// starts -- and nothing on the node is held forever.
+func TestAnAbortBeforeTheHoldLeavesNothingHeld(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t)
+
+	if _, err := h.Coordinator.Discard(context.Background(), c.Key(), "build_aborted"); err != nil {
+		t.Fatalf("discarding: %v", err)
+	}
+	record := c.advance(t)
+	if record.State != output.CaptureDiscarded || !record.Released() {
+		t.Fatalf("the aborted capture is %s, released %v", record.State, record.Released())
+	}
+
+	status, _ := h.Daemon.holdSource(t, c.Execution, c.Output, c.Pod)
+	if status != http.StatusConflict {
+		t.Fatalf("a hold after the release answered %d, want 409", status)
+	}
+	if _, err := os.Stat(filepath.Join(h.Daemon.StepsDir, c.Key().Directory())); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the refused hold created the step directory: %v", err)
+	}
+	if class := ledger.New(h.Daemon.StorageDir).Classify(c.Key().Directory()); class != ledger.Unmanaged {
+		t.Errorf("the aborted step classifies %s, want unmanaged", class)
 	}
 }

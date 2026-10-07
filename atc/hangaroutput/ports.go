@@ -49,6 +49,7 @@ type CaptureRows interface {
 	ListPending(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error)
 	ListPendingPastDeadline(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error)
 	ListPublishingForRecovery(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error)
+	ListPublishingPastDeadline(ctx context.Context, tx output.Tx, margin time.Duration, limit int) ([]output.Capture, error)
 	ListUnreleased(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error)
 }
 

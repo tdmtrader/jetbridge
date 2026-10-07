@@ -19,13 +19,14 @@ import (
 // get/list on Pods and nothing that changes one: a seal waits for writers to
 // stop and never makes them.
 type nodePodTerminations struct {
-	client kubernetes.Interface
-	node   string
+	client    kubernetes.Interface
+	namespace string
+	node      string
 }
 
-// NewNodePodTerminations observes Pods scheduled to node.
-func NewNodePodTerminations(client kubernetes.Interface, node string) PodTerminations {
-	return &nodePodTerminations{client: client, node: node}
+// NewNodePodTerminations observes Pods in namespace scheduled to node.
+func NewNodePodTerminations(client kubernetes.Interface, namespace, node string) PodTerminations {
+	return &nodePodTerminations{client: client, namespace: namespace, node: node}
 }
 
 // Terminated is true when the Pod with this UID is gone from the node, or
@@ -33,7 +34,7 @@ func NewNodePodTerminations(client kubernetes.Interface, node string) PodTermina
 // terminated state, or its phase is terminal. Any container running, waiting
 // to start or without a status yet is a writer that may still write.
 func (terminations *nodePodTerminations) Terminated(ctx context.Context, uid executioncontrol.PodUID) (bool, error) {
-	pods, err := terminations.client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+	pods, err := terminations.client.CoreV1().Pods(terminations.namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + terminations.node,
 	})
 	if err != nil {

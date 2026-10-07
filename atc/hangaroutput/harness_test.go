@@ -283,6 +283,11 @@ type daemonProcess struct {
 	// what a pod on the node holds.
 	Node *http.Client
 
+	// controlHTTP and minter are what Client was built from, for a spec that
+	// needs a second client with a different timeout.
+	controlHTTP *http.Client
+	minter      *executioncontrol.CapabilityMinter
+
 	cmd  *exec.Cmd
 	args []string
 }
@@ -366,6 +371,7 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		Node:         nodeClient,
 		args:         args,
 	}
+	process.controlHTTP, process.minter = controlClient, minter
 	process.Client = jetbridge.NewOutputControlClient(base, controlClient, minter, harnessEpoch)
 	process.start(t, binary)
 
@@ -395,6 +401,15 @@ func (process *daemonProcess) start(t *testing.T, binary string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("the daemon never became ready")
+}
+
+// ClientWithTimeout is the production client over the same TLS identity,
+// with an HTTP timeout of its own.
+func (process *daemonProcess) ClientWithTimeout(timeout time.Duration) *jetbridge.OutputControlClient {
+	httpClient := *process.controlHTTP
+	httpClient.Timeout = timeout
+
+	return jetbridge.NewOutputControlClient(process.Endpoint, &httpClient, process.minter, harnessEpoch)
 }
 
 // Kill is a SIGKILL: the process gets no chance to finish anything it was

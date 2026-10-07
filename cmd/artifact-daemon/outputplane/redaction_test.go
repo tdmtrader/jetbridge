@@ -141,7 +141,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	// ---- seal: first while the Pod still runs, then after it stops ----
 	fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
 	fixture.pods.stop(testPod)
-	status, body = fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	status, body = fixture.sealOverHTTP(t)
 	if status != http.StatusOK {
 		t.Fatalf("sealing: %d %s", status, body)
 	}

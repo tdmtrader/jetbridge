@@ -115,6 +115,20 @@ func (fixture *routeFixture) serve(t *testing.T) {
 // valid, it is simply not for this route.
 // identifiedBy is the body a base route takes: the frozen types embed Identity,
 // so the execution is flat rather than nested.
+// sealOverHTTP asks the seal route until it stops answering 202.
+func (fixture *routeFixture) sealOverHTTP(t *testing.T) (int, []byte) {
+	t.Helper()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+		if status != http.StatusAccepted || time.Now().After(deadline) {
+			return status, body
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func identifiedBy(id executioncontrol.Identity) map[string]any {
 	return map[string]any{"execution_id": id.ExecutionID, "fence": id.Fence}
 }
@@ -392,7 +406,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 	}
 
 	fixture.pods.stop(testPod)
-	status, body = fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	status, body = fixture.sealOverHTTP(t)
 	if status != http.StatusOK {
 		t.Fatalf("the seal was refused: %d %s", status, body)
 	}

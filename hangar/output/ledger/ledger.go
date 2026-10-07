@@ -314,7 +314,9 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 			return nil, fmt.Errorf("%s names no step directory", name)
 		}
 
-		held[StepDirectory(body.Execution, body.Output)] = classFor(body.State)
+		if class := classFor(body.State); class != Unmanaged {
+			held[StepDirectory(body.Execution, body.Output)] = class
+		}
 	}
 
 	return held, nil
@@ -326,8 +328,12 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 // reader does not, and the safe reading of "I do not know what this means" over
 // a record that exists at all is that something holds it.
 func classFor(state string) Class {
-	if state == "sealed" {
+	switch state {
+	case "sealed":
 		return Sealed
+	case "released":
+		// A tombstone: the capture is over and holds nothing.
+		return Unmanaged
 	}
 
 	return Held

@@ -43,6 +43,11 @@ const (
 	// StepSealed: the producer has exited and its tree is being, or has been,
 	// read. Nobody may write to it again.
 	StepSealed StepMarkerState = "sealed"
+	// StepReleased: a tombstone. The capture is over; the directory is the
+	// artifact daemon's ordinary business, and no hold may be taken for this
+	// step again -- a producer whose capture was released before its control
+	// init ran must not start. Swept once the directory is gone.
+	StepReleased StepMarkerState = "released"
 )
 
 // StepMarker is the one marker file per step directory: the only node-local
@@ -61,13 +66,14 @@ func (marker StepMarker) Key() CaptureKey {
 }
 
 func (marker StepMarker) Validate() error {
-	if !slices.Contains([]StepMarkerState{StepHeld, StepSealed}, marker.State) {
+	if !slices.Contains([]StepMarkerState{StepHeld, StepSealed, StepReleased}, marker.State) {
 		return fmt.Errorf("%w: step marker state %q", ErrUnknownMember, marker.State)
 	}
 	if err := marker.Key().Validate(); err != nil {
 		return err
 	}
-	if marker.Node == "" || marker.PodUID == "" {
+	// A tombstone may name no Pod: a capture released before any hold.
+	if marker.Node == "" || (marker.PodUID == "" && marker.State != StepReleased) {
 		return fmt.Errorf("%w: a step marker names no node or no Pod", ErrIncomplete)
 	}
 

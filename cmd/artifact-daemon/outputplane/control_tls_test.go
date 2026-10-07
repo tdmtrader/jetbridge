@@ -158,7 +158,11 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 
 	// And the node-local hold, from a caller with no certificate at all: this
 	// is the capture control init, and it must still work.
-	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest())
+	// A step the table above did not release: a released step leaves a
+	// tombstone that refuses every later hold.
+	unreleased := holdRequest()
+	unreleased.Output = "unreleased"
+	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold", unreleased)
 	if code != http.StatusOK {
 		t.Errorf("the node-local capture hold answered %d without a client certificate; the "+
 			"control init holds none and cannot be given one, so this refusal would stop every "+

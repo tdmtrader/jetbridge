@@ -164,7 +164,7 @@ func settle(in FinishWitnessed, res brine.Resources) (CaptureOutcome, error) {
 			return outcome, err
 		}
 	}
-	if err := plane.Coordinator.Advance(ctx, key); err != nil {
+	if err := plane.Coordinator.Settle(ctx, key, 60*time.Second); err != nil {
 		outcome.Err = err
 	}
 

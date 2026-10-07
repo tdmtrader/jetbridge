@@ -165,7 +165,8 @@ func advanceRunCapture(in RunOutputRuntime, rec *brine.Recorder, publish func(st
 		return out, err
 	}
 	coordinator := runOutputCoordinator(in)
-	for i := 0; i < 5; i++ {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
 		if err := coordinator.Advance(ctx, r.Key); err != nil {
 			return out, err
 		}
@@ -177,6 +178,8 @@ func advanceRunCapture(in RunOutputRuntime, rec *brine.Recorder, publish func(st
 			out.Start.Record = out.Record
 			return out, nil
 		}
+		// The node's seal is asynchronous; ask again, as the next pass would.
+		time.Sleep(20 * time.Millisecond)
 	}
 	return out, fmt.Errorf("Run capture did not reach its stopping state; it is %s (released %t, error %q)",
 		out.Record.State, out.Record.Released(), out.Record.Error)

@@ -208,7 +208,9 @@ func (producer *Producer) publish(files map[string][]byte) error {
 		}),
 		ActivationEpoch: Epoch,
 	}
-	if err := coordinator.Advance(ctx, c.Key); err != nil {
+	// The node's seal is asynchronous: successive passes ask again until it
+	// answers, so this asks again until the row has settled.
+	if err := coordinator.Settle(ctx, c.Key, 60*time.Second); err != nil {
 		return err
 	}
 	var current db.RunCapture

@@ -146,6 +146,11 @@ var (
 	// re-executes the producer.
 	ErrSealUnconfirmed = errors.New("hangar/output: seal unconfirmed")
 
+	// ErrSealInProgress is a seal the node has begun and not finished: it is
+	// waiting for the producing Pod's containers to stop, or canonicalizing.
+	// It authorizes asking again later and nothing else.
+	ErrSealInProgress = errors.New("hangar/output: seal in progress")
+
 	// ErrGenerationConflict is a conditional operation refused because the
 	// exact generation is not the one at the key. It becomes debt; it never
 	// broadens into an unconditional delete.

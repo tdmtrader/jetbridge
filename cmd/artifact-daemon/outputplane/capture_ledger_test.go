@@ -2,6 +2,7 @@ package outputplane
 
 import (
 	"context"
+	"io/fs"
 
 	"errors"
 	"os"
@@ -123,6 +124,21 @@ func holdRequest() output.CaptureHoldRequest {
 func sealRequest() output.CaptureSealRequest {
 	return output.CaptureSealRequest{
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput, PodUID: testPod,
+	}
+}
+
+// sealNow drives the asynchronous seal to its answer: it asks again while the
+// node says the seal is in progress, the way the coordinator does.
+func sealNow(t *testing.T, fixture *captureFixture) (output.CaptureSealResult, error) {
+	t.Helper()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		result, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
+		if !errors.Is(err, output.ErrSealInProgress) || time.Now().After(deadline) {
+			return result, err
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -259,7 +275,7 @@ func TestTheSealWaitsForEveryContainerAndCapturesTheLastWrite(t *testing.T) {
 		fixture.pods.stop(testPod)
 	}()
 
-	result, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
+	result, err := sealNow(t, fixture)
 	if err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
@@ -287,8 +303,13 @@ func TestASealOfARunningPodAnswersNotYetAndKeepsTheMarkerSealed(t *testing.T) {
 	fixture := newCaptureLedger(t)
 	held(t, fixture)
 	_, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
-	if !errors.Is(err, output.ErrUnresolved) {
-		t.Fatalf("a seal of a running Pod answered %v", err)
+	if !errors.Is(err, output.ErrSealInProgress) {
+		t.Fatalf("a seal of a running Pod answered %v, want in progress", err)
+	}
+	// The background seal runs out at its bound and says why; the next ask
+	// starts another.
+	if _, err := sealNow(t, fixture); !errors.Is(err, output.ErrUnresolved) {
+		t.Fatalf("a background seal of a Pod that never stopped answered %v", err)
 	}
 	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Sealed {
 		t.Errorf("after the fence the step directory is %s", class)
@@ -311,7 +332,7 @@ func TestASealInterruptedByARestartFinishesFromTheMarker(t *testing.T) {
 
 	fixture.restart(t)
 	fixture.pods.stop(testPod)
-	result, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
+	result, err := sealNow(t, fixture)
 	if err != nil {
 		t.Fatalf("the seal after a restart: %v", err)
 	}
@@ -332,7 +353,7 @@ func TestPublishIsIdempotentDeduplicatesAndRefusesAChangedTree(t *testing.T) {
 	held(t, fixture)
 	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "produced")
 	fixture.pods.stop(testPod)
-	sealed, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
+	sealed, err := sealNow(t, fixture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,5 +470,75 @@ func TestTheClassifierAndTheCaptureAgreeOnTheStepDirectory(t *testing.T) {
 	key := output.CaptureKey{ExecutionID: testExecution, Output: testOutput}
 	if got := ledger.StepDirectory(string(key.ExecutionID), string(key.Output)); got != key.Directory() {
 		t.Fatalf("the classifier keys on %q and the capture writes %q", got, key.Directory())
+	}
+}
+
+// A cancellation that wins the race with the control init: the capture is
+// released before any hold. The release leaves a tombstone, the late hold is
+// refused (the producer must not start), the step classifies unmanaged, and
+// the tombstone is swept once its directory is gone and it is old enough.
+func TestAReleaseBeforeTheHoldLeavesATombstoneTheHoldIsRefusedBy(t *testing.T) {
+	fixture := newCaptureLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	release := output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}
+	if _, err := fixture.capture.Release(context.Background(), release); err != nil {
+		t.Fatalf("releasing a capture nothing held: %v", err)
+	}
+	if _, err := fixture.capture.Hold(context.Background(), holdRequest()); !errors.Is(err, output.ErrConflict) {
+		t.Fatalf("a hold after the release answered %v, want a conflict", err)
+	}
+	if _, err := os.Stat(fixture.stepDir()); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused hold created the step directory: %v", err)
+	}
+	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Unmanaged {
+		t.Errorf("a released step classifies %s, want unmanaged", class)
+	}
+	if _, err := fixture.capture.Seal(context.Background(), sealRequest(), nil); !errors.Is(err, output.ErrNotFound) {
+		t.Errorf("a seal of a released step answered %v", err)
+	}
+	// Replayed: still released, still refusing.
+	if _, err := fixture.capture.Release(context.Background(), release); err != nil {
+		t.Fatalf("a replayed release: %v", err)
+	}
+
+	tombstone, err := markerName(fixture.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.capture.sweepTombstones()
+	if _, found, _ := fixture.capture.load(fixture.key()); !found {
+		t.Fatalf("a fresh tombstone was swept inside its retention")
+	}
+	fixture.capture.tombstoneRetention = time.Nanosecond
+	fixture.capture.sweepTombstones()
+	if _, found, _ := fixture.capture.load(fixture.key()); found {
+		t.Errorf("tombstone %s outlived its retention with no directory", tombstone)
+	}
+}
+
+// A held, captured step released after its seal keeps its tombstone while the
+// directory exists; the artifact daemon's sweeper takes the directory first.
+func TestATombstoneIsSweptOnlyAfterItsDirectory(t *testing.T) {
+	fixture := newCaptureLedger(t)
+	held(t, fixture)
+	release := output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}
+	if _, err := fixture.capture.Release(context.Background(), release); err != nil {
+		t.Fatalf("releasing: %v", err)
+	}
+	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Unmanaged {
+		t.Errorf("a released step classifies %s, want unmanaged", class)
+	}
+	fixture.capture.tombstoneRetention = time.Nanosecond
+	fixture.capture.sweepTombstones()
+	if _, found, _ := fixture.capture.load(fixture.key()); !found {
+		t.Fatalf("the tombstone was swept while its directory still exists")
+	}
+	if err := os.RemoveAll(fixture.stepDir()); err != nil {
+		t.Fatal(err)
+	}
+	fixture.capture.sweepTombstones()
+	if _, found, _ := fixture.capture.load(fixture.key()); found {
+		t.Errorf("the tombstone survived its directory")
 	}
 }

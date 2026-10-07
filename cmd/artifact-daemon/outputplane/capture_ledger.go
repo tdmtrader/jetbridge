@@ -8,9 +8,12 @@ package outputplane
 // sealed, and what are its bytes. The marker is written by fsync and rename in
 // the private control directory, keyed by the step directory it protects:
 //
-//	held    written before the step's first container may start
-//	sealed  the producer exited; nobody writes the tree again
-//	(gone)  released; the directory is the artifact daemon's ordinary business
+//	held      written before the step's first container may start
+//	sealed    the producer exited; nobody writes the tree again
+//	released  a tombstone: the directory is the artifact daemon's ordinary
+//	          business, and no hold may be taken for the step again
+//	(gone)    the tombstone is swept once its directory is gone and it has
+//	          outlived the window a late control init could still arrive in
 //
 // Three rules run through it.
 //
@@ -27,6 +30,14 @@ package outputplane
 // terminated, and never deletes anything to get there. A sidecar still writing
 // when the main process exits is part of the tree, and the tree is what the
 // directory holds once nobody can write to it.
+//
+// The seal is ASYNCHRONOUS. The first seal call flips the marker and starts
+// the wait and the canonicalization in the background; every call until it
+// finishes answers ErrSealInProgress, and the call after it finishes answers
+// the digest. No caller's HTTP timeout bounds how long a Pod takes to stop or
+// a tree takes to read: the background job is bounded by --capture-seal-wait,
+// and the capture row by its own deadline. A daemon killed mid-seal loses
+// only the job; the marker says sealed, and the next call starts it again.
 
 import (
 	"context"
@@ -74,12 +85,33 @@ type CaptureLedger struct {
 	stepsPath string
 	staging   string
 
-	// sealWait bounds one seal call's wait for termination. A Pod still
-	// running past it answers ErrUnresolved and the control plane asks again.
+	// sealWait bounds one background seal: the wait for termination and the
+	// canonicalization. A job that runs past it ends ErrUnresolved, and the
+	// next seal call starts another.
 	sealWait time.Duration
 	poll     time.Duration
 
+	// tombstoneRetention is how long a released tombstone outlives its
+	// directory: the window in which a control init that lost its race with a
+	// cancellation could still ask to hold the step.
+	tombstoneRetention time.Duration
+
+	// slot, when set, is taken by a background seal for its canonicalization.
+	slot func(context.Context) (func(), error)
+
+	jobs   map[output.CaptureKey]*sealJob
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu sync.Mutex
+}
+
+// sealJob is one background seal. done is closed when result or err is set.
+type sealJob struct {
+	pod    executioncontrol.PodUID
+	done   chan struct{}
+	result output.CaptureSealResult
+	err    error
 }
 
 // CaptureLedgerConfig is everything the ledger needs beyond the store.
@@ -89,7 +121,17 @@ type CaptureLedgerConfig struct {
 	ScratchDir   string
 	Terminations PodTerminations
 	SealWait     time.Duration
+
+	// TombstoneRetention defaults to DefaultTombstoneRetention.
+	TombstoneRetention time.Duration
+	// Poll is how often a seal asks whether the Pod has stopped. Defaults to
+	// one second.
+	Poll time.Duration
 }
+
+// DefaultTombstoneRetention outlives the default capture term: a control init
+// cannot still be waiting to start after the capture it belongs to expired.
+const DefaultTombstoneRetention = 25 * time.Hour
 
 func OpenCaptureLedger(store *controlStore, base *ExecutionLedger, daemon *Daemon, config CaptureLedgerConfig) (*CaptureLedger, error) {
 	if store == nil || base == nil || daemon == nil {
@@ -120,14 +162,33 @@ func OpenCaptureLedger(store *controlStore, base *ExecutionLedger, daemon *Daemo
 		return nil, fmt.Errorf("%w: creating the capture staging directory: %v", output.ErrInfrastructure, err)
 	}
 
-	return &CaptureLedger{
+	if config.TombstoneRetention <= 0 {
+		config.TombstoneRetention = DefaultTombstoneRetention
+	}
+	if config.Poll <= 0 {
+		config.Poll = time.Second
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ledger := &CaptureLedger{
 		store: store, base: base, node: config.Node, daemon: daemon,
 		terminations: config.Terminations, steps: steps, stepsPath: config.StepsDir,
-		staging: staging, sealWait: config.SealWait, poll: 250 * time.Millisecond,
-	}, nil
+		staging: staging, sealWait: config.SealWait, poll: config.Poll,
+		tombstoneRetention: config.TombstoneRetention,
+		jobs:               map[output.CaptureKey]*sealJob{}, ctx: ctx, cancel: cancel,
+	}
+	ledger.sweepTombstones()
+
+	return ledger, nil
 }
 
-func (ledger *CaptureLedger) Close() error { return ledger.steps.Close() }
+// Close stops every background seal. Their markers stay sealed; the next
+// daemon's first seal call starts them again.
+func (ledger *CaptureLedger) Close() error {
+	ledger.cancel()
+
+	return ledger.steps.Close()
+}
 
 func markerName(key output.CaptureKey) (string, error) {
 	if err := key.Validate(); err != nil {
@@ -213,6 +274,10 @@ func (ledger *CaptureLedger) Hold(_ context.Context, request output.CaptureHoldR
 	if err != nil {
 		return output.CaptureHoldAcknowledgement{}, err
 	}
+	if found && marker.State == output.StepReleased {
+		return output.CaptureHoldAcknowledgement{}, fmt.Errorf("%w: %s was released before this "+
+			"hold arrived; a producer whose capture is over must not start", output.ErrConflict, key)
+	}
 	if found && marker.PodUID != request.PodUID {
 		return output.CaptureHoldAcknowledgement{}, fmt.Errorf("%w: %s is held for pod %s and this "+
 			"hold names %s; a recreated Pod does not inherit a hold", output.ErrConflict, key,
@@ -255,6 +320,10 @@ func (ledger *CaptureLedger) matching(key output.CaptureKey, pod executioncontro
 		return output.StepMarker{}, fmt.Errorf("%w: no held marker for %s on this node; a step "+
 			"directory nothing held is never captured", output.ErrNotFound, key)
 	}
+	if marker.State == output.StepReleased {
+		return output.StepMarker{}, fmt.Errorf("%w: %s was released; a released step directory is "+
+			"never captured", output.ErrNotFound, key)
+	}
 	if marker.Node != ledger.node {
 		return output.StepMarker{}, fmt.Errorf("%w: the marker for %s was written by node %s and "+
 			"this is %s", output.ErrConflict, key, marker.Node, ledger.node)
@@ -291,16 +360,19 @@ func (ledger *CaptureLedger) stagedPath(key output.CaptureKey, digest hangar.Dig
 		strings.TrimPrefix(string(digest), "sha256:")+".tar")
 }
 
-// Seal is step 2: flip the marker to sealed, wait until every container of
-// the marker's Pod has terminated, canonicalize, and answer the digest.
+// Seal is step 2: flip the marker to sealed, and wait -- in the background --
+// until every container of the marker's Pod has terminated, then
+// canonicalize. It answers ErrSealInProgress until the job has finished, and
+// the digest once it has.
 //
-// It is idempotent: a seal of a sealed marker waits and canonicalizes again,
-// which is how a daemon killed mid-seal finishes after its restart.
+// It is idempotent: a seal of a sealed marker with no job starts one, which is
+// how a daemon killed mid-seal finishes after its restart. A job that failed
+// answers its error once and is forgotten, so the next call starts another.
 //
 // slot, when given, is taken after the wait and held for the
 // canonicalization: scratch is bounded, and a Pod that takes minutes to stop
 // must not hold a slot every other capture needs.
-func (ledger *CaptureLedger) Seal(ctx context.Context, request output.CaptureSealRequest,
+func (ledger *CaptureLedger) Seal(_ context.Context, request output.CaptureSealRequest,
 	slot func(context.Context) (func(), error)) (output.CaptureSealResult, error) {
 	if err := request.Validate(); err != nil {
 		return output.CaptureSealResult{}, err
@@ -308,21 +380,64 @@ func (ledger *CaptureLedger) Seal(ctx context.Context, request output.CaptureSea
 	key := output.CaptureKey{ExecutionID: request.Execution.ExecutionID, Output: request.Output}
 
 	ledger.mu.Lock()
-	if err := ledger.admitted(request.Execution); err != nil {
-		ledger.mu.Unlock()
+	defer ledger.mu.Unlock()
 
+	if err := ledger.admitted(request.Execution); err != nil {
 		return output.CaptureSealResult{}, err
 	}
 	marker, err := ledger.matching(key, request.PodUID)
-	if err == nil && marker.State == output.StepHeld {
-		marker.State = output.StepSealed
-		err = ledger.save(marker)
-	}
-	ledger.mu.Unlock()
 	if err != nil {
 		return output.CaptureSealResult{}, err
 	}
+	if marker.State == output.StepHeld {
+		marker.State = output.StepSealed
+		if err := ledger.save(marker); err != nil {
+			return output.CaptureSealResult{}, err
+		}
+	}
 
+	job, started := ledger.jobs[key]
+	if !started {
+		job = &sealJob{pod: marker.PodUID, done: make(chan struct{})}
+		ledger.jobs[key] = job
+		go ledger.runSeal(key, marker, job, slot)
+
+		return output.CaptureSealResult{}, ledger.inProgress(key)
+	}
+	select {
+	case <-job.done:
+	default:
+		return output.CaptureSealResult{}, ledger.inProgress(key)
+	}
+	if job.err != nil {
+		delete(ledger.jobs, key)
+
+		return output.CaptureSealResult{}, job.err
+	}
+
+	return job.result, nil
+}
+
+func (ledger *CaptureLedger) inProgress(key output.CaptureKey) error {
+	return fmt.Errorf("%w: %s is sealed and its tree is not read yet; ask again", output.ErrSealInProgress, key)
+}
+
+// runSeal is the background half of one seal.
+func (ledger *CaptureLedger) runSeal(key output.CaptureKey, marker output.StepMarker, job *sealJob,
+	slot func(context.Context) (func(), error)) {
+	ctx, cancel := context.WithTimeout(ledger.ctx, ledger.sealWait)
+	defer cancel()
+
+	result, err := ledger.seal(ctx, key, marker, slot)
+
+	ledger.mu.Lock()
+	job.result, job.err = result, err
+	close(job.done)
+	ledger.mu.Unlock()
+}
+
+func (ledger *CaptureLedger) seal(ctx context.Context, key output.CaptureKey, marker output.StepMarker,
+	slot func(context.Context) (func(), error)) (output.CaptureSealResult, error) {
 	if err := ledger.awaitTermination(ctx, marker.PodUID); err != nil {
 		return output.CaptureSealResult{}, err
 	}
@@ -364,15 +479,13 @@ func (ledger *CaptureLedger) Seal(ctx context.Context, request output.CaptureSea
 }
 
 func (ledger *CaptureLedger) awaitTermination(ctx context.Context, pod executioncontrol.PodUID) error {
-	wait, cancel := context.WithTimeout(ctx, ledger.sealWait)
-	defer cancel()
 	for {
-		done, err := ledger.terminations.Terminated(wait, pod)
+		done, err := ledger.terminations.Terminated(ctx, pod)
 		if err == nil && done {
 			return nil
 		}
 		select {
-		case <-wait.Done():
+		case <-ctx.Done():
 			if err != nil {
 				return fmt.Errorf("%w: observing pod %s: %v", output.ErrUnresolved, pod, err)
 			}
@@ -470,8 +583,13 @@ func (ledger *CaptureLedger) canonical(ctx context.Context, key output.CaptureKe
 	return file, captured.ByteSize, func() { _ = file.Close(); _ = captured.Close() }, nil
 }
 
-// Release is step 6: clear the marker and anything staged for it, then close
-// the base gate. Idempotent; a capture with no marker is already released.
+// Release is step 6: replace the marker with a released tombstone, clear
+// anything staged for it, then close the base gate. Idempotent.
+//
+// A capture this node never held -- the producer ran elsewhere, or a
+// cancellation won the race with the control init -- gets a tombstone too, so
+// a control init that arrives afterwards is refused rather than holding a
+// directory nothing will ever release.
 func (ledger *CaptureLedger) Release(_ context.Context, request output.CaptureReleaseRequest) (output.CaptureReleaseAcknowledgement, error) {
 	if err := request.Validate(); err != nil {
 		return output.CaptureReleaseAcknowledgement{}, err
@@ -489,14 +607,24 @@ func (ledger *CaptureLedger) Release(_ context.Context, request output.CaptureRe
 		return output.CaptureReleaseAcknowledgement{}, fmt.Errorf("%w: the marker for %s was written "+
 			"by node %s", output.ErrConflict, key, marker.Node)
 	}
-	if found {
-		name, err := markerName(key)
-		if err != nil {
+	held := found && marker.State != output.StepReleased
+	if !found || held {
+		tombstone := output.StepMarker{
+			State: output.StepReleased, ExecutionID: key.ExecutionID, Output: key.Output,
+			Node: ledger.node, PodUID: marker.PodUID,
+		}
+		if err := ledger.save(tombstone); err != nil {
 			return output.CaptureReleaseAcknowledgement{}, err
 		}
-		if err := ledger.store.remove(name); err != nil {
-			return output.CaptureReleaseAcknowledgement{}, err
+	}
+	if job, running := ledger.jobs[key]; running {
+		select {
+		case <-job.done:
+		default:
+			// A seal still waiting for its Pod: the capture is over, and the
+			// job's answer will never be asked for. It ends at its own bound.
 		}
+		delete(ledger.jobs, key)
 	}
 	if stale, err := filepath.Glob(filepath.Join(ledger.staging,
 		string(key.ExecutionID)+"."+string(key.Output)+".*.tar")); err == nil {
@@ -504,18 +632,54 @@ func (ledger *CaptureLedger) Release(_ context.Context, request output.CaptureRe
 			_ = os.Remove(file)
 		}
 	}
-	// The gate last: the marker is gone, so the execution's cleanup is
-	// withheld by nothing this capture owns.
-	// A capture this node never held -- the producer ran elsewhere, or the
-	// hold never happened -- has no gate to close and is released already.
+	// The gate last: the marker is a tombstone, so the execution's cleanup is
+	// withheld by nothing this capture owns. A capture this node never held
+	// has no gate to close.
 	if err := ledger.base.CloseGate(request.Execution, SourceHoldGate); err != nil &&
-		(found || !errors.Is(err, output.ErrUnauthorized)) {
+		(held || !errors.Is(err, output.ErrUnauthorized)) {
 		return output.CaptureReleaseAcknowledgement{}, err
 	}
+	ledger.sweepTombstonesLocked()
 
 	return output.CaptureReleaseAcknowledgement{
 		ProtocolVersion: output.ProtocolVersion, Kind: output.ReleaseAcknowledged, Key: key,
 	}, nil
+}
+
+// sweepTombstones removes every released tombstone whose step directory is
+// gone and which has outlived tombstoneRetention. A tombstone whose directory
+// still exists stays: the artifact daemon's sweeper takes the directory, and
+// this takes the tombstone after it.
+func (ledger *CaptureLedger) sweepTombstones() {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	ledger.sweepTombstonesLocked()
+}
+
+func (ledger *CaptureLedger) sweepTombstonesLocked() {
+	names, err := ledger.store.names()
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, stepMarkerPrefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		var marker output.StepMarker
+		found, err := ledger.store.get(name, &marker)
+		if err != nil || !found || marker.State != output.StepReleased {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(ledger.store.Path(), name))
+		if err != nil || time.Since(info.ModTime()) < ledger.tombstoneRetention {
+			continue
+		}
+		if _, err := ledger.steps.Lstat(marker.Key().Directory()); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		_ = ledger.store.remove(name)
+	}
 }
 
 // Stat is recovery's question: what does the store hold for this digest now?

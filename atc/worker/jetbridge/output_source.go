@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
@@ -181,6 +183,9 @@ func (s *OutputSource) SelectNode(ctx context.Context, spec runtime.ContainerSpe
 
 func (s *OutputSource) exactClient(ctx context.Context, name, uid string) (*OutputControlClient, error) {
 	node, err := s.client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("%w: output node %s is gone: %v", output.ErrNotFound, name, err)
+	}
 	if err != nil {
 		return nil, err
 	}
