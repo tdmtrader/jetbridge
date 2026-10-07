@@ -354,3 +354,22 @@ func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
 		t.Errorf("the control plane's certificate was refused the handshake: %d", code)
 	}
 }
+
+// The pod's readiness is the artifact daemon's, so a plane whose ledger is
+// quarantined says so on its handshakes: the activation walk attests through
+// them, and a node that cannot answer for its ledger must not attest.
+func TestAnUnreadyPlaneRefusesItsHandshakes(t *testing.T) {
+	fixture := newRoutes(t, "")
+	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(fixture.daemon, fixture.ledger, fixture.source, verifier, "a record was quarantined").Handler()
+	for _, path := range []string{"/handshake", "/capture/v1/handshake", "/readyz"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s answered %d with a quarantined ledger", path, recorder.Code)
+		}
+	}
+}

@@ -204,11 +204,15 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
-            # Readiness is not liveness. A daemon whose output control ledger
-            # is quarantined is alive and must STAY alive so an operator can
-            # read the quarantine; /readyz is what says it is not ready.
+            # The POD's readiness is the artifact daemon's: a quarantined output
+            # control ledger must not take the node's artifact plane (resolve,
+            # mirroring, caches) out of service. The output plane reports its
+            # own readiness where its consumers look: /readyz, its two node
+            # labels (withheld while the ledger is quarantined) and its
+            # handshakes (503 while quarantined), which the activation walk
+            # attests through.
             httpGet:
-              path: /readyz
+              path: /healthz
               port: http
               scheme: HTTPS
             initialDelaySeconds: 2

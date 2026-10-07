@@ -230,6 +230,15 @@ func (server *Server) Handler() http.Handler {
 
 			return
 		}
+		// The pod's readiness is the artifact daemon's, not this plane's, so a
+		// plane that could not read its own ledger says so HERE: the
+		// activation walk attests through this handshake, and a node that
+		// cannot answer for its ledger must not attest.
+		if server.unreadyBecause != "" {
+			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
+
+			return
+		}
 		writeJSON(w, http.StatusOK, server.daemon.BaseHandshake())
 	})
 	mux.HandleFunc("GET /capture/v1/handshake", func(w http.ResponseWriter, request *http.Request) {
@@ -250,6 +259,11 @@ func (server *Server) Handler() http.Handler {
 		if !server.controlPlaneCaller(request) {
 			http.Error(w, "the control plane's verified client certificate is required for the capture "+
 				"extension handshake", http.StatusUnauthorized)
+
+			return
+		}
+		if server.unreadyBecause != "" {
+			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
 
 			return
 		}
