@@ -296,6 +296,19 @@ func (repository *HangarOutputRepository) SetReleased(ctx context.Context, tx ou
 		func(current output.Capture) bool { return current.Released() })
 }
 
+// SetReleasedWithoutAcknowledgement releases a terminal row whose node is gone
+// or was re-registered, so nothing can acknowledge clearing its marker. The
+// row records that the release was not acknowledged, and the status residue
+// counts it: a marker may remain on a node that returns with the same disk.
+func (repository *HangarOutputRepository) SetReleasedWithoutAcknowledgement(ctx context.Context, tx output.Tx, key output.CaptureKey) (output.Capture, error) {
+	return repository.casCapture(ctx, tx, key, `
+		UPDATE hangar_captures SET released_at = now(), release_unacknowledged = true
+		WHERE execution_id = $1 AND output_name = $2
+		  AND state IN ('published', 'discarded', 'failed') AND released_at IS NULL`,
+		nil,
+		func(current output.Capture) bool { return current.Released() })
+}
+
 func (repository *HangarOutputRepository) listCaptures(ctx context.Context, tx output.Tx, where string, order string, limit int) ([]output.Capture, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("%w: a capture pass is bounded; %d is not a batch", output.ErrIncomplete, limit)

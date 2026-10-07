@@ -434,9 +434,10 @@ func (coordinator *Coordinator) release(ctx context.Context, capture output.Capt
 		if nodeGone(err) && capture.FinishedAt != nil &&
 			coordinator.now().Sub(*capture.FinishedAt) >= coordinator.nodeGoneMargin() {
 			// The node the marker lived on is gone or was replaced; the
-			// marker went with it, and there is nothing left to clear.
+			// marker went with it, and there is nothing left to clear. The
+			// row records that no node acknowledged it.
 			err = coordinator.write(func(tx Transaction) error {
-				_, err := coordinator.Rows.SetReleased(ctx, tx, capture.Key)
+				_, err := coordinator.Rows.SetReleasedWithoutAcknowledgement(ctx, tx, capture.Key)
 				return err
 			})
 

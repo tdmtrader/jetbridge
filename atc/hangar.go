@@ -28,6 +28,11 @@ type HangarResidue struct {
 	LiveReadLeases         int `json:"live_read_leases"`
 	UnfinalizedReclaimJobs int `json:"unfinalized_reclaim_jobs"`
 	Total                  int `json:"total"`
+
+	// UnacknowledgedReleases are not in Total: captures released because
+	// their node was gone or re-registered, whose step marker no node
+	// acknowledged clearing.
+	UnacknowledgedReleases int `json:"unacknowledged_releases"`
 }
 
 // HangarFinding is one open integrity finding. BlocksAdmission is true for the

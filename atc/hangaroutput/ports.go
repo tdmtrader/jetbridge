@@ -45,6 +45,7 @@ type CaptureRows interface {
 	CASPublishingToPublished(ctx context.Context, tx output.Tx, published output.PublishedCapture) (output.Capture, error)
 	MarkFailed(ctx context.Context, tx output.Tx, key output.CaptureKey, reason string) (output.Capture, error)
 	SetReleased(ctx context.Context, tx output.Tx, key output.CaptureKey) (output.Capture, error)
+	SetReleasedWithoutAcknowledgement(ctx context.Context, tx output.Tx, key output.CaptureKey) (output.Capture, error)
 
 	ListPending(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error)
 	ListPendingPastDeadline(ctx context.Context, tx output.Tx, limit int) ([]output.Capture, error)

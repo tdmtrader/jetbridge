@@ -8,6 +8,8 @@
 -- The inventory cursor, its debt and the operation leases restart from nothing,
 -- which is how a fresh controller finds them anyway.
 
+ALTER TABLE hangar_captures DROP COLUMN release_unacknowledged;
+
 CREATE FUNCTION hangar_output_facet_ordinal(facet_state text) RETURNS integer
 LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE facet_state

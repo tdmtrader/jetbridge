@@ -98,6 +98,12 @@ type PlaneCounts struct {
 	// not yet acknowledged clearing. The release pass retries them forever.
 	UnreleasedCaptures int
 
+	// UnacknowledgedReleases are captures released because their node was
+	// gone or re-registered: no node acknowledged clearing the marker, which
+	// may remain on a node that returns with the same disk. Reported, not
+	// residue: nothing in the plane is waiting on them.
+	UnacknowledgedReleases int
+
 	// OpenClaims and OpenReadLeases are the protections consumers hold. Each
 	// one keeps reclaim admission refusing for the generation it names, so an
 	// open lease nobody is using is an object nothing will ever delete.

@@ -321,3 +321,34 @@ func hangarLockEnabled(ctx context.Context, tx output.Tx) (bool, error) {
 	}
 	return enabled, rows.Err()
 }
+
+// hangarSetEnabled moves the in-service row, taking it FOR UPDATE first so it
+// waits for every admission holding it FOR SHARE. It is the in-service
+// prefix's one writer, beside the one reader above.
+func hangarSetEnabled(ctx context.Context, tx output.Tx, enabled bool) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT enabled FROM hangar_enabled WHERE singleton FOR UPDATE`)
+	if err != nil {
+		return false, err
+	}
+	found, current := rows.Next(), false
+	if found {
+		if err := rows.Scan(&current); err != nil {
+			rows.Close()
+			return false, err
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	switch {
+	case !found:
+		_, err = tx.ExecContext(ctx, `INSERT INTO hangar_enabled (enabled) VALUES ($1)`, enabled)
+	case current == enabled:
+		return false, nil
+	default:
+		_, err = tx.ExecContext(ctx, `UPDATE hangar_enabled SET enabled = $1, updated_at = now() WHERE singleton`, enabled)
+	}
+
+	return err == nil, err
+}

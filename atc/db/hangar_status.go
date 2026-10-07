@@ -6,7 +6,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -26,24 +25,12 @@ func SetHangarEnabled(ctx context.Context, conn DbConn, enabled bool) (bool, err
 	}
 	defer Rollback(tx)
 
-	var current bool
-	err = tx.QueryRowContext(ctx, `SELECT enabled FROM hangar_enabled WHERE singleton FOR UPDATE`).Scan(&current)
-	switch {
-	case err == sql.ErrNoRows:
-		if _, err := tx.ExecContext(ctx, `INSERT INTO hangar_enabled (enabled) VALUES ($1)`, enabled); err != nil {
-			return false, err
-		}
-	case err != nil:
+	moved, err := hangarSetEnabled(ctx, tx, enabled)
+	if err != nil {
 		return false, err
-	case current == enabled:
-		return false, tx.Commit()
-	default:
-		if _, err := tx.ExecContext(ctx, `UPDATE hangar_enabled SET enabled = $1, updated_at = now() WHERE singleton`, enabled); err != nil {
-			return false, err
-		}
 	}
 
-	return true, tx.Commit()
+	return moved, tx.Commit()
 }
 
 // RecordRuntimeAtRisk preserves a storage failure until explicit operator
@@ -150,6 +137,7 @@ func (repository *HangarOutputRepository) CountOutputPlaneState(ctx context.Cont
 			(SELECT count(*) FROM hangar_captures WHERE state = 'publishing'),
 			(SELECT count(*) FROM hangar_captures
 			  WHERE released_at IS NULL AND state IN ('published', 'discarded', 'failed')),
+			(SELECT count(*) FROM hangar_captures WHERE release_unacknowledged),
 			(SELECT count(*) FROM hangar_claims WHERE released_at IS NULL),
 			(SELECT count(*) FROM hangar_read_leases
 			  WHERE released_at IS NULL AND expires_at > now()),
@@ -169,7 +157,7 @@ func (repository *HangarOutputRepository) CountOutputPlaneState(ctx context.Cont
 			output.ErrCorrupt)
 	}
 	if err := rows.Scan(&counts.LiveGenerations, &counts.PendingCaptures, &counts.PublishingCaptures,
-		&counts.UnreleasedCaptures, &counts.OpenClaims, &counts.OpenReadLeases,
+		&counts.UnreleasedCaptures, &counts.UnacknowledgedReleases, &counts.OpenClaims, &counts.OpenReadLeases,
 		&counts.UnfinalizedReclaimJobs, &counts.OpenIntegrityFindings); err != nil {
 		return output.PlaneCounts{}, hangarConflict(err)
 	}

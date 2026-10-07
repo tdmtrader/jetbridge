@@ -197,4 +197,3 @@ func (sweep *Sweep) classify(ctx context.Context, object objectstore.Attrs, stor
 		return SweepFailed, err
 	}
 }
-

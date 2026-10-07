@@ -79,6 +79,7 @@ func (command *HangarStatusCommand) Execute([]string) error {
 		{"live read leases", status.Residue.LiveReadLeases},
 		{"unfinalized reclaim jobs", status.Residue.UnfinalizedReclaimJobs},
 		{"total", status.Residue.Total},
+		{"captures released without node acknowledgement", status.Residue.UnacknowledgedReleases},
 		{"open integrity findings", len(status.Findings)},
 		{"live generations", status.LiveGenerations},
 	} {

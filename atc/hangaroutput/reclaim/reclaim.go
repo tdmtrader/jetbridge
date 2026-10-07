@@ -382,4 +382,3 @@ func (pass *Pass) Finalize(ctx context.Context, job db.HangarReclaimJob, attempt
 
 	return settled, reported
 }
-

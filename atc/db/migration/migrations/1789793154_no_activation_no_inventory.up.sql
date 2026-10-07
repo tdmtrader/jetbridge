@@ -50,6 +50,14 @@ DROP TABLE hangar_output_activation_epochs;
 DROP FUNCTION hangar_output_epoch_transition();
 DROP FUNCTION hangar_output_facet_ordinal(text);
 
+-- A terminal capture whose node was gone or re-registered is released without
+-- the node acknowledging the marker cleared (the coordinator's node-gone
+-- path). The marker and its gate may remain on a node that comes back under
+-- the same disk, so the release says so, and `fly hangar-status` counts it.
+ALTER TABLE hangar_captures ADD COLUMN release_unacknowledged boolean NOT NULL DEFAULT false,
+    ADD CONSTRAINT hangar_captures_unacknowledged_release_is_a_release
+        CHECK (NOT release_unacknowledged OR released_at IS NOT NULL);
+
 -- hangar_output_node_keys went with the daemon-signature path; drop it here
 -- for any database that still carries it.
 DROP TABLE IF EXISTS hangar_output_node_keys;

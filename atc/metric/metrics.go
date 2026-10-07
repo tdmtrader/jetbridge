@@ -719,6 +719,7 @@ type HangarOutputSnapshot struct {
 	PendingCaptures        int
 	PublishingCaptures     int
 	UnreleasedCaptures     int
+	UnacknowledgedReleases int
 	OpenClaims             int
 	OpenReadLeases         int
 	UnfinalizedReclaimJobs int
@@ -760,6 +761,7 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 		"pending_captures":         event.Status.PendingCaptures,
 		"publishing_captures":      event.Status.PublishingCaptures,
 		"unreleased_captures":      event.Status.UnreleasedCaptures,
+		"unacknowledged_releases":  event.Status.UnacknowledgedReleases,
 		"open_claims":              event.Status.OpenClaims,
 		"open_read_leases":         event.Status.OpenReadLeases,
 		"unfinalized_reclaim_jobs": event.Status.UnfinalizedReclaimJobs,

@@ -66,6 +66,28 @@ var _ = Describe("Hangar capture rows", func() {
 		hangarActivateEpoch(ctx, repository)
 	})
 
+	It("records a release no node acknowledged, and counts it apart from the residue", func() {
+		insert(key, time.Hour)
+		Expect(in(func(tx db.Tx) error {
+			_, err := repository.CASPendingToDiscarded(ctx, tx, key, "no output")
+			return err
+		})).To(Succeed())
+		Expect(in(func(tx db.Tx) error {
+			_, err := repository.SetReleasedWithoutAcknowledgement(ctx, tx, key)
+			return err
+		})).To(Succeed())
+		Expect(get(key).Released()).To(BeTrue())
+
+		var counts output.PlaneCounts
+		Expect(in(func(tx db.Tx) (err error) {
+			counts, err = repository.CountOutputPlaneState(ctx, tx)
+			return err
+		})).To(Succeed())
+		Expect(counts.UnacknowledgedReleases).To(Equal(1))
+		Expect(counts.UnreleasedCaptures).To(BeZero())
+		Expect(counts.Residue()).To(BeZero())
+	})
+
 	It("admits no new capture out of service, and still replays one admitted before", func() {
 		insert(key, time.Hour)
 		_, err := db.SetHangarEnabled(ctx, dbConn, false)
