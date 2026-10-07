@@ -146,7 +146,8 @@ new exact inputs onto nodes that cannot materialize them.
 To disable without changing resource-cache behavior, set
 `artifactDaemon.hangar.enabled=false` and follow the downgrade order. Existing
 immutable objects remain stored. Strict-input objects have no automatic
-reclaimer; output reclamation follows claims and read leases.
+reclaimer; output reclamation follows claims and read leases, and is the
+web's.
 
 The daemon container is explicitly UID 0, non-privileged, unable to escalate,
 under `RuntimeDefault`, and drops all capabilities except `DAC_OVERRIDE`. A
@@ -158,12 +159,68 @@ applied to task or init containers.
 ## Durable output publication
 
 The output plane captures selected successful outputs, registers exact tree
-refs, and protects them with claims and read leases. It has its own daemon,
-inventory controller, reclaimer and activation epoch. It remains opt-in:
-`hangarOutput.executionControl.enabled` enables the base facet;
-`hangarOutput.enabled` enables the output facet. Configure keys, mutual TLS,
-database identities and activation as described in `deploy/chart/values.yaml`.
-Changing the storage selector does not bypass these gates.
+refs, and protects them with claims and read leases. The node's artifact
+daemon publishes; the web reclaims, through two components of its own --
+`hangar_reclaim` (admission, conditional delete, finalization) and
+`hangar_orphan_sweep` -- which share one PostgreSQL advisory lock across web
+replicas. It remains opt-in: `hangarOutput.executionControl.enabled` enables
+the base facet; `hangarOutput.enabled` enables the output facet; and
+`hangarOutput.webEnabled` puts the plane **in service**. Configure keys and
+mutual TLS as described in `deploy/chart/values.yaml`. Changing the storage
+selector does not bypass these gates.
+
+### In service, and the drain
+
+In service is one database row, `hangar_enabled`. The web writes it at
+startup from `hangarOutput.webEnabled`, and every admission that needs the
+output plane -- a new capture, a Run that declares results or takes inputs, an
+input upload -- reads it `FOR SHARE` in its own transaction and is refused
+while it says false. There are no activation epochs, facets or cohort
+attestations to walk: `hangarOutput.activationEpoch` is only the control-key
+generation that capabilities and the control-key ring are minted under, and the
+output scope does not derive from it.
+
+To remove the output plane (or replace its daemons):
+
+1. Set `hangarOutput.webEnabled: false` and roll the web. New admission stops;
+   captures already pending carry on to completion, and the reclaim pass keeps
+   finalizing.
+2. Watch the residue until it reaches zero:
+
+   ```sh
+   fly -t <target> hangar-status
+   ```
+
+   It prints whether the plane is in service and counts the pending and
+   publishing captures, captures whose step marker is not yet released, open
+   claims, live read leases, unfinalized reclaim jobs and open integrity
+   findings, and lists each open finding with its id. The plane is drained when
+   it says `out of service, drained`. Open claims belong to consumers (a running
+   Run, a retained result); release or let them finish.
+3. Only then remove the node daemons' output plane (`hangarOutput.enabled`).
+
+The same numbers are published continuously as
+`concourse_hangar_output_enabled` and
+`concourse_hangar_output_plane_inventory{kind=...}` (with `kind="residue"` the
+drain's total).
+
+### Reclamation and the orphan sweep
+
+The reclaim pass admits a generation only once its publication grace has
+elapsed, nothing claims it, no read lease is live, and no pending or
+publishing capture -- or unregistered input publication -- names its tree.
+It then deletes that exact generation conditionally and finalizes the job:
+confirmed, inferred from a lost response, conflicted, or abandoned with an
+integrity finding.
+
+The orphan sweep lists the output namespace under the deployment prefix. It
+deletes an object only when its marker names **this** store, it has no
+lifecycle row, nothing pending could still register it, and it is older than
+twice the capture deadline -- and then only its exact listed generation. Every
+other object is counted by class (`foreign`, `unmarked`, `young`, `registered`,
+`protected`, ...), logged, and published as
+`concourse_hangar_output_orphan_sweep_objects{class=...}`; nothing outside the
+web's own store is ever deleted.
 
 ### The ordinary-task cost of a durable capture
 
@@ -199,9 +256,8 @@ permissions. Provision the bucket and permissions outside the chart:
 | --- | --- |
 | Strict-input daemon | create, get in the strict-input bucket |
 | Artifact daemon, resource cache (`--durable-store=gcs`) | create, get, list, delete in the cache bucket **only** |
-| Output publisher/materializer | create, get in the output bucket |
-| Inventory | list, get in the output bucket |
-| Reclaimer | get, delete in the output bucket |
+| Output publisher/materializer (artifact daemon) | create, get in the output bucket |
+| Web (reclaim pass and orphan sweep) | list, get, delete in the output bucket |
 
 The artifact daemon's strict-input and resource-cache roles are one Pod and so
 one workload identity. Grant each as a binding on its own bucket. The daemon's
@@ -213,31 +269,28 @@ on any exact tree.
 Keep output objects in a dedicated bucket, separate from strict inputs and
 resource caches. Do not configure lifecycle deletion, external cleanup or
 retention rules that prevent Hangar's admitted deletes. GCS `get` covers both
-metadata and body access; inventory and reclaimer code deliberately expose
-only metadata operations, but IAM cannot separate those reads. Never give the
+metadata and body access; the web's reclaim code deliberately exposes only
+metadata operations, but IAM cannot separate those reads. Never give the
 publisher delete permission: replacing an existing GCS object requires both
-create and delete. Separate workload identities keep these roles isolated.
+create and delete. The node daemon and the web are separate workload
+identities, which keeps the delete on the web alone.
 These are deployment requirements, not properties that Hangar can prove by
 periodically inspecting a bucket policy.
 
 Actual unexpected absence and runtime authorization failures remain durable
-integrity findings. They block new capture, claims, managed read warrants,
-adoption and reclaim admission; releases and diagnosis remain possible.
-Already-admitted exact deletes can finish. Repair the cause and investigate
-lost content before acknowledging one exact finding with:
+integrity findings (`out_of_band_absence`, `runtime_principal_denied`). They
+block new capture, claims, managed read warrants and reclaim admission;
+releases and diagnosis remain possible. Already-admitted exact deletes can
+finish. Repair the cause and investigate lost content before resolving one
+finding, as an admin, by the id `fly hangar-status` lists:
 
 ```sh
-hangar-output-activate --mode=reconcile-integrity \
-  --epoch=7 --integrity-violation=runtime_principal_denied \
-  --integrity-subject='<exact subject from the finding>' \
-  --database='<activation database connection>'
+fly -t <target> hangar-status --resolve-finding <id>
 ```
 
-The other supported class is `out_of_band_absence`. Acknowledgement does not
-restore bytes, change generations or make a missing reference readable. The
-activation database role needs SELECT and UPDATE(`resolved_at`) on
-`hangar_policy_violations` for this operator command. Historical policy
-snapshots remain in the database for audit but no longer control admission.
+Resolution does not restore bytes, change generations or make a missing
+reference readable, and a resolved finding cannot be reopened. Historical
+findings remain in `hangar_integrity_findings` for audit.
 
 ## Persistent disk without GCS
 
@@ -264,11 +317,13 @@ Provision two Secrets in the release namespace:
   characters, under `input`, `publisher`, `inventory`, `reclaimer`, plus
   `server.json`, a JSON object mapping those same four names to the same tokens.
   For example, `openssl rand -hex 32` generates a suitable token. Only the
-  server receives `server.json`; clients receive their own token and CA.
+  server receives `server.json`; clients receive their own token and CA. The
+  web holds two of them: `inventory` (list and stat, for the orphan sweep) and
+  `reclaimer` (stat and exact delete).
 
 The storage link verifies the TLS server identity and the initialized store
-ID on every request. Its fixed roles have the permissions above, except disk
-inventory and reclaimer cannot read object bodies. There is no general IAM
+ID on every request. Its fixed roles have the permissions above, except the
+web's `inventory` and `reclaimer` roles cannot read object bodies. There is no general IAM
 engine, overwrite API or unconditional delete API.
 
 The artifact daemon's fail-open resource cache (`--durable-store=disk`) runs on
@@ -331,9 +386,9 @@ become reclaimable only through the existing claim/read-lease protocol.
 
 Back up the whole storage directory while the owner is stopped or using a
 consistent volume snapshot. The index and blobs are one unit. Restore it in
-coordination with the control-plane database while writers and reclaimers are
-stopped. Never roll back the generation counter beneath references already
+coordination with the control-plane database while the daemons and the web's
+reclaim components are stopped. Never roll back the generation counter beneath references already
 issued, clone a live store into two owners, or reuse its ID for an empty volume.
-There is no online GCS-to-disk migration: provider and store ID participate in
-output identity, so changing backends requires draining and a new activation
-configuration. Existing references are not retargeted.
+There is no online GCS-to-disk migration: the store (provider, store ID and
+namespace) participates in the output scope, so changing backends requires a
+drain and a new output configuration. Existing references are not retargeted.
