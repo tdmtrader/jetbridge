@@ -403,6 +403,16 @@ func (ledger *CaptureLedger) Seal(_ context.Context, request output.CaptureSealR
 	if err != nil {
 		return output.CaptureSealResult{}, err
 	}
+	job, started := ledger.jobs[key]
+	if !started {
+		// The directory is refused BEFORE any job starts: a symlink swapped in
+		// for it is answered now, not as "in progress" until the Pod stops.
+		// The job resolves it again after the wait, which is the check the
+		// canonicalization relies on.
+		if _, err := ledger.resolve(key); err != nil {
+			return output.CaptureSealResult{}, err
+		}
+	}
 	if marker.State == output.StepHeld {
 		marker.State = output.StepSealed
 		if err := ledger.save(marker); err != nil {
@@ -410,7 +420,6 @@ func (ledger *CaptureLedger) Seal(_ context.Context, request output.CaptureSealR
 		}
 	}
 
-	job, started := ledger.jobs[key]
 	if !started {
 		jobCtx, cancel := context.WithTimeout(ledger.ctx, ledger.sealWait)
 		job = &sealJob{pod: marker.PodUID, done: make(chan struct{}), cancel: cancel}

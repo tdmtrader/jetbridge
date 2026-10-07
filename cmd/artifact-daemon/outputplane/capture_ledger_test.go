@@ -313,6 +313,26 @@ func TestTheSealWaitsForEveryContainerAndCapturesTheLastWrite(t *testing.T) {
 	}
 }
 
+// A symlink swapped in for the step directory is refused by the call that
+// would start the seal, never answered as "in progress" while the Pod runs.
+func TestASealOfASymlinkedStepDirectoryIsRefusedBeforeItStarts(t *testing.T) {
+	fixture := newCaptureLedger(t)
+	held(t, fixture)
+	if err := os.RemoveAll(fixture.stepDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), fixture.stepDir()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
+	if !errors.Is(err, output.ErrUnauthorized) {
+		t.Fatalf("a seal of a symlinked step directory answered %v, want unauthorized", err)
+	}
+	if len(fixture.capture.jobs) != 0 {
+		t.Errorf("a refused seal left %d background jobs", len(fixture.capture.jobs))
+	}
+}
+
 func TestASealOfARunningPodAnswersNotYetAndKeepsTheMarkerSealed(t *testing.T) {
 	fixture := newCaptureLedger(t)
 	held(t, fixture)
