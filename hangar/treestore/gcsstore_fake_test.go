@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/gcs"
-	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"io"
 	"sync"
@@ -488,11 +487,11 @@ func newGCSStore(objects objectClient, config Config) (*GCSStore, error) {
 	return &GCSStore{Store: store, deleter: adapter}, err
 }
 func NewGCSStore(ctx context.Context, endpoint string, config Config) (*GCSStore, func() error, error) {
-	objects, closeObjects, err := gcs.NewObjectClient(ctx, endpoint)
+	objects, closeObjects, err := gcs.NewClient(ctx, endpoint)
 	if err != nil {
 		return nil, nil, err
 	}
-	deleter, closeDelete, err := gcsdelete.NewDeleteClient(ctx, endpoint)
+	deleter, closeDelete, err := gcs.NewDeleteClient(ctx, endpoint)
 	if err != nil {
 		_ = closeObjects()
 		return nil, nil, err

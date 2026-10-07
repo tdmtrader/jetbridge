@@ -64,6 +64,7 @@ import (
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -260,6 +261,8 @@ type RunCommand struct {
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a warrant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
 		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
 		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
+		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002); web never reaches the cache."`
+		InputBucket                        string        `long:"kubernetes-hangar-input-bucket"            description:"The strict-input bucket or disk namespace the artifact daemons publish trees into. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002)."`
 		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
 		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the output daemon output-timeout; read leases and transports cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
@@ -2425,6 +2428,13 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 	}
 	if cmd.Kubernetes.HangarEnabled && cmd.Kubernetes.Namespace == "" {
 		return errors.New("--kubernetes-namespace is required when --kubernetes-hangar-enabled is set")
+	}
+	if err := (objectstore.Namespaces{
+		Cache:  cmd.Kubernetes.CacheBucket,
+		Input:  cmd.Kubernetes.InputBucket,
+		Output: cmd.Kubernetes.OutputBucket,
+	}).Validate(); err != nil {
+		return fmt.Errorf("--kubernetes-artifact-daemon-cache-bucket, --kubernetes-hangar-input-bucket and --kubernetes-hangar-output-bucket: %w", err)
 	}
 	if cmd.Kubernetes.Namespace == "" {
 		return nil

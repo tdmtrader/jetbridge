@@ -1,6 +1,6 @@
 // Package gcs implements Hangar immutable object operations over Cloud Storage.
-// Clients expose no raw SDK handle or delete capability; deletion is isolated
-// in hangar/gcsdelete.
+// Clients expose no raw SDK handle. Deletion is a separate constructor,
+// NewDeleteClient, whose callers are fixed by hangar/architecture_test.go.
 package gcs
 
 import (
@@ -29,13 +29,13 @@ func NormalizeStorageEndpoint(endpoint string) (string, error) {
 	return gcsclient.NormalizeEndpoint(endpoint)
 }
 
-// NewObjectClient opens a client for the shared object seam and owns it.
+// NewClient opens a client for the shared object seam and owns it.
 //
 // The returned closer is the caller's to defer. It takes an endpoint rather
 // than a client so that no caller ever holds a type from which delete is
 // reachable: objectstore.Client has no delete on it, and a root that held the
 // *storage.Client behind it would have one anyway.
-func NewObjectClient(ctx context.Context, endpoint string) (objectstore.Client, func() error, error) {
+func NewClient(ctx context.Context, endpoint string) (objectstore.Client, func() error, error) {
 	client, err := gcsclient.New(ctx, endpoint)
 	if err != nil {
 		return nil, nil, fmt.Errorf("hangar: opening the GCS object client: %w", err)
@@ -177,16 +177,8 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 	return page, nil
 }
 
-// OutputAttrs and TranslateObjectError are exported for hangar/gcsdelete, which
-// is the delete capability's own package and therefore cannot be this one.
-//
-// They are the projection and the status-code split, and both are shared on
-// purpose: a second reading of 404/412/403 is where a delete would eventually
-// be told that 412 means "already gone".
-func OutputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs { return outputAttrs(attrs) }
-
-// TranslateObjectError is the 404/412/403 split, shared with the delete
-// capability's package.
+// TranslateObjectError is the 404/412/403 split, exported for fixtures that
+// must read an SDK error the way the adapter does.
 func TranslateObjectError(err error) error { return translate(err) }
 
 func outputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs {

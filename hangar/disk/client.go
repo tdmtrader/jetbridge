@@ -1,5 +1,9 @@
-// Package diskclient exposes only non-destructive disk object operations.
-package diskclient
+package disk
+
+// The client half of the disk store: the wire adapters over the store's
+// authenticated HTTP server. NewClient exposes only non-destructive
+// operations; NewDeleteClient is the separate conditional-deletion capability,
+// whose callers are fixed by hangar/architecture_test.go.
 
 import (
 	"context"
@@ -13,10 +17,14 @@ import (
 	"github.com/concourse/concourse/hangar/objectstore"
 )
 
-type Config = disktransport.Config
+// ClientConfig names the disk store a client reaches and the role credential it
+// presents.
+type ClientConfig = disktransport.Config
+
 type client struct{ transport *disktransport.Transport }
 
-func New(config Config) (objectstore.Client, error) {
+// NewClient opens the create/stat/read/list adapter. It carries no delete.
+func NewClient(config ClientConfig) (objectstore.Client, error) {
 	t, err := disktransport.New(config)
 	if err != nil {
 		return nil, err
@@ -83,4 +91,44 @@ func (c *client) List(ctx context.Context, bucket string, request objectstore.Li
 	var page objectstore.Page
 	err = disktransport.Decode(response, &page)
 	return page, err
+}
+
+type deleteClient struct{ transport *disktransport.Transport }
+
+// NewDeleteClient opens the conditional-deletion capability. The server
+// authorizes it per role and namespace; this constructor's callers are fixed by
+// hangar/architecture_test.go.
+func NewDeleteClient(config ClientConfig) (objectstore.DeleteClient, error) {
+	t, err := disktransport.New(config)
+	if err != nil {
+		return nil, err
+	}
+	return &deleteClient{t}, nil
+}
+
+func (c *deleteClient) StatExact(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
+	if generation <= 0 {
+		return objectstore.Attrs{}, objectstore.ErrPreconditionFailed
+	}
+	query := disktransport.Query(bucket, key)
+	query.Set("generation", strconv.FormatInt(generation, 10))
+	response, err := c.transport.Request(ctx, http.MethodGet, "stat", query, nil, nil)
+	if err != nil {
+		return objectstore.Attrs{}, err
+	}
+	var attrs objectstore.Attrs
+	err = disktransport.Decode(response, &attrs)
+	return attrs, err
+}
+func (c *deleteClient) DeleteExact(ctx context.Context, bucket, key string, generation int64) error {
+	if generation <= 0 {
+		return objectstore.ErrPreconditionFailed
+	}
+	query := disktransport.Query(bucket, key)
+	query.Set("generation", strconv.FormatInt(generation, 10))
+	response, err := c.transport.Request(ctx, http.MethodDelete, "delete", query, nil, nil)
+	if err != nil {
+		return err
+	}
+	return response.Body.Close()
 }

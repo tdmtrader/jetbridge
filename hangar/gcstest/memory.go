@@ -139,6 +139,22 @@ func (memory *Memory) Seed(bucket, key string, body []byte, metadata map[string]
 	return memory.putLocked(bucket, key, body, metadata)
 }
 
+// SeedCreatedAt is Seed with an explicit creation time, for a caller whose
+// subject is an object's age -- a retention pass -- rather than the fixed clock
+// every other operation reads.
+func (memory *Memory) SeedCreatedAt(bucket, key string, body []byte, created time.Time) objectstore.Attrs {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	attrs := memory.putLocked(bucket, key, body, nil)
+	object := memory.objects[bucket][key]
+	object.created = created
+	memory.objects[bucket][key] = object
+	attrs.Created = created
+
+	return attrs
+}
+
 func (memory *Memory) putLocked(bucket, key string, body []byte, metadata map[string]string) objectstore.Attrs {
 	if memory.objects[bucket] == nil {
 		memory.objects[bucket] = map[string]storedObject{}

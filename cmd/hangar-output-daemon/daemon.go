@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"fmt"
-	"github.com/concourse/concourse/hangar/diskclient"
+	"github.com/concourse/concourse/hangar/disk"
 	"io"
 	"time"
 
@@ -119,9 +119,9 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		// error rather than a line that built and passed every guard.
 		var objects objectstore.Client
 		if config.OutputStore == output.StoreDisk {
-			objects, err = diskclient.New(diskclient.Config{Endpoint: config.OutputEndpoint, StoreID: config.OutputStoreID, TokenFile: config.OutputTokenFile, CACert: config.OutputCACert, Timeout: config.OperationTimeout})
+			objects, err = disk.NewClient(disk.ClientConfig{Endpoint: config.OutputEndpoint, StoreID: config.OutputStoreID, TokenFile: config.OutputTokenFile, CACert: config.OutputCACert, Timeout: config.OperationTimeout})
 		} else {
-			objects, _, err = hangargcs.NewObjectClient(ctx, config.OutputEndpoint)
+			objects, _, err = hangargcs.NewClient(ctx, config.OutputEndpoint)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: building the output object client: %v",

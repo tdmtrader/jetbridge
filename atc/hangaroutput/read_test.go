@@ -77,7 +77,7 @@ func harnessStat(t *testing.T, h *harness) hangaroutput.ExactStat {
 		t.Fatalf("deriving the harness namespace: %v", err)
 	}
 
-	objects, closeObjects, err := hangargcs.NewObjectClient(context.Background(), h.Store.URL())
+	objects, closeObjects, err := hangargcs.NewClient(context.Background(), h.Store.URL())
 	if err != nil {
 		t.Fatalf("object client for the emulator: %v", err)
 	}

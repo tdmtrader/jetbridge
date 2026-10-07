@@ -25,6 +25,19 @@
 // not prove, and the daemon turned any non-miss error into a 502. Applied to
 // derivable bytes that same strictness converts a free cache miss into a broken
 // build.
+//
+// # One storage interface
+//
+// The tier has no backend of its own. It is a thin wrapper over the same
+// hangar/objectstore.Client the strict input and output planes use, with the
+// same two backends (hangar/gcs and hangar/disk), against its OWN bucket or
+// disk namespace and its OWN client instance. Fail-open versus fail-closed is
+// decided here, in how answers are read, and the two never share a read path:
+// the daemon refuses to start with the cache namespace equal to the input or
+// output one (ADR-0002).
+//
+// The wrapper is also the only node-side holder of a delete, and only over the
+// cache namespace: the daemon expires its own cache objects by retention class.
 package durable
 
 import (
@@ -55,8 +68,9 @@ type Attributes struct {
 	// on this.
 	Updated time.Time
 
-	// Version identifies one particular write, where the backend has such a
-	// concept -- a GCS generation, an S3 versionId. Empty where it does not.
+	// Version identifies one particular write: the object's generation, in
+	// decimal. Objects are immutable, so a key's version only changes when the
+	// object is expired and created again.
 	//
 	// It exists so a caller that cares which write it read (v4's snapshot
 	// store will) can pin one, without this package taking a position on
@@ -82,11 +96,11 @@ type Store interface {
 	// The caller owns the returned ReadCloser and must close it.
 	Get(ctx context.Context, key string) (io.ReadCloser, bool, error)
 
-	// Put writes the object, replacing any previous copy of the same key.
+	// Put writes the object if the key is absent.
 	//
-	// Keys are content-derived upstream, so a rewrite carries the same bytes
-	// as the copy it replaces; implementations need not make Put atomic
-	// against a concurrent Get of the same key.
+	// Objects are immutable. Keys are content-derived upstream, so a second
+	// write of a key carries the same bytes as the first, and finding the key
+	// already present is success, not an error.
 	Put(ctx context.Context, key string, body io.Reader) error
 
 	// Delete removes the object. Deleting an absent key is not an error, so a
@@ -111,30 +125,16 @@ type Store interface {
 // because the build consuming it fails somewhere further away.
 var ErrTooLarge = errors.New("durable: object exceeds size limit")
 
-// segmentPattern is deliberately narrow. Segments reach a filesystem path in
-// the fs backend and an object name in GCS and S3, so anything outside this
-// shape is a bug upstream rather than a case to encode.
+// segmentPattern is deliberately narrow. A segment reaches an object name in
+// the cache bucket or disk namespace, and the daemon also joins a restore's
+// local alias onto its steps/ root with the same validator, so anything outside
+// this shape is a bug upstream rather than a case to encode.
 var segmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
 
-// MaxPrefixSegments and MaxKeySegments are the two halves of the bound on an
-// object name this store can address. Every backend's objectName concatenates
-// the configured prefix ahead of the key, so the deepest name this package can
-// compose is MaxPrefixSegments+MaxKeySegments segments and no deeper.
-//
-// They are exported CONSTANTS rather than literals in the two validators
-// because something outside this package depends on their sum. An output-plane
-// object key is seven segments (nine with a deployment prefix), so it is out of
-// reach of this store by one segment -- which was an arithmetic coincidence
-// between two files that did not mention each other until
-// hangar/output.TestNoDurableTierObjectNameCanAddressAnOutputObject asserted
-// it. Raising either one is therefore a decision about the OUTPUT bucket as
-// well as about this one, and that test is what says so.
-const (
-	MaxPrefixSegments = 4
-	MaxKeySegments    = 2
-)
+// maxKeySegments: a key is one segment, or a retention class and one segment.
+const maxKeySegments = 2
 
-// ValidateKey rejects keys that could escape the store's namespace.
+// ValidateKey rejects keys that are not a cache object name.
 //
 // A key is either one segment, or a retention-class prefix and one segment:
 //
@@ -142,56 +142,23 @@ const (
 //	resource-caches/rc-<sha256>
 //
 // The prefix exists so an object lifecycle rule can expire whole classes of
-// artifact at different ages — a task cache in days, a review perhaps never —
+// artifact at different ages -- a task cache in days, a review perhaps never --
 // without the store, the daemon, or this function knowing what any class means.
-// Each segment is validated identically; the slash is structure, not content.
+// It stays a KEY PREFIX rather than metadata because GCS lifecycle rules match
+// prefixes. Each segment is validated identically; the slash is structure, not
+// content.
 //
-// Exactly one slash is allowed. Deeper nesting is not rejected for safety (the
-// checks below already cover traversal) but because a lifecycle rule matches a
-// prefix, and a hierarchy invites rules that overlap in ways nobody can predict
-// from reading them.
+// Exactly one slash is allowed, because a lifecycle rule matches a prefix, and
+// a hierarchy invites rules that overlap in ways nobody can predict from
+// reading them.
 //
-// The fs backend joins the key onto a root directory, so "../" would write
-// outside it.
-// ValidatePrefix bounds the deployment prefix the same way ValidateKey bounds a
-// key, and it exists because ValidateKey alone did not bound the OBJECT NAME.
-//
-// The prefix is concatenated ahead of the key in every backend's objectName, so
-// `ValidateKey`'s "at most one prefix segment" rule constrained only the last
-// one or two path segments and said nothing about what came before them. A
-// prefix of "any/deep/path/segments" -- or of "../.." in the filesystem backend,
-// which joins the key onto a root -- produced an object name this package's own
-// bound had never seen. That is what made the key-only delete route round 3
-// found reach ANY key rather than a shallow one.
-//
-// Same segment pattern, so there is one shape; up to four segments, because a
-// deployment prefix is legitimately "cluster/tenant" or a little deeper, and an
-// unbounded depth is the thing being fixed. An empty prefix is valid and means
-// no namespacing at all.
-func ValidatePrefix(prefix string) error {
-	trimmed := strings.Trim(prefix, "/")
-	if trimmed == "" {
-		return nil
-	}
-
-	segments := strings.Split(trimmed, "/")
-	if len(segments) > MaxPrefixSegments {
-		return fmt.Errorf("durable: invalid prefix %q: at most %d segments. The prefix is "+
-			"concatenated ahead of the key, so an unbounded one is an object name nothing in "+
-			"this package bounds", prefix, MaxPrefixSegments)
-	}
-	for _, segment := range segments {
-		if !segmentPattern.MatchString(segment) {
-			return fmt.Errorf("durable: invalid prefix %q: segment %q", prefix, segment)
-		}
-	}
-
-	return nil
-}
-
+// What this does NOT do any more is keep the cache away from exact trees by
+// the depth of a name. That separation is now the namespace: the cache is its
+// own bucket (GCS) or disk namespace, and the daemon refuses to start with it
+// equal to the input or output one (objectstore.Namespaces).
 func ValidateKey(key string) error {
 	segments := strings.Split(key, "/")
-	if len(segments) > MaxKeySegments {
+	if len(segments) > maxKeySegments {
 		return fmt.Errorf("durable: invalid key %q: at most one prefix segment", key)
 	}
 

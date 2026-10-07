@@ -18,7 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/concourse/concourse/hangar/diskclient"
+	"github.com/concourse/concourse/hangar/disk"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"os"
 	"time"
@@ -62,9 +62,9 @@ func run(ctx context.Context, config controllerConfig) error {
 	var objects objectstore.Client
 	closeObjects := func() error { return nil }
 	if config.Store == output.StoreDisk {
-		objects, err = diskclient.New(diskclient.Config{Endpoint: config.Endpoint, StoreID: config.StoreID, TokenFile: config.TokenFile, CACert: config.CACert, Timeout: 2 * time.Minute})
+		objects, err = disk.NewClient(disk.ClientConfig{Endpoint: config.Endpoint, StoreID: config.StoreID, TokenFile: config.TokenFile, CACert: config.CACert, Timeout: 2 * time.Minute})
 	} else {
-		objects, closeObjects, err = hangargcs.NewObjectClient(ctx, config.Endpoint)
+		objects, closeObjects, err = hangargcs.NewClient(ctx, config.Endpoint)
 	}
 	if err != nil {
 		return err

@@ -161,10 +161,10 @@ func (s *Server) writeRestoreResult(w http.ResponseWriter, status int, tier stri
 // each spool a full copy to temporary storage and could evict the DaemonSet on
 // disk pressure.
 //
-// It deliberately does NOT skip an upload when the key already exists. A
-// cleanup init container can truncate a tar from outside any guard this daemon
-// holds; what makes that survivable is the next producer overwriting it.
-// Skipping would make one truncated object permanent and cluster-wide.
+// Objects are immutable: a key already present is left as it is and the
+// upload is skipped (durable.Store.Put). An object that later fails to restore
+// is expired by the restore path, which is what lets the next producer here put
+// a good copy back.
 //
 // The guard key comes from loc, not from a path the caller holds: this runs
 // detached and only logs, so a key that locks nothing is invisible until a

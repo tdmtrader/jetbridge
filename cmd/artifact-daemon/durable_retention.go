@@ -19,7 +19,7 @@ import (
 // opaque grouping string the daemon never interprets: the operator said
 // "whatever lives under this prefix expires after N", and the daemon applies it.
 // It is exactly what a bucket lifecycle rule does, moved into a process that can
-// also do it for a filesystem store, and that can be held to one source of truth.
+// also do it for the disk store, and that can be held to one source of truth.
 //
 // # An unconfigured class is kept forever
 //

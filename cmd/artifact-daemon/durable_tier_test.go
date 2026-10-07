@@ -49,9 +49,9 @@ func writeDir(t *testing.T, s *Server, name string, files map[string]string) Rel
 func mustFS(t *testing.T) durable.Store {
 	t.Helper()
 
-	store, err := durable.NewFS(t.TempDir(), 0)
+	store, err := newTestCache(t)
 	if err != nil {
-		t.Fatalf("NewFS: %v", err)
+		t.Fatalf("newTestCache: %v", err)
 	}
 
 	return store
@@ -278,6 +278,12 @@ func TestRestoreRefusesAnObjectThatEscapesItsDestination(t *testing.T) {
 
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
 		t.Error("a refused Restore promoted the destination directory")
+	}
+
+	// Objects are immutable, so an unusable one is expired rather than left to
+	// block every later upload of the same key.
+	if _, found, _ := tier.ObjectStore().Stat(context.Background(), "rc-hostile"); found {
+		t.Error("an object that could not be restored is still in the store")
 	}
 
 	// The tier extracts to a temp dir beside dest and renames on success. A

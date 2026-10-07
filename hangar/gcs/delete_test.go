@@ -1,4 +1,4 @@
-package gcsdelete
+package gcs
 
 import (
 	"context"

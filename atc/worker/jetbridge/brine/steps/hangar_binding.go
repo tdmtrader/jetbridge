@@ -243,7 +243,7 @@ func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, erro
 		return nil, nil, err
 	}
 
-	objects, closeObjects, err := hangargcs.NewObjectClient(daemon.Ctx, daemon.Endpoint)
+	objects, closeObjects, err := hangargcs.NewClient(daemon.Ctx, daemon.Endpoint)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -175,6 +175,32 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
 	s.NoError(err, "expected validation to pass when DaemonSet host path is set")
 }
 
+// ADR-0002 as configuration: the fail-open cache, the strict inputs and the
+// outputs are three different buckets or disk namespaces, and web refuses to
+// start when any two coincide.
+func (s *CommandSuite) TestK8sRuntimeRefusesSharedStorageNamespaces() {
+	for _, buckets := range [][3]string{
+		{"shared", "shared", ""},
+		{"shared", "", "shared"},
+		{"", "shared", "shared"},
+	} {
+		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.Namespace = "concourse"
+		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.CacheBucket, cmd.Kubernetes.InputBucket, cmd.Kubernetes.OutputBucket = buckets[0], buckets[1], buckets[2]
+
+		err := atccmd.ValidateK8sRuntimeForTest(cmd)
+		s.Error(err, "expected startup to refuse buckets %v", buckets)
+		s.Contains(err.Error(), `"shared"`)
+	}
+
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.CacheBucket, cmd.Kubernetes.InputBucket, cmd.Kubernetes.OutputBucket = "cache", "inputs", "outputs"
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(cmd))
+}
+
 func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
 	cmd := &atccmd.RunCommand{}
 	// Namespace empty — K8s runtime not enabled.

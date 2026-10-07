@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,9 +47,9 @@ func newMaintainer(t *testing.T, store durable.Store, m *metrics, policy Retenti
 }
 
 func TestResidencyMeasuresWhatTheStoreHolds(t *testing.T) {
-	store, err := durable.NewFS(t.TempDir(), 0)
+	store, err := newTestCache(t)
 	if err != nil {
-		t.Fatalf("NewFS: %v", err)
+		t.Fatalf("newTestCache: %v", err)
 	}
 	m := newMetrics()
 	ctx := context.Background()
@@ -83,9 +81,9 @@ func TestResidencyMeasuresWhatTheStoreHolds(t *testing.T) {
 // indistinguishable from "the bucket is empty", which is the single worst false
 // alert this gauge could produce.
 func TestResidencyKeepsLastValuesWhenTheStoreFails(t *testing.T) {
-	store, err := durable.NewFS(t.TempDir(), 0)
+	store, err := newTestCache(t)
 	if err != nil {
-		t.Fatalf("NewFS: %v", err)
+		t.Fatalf("newTestCache: %v", err)
 	}
 	m := newMetrics()
 	ctx := context.Background()
@@ -114,9 +112,9 @@ func TestResidencyKeepsLastValuesWhenTheStoreFails(t *testing.T) {
 // The reporter must stop when the daemon is shutting down rather than hold the
 // process open mid-enumeration.
 func TestResidencyRunStopsOnContextCancel(t *testing.T) {
-	store, err := durable.NewFS(t.TempDir(), 0)
+	store, err := newTestCache(t)
 	if err != nil {
-		t.Fatalf("NewFS: %v", err)
+		t.Fatalf("newTestCache: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -152,24 +150,6 @@ func TestResidencyWithoutAStoreIsANoOp(t *testing.T) {
 	}
 }
 
-// seed writes an object and back-dates it, so a test can express age directly
-// rather than sleeping.
-func seed(t *testing.T, root, key string, body string, age time.Duration) {
-	t.Helper()
-
-	path := filepath.Join(root, filepath.FromSlash(key))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	when := time.Now().Add(-age)
-	if err := os.Chtimes(path, when, when); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
-}
-
 func present(t *testing.T, store durable.Store, key string) bool {
 	t.Helper()
 
@@ -184,11 +164,7 @@ func present(t *testing.T, store durable.Store, key string) bool {
 // The whole feature, end to end: expired objects in a configured class go, and
 // nothing else is touched.
 func TestSweepReclaimsOnlyWhatThePolicyCovers(t *testing.T) {
-	root := t.TempDir()
-	store, err := durable.NewFS(root, 0)
-	if err != nil {
-		t.Fatalf("NewFS: %v", err)
-	}
+	store, root := newSeedableCache(t)
 
 	seed(t, root, "resource-caches/rc-old", "aaa", 48*time.Hour)
 	seed(t, root, "resource-caches/rc-new", "bbb", time.Minute)
@@ -224,11 +200,7 @@ func TestSweepReclaimsOnlyWhatThePolicyCovers(t *testing.T) {
 // A daemon with no retention configured must never delete anything, whatever it
 // finds. This is the state every deployment starts in.
 func TestSweepWithNoPolicyDeletesNothing(t *testing.T) {
-	root := t.TempDir()
-	store, err := durable.NewFS(root, 0)
-	if err != nil {
-		t.Fatalf("NewFS: %v", err)
-	}
+	store, root := newSeedableCache(t)
 
 	seed(t, root, "resource-caches/rc-ancient", "x", 10000*time.Hour)
 	seed(t, root, "rc-also-ancient", "y", 10000*time.Hour)
@@ -263,11 +235,7 @@ func TestSweepNeverDeletesAnObjectWithNoTimestamp(t *testing.T) {
 // One failed delete must not abort the pass -- the rest of the backlog still
 // needs clearing, and the object it could not remove is simply removed later.
 func TestSweepContinuesPastADeleteFailure(t *testing.T) {
-	root := t.TempDir()
-	inner, err := durable.NewFS(root, 0)
-	if err != nil {
-		t.Fatalf("NewFS: %v", err)
-	}
+	inner, root := newSeedableCache(t)
 
 	seed(t, root, "resource-caches/rc-a", "x", 48*time.Hour)
 	seed(t, root, "resource-caches/rc-b", "y", 48*time.Hour)

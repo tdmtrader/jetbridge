@@ -41,8 +41,8 @@ const maxDeletesPerPass = 1000
 // the retention period lives as a string an operator types into a cloud console
 // that must match a prefix this code composes. Nothing can check the two agree —
 // a rule with the wrong prefix matches nothing, deletes nothing, and reports no
-// error. It also does not exist at all for the filesystem backend, where a
-// shared NFS or RWX volume would simply grow forever.
+// error. It also does not exist at all for the disk backend, whose namespace
+// would simply grow forever.
 //
 // So policy lives in one place, next to everything else that configures this
 // daemon. A bucket rule remains a perfectly good backstop for when JetBridge is

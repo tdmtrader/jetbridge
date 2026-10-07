@@ -16,7 +16,6 @@ import (
 
 	"github.com/concourse/concourse/hangar/disk"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
-	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
@@ -317,13 +316,13 @@ const conformanceProject = "hangar-conformance"
 func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, objectstore.DeleteClient, *storage.Client) {
 	t.Helper()
 
-	client, closeClient, err := hangargcs.NewObjectClient(context.Background(), endpoint)
+	client, closeClient, err := hangargcs.NewClient(context.Background(), endpoint)
 	if err != nil {
 		t.Fatalf("adapting the object seam to %s: %v", endpoint, err)
 	}
 	t.Cleanup(func() { _ = closeClient() })
 
-	deleter, closeDeleter, err := gcsdelete.NewDeleteClient(context.Background(), endpoint)
+	deleter, closeDeleter, err := hangargcs.NewDeleteClient(context.Background(), endpoint)
 	if err != nil {
 		t.Fatalf("adapting the delete capability: %v", err)
 	}

@@ -31,7 +31,6 @@ import (
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 	"github.com/concourse/concourse/hangar"
 )
 
@@ -634,7 +633,7 @@ func TestHangarConcurrentIdenticalPublish(t *testing.T) {
 func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testing.T) {
 	base := hangarOptions{
 		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), WarrantKey: filepath.Join(t.TempDir(), "key"),
-		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute, DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
+		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute, Store: "gcs", Bucket: "bucket", Timeout: time.Minute,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	}
 	if err := os.WriteFile(base.WarrantKey, bytes.Repeat([]byte{1}, 32), 0600); err != nil {
@@ -645,9 +644,8 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 	disk.StoreID = "disk-1"
 	disk.Endpoint = "https://hangar-store.example"
 	disk.TokenFile = "input-token"
-	disk.DurableKind = "filesystem"
 	if err := validateHangarOptions(disk, t.TempDir()); err != nil {
-		t.Fatalf("independent disk storage required GCS cache: %v", err)
+		t.Fatalf("disk storage refused: %v", err)
 	}
 	for _, mutate := range []func(*hangarOptions){
 		func(o *hangarOptions) { o.StoreID = "" },
@@ -665,7 +663,8 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 		mutate func(*hangarOptions)
 	}{
 		{"partial-tls", func(o *hangarOptions) { o.TLSCACert = "" }},
-		{"non-gcs", func(o *hangarOptions) { o.DurableKind = "filesystem" }},
+		{"no-store", func(o *hangarOptions) { o.Store = "" }},
+		{"filesystem", func(o *hangarOptions) { o.Store = "filesystem" }},
 		{"empty-bucket", func(o *hangarOptions) { o.Bucket = "" }},
 		{"relative-scratch", func(o *hangarOptions) { o.ScratchDir = "relative" }},
 		{"bad-key", func(o *hangarOptions) {
@@ -692,7 +691,7 @@ func TestHangarConfigRejectsCapabilityTTLOutsideCoreBound(t *testing.T) {
 	base := hangarOptions{
 		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), WarrantKey: keyPath,
 		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute,
-		DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
+		Store: "gcs", Bucket: "bucket", Timeout: time.Minute,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	}
 	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxWarrantTTL + time.Nanosecond} {
@@ -704,7 +703,9 @@ func TestHangarConfigRejectsCapabilityTTLOutsideCoreBound(t *testing.T) {
 	}
 }
 
-func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
+// The strict-input GCS store validates its own bucket when it is built, on the
+// same JSON API root the emulator convention names.
+func TestHangarGCSValidatesItsBucketAtBuild(t *testing.T) {
 	var mu sync.Mutex
 	var paths []string
 	fakeGCS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -714,11 +715,6 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/storage/v1/b/bucket" {
 			_, _ = w.Write([]byte(`{"name":"bucket"}`))
-			return
-		}
-		if r.URL.Path == "/bucket/resource-caches/shared" {
-			w.Header().Set("Content-Length", "3")
-			_, _ = w.Write([]byte("obj"))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -733,7 +729,7 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 	scratch := filepath.Join(t.TempDir(), "scratch")
 	service, closeService, err := buildHangarService(context.Background(), lagertest.NewTestLogger("hangar-build"), storage, hangarOptions{
 		Enabled: true, ScratchDir: scratch, WarrantKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute,
-		DurableKind: "gcs", Bucket: "bucket", Endpoint: fakeGCS.URL, Timeout: time.Second,
+		Store: "gcs", Bucket: "bucket", Endpoint: fakeGCS.URL, Timeout: time.Second,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	})
 	if err != nil {
@@ -745,31 +741,14 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 	if err := closeService(); err != nil {
 		t.Fatal(err)
 	}
-	durableStore, err := durable.NewGCS(context.Background(), durable.GCSConfig{Bucket: "bucket", Endpoint: fakeGCS.URL})
-	if err != nil {
-		t.Fatalf("build durable: %v", err)
-	}
-	reader, found, err := durableStore.Get(context.Background(), "resource-caches/shared")
-	if err != nil || !found {
-		mu.Lock()
-		gotPaths := append([]string(nil), paths...)
-		mu.Unlock()
-		t.Fatalf("durable get found=%v err=%v paths=%v", found, err, gotPaths)
-	}
-	body, readErr := io.ReadAll(reader)
-	closeErr := reader.Close()
-	if readErr != nil || closeErr != nil || string(body) != "obj" {
-		t.Fatalf("durable get body=%q read=%v close=%v", body, readErr, closeErr)
-	}
 	mu.Lock()
 	gotPaths := append([]string(nil), paths...)
 	mu.Unlock()
 	wantPaths := []string{
 		"GET /storage/v1/b/bucket",
-		"GET /bucket/resource-caches%2Fshared",
 	}
 	if !slices.Equal(gotPaths, wantPaths) {
-		t.Fatalf("shared endpoint paths = %v, want %v", gotPaths, wantPaths)
+		t.Fatalf("bucket validation paths = %v, want %v", gotPaths, wantPaths)
 	}
 }
 

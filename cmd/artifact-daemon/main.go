@@ -41,17 +41,15 @@ func main() {
 	mirrorReplicas := flag.Int("mirror-replicas", 2, "Replication factor for outbound mirror: 0=disabled, N=local + (N-1) peers, -1=all peers")
 	mirrorConcurrency := flag.Int("mirror-concurrency", 4, "Max concurrent in-flight mirror jobs")
 	mirrorTimeout := flag.Duration("mirror-timeout", 5*time.Minute, "Per-peer per-job mirror PUT timeout")
-	preemptionWatch := flag.Bool("preemption-watch", false, "Watch GCP metadata server for spot preemption notice and evacuate unmirrored artifacts before termination")
-	preemptionBudget := flag.Duration("preemption-budget", 25*time.Second, "Total time budget for synchronous evacuation on preemption")
 
 	// Durable tier. Off unless --durable-store names a backend, and the daemon
 	// behaves exactly as before when it is off.
-	durableStore := flag.String("durable-store", "", "Long-term store for resource caches: \"\" (disabled), \"gcs\", \"s3\" or \"filesystem\"")
-	durablePath := flag.String("durable-path", "", "Root directory for --durable-store=filesystem")
-	durableBucket := flag.String("durable-bucket", "", "Bucket for --durable-store=gcs or =s3")
-	durablePrefix := flag.String("durable-prefix", "", "Key prefix inside the bucket, so one bucket can serve several clusters or consumers")
-	durableEndpoint := flag.String("durable-endpoint", "", "Endpoint override; set this for MinIO and other S3-compatible stores")
-	durableRegion := flag.String("durable-s3-region", "us-east-1", "S3 region")
+	durableStore := flag.String("durable-store", "", "Fail-open store for resource caches: \"\" (disabled), \"gcs\" or \"disk\"")
+	durableBucket := flag.String("durable-bucket", "", "The cache's own GCS bucket or disk namespace; never the strict-input or output one")
+	durableEndpoint := flag.String("durable-endpoint", "", "GCS emulator endpoint (empty is real GCS), or the disk store's HTTPS origin")
+	durableStoreID := flag.String("durable-store-id", "", "Expected persistent disk storage identity, for --durable-store=disk")
+	durableTokenFile := flag.String("durable-token-file", "", "Disk storage cache-role credential file, for --durable-store=disk")
+	durableCACert := flag.String("durable-ca-cert", "", "Disk storage CA certificate, for --durable-store=disk")
 	durableTimeout := flag.Duration("durable-timeout", 5*time.Minute, "Per-operation timeout for the durable store")
 	durableMaintenanceInterval := flag.Duration("durable-maintenance-interval", defaultMaintenanceInterval, "How often to walk the durable store to reclaim expired objects and measure what remains. Every daemon runs its own enumeration, and a List is billed per page, so this is deliberately slow.")
 
@@ -64,8 +62,9 @@ func main() {
 	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
 
 	// Hangar is a strict immutable-tree service composed beside the fail-open
-	// cache tier. It deliberately reuses only the GCS connection settings.
-	hangarStore := flag.String("hangar-store", "", "Strict-input storage profile: gcs or disk; empty inherits durable store settings")
+	// cache tier. It names its own store and shares no setting, client or
+	// namespace with the cache.
+	hangarStore := flag.String("hangar-store", "", "Strict-input storage profile: gcs or disk")
 	hangarBucket := flag.String("hangar-bucket", "", "Strict-input bucket or disk namespace")
 	hangarEndpoint := flag.String("hangar-endpoint", "", "Strict-input storage endpoint")
 	hangarPrefix := flag.String("hangar-prefix", "", "Strict-input object prefix; empty selector inherits durable prefix")
@@ -226,15 +225,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	if tier, err := buildDurableTier(logger, server.Metrics(), durableOptions{
-		kind:     *durableStore,
-		path:     *durablePath,
-		bucket:   *durableBucket,
-		prefix:   *durablePrefix,
-		endpoint: *durableEndpoint,
-		region:   *durableRegion,
-		timeout:  *durableTimeout,
-		maxBytes: *durableMaxBytes,
+	// The cache and the strict-input store are two namespaces, refused before
+	// either is dialled.
+	if err := validateStorageNamespaces(*durableBucket, hangarInputNamespace(*hangarEnabled, *hangarBucket), ""); err != nil {
+		logger.Error("storage-namespaces-invalid", err)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		cleanupCancel()
+		os.Exit(1)
+	}
+
+	closeDurable := func() error { return nil }
+	if tier, closeTier, err := buildDurableTier(context.Background(), logger, server.Metrics(), durableOptions{
+		kind:      *durableStore,
+		bucket:    *durableBucket,
+		endpoint:  *durableEndpoint,
+		storeID:   *durableStoreID,
+		tokenFile: *durableTokenFile,
+		caCert:    *durableCACert,
+		timeout:   *durableTimeout,
+		maxBytes:  *durableMaxBytes,
 	}); err != nil {
 		// Misconfiguration is worth failing on: an operator who asked for a
 		// durable store and silently did not get one would discover it as a
@@ -245,6 +255,7 @@ func main() {
 		cleanupCancel()
 		os.Exit(1)
 	} else if tier != nil {
+		closeDurable = closeTier
 		server.SetDurableTier(tier)
 		logger.Info("durable-store-enabled", lager.Data{"backend": *durableStore})
 
@@ -277,22 +288,10 @@ func main() {
 		}
 	}
 
-	if *hangarStore == "" {
-		*hangarStore = *durableStore
-		if *hangarBucket == "" {
-			*hangarBucket = *durableBucket
-		}
-		if *hangarEndpoint == "" {
-			*hangarEndpoint = *durableEndpoint
-		}
-		if *hangarPrefix == "" {
-			*hangarPrefix = *durablePrefix
-		}
-	}
 	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
 		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, WarrantKey: *hangarWarrantKey,
 		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, WarrantTTL: *hangarWarrantTTL,
-		DurableKind: *durableStore, Store: *hangarStore, StoreID: *hangarStoreID, TokenFile: *hangarTokenFile, CACert: *hangarCACert, Bucket: *hangarBucket, Prefix: *hangarPrefix, Endpoint: *hangarEndpoint, Timeout: *durableTimeout,
+		Store: *hangarStore, StoreID: *hangarStoreID, TokenFile: *hangarTokenFile, CACert: *hangarCACert, Bucket: *hangarBucket, Prefix: *hangarPrefix, Endpoint: *hangarEndpoint, Timeout: *durableTimeout,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
 	})
 	if err != nil {
@@ -388,29 +387,6 @@ func main() {
 		Handler: server.Handler(handlerOpts...),
 	}
 
-	// Wire preemption watcher if enabled. The watcher long-polls GCP
-	// metadata in its own goroutine and fires Mirror.Evacuate when the
-	// preempted endpoint transitions to TRUE.
-	preemptCtx, preemptCancel := context.WithCancel(context.Background())
-	defer preemptCancel()
-	if *preemptionWatch && mirror != nil {
-		watcher := NewPreemptionWatcher(logger.Session("preempt"), DefaultPreemptionMetadataURL,
-			func(ctx context.Context) {
-				logger.Info("evacuating-on-preemption", lager.Data{
-					"budget": preemptionBudget.String(),
-				})
-				mirror.Evacuate(ctx, *preemptionBudget)
-			})
-		go watcher.Run(preemptCtx)
-		logger.Info("preemption-watcher-started", lager.Data{
-			"budget": preemptionBudget.String(),
-		})
-	} else if *preemptionWatch {
-		logger.Info("preemption-watch-disabled", lager.Data{
-			"reason": "mirror not configured (--mirror-replicas=0, or neither --node-name nor --peer-discovery set)",
-		})
-	}
-
 	if tlsEnabled {
 		httpServer.TLSConfig = tlsCfg
 	}
@@ -494,9 +470,6 @@ func main() {
 		serverFailure = err
 	}
 
-	// Cancel the preemption watcher's poll loop so it exits cleanly.
-	preemptCancel()
-
 	// Drain mirror jobs before sweeping / shutting down. This is best-effort
 	// — Wait blocks until in-flight jobs complete (capped by per-peer timeout).
 	if mirror != nil {
@@ -506,6 +479,9 @@ func main() {
 	// Stop sweeper.
 	close(sweepDone)
 	maintenanceCancel()
+	if err := closeDurable(); err != nil {
+		logger.Error("durable-store-close-failed", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -135,6 +135,7 @@ func (d *DurableTier) Restore(ctx context.Context, key, destDir string) bool {
 	if err != nil {
 		logger.Error("extract-failed", err)
 		d.metrics.recordDurable("restore", "error")
+		d.expireUnusable(ctx, logger, key)
 		return false
 	}
 	cleanup := func() { parent.RemoveAll(tmpDir) }
@@ -198,6 +199,28 @@ func (d *DurableTier) Store(ctx context.Context, key string, tar func(io.Writer)
 	d.metrics.recordDurable("store", "ok")
 }
 
+// expireUnusable removes an object that could not be restored.
+//
+// Objects are immutable, so a truncated, corrupt or hostile object is not
+// healed by the next producer's upload the way an overwrite once healed it: the
+// create-if-absent finds the key taken and succeeds without writing. Removing
+// the object is what lets the next producer put a good copy back. A cache entry
+// is re-derivable, so deleting a good one by mistake costs a re-download and
+// nothing else. A restore that failed because its own deadline ran out says
+// nothing about the object, and is left alone.
+func (d *DurableTier) expireUnusable(ctx context.Context, logger lager.Logger, key string) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := d.store.Delete(ctx, key); err != nil {
+		logger.Error("expire-unusable-failed", err)
+		d.metrics.recordDurable("delete", "error")
+		return
+	}
+	logger.Info("expired-unusable-object")
+	d.metrics.recordDurable("delete", "ok")
+}
+
 // ObjectStore exposes the backing store for callers that enumerate it rather
 // than fetch through it — today only the residency reporter.
 //
@@ -212,7 +235,7 @@ func (d *DurableTier) ObjectStore() durable.Store {
 	return d.store
 }
 
-// Delete removes the durable copy. Used by the reclaim path.
+// Delete removes the durable copy. Used by the retention pass.
 func (d *DurableTier) Delete(ctx context.Context, key string) bool {
 	if d == nil {
 		return false

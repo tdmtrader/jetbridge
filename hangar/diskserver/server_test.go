@@ -18,8 +18,6 @@ import (
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/disk"
-	"github.com/concourse/concourse/hangar/diskclient"
-	"github.com/concourse/concourse/hangar/diskdelete"
 	"github.com/concourse/concourse/hangar/diskserver"
 	"github.com/concourse/concourse/hangar/objectstore"
 )
@@ -101,17 +99,17 @@ func setup(t *testing.T) fixture {
 	}
 	return fixture{server: server, root: root, ca: ca, tokens: tokens}
 }
-func (f fixture) config(t *testing.T, role string) diskclient.Config {
+func (f fixture) config(t *testing.T, role string) disk.ClientConfig {
 	t.Helper()
 	token := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(token, []byte(f.tokens[role]), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return diskclient.Config{Endpoint: f.server.URL, StoreID: "test-store", TokenFile: token, CACert: f.ca, Timeout: time.Second * 5}
+	return disk.ClientConfig{Endpoint: f.server.URL, StoreID: "test-store", TokenFile: token, CACert: f.ca, Timeout: time.Second * 5}
 }
 func (f fixture) client(t *testing.T, role string) objectstore.Client {
 	t.Helper()
-	c, err := diskclient.New(f.config(t, role))
+	c, err := disk.NewClient(f.config(t, role))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +149,7 @@ func TestAuthenticatedExactObjectsAndNamespaceIsolation(t *testing.T) {
 	if _, err := inv.CreateAbsent(ctx, "outputs", "other", nil, strings.NewReader("bad")); !errors.Is(err, objectstore.ErrUnauthorized) {
 		t.Fatalf("inventory create %v", err)
 	}
-	deleter, err := diskdelete.New(f.config(t, "reclaimer"))
+	deleter, err := disk.NewDeleteClient(f.config(t, "reclaimer"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +169,7 @@ func TestAuthenticatedExactObjectsAndNamespaceIsolation(t *testing.T) {
 	if _, err := input.StatCurrent(ctx, "outputs", "tree"); !errors.Is(err, objectstore.ErrUnauthorized) {
 		t.Fatalf("input output access %v", err)
 	}
-	pubDelete, err := diskdelete.New(f.config(t, "publisher"))
+	pubDelete, err := disk.NewDeleteClient(f.config(t, "publisher"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +182,7 @@ func TestIdentityAuthenticationAndStreamingFailure(t *testing.T) {
 	ctx := context.Background()
 	config := f.config(t, "publisher")
 	config.StoreID = "other"
-	if _, err := diskclient.New(config); !errors.Is(err, hangar.ErrConflict) {
+	if _, err := disk.NewClient(config); !errors.Is(err, hangar.ErrConflict) {
 		t.Fatalf("identity %v", err)
 	}
 	response, err := f.server.Client().Get(f.server.URL + "/v1/stat?bucket=outputs&key=tree")
@@ -244,7 +242,79 @@ func TestNoUnconditionalDeleteOrCredentialRedirect(t *testing.T) {
 	}
 	config := f.config(t, "publisher")
 	config.Endpoint = "http://localhost:1234"
-	if _, err := diskclient.New(config); err == nil {
+	if _, err := disk.NewClient(config); err == nil {
 		t.Fatal("plaintext credentials permitted")
+	}
+}
+
+// The cache role is the artifact daemon's fail-open resource cache. It holds
+// the one delete a node daemon is given, and only inside its own namespace:
+// it can neither read nor delete an exact tree in the input or output
+// namespace, and the store refuses to start with the cache sharing either.
+func TestTheCacheRoleIsConfinedToItsOwnNamespace(t *testing.T) {
+	root := t.TempDir()
+	if err := disk.Initialize(root, "test-store"); err != nil {
+		t.Fatal(err)
+	}
+	store, err := disk.Open(root, "test-store", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	tokens := map[string]string{"input": strings.Repeat("i", 32), "publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32), "cache": strings.Repeat("c", 32)}
+
+	for _, shared := range []string{"inputs", "outputs"} {
+		if _, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", CacheNamespace: shared, Credentials: tokens, MaxConcurrent: 4}); err == nil {
+			t.Fatalf("a cache namespace equal to %q was accepted", shared)
+		}
+	}
+	if _, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", Credentials: tokens, MaxConcurrent: 4}); err == nil {
+		t.Fatal("a cache credential without a cache namespace was accepted")
+	}
+
+	h, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", CacheNamespace: "caches", Credentials: tokens, MaxConcurrent: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(h)
+	t.Cleanup(server.Close)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f := fixture{server: server, root: root, ca: ca, tokens: tokens}
+	ctx := context.Background()
+
+	cache := f.client(t, "cache")
+	cacheDelete, err := disk.NewDeleteClient(f.config(t, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attrs, err := cache.CreateAbsent(ctx, "caches", "resource-caches/rc-abc", nil, strings.NewReader("body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page, err := cache.List(ctx, "caches", objectstore.ListRequest{PageSize: 10}); err != nil || len(page.Objects) != 1 {
+		t.Fatalf("cache list: %+v %v", page, err)
+	}
+	if err := cacheDelete.DeleteExact(ctx, "caches", "resource-caches/rc-abc", attrs.Generation); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := f.client(t, "publisher").CreateAbsent(ctx, "outputs", "tree", nil, strings.NewReader("body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.StatExact(ctx, "outputs", "tree", tree.Generation); !errors.Is(err, objectstore.ErrUnauthorized) {
+		t.Fatalf("cache role stat an output tree: %v", err)
+	}
+	if err := cacheDelete.DeleteExact(ctx, "outputs", "tree", tree.Generation); !errors.Is(err, objectstore.ErrUnauthorized) {
+		t.Fatalf("cache role deleted an output tree: %v", err)
+	}
+	if _, err := cache.CreateAbsent(ctx, "inputs", "tree", nil, strings.NewReader("body")); !errors.Is(err, objectstore.ErrUnauthorized) {
+		t.Fatalf("cache role wrote the input namespace: %v", err)
+	}
+	if _, err := f.client(t, "input").CreateAbsent(ctx, "caches", "x", nil, strings.NewReader("body")); !errors.Is(err, objectstore.ErrUnauthorized) {
+		t.Fatalf("input role wrote the cache namespace: %v", err)
 	}
 }

@@ -24,6 +24,11 @@ type Config struct {
 	StoreID         string
 	InputNamespace  string
 	OutputNamespace string
+	// CacheNamespace is the artifact daemon's fail-open resource cache. Empty
+	// means this store serves no cache; set, it requires a fifth, "cache"
+	// credential, which may create, stat, read, list and delete inside that
+	// namespace and nothing outside it.
+	CacheNamespace string
 	Credentials     map[string]string
 	MaxConcurrent   int
 }
@@ -46,17 +51,23 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 	if store.ID() != config.StoreID {
 		return nil, fmt.Errorf("%w: disk server identity differs from its index", hangar.ErrConflict)
 	}
-	for _, name := range []string{config.StoreID, config.InputNamespace, config.OutputNamespace} {
+	names := []string{config.StoreID, config.InputNamespace, config.OutputNamespace}
+	roles := []string{"input", "publisher", "inventory", "reclaimer"}
+	if config.CacheNamespace != "" {
+		names = append(names, config.CacheNamespace)
+		roles = append(roles, "cache")
+	}
+	for _, name := range names {
 		if err := hangar.Scope(name).Validate(); err != nil {
 			return nil, err
 		}
 	}
-	if config.InputNamespace == config.OutputNamespace {
-		return nil, errors.New("input and output namespaces must differ")
+	if err := (objectstore.Namespaces{Cache: config.CacheNamespace, Input: config.InputNamespace, Output: config.OutputNamespace}).Validate(); err != nil {
+		return nil, err
 	}
 	s := &server{store: store, config: config, slots: make(chan struct{}, config.MaxConcurrent)}
 	seen := map[string]bool{}
-	for _, role := range []string{"input", "publisher", "inventory", "reclaimer"} {
+	for _, role := range roles {
 		token := strings.TrimSpace(config.Credentials[role])
 		if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(token, "\r\n\x00") || seen[token] {
 			return nil, errors.New("each disk role requires a distinct 32..4096 byte credential")
@@ -64,7 +75,7 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 		seen[token] = true
 		s.credentials = append(s.credentials, credential{role: role, hash: sha256.Sum256([]byte(token))})
 	}
-	if len(config.Credentials) != 4 {
+	if len(config.Credentials) != len(roles) {
 		return nil, errors.New("unrecognized disk role")
 	}
 	// Keep only digests after initialization.
@@ -105,6 +116,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	allowed := false
 	if role == "input" && bucket == s.config.InputNamespace {
 		allowed = operation == "create" || operation == "stat" || operation == "read"
+	}
+	if role == "cache" && s.config.CacheNamespace != "" && bucket == s.config.CacheNamespace {
+		allowed = operation == "create" || operation == "stat" || operation == "read" || operation == "list" || operation == "delete"
 	}
 	if bucket == s.config.OutputNamespace {
 		switch role {

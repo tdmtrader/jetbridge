@@ -26,7 +26,13 @@ import (
 //     reference type is how two object models start diverging. (Req 20)
 //  3. Output code is never routed through the durable *cache* tier, which is a
 //     fail-open, name-keyed cache whose every method swallows its errors.
-//     (Reqs 20, 59)
+//     (Reqs 20, 59) The cache shares the object interface and backends with
+//     this plane but never a namespace: the daemon and web refuse to start
+//     with the cache bucket equal to the output or input one
+//     (objectstore.Namespaces), which replaced the old guarantee that a cache
+//     object name was one segment too shallow to address an output key. The
+//     other direction -- the cache tier importing hangar/output -- is the root
+//     architecture_test.go's TestDurableTierAndHangarAreSeparateStores.
 //  4. The privilege split between the three roles. Each role is one binary and
 //     one cloud service account, and the split only means something while
 //     each role's exported method set stays its own: the publisher never

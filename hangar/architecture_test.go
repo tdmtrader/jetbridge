@@ -1,6 +1,7 @@
 package hangar
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -66,8 +67,8 @@ func TestArchitectureHasNoAgentImports(t *testing.T) {
 // hangar is imported by atc/runtime, atc/atccmd and atc/worker/jetbridge, so
 // every package hangar imports is linked into the web binary too. While the
 // GCS store lived in this package that cost ./cmd/concourse 168 extra packages
-// and 20 MB; the store now lives in hangar/gcsstore, which only cmd/artifact-daemon
-// imports. This asserts the shape that keeps it that way: hangar itself is a
+// and 20 MB; the GCS adapter now lives in hangar/gcs, which only daemon-side binaries
+// import. This asserts the shape that keeps it that way: hangar itself is a
 // leaf — no cloud client, and no first-party import but its own path, which is
 // what "go list -deps ./hangar/ | grep concourse prints only hangar" means.
 //
@@ -351,4 +352,208 @@ func receiverTypeName(expression ast.Expr) string {
 	}
 
 	return ""
+}
+
+// THE DELETE CONSTRUCTORS HAVE A FIXED SET OF CALLERS.
+//
+// Deletion is objectstore.DeleteClient, and the only constructors of one over a
+// real backend are hangar/gcs.NewDeleteClient and hangar/disk.NewDeleteClient.
+// They live beside the read/create clients rather than in packages of their
+// own, so "which binary links the package" no longer says who can delete --
+// every storage-facing binary links both packages. What says it is who names
+// the constructor, and that is what this scans: every non-test Go file in the
+// module, for any reference to either constructor through its import, called
+// or not (a function value handed elsewhere is the same capability).
+//
+// Two callers, each with the namespace it may delete in:
+//
+//   - the output reclaimer, over the output namespace, after the control plane
+//     admitted the exact generation;
+//   - the artifact daemon's fail-open cache tier (cmd/artifact-daemon/durable),
+//     over the cache namespace only. The cache is re-derivable and the daemon
+//     expires its own objects. It never holds delete over input or output:
+//     the daemon refuses to start with the cache namespace equal to either
+//     (objectstore.Namespaces), and the disk store authorizes the cache role
+//     in the cache namespace alone.
+//
+// Credentials remain the real boundary (IAM, the disk store's role table); this
+// keeps the composition from handing the capability to a third place by
+// accident.
+var deleteConstructorCallers = map[string]string{
+	"cmd/hangar-output-reclaimer": "the output reclaimer, over the output namespace",
+	"cmd/artifact-daemon/durable": "the fail-open cache tier, over the cache namespace only",
+}
+
+var deleteConstructors = map[string]string{
+	"github.com/concourse/concourse/hangar/gcs":  "NewDeleteClient",
+	"github.com/concourse/concourse/hangar/disk": "NewDeleteClient",
+}
+
+type goFile struct {
+	pkg  string // slash-separated directory relative to the repository root
+	path string
+	file *ast.File
+}
+
+// deleteConstructorReferences returns "pkg: file" for every reference to a
+// delete constructor, and the packages that made one.
+func deleteConstructorReferences(files []goFile) (map[string][]string, int) {
+	found := map[string][]string{}
+	for _, f := range files {
+		aliases := map[string]string{}
+		for _, spec := range f.file.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				continue
+			}
+			name, ok := deleteConstructors[path]
+			if !ok {
+				continue
+			}
+			alias := filepath.Base(path)
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			aliases[alias] = name
+		}
+		if len(aliases) == 0 {
+			continue
+		}
+		ast.Inspect(f.file, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := selector.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if name, ok := aliases[ident.Name]; ok && selector.Sel.Name == name {
+				found[f.pkg] = append(found[f.pkg], f.path)
+			}
+			return true
+		})
+	}
+	return found, len(files)
+}
+
+func deleteConstructorProblems(found map[string][]string, scanned int, allowed map[string]string) []string {
+	if scanned == 0 {
+		return []string{"no Go file was scanned; this rule would pass vacuously"}
+	}
+	var problems []string
+	for pkg, paths := range found {
+		if _, ok := allowed[pkg]; ok {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf("%s names a delete constructor (%s). Only %v may: "+
+			"a binary that constructs a DeleteClient holds an exact delete over whatever namespace it "+
+			"names.", pkg, strings.Join(paths, ", "), sortedKeys(allowed)))
+	}
+	for pkg := range allowed {
+		if len(found[pkg]) == 0 {
+			problems = append(problems, pkg+" is allowed to construct a delete client and does not; "+
+				"the exemption is stale")
+		}
+	}
+	sort.Strings(problems)
+	return problems
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func productionFiles(t *testing.T) []goFile {
+	t.Helper()
+	root := repositoryRoot()
+	var files []goFile
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case "vendor", ".git", ".claude", "node_modules", "brine":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, goFile{pkg: filepath.ToSlash(filepath.Dir(relative)), path: filepath.ToSlash(relative), file: file})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning: %v", err)
+	}
+	return files
+}
+
+func TestOnlyTheReclaimerAndTheCacheTierConstructADeleteClient(t *testing.T) {
+	files := productionFiles(t)
+	if len(files) < 500 {
+		t.Fatalf("parsed only %d production Go files; the walk failed", len(files))
+	}
+	found, scanned := deleteConstructorReferences(files)
+	for pkg, paths := range found {
+		t.Logf("%s constructs a delete client in %v", pkg, paths)
+	}
+	for _, problem := range deleteConstructorProblems(found, scanned, deleteConstructorCallers) {
+		t.Error(problem)
+	}
+}
+
+func TestTheDeleteConstructorGuardIsNotVacuous(t *testing.T) {
+	parse := func(pkg, source string) goFile {
+		file, err := parser.ParseFile(token.NewFileSet(), pkg+"/f.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return goFile{pkg: pkg, path: pkg + "/f.go", file: file}
+	}
+	allowed := map[string]string{"cmd/reclaimer": "because"}
+
+	if problems := deleteConstructorProblems(map[string][]string{}, 0, allowed); len(problems) == 0 {
+		t.Fatal("an empty scan passed")
+	}
+
+	files := []goFile{
+		parse("cmd/reclaimer", `package main
+import "github.com/concourse/concourse/hangar/gcs"
+var _, _, _ = gcs.NewDeleteClient(nil, "")`),
+		// An aliased import, and a function value rather than a call.
+		parse("cmd/web", `package main
+import store "github.com/concourse/concourse/hangar/disk"
+var open = store.NewDeleteClient`),
+		// The read/create client is not the capability.
+		parse("cmd/daemon", `package main
+import "github.com/concourse/concourse/hangar/gcs"
+var _, _, _ = gcs.NewClient(nil, "")`),
+	}
+	found, scanned := deleteConstructorReferences(files)
+	problems := deleteConstructorProblems(found, scanned, allowed)
+	if len(problems) != 1 || !strings.Contains(problems[0], "cmd/web") {
+		t.Fatalf("expected exactly cmd/web to be reported, got %v", problems)
+	}
+
+	stale := deleteConstructorProblems(map[string][]string{"cmd/reclaimer": {"x"}}, 1,
+		map[string]string{"cmd/reclaimer": "because", "cmd/gone": "because"})
+	if len(stale) != 1 || !strings.Contains(stale[0], "cmd/gone") {
+		t.Fatalf("expected the stale exemption to be reported, got %v", stale)
+	}
 }

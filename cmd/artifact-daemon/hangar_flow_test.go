@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"github.com/concourse/concourse/artifactwire"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -23,8 +22,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/artifactwire"
+
 	"github.com/concourse/concourse/hangar"
-	hangargcs "github.com/concourse/concourse/hangar/gcsstore"
+	hangargcs "github.com/concourse/concourse/hangar/gcs"
+	"github.com/concourse/concourse/hangar/treestore"
 )
 
 type strictGCSObject struct {
@@ -293,14 +295,18 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 		t.Fatal("raw upload did not depend on producer content")
 	}
 	fake, fakeServer := newStrictGCSFake(t)
-	store, closeStore, err := hangargcs.NewGCSStore(context.Background(), fakeServer.URL, hangargcs.GCSConfig{
+	objects, closeStore, err := hangargcs.NewClient(context.Background(), fakeServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeStore() })
+	store, err := treestore.New(objects, treestore.Config{
 		Bucket: "bucket", Prefix: "deployment/blue", ScratchDir: t.TempDir(),
 		ReadTimeout: time.Second, WriteTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = closeStore() })
 	server, service, key := newHangarTestServer(t, store)
 	handler := server.Handler(WithTLS())
 

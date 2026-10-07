@@ -23,7 +23,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"github.com/concourse/concourse/hangar/diskdelete"
+	"github.com/concourse/concourse/hangar/disk"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"os"
 	"time"
@@ -35,7 +35,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaimpass"
-	"github.com/concourse/concourse/hangar/gcsdelete"
+	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 )
@@ -69,9 +69,9 @@ func run(ctx context.Context, config controllerConfig) error {
 	var objects objectstore.DeleteClient
 	closeObjects := func() error { return nil }
 	if config.Store == output.StoreDisk {
-		objects, err = diskdelete.New(diskdelete.Config{Endpoint: config.Endpoint, StoreID: config.StoreID, TokenFile: config.TokenFile, CACert: config.CACert, Timeout: config.DeleteTimeout})
+		objects, err = disk.NewDeleteClient(disk.ClientConfig{Endpoint: config.Endpoint, StoreID: config.StoreID, TokenFile: config.TokenFile, CACert: config.CACert, Timeout: config.DeleteTimeout})
 	} else {
-		objects, closeObjects, err = gcsdelete.NewDeleteClient(ctx, config.Endpoint)
+		objects, closeObjects, err = hangargcs.NewDeleteClient(ctx, config.Endpoint)
 	}
 	if err != nil {
 		return err

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/concourse/concourse/artifactwire"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/concourse/concourse/artifactwire"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
@@ -31,9 +32,9 @@ func newDaemon(t *testing.T, node string, withTier bool) (*Server, *httptest.Ser
 
 	var store durable.Store
 	if withTier {
-		fs, err := durable.NewFS(t.TempDir(), 0)
+		fs, err := newTestCache(t)
 		if err != nil {
-			t.Fatalf("NewFS: %v", err)
+			t.Fatalf("newTestCache: %v", err)
 		}
 		store = fs
 		server.SetDurableTier(NewDurableTier(lagertest.NewTestLogger("tier-"+node), store, server.Metrics(), time.Minute))

@@ -36,8 +36,9 @@ func run(args []string) error {
 	listen := flags.String("listen", ":7783", "HTTPS listener.")
 	cert := flags.String("tls-cert", "", "Server certificate PEM.")
 	key := flags.String("tls-key", "", "Server private key PEM.")
-	credentials := flags.String("credentials-file", "", "JSON mapping input, publisher, inventory and reclaimer to distinct bearer credentials.")
+	credentials := flags.String("credentials-file", "", "JSON mapping input, publisher, inventory, reclaimer (and cache, with --cache-namespace) to distinct bearer credentials.")
 	input := flags.String("input-namespace", "inputs", "Dedicated strict-input namespace.")
+	cache := flags.String("cache-namespace", "", "Dedicated namespace for the artifact daemons' fail-open resource cache. Empty serves no cache; set, the credentials file must also name a cache role.")
 	output := flags.String("output-namespace", "outputs", "Dedicated output namespace.")
 	maxBytes := flags.Int64("max-object-bytes", 16<<30, "Maximum stored bytes per object.")
 	concurrency := flags.Int("max-concurrent", 4, "Maximum simultaneous object operations; excess requests fail for retry.")
@@ -75,7 +76,7 @@ func run(args []string) error {
 		return err
 	}
 	defer store.Close()
-	handler, err := diskserver.New(store, diskserver.Config{StoreID: *id, InputNamespace: *input, OutputNamespace: *output, Credentials: tokens, MaxConcurrent: *concurrency})
+	handler, err := diskserver.New(store, diskserver.Config{StoreID: *id, InputNamespace: *input, OutputNamespace: *output, CacheNamespace: *cache, Credentials: tokens, MaxConcurrent: *concurrency})
 	if err != nil {
 		return err
 	}
