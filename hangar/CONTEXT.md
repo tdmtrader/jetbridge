@@ -179,6 +179,12 @@ The ownership metadata written once at object creation and never updated:
 which store, which digest, which marker version.
 _Avoid_: label, tag
 
+**Tree lock**:
+The database lock on one scope and digest that a capture moving to
+publishing, a reclaim admission and an orphan verdict each take, so none
+interleaves with another over the same tree.
+_Avoid_: dedup lock
+
 **Lifecycle**:
 The record that one published generation is managed by this plane, from
 publication until reclamation finishes.
@@ -220,8 +226,8 @@ the plane is out of service and every count is zero at once.
 _Avoid_: debt, backlog
 
 **Integrity finding**:
-The durable record of an unexpected object absence or runtime
-authorization failure. An open finding blocks new admission until an
+The durable record of an unexpected object absence (a read found a
+registered generation missing) or a runtime authorization failure. An open finding blocks new admission until an
 operator resolves it.
 _Avoid_: at risk, policy violation
 

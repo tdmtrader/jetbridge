@@ -19,7 +19,9 @@ through a caller-owned transaction and opaque identities.
 
 A tree ref is scope, digest and generation, all three. Scope is derived by
 the control plane from the deployment, tenant and store, and never accepted
-from a caller. Hangar never substitutes a newer generation or different
+from a caller. A ref under the previous scope derivation (v1, which also
+hashed the control-key generation) stays readable: the read path keys a ref
+by its own scope and accepts v1 for the same tenant and store. Hangar never substitutes a newer generation or different
 content. A strict input names a complete tree ref and fails closed on
 absence, corruption, conflict, authorization, limits or infrastructure.
 
@@ -61,7 +63,7 @@ database lock across a network call and nothing in memory between calls:
    never deletes one), canonicalizes the directory into scratch and answers
    the digest.
 3. **CAS pending → publishing**, writing the digest before any object can
-   exist. A cancelled Run, aborted build, failed or stopped producer is
+   exist, under the tree lock (below). A cancelled Run, aborted build, failed or stopped producer is
    instead CAS pending → discarded.
 4. **Publish.** The daemon creates the object for that digest, absent-only,
    with an object marker naming this store. On a precondition failure it
@@ -109,6 +111,10 @@ Run ──claim──▶ tree ref ◀──read lease── reader (read warrant
 - A **read lease** protects one generation for one reader. It refuses
   reclaim admission while live (a trigger enforces it), closes by
   database-clock expiry, and is given back when a read ends.
+- The **tree lock** is a transaction-scoped advisory lock on (scope,
+  digest). A capture's move to publishing, a reclaim admission and an
+  orphan verdict all take it, so none of them interleaves with a capture
+  deduplicating onto the same generation.
 - **Reclamation** runs in the web under a PostgreSQL advisory lock.
   Admission excludes any tree a pending or publishing capture names, any
   open claim and any live read lease; the delete is the exact generation
@@ -117,16 +123,23 @@ Run ──claim──▶ tree ref ◀──read lease── reader (read warrant
   output namespace and deletes, by the exact listed generation, only an
   object whose marker names this store, with no lifecycle, nothing pending
   or publishing that could register it, and older than twice the capture
-  deadline. A foreign-marked or unmarked object is counted and never
-  touched.
+  deadline. The marker's store is the bucket, the deployment prefix and the
+  scope, so two installs sharing a bucket never delete each other's
+  objects. A foreign-marked or unmarked object is counted and never
+  touched. The sweep judges one listed page at a time, re-judges only that
+  page's orphans under the tree lock in the transaction that deletes them,
+  stops at a duration budget and resumes from its place; failed passes are
+  counted and alerted on.
 
 ## In service and drain
 
 The output plane is in service when the `hangar_enabled` row says so. The
 web writes it at startup from its configuration; every admission (Run
 creation, capture start, exact-execution start, input upload) takes it FOR
-SHARE. An open integrity finding (unexpected absence, runtime authorization
-failure) also blocks admission until an operator resolves it.
+SHARE. An open integrity finding also blocks admission until an operator
+resolves it (`fly hangar-status --resolve-finding`): a runtime authorization
+failure, or an unexpected absence -- a managed read that finds a registered
+generation missing records one, and the read fails closed.
 
 Drain: turn the plane out of service; in-flight captures finish; `fly
 hangar-status` reports the residue (pending and publishing captures, open

@@ -42,13 +42,18 @@ We collapsed it:
   labels. There is no cohort to attest and so no frozen cohort.
 - **Reclaim and the orphan sweep run in the web**, under one advisory lock,
   admission excluding pending and publishing captures, claims and live
-  read leases, and the sweep marker-gated to this store.
+  read leases, and the sweep marker-gated to this store (bucket, prefix and
+  scope) and bounded by a per-pass budget. A per-tree advisory lock orders
+  a capture's move to publishing against reclaim and the sweep, since the
+  CAS alone cannot see a dedup onto the same generation.
 - **Product neutrality is dropped.** Hangar has one consumer. The
   vocabulary scan is gone; the import-leaf rule and the rule that no
   callable takes a bare string or a caller-chosen scope stay.
 
 ## Consequences
 
+- Integrity findings remain the one stop on admission, and a managed read
+  that finds a registered generation missing records one.
 - Node daemons hold publisher credentials only; the web holds list and
   delete over the output namespace. The daemon has no database credential
   and never calls the web.
@@ -63,6 +68,8 @@ We collapsed it:
     history and dead cancellation-queue rows are not reconstructed.
   - Output history from the handoff era is refused, not migrated:
     migration 1789793153 stops on a database that still holds any.
+    Published refs under the old scope derivation stay readable; nothing
+    new is written under it.
 - ADR-0005's storage contract (create-absent, exact operations, the disk
   store's single owner, operators owning infrastructure policy, integrity
   findings blocking admission) stands; its cohort attestation, receipts and
