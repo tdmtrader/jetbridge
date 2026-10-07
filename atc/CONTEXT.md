@@ -308,8 +308,9 @@ step rebuilds and pushes exactly that commit. It is never a branch.
 _Avoid_: candidate branch, queue-next
 
 **Landing intent**:
-The row written before the land Run is admitted, keyed by the compose Run,
-that makes a land Run for a candidate admitted at most once across restarts.
+The row created when a candidate's compose Run is admitted, keyed by that
+Run and completed by its land Run, so a land Run for a candidate is admitted
+at most once across restarts.
 _Avoid_: queue lease, fence
 
 **Queue principal**:
