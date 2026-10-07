@@ -203,9 +203,9 @@ func (producer *Producer) publish(files map[string][]byte) error {
 	}
 	coordinator := &hangaroutput.Coordinator{
 		Transactor: transactor{p.conn}, Rows: db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
-		Dialer: hangaroutput.SourceDialerFunc(func(context.Context, string, executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+		Dial: func(context.Context, string, executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 			return n.client, nil
-		}),
+		},
 		ActivationEpoch: Epoch,
 	}
 	// The node's seal is asynchronous: successive passes ask again until it

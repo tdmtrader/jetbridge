@@ -1,14 +1,11 @@
-// Package output is the product-neutral contract for turning one ordinary task
-// output into durable, claimable result content.
+// Package output is the contract for turning one ordinary task output into
+// durable, claimable result content.
 //
-// It is deliberately narrow about what it knows. Hangar owns durable capture
-// intent, source retention, structural sealing, canonical publication,
-// authoritative receipts, exact-generation inventory, opaque claims, orphan
-// recovery and physical reclamation. A consumer owns why an output matters, its
-// name, authorization, finality, causation and retention policy. Nothing in
-// this package can tell you which is which, and that is the point: a consumer
-// composes with Hangar through a caller-owned database transaction and an
-// opaque identity, and Hangar never learns what it composed with.
+// Hangar owns the capture row's vocabulary, the step marker, structural
+// sealing, canonical publication, opaque claims and physical reclamation. Its
+// one consumer, the pipeline Run, owns why an output matters, its name,
+// authorization and retention policy, and composes with Hangar through a
+// caller-owned database transaction and an opaque identity.
 //
 // Durable capture is an *extension* of the base exact-execution protocol in
 // hangar/executioncontrol. It references that package's Identity and

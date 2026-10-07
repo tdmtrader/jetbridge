@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -23,14 +24,7 @@ import (
 // questions and reports the answers.
 type StatusReader struct {
 	Transactor Transactor
-	Repository StatusStore
-}
-
-// StatusStore is the read surface a status pass needs.
-type StatusStore interface {
-	HangarEnabled(ctx context.Context, tx output.Tx) (bool, error)
-	OpenIntegrityFindings(ctx context.Context, tx output.Tx) ([]output.IntegrityFinding, error)
-	CountOutputPlaneState(ctx context.Context, tx output.Tx) (output.PlaneCounts, error)
+	Repository *db.HangarOutputRepository
 }
 
 // Status is what one read found.
@@ -96,14 +90,9 @@ func (reader *StatusReader) Read(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
-// FindingResolver closes an open integrity finding by id.
-type FindingResolver interface {
-	ResolveIntegrityFinding(ctx context.Context, tx output.Tx, id int64) error
-}
-
 // ResolveFinding closes one open integrity finding by id, in its own
 // transaction: the operator's statement that the cause was repaired.
-func ResolveFinding(ctx context.Context, transactor Transactor, repository FindingResolver, id int64) error {
+func ResolveFinding(ctx context.Context, transactor Transactor, repository *db.HangarOutputRepository, id int64) error {
 	tx, err := transactor.Begin()
 	if err != nil {
 		return err

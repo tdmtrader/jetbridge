@@ -33,16 +33,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
-
-// ReadLeaseStore is the durable half of a managed read.
-type ReadLeaseStore interface {
-	AcquireReadLease(ctx context.Context, tx output.Tx, request output.ReadLeaseRequest) (output.ReadLease, error)
-	LoadReadLease(ctx context.Context, tx output.Tx, id output.ReadLeaseID) (output.ReadLeaseRecord, error)
-}
 
 // ExactStat is the metadata stat performed outside the locks.
 //
@@ -119,7 +114,7 @@ type ReadWarrant struct {
 // ReadAdmission is the control plane's managed-output read.
 type ReadAdmission struct {
 	Transactor Transactor
-	Leases     ReadLeaseStore
+	Leases     *db.HangarOutputRepository
 	Stat       ExactStat
 	Minter     WarrantMinter
 	Clock      output.Clock

@@ -220,11 +220,11 @@ func runOutputCoordinator(in RunOutputRuntime) *hangaroutput.Coordinator {
 	return &hangaroutput.Coordinator{
 		Transactor: brineTransactor{conn: in.Start.DB.Conn},
 		Rows:       runCaptureRepository(),
-		Dialer: hangaroutput.SourceDialerFunc(func(ctx context.Context, node string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+		Dial: func(ctx context.Context, node string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 			dial, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			return source.CaptureControl(dial, node, uid)
-		}),
+		},
 		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
 	}
 }

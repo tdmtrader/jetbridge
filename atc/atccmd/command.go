@@ -1799,21 +1799,22 @@ func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableCompon
 // hangarOutputCoordinator is the capture coordinator: the capture rows in
 // PostgreSQL and the node daemons the rows name.
 func (cmd *RunCommand) hangarOutputCoordinator(dbConn db.DbConn) *hangaroutput.Coordinator {
-	var dialer hangaroutput.SourceDialer = hangaroutput.NoSourcePlane()
+	coordinator := &hangaroutput.Coordinator{
+		Transactor:      hangarOutputTransactor{conn: dbConn},
+		Rows:            db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
+		ActivationEpoch: executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
+	}
+	// With no runtime source the coordinator's Dial stays nil, and it refuses
+	// every node-side step with a typed error.
 	if source := cmd.hangarOutputSource; source != nil {
-		dialer = hangaroutput.SourceDialerFunc(func(ctx context.Context, node string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
+		coordinator.Dial = func(ctx context.Context, node string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 			dial, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			return source.CaptureControl(dial, node, uid)
-		})
+		}
 	}
 
-	return &hangaroutput.Coordinator{
-		Transactor:      hangarOutputTransactor{conn: dbConn},
-		Rows:            db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
-		Dialer:          dialer,
-		ActivationEpoch: executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
-	}
+	return coordinator
 }
 
 // hangarOutputCaptureComponent runs the capture sequence and its recovery:

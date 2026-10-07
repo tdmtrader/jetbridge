@@ -337,8 +337,6 @@ func (dialer *injectingDialer) NodeGone() {
 	dialer.gone = true
 }
 
-var _ hangaroutput.SourceDialer = (*injectingDialer)(nil)
-
 func (dialer *injectingDialer) ForNode(_ context.Context, name string, uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 	if name != harnessNodeName || uid != harnessNode {
 		return nil, fmt.Errorf("%w: no daemon on node %s/%s", output.ErrInfrastructure, name, uid)
@@ -748,7 +746,7 @@ func TestA5RecoveryAfterALostPublishCompletesWithoutASecondObject(t *testing.T) 
 	// A fresh coordinator: nothing survives the crash but the row.
 	recovered := &hangaroutput.Coordinator{
 		Transactor: h.Coordinator.Transactor, Rows: h.Repository,
-		Dialer: h.Dialer, ActivationEpoch: harnessEpoch,
+		Dial: h.Dialer.ForNode, ActivationEpoch: harnessEpoch,
 	}
 	if err := recovered.Run(context.Background()); err != nil {
 		t.Fatalf("the recovery pass: %v", err)

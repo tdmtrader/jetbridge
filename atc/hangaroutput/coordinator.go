@@ -45,6 +45,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -63,11 +64,43 @@ const DefaultPublishingMargin = time.Hour
 // exists waits before it is released without the node's acknowledgement.
 const DefaultNodeGoneMargin = time.Hour
 
+// Transaction is the caller's transaction, plus the two things only its owner
+// may do. The row methods take output.Tx, which is deliberately ExecContext and
+// QueryContext and nothing that could commit.
+type Transaction interface {
+	output.Tx
+
+	Commit() error
+	Rollback() error
+}
+
+// Transactor begins one. Each consumer begins it differently -- a Run result
+// read and a task input read take their own row locks first -- so this stays
+// an interface.
+type Transactor interface {
+	Begin() (Transaction, error)
+}
+
+// SourceControl is one node's artifact daemon: the base protocol's
+// observation of an execution, and the capture routes over its step
+// directories. The daemon client lives in the Kubernetes runtime, which
+// imports this package, so it is named here by what is called.
+type SourceControl interface {
+	output.SourceControl
+
+	Observe(ctx context.Context, id executioncontrol.Identity,
+		wait time.Duration) (executioncontrol.ObserveFinishOrStopResult, error)
+}
+
 // Coordinator advances capture rows. It holds no state about any capture.
 type Coordinator struct {
 	Transactor Transactor
-	Rows       CaptureRows
-	Dialer     SourceDialer
+	Rows       *db.HangarOutputRepository
+
+	// Dial reaches the artifact daemon on the node a row names, refusing a
+	// node replaced under the same name. Nil means this web has no output
+	// plane in service, and every node-side step is refused.
+	Dial func(ctx context.Context, node string, uid executioncontrol.NodeUID) (SourceControl, error)
 
 	// ActivationEpoch is the epoch a published generation's lifecycle and
 	// claim are recorded under while epochs exist.
@@ -295,7 +328,7 @@ func (coordinator *Coordinator) Run(ctx context.Context) error {
 
 // seal is steps 2 and 3. It answers whether the row moved.
 func (coordinator *Coordinator) seal(ctx context.Context, capture output.Capture) (bool, error) {
-	node, err := coordinator.Dialer.ForNode(ctx, capture.Node, capture.NodeUID)
+	node, err := coordinator.node(ctx, capture)
 	if err != nil {
 		return false, err
 	}
@@ -359,7 +392,7 @@ func (coordinator *Coordinator) seal(ctx context.Context, capture output.Capture
 // object was created before a lost answer completes onto that object rather
 // than creating anything.
 func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capture, recovering bool) (bool, error) {
-	node, err := coordinator.Dialer.ForNode(ctx, capture.Node, capture.NodeUID)
+	node, err := coordinator.node(ctx, capture)
 	if err != nil {
 		return false, err
 	}
@@ -429,7 +462,7 @@ func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capt
 
 // release is step 6.
 func (coordinator *Coordinator) release(ctx context.Context, capture output.Capture) (bool, error) {
-	node, err := coordinator.Dialer.ForNode(ctx, capture.Node, capture.NodeUID)
+	node, err := coordinator.node(ctx, capture)
 	if err != nil {
 		if nodeGone(err) && capture.FinishedAt != nil &&
 			coordinator.now().Sub(*capture.FinishedAt) >= coordinator.nodeGoneMargin() {
@@ -505,6 +538,17 @@ func (coordinator *Coordinator) get(ctx context.Context, key output.CaptureKey) 
 	defer tx.Rollback()
 
 	return coordinator.Rows.GetCapture(ctx, tx, key)
+}
+
+// node dials the daemon a row names. With no output plane in service nothing
+// node-side advances and nothing is guessed: the row waits.
+func (coordinator *Coordinator) node(ctx context.Context, capture output.Capture) (SourceControl, error) {
+	if coordinator.Dial == nil {
+		return nil, fmt.Errorf("%w: this web has no output plane in service, and step directories "+
+			"on %q cannot be reached", output.ErrInfrastructure, capture.Node)
+	}
+
+	return coordinator.Dial(ctx, capture.Node, capture.NodeUID)
 }
 
 func (coordinator *Coordinator) list(ctx context.Context,

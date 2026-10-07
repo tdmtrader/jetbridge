@@ -25,7 +25,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
-	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/atc/db"
 )
 
 // defaultReadLeaseBatch bounds one pass.
@@ -35,15 +35,10 @@ import (
 // the first wake after an outage would hold the component runner behind it.
 const defaultReadLeaseBatch = 100
 
-// AbandonedReadLeases is the durable half, declared where it is consumed.
-type AbandonedReadLeases interface {
-	CloseAbandonedReadLeases(ctx context.Context, tx output.Tx, limit int) (int, error)
-}
-
 // ReadLeaseCleaner is the component.
 type ReadLeaseCleaner struct {
 	Transactor Transactor
-	Leases     AbandonedReadLeases
+	Leases     *db.HangarOutputRepository
 	BatchSize  int
 }
 

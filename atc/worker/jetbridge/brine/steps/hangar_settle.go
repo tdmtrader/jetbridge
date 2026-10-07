@@ -57,10 +57,10 @@ func (transactor brineTransactor) Begin() (hangaroutput.Transaction, error) {
 // daemon. The node name and UID are still handed over, and a capture that
 // names a node this fixture did not start is refused rather than routed to
 // the one daemon there is.
-func oneDaemonDialer(daemon HangarDaemon) hangaroutput.SourceDialer {
+func oneDaemonDialer(daemon HangarDaemon) func(context.Context, string, executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 	control := jetbridgeClientFor(daemon)
 
-	return hangaroutput.SourceDialerFunc(func(_ context.Context, name string,
+	return func(_ context.Context, name string,
 		uid executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 		if string(uid) != daemon.NodeUID {
 			return nil, fmt.Errorf("%w: capture names node %s (%s); this fixture's daemon is %s",
@@ -68,7 +68,7 @@ func oneDaemonDialer(daemon HangarDaemon) hangaroutput.SourceDialer {
 		}
 
 		return control, nil
-	})
+	}
 }
 
 // brineCaptureNode is the node name the fixture's capture rows carry. The
@@ -99,7 +99,7 @@ func newSettlementPlane(daemon HangarDaemon, res brine.Resources) (settlementPla
 		Coordinator: &hangaroutput.Coordinator{
 			Transactor:      brineTransactor{conn: jdb.Conn},
 			Rows:            repository,
-			Dialer:          oneDaemonDialer(daemon),
+			Dial:            oneDaemonDialer(daemon),
 			ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
 		},
 	}, nil

@@ -155,7 +155,7 @@ func newHarness(t *testing.T) *harness {
 	coordinator := &hangaroutput.Coordinator{
 		Transactor:      &connTransactor{conn: conn},
 		Rows:            repository,
-		Dialer:          dialer,
+		Dial:            dialer.ForNode,
 		ActivationEpoch: harnessEpoch,
 	}
 

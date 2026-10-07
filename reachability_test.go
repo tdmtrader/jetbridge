@@ -295,10 +295,9 @@ func collectExported(t *testing.T, dir, root, filePrefix string, into map[string
 // So a reference now has to be one the Go compiler could also resolve to the
 // declaration: the referring file is in the declaring package, or its package
 // imports the declaring package, or the name is in interfaceSatisfied below.
-// That last list is the honest cost of not running a type checker: atc/db's
-// Hangar surface is reached through atc/hangaroutput's port interfaces, so the
-// caller imports the port and never the implementation. Those names are written
-// down with the port that carries them rather than obtained by accident from a
+// That last list is the honest cost of not running a type checker: a
+// declaration reached only through an interface is written down with the
+// interface that carries it rather than obtained by accident from a
 // repository-wide name match.
 func productionReferences(t *testing.T, root string, declared map[string][]string) map[string]map[string]bool {
 	t.Helper()
@@ -553,44 +552,12 @@ func (entry satisfiedEntry) credits(pkg string) bool {
 }
 
 var interfaceSatisfied = map[string]satisfiedEntry{
-	// atc/hangaroutput.Repository -- the ATC-side port the passes hold. Its
-	// implementation is db.HangarOutputRepository and no pass imports atc/db.
-	"AcknowledgeCaptureRelease":    {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"AcknowledgeSourceHold":        {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"AcquireCaptureLease":          {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"IssueStatChallenge":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"LoadHandoffRecord":            {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"RecordFirstObjectCreate":      {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"RecordSealDeadline":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"RecordTerminalCaptureFailure": {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-	"SealDeadlinePassed":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-
-	// The same implementation, reached through the leaf's own repository ports
-	// as well, so the capture half can be composed without the ATC.
-	"AcknowledgeNoCaptureRelease":            {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"AcknowledgePreReservationCancelRelease": {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"CommitCaptureReservation":               {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"RecordNoCaptureIntent":                  {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"RegisterReceipt":                        {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"ResolveLogicalReservation":              {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
-
-	// The read-lease ports, split so a holder of one cannot use the other.
-	"AcquireReadLease": {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore"},
+	// A Run's result reader releases its lease through a port of its own.
 	"ReleaseReadLease": {pkg: "atc/db", port: "atc/runs.resultLeaseReleaser"},
-
-	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
-	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},
 
 	// The web's deleting passes are components: the component runner calls
 	// Run through atc/component.Runnable.
 	"Run": {pkg: "atc/hangaroutput/reclaim", port: "atc/component.Runnable"},
-
-	// The operator status surface's read port. Its implementation is
-	// db.HangarOutputRepository, and atc/hangaroutput/status.go holds the port
-	// rather than the package -- which is the same shape every other entry here
-	// has, and the reason the reads below are reached without an atc/db import.
-	"CountOutputPlaneState": {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
 
 	// A standard-library interface, and the one case where the port is not in
 	// this repository at all: encoding/json reaches these by reflection, so no

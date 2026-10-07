@@ -18,10 +18,9 @@ import (
 // The seams this file defends, all of them stated once here rather than
 // re-derived at each call site in Phases 2 through 9:
 //
-//  1. Neither hangar/output nor hangar/executioncontrol may name a Run,
-//     workflow, ticket, agent, Anvil or playbook. Hangar is the product-neutral
-//     durable result plane; the moment it learns why an output matters, the
-//     consumer track owns Hangar rather than composing with it. (Reqs 1, 57)
+//  1. (Retired: the product-vocabulary rule. Hangar has one consumer, the
+//     pipeline Run, and the leaf rule in 6 already keeps the consumer's
+//     packages out of these two.)
 //  2. There is exactly one TreeRef, and it is the foundation's. A second exact
 //     reference type is how two object models start diverging. (Req 20)
 //  3. Output code is never routed through the durable *cache* tier, which is a
@@ -309,38 +308,6 @@ func union(parts ...surface) surface {
 // ---------------------------------------------------------------------------
 // The rules, as pure functions over an inventory.
 // ---------------------------------------------------------------------------
-
-// productDomainTerms are the vocabularies Hangar must not learn. They are
-// matched token by token against import paths, in singular and plural form.
-var productDomainTerms = []string{
-	"run", "workflow", "ticket", "agent", "anvil", "playbook",
-}
-
-// checkNoProductDomainImports matches import paths token by token rather than
-// by substring, so `atc/runs` is caught while `atc/runtime`, `runner` and this
-// repository's own `agentic` are not. A rule that cries wolf is deleted the
-// first time it does.
-func checkNoProductDomainImports(found surface) []string {
-	var problems []string
-
-	if len(found.Imports) == 0 {
-		return []string{"the inventory found no import at all; this rule would pass vacuously"}
-	}
-
-	for _, edge := range found.Imports {
-		for _, term := range productDomainTerms {
-			if !namesTerm(edge.Path, term) {
-				continue
-			}
-			problems = append(problems, edge.File+" imports "+edge.Path+
-				": Hangar is the product-neutral durable result plane. It must not learn what a "+
-				term+" is; the consumer composes with Hangar through a caller-owned transaction "+
-				"and an opaque identity instead.")
-		}
-	}
-
-	return problems
-}
 
 // namesTerm reports whether any token of s is term, or term pluralised.
 func namesTerm(s, term string) bool {
@@ -1007,7 +974,6 @@ func TestArchitecture(t *testing.T) {
 		t.Logf("%s: scanned %d files (%d Go)", name, len(found.Files), goFiles)
 	}
 
-	report(t, "product-domain vocabulary", checkNoProductDomainImports(leafSurface))
 	report(t, "one TreeRef", checkNoSecondTreeRef(leafSurface))
 	report(t, "not the durable cache tier", checkNotRoutedThroughTheDurableCache(leafSurface))
 	report(t, "no caller-chosen storage location", checkNoAPIAcceptsAStorageLocation(leafSurface))
@@ -1027,7 +993,6 @@ func TestArchitecture(t *testing.T) {
 func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 	empty := surface{}
 	rules := map[string]func(surface) []string{
-		"product-domain vocabulary":         checkNoProductDomainImports,
 		"one TreeRef":                       checkNoSecondTreeRef,
 		"not the durable cache tier":        checkNotRoutedThroughTheDurableCache,
 		"no caller-chosen storage location": checkNoAPIAcceptsAStorageLocation,
@@ -1057,7 +1022,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			Body: []byte("package output\n\nvar _ = durable.Store(nil)\n"),
 		}},
 		Imports: []importEdge{
-			{File: "output.go", Path: "github.com/concourse/concourse/atc/runs"},
 			{File: "output.go", Path: "github.com/concourse/concourse/cmd/artifact-daemon/durable"},
 			{File: "output.go", Path: "github.com/concourse/concourse/atc/db"},
 			{File: "output.go", Path: "cloud.google.com/go/storage"},
@@ -1080,7 +1044,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 	}
 
 	expectations := map[string]string{
-		"product-domain vocabulary":         "atc/runs",
 		"one TreeRef":                       "declares type TreeRef",
 		"not the durable cache tier":        "artifact-daemon/durable",
 		"no caller-chosen storage location": "caller-chosen bucket",
@@ -1240,20 +1203,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			if !strings.Contains(joined, expected) {
 				t.Errorf("the rule did not object to %q. It reported:\n%s", expected, joined)
 			}
-		}
-	})
-
-	// The vocabulary rule must not fire on the words that legitimately contain
-	// a forbidden term, or the allowlist above is doing nothing and the rule
-	// will be deleted the first time it cries wolf.
-	t.Run("vocabulary rule tolerates legitimate containing words", func(t *testing.T) {
-		benign := surface{Imports: []importEdge{
-			{File: "output.go", Path: "github.com/concourse/concourse/atc/runtime"},
-			{File: "output.go", Path: "time"},
-			{File: "output.go", Path: "context"},
-		}}
-		if problems := checkNoProductDomainImports(benign); len(problems) != 0 {
-			t.Errorf("the vocabulary rule objected to benign imports: %v", problems)
 		}
 	})
 }

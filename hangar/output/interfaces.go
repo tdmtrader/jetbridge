@@ -65,20 +65,17 @@ func (object PublishedObject) Validate() error {
 	return nil
 }
 
-// PrincipalRole is the closed set of cloud identities in the output plane.
+// PrincipalRole names the cloud identity a runtime denial was recorded
+// against. The node daemon publishes; the web reclaims.
 type PrincipalRole string
 
 const (
 	PrincipalPublisher PrincipalRole = "publisher"
-	PrincipalInventory PrincipalRole = "inventory"
 	PrincipalReclaimer PrincipalRole = "reclaimer"
 )
 
-// Validate refuses a role outside the closed set.
-//
-// It matters here for the same reason it matters everywhere else in this
-// vocabulary: a runtime denial recorded against an invented role name is a
-// violation row an operator cannot map to a service account.
+// Validate refuses a role outside the closed set: a denial recorded against an
+// invented role name is a finding an operator cannot map to a service account.
 func (role PrincipalRole) Validate() error {
 	if slices.Contains(PrincipalRoles(), role) {
 		return nil
@@ -89,30 +86,8 @@ func (role PrincipalRole) Validate() error {
 }
 
 func PrincipalRoles() []PrincipalRole {
-	return []PrincipalRole{
-		PrincipalPublisher,
-		PrincipalInventory,
-		PrincipalReclaimer,
-	}
+	return []PrincipalRole{PrincipalPublisher, PrincipalReclaimer}
 }
-
-// StatChallenge is a one-use, database-clock-bounded demand for fresh proof
-// that an exact generation is really there, with the attributes and marker it
-// should have.
-//
-// It exists because a signature over old facts proves the facts were once true.
-// The nonce is consumed by the caller's transaction, which revalidates every
-// bound fact before the deadline, so a receipt cannot be replayed for another
-// capture, source, output or fence.
-// The bounds a challenge is issued under, mirroring
-// hangar_receipt_stat_challenges' own CHECK constraints. They are restated here
-// because the daemon that signs against a challenge never sees the schema, and
-// a bound only the database knows is a bound the signer cannot enforce.
-const (
-	MinChallengeNonceBytes = 16
-	MaxChallengeNonceBytes = 128
-	MaxChallengeWindow     = 5 * time.Minute
-)
 
 // ReadLeaseRequest asks for the right to read one exact generation.
 //
@@ -199,4 +174,4 @@ func (request ReadLeaseRequest) Validate() error {
 
 // MaxStatProofAge is how stale the stat admitting a read lease may be: how
 // long an observation of the object store may stand in for the object store.
-const MaxStatProofAge = MaxChallengeWindow
+const MaxStatProofAge = 5 * time.Minute
