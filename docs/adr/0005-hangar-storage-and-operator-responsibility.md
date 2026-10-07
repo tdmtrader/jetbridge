@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded in part by 0009
 date: 2026-09-24
 ---
 
@@ -40,3 +40,6 @@ replication layer or provider-specific implementation of the output protocol.
 - Historical policy evidence is retained for audit. Wire/state-machine names
   used by daemon cohort activation remain compatible; cohort attestation is
   separate from the removed storage-policy process.
+- Superseded in part by [ADR-0009](0009-one-node-daemon-one-capture-row.md)
+  (2026-10-07): there is no cohort attestation, no publication receipt and
+  no fixed set of four storage roles. The storage contract above stands.

@@ -1,131 +1,144 @@
 # Hangar: relationships and invariants
 
-Vocabulary: [`hangar/CONTEXT.md`](../../hangar/CONTEXT.md).
+Vocabulary: [`hangar/CONTEXT.md`](../../hangar/CONTEXT.md). The decision
+behind this shape is [ADR-0009](../adr/0009-one-node-daemon-one-capture-row.md).
 
 ## Two halves
 
 ```
-Strict input:  task ──materialization warrant──▶ daemon ──materializes──▶ tree ref
-Output plane:  task output ──capture──▶ handoff ──publish──▶ tree ref ──claim──▶ consumer
+Strict input:  task ──materialization warrant──▶ artifact daemon ──materializes──▶ tree ref
+Output plane:  task output ──capture row + step marker──▶ publish ──▶ tree ref ──claim──▶ Run
 ```
 
-Hangar knows nothing about what a tree is for. Its packages never name a
-run, workflow, ticket, agent, anvil or playbook; the base execution
-protocol also never names a build, job, check or capture; the coordinator
-never names a build, job or check. A test scans exported fields, wire
-spellings and imports for those words.
+Both halves live in two processes: the artifact daemon on each node, and the
+web. `hangar-store` serves the disk store. Nothing else runs. Hangar is a
+leaf: `hangar/` imports nothing from core, and the web composes with it
+through a caller-owned transaction and opaque identities.
 
 ## Tree refs
 
-A tree ref is scope, digest and generation, all three. Scope is filled in by
-the control plane and never accepted from a caller. Hangar never
-substitutes a newer generation or different content. A strict input names a
-complete tree ref and fails closed on absence, corruption, conflict,
-authorization, limits or infrastructure.
+A tree ref is scope, digest and generation, all three. Scope is derived by
+the control plane from the deployment, tenant and store, and never accepted
+from a caller. Hangar never substitutes a newer generation or different
+content. A strict input names a complete tree ref and fails closed on
+absence, corruption, conflict, authorization, limits or infrastructure.
 
-## Capture handoff
+## Storage
 
-```
-unresolved ──▶ resolved ──▶ registered
-     │                          │
-     ├──▶ cancelled             └──▶ (release source) ──▶ done
-     └──▶ failed
-```
+One object interface (create-absent, current and exact stat, exact open,
+list) with two backends, GCS and the disk store. Exact delete is a separate
+interface constructed only by the web's reclaim pass and orphan sweep, and by
+the durable cache tier over its own namespace.
 
-Every next step is decided from durable facts alone; the coordinator holds
-no lock across the network and no memory between calls.
+Three namespaces: **cache** (the runtime's fail-open tier), **input** (strict
+inputs) and **output** (captures). No two may be the same bucket or disk
+namespace; the daemon and the web refuse to start otherwise. Retention class
+is a key prefix.
 
-- A handoff starts with a **predeclaration**: id, source hold, execution,
-  activation epoch, output, capture deadline.
-- Before anything writes, the **source placement** (locator, incarnation,
-  directory) and the **hold acknowledgement** are recorded.
-- The **disposition** is arbitrated by one row and is permanently one of
-  capture, no capture, or cancelled before reservation. An unwon arbiter is
-  an absence, not a fourth value.
-- A capture disposition records a **reservation** and a **producer
-  checkpoint** at the producer's completion, before any object exists, so
-  recovery can correlate an object that may exist.
-- Past the **irreversible publish point** cancellation is unavailable; an
-  unresolved state there is corruption.
-- A no-capture disposition releases the source in two crash-recoverable
-  halves: recorded **release intent**, then daemon acknowledgement. Until
-  both, the source stays held and destructive cleanup is forbidden.
-- A tree ref is durable only once a verified **publication receipt** is
-  registered.
-
-## Source incarnation, hold and ledger
-
-A source incarnation is four facts and no path: execution, node, handle
-generation, output. A recreated pod is a new incarnation and may not
-write. The **source hold** is provisional and non-authorizing: it prevents
-cleanup, replacement and reuse while a capture is pending. The **seal**
-fences and drains every writer so the published tree is exactly what the
-producer left.
-
-The **source ledger** answers every destructive request one of four ways:
-unmanaged (may destroy), held, sealed, unavailable. Only unmanaged permits
-destruction. An unknown writer state is held; an unreadable ledger is
-unavailable; both refuse.
-
-## Activation
-
-An **activation epoch** is the single authority on whether the plane is in
-service. It has two **facets**, base and output, each moving through
-initial, attesting, attested, enabled, draining, disabled. Disabled is
-terminal; rotation creates a new epoch. Output may leave initial only once
-base is attested. Every transition compares a revision and refuses a stale
-one. Draining goes output first, then base. Unresolved runtime integrity
-findings (unexpected absence or authorization failure) block admission. IAM
-and lifecycle configuration belong to the operator, not an attestation loop.
-
-## Claims, leases and reclamation
+## The capture row
 
 ```
-Consumer ──claim──▶ tree ref ◀──read lease── reader
-                       │
-      reclaim admission ──▶ reclaim delete ──▶ reclaim finalization
+             ┌──▶ discarded
+             │
+pending ──▶ publishing ──▶ published
+   │            │
+   └────────────┴──▶ failed
+```
+
+One row per (execution, output), the only durable capture state. Every move
+is a compare-and-set; a replayed commit whose answer was lost succeeds, and
+anything else is a conflict. Identity and a written digest never change.
+`released_at` is a one-way stamp on a terminal row.
+
+The coordinator in the web drives each row in six steps, holding no
+database lock across a network call and nothing in memory between calls:
+
+1. **Step start.** The web inserts a pending row naming the node and Pod;
+   the step's control init writes a held step marker before the first
+   container starts.
+2. **Seal.** After the step exits the daemon flips the marker to sealed,
+   waits until every container of that exact Pod UID has terminated (it
+   never deletes one), canonicalizes the directory into scratch and answers
+   the digest.
+3. **CAS pending → publishing**, writing the digest before any object can
+   exist. A cancelled Run, aborted build, failed or stopped producer is
+   instead CAS pending → discarded.
+4. **Publish.** The daemon creates the object for that digest, absent-only,
+   with an object marker naming this store. On a precondition failure it
+   stats the existing object and compares marker and digest: a match joins
+   that generation, anything else is a collision and the row fails.
+5. **CAS publishing → published**, writing the generation; the same
+   transaction registers the generation's lifecycle and takes the capture's
+   claim, and the Run sees the announcement.
+6. **Release.** For every terminal row with no `released_at`, the daemon
+   clears the marker, then the web stamps `released_at`. Retried every pass;
+   the sweeper refuses the directory until then. A row whose node is gone is
+   released without acknowledgement after a margin, and the row records it.
+
+No marker is never "capture what is there": a capture asked of a node that
+did not hold the step fails, and no empty tree is published.
+
+## The step marker
+
+One file per step directory, written by fsync and rename: `held`, `sealed`
+or `released` (a tombstone, so no hold is taken for that step again), with
+the execution, output, node and Pod UID. The daemon's source ledger reads the
+markers and answers every destructive request unmanaged, held, sealed or
+unavailable. Only unmanaged permits destruction; an unreadable marker is
+unavailable and refuses.
+
+## Recovery
+
+Recovery reads the row, because the marker kept the directory:
+
+- **publishing** with a digest: stat the store for that digest; complete
+  step 5 onto what is there, or repeat step 4. When the store holds nothing
+  and the sealed directory is gone from its node, fail.
+- **pending** past its capture deadline: fail. A publishing row past the
+  deadline plus a margin: fail.
+
+## Claims, read leases and reclamation
+
+```
+Run ──claim──▶ tree ref ◀──read lease── reader (read warrant)
+                  │
+   reclaim admission ──▶ delete exact generation ──▶ finalization
 ```
 
 - A **claim** is opaque and idempotent; Hangar never interprets one.
-- A **read lease** is the reader's protection over one generation. It
-  outlives the last claim and refuses reclaim admission while active. It
-  closes by database-clock expiry, swept in bounded batches; a lease renewed
-  between candidate read and write is not closed. The daemon gives it back
-  when a read ends, except after an unavailable answer, which the reader
-  retries under the same warrant: that lease stays until its term ends.
-- **Reclamation** is admission (the decision) then delete (the act) then
-  finalization (the record), each its own operation kind.
+- A **read lease** protects one generation for one reader. It refuses
+  reclaim admission while live (a trigger enforces it), closes by
+  database-clock expiry, and is given back when a read ends.
+- **Reclamation** runs in the web under a PostgreSQL advisory lock.
+  Admission excludes any tree a pending or publishing capture names, any
+  open claim and any live read lease; the delete is the exact generation
+  the lifecycle recorded.
+- The **orphan sweep** runs in the web under the same lock. It lists the
+  output namespace and deletes, by the exact listed generation, only an
+  object whose marker names this store, with no lifecycle, nothing pending
+  or publishing that could register it, and older than twice the capture
+  deadline. A foreign-marked or unmarked object is counted and never
+  touched.
 
-## Operation kinds and leases
+## In service and drain
 
-Eight kinds: capture recovery, no-capture release, inventory, adoption,
-reclaim admission, reclaim delete, reclaim finalization, read-lease
-cleanup. Only three contend and hold an **operation
-lease**: inventory, reclaim admission, reclaim delete.
-The rest run unleased for stated reasons: recovery and release are the web
-node's own pass; adoption runs inside inventory's lease; finalization
-records an object already gone; read-lease cleanup is clock-driven. Only
-reclaim delete is woken by notification.
+The output plane is in service when the `hangar_enabled` row says so. The
+web writes it at startup from its configuration; every admission (Run
+creation, capture start, exact-execution start, input upload) takes it FOR
+SHARE. An open integrity finding (unexpected absence, runtime authorization
+failure) also blocks admission until an operator resolves it.
 
-**Inventory** sweeps the bucket and gives every readable object a
-committed disposition. **Adoption** takes ownership of an object carrying
-this epoch's marker with no lifecycle row; an unmarked object or a foreign
-epoch's object is never adopted and becomes **debt**, which also records
-any stretch a pass did not reach. Debt keeps one bad object from starving
-the keys after it.
+Drain: turn the plane out of service; in-flight captures finish; `fly
+hangar-status` reports the residue (pending and publishing captures, open
+claims, live read leases, unfinished reclaim jobs, and releases no node
+acknowledged). Remove the plane when every count is zero at once.
 
-## Roles
+## Trust
 
-Three output storage roles, each its own binary and credentials:
-publisher, inventory, reclaimer. Strict inputs use a separate storage identity. Delete exists only on the
-reclaimer and only against a tree ref with a precondition. No interface
-accepts a storage location; scope is the only namespace a caller can name.
-
-## Storage backends
-
-GCS and disk implement explicit immutable object operations. Tree verification,
-publication, inventory and reclamation share the same algorithms. Disk uses a
-single PVC owner, bbolt generation/index transactions and synced immutable
-blobs. Fixed namespace-scoped credentials over verified TLS separate storage
-roles. Only the reclaimer client exposes exact deletion; only the storage
-service links the local index. See [ADR-0005](../adr/0005-hangar-storage-and-operator-responsibility.md).
+Step pods are untrusted. Every pod-originated daemon call carries a warrant;
+warrant keys never enter a task pod; no callable accepts a bare string or a
+caller-chosen scope (`hangar/output/architecture_test.go`). The daemon holds
+no database credential and no delete credential over the input or output
+namespace, and never calls the web; every off-node route needs an mTLS
+client certificate. The reader verifies a tree against the digest in the
+row.
