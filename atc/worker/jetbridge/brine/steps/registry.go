@@ -124,6 +124,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, RunReviewResultDefinitions()...)
 	defs = append(defs, HangarManagedReadDefinitions()...)
 	defs = append(defs, HangarNodeIdentityDefinitions()...)
+	defs = append(defs, HangarReclaimDefinitions()...)
 	defs = append(defs, RunCancellationDefinitions()...)
 	defs = append(defs, RunCancellationBoundaryDefinitions()...)
 	defs = append(defs, RunCancellationAPIDefinitions()...)
