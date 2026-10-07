@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,5 +310,47 @@ func mintControlPKI(t *testing.T) controlPKI {
 			[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, []net.IP{net.ParseIP("127.0.0.1")}),
 		client: leaf(3, "concourse-web",
 			[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil),
+	}
+}
+
+// A peer artifact daemon presents the daemons' shared serving certificate as
+// its client certificate (mirroring, cross-node fetches), and it verifies
+// against the one CA. On the output plane's off-node routes it is refused:
+// only the control plane drives a node's capture plane. The node-local hold is
+// unaffected, and a different certificate from the same CA is admitted.
+func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
+	fixture := newRoutes(t, "")
+	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
+	if err != nil {
+		t.Fatalf("building the verifier: %v", err)
+	}
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.source, verifier, "")
+	server.RequireClientCertificates()
+	daemonDER := []byte("the daemons' serving certificate")
+	server.RefuseDaemonCertificate(daemonDER)
+	handler := server.Handler()
+
+	call := func(method, path string, peer []byte) int {
+		request := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Raw: peer}}}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+
+		return recorder.Code
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/handshake"},
+		{http.MethodPost, "/execution/v1/classify"},
+		{http.MethodPost, "/capture/v1/seal"},
+		{http.MethodPost, "/read/v1/stat"},
+	} {
+		code := call(route.method, route.path, daemonDER)
+		if code != http.StatusUnauthorized && code != http.StatusForbidden {
+			t.Errorf("%s %s answered %d to the daemons' own certificate", route.method, route.path, code)
+		}
+	}
+	if code := call(http.MethodGet, "/handshake", []byte("the web's client certificate")); code != http.StatusOK {
+		t.Errorf("the control plane's certificate was refused the handshake: %d", code)
 	}
 }

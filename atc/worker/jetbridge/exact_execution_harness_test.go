@@ -108,8 +108,9 @@ func repositoryRoot() string {
 }
 
 // startOutputDaemon brings up one daemon with its own ledger and returns a
-// client already bound to it.
-func startOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemonWith(false) }
+// client already bound to it. The output plane is TLS-only, so it is the TLS
+// daemon.
+func startOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemonWith(true) }
 
 // startTLSOutputDaemon is the same daemon with its three TLS flags set.
 //

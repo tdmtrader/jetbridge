@@ -33,13 +33,18 @@ package hangaroutput_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -371,10 +376,13 @@ func repositoryRoot() string {
 }
 
 type daemonProcess struct {
-	Endpoint      string
-	StepsDir      string
-	Dir           string
-	Client        *jetbridge.OutputControlClient
+	Endpoint string
+	StepsDir string
+	Dir      string
+	Client   *jetbridge.OutputControlClient
+	// Node is a client that trusts the daemon and presents no certificate:
+	// what a pod on the node holds.
+	Node          *http.Client
 	ReceiptPublic []byte
 	KeyRing       *output.ReceiptKeyRing
 
@@ -422,7 +430,10 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 	}
 
 	port := freePort(t)
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	base := fmt.Sprintf("https://127.0.0.1:%d", port)
+	// The output plane is TLS-only: one small PKI, a server certificate for
+	// 127.0.0.1 and a control-plane client certificate.
+	controlClient, nodeClient := writeHarnessPKI(t, dir)
 
 	args := []string{
 		"--output-endpoint", endpoint,
@@ -442,6 +453,9 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
 		"--listen-address", "127.0.0.1",
 		"--port", fmt.Sprint(port),
+		"--tls-cert", filepath.Join(dir, "server.crt"),
+		"--tls-key", filepath.Join(dir, "server.key"),
+		"--tls-ca-cert", filepath.Join(dir, "ca.crt"),
 	}
 
 	minter, err := executioncontrol.NewCapabilityMinter(secret, time.Minute, time.Now)
@@ -466,10 +480,10 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		Dir:           dir,
 		ReceiptPublic: receiptPublic,
 		KeyRing:       ring,
+		Node:          nodeClient,
 		args:          args,
 	}
-	process.Client = jetbridge.NewOutputControlClient(base,
-		&http.Client{Timeout: 15 * time.Second}, minter, harnessEpoch)
+	process.Client = jetbridge.NewOutputControlClient(base, controlClient, minter, harnessEpoch)
 	process.start(t, binary)
 
 	return process
@@ -488,7 +502,7 @@ func (process *daemonProcess) start(t *testing.T, binary string) {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		response, err := http.Get(process.Endpoint + "/readyz")
+		response, err := process.Node.Get(process.Endpoint + "/readyz")
 		if err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
@@ -595,7 +609,7 @@ func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureA
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(jetbridge.CapabilityHeaderName, string(warrant))
 
-	response, err := http.DefaultClient.Do(request)
+	response, err := process.Node.Do(request)
 	if err != nil {
 		t.Fatalf("holding: %v", err)
 	}
@@ -611,4 +625,82 @@ func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureA
 	}
 
 	return ack
+}
+
+// writeHarnessPKI mints a CA, a server certificate for 127.0.0.1 and a client
+// certificate under it, writes the server half and the CA into dir, and
+// returns a control-plane client (presents the client certificate) and a
+// node client (trusts the CA, presents nothing).
+func writeHarnessPKI(t *testing.T, dir string) (*http.Client, *http.Client) {
+	t.Helper()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("CA key: %v", err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "harness-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CA certificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parsing the CA: %v", err)
+	}
+	leaf := func(serial int64, name string, server bool) ([]byte, []byte) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("leaf key: %v", err)
+		}
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(serial),
+			Subject:      pkix.Name{CommonName: name},
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+		if server {
+			template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+			template.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
+		if err != nil {
+			t.Fatalf("leaf certificate: %v", err)
+		}
+		keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatalf("leaf key encoding: %v", err)
+		}
+		return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+			pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	serverCert, serverKey := leaf(2, "artifact-daemon", true)
+	clientCert, clientKey := leaf(3, "concourse-client", false)
+	for name, body := range map[string][]byte{"ca.crt": caPEM, "server.crt": serverCert, "server.key": serverKey} {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	pair, err := tls.X509KeyPair(clientCert, clientKey)
+	if err != nil {
+		t.Fatalf("client key pair: %v", err)
+	}
+	control := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS12, RootCAs: pool, Certificates: []tls.Certificate{pair}}}}
+	node := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS12, RootCAs: pool}}}
+
+	return control, node
 }

@@ -417,7 +417,7 @@ func TestTheOutputDaemonWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading %s: %v", startupOnly, err)
 	}
-	if !strings.Contains(string(banner), "func Open(ctx context.Context, config Config, nodes kubernetes.Interface, mutualTLS bool, out io.Writer) (_ *Plane, err error)") {
+	if !strings.Contains(string(banner), "func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemonCertificate []byte, out io.Writer) (_ *Plane, err error)") {
 		t.Error("Open() no longer takes its output destination as a parameter. The startup " +
 			"banner's confinement to startup was that signature; check where it prints now.")
 	}

@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +38,12 @@ func postHold(endpoint, warrant string, admission hangaroutput.CaptureAdmission,
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(CapabilityHeaderName, warrant)
 
-	response, err := http.DefaultClient.Do(request)
+	// What the control init does: it dials its own node by IP, which no
+	// certificate names, so it does not verify the server and presents no
+	// client certificate -- the hold is the node-local route.
+	node := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}}
+	response, err := node.Do(request)
 	if err != nil {
 		return err
 	}

@@ -333,7 +333,11 @@ func main() {
 		if *nodeName != "" {
 			nodes = k8sClient
 		}
-		plane, err = outputplane.Open(context.Background(), planeConfig, nodes, tlsEnabled, os.Stdout)
+		var servingCertificate []byte
+		if tlsCfg != nil && len(tlsCfg.Certificates) > 0 && len(tlsCfg.Certificates[0].Certificate) > 0 {
+			servingCertificate = tlsCfg.Certificates[0].Certificate[0]
+		}
+		plane, err = outputplane.Open(context.Background(), planeConfig, nodes, servingCertificate, os.Stdout)
 		if err != nil {
 			logger.Error("output-plane-config-invalid", err)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)

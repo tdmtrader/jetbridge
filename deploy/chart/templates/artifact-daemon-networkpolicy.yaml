@@ -47,7 +47,10 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
-    # Allow traffic from peer daemon pods (cross-node resolution)
+    # Allow traffic from peer daemon pods (cross-node resolution). The output
+    # plane is served on this same port, so a policy cannot admit peers to the
+    # artifact routes alone; the plane's off-node routes refuse the daemons'
+    # own serving certificate instead, which is the one a peer presents.
     - from:
         - podSelector:
             matchLabels:

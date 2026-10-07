@@ -232,10 +232,10 @@ func hostAndPortOf(endpoint string) (string, int, error) {
 //
 // This is the endpoint-supplied half, and it is the one production always
 // takes: `buildPod` validates the envelope and refuses an empty endpoint ("an
-// envelope nobody can ask about is not control"). The daemon here is the
-// plaintext harness, so what is exercised is the SCRIPT -- its body, its
-// header, its parsing of the answer -- with the transport taken out of the
-// question. The fallback's own scheme is the TLS test below.
+// envelope nobody can ask about is not control"). What is exercised is the
+// SCRIPT -- its body, its header, its parsing of the answer. The output plane
+// is TLS-only, so the harness serves HTTPS; the fallback's own scheme is the
+// TLS test below.
 func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T) {
 	harness, err := startOutputDaemon()
 	if err != nil {

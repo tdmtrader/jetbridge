@@ -58,10 +58,18 @@ var Patterns = []string{
 // not read its own ledger is not one that may say what it says.
 //
 // nodes is the artifact daemon's Kubernetes client; nil means there is no node
-// to label, which is how this runs outside a cluster. mutualTLS says the
-// daemon's listener verifies client certificates, which makes every route but
-// the node-local ones require one.
-func Open(ctx context.Context, config Config, nodes kubernetes.Interface, mutualTLS bool, out io.Writer) (_ *Plane, err error) {
+// to label, which is how this runs outside a cluster. daemonCertificate is the
+// DER of the certificate the daemon's mTLS listener serves with: the plane is
+// TLS-only, so nil is refused, and every route but the node-local ones requires
+// a verified client certificate that is not that one (see
+// Server.RefuseDaemonCertificate).
+func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemonCertificate []byte, out io.Writer) (_ *Plane, err error) {
+	if len(daemonCertificate) == 0 {
+		return nil, fmt.Errorf("%w: the output plane needs the daemon's mTLS (--tls-cert, "+
+			"--tls-key, --tls-ca-cert): its off-node routes carry control capabilities and "+
+			"read warrants, and over plaintext those are interceptable inside their TTL",
+			output.ErrIncomplete)
+	}
 	labeler := NewFacetLabeler(nodes, config.NodeName)
 	if labeler != nil {
 		lookup, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -133,9 +141,8 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, mutual
 	if err := plane.server.configureReads(config, store); err != nil {
 		return nil, err
 	}
-	if mutualTLS {
-		plane.server.RequireClientCertificates()
-	}
+	plane.server.RequireClientCertificates()
+	plane.server.RefuseDaemonCertificate(daemonCertificate)
 
 	fmt.Fprintf(out, "output plane mounted\n")
 	fmt.Fprintf(out, "  activation epoch: %d\n", daemon.ActivationEpoch())
@@ -155,12 +162,8 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, mutual
 		fmt.Fprintf(out, "  facets:           base exact-execution-control only; "+
 			"durable output capture is NOT enabled on this node\n")
 	}
-	if mutualTLS {
-		fmt.Fprintf(out, "  control API:      https, client certificate required "+
-			"(node-local routes exempt)\n")
-	} else {
-		fmt.Fprintf(out, "  control API:      http, node-local only\n")
-	}
+	fmt.Fprintf(out, "  control API:      https, the control plane's client certificate "+
+		"required (node-local routes exempt)\n")
 	if plane.unready != "" {
 		fmt.Fprintf(out, "\nNOT READY: %s\n", plane.unready)
 	}

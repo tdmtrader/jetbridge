@@ -40,7 +40,8 @@ func (server *Server) readStat(w http.ResponseWriter, request *http.Request) {
 func (server *Server) authorizeRead(w http.ResponseWriter, request *http.Request) bool {
 	// Unlike execution operations, these requests have no execution capability.
 	// Their caller must be a verified control-plane peer even in a local setup.
-	if !server.mutualTLS || request.TLS == nil || len(request.TLS.VerifiedChains) == 0 {
+	if !server.mutualTLS || request.TLS == nil || len(request.TLS.VerifiedChains) == 0 ||
+		!server.controlPlaneCaller(request) {
 		readRefusal(w, output.ErrUnauthorized)
 		return false
 	}

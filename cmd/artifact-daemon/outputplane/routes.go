@@ -73,11 +73,40 @@ type Server struct {
 	// requires TLS", and only the second one can be enforced.
 	mutualTLS bool
 	reads     *managedReads
+
+	// daemonCertificate is the DER of the certificate this daemon SERVES with.
+	// Every artifact daemon in a deployment serves with the same certificate
+	// and presents it as its client certificate to its peers for mirroring
+	// and cross-node fetches, so it verifies against the one CA. On this
+	// plane's off-node routes it is refused: those are the control plane's,
+	// and a node that could drive another node's capture plane with its own
+	// serving certificate would make every node an authority over every
+	// other. Nil refuses nothing extra.
+	daemonCertificate []byte
 }
 
 // RequireClientCertificates turns on the client-certificate check for every
 // route that is not node-local.
 func (server *Server) RequireClientCertificates() { server.mutualTLS = true }
+
+// RefuseDaemonCertificate makes the off-node routes refuse a caller that
+// presents the daemons' own serving certificate. See daemonCertificate.
+func (server *Server) RefuseDaemonCertificate(der []byte) { server.daemonCertificate = der }
+
+// controlPlaneCaller reports whether an off-node request may proceed: with
+// mTLS configured it must carry a verified client certificate, and that
+// certificate must not be the daemons' own.
+func (server *Server) controlPlaneCaller(request *http.Request) bool {
+	if !server.mutualTLS {
+		return true
+	}
+	if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+		return false
+	}
+
+	return len(server.daemonCertificate) == 0 ||
+		!bytes.Equal(request.TLS.PeerCertificates[0].Raw, server.daemonCertificate)
+}
 
 func NewServer(daemon *Daemon, base *ExecutionLedger, source *SourceLedger,
 	capability *executioncontrol.CapabilityVerifier, unreadyBecause string) *Server {
@@ -195,8 +224,8 @@ func (server *Server) Handler() http.Handler {
 		// the web and the activation walk -- are off-node, and every off-node
 		// route requires a verified client certificate when the daemon is
 		// configured for one.
-		if server.mutualTLS && (request.TLS == nil || len(request.TLS.PeerCertificates) == 0) {
-			http.Error(w, "a verified client certificate is required for the handshake",
+		if !server.controlPlaneCaller(request) {
+			http.Error(w, "the control plane's verified client certificate is required for the handshake",
 				http.StatusUnauthorized)
 
 			return
@@ -218,8 +247,8 @@ func (server *Server) Handler() http.Handler {
 		// It names a bucket and a derived namespace, which the base handshake
 		// does not, so it is behind the same client-certificate requirement as
 		// every other off-node call when the control API is configured for one.
-		if server.mutualTLS && (request.TLS == nil || len(request.TLS.PeerCertificates) == 0) {
-			http.Error(w, "a verified client certificate is required for the capture "+
+		if !server.controlPlaneCaller(request) {
+			http.Error(w, "the control plane's verified client certificate is required for the capture "+
 				"extension handshake", http.StatusUnauthorized)
 
 			return
@@ -312,9 +341,8 @@ func (server *Server) protect(declared route) http.Handler {
 		// transport has already been on the wire in the clear, and verifying
 		// it would be deciding whether to honour a token that may have been
 		// copied on the way in.
-		if server.mutualTLS && !declared.nodeLocal &&
-			(request.TLS == nil || len(request.TLS.PeerCertificates) == 0) {
-			http.Error(w, "a verified client certificate is required for the control plane's "+
+		if !declared.nodeLocal && !server.controlPlaneCaller(request) {
+			http.Error(w, "the control plane's verified client certificate is required for its "+
 				"operations on this daemon; only the node-local capture hold is exempt",
 				http.StatusUnauthorized)
 
