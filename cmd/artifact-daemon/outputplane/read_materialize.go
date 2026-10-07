@@ -29,7 +29,9 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 		return
 	}
 	claims, err := server.reads.verifier.Verify(input.Warrant, input.Ref, input.Destination)
-	if err != nil || claims.ActivationEpoch != server.daemon.ActivationEpoch() {
+	// The warrant names its epoch and its node; on any other it opens nothing.
+	if err != nil || claims.ActivationEpoch != server.daemon.ActivationEpoch() ||
+		claims.NodeUID == "" || claims.NodeUID != server.daemon.nodeUID {
 		readRefusal(w, output.ErrUnauthorized)
 		return
 	}

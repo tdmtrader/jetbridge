@@ -70,7 +70,7 @@ func mustSignReadWarrant(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("new read warrant nonce: %v", err)
 	}
-	token, err := signer.Sign(readWarrantLease(), readWarrantDestination(), nonce)
+	token, err := signer.Sign(readWarrantLease(), readWarrantDestination(), "node-1", nonce)
 	if err != nil {
 		t.Fatalf("sign read warrant: %v", err)
 	}
@@ -132,6 +132,7 @@ func TestAnEditedOutputReadWarrantDoesNotVerify(t *testing.T) {
 		{"destination handle", func(c *ReadWarrantClaims) { c.Destination.Handle = "other-handle" }},
 		{"destination volume", func(c *ReadWarrantClaims) { c.Destination.Volume = "input-9" }},
 		{"activation epoch", func(c *ReadWarrantClaims) { c.ActivationEpoch++ }},
+		{"node", func(c *ReadWarrantClaims) { c.NodeUID = "another-node" }},
 		{"issued at", func(c *ReadWarrantClaims) {
 			c.IssuedAt = NewTimestamp(c.IssuedAt.Add(-time.Hour))
 		}},
@@ -293,7 +294,7 @@ func TestReMintingOneLeasesWarrantIsByteIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new read warrant nonce: %v", err)
 	}
-	token, err := signer.Sign(readWarrantLease(), readWarrantDestination(), other)
+	token, err := signer.Sign(readWarrantLease(), readWarrantDestination(), "node-1", other)
 	if err != nil {
 		t.Fatalf("sign read warrant: %v", err)
 	}

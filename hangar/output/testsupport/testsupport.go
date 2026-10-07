@@ -120,7 +120,7 @@ func Warrant(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.Activation
 
 	claims := output.WarrantClaimsFor(Lease(t, ref, epoch),
 		output.ReadDestination{Handle: "fixture-handle", Volume: "fixture-volume"},
-		"AAAAAAAAAAAAAAAAAAAAAA")
+		"fixture-node", "AAAAAAAAAAAAAAAAAAAAAA")
 	if err := claims.Validate(); err != nil {
 		t.Fatalf("the fixture warrant does not validate: %v", err)
 	}

@@ -93,7 +93,7 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 			Minter:     s.inputReadMinter, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 		}
 		destination := output.ReadDestination{Handle: handle, Volume: volumeNames[i]}
-		warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(uuid.NewString()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: s.Epoch, MaterializationTimeout: source.ManagedInputTimeout(len(bindings))})
+		warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(uuid.NewString()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: s.Epoch, MaterializationTimeout: source.ManagedInputTimeout(len(bindings)), NodeUID: node.UID})
 		if err != nil {
 			return spec, err
 		}

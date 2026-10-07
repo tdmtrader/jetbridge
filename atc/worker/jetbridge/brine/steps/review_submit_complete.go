@@ -388,7 +388,7 @@ func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbri
 	}
 	destination := output.ReadDestination{Handle: freshUUID(), Volume: "source"}
 	admission := hangaroutput.ReadAdmission{Transactor: brineTransactor{conn: start.DB.Conn}, Leases: db.NewHangarOutputRepository(prefix), Stat: node, Minter: signer, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
-	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), MaterializationTimeout: time.Minute})
+	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), MaterializationTimeout: time.Minute, NodeUID: node.NodeUID()})
 	if err != nil {
 		return "", err
 	}

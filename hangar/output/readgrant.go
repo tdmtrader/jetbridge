@@ -142,9 +142,13 @@ type ReadWarrantClaims struct {
 	Ref             hangar.TreeRef                   `json:"ref"`
 	Destination     ReadDestination                  `json:"destination"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
-	IssuedAt        Timestamp                        `json:"issued_at"`
-	ExpiresAt       Timestamp                        `json:"expires_at"`
-	Nonce           string                           `json:"nonce"`
+	// NodeUID is the one node whose daemon may honour the warrant. The node
+	// keeps a warrant single-use on itself; binding the node is what makes it
+	// one read in the whole cluster rather than one per node.
+	NodeUID   executioncontrol.NodeUID `json:"node_uid"`
+	IssuedAt  Timestamp                `json:"issued_at"`
+	ExpiresAt Timestamp                `json:"expires_at"`
+	Nonce     string                   `json:"nonce"`
 }
 
 func (claims ReadWarrantClaims) Validate() error {
@@ -170,6 +174,9 @@ func (claims ReadWarrantClaims) Validate() error {
 	}
 	if claims.ActivationEpoch == 0 {
 		return fmt.Errorf("%w: read warrant names no activation epoch", ErrIncomplete)
+	}
+	if claims.NodeUID == "" {
+		return fmt.Errorf("%w: read warrant names no node", ErrIncomplete)
 	}
 	if err := claims.IssuedAt.Validate(); err != nil {
 		return err
@@ -239,6 +246,7 @@ func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 	field(claims.Destination.Handle)
 	field(claims.Destination.Volume)
 	number(int64(claims.ActivationEpoch))
+	field(string(claims.NodeUID))
 	field(claims.IssuedAt.UTC().Format(time.RFC3339Nano))
 	field(claims.ExpiresAt.UTC().Format(time.RFC3339Nano))
 	field(claims.Nonce)
@@ -295,7 +303,7 @@ func NewReadWarrantVerifier(material []byte, clock Clock) (*ReadWarrantVerifier,
 
 // WarrantClaimsFor is everything a read warrant over one committed lease binds:
 // every dated and fenced value comes from the lease row itself.
-func WarrantClaimsFor(lease ReadLease, destination ReadDestination, nonce string) ReadWarrantClaims {
+func WarrantClaimsFor(lease ReadLease, destination ReadDestination, node executioncontrol.NodeUID, nonce string) ReadWarrantClaims {
 	return ReadWarrantClaims{
 		Domain:          MaterializeDomain,
 		Version:         readWarrantVersion,
@@ -304,6 +312,7 @@ func WarrantClaimsFor(lease ReadLease, destination ReadDestination, nonce string
 		Ref:             lease.Ref,
 		Destination:     destination,
 		ActivationEpoch: lease.ActivationEpoch,
+		NodeUID:         node,
 		IssuedAt:        lease.GrantedAt,
 		ExpiresAt:       lease.ExpiresAt,
 		Nonce:           nonce,
@@ -316,11 +325,11 @@ func WarrantClaimsFor(lease ReadLease, destination ReadDestination, nonce string
 // and fenced value in the token must come from the committed row: a signature
 // over a caller's idea of the lease would be a signature over a lease that may
 // never have existed.
-func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestination, nonce string) (string, error) {
+func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestination, node executioncontrol.NodeUID, nonce string) (string, error) {
 	if err := lease.Validate(); err != nil {
 		return "", err
 	}
-	claims := WarrantClaimsFor(lease, destination, nonce)
+	claims := WarrantClaimsFor(lease, destination, node, nonce)
 
 	canonical, err := CanonicalReadWarrantBytes(claims)
 	if err != nil {

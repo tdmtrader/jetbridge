@@ -52,6 +52,7 @@ func (s *OutputSource) outputNode(ctx context.Context, epoch executioncontrol.Ac
 				}
 				// Leave transport time beyond the daemon's operation budget.
 				client.http.Timeout = output.ReadTransferTimeout(client.ManagedReadTimeout())
+				client.node = executioncontrol.NodeUID(node.UID)
 				return client, executioncontrol.NodeUID(node.UID), nil
 			}
 		}

@@ -300,6 +300,7 @@ func managedReadWarrant(in BoundOutput) (hangaroutput.ReadWarrant, error) {
 		Destination:            hangaroutputleaf.ReadDestination{Handle: "consumer", Volume: "input-0"},
 		ActivationEpoch:        executioncontrol.ActivationEpoch(hangarEpoch),
 		MaterializationTimeout: 10 * time.Minute,
+		NodeUID:                executioncontrol.NodeUID(in.Tree.Outcome.Source.Draft.Daemon.NodeUID),
 	})
 	if err != nil {
 		return hangaroutput.ReadWarrant{}, err

@@ -32,6 +32,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/publisher"
@@ -128,10 +129,10 @@ type countingMinter struct {
 	calls int
 }
 
-func (minter *countingMinter) Sign(lease output.ReadLease, destination output.ReadDestination, nonce string) (string, error) {
+func (minter *countingMinter) Sign(lease output.ReadLease, destination output.ReadDestination, node executioncontrol.NodeUID, nonce string) (string, error) {
 	minter.calls++
 
-	return minter.inner.Sign(lease, destination, nonce)
+	return minter.inner.Sign(lease, destination, node, nonce)
 }
 
 func readAdmission(t *testing.T, h *harness) (*hangaroutput.ReadAdmission, *countingMinter) {
@@ -168,6 +169,7 @@ func readRequest(t *testing.T, claimID output.ClaimID, ref hangar.TreeRef) hanga
 		Destination:            output.ReadDestination{Handle: "consumer-handle", Volume: "input-0"},
 		ActivationEpoch:        harnessEpoch,
 		MaterializationTimeout: 10 * time.Minute,
+		NodeUID:                harnessNode,
 	}
 }
 

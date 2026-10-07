@@ -199,7 +199,7 @@ func startNode(conn db.DbConn, activator *sql.DB) (n *node, err error) {
 	if err = n.awaitReady(logged); err != nil {
 		return n, fmt.Errorf("%w\n%s", err, logged.String())
 	}
-	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.minter, Epoch)
+	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.minter, Epoch).OnNode(n.uid)
 	if err = n.activate(activator); err != nil {
 		return n, err
 	}

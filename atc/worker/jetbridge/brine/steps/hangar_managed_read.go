@@ -113,7 +113,7 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	if err != nil {
 		return in, err
 	}
-	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: in.Acquisition.ClaimID, Ref: in.Tree.Ref, Destination: output.ReadDestination{Handle: "consumer", Volume: "input-0"}, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), MaterializationTimeout: time.Minute})
+	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: in.Acquisition.ClaimID, Ref: in.Tree.Ref, Destination: output.ReadDestination{Handle: "consumer", Volume: "input-0"}, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), MaterializationTimeout: time.Minute, NodeUID: executioncontrol.NodeUID(daemon.NodeUID)})
 	if err != nil {
 		return in, err
 	}
@@ -123,7 +123,7 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 		expired := warrant.Lease
 		expired.GrantedAt = output.NewTimestamp(time.Now().UTC().Add(-time.Hour))
 		expired.ExpiresAt = output.NewTimestamp(time.Now().UTC().Add(-time.Minute))
-		warrant.Token, err = signer.Sign(expired, warrant.Record.Destination, warrant.Record.WarrantNonce)
+		warrant.Token, err = signer.Sign(expired, warrant.Record.Destination, executioncontrol.NodeUID(daemon.NodeUID), warrant.Record.WarrantNonce)
 		if err != nil {
 			return in, err
 		}

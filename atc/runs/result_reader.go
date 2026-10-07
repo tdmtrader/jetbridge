@@ -22,6 +22,8 @@ const maxResultArchiveBytes int64 = 256 << 20
 type ResultSource interface {
 	hangaroutput.ExactStat
 	ManagedReadTimeout() time.Duration
+	// NodeUID is the node the source reads from; the warrant is bound to it.
+	NodeUID() executioncontrol.NodeUID
 	OpenManagedOutput(context.Context, output.ManagedReadRequest, int64) (io.ReadCloser, hangar.TreeAttributes, error)
 }
 type ResultSourceFunc func(context.Context, executioncontrol.ActivationEpoch) (ResultSource, error)
@@ -73,6 +75,7 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{
 		ReadLeaseID: output.ReadLeaseID(id.String()), WarrantNonce: nonce, ClaimID: selected.Binding.ClaimID,
 		Ref: selected.Binding.Ref, Destination: destination, ActivationEpoch: selected.Epoch, MaterializationTimeout: source.ManagedReadTimeout(),
+		NodeUID: source.NodeUID(),
 	})
 	if err != nil {
 		return nil, err

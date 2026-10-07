@@ -55,7 +55,7 @@ type ExactStat interface {
 
 // WarrantMinter turns a committed lease into a usable token.
 type WarrantMinter interface {
-	Sign(lease output.ReadLease, destination output.ReadDestination, nonce string) (string, error)
+	Sign(lease output.ReadLease, destination output.ReadDestination, node executioncontrol.NodeUID, nonce string) (string, error)
 }
 
 // ReadRequest is what a consumer asks for.
@@ -72,6 +72,9 @@ type ReadRequest struct {
 	Destination            output.ReadDestination
 	ActivationEpoch        executioncontrol.ActivationEpoch
 	MaterializationTimeout time.Duration
+	// NodeUID is the node whose daemon serves the read; the warrant opens
+	// nothing on any other.
+	NodeUID executioncontrol.NodeUID
 }
 
 func (request ReadRequest) Validate() error {
@@ -89,6 +92,9 @@ func (request ReadRequest) Validate() error {
 	}
 	if request.ActivationEpoch == 0 {
 		return fmt.Errorf("%w: a managed read names no activation epoch", output.ErrIncomplete)
+	}
+	if request.NodeUID == "" {
+		return fmt.Errorf("%w: a managed read names no node", output.ErrIncomplete)
 	}
 	// The term's bounds, read here rather than left to the column's CHECK: a
 	// request refused by the schema comes back carrying a constraint's text.
@@ -148,7 +154,7 @@ func (admission *ReadAdmission) Admit(ctx context.Context, request ReadRequest) 
 		return ReadWarrant{}, err
 	}
 
-	return admission.mint(record)
+	return admission.mint(record, request.NodeUID)
 }
 
 // commitLease is step 2, and it is the only function here that opens a
@@ -258,12 +264,12 @@ func (admission *ReadAdmission) load(ctx context.Context, request ReadRequest) (
 
 // mint is step 3. It opens no transaction, which is a rule this file's guard
 // enforces rather than a habit.
-func (admission *ReadAdmission) mint(record output.ReadLeaseRecord) (ReadWarrant, error) {
+func (admission *ReadAdmission) mint(record output.ReadLeaseRecord, node executioncontrol.NodeUID) (ReadWarrant, error) {
 	if err := record.Validate(); err != nil {
 		return ReadWarrant{}, err
 	}
 
-	token, err := admission.Minter.Sign(record.Lease, record.Destination, record.WarrantNonce)
+	token, err := admission.Minter.Sign(record.Lease, record.Destination, node, record.WarrantNonce)
 	if err != nil {
 		return ReadWarrant{}, err
 	}

@@ -422,7 +422,7 @@ func (p *Platform) Input(t testing.TB, team, template string, number int, name s
 	admission := hangaroutput.ReadAdmission{Transactor: transactor{p.conn}, Leases: db.NewHangarOutputRepository(prefix), Stat: p.node.client,
 		Minter: p.node.warrants, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
 	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(uuid.NewString()), WarrantNonce: nonce,
-		ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: Epoch, MaterializationTimeout: time.Minute})
+		ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: Epoch, MaterializationTimeout: time.Minute, NodeUID: p.node.uid})
 	if err != nil {
 		t.Fatal(err)
 	}

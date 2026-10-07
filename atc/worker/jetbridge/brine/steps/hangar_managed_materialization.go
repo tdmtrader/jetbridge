@@ -14,6 +14,7 @@ import (
 
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -101,7 +102,7 @@ func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode st
 		if err != nil {
 			return err
 		}
-		retry, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: in.Acquisition.ClaimID, Ref: in.Tree.Ref, Destination: request.Destination, ActivationEpoch: warrant.Lease.ActivationEpoch, MaterializationTimeout: time.Minute})
+		retry, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: in.Acquisition.ClaimID, Ref: in.Tree.Ref, Destination: request.Destination, ActivationEpoch: warrant.Lease.ActivationEpoch, MaterializationTimeout: time.Minute, NodeUID: executioncontrol.NodeUID(daemon.NodeUID)})
 		if err != nil {
 			return err
 		}

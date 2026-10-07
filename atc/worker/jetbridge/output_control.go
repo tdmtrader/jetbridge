@@ -104,6 +104,20 @@ type OutputControlClient struct {
 	minter      *executioncontrol.CapabilityMinter
 	epoch       executioncontrol.ActivationEpoch
 	readTimeout time.Duration
+	// node is the UID of the node this client's daemon runs on, when the
+	// client was chosen for one: a read warrant is bound to it.
+	node executioncontrol.NodeUID
+}
+
+// NodeUID is the node this client reads from, or "" when it was not chosen
+// for a node.
+func (client *OutputControlClient) NodeUID() executioncontrol.NodeUID { return client.node }
+
+// OnNode records which node this client's daemon runs on, for a caller that
+// built the client for a known node rather than choosing one.
+func (client *OutputControlClient) OnNode(node executioncontrol.NodeUID) *OutputControlClient {
+	client.node = node
+	return client
 }
 
 // NewOutputControlClient builds the client for one node's daemon.
