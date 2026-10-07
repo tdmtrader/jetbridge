@@ -615,6 +615,10 @@ func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context,
 		        WHERE g.scope = l.scope AND g.digest = l.digest
 		          AND g.state = 'unresolved_generation')
 		   AND NOT EXISTS (
+		       SELECT 1 FROM hangar_captures p
+		        WHERE p.scope = l.scope AND p.digest = l.digest
+		          AND p.state IN ('pending', 'publishing'))
+		   AND NOT EXISTS (
 		       SELECT 1 FROM hangar_reclaim_jobs j
 		        WHERE j.lifecycle_id = l.id AND j.finalized_at IS NULL)
 		 ORDER BY l.registered_at, l.id

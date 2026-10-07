@@ -1210,6 +1210,7 @@ var hangarTableClass = map[string]int{
 	"hangar_output_activation_epochs": 0,
 	"hangar_logical_reservations":     1,
 	"hangar_input_publications":       1,
+	"hangar_captures":                 1,
 	"hangar_exact_lifecycles":         2,
 	"hangar_capture_reservations":     3,
 	"hangar_output_receipts":          4,
@@ -1219,12 +1220,13 @@ var hangarTableClass = map[string]int{
 
 // hangarRequestFieldClass maps a HangarLockRequest field to the class it names.
 var hangarRequestFieldClass = map[string]int{
-	"Logical":    1,
-	"Exact":      2,
-	"Captures":   3,
-	"Receipts":   4,
-	"Claims":     4,
-	"ReadLeases": 4,
+	"Logical":     1,
+	"CaptureRows": 1,
+	"Exact":       2,
+	"Captures":    3,
+	"Receipts":    4,
+	"Claims":      4,
+	"ReadLeases":  4,
 }
 
 // hangarAcquisition is one lock class a function takes, in source order.

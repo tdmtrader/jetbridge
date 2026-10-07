@@ -72,12 +72,15 @@ type HangarLogicalKey struct {
 // which is what makes two transactions given the same refs in opposite orders
 // take them in the same order.
 type HangarLockRequest struct {
-	Logical    []HangarLogicalKey
-	Exact      []hangar.TreeRef
-	Captures   []output.ReservationID
-	Receipts   []output.ReservationID
-	Claims     []output.ClaimID
-	ReadLeases []output.ReadLeaseID
+	Logical []HangarLogicalKey
+	// CaptureRows are capture rows named by key, for a transaction that moves
+	// one before it has a digest. Same class as Logical, taken after it.
+	CaptureRows []output.CaptureKey
+	Exact       []hangar.TreeRef
+	Captures    []output.ReservationID
+	Receipts    []output.ReservationID
+	Claims      []output.ClaimID
+	ReadLeases  []output.ReadLeaseID
 }
 
 // HangarLocks is what the helper locked, in the order it locked it.
@@ -86,11 +89,14 @@ type HangarLockRequest struct {
 // every caller wants it and re-reading it outside the lock would be reading a
 // fact the lock was taken to freeze.
 type HangarLocks struct {
-	consumer   string
-	Logical    []HangarLogicalKey
-	Exact      []hangar.TreeRef
-	Lifecycles map[hangar.TreeRef]int64
-	Captures   []output.ReservationID
+	consumer string
+	Logical  []HangarLogicalKey
+	// CaptureRows are capture rows named by key, for a transaction that moves
+	// one before it has a digest. Same class as Logical, taken after it.
+	CaptureRows []output.CaptureKey
+	Exact       []hangar.TreeRef
+	Lifecycles  map[hangar.TreeRef]int64
+	Captures    []output.ReservationID
 }
 
 // LockHangarSuffix takes the complete Hangar lock suffix, in the one order this
@@ -141,6 +147,15 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 	// taking the SAME key's rows in different orders, and both of them issue
 	// this same statement.
 	for _, key := range locks.Logical {
+		// Every capture row resolved to this correlation: the publishing ones
+		// reclaim admission must see, and the published ones a claim joins.
+		if _, err := tx.ExecContext(ctx, `
+			SELECT 1 FROM hangar_captures
+			WHERE scope = $1 AND digest = $2
+			ORDER BY execution_id, output_name
+			FOR NO KEY UPDATE`, string(key.Scope), string(key.Digest)); err != nil {
+			return HangarLocks{}, hangarConflict(err)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			SELECT 1 FROM hangar_logical_reservations
 			WHERE scope = $1 AND digest = $2
@@ -153,6 +168,18 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 			WHERE scope = $1 AND digest = $2
 			ORDER BY reservation_id
 			FOR NO KEY UPDATE`, string(key.Scope), string(key.Digest)); err != nil {
+			return HangarLocks{}, hangarConflict(err)
+		}
+	}
+
+	// 1b. Capture rows named by key, after every correlation's rows: a row a
+	// correlation already locked is held, and a row it did not is taken in key
+	// order behind it.
+	for _, key := range sortedCaptureKeys(request.CaptureRows) {
+		if _, err := tx.ExecContext(ctx, `
+			SELECT 1 FROM hangar_captures
+			WHERE execution_id = $1 AND output_name = $2
+			FOR NO KEY UPDATE`, string(key.Execution), string(key.Output)); err != nil {
 			return HangarLocks{}, hangarConflict(err)
 		}
 	}
@@ -456,6 +483,13 @@ func sortedExactRefs(refs []hangar.TreeRef) []hangar.TreeRef {
 
 func sortedReservationIDs(ids []output.ReservationID) []output.ReservationID {
 	return sortedOpaque(ids)
+}
+
+func sortedCaptureKeys(keys []output.CaptureKey) []output.CaptureKey {
+	sorted := slices.Clone(keys)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].String() < sorted[j].String() })
+
+	return slices.Compact(sorted)
 }
 
 func sortedClaimIDs(ids []output.ClaimID) []output.ClaimID { return sortedOpaque(ids) }

@@ -25,21 +25,21 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
-// CaptureState is the reservation row's own lifecycle vocabulary. It is the
+// HandoffCaptureState is the reservation row's own lifecycle vocabulary. It is the
 // schema's CHECK constraint, spelled once here so that a coordinator reading a
 // state it does not know is a refusal rather than a silent default.
-type CaptureState string
+type HandoffCaptureState string
 
 const (
-	CaptureStateUnresolved CaptureState = "unresolved"
-	CaptureStateResolved   CaptureState = "resolved"
-	CaptureStateRegistered CaptureState = "registered"
-	CaptureStateFailed     CaptureState = "failed"
-	CaptureStateCancelled  CaptureState = "cancelled"
+	CaptureStateUnresolved HandoffCaptureState = "unresolved"
+	CaptureStateResolved   HandoffCaptureState = "resolved"
+	CaptureStateRegistered HandoffCaptureState = "registered"
+	CaptureStateFailed     HandoffCaptureState = "failed"
+	CaptureStateCancelled  HandoffCaptureState = "cancelled"
 )
 
-func CaptureStates() []CaptureState {
-	return []CaptureState{
+func HandoffCaptureStates() []HandoffCaptureState {
+	return []HandoffCaptureState{
 		CaptureStateUnresolved,
 		CaptureStateResolved,
 		CaptureStateRegistered,
@@ -48,15 +48,15 @@ func CaptureStates() []CaptureState {
 	}
 }
 
-func ParseCaptureState(value string) (CaptureState, error) {
-	for _, member := range CaptureStates() {
+func ParseCaptureState(value string) (HandoffCaptureState, error) {
+	for _, member := range HandoffCaptureStates() {
 		if string(member) == value {
 			return member, nil
 		}
 	}
 
 	return "", fmt.Errorf("%w: capture state %q; the vocabulary is %v",
-		ErrUnknownMember, value, CaptureStates())
+		ErrUnknownMember, value, HandoffCaptureStates())
 }
 
 // CaptureLease is one renewable, fenced warrant of capture ownership.
@@ -123,7 +123,7 @@ type HandoffRecord struct {
 	ReservationID        ReservationID
 	ProducerCheckpointID OpaqueID
 	CaptureFence         CaptureFence
-	State                CaptureState
+	State                HandoffCaptureState
 	Ref                  hangar.TreeRef
 	TerminalFailure      string
 

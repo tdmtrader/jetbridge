@@ -996,6 +996,8 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		         WHERE lifecycle_id = l.id AND released_at IS NULL AND expires_at > now()),
 		       (SELECT count(*) FROM hangar_logical_reservations
 		         WHERE scope = l.scope AND digest = l.digest AND state = 'unresolved_generation') +
+		       (SELECT count(*) FROM hangar_captures
+		         WHERE scope = l.scope AND digest = l.digest AND state IN ('pending', 'publishing')) +
 		       (SELECT count(*) FROM hangar_input_publications
 		         WHERE scope = l.scope AND digest = l.digest AND lifecycle_id IS NULL AND expires_at > clock_timestamp())
 		FROM hangar_exact_lifecycles l WHERE l.id = $1`,
