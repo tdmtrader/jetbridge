@@ -93,6 +93,9 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		return AuthorizationAdmin, true
 	case atc.GetTeam,
 		atc.GetPipelineRunResult,
+		atc.SetLandingQueue,
+		atc.SubmitLanding,
+		atc.GetLandingQueue,
 		atc.SetTeam,
 		atc.RenameTeam,
 		atc.ListContainers,

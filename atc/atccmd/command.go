@@ -2716,6 +2716,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbCheckFactory,
 		resourceConfigFactory,
 		dbUserFactory,
+		db.NewLandingQueueFactory(dbConn),
 
 		buildserver.NewEventHandler,
 
