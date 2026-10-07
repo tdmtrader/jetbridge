@@ -87,8 +87,9 @@ type Config struct {
 	ActivationEpoch  uint64
 	OperationTimeout time.Duration
 
-	// SealWait bounds one background seal: the wait for the producing Pod's
-	// containers to terminate and the canonicalization after it.
+	// SealWait bounds one background capture job: a seal (the wait for the
+	// producing Pod's containers to terminate and the canonicalization after
+	// it) or a publish (the upload).
 	SealWait time.Duration
 
 	// PodTerminationsNamespace is the namespace task Pods run in. The daemon
@@ -138,7 +139,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
-		"How long one background capture seal may run: the wait for every container of the producing Pod to terminate, and the canonicalization after it. The seal is asynchronous -- the control plane polls it -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
+		"How long one background capture job may run: a seal (the wait for every container of the producing Pod to terminate, and the canonicalization after it) or a publish (the upload). Both are asynchronous -- the control plane polls them -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
 	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
 		"The namespace task Pods run in. A capture seal reads this node's Pods in it, and only in it, to see that every container of the producing Pod has terminated. Required when the output plane reads Pods from Kubernetes.")
 	flags.StringVar(&config.PodTerminationsDir, "pod-terminations-dir", "",

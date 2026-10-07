@@ -142,6 +142,20 @@ func sealNow(t *testing.T, fixture *captureFixture) (output.CaptureSealResult, e
 	}
 }
 
+// publishNow drives the asynchronous publish to its answer.
+func publishNow(t *testing.T, fixture *captureFixture, request output.CapturePublishRequest) (output.CapturePublishResult, error) {
+	t.Helper()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		result, err := fixture.capture.Publish(context.Background(), request, nil)
+		if !errors.Is(err, output.ErrPublishInProgress) || time.Now().After(deadline) {
+			return result, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func held(t *testing.T, fixture *captureFixture) output.CaptureHoldAcknowledgement {
 	t.Helper()
 
@@ -226,7 +240,7 @@ func TestASealWithNoHeldMarkerIsRefusedAndPublishesNothing(t *testing.T) {
 	if !errors.Is(err, output.ErrNotFound) {
 		t.Fatalf("a seal with no marker answered %v, want not found", err)
 	}
-	_, err = fixture.capture.Publish(context.Background(), output.CapturePublishRequest{
+	_, err = publishNow(t, fixture, output.CapturePublishRequest{
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
 		Digest: hangar.Digest("sha256:" + string(make64('a'))),
 	})
@@ -336,7 +350,7 @@ func TestASealInterruptedByARestartFinishesFromTheMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the seal after a restart: %v", err)
 	}
-	published, err := fixture.capture.Publish(context.Background(), output.CapturePublishRequest{
+	published, err := publishNow(t, fixture, output.CapturePublishRequest{
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
 		Digest: result.Digest,
 	})
@@ -361,14 +375,14 @@ func TestPublishIsIdempotentDeduplicatesAndRefusesAChangedTree(t *testing.T) {
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
 		Digest: sealed.Digest, Staged: sealed.Staged,
 	}
-	first, err := fixture.capture.Publish(context.Background(), request)
+	first, err := publishNow(t, fixture, request)
 	if err != nil {
 		t.Fatalf("publishing: %v", err)
 	}
 	if first.Deduplicated {
 		t.Error("the first publish of a tree deduplicated")
 	}
-	again, err := fixture.capture.Publish(context.Background(), request)
+	again, err := publishNow(t, fixture, request)
 	if err != nil || again.Ref != first.Ref || !again.Deduplicated {
 		t.Fatalf("a second publish answered %+v, %v; want the same generation, deduplicated", again, err)
 	}
@@ -388,7 +402,7 @@ func TestPublishIsIdempotentDeduplicatesAndRefusesAChangedTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "changed after the seal")
-	if _, err := fixture.capture.Publish(context.Background(), request); !errors.Is(err, output.ErrConflict) {
+	if _, err := publishNow(t, fixture, request); !errors.Is(err, output.ErrConflict) {
 		t.Fatalf("a publish of a changed tree answered %v", err)
 	}
 }
@@ -540,5 +554,82 @@ func TestATombstoneIsSweptOnlyAfterItsDirectory(t *testing.T) {
 	fixture.capture.sweepTombstones()
 	if _, found, _ := fixture.capture.load(fixture.key()); found {
 		t.Errorf("the tombstone survived its directory")
+	}
+}
+
+// Release cancels a seal still waiting for its Pod, and a job that is no
+// longer registered stages nothing: no archive survives in scratch.
+func TestAReleaseDuringTheTerminationWaitLeavesNoStagedArchive(t *testing.T) {
+	fixture := newCaptureLedger(t)
+	fixture.capture.sealWait = time.Minute
+	held(t, fixture)
+	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "produced")
+
+	if _, err := fixture.capture.Seal(context.Background(), sealRequest(), nil); !errors.Is(err, output.ErrSealInProgress) {
+		t.Fatalf("starting the seal answered %v", err)
+	}
+	fixture.capture.mu.Lock()
+	job := fixture.capture.jobs[fixture.key()]
+	fixture.capture.mu.Unlock()
+	if job == nil {
+		t.Fatal("no background seal is registered")
+	}
+
+	release := output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}
+	if _, err := fixture.capture.Release(context.Background(), release); err != nil {
+		t.Fatalf("releasing: %v", err)
+	}
+	// The Pod stops after the release: a job that ignored the cancellation
+	// would now canonicalize and stage.
+	fixture.pods.stop(testPod)
+	select {
+	case <-job.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the released seal never ended")
+	}
+	if job.err == nil {
+		t.Errorf("a released seal answered success")
+	}
+	time.Sleep(200 * time.Millisecond)
+	staged, err := filepath.Glob(filepath.Join(fixture.config.ScratchDir, "staged", "*.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 0 {
+		t.Errorf("a released seal staged %v", staged)
+	}
+}
+
+// A seal that finished canonicalizing after its release was already decided
+// is not staged either: the rename happens only while the job is registered.
+func TestASealForgottenBeforeItFinishesRemovesItsArchive(t *testing.T) {
+	fixture := newCaptureLedger(t)
+	held(t, fixture)
+	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "produced")
+
+	gate := make(chan struct{})
+	slot := func(context.Context) (func(), error) {
+		<-gate
+		return func() {}, nil
+	}
+	fixture.pods.stop(testPod)
+	if _, err := fixture.capture.Seal(context.Background(), sealRequest(), slot); !errors.Is(err, output.ErrSealInProgress) {
+		t.Fatalf("starting the seal answered %v", err)
+	}
+	fixture.capture.mu.Lock()
+	job := fixture.capture.jobs[fixture.key()]
+	// Forgotten without its cancellation reaching the canonicalization: the
+	// job runs to the end and must find itself unregistered.
+	delete(fixture.capture.jobs, fixture.key())
+	fixture.capture.mu.Unlock()
+	close(gate)
+	<-job.done
+
+	staged, err := filepath.Glob(filepath.Join(fixture.config.ScratchDir, "staged", "*.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 0 || job.err == nil {
+		t.Errorf("an unregistered seal staged %v (err %v)", staged, job.err)
 	}
 }

@@ -25,9 +25,9 @@ package hangaroutput
 // node is gone is released once FinishedAt is NodeGoneMargin old: the marker
 // went with the node.
 //
-// The seal is asynchronous on the node: step 2 is asked again on each pass
-// until it answers the digest, so no HTTP timeout bounds a slow Pod or a
-// large tree. Pending rows are advanced concurrently, at most Concurrency at
+// The seal and the publish are asynchronous on the node: steps 2 and 4 are
+// asked again on each pass until they answer, so no HTTP timeout bounds a
+// slow Pod, a large tree or a slow upload. Pending rows are advanced concurrently, at most Concurrency at
 // once.
 //
 // Two rules run through every method. No database lock is held across a
@@ -324,7 +324,7 @@ func (coordinator *Coordinator) seal(ctx context.Context, capture output.Capture
 		PodUID:          ack.PodUID,
 	})
 	switch {
-	case errors.Is(err, output.ErrSealInProgress), errors.Is(err, output.ErrUnresolved),
+	case errors.Is(err, output.ErrInProgress), errors.Is(err, output.ErrUnresolved),
 		errors.Is(err, output.ErrSealUnconfirmed):
 		// The node is waiting for the Pod's containers to stop, or reading the
 		// tree, or a background seal ran out and the next ask starts another.
@@ -389,6 +389,10 @@ func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capt
 			Digest:          capture.Digest,
 		})
 		switch {
+		case errors.Is(err, output.ErrInProgress):
+			// The node is uploading in the background. Ask again next pass;
+			// the publishing deadline is the bound.
+			return false, nil
 		case errors.Is(err, output.ErrConflict):
 			// A collision at the key, or a sealed tree that is no longer the
 			// recorded digest. Never adopted, never overwritten.

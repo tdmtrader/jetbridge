@@ -513,13 +513,7 @@ func (server *Server) publish(_ http.ResponseWriter, request *http.Request,
 	if publication.Execution != identity {
 		return nil, fmt.Errorf("%w: the publish is authorized for another execution", output.ErrUnauthorized)
 	}
-	release, err := server.spooling(request.Context())
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	return server.capture.Publish(request.Context(), publication)
+	return server.capture.Publish(request.Context(), publication, server.spooling)
 }
 
 func (server *Server) release(_ http.ResponseWriter, request *http.Request,
@@ -563,10 +557,14 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, output.ErrSealed), errors.Is(err, output.ErrConflict),
 		errors.Is(err, output.ErrGenerationConflict), errors.Is(err, executioncontrol.ErrStaleFence):
 		status = http.StatusConflict
-	case errors.Is(err, output.ErrSealInProgress):
-		// Accepted: the seal is running in the background. The body names it
-		// so a caller can tell it from a completed seal.
-		writeJSON(w, http.StatusAccepted, map[string]string{"state": "sealing", "error": err.Error()})
+	case errors.Is(err, output.ErrInProgress):
+		// Accepted: the operation is running in the background. The body names
+		// it so a caller can tell it from a completed one.
+		state := "publishing"
+		if errors.Is(err, output.ErrSealInProgress) {
+			state = "sealing"
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"state": state, "error": err.Error()})
 
 		return
 	case errors.Is(err, output.ErrSealUnconfirmed), errors.Is(err, output.ErrUnresolved):

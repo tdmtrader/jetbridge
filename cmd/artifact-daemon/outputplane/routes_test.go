@@ -2,6 +2,7 @@ package outputplane
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,8 @@ type routeFixture struct {
 	*captureFixture
 
 	server  *httptest.Server
+	api     *Server
+	client  *http.Client
 	unready string
 	daemon  *Daemon
 	minter  *executioncontrol.CapabilityMinter
@@ -105,8 +108,8 @@ func (fixture *routeFixture) serve(t *testing.T) {
 	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.captureFixture.store}); err != nil {
 		t.Fatalf("opening the spent-capability record: %v", err)
 	}
-	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,
-		fixture.capture, verifier, fixture.unready).Handler())
+	fixture.api = NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, fixture.unready)
+	fixture.server = httptest.NewServer(fixture.api.Handler())
 	t.Cleanup(fixture.server.Close)
 }
 
@@ -124,6 +127,20 @@ func (fixture *routeFixture) sealOverHTTP(t *testing.T) (int, []byte) {
 		status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
 		if status != http.StatusAccepted || time.Now().After(deadline) {
 			return status, body
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// publishOverHTTP asks the publish route until it stops answering 202.
+func (fixture *routeFixture) publishOverHTTP(t *testing.T, body any) (int, []byte) {
+	t.Helper()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		status, answer := fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", body)
+		if status != http.StatusAccepted || time.Now().After(deadline) {
+			return status, answer
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -179,7 +196,11 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 	}
 	request.Header.Set(CapabilityHeader, string(token))
 
-	response, err := http.DefaultClient.Do(request)
+	client := http.DefaultClient
+	if fixture.client != nil {
+		client = fixture.client
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("calling %s: %v", path, err)
 	}
@@ -420,7 +441,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 	}
 
 	publication.Digest, publication.Staged = sealed.Digest, sealed.Staged
-	status, body = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	status, body = fixture.publishOverHTTP(t, publication)
 	if status != http.StatusOK {
 		t.Fatalf("the sealed tree was not published: %d %s", status, body)
 	}
@@ -638,5 +659,79 @@ func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
 	if status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
 		"classify", identifiedBy(identity(1))); status != http.StatusForbidden {
 		t.Fatalf("a classify capability read the start: %d %s", status, body)
+	}
+}
+
+// A publish that takes longer than the caller's HTTP timeout -- here because
+// the one scratch slot is busy for longer than that -- is not a failed call:
+// the route answers 202 at once, the upload runs on the node, and the next
+// ask after it finishes answers the generation.
+func TestAPublishSlowerThanTheClientTimeoutIsPolledToItsGeneration(t *testing.T) {
+	fixture := newRoutes(t, "")
+	fixture.capture.sealWait = time.Minute
+	admitted(t, &fixture.ledgerFixture)
+	if status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest()); status != http.StatusOK {
+		t.Fatalf("the hold was refused: %d %s", status, body)
+	}
+	writeFile(t, filepath.Join(fixture.stepDir(), "artifact.txt"), "the bytes")
+	fixture.pods.stop(testPod)
+	status, body := fixture.sealOverHTTP(t)
+	if status != http.StatusOK {
+		t.Fatalf("sealing: %d %s", status, body)
+	}
+	var sealed output.CaptureSealResult
+	if err := json.Unmarshal(body, &sealed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another tree is spooling, and holds the only scratch slot for longer
+	// than the client will wait.
+	busy, err := fixture.api.spooling(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		busy()
+		close(released)
+	}()
+	fixture.client = &http.Client{Timeout: time.Second}
+
+	publication := output.CapturePublishRequest{
+		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
+		Digest: sealed.Digest,
+	}
+	started := time.Now()
+	status, body = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	if status != http.StatusAccepted || !strings.Contains(string(body), `"publishing"`) {
+		t.Fatalf("the first publish answered %d %s, want 202 publishing", status, body)
+	}
+	if time.Since(started) > 500*time.Millisecond {
+		t.Errorf("the first publish took %s; it should only start the upload", time.Since(started))
+	}
+	// Concurrent polls see the one job.
+	status, _ = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	if status != http.StatusAccepted {
+		t.Fatalf("a poll while the slot is busy answered %d", status)
+	}
+
+	status, body = fixture.publishOverHTTP(t, publication)
+	<-released
+	if status != http.StatusOK {
+		t.Fatalf("the polled publish answered %d %s", status, body)
+	}
+	var result output.CapturePublishResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Ref.Digest != sealed.Digest || result.Ref.Generation <= 0 {
+		t.Fatalf("the publish answered %+v for %s", result.Ref, sealed.Digest)
+	}
+	if time.Since(started) < 2*time.Second {
+		t.Errorf("the publish finished in %s, before the slot was free", time.Since(started))
+	}
+	if keys := listKeys(t, fixture.objects, fixture.bucket); len(keys) != 1 {
+		t.Errorf("the polled publish left %d objects: %v", len(keys), keys)
 	}
 }

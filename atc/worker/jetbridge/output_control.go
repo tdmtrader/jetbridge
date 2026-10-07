@@ -31,6 +31,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -223,6 +224,10 @@ func (refusal *OutputControlRefusal) Unwrap() error {
 	case http.StatusConflict:
 		return output.ErrConflict
 	case http.StatusAccepted:
+		// Seal or publish, still running on the node; the body says which.
+		if strings.Contains(refusal.Body, `"publishing"`) {
+			return output.ErrPublishInProgress
+		}
 		return output.ErrSealInProgress
 	case http.StatusPreconditionFailed:
 		return output.ErrSealUnconfirmed

@@ -181,7 +181,7 @@ func TestACallerChosenNamespaceIsRefusedByThePublishPath(t *testing.T) {
 		"key":    {Key: "hangar/v1/scopes/x/trees/sha256/dead.tar.zst"},
 		"prefix": {Prefix: "deployments/red"},
 	} {
-		_, err := fixture.capture.Publish(context.Background(), output.CapturePublishRequest{
+		_, err := publishNow(t, fixture, output.CapturePublishRequest{
 			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
 			Digest: sealed.Digest, Namespace: chosen,
 		})

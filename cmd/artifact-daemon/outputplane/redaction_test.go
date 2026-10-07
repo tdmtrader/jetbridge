@@ -155,14 +155,14 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
 		Digest: sealed.Digest, Staged: sealed.Staged,
 	}
-	status, body = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	status, body = fixture.publishOverHTTP(t, publication)
 	if status != http.StatusOK {
 		t.Fatalf("publishing: %d %s", status, body)
 	}
 
 	// The same publication again: the dedup path, which reads the object back
 	// and classifies what it finds -- and does so BY KEY.
-	fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	fixture.publishOverHTTP(t, publication)
 
 	// A publication naming a bucket, a scope and a key the caller chose. If any
 	// refusal echoes its input this is the one.
@@ -174,14 +174,14 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	} {
 		carrying := publication
 		carrying.Namespace = chosen
-		fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", carrying)
+		fixture.publishOverHTTP(t, carrying)
 	}
 
 	// A publication for a digest the sealed tree is not: the refusal compares
 	// two digests and must name no location.
 	wrong := publication
 	wrong.Digest, wrong.Staged = hangar.Digest("sha256:"+strings.Repeat("ab", 32)), ""
-	fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", wrong)
+	fixture.publishOverHTTP(t, wrong)
 
 	// ---- stat: one present, one absent ----
 	//

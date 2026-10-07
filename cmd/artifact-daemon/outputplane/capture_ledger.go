@@ -99,18 +99,30 @@ type CaptureLedger struct {
 	// slot, when set, is taken by a background seal for its canonicalization.
 	slot func(context.Context) (func(), error)
 
-	jobs   map[output.CaptureKey]*sealJob
-	ctx    context.Context
-	cancel context.CancelFunc
+	jobs    map[output.CaptureKey]*sealJob
+	uploads map[output.CaptureKey]*publishJob
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	mu sync.Mutex
 }
 
-// sealJob is one background seal. done is closed when result or err is set.
+// sealJob is one background seal. done is closed when result or err is set;
+// cancel is Release's, so a released capture's job stops and stages nothing.
 type sealJob struct {
 	pod    executioncontrol.PodUID
 	done   chan struct{}
+	cancel context.CancelFunc
 	result output.CaptureSealResult
+	err    error
+}
+
+// publishJob is one background publish of one digest.
+type publishJob struct {
+	digest hangar.Digest
+	done   chan struct{}
+	cancel context.CancelFunc
+	result output.CapturePublishResult
 	err    error
 }
 
@@ -129,9 +141,10 @@ type CaptureLedgerConfig struct {
 	Poll time.Duration
 }
 
-// DefaultTombstoneRetention outlives the default capture term: a control init
-// cannot still be waiting to start after the capture it belongs to expired.
-const DefaultTombstoneRetention = 25 * time.Hour
+// DefaultTombstoneRetention outlives the longest capture term a control plane
+// may configure (output.MaxCaptureDeadline) by an hour: a control init cannot
+// still be waiting to start after the capture it belongs to expired.
+const DefaultTombstoneRetention = output.MaxCaptureDeadline + time.Hour
 
 func OpenCaptureLedger(store *controlStore, base *ExecutionLedger, daemon *Daemon, config CaptureLedgerConfig) (*CaptureLedger, error) {
 	if store == nil || base == nil || daemon == nil {
@@ -175,7 +188,8 @@ func OpenCaptureLedger(store *controlStore, base *ExecutionLedger, daemon *Daemo
 		terminations: config.Terminations, steps: steps, stepsPath: config.StepsDir,
 		staging: staging, sealWait: config.SealWait, poll: config.Poll,
 		tombstoneRetention: config.TombstoneRetention,
-		jobs:               map[output.CaptureKey]*sealJob{}, ctx: ctx, cancel: cancel,
+		jobs:               map[output.CaptureKey]*sealJob{},
+		uploads:            map[output.CaptureKey]*publishJob{}, ctx: ctx, cancel: cancel,
 	}
 	ledger.sweepTombstones()
 
@@ -398,9 +412,10 @@ func (ledger *CaptureLedger) Seal(_ context.Context, request output.CaptureSealR
 
 	job, started := ledger.jobs[key]
 	if !started {
-		job = &sealJob{pod: marker.PodUID, done: make(chan struct{})}
+		jobCtx, cancel := context.WithTimeout(ledger.ctx, ledger.sealWait)
+		job = &sealJob{pod: marker.PodUID, done: make(chan struct{}), cancel: cancel}
 		ledger.jobs[key] = job
-		go ledger.runSeal(key, marker, job, slot)
+		go ledger.runSeal(jobCtx, key, marker, job, slot)
 
 		return output.CaptureSealResult{}, ledger.inProgress(key)
 	}
@@ -422,49 +437,38 @@ func (ledger *CaptureLedger) inProgress(key output.CaptureKey) error {
 	return fmt.Errorf("%w: %s is sealed and its tree is not read yet; ask again", output.ErrSealInProgress, key)
 }
 
-// runSeal is the background half of one seal.
-func (ledger *CaptureLedger) runSeal(key output.CaptureKey, marker output.StepMarker, job *sealJob,
-	slot func(context.Context) (func(), error)) {
-	ctx, cancel := context.WithTimeout(ledger.ctx, ledger.sealWait)
-	defer cancel()
+// runSeal is the background half of one seal. The staged archive is renamed
+// into place only while the job is still registered, under the ledger lock: a
+// job Release cancelled or forgot stages nothing and removes what it read.
+func (ledger *CaptureLedger) runSeal(ctx context.Context, key output.CaptureKey, marker output.StepMarker,
+	job *sealJob, slot func(context.Context) (func(), error)) {
+	defer job.cancel()
 
-	result, err := ledger.seal(ctx, key, marker, slot)
+	captured, err := ledger.seal(ctx, key, marker, slot)
 
 	ledger.mu.Lock()
-	job.result, job.err = result, err
-	close(job.done)
-	ledger.mu.Unlock()
-}
+	defer ledger.mu.Unlock()
+	defer close(job.done)
+	if captured != nil {
+		defer captured.Close()
+	}
+	if ledger.jobs[key] != job {
+		job.err = fmt.Errorf("%w: %s was released while it was being sealed", output.ErrNotFound, key)
 
-func (ledger *CaptureLedger) seal(ctx context.Context, key output.CaptureKey, marker output.StepMarker,
-	slot func(context.Context) (func(), error)) (output.CaptureSealResult, error) {
-	if err := ledger.awaitTermination(ctx, marker.PodUID); err != nil {
-		return output.CaptureSealResult{}, err
+		return
 	}
-	if slot != nil {
-		release, err := slot(ctx)
-		if err != nil {
-			return output.CaptureSealResult{}, err
-		}
-		defer release()
-	}
-	root, err := ledger.resolve(key)
 	if err != nil {
-		return output.CaptureSealResult{}, err
+		job.err = err
+
+		return
 	}
-	captured, err := ledger.daemon.CanonicalizeDirectory(ctx, root)
-	if err != nil {
-		return output.CaptureSealResult{}, err
-	}
-	defer captured.Close()
 
 	staged := ledger.stagedPath(key, captured.Digest)
 	if err := os.Rename(captured.ArchivePath, staged); err != nil {
 		// Staging is an optimisation; the publish canonicalizes again.
 		staged = ""
 	}
-
-	result := output.CaptureSealResult{
+	job.result = output.CaptureSealResult{
 		ProtocolVersion: output.ProtocolVersion,
 		Marker:          marker,
 		Scope:           ledger.daemon.Namespace().Scope(),
@@ -472,10 +476,30 @@ func (ledger *CaptureLedger) seal(ctx context.Context, key output.CaptureKey, ma
 		LogicalBytes:    captured.ByteSize,
 	}
 	if staged != "" {
-		result.Staged = filepath.Base(staged)
+		job.result.Staged = filepath.Base(staged)
+	}
+	job.err = job.result.Validate()
+}
+
+// seal waits for the Pod and canonicalizes. It holds no lock.
+func (ledger *CaptureLedger) seal(ctx context.Context, key output.CaptureKey, marker output.StepMarker,
+	slot func(context.Context) (func(), error)) (*hangar.CapturedTree, error) {
+	if err := ledger.awaitTermination(ctx, marker.PodUID); err != nil {
+		return nil, err
+	}
+	if slot != nil {
+		release, err := slot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
+	root, err := ledger.resolve(key)
+	if err != nil {
+		return nil, err
 	}
 
-	return result, result.Validate()
+	return ledger.daemon.CanonicalizeDirectory(ctx, root)
 }
 
 func (ledger *CaptureLedger) awaitTermination(ctx context.Context, pod executioncontrol.PodUID) error {
@@ -499,19 +523,30 @@ func (ledger *CaptureLedger) awaitTermination(ctx context.Context, pod execution
 
 // Publish is step 4: create the object for the sealed tree, which must be
 // the digest the control plane already recorded.
-func (ledger *CaptureLedger) Publish(ctx context.Context, request output.CapturePublishRequest) (output.CapturePublishResult, error) {
+//
+// It is ASYNCHRONOUS like the seal. The first call starts the upload in the
+// background, detached from the request and bounded by --capture-seal-wait;
+// every call until it finishes answers ErrPublishInProgress, and the call
+// after answers the generation. Concurrent polls see one job. A failed job
+// answers its error once and is forgotten; a daemon restart loses only the
+// job, and the next call uploads again onto the object this plane already
+// marked with the digest. A finished job is answered once and forgotten too:
+// a caller that lost that answer asks again and the next upload deduplicates
+// onto the same generation, or recovery asks the store.
+func (ledger *CaptureLedger) Publish(_ context.Context, request output.CapturePublishRequest,
+	slot func(context.Context) (func(), error)) (output.CapturePublishResult, error) {
 	if err := request.Validate(); err != nil {
 		return output.CapturePublishResult{}, err
 	}
 	key := output.CaptureKey{ExecutionID: request.Execution.ExecutionID, Output: request.Output}
 
 	ledger.mu.Lock()
-	err := ledger.admitted(request.Execution)
-	var marker output.StepMarker
-	if err == nil {
-		marker, err = ledger.matching(key, "")
+	defer ledger.mu.Unlock()
+
+	if err := ledger.admitted(request.Execution); err != nil {
+		return output.CapturePublishResult{}, err
 	}
-	ledger.mu.Unlock()
+	marker, err := ledger.matching(key, "")
 	if err != nil {
 		return output.CapturePublishResult{}, err
 	}
@@ -520,7 +555,59 @@ func (ledger *CaptureLedger) Publish(ctx context.Context, request output.Capture
 			"its seal", output.ErrSealUnconfirmed, key, marker.State)
 	}
 
-	archive, size, cleanup, err := ledger.canonical(ctx, key, request.Digest)
+	job, started := ledger.uploads[key]
+	if started && job.digest != request.Digest {
+		return output.CapturePublishResult{}, fmt.Errorf("%w: %s is being published at %s, not %s",
+			output.ErrConflict, key, job.digest, request.Digest)
+	}
+	if !started {
+		jobCtx, cancel := context.WithTimeout(ledger.ctx, ledger.sealWait)
+		job = &publishJob{digest: request.Digest, done: make(chan struct{}), cancel: cancel}
+		ledger.uploads[key] = job
+		go ledger.runPublish(jobCtx, key, job, slot)
+
+		return output.CapturePublishResult{}, ledger.publishing(key)
+	}
+	select {
+	case <-job.done:
+	default:
+		return output.CapturePublishResult{}, ledger.publishing(key)
+	}
+	delete(ledger.uploads, key)
+
+	return job.result, job.err
+}
+
+func (ledger *CaptureLedger) publishing(key output.CaptureKey) error {
+	return fmt.Errorf("%w: %s is uploading; ask again", output.ErrPublishInProgress, key)
+}
+
+// runPublish is the background half of one publish.
+func (ledger *CaptureLedger) runPublish(ctx context.Context, key output.CaptureKey, job *publishJob,
+	slot func(context.Context) (func(), error)) {
+	defer job.cancel()
+
+	result, err := ledger.publish(ctx, key, job.digest, slot)
+
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	job.result, job.err = result, err
+	if ledger.uploads[key] != job && err == nil {
+		job.err = fmt.Errorf("%w: %s was released while it was being published", output.ErrNotFound, key)
+	}
+	close(job.done)
+}
+
+func (ledger *CaptureLedger) publish(ctx context.Context, key output.CaptureKey, digest hangar.Digest,
+	slot func(context.Context) (func(), error)) (output.CapturePublishResult, error) {
+	if slot != nil {
+		release, err := slot(ctx)
+		if err != nil {
+			return output.CapturePublishResult{}, err
+		}
+		defer release()
+	}
+	archive, size, cleanup, err := ledger.canonical(ctx, key, digest)
 	if err != nil {
 		return output.CapturePublishResult{}, err
 	}
@@ -529,7 +616,7 @@ func (ledger *CaptureLedger) Publish(ctx context.Context, request output.Capture
 	namespace := ledger.daemon.Namespace()
 	var store *publisher.Publisher = ledger.daemon.Publisher()
 	object, err := store.EnsurePublication(ctx,
-		namespace.MarkerFor(key.MarkerID(), request.Digest, output.NewTimestamp(nowUTC())),
+		namespace.MarkerFor(key.MarkerID(), digest, output.NewTimestamp(nowUTC())),
 		archive, size)
 	if err != nil {
 		return output.CapturePublishResult{}, err
@@ -617,14 +704,15 @@ func (ledger *CaptureLedger) Release(_ context.Context, request output.CaptureRe
 			return output.CaptureReleaseAcknowledgement{}, err
 		}
 	}
+	// Background jobs end: the capture is over and their answers will never
+	// be asked for. A seal that finishes after this stages nothing.
 	if job, running := ledger.jobs[key]; running {
-		select {
-		case <-job.done:
-		default:
-			// A seal still waiting for its Pod: the capture is over, and the
-			// job's answer will never be asked for. It ends at its own bound.
-		}
+		job.cancel()
 		delete(ledger.jobs, key)
+	}
+	if job, running := ledger.uploads[key]; running {
+		job.cancel()
+		delete(ledger.uploads, key)
 	}
 	if stale, err := filepath.Glob(filepath.Join(ledger.staging,
 		string(key.ExecutionID)+"."+string(key.Output)+".*.tar")); err == nil {

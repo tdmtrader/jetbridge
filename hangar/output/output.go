@@ -146,10 +146,16 @@ var (
 	// re-executes the producer.
 	ErrSealUnconfirmed = errors.New("hangar/output: seal unconfirmed")
 
-	// ErrSealInProgress is a seal the node has begun and not finished: it is
-	// waiting for the producing Pod's containers to stop, or canonicalizing.
-	// It authorizes asking again later and nothing else.
-	ErrSealInProgress = errors.New("hangar/output: seal in progress")
+	// ErrInProgress is a node operation that has begun in the background and
+	// not finished. It authorizes asking again later and nothing else.
+	ErrInProgress = errors.New("hangar/output: in progress")
+
+	// ErrSealInProgress is a seal waiting for the producing Pod's containers
+	// to stop, or canonicalizing.
+	ErrSealInProgress = fmt.Errorf("%w: seal", ErrInProgress)
+
+	// ErrPublishInProgress is a publish uploading the sealed tree.
+	ErrPublishInProgress = fmt.Errorf("%w: publish", ErrInProgress)
 
 	// ErrGenerationConflict is a conditional operation refused because the
 	// exact generation is not the one at the key. It becomes debt; it never

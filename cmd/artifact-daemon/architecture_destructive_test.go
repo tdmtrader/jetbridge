@@ -202,7 +202,7 @@ var destructiveInventory = map[string]struct {
 			"capture. It touches no source: the step directory becomes the artifact daemon's " +
 			"ordinary business, which is what a release is.",
 	}},
-	"outputplane/capture_ledger.go | CaptureLedger.seal | os.Rename(captured.ArchivePath)": {1, admission{
+	"outputplane/capture_ledger.go | CaptureLedger.runSeal | os.Rename(captured.ArchivePath)": {1, admission{
 		why: "moves the seal's canonical archive from the canonicalizer's private scratch into " +
 			"the capture's staging file in the same scratch volume. It touches no source.",
 	}},
