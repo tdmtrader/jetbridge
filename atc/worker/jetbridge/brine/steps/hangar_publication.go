@@ -43,7 +43,7 @@ func sealAndPublish(in FinishWitnessed) (CaptureOutcome, error) {
 	if err := source.Draft.Daemon.terminate(source.PodUID); err != nil {
 		return outcome, err
 	}
-	sealed := source.Draft.Daemon.capture("seal", "/capture/v1/seal",
+	sealed := source.Draft.Daemon.captureSettled("seal", "/capture/v1/seal",
 		source.Execution, source.sealRequest())
 	result, err := decodeControl[hangaroutput.CaptureSealResult](sealed)
 	if err != nil {
@@ -60,7 +60,7 @@ func sealAndPublish(in FinishWitnessed) (CaptureOutcome, error) {
 
 	publication := source.publishRequest(result.Digest)
 	publication.Staged = result.Staged
-	published := source.Draft.Daemon.capture("publish", "/capture/v1/publish",
+	published := source.Draft.Daemon.captureSettled("publish", "/capture/v1/publish",
 		source.Execution, publication)
 	outcome.Answer = published
 	answer, err := decodeControl[hangaroutput.CapturePublishResult](published)

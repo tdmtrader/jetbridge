@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
@@ -99,6 +100,28 @@ func (s HangarDaemon) capture(operation, path string, identity executioncontrol.
 	body any) controlAnswer {
 	return s.control(hangaroutput.CaptureFacet, operation, path, identity, body)
 }
+
+// captureSettled is capture for the two ASYNCHRONOUS operations, seal and
+// publish: the daemon answers 202 while the background job runs, and the
+// coordinator asks again until a terminal answer. So does this, bounded, and
+// it returns that terminal answer -- a refusal included -- or the last 202
+// when the bound runs out.
+func (s HangarDaemon) captureSettled(operation, path string, identity executioncontrol.Identity,
+	body any) controlAnswer {
+	deadline := time.Now().Add(captureSettleBound)
+	for {
+		answer := s.capture(operation, path, identity, body)
+		if answer.Err != nil || answer.Status != http.StatusAccepted || time.Now().After(deadline) {
+			return answer
+		}
+		time.Sleep(captureSettlePoll)
+	}
+}
+
+const (
+	captureSettleBound = 2 * time.Minute
+	captureSettlePoll  = 50 * time.Millisecond
+)
 
 // base is control with the base protocol's facet.
 func (s HangarDaemon) base(operation, path string, identity executioncontrol.Identity,
