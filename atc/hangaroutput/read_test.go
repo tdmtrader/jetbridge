@@ -590,7 +590,7 @@ func TestAManagedReadOfAMissingRegisteredGenerationRecordsTheAbsence(t *testing.
 	}
 
 	admission, minter := readAdmission(t, h)
-	admission.Absences = db.HangarAbsences{Conn: h.Conn}
+	admission.Absences = &db.HangarAbsences{Conn: h.Conn}
 	if _, err := admission.Admit(context.Background(), readRequest(t, claimID, ref)); !errors.Is(err, output.ErrNotFound) {
 		t.Fatalf("a read of a missing generation answered %v, want not found", err)
 	}

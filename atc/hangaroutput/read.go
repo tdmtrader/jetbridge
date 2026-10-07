@@ -48,14 +48,6 @@ type ExactStat interface {
 	StatExactObject(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error)
 }
 
-// UnexpectedAbsences records that a registered exact generation is missing
-// from the store: an integrity finding that blocks new admission. It opens
-// its own transaction; a read that found the object gone fails closed either
-// way, and this is what makes that visible.
-type UnexpectedAbsences interface {
-	RecordUnexpectedAbsence(ctx context.Context, ref hangar.TreeRef) error
-}
-
 // WarrantMinter turns a committed lease into a usable token.
 type WarrantMinter interface {
 	Sign(lease output.ReadLease, destination output.ReadDestination, node executioncontrol.NodeUID, nonce string) (string, error)
@@ -119,9 +111,10 @@ type ReadAdmission struct {
 	Minter     WarrantMinter
 	Clock      output.Clock
 
-	// Absences, when set, is told about a registered generation the stat
-	// found missing.
-	Absences UnexpectedAbsences
+	// Absences, when set, records a registered generation the stat found
+	// missing as an integrity finding that blocks new admission. A read that
+	// found the object gone fails closed either way; this makes it visible.
+	Absences *db.HangarAbsences
 }
 
 // Admit performs the whole boundary: stat, one transaction, then mint.
