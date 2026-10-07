@@ -94,11 +94,11 @@ first -- Run cancellation reads the start from the node that signed it,
 retains it, and interrupts and closes the execution from the Pod's journal.
 Aborting a Run build is scoped to that build and never cancels its Run. An
 aborted build that cannot finish over an open execution or an unsettled
-output handoff records a build closure. The cancellation worker converges it
+capture records a build closure. The cancellation worker converges it
 with Run cancellation's own operations, lease and node protocol, restricted
-to that build's handoffs, holds, captures and executions: classify first, ask
-for a source-preserving stop of an executing producer, release a hold or
-settle a capture only on the node's exact finish or stop evidence, and finish
+to that build's captures and executions: classify first, ask
+for a source-preserving stop of an executing producer, discard or settle a
+capture row only on the node's exact finish or stop evidence, and finish
 the build aborted once its execution is closed. It never touches another
 build, scheduler debt, candidates or terminal publication. The closure closes
 with its last operation; until then the build stays unfinished, the Run keeps

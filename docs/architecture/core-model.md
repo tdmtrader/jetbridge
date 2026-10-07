@@ -44,7 +44,7 @@ pending ──▶ started ──▶ succeeded | failed | errored | aborted
 - Aborting requires pipeline-operator on any team the build is associated
   with.
 - Aborting a v2 run build is scoped to that build. If it cannot finish over
-  an open execution or an unsettled output handoff, finishing records its
+  an open execution or an unsettled capture, finishing records its
   build closure and leaves it unfinished; the run keeps running and a rerun
   of its job is admitted. The build finishes aborted when the closure has
   settled that work, and the run completes through ordinary completion.
@@ -185,18 +185,17 @@ has one writer, the Run result finalizer (component `run_results`); build
 completion only wakes it.
 
 Admission is activated by configuration, not by hand, and the Run contract
-has its own activation, separate from the Hangar output epoch. Every web
+has its own activation, separate from Hangar's in-service row. Every web
 node, at startup, reconciles the run activation marker from
 `--pipeline-run-activation-epoch`, which the chart sets at every deploy: a
 positive epoch admits at that epoch, zero stops admitting and keeps the
 epoch. An epoch older than the recorded one refuses to start. Inside each
 admission the marker must admit the epoch. A template that declares results,
-or a run given inputs, additionally needs the node's Hangar output epoch
-enabled (base and output facets, which only the Hangar output activation Job
-enables). Admission checks nothing more, but executing any run -- with or
+or a run given inputs, additionally needs the Hangar output plane in service (its
+`hangar_enabled` row, which the web writes from `hangarOutput.webEnabled`). Admission checks nothing more, but executing any run -- with or
 without results -- needs the Hangar output plane's execution control
 (`hangarOutput.executionControl`) with the node's output capability key
-configured and its Hangar output epoch enabled, because every step of a run
+configured and the output plane in service, because every step of a run
 build starts through the exact-execution check. On a deploy missing any of
 these, a run of a
 template without results is admitted and every step then fails with "Run
