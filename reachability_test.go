@@ -120,9 +120,6 @@ var deferredEntryPoints = []deferredEntryPoint{
 
 	// The web-side answers to the deleted read-lease control protocol.
 	{name: "RenewReadLease", pkg: "atc/db", why: leaseControlDeleted},
-	{name: "ValidateReadLease", pkg: "atc/db", why: leaseControlDeleted},
-	{name: "ReadWarrantFor", pkg: "hangar/output", why: leaseControlDeleted},
-	{name: "ObserveExactAbsence", why: separateAbsenceStat},
 
 	// The reclaim-admission violation gate is enforced by the schema, on the
 	// INSERT itself, so this read is not part of it: a Go copy of the rule
@@ -141,8 +138,6 @@ const (
 	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
 		"does not return; Phase 8, with the activation verification"
 	leaseControlDeleted = "the read-lease control protocol that asked this of the web is deleted: the node daemon verifies a read warrant against its own window and never calls the web. The row semantics this method pins stay specified until the read rows are rewritten with the capture row"
-	separateAbsenceStat = "the delete pass's own answer already reports absence; a separate " +
-		"stat belongs to the ambiguous-response recovery path in Phase 8"
 )
 
 func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T) {

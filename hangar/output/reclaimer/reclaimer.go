@@ -132,34 +132,3 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 			output.ErrInfrastructure, key, err)
 	}
 }
-
-// ObserveExactAbsence is the stat half of inferred reclamation.
-//
-// It is a separate method because "the object is gone" and "we deleted it" are
-// separate facts, and the reclaim evidence rule in the schema will not accept
-// one for the other.
-func (reclaimer *Reclaimer) ObserveExactAbsence(ctx context.Context, ref hangar.TreeRef) (bool, error) {
-	if err := ref.Validate(); err != nil {
-		return false, err
-	}
-
-	key, err := hangar.TreeKey(reclaimer.namespace.Prefix(), ref.Scope, ref.Digest)
-	if err != nil {
-		return false, err
-	}
-
-	_, err = reclaimer.store.StatExact(ctx, reclaimer.namespace.Bucket(), key, ref.Generation)
-	switch {
-	case err == nil:
-		return false, nil
-	case errors.Is(err, objectstore.ErrBucketNotFound):
-		return false, fmt.Errorf("%w: the bucket does not exist, which is not absence of an "+
-			"object: %v", output.ErrInfrastructure, err)
-	case errors.Is(err, objectstore.ErrNotFound):
-		return true, nil
-	case errors.Is(err, objectstore.ErrUnauthorized):
-		return false, fmt.Errorf("%w: %v", output.ErrUnauthorized, err)
-	default:
-		return false, fmt.Errorf("%w: %v", output.ErrInfrastructure, err)
-	}
-}

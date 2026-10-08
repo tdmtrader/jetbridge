@@ -1141,8 +1141,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 					Params: []declaredParam{{Name: "keys", Type: "[]string"}}},
 				{File: "reclaimer/reclaimer.go", Owner: "Reclaimer", Name: "SweepPage",
 					Params: []declaredParam{{Name: "only", Type: "...string"}}},
-				{File: "reclaimer/reclaimer.go", Owner: "Reclaimer", Name: "ObserveExactAbsence",
-					Params: []declaredParam{{Name: "at", Type: "*string"}}},
 				{File: "reclaimer/reclaimer.go", Name: "New",
 					Params: []declaredParam{{Name: "labels", Type: "map[string]string"}}},
 				{File: "publisher/publisher.go", Owner: "Publisher", Name: "EnsurePublication",
@@ -1157,7 +1155,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 		for _, expected := range []string{
 			"publisher.Publisher.StatExactObject takes a bare string parameter keys ([]string)",
 			"reclaimer.Reclaimer.SweepPage takes a bare string parameter only (...string)",
-			"reclaimer.Reclaimer.ObserveExactAbsence takes a bare string parameter at (*string)",
 			"reclaimer.New takes a bare string parameter labels (map[string]string)",
 			"publisher.Publisher.EnsurePublication accepts a hangar.Scope parameter",
 		} {

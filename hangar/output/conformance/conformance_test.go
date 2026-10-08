@@ -657,17 +657,6 @@ func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 	if !errors.Is(err, output.ErrInfrastructure) {
 		t.Errorf("a lost delete response returned %v", err)
 	}
-
-	// Absence is then observable, which is the other half of what an inferred
-	// reclamation needs.
-	tier.memory.Inject(gcstest.Faults{})
-	absent, err := sweeper.ObserveExactAbsence(ctx, object.Attributes.Ref)
-	if err != nil {
-		t.Fatalf("observing absence: %v", err)
-	}
-	if !absent {
-		t.Error("the object is still there after a delete whose response was lost")
-	}
 }
 
 func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
@@ -800,9 +789,6 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 			reclaimer.Restrict(reclaimRecorder.RecordDeletes(tier.deleter)))
 		if err != nil {
 			t.Fatalf("building the reclaimer: %v", err)
-		}
-		if _, err := sweeper.ObserveExactAbsence(ctx, object.Attributes.Ref); err != nil {
-			t.Fatalf("observing: %v", err)
 		}
 		if _, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
 			output.DeletePrecondition{Generation: object.Attributes.Ref.Generation}); err != nil {
