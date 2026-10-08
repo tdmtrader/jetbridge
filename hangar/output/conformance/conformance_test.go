@@ -493,7 +493,7 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 			wrongRef.Generation = wrong.Generation
 			outcome, err := sweeper.DeleteExactGeneration(ctx, wrongRef, wrong)
 			switch outcome {
-			case output.DeleteGenerationConflict, output.DeleteAlreadyAbsent:
+			case reclaimer.GenerationConflict, reclaimer.AlreadyAbsent:
 				// Both are honest answers to "delete generation N+1": the store
 				// may report a missing generation as absence or as a
 				// precondition failure, and neither is a licence to delete
@@ -518,8 +518,8 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the conditional delete: %v", err)
 		}
-		if outcome != output.DeleteConfirmed {
-			t.Errorf("the conditional delete reported %q, expected %q", outcome, output.DeleteConfirmed)
+		if outcome != reclaimer.Deleted {
+			t.Errorf("the conditional delete reported %q, expected %q", outcome, reclaimer.Deleted)
 		}
 
 		// Repeating it is absence, not confirmation. Confirming a delete that
@@ -529,8 +529,8 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the repeated delete: %v", err)
 		}
-		if outcome != output.DeleteAlreadyAbsent {
-			t.Errorf("the repeated delete reported %q, expected %q", outcome, output.DeleteAlreadyAbsent)
+		if outcome != reclaimer.AlreadyAbsent {
+			t.Errorf("the repeated delete reported %q, expected %q", outcome, reclaimer.AlreadyAbsent)
 		}
 	})
 }
@@ -642,14 +642,13 @@ func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 	tier.memory.Inject(gcstest.Faults{DeleteResponseLost: true})
 	outcome, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
 		output.DeletePrecondition{Generation: object.Attributes.Ref.Generation})
-	if outcome == output.DeleteConfirmed {
-		t.Error("a delete whose response was lost was reported as confirmed. The object is gone " +
-			"either way; the difference is whether reclamation may claim it proved that, and it " +
-			"may not -- inferred reclamation needs the admitted-delete record plus observed " +
-			"absence, which is a different piece of evidence")
+	if outcome == reclaimer.Deleted {
+		t.Error("a delete whose response was lost was reported as deleted. The object is gone " +
+			"either way; the difference is whether the pass may stamp the generation reclaimed on " +
+			"that answer, and it may not -- it retries next pass and gets already_absent")
 	}
-	if outcome != output.DeleteInfrastructure {
-		t.Errorf("a lost delete response reported %q, expected %q", outcome, output.DeleteInfrastructure)
+	if outcome != reclaimer.Failed {
+		t.Errorf("a lost delete response reported %q, expected %q", outcome, reclaimer.Failed)
 	}
 	if !errors.Is(err, output.ErrInfrastructure) {
 		t.Errorf("a lost delete response returned %v", err)
@@ -1049,7 +1048,7 @@ func TestABenignMetadataChangeDoesNotWedgeReclamationForever(t *testing.T) {
 	}
 	outcome, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
 		output.DeletePrecondition{Generation: object.Attributes.Ref.Generation})
-	if outcome != output.DeleteConfirmed {
+	if outcome != reclaimer.Deleted {
 		t.Fatalf("a benign metadata change wedged reclamation: the delete reported %q (%v).\n\n"+
 			"conflicted is TERMINAL and there is no re-stat-and-re-register path, so every "+
 			"object in a bucket with a storage-class transition becomes permanently "+

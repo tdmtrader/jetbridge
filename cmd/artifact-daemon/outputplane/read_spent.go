@@ -17,15 +17,13 @@ const readWarrantRecordName = "read-warrants-spent.json"
 
 // spentReads makes a read warrant single-use on this node, durably.
 //
-// It is what the read lease's release used to buy, kept on the node now that
-// the node no longer asks the web. A read's protection was given back when the
-// read ended, so the warrant bound to it could not be spent again; the web
-// still gives the LEASE back (or its abandoned-lease cleaner closes it at
-// expiry), and this is the warrant's half: once a read under it has ended --
-// verified, refused, or failed for a reason a retry cannot change -- the same
-// warrant opens nothing more here. A failure this daemon answers as
-// unavailable (503) gives the warrant back, because the managed-input init
-// retries that answer with the one warrant minted for its Pod.
+// The node never asks the web whether the reader's claim is still live. The
+// web gives the CLAIM back when its read ends (or it expires on its own), and
+// this is the warrant's half: once a read under it has ended -- verified,
+// refused, or failed for a reason a retry cannot change -- the same warrant
+// opens nothing more here. A failure this daemon answers as unavailable (503)
+// gives the warrant back, because the managed-input init retries that answer
+// with the one warrant minted for its Pod.
 //
 // The warrant is recorded IN FLIGHT, durably, before its read begins. A second
 // presentation while it is in flight is refused, and so is one after a crash
@@ -35,8 +33,8 @@ const readWarrantRecordName = "read-warrants-spent.json"
 // materialization receipt before it asks again, so a materialization that finished before the
 // crash still completes.)
 //
-// The set is keyed by read lease id and pruned at each warrant's own expiry: a
-// warrant past its window authorizes nothing anyway.
+// The set is keyed by the reader's claim id and pruned at each warrant's own
+// expiry: a warrant past its window authorizes nothing anyway.
 type spentReads struct {
 	mu    sync.Mutex
 	store *controlStore
@@ -61,11 +59,11 @@ func openSpentReads(store *controlStore, clock func() time.Time) (*spentReads, e
 	reads := &spentReads{store: store, used: map[string]usedWarrant{}, clock: clock}
 	if found {
 		now := clock()
-		for lease, entry := range recorded {
+		for claim, entry := range recorded {
 			if now.Before(entry.ExpiresAt) {
 				// An entry left in flight by a previous process counts as used.
 				entry.InFlight = false
-				reads.used[lease] = entry
+				reads.used[claim] = entry
 			}
 		}
 	}
@@ -80,12 +78,12 @@ func (reads *spentReads) begin(claims output.ReadWarrantClaims) error {
 	reads.mu.Lock()
 	defer reads.mu.Unlock()
 
-	lease := string(claims.ReadLeaseID)
-	if _, used := reads.used[lease]; used {
+	claim := string(claims.ClaimID)
+	if _, used := reads.used[claim]; used {
 		return fmt.Errorf("%w: the read warrant was already used on this node", output.ErrUnauthorized)
 	}
 
-	return reads.save(lease, &usedWarrant{ExpiresAt: claims.ExpiresAt.UTC(), InFlight: true})
+	return reads.save(claim, &usedWarrant{ExpiresAt: claims.ExpiresAt.UTC(), InFlight: true})
 }
 
 // end closes the read begin admitted: the warrant stays used unless the read's
@@ -94,27 +92,27 @@ func (reads *spentReads) end(claims output.ReadWarrantClaims, readErr error) err
 	reads.mu.Lock()
 	defer reads.mu.Unlock()
 
-	lease := string(claims.ReadLeaseID)
+	claim := string(claims.ClaimID)
 	if readErr != nil && readRefusalClass(readErr) == output.ErrInfrastructure &&
 		!errors.Is(readErr, output.ErrCorrupt) && !errors.Is(readErr, hangar.ErrCorrupt) {
-		return reads.save(lease, nil)
+		return reads.save(claim, nil)
 	}
 
-	return reads.save(lease, &usedWarrant{ExpiresAt: claims.ExpiresAt.UTC()})
+	return reads.save(claim, &usedWarrant{ExpiresAt: claims.ExpiresAt.UTC()})
 }
 
 // save writes the set with one entry set (or removed, for nil), pruning
 // expired entries, and adopts it only once it is durable.
-func (reads *spentReads) save(lease string, entry *usedWarrant) error {
+func (reads *spentReads) save(claim string, entry *usedWarrant) error {
 	now := reads.clock()
 	next := make(map[string]usedWarrant, len(reads.used)+1)
 	for other, existing := range reads.used {
-		if other != lease && now.Before(existing.ExpiresAt) {
+		if other != claim && now.Before(existing.ExpiresAt) {
 			next[other] = existing
 		}
 	}
 	if entry != nil {
-		next[lease] = *entry
+		next[claim] = *entry
 	}
 	if err := reads.store.put(readWarrantRecordName, next); err != nil {
 		return err

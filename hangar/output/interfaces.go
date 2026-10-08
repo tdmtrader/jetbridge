@@ -5,10 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 // Tx is the caller-owned database transaction Hangar composes with.
@@ -88,80 +86,3 @@ func (role PrincipalRole) Validate() error {
 func PrincipalRoles() []PrincipalRole {
 	return []PrincipalRole{PrincipalPublisher, PrincipalReclaimer}
 }
-
-// ReadLeaseRequest asks for the right to read one exact generation.
-//
-// MaterializationTimeout is on the request because the lease term is derived
-// from it: at least MinLeaseTerm, and at least the timeout plus
-// LeaseTermMargin. A caller that under-reports its own timeout gets a lease it
-// will outlive, and MayStartWork refuses to begin.
-type ReadLeaseRequest struct {
-	ReadLeaseID            ReadLeaseID
-	ClaimID                ClaimID
-	Ref                    hangar.TreeRef
-	ActivationEpoch        executioncontrol.ActivationEpoch
-	RequestedAt            Timestamp
-	MaterializationTimeout time.Duration
-
-	// Destination and WarrantNonce are what the warrant for this lease will bind.
-	// They are on the REQUEST, and stored with the lease, because the warrant is
-	// minted after the transaction commits and may have to be minted again: a
-	// nonce chosen at mint time would make two mints of one lease differ.
-	Destination  ReadDestination
-	WarrantNonce string
-
-	// StatProof is the exact-generation metadata stat, performed OUTSIDE the
-	// locks and revalidated inside them. A read warrant is admitted only after
-	// a stat proves the registered marked generation is present; a lease
-	// created without one would be protection for content nobody looked at.
-	StatProof PublishedObject
-
-	// StatObservedAt is when that stat was taken. It is separate from
-	// RequestedAt because a caller may hold a request open while retrying, and
-	// what has to be fresh is the OBSERVATION.
-	StatObservedAt Timestamp
-}
-
-func (request ReadLeaseRequest) Validate() error {
-	if err := request.ReadLeaseID.Validate(); err != nil {
-		return err
-	}
-	if err := request.ClaimID.Validate(); err != nil {
-		return err
-	}
-	if err := request.Ref.Validate(); err != nil {
-		return err
-	}
-	if request.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero", ErrIncomplete)
-	}
-	if err := ValidateMaterializationTimeout(request.MaterializationTimeout); err != nil {
-		return err
-	}
-	if err := request.Destination.Validate(); err != nil {
-		return err
-	}
-	if err := validateReadWarrantNonce(request.WarrantNonce); err != nil {
-		return err
-	}
-	if err := request.StatProof.Validate(); err != nil {
-		return fmt.Errorf("%w: a read lease is admitted on an exact-generation stat: %v",
-			ErrIncomplete, err)
-	}
-	if request.StatProof.Attributes.Ref != request.Ref {
-		return fmt.Errorf("%w: the stat proves %s/%s/%d and the lease is for %s/%s/%d",
-			ErrConflict,
-			request.StatProof.Attributes.Ref.Scope, request.StatProof.Attributes.Ref.Digest,
-			request.StatProof.Attributes.Ref.Generation,
-			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation)
-	}
-	if err := request.StatObservedAt.Validate(); err != nil {
-		return err
-	}
-
-	return request.RequestedAt.Validate()
-}
-
-// MaxStatProofAge is how stale the stat admitting a read lease may be: how
-// long an observation of the object store may stand in for the object store.
-const MaxStatProofAge = 5 * time.Minute

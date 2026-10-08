@@ -162,17 +162,14 @@ func (repository *HangarOutputRepository) CountOutputPlaneState(ctx context.Cont
 	var counts output.PlaneCounts
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
-			(SELECT count(*) FROM hangar_exact_lifecycles
-			  WHERE state IN ('registered', 'adopted', 'reclaiming')),
+			(SELECT count(*) FROM hangar_exact_lifecycles WHERE reclaimed_at IS NULL),
 			(SELECT count(*) FROM hangar_captures WHERE state = 'pending'),
 			(SELECT count(*) FROM hangar_captures WHERE state = 'publishing'),
 			(SELECT count(*) FROM hangar_captures
 			  WHERE released_at IS NULL AND state IN ('published', 'discarded', 'failed')),
 			(SELECT count(*) FROM hangar_captures WHERE release_unacknowledged),
-			(SELECT count(*) FROM hangar_claims WHERE released_at IS NULL),
-			(SELECT count(*) FROM hangar_read_leases
-			  WHERE released_at IS NULL AND expires_at > now()),
-			(SELECT count(*) FROM hangar_reclaim_jobs WHERE finalized_at IS NULL),
+			(SELECT count(*) FROM hangar_claims
+			  WHERE released_at IS NULL AND (expires_at IS NULL OR expires_at > now())),
 			(SELECT count(*) FROM hangar_integrity_findings WHERE resolved_at IS NULL)`)
 	if err != nil {
 		return output.PlaneCounts{}, hangarConflict(err)
@@ -188,8 +185,8 @@ func (repository *HangarOutputRepository) CountOutputPlaneState(ctx context.Cont
 			output.ErrCorrupt)
 	}
 	if err := rows.Scan(&counts.LiveGenerations, &counts.PendingCaptures, &counts.PublishingCaptures,
-		&counts.UnreleasedCaptures, &counts.UnacknowledgedReleases, &counts.OpenClaims, &counts.OpenReadLeases,
-		&counts.UnfinalizedReclaimJobs, &counts.OpenIntegrityFindings); err != nil {
+		&counts.UnreleasedCaptures, &counts.UnacknowledgedReleases, &counts.OpenClaims,
+		&counts.OpenIntegrityFindings); err != nil {
 		return output.PlaneCounts{}, hangarConflict(err)
 	}
 	counts.NonterminalCaptures = counts.PendingCaptures + counts.PublishingCaptures
@@ -214,10 +211,11 @@ type HangarAbsences struct {
 	Conn DbConn
 }
 
-// RecordUnexpectedAbsence moves a REGISTERED or ADOPTED generation to
-// missing_out_of_band and records the blocking finding. A generation being
-// reclaimed, already reclaimed or already missing is not news and is left
-// alone: its absence is explained by this plane's own delete.
+// RecordUnexpectedAbsence records the blocking finding for a REGISTERED
+// generation a read found missing. The lifecycle row stays registered beside
+// the finding; the reclaim pass finds the object absent once nothing claims
+// it and stamps it reclaimed then. A reclaimed generation is not news and is
+// left alone: its absence is this plane's own delete.
 func (absences HangarAbsences) RecordUnexpectedAbsence(ctx context.Context, ref hangar.TreeRef) error {
 	tx, err := absences.Conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -250,7 +248,7 @@ func (repository *HangarOutputRepository) recordUnexpectedAbsence(ctx context.Co
 		return false, nil
 	}
 	var live bool
-	if err := hangarQueryRow(ctx, tx, `SELECT state IN ('registered', 'adopted') FROM hangar_exact_lifecycles WHERE id = $1`,
+	if err := hangarQueryRow(ctx, tx, `SELECT reclaimed_at IS NULL FROM hangar_exact_lifecycles WHERE id = $1`,
 		[]any{id}, &live); err != nil {
 		return false, err
 	}
@@ -258,5 +256,10 @@ func (repository *HangarOutputRepository) recordUnexpectedAbsence(ctx context.Co
 		return false, nil
 	}
 
-	return true, repository.RecordOutOfBandAbsence(ctx, tx, ref)
+	return true, repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{
+		Violation: output.ViolationOutOfBandAbsence,
+		Subject:   fmt.Sprintf("%s/%s/%d", ref.Scope, ref.Digest, ref.Generation),
+		Detail: "a read found the registered generation absent from the output namespace and " +
+			"no reclaim of this plane explains it; this is a lifetime violation, never a reclamation",
+	})
 }

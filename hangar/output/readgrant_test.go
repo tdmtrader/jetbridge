@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,22 +31,23 @@ import (
 
 var readWarrantKey = []byte("0123456789abcdef0123456789abcdef")
 
-func readWarrantLease() ReadLease {
-	granted := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+// readWarrantClaim is the committed reader's claim every warrant below is
+// minted over: an expiring hold on one registered generation.
+func readWarrantClaim() ClaimRecord {
+	acquired := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	expires := NewTimestamp(acquired.Add(20 * time.Minute))
 
-	return ReadLease{
-		ProtocolVersion: ProtocolVersion,
-		ReadLeaseID:     ReadLeaseID("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d"),
-		ClaimID:         ClaimID("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
+	return ClaimRecord{
+		ClaimID: ClaimID("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
 		Ref: hangar.TreeRef{
 			Scope:      "deployment-ns",
 			Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			Generation: 7,
 		},
-		ActivationEpoch: executioncontrol.ActivationEpoch(3),
-		LeaseFence:      LeaseFence(1),
-		GrantedAt:       NewTimestamp(granted),
-		ExpiresAt:       NewTimestamp(granted.Add(20 * time.Minute)),
+		ConsumerBindingID: "result-read:task-handle",
+		ActivationEpoch:   executioncontrol.ActivationEpoch(3),
+		AcquiredAt:        NewTimestamp(acquired),
+		ExpiresAt:         &expires,
 	}
 }
 
@@ -53,10 +55,10 @@ func readWarrantDestination() ReadDestination {
 	return ReadDestination{Handle: "task-handle", Volume: "input-0"}
 }
 
-// insideTheWindow is a clock inside the lease's own window, which is the
+// insideTheWindow is a clock inside the claim's own window, which is the
 // warrant's window too.
 func insideTheWindow() ClockFunc {
-	return func() time.Time { return readWarrantLease().GrantedAt.Add(time.Minute) }
+	return func() time.Time { return readWarrantClaim().AcquiredAt.Add(time.Minute) }
 }
 
 func mustSignReadWarrant(t *testing.T) string {
@@ -66,11 +68,7 @@ func mustSignReadWarrant(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("new read warrant signer: %v", err)
 	}
-	nonce, err := NewReadWarrantNonce(strings.NewReader("0123456789abcdef"))
-	if err != nil {
-		t.Fatalf("new read warrant nonce: %v", err)
-	}
-	token, err := signer.Sign(readWarrantLease(), readWarrantDestination(), "node-1", nonce)
+	token, err := signer.Sign(readWarrantClaim(), readWarrantDestination(), "node-1")
 	if err != nil {
 		t.Fatalf("sign read warrant: %v", err)
 	}
@@ -78,32 +76,65 @@ func mustSignReadWarrant(t *testing.T) string {
 	return token
 }
 
-func TestAnOutputReadWarrantVerifiesForItsOwnLeaseRefAndDestination(t *testing.T) {
+func TestAnOutputReadWarrantVerifiesForItsOwnClaimRefAndDestination(t *testing.T) {
 	verifier, err := NewReadWarrantVerifier(readWarrantKey, insideTheWindow())
 	if err != nil {
 		t.Fatalf("new read warrant verifier: %v", err)
 	}
 
-	lease := readWarrantLease()
-	claims, err := verifier.Verify(mustSignReadWarrant(t), lease.Ref, readWarrantDestination())
+	claim := readWarrantClaim()
+	claims, err := verifier.Verify(mustSignReadWarrant(t), claim.Ref, readWarrantDestination())
 	if err != nil {
-		t.Fatalf("a warrant minted for this lease did not verify: %v", err)
+		t.Fatalf("a warrant minted for this claim did not verify: %v", err)
 	}
 
-	if claims.ReadLeaseID != lease.ReadLeaseID {
-		t.Errorf("read lease id = %q, want %q", claims.ReadLeaseID, lease.ReadLeaseID)
+	if claims.ClaimID != claim.ClaimID {
+		t.Errorf("claim id = %q, want %q", claims.ClaimID, claim.ClaimID)
 	}
-	if claims.ClaimID != lease.ClaimID {
-		t.Errorf("claim id = %q, want %q", claims.ClaimID, lease.ClaimID)
+	if claims.ActivationEpoch != claim.ActivationEpoch {
+		t.Errorf("activation epoch = %d, want %d", claims.ActivationEpoch, claim.ActivationEpoch)
 	}
-	if claims.ActivationEpoch != lease.ActivationEpoch {
-		t.Errorf("activation epoch = %d, want %d", claims.ActivationEpoch, lease.ActivationEpoch)
+	if claims.NodeUID != "node-1" {
+		t.Errorf("node = %q, want node-1", claims.NodeUID)
 	}
 	if claims.Destination != readWarrantDestination() {
 		t.Errorf("destination = %+v, want %+v", claims.Destination, readWarrantDestination())
 	}
-	if !claims.ExpiresAt.Equal(lease.ExpiresAt.Time) {
-		t.Errorf("expiry = %s, want the lease's own %s", claims.ExpiresAt, lease.ExpiresAt)
+	// The window is the claim's: issued when it was acquired, expiring when
+	// it lapses. Nothing in the token comes from the instant it was minted.
+	if !claims.IssuedAt.Equal(claim.AcquiredAt.Time) {
+		t.Errorf("issued at = %s, want the claim's own acquired-at %s", claims.IssuedAt, claim.AcquiredAt)
+	}
+	if !claims.ExpiresAt.Equal(claim.ExpiresAt.Time) {
+		t.Errorf("expiry = %s, want the claim's own %s", claims.ExpiresAt, claim.ExpiresAt)
+	}
+}
+
+// Sign takes the committed claim, and refuses one a warrant cannot be minted
+// over: a consumer's hold has no window, and a released claim is no hold.
+func TestSignRefusesAClaimThatIsNotALiveReadersHold(t *testing.T) {
+	signer, err := NewReadWarrantSigner(readWarrantKey)
+	if err != nil {
+		t.Fatalf("new read warrant signer: %v", err)
+	}
+
+	consumers := readWarrantClaim()
+	consumers.ExpiresAt = nil
+	if _, err := signer.Sign(consumers, readWarrantDestination(), "node-1"); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("a consumer's claim, with no expiry, was signed into a read warrant: %v", err)
+	}
+
+	released := readWarrantClaim()
+	at := NewTimestamp(released.AcquiredAt.Add(time.Minute))
+	released.ReleasedAt = &at
+	if _, err := signer.Sign(released, readWarrantDestination(), "node-1"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a released claim was signed into a read warrant: %v", err)
+	}
+
+	invalid := readWarrantClaim()
+	invalid.ActivationEpoch = 0
+	if _, err := signer.Sign(invalid, readWarrantDestination(), "node-1"); err == nil {
+		t.Fatal("a claim naming no activation epoch was signed into a read warrant")
 	}
 }
 
@@ -118,9 +149,6 @@ func TestAnEditedOutputReadWarrantDoesNotVerify(t *testing.T) {
 		name string
 		edit func(*ReadWarrantClaims)
 	}{
-		{"read lease id", func(c *ReadWarrantClaims) {
-			c.ReadLeaseID = ReadLeaseID("99999999-2e1f-4a0b-9c8d-7e6f5a4b3c2d")
-		}},
 		{"claim id", func(c *ReadWarrantClaims) {
 			c.ClaimID = ClaimID("99999999-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
 		}},
@@ -139,7 +167,6 @@ func TestAnEditedOutputReadWarrantDoesNotVerify(t *testing.T) {
 		{"expires at", func(c *ReadWarrantClaims) {
 			c.ExpiresAt = NewTimestamp(c.ExpiresAt.Add(24 * time.Hour))
 		}},
-		{"nonce", func(c *ReadWarrantClaims) { c.Nonce = "AAAAAAAAAAAAAAAAAAAAAA" }},
 		{"domain", func(c *ReadWarrantClaims) { c.Domain = hangarStrictInputDomain }},
 		{"version", func(c *ReadWarrantClaims) { c.Version = "2" }},
 	} {
@@ -165,17 +192,17 @@ func TestAnEditedOutputReadWarrantDoesNotVerify(t *testing.T) {
 	}
 }
 
-// The window is the lease's, and it is checked at both ends.
-func TestAnOutputReadWarrantIsRefusedOutsideTheLeaseWindow(t *testing.T) {
-	lease := readWarrantLease()
+// The window is the claim's, and it is checked at both ends.
+func TestAnOutputReadWarrantIsRefusedOutsideTheClaimWindow(t *testing.T) {
+	claim := readWarrantClaim()
 
 	for _, test := range []struct {
 		name string
 		at   time.Time
 	}{
-		{"before the lease was granted", lease.GrantedAt.Add(-time.Second)},
-		{"at the moment the lease expires", lease.ExpiresAt.Time},
-		{"after the lease expires", lease.ExpiresAt.Add(time.Hour)},
+		{"before the claim was acquired", claim.AcquiredAt.Add(-time.Second)},
+		{"at the moment the claim expires", claim.ExpiresAt.Time},
+		{"after the claim expires", claim.ExpiresAt.Add(time.Hour)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			verifier, err := NewReadWarrantVerifier(readWarrantKey,
@@ -183,9 +210,15 @@ func TestAnOutputReadWarrantIsRefusedOutsideTheLeaseWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new read warrant verifier: %v", err)
 			}
-			if _, err := verifier.Verify(mustSignReadWarrant(t), lease.Ref,
+			if _, err := verifier.Verify(mustSignReadWarrant(t), claim.Ref,
 				readWarrantDestination()); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("a warrant verified %s: %v", test.name, err)
+			}
+			// The binding alone is true forever: whether the claim is still
+			// a live hold is the database's question, on its own clock.
+			if _, err := verifier.VerifyBinding(mustSignReadWarrant(t), claim.Ref,
+				readWarrantDestination()); err != nil {
+				t.Fatalf("the binding did not verify %s: %v", test.name, err)
 			}
 		})
 	}
@@ -193,8 +226,8 @@ func TestAnOutputReadWarrantIsRefusedOutsideTheLeaseWindow(t *testing.T) {
 
 // A warrant presented for content or a destination it does not name.
 func TestAnOutputReadWarrantIsRefusedForAnotherRefOrDestination(t *testing.T) {
-	lease := readWarrantLease()
-	other := lease.Ref
+	claim := readWarrantClaim()
+	other := claim.Ref
 	other.Generation++
 
 	for _, test := range []struct {
@@ -203,8 +236,8 @@ func TestAnOutputReadWarrantIsRefusedForAnotherRefOrDestination(t *testing.T) {
 		destination ReadDestination
 	}{
 		{"another generation", other, readWarrantDestination()},
-		{"another handle", lease.Ref, ReadDestination{Handle: "other", Volume: "input-0"}},
-		{"another volume", lease.Ref, ReadDestination{Handle: "task-handle", Volume: "input-1"}},
+		{"another handle", claim.Ref, ReadDestination{Handle: "other", Volume: "input-0"}},
+		{"another volume", claim.Ref, ReadDestination{Handle: "task-handle", Volume: "input-1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			verifier, err := NewReadWarrantVerifier(readWarrantKey, insideTheWindow())
@@ -214,6 +247,10 @@ func TestAnOutputReadWarrantIsRefusedForAnotherRefOrDestination(t *testing.T) {
 			if _, err := verifier.Verify(mustSignReadWarrant(t), test.ref,
 				test.destination); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("a warrant verified for %s: %v", test.name, err)
+			}
+			if _, err := verifier.VerifyBinding(mustSignReadWarrant(t), test.ref,
+				test.destination); !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("a warrant's binding verified for %s: %v", test.name, err)
 			}
 		})
 	}
@@ -225,15 +262,15 @@ func TestAnOutputReadWarrantIsRefusedForAnotherRefOrDestination(t *testing.T) {
 // in the key material. A deployment that reused one key would still not be able
 // to present a strict input warrant as a managed-output read.
 func TestAStrictInputWarrantDoesNotVerifyAsAnOutputReadWarrant(t *testing.T) {
-	lease := readWarrantLease()
+	claim := readWarrantClaim()
 
 	strict, err := hangar.NewWarrantSigner(readWarrantKey, hangar.MaxWarrantTTL, func() time.Time {
-		return lease.GrantedAt.Time
+		return claim.AcquiredAt.Time
 	})
 	if err != nil {
 		t.Fatalf("new strict-input warrant signer: %v", err)
 	}
-	token, err := strict.Sign(lease.Ref, "task-handle", "input-0")
+	token, err := strict.Sign(claim.Ref, "task-handle", "input-0")
 	if err != nil {
 		t.Fatalf("sign strict-input warrant: %v", err)
 	}
@@ -242,19 +279,19 @@ func TestAStrictInputWarrantDoesNotVerifyAsAnOutputReadWarrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new read warrant verifier: %v", err)
 	}
-	if _, err := verifier.Verify(token, lease.Ref, readWarrantDestination()); !errors.Is(err, ErrUnauthorized) {
+	if _, err := verifier.Verify(token, claim.Ref, readWarrantDestination()); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("a strict-input materialization warrant verified as an output read warrant: %v", err)
 	}
 
 	// And the other way: the foundation's verifier must not accept an output
 	// read warrant either, or a managed read would be presentable as an input.
 	strictVerifier, err := hangar.NewWarrantVerifier(readWarrantKey, hangar.MaxWarrantTTL, func() time.Time {
-		return lease.GrantedAt.Add(time.Minute)
+		return claim.AcquiredAt.Add(time.Minute)
 	})
 	if err != nil {
 		t.Fatalf("new strict-input warrant verifier: %v", err)
 	}
-	if err := strictVerifier.Verify(mustSignReadWarrant(t), lease.Ref, "task-handle",
+	if err := strictVerifier.Verify(mustSignReadWarrant(t), claim.Ref, "task-handle",
 		"input-0"); !errors.Is(err, hangar.ErrUnauthorized) {
 		t.Fatalf("an output read warrant verified as a strict-input warrant: %v", err)
 	}
@@ -276,30 +313,87 @@ func TestTheReceiptKeyCannotSignAnOutputReadWarrant(t *testing.T) {
 	}
 }
 
-// The replay rule: two mints of one committed lease are the same bytes.
-func TestReMintingOneLeasesWarrantIsByteIdentical(t *testing.T) {
+// The replay rule: two mints of one committed claim are the same bytes, so a
+// mint whose commit answer was lost is answered by acquiring the same claim
+// again and minting again, never by a second claim.
+func TestReMintingOneClaimsWarrantIsByteIdentical(t *testing.T) {
 	first, second := mustSignReadWarrant(t), mustSignReadWarrant(t)
 	if first != second {
-		t.Fatal("two mints of one committed lease produced different warrants; requirement 37's " +
-			"replay would have to create a second lease to be answerable")
+		t.Fatal("two mints of one committed claim produced different warrants; a lost commit " +
+			"answer would have to create a second claim to be answerable")
+	}
+}
+
+// The canonical bytes carry no identity but the claim's: no lease id and no
+// nonce, so nothing in the signature comes from the instant of minting.
+func TestTheCanonicalReadWarrantBytesCarryNoLeaseIDOrNonce(t *testing.T) {
+	claim := readWarrantClaim()
+	claims := WarrantClaimsFor(claim, readWarrantDestination(), "node-1")
+
+	canonical, err := CanonicalReadWarrantBytes(claims)
+	if err != nil {
+		t.Fatalf("canonical read warrant bytes: %v", err)
 	}
 
-	// And a different nonce is a different warrant, so the nonce is genuinely
-	// inside the signature rather than decorative.
-	signer, err := NewReadWarrantSigner(readWarrantKey)
-	if err != nil {
-		t.Fatalf("new read warrant signer: %v", err)
+	fields := strings.Split(strings.TrimSuffix(string(canonical), "|"), "|")
+	want := []string{
+		MaterializeDomain,
+		readWarrantVersion,
+		string(claim.ClaimID),
+		string(claim.Ref.Scope),
+		string(claim.Ref.Digest),
+		"7",
+		"task-handle",
+		"input-0",
+		"3",
+		"node-1",
+		claim.AcquiredAt.UTC().Format(time.RFC3339Nano),
+		claim.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	}
-	other, err := NewReadWarrantNonce(strings.NewReader("fedcba9876543210"))
-	if err != nil {
-		t.Fatalf("new read warrant nonce: %v", err)
+	if len(fields) != len(want) {
+		t.Fatalf("the canonical form has %d fields, want %d: %q", len(fields), len(want), fields)
 	}
-	token, err := signer.Sign(readWarrantLease(), readWarrantDestination(), "node-1", other)
-	if err != nil {
-		t.Fatalf("sign read warrant: %v", err)
+	for index, field := range fields {
+		length, value, found := strings.Cut(field, ":")
+		if !found || length != strconv.Itoa(len(value)) || value != want[index] {
+			t.Errorf("canonical field %d = %q, want %d:%s", index, field, len(want[index]), want[index])
+		}
 	}
-	if token == first {
-		t.Fatal("a warrant minted with another nonce is byte-identical; the nonce is not bound")
+
+	rendered, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("rendering the claims: %v", err)
+	}
+	for _, absent := range []string{"read_lease_id", "nonce", "lease"} {
+		if strings.Contains(string(rendered), absent) {
+			t.Errorf("the rendered warrant carries %q: %s", absent, rendered)
+		}
+	}
+}
+
+// The destination-segment rule is the foundation's rule, restated: whatever
+// the strict-input signer refuses as a handle or a volume, a read destination
+// refuses too, and whatever it accepts, a read destination accepts.
+func TestAReadDestinationSegmentIsTheFoundationsPathSegmentRule(t *testing.T) {
+	signer, err := hangar.NewWarrantSigner(readWarrantKey, hangar.MaxWarrantTTL, func() time.Time {
+		return readWarrantClaim().AcquiredAt.Time
+	})
+	if err != nil {
+		t.Fatalf("new strict-input warrant signer: %v", err)
+	}
+	ref := readWarrantClaim().Ref
+
+	for _, segment := range []string{
+		"task-handle", "input-0", "a", "A.b_c-d9", strings.Repeat("a", 128),
+		"", ".", "..", "../escape", "/absolute", "nested/volume", "-leading", "trailing.",
+		"with space", strings.Repeat("a", 129), "ünïcode",
+	} {
+		_, foundationErr := signer.Sign(ref, segment, "input-0")
+		if accepted := validDestinationSegment(segment); accepted != (foundationErr == nil) {
+			t.Errorf("segment %q: read destination accepts = %t, the foundation's strict-input "+
+				"signer accepts = %t (%v); both must be one rule", segment, accepted,
+				foundationErr == nil, foundationErr)
+		}
 	}
 }
 

@@ -492,11 +492,10 @@ func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
 
 // TWO NEW COMPONENTS RAN ON EVERY DEPLOYMENT, INCLUDING NON-KUBERNETES ONES.
 //
-// The capture advancer and the read-lease cleanup were appended to the
-// component table outside both the Kubernetes block and any output-plane
-// check. A deployment with capture disabled must behave as it did before,
-// and two `components` rows, two advisory locks and two queries a minute is
-// not that -- however cheap each pass is.
+// The capture advancer was appended to the component table outside both the
+// Kubernetes block and any output-plane check. A deployment with capture
+// disabled must behave as it did before, and a `components` row, an advisory
+// lock and a query a minute is not that -- however cheap each pass is.
 func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnabled() {
 	names := func(components []atccmd.RunnableComponent) []string {
 		var named []string
@@ -511,21 +510,22 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 	s.Empty(names(atccmd.HangarOutputComponentsForTest(off, nil)),
 		"a deployment that never opted into the output plane registers one of its components")
 
-	// The plane: capture, read-lease cleanup and status -- the status surface
-	// on the same condition the admin status API answers on. Run cancellation
-	// is not among them; every web node registers it (runComponents).
+	// The plane: capture and status -- the status surface on the same
+	// condition the admin status API answers on. A reader's claim expires on
+	// the database clock, so no cleanup component exists for it. Run
+	// cancellation is not among them; every web node registers it
+	// (runComponents).
 	on := &atccmd.RunCommand{}
 	on.Kubernetes.OutputPlaneEnabled = true
 	s.ElementsMatch([]string{
 		atc.ComponentHangarOutputCapture,
-		atc.ComponentHangarOutputReadLeaseCleanup,
 		atc.ComponentHangarOutputStatus,
 	}, names(atccmd.HangarOutputComponentsForTest(on, nil)))
 }
 
 // The web's two deleting passes -- reclaim and the orphan sweep -- register
 // wherever an output bucket is configured, in service or not: a drained plane
-// still finalizes its reclaim jobs. Nowhere else.
+// still reclaims what nothing holds. Nowhere else.
 func (s *CommandSuite) TestTheWebRunsTheReclaimPassAndTheOrphanSweepWhereAnOutputBucketIs() {
 	names := func(components []atccmd.RunnableComponent) []string {
 		var named []string
@@ -588,8 +588,6 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = filepath.Join(dir, "ca.crt")
 		cmd.Kubernetes.OutputOperationTimeout = 15 * time.Minute
 		cmd.Kubernetes.OutputCaptureDeadline = 2 * time.Hour
-		cmd.Kubernetes.OutputLeaseTerm = 15 * time.Minute
-		cmd.Kubernetes.OutputLeaseRenewInterval = 30 * time.Second
 
 		return cmd
 	}
@@ -608,7 +606,9 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 	// key rather than about the rest of the configuration.
 	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(plane(valid)))
 
-	for _, timeout := range []time.Duration{0, -time.Second, 24 * time.Hour} {
+	// The operation timeout need only be positive: a reader's claim term is
+	// derived from it, and a claim's term has no ceiling of its own.
+	for _, timeout := range []time.Duration{0, -time.Second} {
 		invalid := plane(valid)
 		invalid.Kubernetes.OutputOperationTimeout = timeout
 		err = atccmd.ValidateHangarOutputPlaneForTest(invalid)

@@ -146,8 +146,7 @@ new exact inputs onto nodes that cannot materialize them.
 To disable without changing resource-cache behavior, set
 `artifactDaemon.hangar.enabled=false` and follow the downgrade order. Existing
 immutable objects remain stored. Strict-input objects have no automatic
-reclaimer; output reclamation follows claims and read leases, and is the
-web's.
+reclaimer; output reclamation follows claims, and is the web's.
 
 The daemon container is explicitly UID 0, non-privileged, unable to escalate,
 under `RuntimeDefault`, and drops all capabilities except `DAC_OVERRIDE`. A
@@ -159,11 +158,11 @@ applied to task or init containers.
 ## Durable output publication
 
 The output plane captures selected successful outputs, registers exact tree
-refs, and protects them with claims and read leases. The node's artifact
-daemon publishes; the web reclaims, through two components of its own --
-`hangar_reclaim` (admission, conditional delete, finalization) and
-`hangar_orphan_sweep` -- which share one PostgreSQL advisory lock across web
-replicas. It remains opt-in: `hangarOutput.executionControl.enabled` turns on the
+refs, and protects them with claims: a consumer's hold lasts until released,
+a reader's expires. The node's artifact daemon publishes; the web reclaims,
+through two components of its own -- `hangar_reclaim` (an unclaimed
+generation is deleted and stamped reclaimed) and `hangar_orphan_sweep` --
+which share one PostgreSQL advisory lock across web replicas. It remains opt-in: `hangarOutput.executionControl.enabled` turns on the
 daemon's base execution-control protocol; `hangarOutput.enabled` mounts the
 output plane in the artifact daemon; and `hangarOutput.webEnabled` puts the
 plane **in service**. Configure keys and
@@ -186,7 +185,7 @@ To remove the output plane (or replace its daemons):
 
 1. Set `hangarOutput.webEnabled: false` and roll the web. New admission stops;
    captures already pending carry on to completion, and the reclaim pass keeps
-   finalizing. Execution start is admission too: a running multi-step Run
+   reclaiming what consumers release. Execution start is admission too: a running multi-step Run
    whose next step needs the output plane fails at that step during a drain.
    Drain when no Run you care about is mid-flight, or let them finish first.
 2. Watch the residue until it reaches zero:
@@ -197,14 +196,14 @@ To remove the output plane (or replace its daemons):
 
    It prints whether the plane is in service and counts the pending and
    publishing captures, captures whose step marker is not yet released, open
-   claims, live read leases, unfinalized reclaim jobs and open integrity
-   findings, and lists each open finding with its id. The plane is drained when
+   claims (consumers' and readers' alike) and open integrity findings, and
+   lists each open finding with its id. The plane is drained when
    it says `out of service, drained`. Open claims belong to consumers, and most
    are Run results: a finished Run keeps its result claims until the Run is
    reclaimed under its retention, so `open claims` may not reach zero on its
    own. Read it against the other counts: once pending, publishing and
-   unreleased captures, live read leases and unfinalized reclaim jobs are all
-   zero, what remains is retained results. Removing the daemon then strands
+   unreleased captures are all zero, what remains is retained results (a
+   reader's claim lapses within the operation timeout plus five minutes). Removing the daemon then strands
    no capture, but those results stay unreadable until the plane returns; wait
    for retention (or reclaim the Runs) if they must stay readable.
 3. Only then remove the node daemons' output plane (`hangarOutput.enabled`).
@@ -216,12 +215,14 @@ drain's total).
 
 ### Reclamation and the orphan sweep
 
-The reclaim pass admits a generation only once its publication grace has
-elapsed, nothing claims it, no read lease is live, and no pending or
-publishing capture -- or unregistered input publication -- names its tree.
-It then deletes that exact generation conditionally and finalizes the job:
-confirmed, inferred from a lost response, conflicted, or abandoned with an
-integrity finding.
+The reclaim pass reclaims a generation only once its publication grace has
+elapsed, no live claim names it, and no pending or publishing capture -- or
+unregistered input publication -- names its tree. In one transaction under
+the tree lock it deletes that exact generation conditionally and stamps the
+lifecycle reclaimed once the store answered: a confirmed delete, an object
+already absent and another generation at the key all stamp; a refused
+delete records a `runtime_principal_denied` finding instead; a delete that
+did not answer is retried next pass.
 
 The orphan sweep lists the output namespace under the deployment prefix. It
 deletes an object only when its marker names **this** store, it has no
@@ -289,9 +290,8 @@ periodically inspecting a bucket policy.
 
 Actual unexpected absence and runtime authorization failures remain durable
 integrity findings (`out_of_band_absence`, `runtime_principal_denied`). They
-block new capture, claims, managed read warrants and reclaim admission;
-releases and diagnosis remain possible. Already-admitted exact deletes can
-finish. Repair the cause and investigate lost content before resolving one
+block new capture, claims, managed read warrants and the reclaim pass;
+releases and diagnosis remain possible. Repair the cause and investigate lost content before resolving one
 finding, as an admin, by the id `fly hangar-status` lists (resolving one
 already resolved succeeds and changes nothing):
 
@@ -393,7 +393,7 @@ when both Hangar planes use disk and resource caches use a non-GCS backend.
 individual transfers and concurrent work; they do not reserve free space.
 Size and monitor the PVC, including temporary uploads, index growth and retained
 strict inputs. Full disk returns an infrastructure failure. Output objects
-become reclaimable only through the existing claim/read-lease protocol.
+become reclaimable only once every claim on them is released or expired.
 
 Back up the whole storage directory while the owner is stopped or using a
 consistent volume snapshot. The index and blobs are one unit. Restore it in

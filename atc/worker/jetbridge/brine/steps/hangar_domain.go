@@ -417,8 +417,9 @@ type BoundOutput struct {
 	// halves.
 	Visible bool
 
-	// Lease is the read lease a warranted managed read produced.
-	Lease hangaroutput.ReadLease
+	// Claim is the reader's claim a warranted managed read took: the one
+	// hold a read has, and the one the warrant was minted over.
+	Claim hangaroutput.ClaimRecord
 
 	Err error
 }

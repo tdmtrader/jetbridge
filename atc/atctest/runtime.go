@@ -2,7 +2,6 @@ package atctest
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -368,19 +367,15 @@ func (p *Platform) Input(t testing.TB, team, template string, number int, name s
 	}); err != nil {
 		t.Fatal(err)
 	}
-	nonce, err := output.NewReadWarrantNonce(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	prefix, err := db.HangarConsumerPrefixHeld("atctest-input")
 	if err != nil {
 		t.Fatal(err)
 	}
 	destination := output.ReadDestination{Handle: uuid.NewString(), Volume: "input"}
-	admission := hangaroutput.ReadAdmission{Transactor: transactor{p.conn}, Leases: db.NewHangarOutputRepository(prefix), Stat: p.node.client,
+	admission := hangaroutput.ReadAdmission{Transactor: transactor{p.conn}, Claims: db.NewHangarOutputRepository(prefix), Stat: p.node.client,
 		Minter: p.node.warrants, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
-	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(uuid.NewString()), WarrantNonce: nonce,
-		ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: Epoch, MaterializationTimeout: time.Minute, NodeUID: p.node.uid})
+	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ClaimID: output.ClaimID(uuid.NewString()), Binding: output.OpaqueID("atctest-read:" + destination.Handle),
+		Ref: binding.Ref, Destination: destination, MaterializationTimeout: time.Minute, NodeUID: p.node.uid})
 	if err != nil {
 		t.Fatal(err)
 	}

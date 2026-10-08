@@ -195,11 +195,6 @@ func (config Config) Validate() error {
 	if !config.OutputFacetEnabled() {
 		return nil
 	}
-	// Managed reads run under a lease term derived from this timeout.
-	if err := output.ValidateMaterializationTimeout(config.OperationTimeout); err != nil {
-		return err
-	}
-
 	_, err := config.Namespace()
 
 	return err

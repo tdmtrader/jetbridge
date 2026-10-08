@@ -74,11 +74,11 @@ func HangarManagedReadDefinitions() []brine.StepDefinition {
 			}
 			return nil
 		}),
-		brine.DefineMap[BoundOutput, BoundOutput]("the consumer downloads with a {string} read lease", func(in BoundOutput, p brine.Params, rec *brine.Recorder) (BoundOutput, error) {
+		brine.DefineMap[BoundOutput, BoundOutput]("the consumer downloads with a {string} reader's claim", func(in BoundOutput, p brine.Params, rec *brine.Recorder) (BoundOutput, error) {
 			mode, _ := p.GetString(0)
 			return exerciseManagedRead(in, mode, false, rec)
 		}),
-		brine.DefineMap[BoundOutput, BoundOutput]("the consumer materializes with a {string} read lease", func(in BoundOutput, p brine.Params, rec *brine.Recorder) (BoundOutput, error) {
+		brine.DefineMap[BoundOutput, BoundOutput]("the consumer materializes with a {string} reader's claim", func(in BoundOutput, p brine.Params, rec *brine.Recorder) (BoundOutput, error) {
 			mode, _ := p.GetString(0)
 			return exerciseManagedRead(in, mode, true, rec)
 		}),
@@ -108,22 +108,21 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	if !ok {
 		return in, fmt.Errorf("managed-read stat is unavailable")
 	}
-	admission := &hangaroutput.ReadAdmission{Transactor: brineTransactor{conn: plane.DB.Conn}, Leases: plane.Repository, Stat: stat, Minter: signer, Clock: clock}
-	nonce, err := output.NewReadWarrantNonce(freshReader())
+	admission := &hangaroutput.ReadAdmission{Transactor: brineTransactor{conn: plane.DB.Conn}, Claims: plane.Repository, Stat: stat, Minter: signer, Clock: clock}
+	destination := output.ReadDestination{Handle: "consumer", Volume: "input-0"}
+	admitted, err := admission.Admit(ctx, hangaroutput.ReadRequest{ClaimID: output.ClaimID(freshUUID()), Binding: readBindingFor(destination), Ref: in.Tree.Ref, Destination: destination, MaterializationTimeout: time.Minute, NodeUID: executioncontrol.NodeUID(daemon.NodeUID)})
 	if err != nil {
 		return in, err
 	}
-	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: in.Acquisition.ClaimID, Ref: in.Tree.Ref, Destination: output.ReadDestination{Handle: "consumer", Volume: "input-0"}, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), MaterializationTimeout: time.Minute, NodeUID: executioncontrol.NodeUID(daemon.NodeUID)})
-	if err != nil {
-		return in, err
-	}
+	warrant := mintedRead{ReadWarrant: admitted, Destination: destination}
 	if mode == "expired" {
 		// A valid signature is insufficient: the warrant's window, which is its
-		// lease's, has passed.
-		expired := warrant.Lease
-		expired.GrantedAt = output.NewTimestamp(time.Now().UTC().Add(-time.Hour))
-		expired.ExpiresAt = output.NewTimestamp(time.Now().UTC().Add(-time.Minute))
-		warrant.Token, err = signer.Sign(expired, warrant.Record.Destination, executioncontrol.NodeUID(daemon.NodeUID), warrant.Record.WarrantNonce)
+		// reader's claim's, has passed.
+		expired := warrant.Claim
+		expired.AcquiredAt = output.NewTimestamp(time.Now().UTC().Add(-time.Hour))
+		lapsed := output.NewTimestamp(time.Now().UTC().Add(-time.Minute))
+		expired.ExpiresAt = &lapsed
+		warrant.Token, err = signer.Sign(expired, warrant.Destination, executioncontrol.NodeUID(daemon.NodeUID))
 		if err != nil {
 			return in, err
 		}
@@ -144,7 +143,7 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	if mode == "spent" {
 		// One whole read under the warrant first; the second is the one
 		// refused below.
-		archive, _, err := node.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}, limit)
+		archive, _, err := node.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Destination, Warrant: warrant.Token}, limit)
 		if err != nil {
 			return in, fmt.Errorf("the first read under the warrant: %w", err)
 		}
@@ -154,7 +153,7 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 			return in, fmt.Errorf("the first read under the warrant: %w", err)
 		}
 	}
-	archive, attributes, err := node.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}, limit)
+	archive, attributes, err := node.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Destination, Warrant: warrant.Token}, limit)
 	if mode != "live" {
 		want := output.ErrUnauthorized
 		if mode == "limited" {
@@ -191,10 +190,21 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 		return in, err
 	}
 	defer tx.Rollback()
-	// The node gave nothing back: it holds no client for the web. The lease is
-	// the web's to release when its read ends, and it is still live here.
-	if _, err = plane.Repository.LoadReadLease(ctx, tx, warrant.Lease.ReadLeaseID); err != nil {
-		return in, fmt.Errorf("the node changed the lease it read under: %v", err)
+	// The node gave nothing back: it holds no client for the web. The reader's
+	// claim is the web's to release when its read ends, and it is still live
+	// here.
+	claims, err := plane.Repository.ReadClaims(ctx, tx, in.Tree.Ref)
+	if err != nil {
+		return in, err
 	}
-	return in, nil
+	for _, claim := range claims {
+		if claim.ClaimID != warrant.Claim.ClaimID {
+			continue
+		}
+		if !claim.Active() || claim.ExpiresAt == nil || !claim.ExpiresAt.Time.After(time.Now()) {
+			return in, fmt.Errorf("the node changed the reader's claim it read under: %+v", claim)
+		}
+		return in, nil
+	}
+	return in, fmt.Errorf("the reader's claim %s the node read under is gone", warrant.Claim.ClaimID)
 }

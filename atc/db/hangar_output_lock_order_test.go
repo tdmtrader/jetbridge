@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -146,115 +147,119 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 		})
 	})
 
-	Describe("a read-lease renewal against a reclaim admission", func() {
-		// F2. The renewal took class 3 alone and AdmitReclaim takes classes 1
-		// and 2, so the two took DISJOINT lock sets and nothing serialized
-		// them. The deferred hangar_reclaim_exclusion trigger is a snapshot
-		// read, not a mutex: with the renewal still uncommitted, the
-		// admission's constraint phase saw no live lease and both committed --
-		// a generation admitted to reclamation with a renewed read lease over
-		// it, which is forbidden.
+	Describe("a claim acquisition against the reclaim pass holding the generation", func() {
+		// F2. The pass holds the tree and the lifecycle row across its store
+		// delete and stamps the row in the same transaction. A claimant that
+		// arrives meanwhile takes the same exact-lifecycle lock, so it WAITS
+		// on the pass and then finds the generation reclaimed -- never a
+		// claim on an object the pass is deleting. The reverse order is the
+		// claimant holding the row and the pass waiting, then rechecking and
+		// deferring.
 		//
 		// What is asserted is the blocking, not only the outcome: a spec that
-		// merely committed one then the other would pass against the broken
-		// code, which is how this survived ten phases.
-		It("blocks the admission on the renewal's own lock rather than on a deferred trigger", func() {
+		// merely committed one then the other would pass against code that
+		// took disjoint lock sets, which is how a deferred-trigger version of
+		// this survived ten phases.
+		acquire := func(tx db.Tx, ref hangar.TreeRef) error {
+			return hangarAcquireClaim(ctx, repository, tx, output.ClaimID(uuid.NewString()), ref,
+				"binding-lock-order")
+		}
+
+		It("blocks the claimant on the lifecycle row until the pass commits, and then refuses it", func() {
 			digest := hangarDigest(63)
-			capture, ref := hangarPublish(ctx, repository, digest, 1725830823000063)
-			Expect(capture.Validate()).To(Succeed())
+			_, ref := hangarPublish(ctx, repository, digest, 1725830823000063)
 			hangarAgePublication(ref, hangarGraceElapsed)
 
-			claimID := output.ClaimID(uuid.NewString())
-			claiming, err := dbConn.Begin()
+			// The pass: holding the generation, between its hold and its
+			// stamp, and not committed.
+			passing := second()
+			pass, err := passing.Begin()
 			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(claiming)
-			Expect(repository.AcquireClaim(ctx, claiming, output.ClaimAcquisition{
-				ProtocolVersion:   output.ProtocolVersion,
-				ClaimID:           claimID,
-				Ref:               ref,
-				ConsumerBindingID: output.OpaqueID("binding-lock-order"),
-				RequestedAt:       output.NewTimestamp(time.Now()),
-			})).To(Succeed())
-			Expect(db.HangarOutputTx{Tx: claiming}.Commit()).To(Succeed())
+			defer db.Rollback(pass)
+			Expect(repository.HoldForReclaim(ctx, pass, ref, output.DefaultPublicationGrace)).To(Succeed())
 
-			leaseID := output.ReadLeaseID(uuid.NewString())
-			granting, err := dbConn.Begin()
-			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(granting)
-			lease, err := repository.AcquireReadLease(ctx, granting,
-				hangarReadLeaseRequest(leaseID, claimID, ref))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(db.HangarOutputTx{Tx: granting}.Commit()).To(Succeed())
-
-			// The consumer released its last claim during the transfer, so
-			// the read lease is the only protection left.
-			releasing, err := dbConn.Begin()
-			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(releasing)
-			Expect(repository.ReleaseClaim(ctx, releasing, output.ClaimRelease{
-				ProtocolVersion: output.ProtocolVersion,
-				ClaimID:         claimID,
-				Ref:             ref,
-				RequestedAt:     output.NewTimestamp(time.Now()),
-			})).To(Succeed())
-			Expect(db.HangarOutputTx{Tx: releasing}.Commit()).To(Succeed())
-
-			// The renewal: open, admitted, holding whatever it holds, and not
-			// committed.
-			renewing := second()
-			renewal, err := renewing.Begin()
-			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(renewal)
-			renewed, err := repository.RenewReadLease(ctx, renewal, lease)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(renewed.ExpiresAt.After(lease.ExpiresAt.Time) ||
-				renewed.ExpiresAt.Equal(lease.ExpiresAt.Time)).To(BeTrue())
-
-			admitted := make(chan error, 1)
+			claimed := make(chan error, 1)
 			go func() {
 				defer GinkgoRecover()
 				tx, err := dbConn.Begin()
 				if err != nil {
-					admitted <- err
+					claimed <- err
 
 					return
 				}
 				defer db.Rollback(tx)
-				if err := repository.AdmitReclaim(ctx, tx, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm, output.DefaultPublicationGrace); err != nil {
-					admitted <- err
+				if err := acquire(tx, ref); err != nil {
+					claimed <- err
 
 					return
 				}
-				admitted <- db.HangarOutputTx{Tx: tx}.Commit()
+				claimed <- db.HangarOutputTx{Tx: tx}.Commit()
 			}()
 
-			Consistently(admitted, time.Second, 50*time.Millisecond).ShouldNot(Receive(),
-				"the admission answered without ever meeting a row the open renewal holds, so "+
-					"the only thing between a live reader and a reclaimer is a deferred "+
-					"trigger -- and a deferred trigger is a snapshot read, not a mutex")
+			Consistently(claimed, time.Second, 50*time.Millisecond).ShouldNot(Receive(),
+				"the claimant answered without ever meeting a row the open pass holds, so "+
+					"a claim can be taken on a generation whose delete is in flight")
 
-			Expect(renewal.Commit()).To(Succeed())
+			Expect(repository.StampReclaimed(ctx, pass, ref)).To(Succeed())
+			Expect(pass.Commit()).To(Succeed())
 
 			var refusal error
-			Eventually(admitted, 30*time.Second).Should(Receive(&refusal))
+			Eventually(claimed, 30*time.Second).Should(Receive(&refusal))
+			Expect(refusal).To(MatchError(output.ErrNotFound),
+				"a claim was taken on a generation the pass had already reclaimed")
+			Expect(refusal.Error()).To(ContainSubstring("reclaimed"))
+
+			var claims int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_claims c
+				JOIN hangar_exact_lifecycles l ON l.id = c.lifecycle_id
+				WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3 AND c.released_at IS NULL`,
+				string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&claims)).To(Succeed())
+			Expect(claims).To(BeZero())
+		})
+
+		It("blocks the pass on the lifecycle row until the claimant commits, and then defers it", func() {
+			digest := hangarDigest(67)
+			_, ref := hangarPublish(ctx, repository, digest, 1725830823000067)
+			hangarAgePublication(ref, hangarGraceElapsed)
+
+			claiming := second()
+			claimant, err := claiming.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(claimant)
+			Expect(acquire(claimant, ref)).To(Succeed())
+
+			held := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				tx, err := dbConn.Begin()
+				if err != nil {
+					held <- err
+
+					return
+				}
+				defer db.Rollback(tx)
+				held <- repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)
+			}()
+
+			Consistently(held, time.Second, 50*time.Millisecond).ShouldNot(Receive(),
+				"the pass held the generation without ever meeting the row the open claimant "+
+					"holds, so its recheck read a snapshot and not the claim")
+
+			Expect(db.HangarOutputTx{Tx: claimant}.Commit()).To(Succeed())
+
+			var refusal error
+			Eventually(held, 30*time.Second).Should(Receive(&refusal))
 			Expect(refusal).To(MatchError(output.ErrConflict),
-				"a generation was admitted to reclamation with a renewed read lease over it")
-			Expect(refusal.Error()).To(ContainSubstring("read lease"))
+				"the pass held a generation beside a live claim")
+			Expect(refusal.Error()).To(ContainSubstring("1 live claim(s)"))
 
-			var state string
+			var reclaimed bool
 			Expect(dbConn.QueryRow(`
-				SELECT state FROM hangar_exact_lifecycles
+				SELECT reclaimed_at IS NOT NULL FROM hangar_exact_lifecycles
 				WHERE scope = $1 AND digest = $2 AND generation = $3`,
-				string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&state)).To(Succeed())
-			Expect(state).To(Equal("registered"))
-
-			var live int
-			Expect(dbConn.QueryRow(`
-				SELECT count(*) FROM hangar_read_leases
-				WHERE read_lease_id = $1 AND released_at IS NULL AND expires_at > now()`,
-				string(leaseID)).Scan(&live)).To(Succeed())
-			Expect(live).To(Equal(1))
+				string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&reclaimed)).To(Succeed())
+			Expect(reclaimed).To(BeFalse())
 		})
 	})
 

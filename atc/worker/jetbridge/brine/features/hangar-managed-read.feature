@@ -20,10 +20,10 @@ Feature: A managed output is read through its authorized node service
     And the capture settles
     And the published tree is read back from the output bucket
     When the consumer binds the output inside its own transaction
-    Then the consumer downloads with a "<lease>" read lease
+    Then the consumer downloads with a "<claim>" reader's claim
 
     Examples:
-      | lease    |
+      | claim    |
       | live     |
       | spent    |
       | expired  |

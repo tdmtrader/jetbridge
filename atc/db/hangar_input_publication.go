@@ -83,12 +83,12 @@ func (repository *HangarOutputRepository) RegisterInputPublication(ctx context.C
 	if !fresh {
 		return fmt.Errorf("%w: input publication reservation expired", output.ErrConflict)
 	}
-	lifecycle, err := repository.upsertLifecycle(ctx, tx, publication.Attributes.Ref, publication.Metageneration, int64(stage.ActivationEpoch), "registered")
+	lifecycle, err := repository.registerLifecycle(ctx, tx, publication.Attributes.Ref, int64(stage.ActivationEpoch))
 	if err != nil {
 		return err
 	}
 	var readable bool
-	if err := hangarQueryRow(ctx, tx, `SELECT state IN ('registered', 'adopted') AND activation_epoch=$2 FROM hangar_exact_lifecycles WHERE id=$1`, []any{lifecycle, int64(stage.ActivationEpoch)}, &readable); err != nil {
+	if err := hangarQueryRow(ctx, tx, `SELECT activation_epoch=$2 FROM hangar_exact_lifecycles WHERE id=$1`, []any{lifecycle, int64(stage.ActivationEpoch)}, &readable); err != nil {
 		return err
 	}
 	if !readable {

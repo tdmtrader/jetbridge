@@ -1,10 +1,10 @@
 package reclaimer_test
 
 // The reclaimer's own refusals: the ones decided from the ref and the
-// precondition before any delete is issued. The six typed outcomes of a
-// delete the store answered are proved in the conformance suite; this file is
-// about the one way in, and the recorder is what makes "no delete was issued"
-// a fact rather than a reading of the code.
+// precondition before any delete is issued. The typed outcomes of a delete the
+// store answered are proved in the conformance suite; this file is about the
+// one way in, and the recorder is what makes "no delete was issued" a fact
+// rather than a reading of the code.
 
 import (
 	"context"
@@ -86,7 +86,7 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
-		if outcome != output.DeleteInfrastructure {
+		if outcome != reclaimer.Failed {
 			t.Errorf("outcome %q; a refused delete is not any kind of reclamation", outcome)
 		}
 		testsupport.ExpectNoRPC(t, recorder)
@@ -98,7 +98,7 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
-		if outcome != output.DeleteInfrastructure {
+		if outcome != reclaimer.Failed {
 			t.Errorf("outcome %q; a refused delete is not any kind of reclamation", outcome)
 		}
 		testsupport.ExpectNoRPC(t, recorder)
@@ -111,7 +111,7 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if err == nil {
 			t.Error("an incomplete ref was accepted")
 		}
-		if outcome != output.DeleteInfrastructure {
+		if outcome != reclaimer.Failed {
 			t.Errorf("outcome %q; a refused delete is not any kind of reclamation", outcome)
 		}
 		testsupport.ExpectNoRPC(t, recorder)
@@ -136,8 +136,8 @@ func TestTheOneDeleteIsPinnedAndConditioned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deleting: %v", err)
 	}
-	if outcome != output.DeleteConfirmed {
-		t.Errorf("outcome %q, expected %q", outcome, output.DeleteConfirmed)
+	if outcome != reclaimer.Deleted {
+		t.Errorf("outcome %q, expected %q", outcome, reclaimer.Deleted)
 	}
 	if kinds := recorder.Kinds(); len(kinds) != 1 || kinds[0] != "objects.delete" {
 		t.Errorf("the delete issued %v; it is one conditional delete and nothing else", kinds)
@@ -153,7 +153,7 @@ func TestTheOneDeleteIsPinnedAndConditioned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deleting again: %v", err)
 	}
-	if outcome != output.DeleteAlreadyAbsent {
-		t.Errorf("outcome %q, expected %q", outcome, output.DeleteAlreadyAbsent)
+	if outcome != reclaimer.AlreadyAbsent {
+		t.Errorf("outcome %q, expected %q", outcome, reclaimer.AlreadyAbsent)
 	}
 }

@@ -158,8 +158,15 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 		if err := transact(false, register); err != nil {
 			return err
 		}
+		// The reclaim pass's act, in one transaction: hold the generation
+		// under its locks, then stamp it reclaimed. The grace rounds to the
+		// pass's second floor, so it has elapsed as soon as the registration
+		// committed.
 		reclaim := func(tx db.Tx) error {
-			return repository.AdmitReclaim(in.Ctx, tx, publication.Attributes.Ref, uuid.NewString(), publication.Metageneration, 20*time.Minute, time.Microsecond)
+			if err := repository.HoldForReclaim(in.Ctx, tx, publication.Attributes.Ref, time.Microsecond); err != nil {
+				return err
+			}
+			return repository.StampReclaimed(in.Ctx, tx, publication.Attributes.Ref)
 		}
 		if mode == "reclaim first" {
 			if err := transact(false, reclaim); err != nil {
@@ -197,7 +204,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 		if err := register(tx); err != nil {
 			return err
 		}
-		if err := repository.AcquireClaim(in.Ctx, tx, claim); err != nil {
+		if _, err := repository.AcquireClaim(in.Ctx, tx, claim); err != nil {
 			return err
 		}
 		if mode == "commit after deadline" {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -114,12 +113,12 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 		if err == nil {
 			return fmt.Errorf("the worker admitted %s", mode)
 		}
-		var leases int
-		if err := conn.QueryRow(`SELECT count(*) FROM hangar_read_leases`).Scan(&leases); err != nil {
+		var readers int
+		if err := conn.QueryRow(`SELECT count(*) FROM hangar_claims WHERE expires_at IS NOT NULL AND released_at IS NULL AND expires_at > now()`).Scan(&readers); err != nil {
 			return err
 		}
-		if leases != 0 {
-			return fmt.Errorf("refused input left %d read leases", leases)
+		if readers != 0 {
+			return fmt.Errorf("refused input left %d live readers' claims", readers)
 		}
 		return nil
 	}
@@ -139,11 +138,11 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	if err != nil {
 		return err
 	}
-	leases, err := verifyRunInputPod(ctx, in, container.DBContainer().Handle(), pod, task)
+	readers, err := verifyRunInputPod(ctx, in, container.DBContainer().Handle(), pod, task)
 	if err != nil {
 		return err
 	}
-	return observeRunTaskStart(ctx, in, starter, owner, pod, leases)
+	return observeRunTaskStart(ctx, in, starter, owner, pod, readers)
 }
 
 // observeRunTaskStart plays the one fact the web observes after the inputs are
@@ -151,10 +150,10 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 // container can reach only after every materialize init container -- each
 // checking its input's receipt -- has exited 0. The node signs the start and
 // the production Run gate retains it; retaining it is what gives the task's
-// input read leases back. The node daemon never calls the web, so nothing
+// input readers' claims back. The node daemon never calls the web, so nothing
 // between the materialization and this start releases them.
 func observeRunTaskStart(ctx context.Context, in RunInputAdmission, starter *runs.ExecutionStarter,
-	owner db.ContainerOwner, pod *corev1.Pod, leases []output.ReadLeaseID) error {
+	owner db.ContainerOwner, pod *corev1.Pod, readers []output.ClaimID) error {
 	buildID, planID, _, _ := db.BuildStepContainerIdentity(owner)
 	conn := in.Source.Start.DB.Conn
 	tx, err := conn.BeginTx(ctx, nil)
@@ -178,21 +177,18 @@ func observeRunTaskStart(ctx context.Context, in RunInputAdmission, starter *run
 		return fmt.Errorf("the Run did not retain the task's start: %w", err)
 	}
 	// The release runs off the start path, so it is awaited, bounded.
-	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
 	deadline := time.Now().Add(15 * time.Second)
-	for _, id := range leases {
+	for _, id := range readers {
 		for {
-			tx, err := conn.BeginTx(ctx, nil)
-			if err != nil {
+			var released bool
+			if err := conn.QueryRowContext(ctx, `SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id=$1`, string(id)).Scan(&released); err != nil {
 				return err
 			}
-			_, loadErr := repository.LoadReadLease(ctx, tx, id)
-			db.Rollback(tx)
-			if errors.Is(loadErr, output.ErrConflict) {
+			if released {
 				break
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("the task started and its materialized input kept a live read lease: %v", loadErr)
+				return fmt.Errorf("the task started and its materialized input kept a live reader's claim %s", id)
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -200,8 +196,8 @@ func observeRunTaskStart(ctx context.Context, in RunInputAdmission, starter *run
 	return nil
 }
 
-func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string, pod *corev1.Pod, task *atc.TaskStep) ([]output.ReadLeaseID, error) {
-	var leases []output.ReadLeaseID
+func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string, pod *corev1.Pod, task *atc.TaskStep) ([]output.ClaimID, error) {
+	var readers []output.ClaimID
 	volumes := map[string]corev1.Volume{}
 	for _, volume := range pod.Spec.Volumes {
 		volumes[volume.Name] = volume
@@ -290,22 +286,21 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 		if err != nil || json.Unmarshal(data, &ref) != nil || ref != request.Ref {
 			return nil, fmt.Errorf("actual task input has no exact sealed receipt: %v", err)
 		}
-		tx, err := in.Source.Start.DB.Conn.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
+		// The node cannot give the claim back -- it has no client for the
+		// web -- and the web has not yet seen the task start, so the reader's
+		// claim still protects the generation here. observeRunTaskStart
+		// releases it.
+		var live bool
+		if err := in.Source.Start.DB.Conn.QueryRowContext(ctx, `SELECT released_at IS NULL AND expires_at > now() FROM hangar_claims WHERE claim_id=$1 AND expires_at IS NOT NULL`, string(claims.ClaimID)).Scan(&live); err != nil {
+			return nil, fmt.Errorf("the materialized input's reader's claim %s: %v", claims.ClaimID, err)
 		}
-		_, loadErr := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()).LoadReadLease(ctx, tx, claims.ReadLeaseID)
-		db.Rollback(tx)
-		// The node cannot give the lease back -- it has no client for the
-		// web -- and the web has not yet seen the task start, so the lease
-		// still protects the generation here. observeRunTaskStart releases it.
-		if loadErr != nil {
-			return nil, fmt.Errorf("the materialized input's read lease is not live before the task starts: %v", loadErr)
+		if !live {
+			return nil, fmt.Errorf("the materialized input's reader's claim %s is not live before the task starts", claims.ClaimID)
 		}
-		leases = append(leases, claims.ReadLeaseID)
+		readers = append(readers, claims.ClaimID)
 	}
 	if count == 0 || count != len(task.RunInputs) {
 		return nil, fmt.Errorf("not every task input was initialized")
 	}
-	return leases, nil
+	return readers, nil
 }

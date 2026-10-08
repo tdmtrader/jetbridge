@@ -259,15 +259,13 @@ type RunCommand struct {
 		OutputStoreCACert                  string        `long:"kubernetes-hangar-output-store-ca-cert"    description:"Disk store CA certificate (disk store only)."`
 		OutputListTokenFile                string        `long:"kubernetes-hangar-output-list-token-file"  description:"Disk store list-and-stat role credential the orphan sweep lists with (disk store only)."`
 		OutputDeleteTokenFile              string        `long:"kubernetes-hangar-output-delete-token-file" description:"Disk store stat-and-delete role credential the reclaim pass and orphan sweep delete with (disk store only). Only the web holds it."`
-		OutputPublicationGrace             time.Duration `long:"kubernetes-hangar-output-publication-grace" default:"192h" description:"Elapsed publication grace is one of reclaim admission's preconditions. Must exceed the maximum capture deadline by an hour."`
-		OutputReclaimInterval              time.Duration `long:"kubernetes-hangar-output-reclaim-interval" default:"1m" description:"How often the web's reclaim pass admits, deletes and finalizes."`
-		OutputReclaimBatch                 int           `long:"kubernetes-hangar-output-reclaim-batch" default:"10" description:"Generations one reclaim pass admits, and jobs it advances."`
+		OutputPublicationGrace             time.Duration `long:"kubernetes-hangar-output-publication-grace" default:"192h" description:"A generation is reclaimable only once this has elapsed since its registration. Must exceed the maximum capture deadline by an hour."`
+		OutputReclaimInterval              time.Duration `long:"kubernetes-hangar-output-reclaim-interval" default:"1m" description:"How often the web's reclaim pass deletes unclaimed generations."`
+		OutputReclaimBatch                 int           `long:"kubernetes-hangar-output-reclaim-batch" default:"10" description:"Generations one reclaim pass reclaims."`
 		OutputDeleteTimeout                time.Duration `long:"kubernetes-hangar-output-delete-timeout" default:"2m" description:"How long one conditional delete may take."`
 		OutputOrphanSweepInterval          time.Duration `long:"kubernetes-hangar-output-orphan-sweep-interval" default:"1h" description:"How often the orphan sweep lists the output namespace."`
-		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the artifact daemon's output-plane operation timeout; read leases and transports cover this budget."`
+		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the artifact daemon's output-plane operation timeout; a reader's claim and the transport cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
-		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
-		OutputLeaseRenewInterval           time.Duration `long:"kubernetes-hangar-output-lease-renew-interval" default:"1m" description:"How often a held lease is renewed. At most one minute: a longer interval is a lease that expires under its own owner."`
 		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
 		HangarWarrantKey                   string        `long:"kubernetes-hangar-warrant-key"           description:"Path to the raw 32-byte Hangar materialization warrant key."`
 		HangarWarrantTTL                   time.Duration `long:"kubernetes-hangar-warrant-ttl"           default:"15m" description:"Lifetime of exact Hangar materialization warrants (maximum 15m)."`
@@ -1765,14 +1763,13 @@ func (cmd *RunCommand) gcComponents(
 // component table, and the one place the plane's own flag decides whether any
 // of it runs.
 //
-// TWO OF THE THREE RAN ON EVERY DEPLOYMENT. The capture advancer and the
-// read-lease cleanup were appended outside both the Kubernetes block and any
-// output-plane check, so an upgraded deployment that never opted in -- a
-// non-Kubernetes one included -- grew two `components` rows, two advisory
-// locks and two queries a minute, for a plane it does not have. Each pass is
-// one bounded indexed SELECT rolled back immediately, so the cost was small;
-// a deployment with capture disabled must behave as it did before, and
-// "small" is not that.
+// THE CAPTURE ADVANCER ONCE RAN ON EVERY DEPLOYMENT. It was appended outside
+// both the Kubernetes block and any output-plane check, so an upgraded
+// deployment that never opted in -- a non-Kubernetes one included -- grew a
+// `components` row, an advisory lock and a query a minute, for a plane it does
+// not have. Each pass is one bounded indexed SELECT rolled back immediately,
+// so the cost was small; a deployment with capture disabled must behave as it
+// did before, and "small" is not that.
 //
 // The status component keeps its own additional condition, and it is a
 // different question: the flag says this deployment HAS an output plane, and
@@ -1787,7 +1784,6 @@ func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableCompon
 
 	components := []RunnableComponent{
 		cmd.hangarOutputCaptureComponent(dbConn),
-		cmd.hangarOutputReadLeaseCleanupComponent(dbConn),
 	}
 	if status := cmd.hangarOutputStatusComponent(dbConn); status != nil {
 		components = append(components, *status)
@@ -1913,34 +1909,6 @@ func (transactor hangarOutputTransactor) Begin() (hangaroutput.Transaction, erro
 	// nowhere earlier, and a coordinator handed an unclassified commit failure
 	// would read a denial as an ambiguous commit and retry it forever.
 	return db.HangarOutputTx{Tx: tx}, nil
-}
-
-// hangarOutputReadLeaseCleanupComponent closes abandoned managed-read leases.
-//
-// It is the carry-forward from the Phase 6 review: `CloseAbandonedReadLeases`
-// existed, was specified, and had no worker, so a materializer that died
-// mid-transfer left a lease that nothing closed and a generation that reclaim
-// admission would refuse forever.
-//
-// It lives in the web node rather than in a controller binary for the same
-// reason capture recovery does: it needs PostgreSQL and no output-bucket role at
-// all. It takes no cloud permission, opens no store client and reads no object;
-// what it does is ask the database which leases its own clock says have expired.
-//
-// The batch is bounded and the interval is the plane's one-minute fallback. A
-// pass that closed every expired lease in one go would hold the component runner
-// behind a deployment's whole backlog on the first wake after an outage.
-func (cmd *RunCommand) hangarOutputReadLeaseCleanupComponent(dbConn db.DbConn) RunnableComponent {
-	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
-
-	return RunnableComponent{
-		Component: atc.Component{Name: atc.ComponentHangarOutputReadLeaseCleanup},
-		Runnable: &hangaroutput.ReadLeaseCleaner{
-			Transactor: hangarOutputTransactor{conn: dbConn},
-			Leases:     repository,
-		},
-		Interval: time.Minute,
-	}
 }
 
 func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {
@@ -3032,26 +3000,12 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	); err != nil {
 		return err
 	}
-	if err := output.ValidateMaterializationTimeout(cmd.Kubernetes.OutputOperationTimeout); err != nil {
-		return fmt.Errorf("--kubernetes-hangar-output-operation-timeout: %w", err)
+	if cmd.Kubernetes.OutputOperationTimeout <= 0 {
+		return errors.New("--kubernetes-hangar-output-operation-timeout must be positive; a " +
+			"reader's claim term is derived from it")
 	}
 	if err := output.ValidateCaptureDeadline(cmd.Kubernetes.OutputCaptureDeadline); err != nil {
 		return fmt.Errorf("--kubernetes-hangar-output-capture-deadline: %w", err)
-	}
-	if cmd.Kubernetes.OutputLeaseTerm < output.MinLeaseTerm {
-		return fmt.Errorf("--kubernetes-hangar-output-lease-term must be at least %s; a "+
-			"shorter term makes expiry -- rather than a fence -- the thing a worker races",
-			output.MinLeaseTerm)
-	}
-	if cmd.Kubernetes.OutputLeaseRenewInterval <= 0 ||
-		cmd.Kubernetes.OutputLeaseRenewInterval > time.Minute {
-		return errors.New("--kubernetes-hangar-output-lease-renew-interval must be positive " +
-			"and no more than 1m: a lease is renewed at least once a minute, and a longer " +
-			"interval is a lease that expires under its own owner")
-	}
-	if cmd.Kubernetes.OutputLeaseRenewInterval >= cmd.Kubernetes.OutputLeaseTerm {
-		return errors.New("--kubernetes-hangar-output-lease-renew-interval is not shorter " +
-			"than --kubernetes-hangar-output-lease-term")
 	}
 	if cmd.Kubernetes.OutputControlKeys != "" {
 		ring, err := hangaroutput.LoadControlKeyRing(cmd.Kubernetes.OutputControlKeys)

@@ -2,7 +2,7 @@
 // durable, claimable result content.
 //
 // Hangar owns the capture row's vocabulary, the step marker, structural
-// sealing, canonical publication, opaque claims and physical reclamation. Its
+// sealing, canonical publication, claims and physical reclamation. Its
 // one consumer, the pipeline Run, owns why an output matters, its name,
 // authorization and retention policy, and composes with Hangar through a
 // caller-owned database transaction and an opaque identity.
@@ -67,39 +67,13 @@ const (
 // durable output. A parallel set would have meant every caller checking twice
 // and eventually checking once.
 //
-// # The eight managed-generation states, and the narrowing this set is
+// # The two lifecycle states, and what a consumer sees
 //
-// A managed generation is in one of eight states: `reclaiming`, `reclaimed`,
-// authoritatively missing, out-of-band missing,
-// conflicted, unregistered, unclaimed and policy-at-risk. A consumer asking for
-// a generation gets one of FOUR values, and this is the mapping, written down
-// rather than left for somebody to infer from a message:
-//
-//	reclaiming, reclaimed, authoritatively missing   -> ErrNotFound
-//	out-of-band missing                              -> ErrNotFound
-//	conflicted                                       -> ErrGenerationConflict
-//	unregistered, unclaimed                          -> ErrNotFound
-//	policy at risk                                   -> ErrAtRisk
-//
-// What a consumer can therefore tell apart is "retry under a NEW generation"
-// (ErrGenerationConflict, and ErrAtRisk once the operator clears the finding)
-// from "this exact generation is not available" -- and what it cannot tell
-// apart is which of the five ErrNotFound states it is in, so "recapture and
-// claim a newly published generation, which will work" reads the same as "this
-// object is being reclaimed right now, so a recapture races it". Today the only
-// way to separate them is substring-matching a message, which is not an
-// interface.
-//
-// The narrowing is RECORDED rather than closed, and the reason is where the
-// eight states live: they are rows of the lifecycle table, and the refusal is
-// composed in the control plane's transaction (atc/db, atc/hangaroutput), not
-// here. Closing it means carrying the lifecycle state ON the refusal -- a typed
-// error value that wraps one of these sentinels and names the row's own state
-// word, so errors.Is keeps working for every existing caller and errors.As
-// answers the eighth question. That is a control-plane change with a schema
-// vocabulary already in place for it; this leaf declares the sentinels it
-// wraps. Until it lands, a consumer must treat every ErrNotFound as "not
-// available now, reason unknown" and must not infer retryability from it.
+// A registered generation is a lifecycle row with no reclaimed_at; a reclaimed
+// one has it stamped. A consumer asking for a reclaimed, unregistered or absent
+// generation gets ErrNotFound; one asking while an integrity finding is open
+// gets ErrAtRisk. A consumer must treat ErrNotFound as "not available, recapture
+// under a new generation" and must not infer anything finer from it.
 var (
 	ErrNotFound       = hangar.ErrNotFound
 	ErrConflict       = hangar.ErrConflict
@@ -225,12 +199,6 @@ type ClaimID string
 
 func (id ClaimID) Validate() error { return validateUUID("claim id", string(id)) }
 
-// ReadLeaseID names one active read of an exact generation. Reclaim admission
-// is refused while one is active, even after the last claim is released.
-type ReadLeaseID string
-
-func (id ReadLeaseID) Validate() error { return validateUUID("read lease id", string(id)) }
-
 // OpaqueID is an identifier Hangar stores, compares and hands back, and never
 // interprets. Producer checkpoints and consumer bindings are opaque: the moment
 // Hangar could read one, it would know what a Run is.
@@ -280,9 +248,6 @@ func (name OutputName) Validate() error {
 
 	return nil
 }
-
-// LeaseFence is the monotonic fencing epoch of a read or reclaim lease.
-type LeaseFence uint64
 
 // Timestamp is re-exported from the base protocol so that a value written here
 // and a value written there have the same single spelling on the wire.

@@ -71,8 +71,8 @@ daemon materialize that tree for that task.
 _Avoid_: input token
 
 **Read warrant**:
-The warrant bound to one read lease that lets a reader open a generation
-under that lease.
+The warrant bound to one reader's claim that lets a reader open that
+generation on one node while the claim lasts.
 _Avoid_: download token
 
 **Warrant key**:
@@ -185,30 +185,27 @@ _Avoid_: label, tag
 
 **Tree lock**:
 The database lock on one scope and digest that a capture moving to
-publishing, a reclaim admission and an orphan verdict each take, so none
+publishing, the reclaim pass and an orphan verdict each take, so none
 interleaves with another over the same tree.
 _Avoid_: dedup lock
 
 **Lifecycle**:
-The record that one published generation is managed by this plane, from
-publication until reclamation finishes.
+The record that one published generation is managed by this plane. It is
+registered, or reclaimed; a reclaimed generation never resurrects.
 _Avoid_: registration, inventory
 
 **Claim**:
-A consumer's opaque, idempotent hold on a tree ref. Hangar never interprets
-or reacquires one.
-_Avoid_: reference, pin
-
-**Read lease**:
-A reader's protection over one generation. It outlives the last claim and
-refuses reclamation while active.
-_Avoid_: lease (alone)
+A consumer's or a reader's opaque, idempotent hold on a tree ref; the one
+refcount. A consumer's lasts until released; a reader's also expires, on
+the database clock. Hangar never interprets or reacquires one.
+_Avoid_: reference, pin, read lease, lease
 
 **Reclamation**:
-Deleting a published generation nobody claims, leases or is about to
-publish: admission is the decision, delete the act, finalization the
-record. Only the web reclaims.
-_Avoid_: garbage collection, purge
+The web's one pass over registered generations: one that no live claim, no
+pending or publishing capture and no unregistered input publication names
+is deleted by its exact generation and stamped reclaimed, in one
+transaction under the tree lock. Only the web reclaims.
+_Avoid_: garbage collection, purge, reclaim admission, reclaim job
 
 **Orphan sweep**:
 The web's periodic pass that deletes an old object marked for this store
@@ -223,9 +220,8 @@ _Avoid_: activation epoch, activation, enabled (alone)
 
 **Residue**:
 What a drain still waits on: pending or publishing capture rows, terminal
-capture rows not yet released, open claims, live read leases, unfinished
-reclaim jobs. Releases no node acknowledged are reported beside it, not
-counted in it.
+capture rows not yet released, open claims. Releases no node acknowledged
+are reported beside it, not counted in it.
 _Avoid_: debt, backlog
 
 **Integrity finding**:
@@ -242,8 +238,8 @@ _Avoid_: role, persona
 
 **Control-key generation**:
 The number a node's control keys and the capabilities signed with them are
-minted under, recorded on every lifecycle, claim, read lease, reclaim job,
-input publication and Run input. Rotating it makes earlier Run results
+minted under, recorded on every lifecycle, claim, input publication and Run
+input. Rotating it makes earlier Run results
 unbindable as inputs. It does not put the plane in service. Its frozen
 spellings -- the `activation_epoch` columns, `--activation-epoch`,
 `hangarOutput.activationEpoch`, the `hangar-output-activation-epoch` marker

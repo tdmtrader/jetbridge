@@ -230,7 +230,7 @@ var _ = Describe("Hangar capture rows", func() {
 		Expect(publishing.State).To(Equal(output.CapturePublishing))
 		Expect(publishing.PodUID).To(Equal(executioncontrol.PodUID("pod-1")))
 
-		published := output.PublishedCapture{Key: key, Generation: 7, Metageneration: 1, ActivationEpoch: 1}
+		published := output.PublishedCapture{Key: key, Generation: 7, ActivationEpoch: 1}
 		Expect(in(func(tx db.Tx) error {
 			_, err := repository.CASPublishingToPublished(ctx, tx, published)
 			return err

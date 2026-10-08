@@ -103,42 +103,10 @@ type deferredEntryPoint struct {
 	why  string
 }
 
-var deferredEntryPoints = []deferredEntryPoint{
-	// The operator surface. Every one of these answers an operator's question
-	// and nothing decides anything from it; the API and the status page that
-	// ask them are Phase 8's.
-	// atc/db.HangarReclaimJob.Remaining, which is the reclaim JOB's own
-	// remaining lease term. hangar/output.OperationLease.Remaining -- the same
-	// name, a different package -- is spent by the status surface; this one is
-	// not, because the status surface reports the reclaim backlog as a COUNT
-	// and a per-job term would be a series per object.
-	{name: "Remaining", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
-	{name: "LoadReclaimJob", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
-
-	// The consumer half: verifying a warrant, a receipt or a lease answer that
-	// this plane issued. This phase issues them and reads none of them back.
-
-	// The web-side answers to the deleted read-lease control protocol.
-	{name: "RenewReadLease", pkg: "atc/db", why: leaseControlDeleted},
-
-	// The reclaim-admission violation gate is enforced by the schema, on the
-	// INSERT itself, so this read is not part of it: a Go copy of the rule
-	// beside the SQL one would be two descriptions to keep in step, and the
-	// one that is not the enforcement is the one that drifts. It stays where
-	// the rest of the operator surface is.
-}
-
-const (
-	statusSurface = "the operator status and diagnosis surface is Phase 8's; no running " +
-		"process reads it yet"
-	reclaimJobDetailHasNoReader = "the operator status surface reports the reclaim backlog as " +
-		"a count, because a series per in-flight object is cardinality nobody can alert on. " +
-		"Loading one job and reading its remaining term is a diagnosis of a SPECIFIC object, " +
-		"and this track ships no API that names one"
-	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
-		"does not return; Phase 8, with the activation verification"
-	leaseControlDeleted = "the read-lease control protocol that asked this of the web is deleted: the node daemon verifies a read warrant against its own window and never calls the web. The row semantics this method pins stay specified until the read rows are rewritten with the capture row"
-)
+// Nothing is deferred: every exported entry point in the Hangar output surface
+// is wired to a running process. The list stays, empty, so that the next
+// deferral is an entry with a reason rather than a rule quietly relaxed.
+var deferredEntryPoints = []deferredEntryPoint{}
 
 func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T) {
 	root := repositoryRoot()
@@ -149,7 +117,11 @@ func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T
 	}
 	collectExported(t, filepath.Join(root, "atc", "db"), root, hangarSurfacePrefix, declared)
 
-	if len(declared) < 100 {
+	// The floor is a vacuity guard for the discovery itself: the surface was
+	// around 80 names once the claims-only reclaim deleted the read-lease and
+	// reclaim-job protocols, and a discovery that finds far fewer than that
+	// has failed rather than found a smaller plane.
+	if len(declared) < 60 {
 		t.Fatalf("found only %d exported entry points across %v and atc/db's Hangar surface, "+
 			"which is far too few; the discovery failed and this rule would pass vacuously",
 			len(declared), reachabilityTrees)
@@ -547,9 +519,6 @@ func (entry satisfiedEntry) credits(pkg string) bool {
 }
 
 var interfaceSatisfied = map[string]satisfiedEntry{
-	// A Run's result reader releases its lease through a port of its own.
-	"ReleaseReadLease": {pkg: "atc/db", port: "atc/runs.resultLeaseReleaser"},
-
 	// The web's deleting passes are components: the component runner calls
 	// Run through atc/component.Runnable.
 	"Run": {pkg: "atc/hangaroutput/reclaim", port: "atc/component.Runnable"},

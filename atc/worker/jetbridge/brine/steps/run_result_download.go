@@ -158,7 +158,7 @@ func configureRunReadPlaneForClient(in RunResultPublication, rec *brine.Recorder
 		return nil, nil, jetbridge.Config{}, err
 	}
 	// The node daemon verifies the warrant and asks the web nothing; the web
-	// gives the read lease back itself when its read ends. The daemon is
+	// gives the reader's claim back itself when its read ends. The daemon is
 	// restarted so arguments a caller appended (an operation timeout) apply.
 	if err = daemon.Output.crash(); err != nil {
 		return nil, nil, jetbridge.Config{}, err

@@ -14,7 +14,7 @@ import (
 )
 
 // ManagedInputTimeout covers every queued managed initializer and pod startup.
-// The coordinator validates this aggregate against the maximum lease term.
+// The web bounds this aggregate by the reader's claim term.
 func (s *OutputSource) ManagedInputTimeout(count int) time.Duration {
 	return managedInputReadyTimeout(s.controls.config, count)
 }

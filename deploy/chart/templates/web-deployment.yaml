@@ -226,8 +226,6 @@ spec:
             - --kubernetes-hangar-output-warrant-key=/etc/concourse/hangar-output/capability/capability.key
             - --kubernetes-hangar-output-operation-timeout={{ .Values.hangarOutput.operationTimeout }}
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
-            - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
-            - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}
             # THE GENERATION BELONGS TO THE BASE FACET. The activation epoch is
             # the control-key generation: every capability this node mints -- base or capture
             # -- is minted under it, and a capability claiming generation zero
@@ -240,7 +238,7 @@ spec:
             # The output namespace. Server configuration and never a request
             # field: no task, consumer, path parameter or request can select or
             # broaden it. The web is the plane's only reclaimer: its reclaim
-            # pass (admission, conditional delete, finalization) and its orphan
+            # pass (an unclaimed generation is deleted and stamped reclaimed) and its orphan
             # sweep reach this namespace, and node daemons publish into it and
             # never delete.
             - --kubernetes-hangar-output-bucket={{ .Values.hangarOutput.bucket }}

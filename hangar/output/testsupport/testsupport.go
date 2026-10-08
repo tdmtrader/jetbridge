@@ -1,5 +1,5 @@
 // Package output_testsupport holds the fixtures the output plane's tests share:
-// a derived namespace, an object marker, a lease, and a tier-1
+// a derived namespace, an object marker, a reader's claim, and a tier-1
 // store behind a recorder.
 //
 // It exists because four test packages -- the three object roles' own tests and
@@ -74,34 +74,33 @@ func Reservation(t *testing.T, namespace output.OutputNamespace, id output.Reser
 	return marker
 }
 
-// Lease is a valid, unexpired read lease over one tree ref.
-func Lease(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ReadLease {
+// ReadClaim is a valid, unexpired reader's claim over one tree ref.
+func ReadClaim(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ClaimRecord {
 	t.Helper()
 
-	lease := output.ReadLease{
-		ProtocolVersion: output.ProtocolVersion,
-		ReadLeaseID:     "22222222-2222-4222-8222-222222222222",
-		ClaimID:         "66666666-6666-4666-8666-666666666666",
-		Ref:             ref,
-		ActivationEpoch: epoch,
-		LeaseFence:      1,
-		GrantedAt:       output.NewTimestamp(FixedInstant),
-		ExpiresAt:       output.NewTimestamp(FixedInstant.Add(20 * time.Minute)),
+	expires := output.NewTimestamp(FixedInstant.Add(20 * time.Minute))
+	claim := output.ClaimRecord{
+		ClaimID:           "66666666-6666-4666-8666-666666666666",
+		Ref:               ref,
+		ConsumerBindingID: "fixture-read",
+		ActivationEpoch:   epoch,
+		AcquiredAt:        output.NewTimestamp(FixedInstant),
+		ExpiresAt:         &expires,
 	}
-	if err := lease.Validate(); err != nil {
-		t.Fatalf("the fixture lease does not validate: %v", err)
+	if err := claim.Validate(); err != nil {
+		t.Fatalf("the fixture claim does not validate: %v", err)
 	}
 
-	return lease
+	return claim
 }
 
-// Warrant is a fixture read warrant's claims over Lease's lease.
+// Warrant is a fixture read warrant's claims over ReadClaim's claim.
 func Warrant(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ReadWarrantClaims {
 	t.Helper()
 
-	claims := output.WarrantClaimsFor(Lease(t, ref, epoch),
+	claims := output.WarrantClaimsFor(ReadClaim(t, ref, epoch),
 		output.ReadDestination{Handle: "fixture-handle", Volume: "fixture-volume"},
-		"fixture-node", "AAAAAAAAAAAAAAAAAAAAAA")
+		"fixture-node")
 	if err := claims.Validate(); err != nil {
 		t.Fatalf("the fixture warrant does not validate: %v", err)
 	}

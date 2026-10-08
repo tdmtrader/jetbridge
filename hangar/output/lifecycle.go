@@ -1,8 +1,8 @@
 package output
 
 import (
-	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -17,12 +17,19 @@ import (
 // ConsumerBindingID is opaque and Hangar never interprets it. It exists so a
 // consumer can find its own binding again after a crash; the moment Hangar
 // could read it, Hangar would know what a Run is.
+//
+// A claim is the one refcount on a generation. A consumer's hold -- a Run's
+// result binding, an input publication, a capture's own -- has no term and
+// lasts until released. A reader's hold has a Term: it expires on the
+// database clock, so an abandoned read pins nothing for the life of the
+// deployment. Zero is a consumer's hold.
 type ClaimAcquisition struct {
 	ProtocolVersion   string         `json:"protocol_version"`
 	ClaimID           ClaimID        `json:"claim_id"`
 	Ref               hangar.TreeRef `json:"ref"`
 	ConsumerBindingID OpaqueID       `json:"consumer_binding_id"`
 	RequestedAt       Timestamp      `json:"requested_at"`
+	Term              time.Duration  `json:"term,omitempty"`
 }
 
 func (acquisition ClaimAcquisition) Validate() error {
@@ -37,6 +44,9 @@ func (acquisition ClaimAcquisition) Validate() error {
 	}
 	if err := acquisition.ConsumerBindingID.Validate(); err != nil {
 		return err
+	}
+	if acquisition.Term < 0 {
+		return fmt.Errorf("%w: a claim's term is never negative", ErrIncomplete)
 	}
 
 	return acquisition.RequestedAt.Validate()
@@ -77,11 +87,20 @@ func (release ClaimRelease) Validate() error {
 // so "no claim is left behind" and "the tombstone is permanent" are different
 // questions about the same row and a reader that could not see a released claim
 // could not tell them apart.
+//
+// A reader's claim carries ExpiresAt; a consumer's does not. Whether an
+// expiring claim still holds is the database clock's question, asked where it
+// matters (reclaim's live-claim check), never a node's.
 type ClaimRecord struct {
-	ClaimID           ClaimID        `json:"claim_id"`
-	Ref               hangar.TreeRef `json:"ref"`
-	ConsumerBindingID OpaqueID       `json:"consumer_binding_id"`
-	AcquiredAt        Timestamp      `json:"acquired_at"`
+	ClaimID           ClaimID                          `json:"claim_id"`
+	Ref               hangar.TreeRef                   `json:"ref"`
+	ConsumerBindingID OpaqueID                         `json:"consumer_binding_id"`
+	ActivationEpoch   executioncontrol.ActivationEpoch `json:"activation_epoch"`
+	AcquiredAt        Timestamp                        `json:"acquired_at"`
+
+	// ExpiresAt is nil for a consumer's hold, and the instant a reader's hold
+	// lapses on the database clock.
+	ExpiresAt *Timestamp `json:"expires_at,omitempty"`
 
 	// ReleasedAt is nil while the claim is active. It is a pointer rather than
 	// a zero time because "not released" is the absence of an instant, and a
@@ -89,7 +108,8 @@ type ClaimRecord struct {
 	ReleasedAt *Timestamp `json:"released_at,omitempty"`
 }
 
-// Active reports whether this claim still protects its generation.
+// Active reports whether this claim was given back. A reader's claim that
+// was not given back also lapses at ExpiresAt; the database judges that.
 func (record ClaimRecord) Active() bool { return record.ReleasedAt == nil }
 
 func (record ClaimRecord) Validate() error {
@@ -102,8 +122,20 @@ func (record ClaimRecord) Validate() error {
 	if err := record.ConsumerBindingID.Validate(); err != nil {
 		return err
 	}
+	if record.ActivationEpoch == 0 {
+		return fmt.Errorf("%w: claim %s names no control-key generation", ErrIncomplete, record.ClaimID)
+	}
 	if err := record.AcquiredAt.Validate(); err != nil {
 		return err
+	}
+	if record.ExpiresAt != nil {
+		if err := record.ExpiresAt.Validate(); err != nil {
+			return err
+		}
+		if !record.ExpiresAt.After(record.AcquiredAt.Time) {
+			return fmt.Errorf("%w: claim %s expires at or before it was acquired", ErrIncomplete,
+				record.ClaimID)
+		}
 	}
 	if record.ReleasedAt != nil {
 		if err := record.ReleasedAt.Validate(); err != nil {
@@ -116,91 +148,6 @@ func (record ClaimRecord) Validate() error {
 	}
 
 	return nil
-}
-
-// ReadLease is the fenced, renewable right to read one exact generation while a
-// materialization is in flight.
-//
-// It exists because a claim is the consumer's protection and a read is the
-// daemon's, and the two have different lifetimes: releasing the last claim
-// during a transfer must not delete the bytes out from under a reader.
-// Reclaim admission is refused while any read lease is active, even after the
-// last claim is gone.
-//
-// The lease is created inside the caller's transaction, together with the claim
-// and policy revalidation. Minting the warrant that carries it is deliberately
-// *not* atomic with that transaction: signing is not a database operation, and
-// pretending otherwise would be the atomic-commit claim this design avoids
-// everywhere else.
-type ReadLease struct {
-	ProtocolVersion string                           `json:"protocol_version"`
-	ReadLeaseID     ReadLeaseID                      `json:"read_lease_id"`
-	ClaimID         ClaimID                          `json:"claim_id"`
-	Ref             hangar.TreeRef                   `json:"ref"`
-	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
-	LeaseFence      LeaseFence                       `json:"lease_fence"`
-	GrantedAt       Timestamp                        `json:"granted_at"`
-	ExpiresAt       Timestamp                        `json:"expires_at"`
-}
-
-func (lease ReadLease) Validate() error {
-	if err := validateProtocol(lease.ProtocolVersion); err != nil {
-		return err
-	}
-	if err := lease.ReadLeaseID.Validate(); err != nil {
-		return err
-	}
-	if err := lease.ClaimID.Validate(); err != nil {
-		return err
-	}
-	if err := lease.Ref.Validate(); err != nil {
-		return err
-	}
-	if lease.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero", ErrIncomplete)
-	}
-	if lease.LeaseFence == 0 {
-		return fmt.Errorf("%w: lease fence is zero", ErrIncomplete)
-	}
-	if err := lease.GrantedAt.Validate(); err != nil {
-		return err
-	}
-	if err := lease.ExpiresAt.Validate(); err != nil {
-		return err
-	}
-	if !lease.ExpiresAt.After(lease.GrantedAt.Time) {
-		return fmt.Errorf("%w: read lease expires at or before it was granted", ErrIncomplete)
-	}
-	if term := lease.ExpiresAt.Sub(lease.GrantedAt.Time); term < MinLeaseTerm {
-		return fmt.Errorf("%w: read lease term %s is shorter than the %s floor",
-			ErrIncomplete, term, MinLeaseTerm)
-	}
-
-	return nil
-}
-
-// ReadLeaseRecord is a committed lease plus everything its warrant binds.
-//
-// It exists because minting is deliberately not atomic with the transaction
-// that created the lease: after the commit, the minter loads the exact facts
-// back rather than signing the ones it thought it wrote. An ambiguous commit is
-// then answered by identity -- load by lease id and fence, mint only if what
-// came back matches -- instead of by hoping.
-type ReadLeaseRecord struct {
-	Lease        ReadLease
-	Destination  ReadDestination
-	WarrantNonce string
-}
-
-func (record ReadLeaseRecord) Validate() error {
-	if err := record.Lease.Validate(); err != nil {
-		return err
-	}
-	if err := record.Destination.Validate(); err != nil {
-		return err
-	}
-
-	return validateReadWarrantNonce(record.WarrantNonce)
 }
 
 // DeletePrecondition is the exact generation a conditional delete must match.
@@ -218,64 +165,4 @@ func (precondition DeletePrecondition) Validate() error {
 	}
 
 	return nil
-}
-
-// DeleteOutcome is the closed set of results a conditional delete may report.
-//
-// The foundation's DeleteTree collapses exact absence into ordinary success.
-// This does not, and that difference is the whole reason the type exists:
-// absence without a prior admitted delete is an out-of-band lifetime violation,
-// not normal reclamation, and a store that cannot tell them apart cannot make
-// a lifetime promise at all.
-type DeleteOutcome string
-
-const (
-	DeleteConfirmed          DeleteOutcome = "deleted"
-	DeleteAlreadyAbsent      DeleteOutcome = "already_absent"
-	DeleteGenerationConflict DeleteOutcome = "generation_conflict"
-	DeleteUnauthorized       DeleteOutcome = "unauthorized"
-	DeleteTimedOut           DeleteOutcome = "timeout"
-	DeleteInfrastructure     DeleteOutcome = "infrastructure_failure"
-)
-
-func DeleteOutcomes() []DeleteOutcome {
-	return []DeleteOutcome{
-		DeleteConfirmed,
-		DeleteAlreadyAbsent,
-		DeleteGenerationConflict,
-		DeleteUnauthorized,
-		DeleteTimedOut,
-		DeleteInfrastructure,
-	}
-}
-
-func ParseDeleteOutcome(value string) (DeleteOutcome, error) {
-	for _, member := range DeleteOutcomes() {
-		if string(member) == value {
-			return member, nil
-		}
-	}
-
-	return "", fmt.Errorf("%w: delete outcome %q; the vocabulary is %v",
-		ErrUnknownMember, value, DeleteOutcomes())
-}
-
-func (outcome *DeleteOutcome) UnmarshalJSON(raw []byte) error {
-	var text string
-	if err := json.Unmarshal(raw, &text); err != nil {
-		return err
-	}
-	parsed, err := ParseDeleteOutcome(text)
-	if err != nil {
-		return err
-	}
-	*outcome = parsed
-
-	return nil
-}
-
-func (outcome DeleteOutcome) Validate() error {
-	_, err := ParseDeleteOutcome(string(outcome))
-
-	return err
 }

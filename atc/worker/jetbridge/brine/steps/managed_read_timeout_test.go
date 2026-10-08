@@ -27,8 +27,8 @@ import (
 
 // This composes the existing local PostgreSQL, envtest, GCS emulator and daemon
 // fixtures. The daemon independently checks the warrant's remaining window --
-// its lease's -- before serving bytes, so the old one-minute admission fails
-// even though this small tree reads quickly.
+// its reader's claim's -- before serving bytes, so the old one-minute admission
+// fails even though this small tree reads quickly.
 func TestRunManagedReadsProtectTheConfiguredOperationBudget(t *testing.T) {
 	RegisterGomegaFailHandler()
 	var resources []brine.ResourceDefinition
@@ -53,7 +53,7 @@ func TestRunManagedReadsProtectTheConfiguredOperationBudget(t *testing.T) {
 		return checkRunManagedReadBudget(in, rec, res)
 	}))
 	feature := brine.ParseFeatureText("managed-read-timeout.feature", `Feature: Run reads use their selected output plane budget
-  Scenario: Input delivery and a retained result download admit sufficient leases
+  Scenario: Input delivery and a retained result download take readers' claims with sufficient terms
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
     And its published producer finishes as "succeeded"
@@ -155,8 +155,9 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	if err != nil {
 		return fmt.Errorf("admit task input read: %w", err)
 	}
-	// Both leases must cover five minutes of startup, two sequential sixteen
-	// minute transfers, and the five minute lease margin: forty-two minutes.
+	// Both readers' claims must cover five minutes of startup, two sequential
+	// sixteen minute transfers, and the five minute claim margin: forty-two
+	// minutes.
 	if err = checkPersistedReadBudget(conn, "input", len(spec.Inputs), 42*time.Minute); err != nil {
 		return err
 	}
@@ -219,13 +220,14 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 			return fmt.Errorf("input has no exact sealed receipt: %v", err)
 		}
 		var released bool
-		if err := conn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_read_leases WHERE read_lease_id=$1`, string(claims.ReadLeaseID)).Scan(&released); err != nil {
+		if err := conn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id=$1`, string(claims.ClaimID)).Scan(&released); err != nil {
 			return err
 		}
 		// The node gave nothing back: it holds no client for the web. An input's
-		// read lease closes at the end of its term, by the web's cleaner.
+		// reader's claim lapses at the end of its term, or the web releases it
+		// when it retains the task's start.
 		if released {
-			return fmt.Errorf("the node daemon released the input's read lease")
+			return fmt.Errorf("the node daemon released the input's reader's claim")
 		}
 		initialized++
 	}
@@ -235,22 +237,25 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	return nil
 }
 
+// checkPersistedReadBudget reads the term of every reader's claim of one kind
+// -- a result read's binding is "result-read:<handle>", a task input's is
+// "input-read:<handle>/<volume>" -- and requires each to protect the
+// generation for at least the minimum, on the database clock.
 func checkPersistedReadBudget(conn db.DbConn, kind string, expectedCount int, minimum time.Duration) error {
-	rows, err := conn.Query(`SELECT lease_term_seconds, extract(epoch from expires_at-granted_at)
-		FROM hangar_read_leases WHERE (destination_volume='result')=$1`, kind == "result")
+	rows, err := conn.Query(`SELECT extract(epoch from expires_at-acquired_at)
+		FROM hangar_claims WHERE expires_at IS NOT NULL AND (consumer_binding_id LIKE 'result-read:%')=$1`, kind == "result")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
-		var seconds int
 		var protectedSeconds float64
-		if err := rows.Scan(&seconds, &protectedSeconds); err != nil {
+		if err := rows.Scan(&protectedSeconds); err != nil {
 			return err
 		}
-		if time.Duration(seconds)*time.Second < minimum || protectedSeconds < minimum.Seconds() {
-			return fmt.Errorf("%s read lease protects %ds; requires at least %s", kind, seconds, minimum)
+		if protectedSeconds < minimum.Seconds() {
+			return fmt.Errorf("%s reader's claim protects %.0fs; requires at least %s", kind, protectedSeconds, minimum)
 		}
 		count++
 	}

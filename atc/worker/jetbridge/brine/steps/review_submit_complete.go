@@ -3,7 +3,6 @@ package steps
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -375,17 +374,13 @@ func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbri
 	if err != nil {
 		return "", err
 	}
-	nonce, err := output.NewReadWarrantNonce(rand.Reader)
-	if err != nil {
-		return "", err
-	}
 	prefix, err := db.HangarConsumerPrefixHeld("brine-submitted-review")
 	if err != nil {
 		return "", err
 	}
 	destination := output.ReadDestination{Handle: freshUUID(), Volume: "source"}
-	admission := hangaroutput.ReadAdmission{Transactor: brineTransactor{conn: start.DB.Conn}, Leases: db.NewHangarOutputRepository(prefix), Stat: node, Minter: signer, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
-	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), MaterializationTimeout: time.Minute, NodeUID: node.NodeUID()})
+	admission := hangaroutput.ReadAdmission{Transactor: brineTransactor{conn: start.DB.Conn}, Claims: db.NewHangarOutputRepository(prefix), Stat: node, Minter: signer, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
+	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ClaimID: output.ClaimID(freshUUID()), Binding: readBindingFor(destination), Ref: binding.Ref, Destination: destination, MaterializationTimeout: time.Minute, NodeUID: node.NodeUID()})
 	if err != nil {
 		return "", err
 	}

@@ -49,7 +49,7 @@ func (client *OutputControlClient) StatExactObject(ctx context.Context, ref hang
 }
 
 // OpenManagedOutput returns the daemon's verified canonical archive. The node
-// has staged it under a live read lease before sending headers. The caller must
+// has staged it under a live reader's claim before sending headers. The caller must
 // still verify the archive digest before publishing it to an external client.
 func (client *OutputControlClient) OpenManagedOutput(ctx context.Context, input output.ManagedReadRequest, maxBytes int64) (io.ReadCloser, hangar.TreeAttributes, error) {
 	var attributes hangar.TreeAttributes

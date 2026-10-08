@@ -169,10 +169,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	tx, err = dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-		ProtocolVersion: output.ProtocolVersion, ClaimID: claim, Ref: ref,
-		ConsumerBindingID: output.OpaqueID(claim), RequestedAt: output.NewTimestamp(time.Now()),
-	})).To(Succeed())
+	Expect(hangarAcquireClaim(ctx, repository, tx, claim, ref, string(claim))).To(Succeed())
 	_, err = tx.Exec(`INSERT INTO pipeline_run_inputs(run_id,name,source_id,scope,digest,generation,claim_id,activation_epoch)
 		VALUES ($1,'input',$2,$3,$4,$5,$6,1)`, run.ID(), "input-v1-"+runEvidenceDigest("input"), string(ref.Scope), string(ref.Digest), ref.Generation, string(claim))
 	Expect(err).NotTo(HaveOccurred())
@@ -320,7 +317,7 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 		_, ref := hangarPublish(ctx, repository, hangarDigest(146), 1725830823000146)
 		claim := output.ClaimID(uuid.NewString())
 		inTx(func(tx db.Tx) error {
-			if err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+			if _, err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
 				ProtocolVersion: output.ProtocolVersion, ClaimID: claim, Ref: ref,
 				ConsumerBindingID: output.OpaqueID(claim), RequestedAt: output.NewTimestamp(time.Now()),
 			}); err != nil {

@@ -18,14 +18,14 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode string, node *jetbridge.OutputControlClient, admission *hangaroutput.ReadAdmission, warrant hangaroutput.ReadWarrant) error {
+func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode string, node *jetbridge.OutputControlClient, admission *hangaroutput.ReadAdmission, warrant mintedRead) error {
 	daemon := in.Tree.Outcome.Source.Draft.Daemon
 	if mode == "unauthenticated" || mode == "node-local warrant" {
 		transport := daemon.HTTP.Transport.(*http.Transport).Clone()
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 		transport.TLSClientConfig.Certificates = nil
 		defer transport.CloseIdleConnections()
-		node = jetbridge.NewOutputControlClient(daemon.Output.URL, &http.Client{Transport: transport, Timeout: 10 * time.Second}, daemon.Minter, warrant.Lease.ActivationEpoch)
+		node = jetbridge.NewOutputControlClient(daemon.Output.URL, &http.Client{Transport: transport, Timeout: 10 * time.Second}, daemon.Minter, warrant.Claim.ActivationEpoch)
 	}
 	materializer, ok := any(node).(interface {
 		MaterializeManagedOutput(context.Context, output.ManagedReadRequest) error
@@ -33,7 +33,7 @@ func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode st
 	if !ok {
 		return fmt.Errorf("the node client has no managed-output materialization operation")
 	}
-	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}
+	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Destination, Warrant: warrant.Token}
 	root := filepath.Join(daemon.Output.Root, "steps", request.Destination.Handle, request.Destination.Volume)
 	switch mode {
 	case "unauthenticated":
@@ -87,7 +87,7 @@ func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode st
 		return err
 	}
 	if err := materializer.MaterializeManagedOutput(ctx, request); !errors.Is(err, output.ErrUnauthorized) {
-		return fmt.Errorf("completed materialization reused its released lease: %v", err)
+		return fmt.Errorf("completed materialization reused its spent warrant: %v", err)
 	}
 	if mode == "fresh retry" {
 		// A lost response is recovered with fresh authority, including after the
@@ -98,11 +98,7 @@ func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode st
 		if err := daemon.Output.restart(ctx, daemon.HTTP); err != nil {
 			return err
 		}
-		nonce, err := output.NewReadWarrantNonce(freshReader())
-		if err != nil {
-			return err
-		}
-		retry, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(freshUUID()), WarrantNonce: nonce, ClaimID: in.Acquisition.ClaimID, Ref: in.Tree.Ref, Destination: request.Destination, ActivationEpoch: warrant.Lease.ActivationEpoch, MaterializationTimeout: time.Minute, NodeUID: executioncontrol.NodeUID(daemon.NodeUID)})
+		retry, err := admission.Admit(ctx, hangaroutput.ReadRequest{ClaimID: output.ClaimID(freshUUID()), Binding: readBindingFor(request.Destination), Ref: in.Tree.Ref, Destination: request.Destination, MaterializationTimeout: time.Minute, NodeUID: executioncontrol.NodeUID(daemon.NodeUID)})
 		if err != nil {
 			return err
 		}

@@ -127,7 +127,7 @@ func (f *pipelineRunFactory) RegisterRunInputUpload(ctx context.Context, tx Tx, 
 	if err := repository.RegisterInputPublication(ctx, tx, publication); err != nil {
 		return result, err
 	}
-	if err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{ProtocolVersion: output.ProtocolVersion, ClaimID: claim, Ref: publication.Attributes.Ref, ConsumerBindingID: output.OpaqueID(claim), RequestedAt: output.NewTimestamp(time.Now())}); err != nil {
+	if _, err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{ProtocolVersion: output.ProtocolVersion, ClaimID: claim, Ref: publication.Attributes.Ref, ConsumerBindingID: output.OpaqueID(claim), RequestedAt: output.NewTimestamp(time.Now())}); err != nil {
 		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE pipeline_run_input_uploads SET claim_acquired_at=coalesce(claim_acquired_at, clock_timestamp()) WHERE reservation_id=$1`, string(publication.Stage.ReservationID)); err != nil {

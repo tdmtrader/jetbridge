@@ -61,7 +61,7 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
 - **Daemon** is the artifact daemon, one per node. Hangar's output plane is
   a part of it, never a daemon of its own; `hangar-store` is the disk
   store's service, not a daemon.
-- **Lease** and **hold** are always qualified: source hold, read lease.
+- **Hold** is always qualified: source hold (a step marker) or a claim's hold on a tree ref. Hangar has no lease.
 - **Reclamation** destroys a pipeline run's payload in core and deletes a
   published object in Hangar. Context makes it clear; do not coin a third
   word.

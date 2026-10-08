@@ -8,12 +8,10 @@ import (
 // The frozen defaults and their configurable ranges.
 //
 // They are constants rather than configuration defaults scattered across flag
-// declarations because several of them constrain each other, and the
-// constraints are the interesting part: publication grace must exceed the
-// maximum capture deadline by an hour, a lease term must exceed the operation
-// it covers plus a margin, and work may only begin with enough of the lease
-// left to finish. Startup validates them together, so a deployment cannot be
-// configured into a state where a reclaimer's lease can expire mid-delete.
+// declarations because two of them constrain each other, and the constraint is
+// the interesting part: publication grace must exceed the maximum capture
+// deadline by an hour, or the orphan sweep could delete an object whose own
+// capture was still legitimately retrying. Startup validates them together.
 const (
 	// DefaultOperationTimeout is shared by the output plane and its callers.
 	DefaultOperationTimeout = time.Minute
@@ -25,36 +23,23 @@ const (
 	MaxCaptureDeadline     = 7 * 24 * time.Hour
 
 	// DefaultPublicationGrace is how long a marked, unregistered object is left
-	// alone before the orphan sweep may treat it as an orphan. Grace reduces work and
-	// provides recovery margin; it is never the claim/reclaim mutex.
+	// alone before the orphan sweep may treat it as an orphan, and how long a
+	// registered generation is left alone before the reclaim pass may delete
+	// it. Grace reduces work and provides recovery margin; it is never the
+	// claim/reclaim mutex.
 	DefaultPublicationGrace = 8 * 24 * time.Hour
 	MaxPublicationGrace     = 30 * 24 * time.Hour
 
 	// PublicationGraceMargin is how far publication grace must exceed the
 	// configured maximum capture deadline. Without it, an object could become
-	// adoptable while its own capture was still legitimately retrying.
+	// an orphan while its own capture was still legitimately retrying.
 	PublicationGraceMargin = time.Hour
 
-	// MinLeaseTerm is the floor for every renewable database-clock lease:
-	// capture ownership, read leases and reclaim work.
-	MinLeaseTerm = 15 * time.Minute
-
-	// maxLeaseTerm is the ceiling, and it is the same number the read-lease
-	// table's CHECK stops at (86400 seconds). A protection longer than a day is
-	// a generation pinned against reclaim for a day by one request, and the
-	// caller who asked for it is the party being protected.
-	//
-	// It lives here, beside the derivation, so that the bound is read where the
-	// policy is. A request refused only by the column comes back carrying a
-	// constraint's text, which names a column no consumer has heard of.
-	maxLeaseTerm = 24 * time.Hour
-
-	// LeaseTermMargin is added to a covered operation's timeout when deriving a
-	// lease term, and LeaseStartMargin is how much of the lease must remain
-	// before work may begin. Work that starts with less has no way to finish
-	// inside its own authority.
-	LeaseTermMargin  = 5 * time.Minute
-	LeaseStartMargin = 2 * time.Minute
+	// ReadClaimMargin is added to a read's materialization timeout to make the
+	// term of the reader's claim: the claim outlives the read it protects by
+	// this much, and then lapses on the database clock whether or not the
+	// web got to give it back.
+	ReadClaimMargin = 5 * time.Minute
 )
 
 // ValidateCaptureDeadline refuses a configured capture deadline outside
@@ -76,13 +61,6 @@ func ValidateCaptureDeadline(deadline time.Duration) error {
 // no such thing to pass. A capture deadline is per-capture and is bounded above
 // by this constant, so a grace above the constant plus an hour is conservative
 // for every capture any deployment can predeclare.
-//
-// This used to take the maximum as a parameter, with a doc sentence saying it
-// did so "because a deployment that lowered its capture deadline may lower its
-// grace with it". Every caller passed the constant, so the floor was always
-// 7d+1h and the sentence described a behaviour nothing had. If a
-// deployment-level maximum is ever configured, the parameter comes back WITH a
-// caller that has one; a parameter nobody varies is a claim nobody keeps.
 func ValidatePublicationGrace(grace time.Duration) error {
 	if grace > MaxPublicationGrace {
 		return fmt.Errorf("%w: publication grace %s exceeds the maximum %s",
@@ -90,7 +68,7 @@ func ValidatePublicationGrace(grace time.Duration) error {
 	}
 	if grace < MaxCaptureDeadline+PublicationGraceMargin {
 		return fmt.Errorf("%w: publication grace %s does not exceed the maximum capture deadline "+
-			"%s by at least %s; an object could become adoptable while its own capture was still "+
+			"%s by at least %s; an object could become an orphan while its own capture was still "+
 			"legitimately retrying", ErrIncomplete, grace, MaxCaptureDeadline,
 			PublicationGraceMargin)
 	}
@@ -102,45 +80,4 @@ func ValidatePublicationGrace(grace time.Duration) error {
 // the node operation. Callers, initializers and startup budgeting share it.
 func ReadTransferTimeout(operationTimeout time.Duration) time.Duration {
 	return operationTimeout + time.Minute
-}
-
-// LeaseTermFor derives the lease term covering an operation with the given
-// timeout: at least MinLeaseTerm, and at least the timeout plus LeaseTermMargin.
-func LeaseTermFor(operationTimeout time.Duration) time.Duration {
-	derived := operationTimeout + LeaseTermMargin
-	if derived < MinLeaseTerm {
-		return MinLeaseTerm
-	}
-
-	return derived
-}
-
-// ValidateMaterializationTimeout checks a covered operation's timeout against
-// the lease term that will be derived from it.
-//
-// One spelling, called from both request surfaces: the leaf's ReadLeaseRequest
-// and the control plane's ReadRequest ask the same question, and two copies of
-// a bound are two chances for one of them to be the one that was not updated.
-//
-// Only the ceiling can be crossed. LeaseTermFor floors at MinLeaseTerm, so no
-// positive timeout can derive a term below it.
-func ValidateMaterializationTimeout(timeout time.Duration) error {
-	if timeout <= 0 {
-		return fmt.Errorf("%w: no materialization timeout; the lease term is derived from it",
-			ErrIncomplete)
-	}
-	if term := LeaseTermFor(timeout); term > maxLeaseTerm {
-		return fmt.Errorf("%w: a materialization timeout of %s derives a lease term of %s and "+
-			"the bound is %s; a read protects a generation against reclaim for as long as its "+
-			"lease lasts", ErrIncomplete, timeout, term, maxLeaseTerm)
-	}
-
-	return nil
-}
-
-// MayStartWork reports whether enough of a lease remains to begin an operation
-// with the given timeout. It is the guard that keeps a delete or a
-// materialization from starting under authority it will outlive.
-func MayStartWork(remaining, operationTimeout time.Duration) bool {
-	return remaining >= operationTimeout+LeaseStartMargin
 }

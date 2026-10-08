@@ -8,12 +8,11 @@
 // and no list, and its handle's Delete is reachable only through a generation
 // pin and a precondition.
 //
-// The outcome vocabulary is the point of the package. `deleted` and
-// `already_absent` are different facts, and so are `deleted` and "we asked and
-// never heard back": a delete whose response was lost removed the object but
-// cannot be reported as confirmed, because confirming it would let reclamation
-// claim evidence it does not have. That distinction is why this returns a
-// typed outcome beside its error rather than only an error.
+// The outcome is the point of the package. `deleted` and `already_absent` are
+// different facts from "we asked and never heard back": a delete whose response
+// was lost may have removed the object and cannot be reported as either, so
+// the caller retries it next pass and gets `already_absent`. That is why this
+// returns a typed outcome beside its error rather than only an error.
 package reclaimer
 
 import (
@@ -24,6 +23,28 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
+)
+
+// Outcome is what one conditional delete settled, for the caller's switch.
+// Nothing stores it.
+type Outcome string
+
+const (
+	// Deleted is an acknowledged conditional delete.
+	Deleted Outcome = "deleted"
+	// AlreadyAbsent is an object that was not there: a delete whose answer
+	// was lost last time, or an object gone out of band. The exact generation
+	// is gone either way.
+	AlreadyAbsent Outcome = "already_absent"
+	// GenerationConflict is a different generation at the key: the exact one
+	// is gone, and the object there is someone else's. Never broadened into
+	// an unconditional delete.
+	GenerationConflict Outcome = "generation_conflict"
+	// Unauthorized is the store refusing the web's delete credential.
+	Unauthorized Outcome = "unauthorized"
+	// Failed is a timeout, a missing bucket or an infrastructure failure: no
+	// answer, so nothing is settled and the delete is retried next pass.
+	Failed Outcome = "failed"
 )
 
 // Store is the reclaimer's view of object operations.
@@ -57,19 +78,18 @@ func New(namespace output.OutputNamespace, store Store) (*Reclaimer, error) {
 //
 // Every branch below returns an outcome, including the failures, because the
 // caller's next move differs per outcome and an error alone cannot say which:
-// `already_absent` finalizes a reclaim job, `generation_conflict` becomes debt
-// and never broadens into an unconditional delete, and an infrastructure
-// failure after the object is gone is `infrastructure_failure` rather than
-// `deleted`, because "we did not hear back" is not proof.
-func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hangar.TreeRef, precondition output.DeletePrecondition) (output.DeleteOutcome, error) {
+// a settled outcome stamps the generation reclaimed, Unauthorized records a
+// finding, and Failed is retried next pass, because "we did not hear back" is
+// not proof.
+func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hangar.TreeRef, precondition output.DeletePrecondition) (Outcome, error) {
 	if err := ref.Validate(); err != nil {
-		return output.DeleteInfrastructure, err
+		return Failed, err
 	}
 	if err := precondition.Validate(); err != nil {
-		return output.DeleteInfrastructure, err
+		return Failed, err
 	}
 	if precondition.Generation != ref.Generation {
-		return output.DeleteInfrastructure, fmt.Errorf("%w: the precondition names generation %d "+
+		return Failed, fmt.Errorf("%w: the precondition names generation %d "+
 			"and the ref names %d; a delete conditioned on a generation other than the one it is "+
 			"about is an unconditional delete with extra steps", output.ErrIncomplete,
 			precondition.Generation, ref.Generation)
@@ -77,7 +97,7 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 
 	key, err := hangar.TreeKey(reclaimer.namespace.Prefix(), ref.Scope, ref.Digest)
 	if err != nil {
-		return output.DeleteInfrastructure, err
+		return Failed, err
 	}
 
 	// The generation and only the generation; the recorded metageneration is
@@ -86,7 +106,7 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 
 	switch {
 	case err == nil:
-		return output.DeleteConfirmed, nil
+		return Deleted, nil
 
 	case errors.Is(err, objectstore.ErrBucketNotFound):
 		// The BUCKET is gone, or was never this one. That is not absence of an
@@ -94,41 +114,33 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 		// controller pointed at the wrong bucket would otherwise finalize every
 		// admitted job in a registered set as its own successful deletion while
 		// every object was still there.
-		return output.DeleteInfrastructure, fmt.Errorf("%w: deleting %s: the bucket does not "+
+		return Failed, fmt.Errorf("%w: deleting %s: the bucket does not "+
 			"exist. This is a misconfiguration or a deleted bucket, and it is never absence of "+
 			"an object: %v", output.ErrInfrastructure, key, err)
 
 	case errors.Is(err, objectstore.ErrNotFound):
-		// Absent. Whether this plane removed it is a question for the reclaim
-		// job's own evidence: absence with a prior admitted delete whose
-		// response was LOST is inferred reclamation, and absence with no such
-		// attempt is an out-of-band lifetime violation. This method reports
-		// what it saw and does not decide.
-		//
-		// It cannot decide, and the reason is measured rather than assumed: the
-		// JSON API answers an object delete in a bucket that does not exist
-		// with an ordinary object 404, so this arm is reached by "the object is
-		// gone", "somebody else removed it" and "this process is pointed at the
-		// wrong bucket" alike. Only the control plane's own record of what this
-		// job previously attempted can tell them apart, which is why the
-		// inference lives there and under the schema's evidence trigger rather
-		// than here.
-		return output.DeleteAlreadyAbsent, nil
+		// Absent. A delete whose answer was lost last pass, or an object gone
+		// out of band: the store's 404 is the same for both (measured, not
+		// assumed: the JSON API answers an object delete in a bucket that does
+		// not exist with an ordinary object 404 too, which is why the bucket
+		// case above is checked first). The exact generation is gone either
+		// way, and the caller stamps it reclaimed.
+		return AlreadyAbsent, nil
 
 	case errors.Is(err, objectstore.ErrPreconditionFailed):
-		return output.DeleteGenerationConflict, fmt.Errorf("%w: %s is not at generation %d; "+
+		return GenerationConflict, fmt.Errorf("%w: %s is not at generation %d; "+
 			"the delete was refused and is never retried unconditionally",
 			output.ErrGenerationConflict, key, precondition.Generation)
 
 	case errors.Is(err, objectstore.ErrUnauthorized):
-		return output.DeleteUnauthorized, fmt.Errorf("%w: deleting %s: %v",
+		return Unauthorized, fmt.Errorf("%w: deleting %s: %v",
 			output.ErrUnauthorized, key, err)
 
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		return output.DeleteTimedOut, fmt.Errorf("%w: deleting %s: %v", output.ErrTimeout, key, err)
+		return Failed, fmt.Errorf("%w: deleting %s: %v", output.ErrTimeout, key, err)
 
 	default:
-		return output.DeleteInfrastructure, fmt.Errorf("%w: deleting %s: %v",
+		return Failed, fmt.Errorf("%w: deleting %s: %v",
 			output.ErrInfrastructure, key, err)
 	}
 }

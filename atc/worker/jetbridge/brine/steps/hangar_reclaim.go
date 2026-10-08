@@ -1,13 +1,13 @@
 package steps
 
-// The web's two deleting passes, seen from a scenario: the reclaim pass's
-// admission against a live read warrant, and the orphan sweep.
+// The web's two deleting passes, seen from a scenario: the reclaim pass
+// against a live read warrant's reader's claim, and the orphan sweep.
 //
 // Both are atc/hangaroutput/reclaim's production passes over this scenario's
 // real PostgreSQL and the fixture's emulated output bucket, deleting through
 // the web's own delete client (hangar/gcs.NewDeleteClient behind
-// hangar/output/reclaimer). Nothing here classifies an object or decides an
-// admission; the scenarios read back what the passes did.
+// hangar/output/reclaimer). Nothing here classifies an object or decides what
+// is reclaimable; the scenarios read back what the passes did.
 
 import (
 	"context"
@@ -15,8 +15,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
-	"strconv"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -24,7 +22,6 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaim"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
@@ -39,12 +36,20 @@ import (
 // its exact generation, and what the reclaim pass and the node then answered.
 type ReclaimRace struct {
 	Bound    BoundOutput
-	Warrants [2]hangaroutput.ReadWarrant
+	Warrants [2]mintedRead
 
-	// State is this generation's lifecycle state after the production pass
-	// ran; AdmitErr is what direct admission of THIS generation answered.
-	State    string
-	AdmitErr error
+	// Registered is whether this generation's lifecycle row is still
+	// registered (not stamped reclaimed) after the production pass ran;
+	// Reclaimed and Failed are what that pass counted. HoldErr is what
+	// holding THIS generation for reclaim directly answered, and LiveReaders
+	// how many live readers' claims the database counts on it: the pass's
+	// candidate query leaves a protected generation out silently, so the
+	// hold and the count are what say why.
+	Registered  bool
+	Reclaimed   int
+	Failed      int
+	HoldErr     error
+	LiveReaders int
 
 	// FirstRead is the first warrant's archive read: the digest of the tree
 	// the node returned, or the refusal.
@@ -54,9 +59,14 @@ type ReclaimRace struct {
 	// Deleted is the out-of-band delete's outcome; SecondErr is the second
 	// warrant's archive read after it, and SecondReturned whether the node
 	// answered with an archive at all.
-	Deleted        hangaroutputleaf.DeleteOutcome
+	Deleted        reclaimer.Outcome
 	SecondErr      error
 	SecondReturned bool
+
+	// LapsedReclaimed and LapsedRegistered are what the pass counted and
+	// left once the readers' claims were given back.
+	LapsedReclaimed  int
+	LapsedRegistered bool
 }
 
 // OrphanSweep is the output bucket the sweep runs over: what was planted, and
@@ -82,11 +92,6 @@ type sweptGeneration struct {
 	Key        string
 	Generation int64
 }
-
-// protectionCounts reads the claim and read-lease counts out of AdmitReclaim's
-// refusal. The refusal is the only place the pass says WHICH protection held,
-// and the scenario is about one of them.
-var protectionCounts = regexp.MustCompile(`(\d+) claim\(s\), (\d+) read lease\(s\)`)
 
 // HangarReclaimDefinitions is the reclaim-and-sweep family.
 func HangarReclaimDefinitions() []brine.StepDefinition {
@@ -114,11 +119,12 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Every claim goes: the consumer's and the capture's own. What is left
-		// protecting the generation is the two read leases and nothing else,
-		// which is what makes the refusal below about the leases.
+		// Every consumer's claim goes: the consumer's binding and the capture's
+		// own. What is left protecting the generation is the two readers'
+		// claims the warrants were minted over, and nothing else, which is
+		// what makes the deferral below about them.
 		brine.DefineMap[ReclaimRace, ReclaimRace](
-			"every claim on the published generation is released",
+			"every consumer's claim on the published generation is released",
 			func(in ReclaimRace, _ brine.Params, _ *brine.Recorder) (ReclaimRace, error) {
 				bound := in.Bound
 				if err := bound.Consumer.release(bound.Binding, bound.Acquisition.ClaimID,
@@ -134,41 +140,39 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The production pass's admission, then the same generation admitted
+		// The production pass, then the same generation held for reclaim
 		// directly: the pass's candidate query filters a protected generation
-		// out silently, so the direct admission is what says why.
+		// out silently, so the direct hold is what says why, and the count of
+		// live readers' claims is what says it was the readers.
 		brine.DefineMap[ReclaimRace, ReclaimRace](
-			"the reclaim pass is asked to admit the published generation",
+			"the reclaim pass runs over the published generation",
 			func(in ReclaimRace, _ brine.Params, _ *brine.Recorder) (ReclaimRace, error) {
-				plane := in.Bound.Tree.Outcome.Plane
-				pass := &reclaim.Pass{
-					Transactor: brineTransactor{conn: plane.DB.Conn},
-					Repository: plane.Repository,
-					Grace:      time.Millisecond,
-					OwnerID:    "brine-web",
+				var err error
+				in.Reclaimed, _, in.Failed, err = runReclaimPass(in.Bound)
+				if err != nil {
+					return in, fmt.Errorf("the reclaim pass: %w", err)
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if _, err := pass.Admit(ctx); err != nil {
-					return in, fmt.Errorf("the reclaim pass's admission: %w", err)
-				}
-				ref := in.Bound.Tree.Ref
-				if err := plane.DB.Conn.QueryRow(`
-					SELECT state FROM hangar_exact_lifecycles
-					 WHERE scope = $1 AND digest = $2 AND generation = $3`,
-					string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&in.State); err != nil {
-					return in, fmt.Errorf("reading the lifecycle of %v: %w", ref, err)
+				if in.Registered, err = lifecycleRegistered(in.Bound); err != nil {
+					return in, err
 				}
 
+				if in.LiveReaders, err = liveReadersClaims(in.Bound); err != nil {
+					return in, err
+				}
+
+				// The hold's transaction is rolled back as soon as it answered:
+				// it holds the tree and lifecycle locks, and the fixture's
+				// connection, and nothing after it may wait on either.
+				plane := in.Bound.Tree.Outcome.Plane
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 				tx, err := plane.DB.Conn.Begin()
 				if err != nil {
 					return in, err
 				}
-				defer func() { _ = tx.Rollback() }()
-				// The registered metageneration is 1: nothing in this chain
-				// touches the object's metadata after it is published.
-				in.AdmitErr = plane.Repository.AdmitReclaim(ctx, brineHangarTx(tx),
-					in.Bound.Tree.Ref, "brine-web", 1, hangaroutputleaf.MinLeaseTerm, time.Millisecond)
+				in.HoldErr = plane.Repository.HoldForReclaim(ctx, brineHangarTx(tx), in.Bound.Tree.Ref,
+					brineReclaimGrace)
+				_ = tx.Rollback()
 
 				return in, nil
 			},
@@ -185,8 +189,8 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 
 		// Out of band: the web's own delete role removes the EXACT generation
 		// while the second warrant is still unspent -- the state a reclaim
-		// would leave if the read lease did not exclude it, and the state any
-		// out-of-band lifetime violation leaves.
+		// would leave if the reader's claim did not defer it, and the state
+		// any out-of-band lifetime violation leaves.
 		brine.DefineMap[ReclaimRace, ReclaimRace](
 			"the published generation is deleted out of band",
 			func(in ReclaimRace, _ brine.Params, _ *brine.Recorder) (ReclaimRace, error) {
@@ -200,7 +204,7 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 				defer cancel()
 				in.Deleted, err = deletes.DeleteExactGeneration(ctx, in.Bound.Tree.Ref,
 					hangaroutputleaf.DeletePrecondition{Generation: in.Bound.Tree.Ref.Generation})
-				if in.Deleted != hangaroutputleaf.DeleteConfirmed {
+				if in.Deleted != reclaimer.Deleted {
 					return in, fmt.Errorf("the out-of-band delete answered %v: %v", in.Deleted, err)
 				}
 
@@ -218,31 +222,29 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		CheckThat[ReclaimRace]("reclaim admission is refused while the read leases are live",
+		CheckThat[ReclaimRace]("the reclaim pass defers the generation while the readers' claims are live",
 			func(in ReclaimRace) error {
-				if in.State != "registered" {
-					return fmt.Errorf("the reclaim pass moved the generation to %q with two live "+
-						"read leases on it", in.State)
+				if !in.Registered {
+					return fmt.Errorf("the reclaim pass stamped the generation reclaimed with two "+
+						"live readers' claims on it (reclaimed %d, failed %d)", in.Reclaimed, in.Failed)
 				}
-				if in.AdmitErr == nil {
-					return fmt.Errorf("direct admission of %v succeeded under two live read leases",
+				if in.Reclaimed != 0 || in.Failed != 0 {
+					return fmt.Errorf("the reclaim pass reclaimed %d and failed %d generation(s); "+
+						"the only registered one is protected", in.Reclaimed, in.Failed)
+				}
+				if in.HoldErr == nil {
+					return fmt.Errorf("holding %v for reclaim succeeded under two live readers' claims",
 						in.Bound.Tree.Ref)
 				}
-				if !errors.Is(in.AdmitErr, hangaroutputleaf.ErrConflict) {
-					return fmt.Errorf("admission was refused, but not as a lifecycle conflict: %v",
-						in.AdmitErr)
+				if !errors.Is(in.HoldErr, hangaroutputleaf.ErrConflict) {
+					return fmt.Errorf("the hold was refused, but not as a lifecycle conflict: %v",
+						in.HoldErr)
 				}
-				counts := protectionCounts.FindStringSubmatch(in.AdmitErr.Error())
-				if counts == nil {
-					return fmt.Errorf("the refusal does not say what protected the generation: %v",
-						in.AdmitErr)
-				}
-				claims, _ := strconv.Atoi(counts[1])
-				leases, _ := strconv.Atoi(counts[2])
-				if claims != 0 || leases != 2 {
-					return fmt.Errorf("the refusal counts %d claim(s) and %d read lease(s); the "+
-						"scenario released every claim and holds two leases, so the leases must "+
-						"be what refused it: %v", claims, leases, in.AdmitErr)
+				if in.LiveReaders != 2 {
+					return fmt.Errorf("the database counts %d live readers' claim(s) on the "+
+						"generation; the scenario released every consumer's claim and holds two "+
+						"warrants, so two readers' claims must be what deferred it: %v",
+						in.LiveReaders, in.HoldErr)
 				}
 
 				return nil
@@ -277,6 +279,45 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 				return word, nil
 			},
 			func(in ReclaimRace) string { return fmt.Sprintf("error: %v", in.SecondErr) }),
+
+		// The readers' claims given back, the generation is nothing's: the
+		// pass holds it, asks the store to delete it -- already absent, after
+		// the out-of-band delete -- and stamps it reclaimed in the same
+		// transaction.
+		brine.DefineMap[ReclaimRace, ReclaimRace](
+			"the readers' claims are released and the reclaim pass runs again",
+			func(in ReclaimRace, _ brine.Params, _ *brine.Recorder) (ReclaimRace, error) {
+				for i, warrant := range in.Warrants {
+					if err := releaseClaim(in.Bound, warrant.Claim.ClaimID); err != nil {
+						return in, fmt.Errorf("releasing reader's claim %d: %w", i+1, err)
+					}
+				}
+				var err error
+				in.LapsedReclaimed, _, _, err = runReclaimPass(in.Bound)
+				if err != nil {
+					return in, fmt.Errorf("the reclaim pass: %w", err)
+				}
+				if in.LapsedRegistered, err = lifecycleRegistered(in.Bound); err != nil {
+					return in, err
+				}
+
+				return in, nil
+			},
+		),
+
+		CheckThat[ReclaimRace]("the generation is stamped reclaimed",
+			func(in ReclaimRace) error {
+				if in.LapsedReclaimed != 1 {
+					return fmt.Errorf("the reclaim pass reclaimed %d generation(s) once the readers' "+
+						"claims were released; want exactly this one", in.LapsedReclaimed)
+				}
+				if in.LapsedRegistered {
+					return fmt.Errorf("the reclaim pass counted %v reclaimed and left its lifecycle "+
+						"registered", in.Bound.Tree.Ref)
+				}
+
+				return nil
+			}),
 
 		// The orphan sweep's bucket. Every key is the one the namespace derives
 		// for its digest, so all three are listed; what tells them apart is
@@ -444,15 +485,78 @@ func releaseClaim(bound BoundOutput, id hangaroutputleaf.ClaimID) error {
 	return tx.Commit()
 }
 
-func managedReadOf(bound BoundOutput, warrant hangaroutput.ReadWarrant) hangaroutputleaf.ManagedReadRequest {
+func managedReadOf(bound BoundOutput, warrant mintedRead) hangaroutputleaf.ManagedReadRequest {
 	return hangaroutputleaf.ManagedReadRequest{Ref: bound.Tree.Ref,
-		Destination: warrant.Record.Destination, Warrant: warrant.Token}
+		Destination: warrant.Destination, Warrant: warrant.Token}
+}
+
+// brineReclaimGrace is the publication grace a scenario's reclaim pass runs
+// with. The pass rounds it to its second floor, so it has elapsed the moment
+// the registration committed; the scenarios are about claims, not grace.
+const brineReclaimGrace = time.Millisecond
+
+// runReclaimPass is one production reclaim pass over the plane a capture
+// settled on, deleting through the web's delete role, and reports what it
+// counted: reclaimed, deferred, failed.
+func runReclaimPass(bound BoundOutput) (int, int, int, error) {
+	plane := bound.Tree.Outcome.Plane
+	if plane == nil {
+		return 0, 0, 0, fmt.Errorf("this chain never settled a capture")
+	}
+	deletes, _, closeDeletes, err := webDeleteRole(bound.Tree.Outcome.Source.Draft.Daemon)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer func() { _ = closeDeletes() }()
+	pass := &reclaim.Pass{
+		Transactor: brineTransactor{conn: plane.DB.Conn},
+		Repository: plane.Repository,
+		Reclaimer:  deletes,
+		Grace:      brineReclaimGrace,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return pass.Reclaim(ctx)
+}
+
+// lifecycleRegistered reads whether the bound generation's lifecycle row is
+// still registered: not stamped reclaimed.
+func lifecycleRegistered(bound BoundOutput) (bool, error) {
+	ref := bound.Tree.Ref
+	var registered bool
+	if err := bound.Tree.Outcome.Plane.DB.Conn.QueryRow(`
+		SELECT reclaimed_at IS NULL FROM hangar_exact_lifecycles
+		 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+		string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&registered); err != nil {
+		return false, fmt.Errorf("reading the lifecycle of %v: %w", ref, err)
+	}
+
+	return registered, nil
+}
+
+// liveReadersClaims counts the live readers' claims on the bound generation
+// the way the reclaim pass does: unreleased, with an expiry still ahead on
+// the database clock.
+func liveReadersClaims(bound BoundOutput) (int, error) {
+	ref := bound.Tree.Ref
+	var live int
+	if err := bound.Tree.Outcome.Plane.DB.Conn.QueryRow(`
+		SELECT count(*) FROM hangar_claims c
+		  JOIN hangar_exact_lifecycles l ON l.id = c.lifecycle_id
+		 WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3
+		   AND c.released_at IS NULL AND c.expires_at IS NOT NULL AND c.expires_at > now()`,
+		string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&live); err != nil {
+		return 0, fmt.Errorf("counting the readers' claims on %v: %w", ref, err)
+	}
+
+	return live, nil
 }
 
 // readArchiveDigest reads the archive route under one warrant and
 // canonicalizes what came back, so the answer is the digest of the bytes the
 // node sent rather than the header it claimed.
-func readArchiveDigest(bound BoundOutput, warrant hangaroutput.ReadWarrant) (hangar.Digest, error) {
+func readArchiveDigest(bound BoundOutput, warrant mintedRead) (hangar.Digest, error) {
 	daemon := bound.Tree.Outcome.Source.Draft.Daemon
 	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter,
 		executioncontrol.ActivationEpoch(hangarEpoch))

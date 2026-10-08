@@ -123,27 +123,24 @@ var _ = Describe("the storage-integrity admission gate", func() {
 
 		It("refuses a claim acquire", func() {
 			err := commitOf(func(tx db.HangarOutputTx) {
-				Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-					ProtocolVersion:   output.ProtocolVersion,
-					ClaimID:           output.ClaimID(uuid.NewString()),
-					Ref:               ref,
-					ConsumerBindingID: "binding-at-risk",
-					RequestedAt:       output.NewTimestamp(time.Now()),
-				})).To(Succeed())
+				Expect(hangarAcquireClaim(ctx, repository, tx, output.ClaimID(uuid.NewString()), ref,
+					"binding-at-risk")).To(Succeed())
 			})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("storage integrity"))
 		})
 
-		It("refuses reclaim admission", func() {
+		It("refuses the reclaim pass its hold on a generation", func() {
+			// The pass deletes nothing while a finding is open. Its refusal is
+			// typed at the hold rather than at commit: the hold is the step
+			// before the store call, and a pass that only learned at commit
+			// would have deleted the object already.
 			hangarAgeCapture(capture, 48*time.Hour)
 			hangarAgePublication(ref, hangarGraceElapsed)
-			err := commitOf(func(tx db.HangarOutputTx) {
-				Expect(repository.AdmitReclaim(ctx, tx, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm,
-					output.DefaultPublicationGrace)).To(Succeed())
-			})
-			Expect(err).To(HaveOccurred())
+			tx := begin()
+			defer db.Rollback(tx)
+			err := repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)
+			Expect(err).To(MatchError(output.ErrAtRisk))
 			Expect(err.Error()).To(ContainSubstring("storage integrity"))
 		})
 	})
@@ -172,13 +169,8 @@ var _ = Describe("the storage-integrity admission gate", func() {
 			capture := settled(hangarDigest(83), 1725830823000083)
 			claimID := output.ClaimID(uuid.NewString())
 			in(func(tx db.HangarOutputTx) {
-				Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-					ProtocolVersion:   output.ProtocolVersion,
-					ClaimID:           claimID,
-					Ref:               capture.Ref,
-					ConsumerBindingID: "binding-existing",
-					RequestedAt:       output.NewTimestamp(time.Now()),
-				})).To(Succeed())
+				Expect(hangarAcquireClaim(ctx, repository, tx, claimID, capture.Ref,
+					"binding-existing")).To(Succeed())
 			})
 
 			recordFailure()

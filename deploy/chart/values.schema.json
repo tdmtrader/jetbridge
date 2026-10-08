@@ -808,8 +808,12 @@
           "$ref": "#/definitions/removed"
         },
         "publicationGrace": {},
-        "leaseTerm": {},
-        "leaseRenewInterval": {},
+        "leaseTerm": {
+          "$ref": "#/definitions/removed"
+        },
+        "leaseRenewInterval": {
+          "$ref": "#/definitions/removed"
+        },
         "operationTimeout": {},
         "receipt": {
           "$ref": "#/definitions/removed"

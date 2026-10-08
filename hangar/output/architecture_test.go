@@ -424,17 +424,6 @@ func checkNotRoutedThroughTheDurableCache(found surface) []string {
 	return problems
 }
 
-// deleteVocabularyExemptions are leaf callables whose name contains "delete"
-// but which cannot delete anything: the closed vocabulary of outcomes a
-// conditional delete may report, and its parser.
-//
-// Every entry must match something, so an exemption cannot outlive the thing it
-// exempts and quietly widen the rule.
-var deleteVocabularyExemptions = map[string]string{
-	"DeleteOutcomes":     "the closed vocabulary of conditional-delete results; it performs none",
-	"ParseDeleteOutcome": "the parser for that vocabulary",
-}
-
 // deleteRole is the one role package that may delete, and deleteRoleType the
 // one exported type in it that carries the delete a binary calls.
 const (
@@ -455,21 +444,19 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 		return []string{"the inventory found no exported callable; this rule would pass vacuously"}
 	}
 
+	// There is no leaf exemption: the outcome vocabulary a conditional delete
+	// reports lives in the reclaimer role (reclaimer.Outcome) and is a type,
+	// not a callable, so nothing in the leaf is named for a delete except the
+	// precondition one carries.
 	roleDeletes, seamDeletes := 0, 0
-	exempted := map[string]bool{}
 	for _, callable := range found.Callables {
 		if !namesTerm(callable.Name, "delete") {
 			continue
 		}
 		owner := roleOf(callable.File)
 		if owner == leafRole {
-			if _, ok := deleteVocabularyExemptions[callable.Name]; ok && callable.Owner == "" {
-				exempted[callable.Name] = true
-
-				continue
-			}
 			problems = append(problems, callable.File+": "+describe(callable)+
-				" offers a delete in the leaf. The leaf declares outcomes and identities; the "+
+				" offers a delete in the leaf. The leaf declares identities and the precondition; the "+
 				"one delete in this plane is on the reclaimer role type.")
 
 			continue
@@ -545,13 +532,6 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 		problems = append(problems, "no Delete on "+string(deleteRole)+"."+deleteSeamType+" was found; "+
 			"the role type's delete has no store seam to reach, or the seam was renamed and "+
 			"this rule no longer describes it.")
-	}
-	for name, reason := range deleteVocabularyExemptions {
-		if !exempted[name] {
-			problems = append(problems, "deleteVocabularyExemptions exempts "+name+" ("+reason+
-				"), but nothing by that name exists any more. Remove the entry so the exemption "+
-				"list keeps describing what is actually true.")
-		}
 	}
 
 	return problems
@@ -1095,9 +1075,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 				}},
 			{File: "reclaimer/reclaimer.go", Owner: "Store", Name: "DeleteExact",
 				Params: []declaredParam{{Name: "ctx", Type: "context.Context"}, {Name: "generation", Type: "int64"}}},
-			{File: "outcomes.go", Name: "DeleteOutcomes"},
-			{File: "outcomes.go", Name: "ParseDeleteOutcome",
-				Params: []declaredParam{{Name: "s", Type: "string"}}},
 		}}
 		if problems := checkOnlyTheReclaimerDeletes(accepted); len(problems) != 0 {
 			t.Errorf("the rule objected to the accepted shape: %v", problems)
@@ -1109,6 +1086,8 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			declaredCallable{File: "reclaimer/reclaimer.go", Name: "DeleteAll"},
 			declaredCallable{File: "reclaimer/reclaimer.go", Owner: "Reclaimer", Name: "DeleteByKey",
 				Params: []declaredParam{{Name: "key", Type: "string"}}},
+			declaredCallable{File: "outcomes.go", Name: "ParseDeleteOutcome",
+				Params: []declaredParam{{Name: "s", Type: "string"}}},
 		)}
 		joined := strings.Join(checkOnlyTheReclaimerDeletes(routes), "\n")
 		for _, expected := range []string{
@@ -1117,6 +1096,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			"offers more than one delete",
 			"Reclaimer.DeleteByKey takes a bare string parameter key",
 			"Reclaimer.DeleteByKey does not take a hangar.TreeRef",
+			"ParseDeleteOutcome offers a delete in the leaf",
 		} {
 			if !strings.Contains(joined, expected) {
 				t.Errorf("the rule did not object to %q. It reported:\n%s", expected, joined)

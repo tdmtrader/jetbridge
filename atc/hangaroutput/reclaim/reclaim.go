@@ -1,12 +1,13 @@
 // Package reclaim is the web's two deleting passes over the output namespace:
-// the reclaim pass (admission, delete, finalization) and the orphan sweep.
+// the reclaim pass (an unclaimed generation is deleted and stamped reclaimed)
+// and the orphan sweep.
 //
 // They are web components and not a separate workload because the web is the
 // only process that can both read the lifecycle rows and hold the output
 // namespace's delete credential; node daemons publish and never delete. Both
 // passes take the same PostgreSQL advisory lock, so across every web replica at
-// most one of them is deleting at a time, and no reclaim admission interleaves
-// with an orphan verdict.
+// most one of them is deleting at a time, and no reclaim interleaves with an
+// orphan verdict.
 //
 // This package and the durable cache tier are the only places a delete client
 // over a real backend is constructed (hangar/architecture_test.go).
@@ -24,6 +25,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/disk"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/objectstore"
@@ -113,27 +115,23 @@ func exclusively(ctx context.Context, locker lock.LockFactory, fn func() error) 
 	return true, fn()
 }
 
-// Pass is the reclaim component: admission, then delete, then finalization.
+// Pass is the reclaim component: one bounded pass that deletes every
+// registered generation nothing holds, and stamps each one reclaimed.
 type Pass struct {
 	Locker     lock.LockFactory
 	Transactor hangaroutput.Transactor
 	Repository *db.HangarOutputRepository
 	Reclaimer  *reclaimer.Reclaimer
 
-	// Grace is the publication grace; admission requires it elapsed since
-	// registration, measured on the database clock.
+	// Grace is the publication grace; a generation is reclaimable only once
+	// it has elapsed since registration, measured on the database clock.
 	Grace time.Duration
 
-	// DeleteTimeout bounds one conditional delete; a job's lease term is
-	// derived from it.
+	// DeleteTimeout bounds one conditional delete.
 	DeleteTimeout time.Duration
 
-	// Batch bounds how many generations one pass admits and how many jobs it
-	// advances. Zero is defaultBatch.
+	// Batch bounds how many generations one pass reclaims. Zero is defaultBatch.
 	Batch int
-
-	// OwnerID names this web process on the jobs it admits and holds.
-	OwnerID string
 }
 
 const defaultBatch = 10
@@ -143,10 +141,6 @@ func (pass *Pass) batch() int {
 		return defaultBatch
 	}
 	return pass.Batch
-}
-
-func (pass *Pass) term() time.Duration {
-	return output.LeaseTermFor(deleteTimeout(pass.DeleteTimeout))
 }
 
 // DefaultDeleteTimeout bounds one conditional delete when none is configured.
@@ -159,232 +153,123 @@ func deleteTimeout(configured time.Duration) time.Duration {
 	return configured
 }
 
-// Run is one pass: admit what is eligible, then advance every due job by one
-// conditional delete and finalize what that delete settled.
+// Run is one pass: select what is reclaimable, then reclaim each candidate
+// in a transaction of its own.
 func (pass *Pass) Run(ctx context.Context) error {
 	_, err := exclusively(ctx, pass.Locker, func() error {
-		admitted, admitErr := pass.Admit(ctx)
-		finalized, open, deleteErr := pass.DeleteDue(ctx)
-
-		metric.HangarOutputReclaimPass{Admitted: admitted, Finalized: finalized, Open: open}.
+		reclaimed, deferred, failed, err := pass.Reclaim(ctx)
+		metric.HangarOutputReclaimPass{Reclaimed: reclaimed, Deferred: deferred, Failed: failed}.
 			Emit(lagerctx.FromContext(ctx))
-
-		return errors.Join(admitErr, deleteErr)
+		return err
 	})
 	return err
 }
 
-// Admit turns grace-elapsed, unprotected generations into reclaim jobs.
+// Reclaim deletes one bounded batch of unclaimed generations. It reports how
+// many it reclaimed, how many it deferred to a later pass (protected between
+// the query and the lock, or still inside grace), and how many deletes failed
+// to answer. It is exported for the acceptance specs; Run is the component.
 //
-// The candidate query excludes a generation with an open claim, a live read
-// lease, a pending or publishing capture of its tree, an unregistered input
-// publication of its tree, or an unfinalized job; AdmitReclaim rechecks every
-// one under the exact-lifecycle lock, and the schema's exclusion trigger
-// refuses at commit whatever slipped between.
-func (pass *Pass) Admit(ctx context.Context) (int, error) {
+// The candidate query excludes a generation with a live claim, a pending or
+// publishing capture of its tree or an unregistered input publication of its
+// tree; HoldForReclaim rechecks every one under the tree and lifecycle locks,
+// which are held across the delete and the stamp.
+func (pass *Pass) Reclaim(ctx context.Context) (int, int, int, error) {
 	tx, err := pass.Transactor.Begin()
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
-	candidates, err := pass.Repository.ReclaimCandidates(ctx, tx, pass.Grace, pass.batch())
+	candidates, err := pass.Repository.ReclaimableGenerations(ctx, tx, pass.Grace, pass.batch())
 	_ = tx.Rollback()
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 
-	admitted := 0
+	reclaimed, deferred, failed := 0, 0, 0
 	var firstErr error
-	for _, candidate := range candidates {
-		err := pass.admitOne(ctx, candidate)
+	for _, ref := range candidates {
+		err := pass.reclaimOne(ctx, ref)
 		switch {
 		case err == nil:
-			admitted++
-		case errors.Is(err, output.ErrConflict), errors.Is(err, output.ErrAtRisk):
-			// Something took a claim, a lease or a capture between the query
+			reclaimed++
+		case errors.Is(err, output.ErrConflict), errors.Is(err, output.ErrNotFound),
+			errors.Is(err, output.ErrAtRisk):
+			// Something took a claim or started a capture between the query
 			// and the lock, or an integrity finding is open: "not yet".
+			deferred++
 		default:
+			failed++
 			if firstErr == nil {
 				firstErr = err
 			}
 		}
 	}
 
-	return admitted, firstErr
+	return reclaimed, deferred, failed, firstErr
 }
 
-func (pass *Pass) admitOne(ctx context.Context, candidate db.HangarReclaimCandidate) error {
+// reclaimOne is the act, in one transaction: hold the generation under the
+// tree and lifecycle locks, ask the store to delete its exact generation,
+// and stamp it reclaimed once the store answered. The locks are held across
+// the network call on purpose: a claimant that arrives meanwhile waits on the
+// lifecycle row and then finds the generation reclaimed, which is the one
+// outcome a hold taken beside a delete must never produce. A pass that dies
+// between the delete and the commit leaves the row registered; the next pass
+// retries the delete and gets already-absent.
+//
+// Delete outcomes collapse to one stamp. Confirmed and already-absent are
+// reclaimed. A generation conflict is reclaimed too: the exact generation is
+// gone, and the object now at its key belongs to another registration (or to
+// nobody, and the orphan sweep judges it by its own marker); the conflict is
+// logged, never retried unconditionally. Unauthorized records a principal
+// denial, which blocks the plane until an operator resolves it, and the row
+// stays registered. A timeout or an infrastructure failure settles nothing:
+// the transaction rolls back and the next pass asks again.
+func (pass *Pass) reclaimOne(ctx context.Context, ref hangar.TreeRef) error {
 	tx, err := pass.Transactor.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := pass.Repository.AdmitReclaim(ctx, tx, candidate.Ref, pass.OwnerID,
-		candidate.Metageneration, pass.term(), pass.Grace); err != nil {
+	if err := pass.Repository.HoldForReclaim(ctx, tx, ref, pass.Grace); err != nil {
+		return err
+	}
+
+	deleteCtx, cancel := context.WithTimeout(ctx, deleteTimeout(pass.DeleteTimeout))
+	outcome, deleteErr := pass.Reclaimer.DeleteExactGeneration(deleteCtx, ref,
+		output.DeletePrecondition{Generation: ref.Generation})
+	cancel()
+
+	logger := lagerctx.FromContext(ctx)
+	switch outcome {
+	case reclaimer.Deleted, reclaimer.AlreadyAbsent:
+	case reclaimer.GenerationConflict:
+		// A count-free line: the ref is an opaque identity the redaction rule
+		// keeps out of logs; the stamped row names it for an operator.
+		logger.Info("hangar-output-reclaim-generation-conflict")
+	case reclaimer.Unauthorized:
+		if err := pass.Repository.RecordRuntimePrincipalDenial(ctx, tx, output.PrincipalReclaimer,
+			"the object store refused the web a conditional delete its reclaim credential is "+
+				"configured to hold"); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the object store refused the reclaim pass a conditional delete of "+
+			"%s/%s/%d", output.ErrUnauthorized, ref.Scope, ref.Digest, ref.Generation)
+	default:
+		if deleteErr == nil {
+			deleteErr = fmt.Errorf("%w: the delete of %s/%s/%d did not answer", output.ErrInfrastructure,
+				ref.Scope, ref.Digest, ref.Generation)
+		}
+		return deleteErr
+	}
+
+	if err := pass.Repository.StampReclaimed(ctx, tx, ref); err != nil {
 		return err
 	}
 
 	return tx.Commit()
-}
-
-// DeleteDue advances each admitted job by exactly one conditional delete and
-// finalizes the ones that delete settled. It returns how many jobs it
-// finalized and how many it left open.
-func (pass *Pass) DeleteDue(ctx context.Context) (int, int, error) {
-	tx, err := pass.Transactor.Begin()
-	if err != nil {
-		return 0, 0, err
-	}
-	jobs, err := pass.Repository.DueReclaimJobs(ctx, tx, pass.batch())
-	_ = tx.Rollback()
-	if err != nil {
-		return 0, 0, err
-	}
-
-	finalized, open := 0, 0
-	var firstErr error
-	for _, job := range jobs {
-		settled, err := pass.deleteOne(ctx, job)
-		if settled {
-			finalized++
-		} else {
-			open++
-		}
-		if err != nil && !errors.Is(err, output.ErrConflict) && firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	return finalized, open, firstErr
-}
-
-// deleteOne is the act: hold the job, durably record that a delete is being
-// asked, and ask. Everything after the commit of the admitted delete is the
-// answer to a question this system has already said it asked, which is what
-// lets a lost response be told apart from somebody else's deletion.
-func (pass *Pass) deleteOne(ctx context.Context, job db.HangarReclaimJob) (bool, error) {
-	job, err := pass.hold(ctx, job)
-	if err != nil {
-		return false, err
-	}
-
-	tx, err := pass.Transactor.Begin()
-	if err != nil {
-		return false, err
-	}
-	attempt, err := pass.Repository.AdmitDelete(ctx, tx, job, deleteTimeout(pass.DeleteTimeout))
-	if err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-
-	// Outside every lock and transaction: a store that does not answer holds
-	// up this one generation and nothing else.
-	deleteCtx, cancel := context.WithTimeout(ctx, deleteTimeout(pass.DeleteTimeout))
-	outcome, deleteErr := pass.Reclaimer.DeleteExactGeneration(deleteCtx, job.Ref,
-		output.DeletePrecondition{Generation: job.Ref.Generation})
-	cancel()
-
-	return pass.Finalize(ctx, job, attempt, outcome, deleteErr)
-}
-
-// hold renews a job this web owns, or takes over one whose owner let its
-// lease lapse (advancing the fence, so the lapsed owner's late writes refuse).
-func (pass *Pass) hold(ctx context.Context, job db.HangarReclaimJob) (db.HangarReclaimJob, error) {
-	tx, err := pass.Transactor.Begin()
-	if err != nil {
-		return job, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var held db.HangarReclaimJob
-	if job.OwnerID == pass.OwnerID {
-		held, err = pass.Repository.RenewReclaimLease(ctx, tx, job, pass.term())
-	} else {
-		held, err = pass.Repository.TakeOverReclaimJob(ctx, tx, job, pass.OwnerID, pass.term())
-	}
-	if err != nil {
-		return job, err
-	}
-
-	return held, tx.Commit()
-}
-
-// Finalize records what the store answered and, where that answer settles
-// the job, finalizes it, in one transaction. It reports whether the job was
-// finalized.
-//
-// A confirmed delete is confirmed. Absence is inferred only when an earlier
-// delete of this job lost its response; absence with nothing behind it is an
-// out-of-band lifetime violation, recorded as an integrity finding that blocks
-// admission. A generation conflict is never broadened into another delete. A
-// refused delete is a runtime principal denial. A timeout or an infrastructure
-// failure leaves the job open for the next pass.
-func (pass *Pass) Finalize(ctx context.Context, job db.HangarReclaimJob, attempt int64, outcome output.DeleteOutcome, deleteErr error) (bool, error) {
-	tx, err := pass.Transactor.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := pass.Repository.RecordDeleteOutcome(ctx, tx, job, attempt, outcome); err != nil {
-		return false, err
-	}
-
-	var reported error
-	settled := true
-	switch outcome {
-	case output.DeleteConfirmed:
-		err = pass.Repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)
-
-	case output.DeleteAlreadyAbsent:
-		var explained bool
-		explained, err = pass.Repository.AbsenceExplainedByALostResponse(ctx, tx, job, attempt)
-		if err != nil {
-			break
-		}
-		if explained {
-			err = pass.Repository.FinalizeReclaim(ctx, tx, job, output.ReclaimInferred, true)
-			break
-		}
-		if err = pass.Repository.FinalizeReclaim(ctx, tx, job, output.ReclaimAbandoned, false); err != nil {
-			break
-		}
-		err = pass.Repository.RecordOutOfBandAbsence(ctx, tx, job.Ref)
-		reported = fmt.Errorf("%w: reclaim job %d found %s/%s/%d already absent with no earlier "+
-			"delete to explain it; recorded as an out-of-band lifetime violation", output.ErrAtRisk,
-			job.ID, job.Ref.Scope, job.Ref.Digest, job.Ref.Generation)
-
-	case output.DeleteGenerationConflict:
-		err = pass.Repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConflicted, false)
-
-	case output.DeleteUnauthorized:
-		if err = pass.Repository.FinalizeReclaim(ctx, tx, job, output.ReclaimAbandoned, false); err != nil {
-			break
-		}
-		err = pass.Repository.RecordRuntimePrincipalDenial(ctx, tx, output.PrincipalReclaimer,
-			"the object store refused the web a conditional delete its reclaim credential is "+
-				"configured to hold")
-		reported = fmt.Errorf("%w: the object store refused reclaim job %d a conditional delete",
-			output.ErrUnauthorized, job.ID)
-
-	default:
-		settled = false
-		reported = deleteErr
-		if deleteErr != nil && !errors.Is(deleteErr, output.ErrTimeout) &&
-			!errors.Is(deleteErr, output.ErrInfrastructure) {
-			return false, deleteErr
-		}
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-
-	return settled, reported
 }

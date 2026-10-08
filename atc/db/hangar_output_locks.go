@@ -77,7 +77,6 @@ type HangarLockRequest struct {
 	CaptureRows []output.CaptureKey
 	Exact       []hangar.TreeRef
 	Claims      []output.ClaimID
-	ReadLeases  []output.ReadLeaseID
 }
 
 // HangarLocks is what the helper locked, in the order it locked it.
@@ -98,11 +97,11 @@ type HangarLocks struct {
 // The order is: the logical correlation -- capture rows and unregistered input
 // publications sorted by scope bytes then digest bytes, then capture rows
 // named by key; exact lifecycle rows sorted by scope, digest and numeric
-// generation; then the subordinate claim and read-lease rows. Claimant and reader first
-// makes a reclaimer recheck and skip; reclaimer first makes the claimant's
-// transaction roll back without a usable binding or warrant. Both are correct
-// outcomes and neither is a deadlock, which is the entire reason the order is
-// an API and not a convention.
+// generation; then the subordinate claim rows. Claimant first makes the
+// reclaim pass recheck and skip; the pass first makes the claimant's
+// transaction refuse a reclaimed generation. Both are correct outcomes and
+// neither is a deadlock, which is the entire reason the order is an API and
+// not a convention.
 //
 // It performs no network work, holds no lock across anything but its own
 // statements, and never touches a consumer's tables.
@@ -203,18 +202,10 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 		}
 	}
 
-	// 3. Subordinate rows: claims, read leases and the tombstones
-	// that share their tables.
+	// 3. Subordinate rows: claims and the tombstones that share their table.
 	for _, id := range sortedClaimIDs(request.Claims) {
 		if _, err := tx.ExecContext(ctx, `
 			SELECT 1 FROM hangar_claims WHERE claim_id = $1 FOR UPDATE`,
-			string(id)); err != nil {
-			return HangarLocks{}, hangarConflict(err)
-		}
-	}
-	for _, id := range sortedReadLeaseIDs(request.ReadLeases) {
-		if _, err := tx.ExecContext(ctx, `
-			SELECT 1 FROM hangar_read_leases WHERE read_lease_id = $1 FOR UPDATE`,
 			string(id)); err != nil {
 			return HangarLocks{}, hangarConflict(err)
 		}
@@ -228,7 +219,7 @@ func (locks HangarLocks) LifecycleID(ref hangar.TreeRef) (int64, error) {
 	id, ok := locks.Lifecycles[ref]
 	if !ok {
 		return 0, fmt.Errorf("%w: no lifecycle record for %s/%s/%d; a claim protects a registered "+
-			"or adopted exact generation", output.ErrNotFound, ref.Scope, ref.Digest, ref.Generation)
+			"exact generation", output.ErrNotFound, ref.Scope, ref.Digest, ref.Generation)
 	}
 
 	return id, nil
@@ -288,8 +279,6 @@ func sortedCaptureKeys(keys []output.CaptureKey) []output.CaptureKey {
 }
 
 func sortedClaimIDs(ids []output.ClaimID) []output.ClaimID { return sortedOpaque(ids) }
-
-func sortedReadLeaseIDs(ids []output.ReadLeaseID) []output.ReadLeaseID { return sortedOpaque(ids) }
 
 func sortedOpaque[T ~string](ids []T) []T {
 	seen := map[T]bool{}

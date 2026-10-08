@@ -390,7 +390,7 @@ func TestTheHangarLockRuleIsNotVacuous(t *testing.T) {
 			"SELECT 1 FROM hangar_claims WHERE claim_id = $1 FOR UPDATE",
 			"SELECT 1 FROM hangar_exact_lifecycles WHERE id = $1 FOR NO KEY UPDATE",
 			"select id from hangar_input_publications for share",
-			"SELECT 1 FROM hangar_read_leases FOR KEY SHARE",
+			"SELECT 1 FROM hangar_integrity_findings FOR KEY SHARE",
 			// Case and line breaks are how a second lock site would actually
 			// be written, not how a rule author imagines it.
 			"\n\t\tSELECT 1\n\t\tFROM hangar_captures\n\t\tWHERE execution_id = $1\n\t\tfor update\n",
@@ -404,7 +404,7 @@ func TestTheHangarLockRuleIsNotVacuous(t *testing.T) {
 	t.Run("it leaves other tables and other statements alone", func(t *testing.T) {
 		for _, statement := range []string{
 			"SELECT 1 FROM builds WHERE id = $1 FOR UPDATE",
-			"SELECT state FROM hangar_exact_lifecycles WHERE id = $1",
+			"SELECT reclaimed_at FROM hangar_exact_lifecycles WHERE id = $1",
 			"UPDATE hangar_claims SET released_at = now() WHERE claim_id = $1",
 			"INSERT INTO hangar_captures (execution_id) VALUES ($1)",
 		} {
@@ -425,7 +425,7 @@ const probeTable = "hangar_claims"
 
 func probe(tx Tx) {
 	_, _ = tx.Exec(fmt.Sprintf("SELECT 1 FROM %s WHERE claim_id = $1 FOR UPDATE", probeTable))
-	_, _ = tx.Exec("SELECT 1 FROM hangar_read_leases WHERE read_lease_id = $1 " + "FOR UPDATE")
+	_, _ = tx.Exec("SELECT 1 FROM hangar_exact_lifecycles WHERE id = $1 " + "FOR UPDATE")
 }
 `
 		fileSet := token.NewFileSet()
@@ -784,7 +784,7 @@ func TestTheTableRuleIsNotVacuous(t *testing.T) {
 		"SELECT 1 FROM hangar_claims WHERE claim_id = $1 FOR UPDATE":              {"hangar_claims"},
 		"SELECT 1 FROM opaque_consumer_bindings WHERE binding_id = $1 FOR UPDATE": {"opaque_consumer_bindings"},
 		"UPDATE hangar_claims SET released_at = now()":                            {"hangar_claims"},
-		"INSERT INTO hangar_read_leases (read_lease_id) VALUES ($1)":              {"hangar_read_leases"},
+		"INSERT INTO hangar_input_publications (reservation_id) VALUES ($1)":      {"hangar_input_publications"},
 		"UPDATE %s SET release_acknowledged_at = now()":                           {"%s"},
 		"SELECT now()": nil,
 		"INSERT INTO hangar_claims (claim_id) VALUES ($1) ON CONFLICT (claim_id) DO UPDATE SET x = 1": {"hangar_claims"},
@@ -876,137 +876,10 @@ func probe(tx Tx) {
 	})
 }
 
-// Every write to hangar_read_leases takes the read-lease suffix.
-//
-// The rule above says only the helper may LOCK a Hangar row. This is the other
-// half, and the one that was silently unmet: a statement that WRITES a Hangar
-// row without having entered the suffix is not a second lock order, it is no
-// lock order -- the row is taken at the write's own moment, in whatever order
-// the writes happen to arrive.
-//
-// Renew, release and abandoned-lease recovery all issued bare UPDATEs. I traced
-// renew-versus-reclaim in both arrival orders and there is no correctness hole
-// today: hangar_reclaim_exclusion is a DEFERRED trigger that fires on the
-// read-lease UPDATE and on the reclaim-job INSERT, each commit's trigger sees
-// the other's committed row, and the second to commit rolls back. But "the
-// schema happens to catch it" is not the rule requirement 33 states, and a rule
-// that holds by accident is one the next statement breaks. The suffix is an API.
-//
-// The check is per FUNCTION rather than per file, because the suffix has to be
-// entered by the transaction that writes, not somewhere in the same package.
-func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
-	_, thisFile, _, _ := runtime.Caller(0)
-	directory := filepath.Dir(thisFile)
-
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatalf("reading atc/db: %v", err)
-	}
-
-	writes := func(statement string) bool {
-		lowered := strings.ToLower(strings.Join(strings.Fields(statement), " "))
-		for _, verb := range []string{"update hangar_read_leases", "insert into hangar_read_leases",
-			"delete from hangar_read_leases"} {
-			if strings.Contains(lowered, verb) {
-				return true
-			}
-		}
-
-		return false
-	}
-
-	scanned, writers := 0, 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, "hangar_output_") ||
-			!strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		// The helper is where the row lock lives; it locks rather than writes.
-		if filepath.ToSlash(filepath.Join("atc/db", name)) == hangarLockHelper {
-			continue
-		}
-
-		fileSet := token.NewFileSet()
-		parsed, err := parser.ParseFile(fileSet, filepath.Join(directory, name), nil, 0)
-		if err != nil {
-			t.Fatalf("parsing %s: %v", name, err)
-		}
-		scanned++
-
-		for _, declaration := range parsed.Decls {
-			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil {
-				continue
-			}
-
-			wrote, locked := false, false
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				switch expression := node.(type) {
-				case *ast.BasicLit:
-					if expression.Kind == token.STRING {
-						if value, err := strconv.Unquote(expression.Value); err == nil &&
-							writes(value) {
-							wrote = true
-						}
-					}
-				case *ast.CallExpr:
-					identifier, ok := expression.Fun.(*ast.Ident)
-					if !ok || identifier.Name != "LockHangarSuffix" {
-						return true
-					}
-					for _, argument := range expression.Args {
-						composite, ok := argument.(*ast.CompositeLit)
-						if !ok {
-							continue
-						}
-						for _, element := range composite.Elts {
-							pair, ok := element.(*ast.KeyValueExpr)
-							if !ok {
-								continue
-							}
-							if key, ok := pair.Key.(*ast.Ident); ok &&
-								key.Name == "ReadLeases" {
-								locked = true
-							}
-						}
-					}
-				}
-
-				return true
-			})
-
-			if !wrote {
-				continue
-			}
-			writers++
-			if !locked {
-				t.Errorf("atc/db/%s: %s writes hangar_read_leases without entering the suffix "+
-					"for the lease it writes.\n\n\"Lock order is an API, not a convention\" puts "+
-					"warrant and read-lease work inside one complete suffix. A bare "+
-					"UPDATE takes the row at the write's own moment, in whatever order the writes "+
-					"arrive; that the deferred hangar_reclaim_exclusion trigger happens to catch "+
-					"the race today is the schema's doing, not this transaction's. Call "+
-					"LockHangarSuffix with ReadLeases: the identities this function writes.",
-					name, function.Name.Name)
-			}
-		}
-	}
-
-	if scanned == 0 {
-		t.Fatal("this guard read no atc/db/hangar_output_*.go file, so it is passing vacuously")
-	}
-	if writers < 4 {
-		t.Errorf("this guard found %d function(s) writing hangar_read_leases; the plane has at "+
-			"least four (acquire, renew, release, close-abandoned), so either they moved or the "+
-			"predicate stopped recognising them", writers)
-	}
-}
-
 // Every production Hangar output transaction is the TYPED one.
 //
-// Two of this plane's constraint triggers are DEFERRED, so their refusals
-// arrive at COMMIT and nowhere earlier. db.HangarOutputTx is what maps that
+// This plane's admission gate is a DEFERRED constraint trigger, so its
+// refusal arrives at COMMIT and nowhere earlier. db.HangarOutputTx is what maps that
 // commit's SQLSTATE onto the output leaf's vocabulary, and a coordinator handed
 // an unmapped commit failure reads a refusal ("stop, or change something
 // first") as a lost answer ("ask again with the same identity") -- against an
@@ -1200,8 +1073,8 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 
 // hangarTableClass includes the outer in-service prefix (0), followed by the
 // three object-lifecycle suffix classes: the correlation (capture rows and input
-// publications), the exact lifecycle, and the rows subordinate to it (claims and
-// read leases). The in-service row must precede every suffix.
+// publications), the exact lifecycle, and the rows subordinate to it (claims).
+// The in-service row must precede every suffix.
 //
 // It is checked against LockHangarSuffix's own statements below rather than
 // trusted, so a fifth class, or a table moving between classes, cannot leave
@@ -1212,7 +1085,6 @@ var hangarTableClass = map[string]int{
 	"hangar_captures":           1,
 	"hangar_exact_lifecycles":   2,
 	"hangar_claims":             3,
-	"hangar_read_leases":        3,
 }
 
 // hangarRequestFieldClass maps a HangarLockRequest field to the class it names.
@@ -1221,7 +1093,6 @@ var hangarRequestFieldClass = map[string]int{
 	"CaptureRows": 1,
 	"Exact":       2,
 	"Claims":      3,
-	"ReadLeases":  3,
 }
 
 // hangarAcquisition is one lock class a function takes, in source order.
@@ -1685,18 +1556,18 @@ func TestTheHangarWriteRuleIsNotVacuous(t *testing.T) {
 	for statement, expected := range map[string]string{
 		"UPDATE hangar_captures SET state = 'failed' WHERE execution_id = $1":   "hangar_captures",
 		"\n\t\tUPDATE hangar_input_publications p\n\t\tSET lifecycle_id = $1\n": "hangar_input_publications",
-		"update hangar_read_leases set released_at = now()":                     "hangar_read_leases",
+		"update hangar_claims set expires_at = now()":                           "hangar_claims",
 		"DELETE FROM hangar_claims WHERE claim_id = $1":                         "hangar_claims",
 		"delete from hangar_exact_lifecycles where id = $1":                     "hangar_exact_lifecycles",
 		// A read is not a lock, an insert creates a row nobody can hold, and a
 		// table outside the classes is outside this order.
-		"SELECT state FROM hangar_captures WHERE execution_id = $1":         "",
-		"INSERT INTO hangar_claims (claim_id) VALUES ($1)":                  "",
-		"UPDATE hangar_reclaim_jobs SET finalized_at = now() WHERE id = $1": "",
-		"UPDATE builds SET status = 'succeeded' WHERE id = $1":              "",
+		"SELECT state FROM hangar_captures WHERE execution_id = $1":              "",
+		"INSERT INTO hangar_claims (claim_id) VALUES ($1)":                       "",
+		"UPDATE hangar_integrity_findings SET resolved_at = now() WHERE id = $1": "",
+		"UPDATE builds SET status = 'succeeded' WHERE id = $1":                   "",
 		// The shape that matters most: the table is named several words in,
 		// and a read of an unrelated Hangar table comes first.
-		"UPDATE hangar_exact_lifecycles SET state = 'reclaiming' FROM hangar_reclaim_jobs j WHERE j.id = $1": "hangar_exact_lifecycles",
+		"UPDATE hangar_exact_lifecycles SET reclaimed_at = now() FROM hangar_integrity_findings f WHERE f.id = $1": "hangar_exact_lifecycles",
 	} {
 		if found := hangarWriteTable(statement); found != expected {
 			t.Errorf("the write rule read %q as writing %q, not %q", statement, found, expected)

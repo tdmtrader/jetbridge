@@ -16,13 +16,13 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-func readClaims(lease string, expires time.Time) output.ReadWarrantClaims {
-	return output.ReadWarrantClaims{ReadLeaseID: output.ReadLeaseID(lease), ExpiresAt: output.NewTimestamp(expires)}
+func readClaims(claim string, expires time.Time) output.ReadWarrantClaims {
+	return output.ReadWarrantClaims{ClaimID: output.ClaimID(claim), ExpiresAt: output.NewTimestamp(expires)}
 }
 
 // A read warrant opens one read on a node, and the node remembers it across a
-// restart. This is what the read lease's release used to buy, kept on the node
-// now that the node no longer asks the web.
+// restart, keyed by the reader's claim. The web gives the claim back when the
+// read ends; this is the node's half, and the node never asks the web.
 func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 	dir := t.TempDir()
 	store, err := openControlStore(dir)
@@ -141,18 +141,17 @@ func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
 
 	now := time.Now().UTC()
 	ref := fixture.daemon.Namespace().Ref(hangar.Digest("sha256:"+strings.Repeat("ab", 32)), 1)
-	lease := output.ReadLease{
-		ProtocolVersion: output.ProtocolVersion,
-		ReadLeaseID:     "33333333-3333-4333-8333-333333333333",
-		ClaimID:         "66666666-6666-4666-8666-666666666666",
-		Ref:             ref,
-		ActivationEpoch: fixture.daemon.ActivationEpoch(),
-		LeaseFence:      1,
-		GrantedAt:       output.NewTimestamp(now.Add(-time.Minute)),
-		ExpiresAt:       output.NewTimestamp(now.Add(30 * time.Minute)),
+	expires := output.NewTimestamp(now.Add(30 * time.Minute))
+	claim := output.ClaimRecord{
+		ClaimID:           "66666666-6666-4666-8666-666666666666",
+		Ref:               ref,
+		ConsumerBindingID: "result-read:consumer",
+		ActivationEpoch:   fixture.daemon.ActivationEpoch(),
+		AcquiredAt:        output.NewTimestamp(now.Add(-time.Minute)),
+		ExpiresAt:         &expires,
 	}
 	destination := output.ReadDestination{Handle: "consumer", Volume: "input-0"}
-	token, err := signer.Sign(lease, destination, "another-node", "AAAAAAAAAAAAAAAAAAAAAA")
+	token, err := signer.Sign(claim, destination, "another-node")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +170,7 @@ func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
 
 	// The control: the same warrant minted for THIS node passes authorization
 	// (the read then fails further on: there is no object in the bucket).
-	token, err = signer.Sign(lease, destination, executioncontrol.NodeUID(fixture.config.NodeUID), "AAAAAAAAAAAAAAAAAAAAAA")
+	token, err = signer.Sign(claim, destination, executioncontrol.NodeUID(fixture.config.NodeUID))
 	if err != nil {
 		t.Fatal(err)
 	}

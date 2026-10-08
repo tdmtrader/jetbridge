@@ -721,8 +721,6 @@ type HangarOutputSnapshot struct {
 	UnreleasedCaptures     int
 	UnacknowledgedReleases int
 	OpenClaims             int
-	OpenReadLeases         int
-	UnfinalizedReclaimJobs int
 	OpenIntegrityFindings  int
 
 	// Residue is what a drain waits on; zero with Enabled false is drained.
@@ -756,17 +754,15 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 		})
 	}
 	for name, value := range map[string]int{
-		"live_generations":         event.Status.LiveGenerations,
-		"nonterminal_captures":     event.Status.NonterminalCaptures,
-		"pending_captures":         event.Status.PendingCaptures,
-		"publishing_captures":      event.Status.PublishingCaptures,
-		"unreleased_captures":      event.Status.UnreleasedCaptures,
-		"unacknowledged_releases":  event.Status.UnacknowledgedReleases,
-		"open_claims":              event.Status.OpenClaims,
-		"open_read_leases":         event.Status.OpenReadLeases,
-		"unfinalized_reclaim_jobs": event.Status.UnfinalizedReclaimJobs,
-		"open_integrity_findings":  event.Status.OpenIntegrityFindings,
-		"residue":                  event.Status.Residue,
+		"live_generations":        event.Status.LiveGenerations,
+		"nonterminal_captures":    event.Status.NonterminalCaptures,
+		"pending_captures":        event.Status.PendingCaptures,
+		"publishing_captures":     event.Status.PublishingCaptures,
+		"unreleased_captures":     event.Status.UnreleasedCaptures,
+		"unacknowledged_releases": event.Status.UnacknowledgedReleases,
+		"open_claims":             event.Status.OpenClaims,
+		"open_integrity_findings": event.Status.OpenIntegrityFindings,
+		"residue":                 event.Status.Residue,
 	} {
 		Metrics.emit(session, Event{
 			Name:       "hangar output plane inventory",
@@ -777,23 +773,24 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 }
 
 // HangarOutputReclaimPass is what one web reclaim pass did: generations it
-// admitted, jobs it finalized, and jobs it left open for the next pass.
+// reclaimed, generations it deferred to a later pass (claimed or captured
+// between the query and the lock), and deletes that did not answer.
 type HangarOutputReclaimPass struct {
-	Admitted  int
-	Finalized int
-	Open      int
+	Reclaimed int
+	Deferred  int
+	Failed    int
 }
 
 func (event HangarOutputReclaimPass) Emit(logger lager.Logger) {
 	session := logger.Session("hangar-output-reclaim")
 
 	for outcome, value := range map[string]int{
-		"admitted":  event.Admitted,
-		"finalized": event.Finalized,
-		"open":      event.Open,
+		"reclaimed": event.Reclaimed,
+		"deferred":  event.Deferred,
+		"failed":    event.Failed,
 	} {
 		Metrics.emit(session, Event{
-			Name:       "hangar output reclaim jobs",
+			Name:       "hangar output reclaim generations",
 			Value:      float64(value),
 			Attributes: map[string]string{"outcome": outcome},
 		})

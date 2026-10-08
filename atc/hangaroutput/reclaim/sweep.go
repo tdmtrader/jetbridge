@@ -58,8 +58,8 @@ func SweepClasses() []string {
 //
 // A page is judged in one statement, and the shared deletion lock is held one
 // page at a time, so the reclaim pass is never shut out for a whole bucket. A
-// pass stops at its duration budget and the next one resumes after the last
-// page it finished.
+// pass lists from the start and stops at its duration budget; whatever it did
+// not reach is the next pass's, from the start again.
 type Sweep struct {
 	Locker     lock.LockFactory
 	Transactor hangaroutput.Transactor
@@ -83,11 +83,6 @@ type Sweep struct {
 	// the lock held elsewhere judged nothing and is neither a completed pass
 	// nor a failure.
 	judged bool
-
-	// after is where the next pass resumes, in this process's memory: a pass
-	// cut short by its budget, or by the lock being held elsewhere, is
-	// continued rather than restarted. A restarted web starts from the top.
-	after string
 }
 
 const (
@@ -140,16 +135,15 @@ func (sweep *Sweep) Once(ctx context.Context) (map[string]int, error) {
 		pageSize = defaultPageSize
 	}
 
+	after := ""
 	for {
 		if time.Since(started) > budget {
-			lagerctx.FromContext(ctx).Info("hangar-output-orphan-sweep-budget-spent",
-				lager.Data{"resume-after-page": sweep.after != ""})
+			lagerctx.FromContext(ctx).Info("hangar-output-orphan-sweep-budget-spent")
 			return counts, nil
 		}
 		page, err := sweep.Lister.List(ctx, sweep.Namespace.Bucket(),
-			objectstore.ListRequest{Prefix: sweep.Namespace.ListPrefix(), PageSize: pageSize, After: sweep.after})
+			objectstore.ListRequest{Prefix: sweep.Namespace.ListPrefix(), PageSize: pageSize, After: after})
 		if err != nil {
-			// Progress is kept: the next pass lists from the same place.
 			return counts, fmt.Errorf("listing the output namespace: %w", err)
 		}
 
@@ -172,10 +166,9 @@ func (sweep *Sweep) Once(ctx context.Context) (map[string]int, error) {
 		}
 
 		if page.Done || page.LastKey == "" {
-			sweep.after = ""
 			return counts, nil
 		}
-		sweep.after = page.LastKey
+		after = page.LastKey
 	}
 }
 
@@ -290,11 +283,11 @@ func (sweep *Sweep) deleteOrphan(ctx context.Context, ref hangar.TreeRef, object
 	outcome, err := sweep.Reclaimer.DeleteExactGeneration(deleteCtx, ref,
 		output.DeletePrecondition{Generation: object.Generation})
 	switch outcome {
-	case output.DeleteConfirmed:
+	case reclaimer.Deleted:
 		return SweepDeleted, tx.Commit()
-	case output.DeleteAlreadyAbsent:
+	case reclaimer.AlreadyAbsent:
 		return SweepAbsent, nil
-	case output.DeleteGenerationConflict:
+	case reclaimer.GenerationConflict:
 		return SweepConflict, nil
 	default:
 		return SweepFailed, err

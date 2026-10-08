@@ -882,15 +882,15 @@ hangarOutput:
   # render test asserts that this value reaches only --output-endpoint.
   endpoint: ""
 
-  # -- Deadlines, grace and leases. The chart enforces the relationships
-  # between them, because a grace that does not exceed the maximum capture
-  # deadline can reclaim an object a capture is still allowed to register.
-  # publicationGrace is one of the web's reclaim admission preconditions.
+  # -- Deadlines and grace. The chart enforces the relationship between
+  # them, because a grace that does not exceed the maximum capture deadline
+  # can reclaim an object a capture is still allowed to register. A
+  # registered generation is reclaimable only once publicationGrace has
+  # elapsed and nothing claims it.
   captureDeadline: "24h"     # 1h .. 168h
   publicationGrace: "192h"   # >= captureDeadline + 1h, <= 720h
-  leaseTerm: "15m"           # at least 15m
-  leaseRenewInterval: "1m"   # at most 1m
-  # Shared by the output plane, managed-read leases and caller deadlines.
+  # Shared by the output plane, readers' claims (which last this plus five
+  # minutes) and caller deadlines.
   operationTimeout: "1m"
 
   # -- Existing Secret holding materialize.key: the exact raw 32 bytes output
@@ -901,14 +901,15 @@ hangarOutput:
   materializationKeySecret: ""
   # -- Key id for the above.
   materializationKeyID: "output-materialize-1"
-  # -- The web's reclaim pass: admission, conditional delete, finalization.
-  # It runs in every web node with the output plane enabled; a database lock
-  # keeps passes from overlapping.
+  # -- The web's reclaim pass: a registered generation nothing claims is
+  # deleted by its exact generation and stamped reclaimed. It runs in every
+  # web node with the output plane enabled; a database lock keeps passes from
+  # overlapping.
   reclaim:
     interval: "1m"
     # -- How long one conditional delete may take.
     deleteTimeout: "2m"
-    # -- How many generations one pass admits, and jobs it advances.
+    # -- How many generations one pass reclaims.
     batch: 10
 
   # -- The web's orphan sweep. It lists the output namespace and deletes only

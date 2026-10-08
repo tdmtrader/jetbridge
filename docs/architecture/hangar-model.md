@@ -106,37 +106,53 @@ Recovery reads the row, because the marker kept the directory:
 - **pending** past its capture deadline: fail. A publishing row past the
   deadline plus a margin: fail.
 
-## Claims, read leases and reclamation
+## Claims and reclamation
 
 ```
-Run ──claim──▶ tree ref ◀──read lease── reader (read warrant)
+Run ──claim──▶ tree ref ◀──claim (expiring)── reader (read warrant)
                   │
-   reclaim admission ──▶ delete exact generation ──▶ finalization
+   reclaim pass: hold ──▶ delete exact generation ──▶ stamp reclaimed
 ```
 
-- A **claim** is opaque and idempotent; Hangar never interprets one.
-- A **read lease** protects one generation for one reader. It refuses
-  reclaim admission while live (a trigger enforces it), closes by
-  database-clock expiry, and is given back when a read ends.
+- A **claim** is the one refcount. It is opaque and idempotent; Hangar never
+  interprets one. A consumer's claim (a Run's result binding, an input
+  publication, a capture's own) lasts until released. A reader's claim also
+  carries an expiry: the read's materialization timeout plus five minutes,
+  on the database clock, so an abandoned read pins nothing for long. The
+  web takes it in the consumer's transaction, mints the read warrant over
+  the committed row (claim id, ref, destination, node, acquired-at,
+  expires-at, nothing from the mint), and releases it when the read ends.
+  The node daemon verifies the warrant and keeps it single-use per claim.
+- A **lifecycle** is registered or reclaimed. Registration is an insert that
+  does nothing on conflict and refuses a row already stamped reclaimed, so a
+  reclaimed generation never resurrects.
 - The **tree lock** is a transaction-scoped advisory lock on (scope,
-  digest). A capture's move to publishing, a reclaim admission and an
-  orphan verdict all take it, so none of them interleaves with a capture
+  digest). A capture's move to publishing, the reclaim pass and an orphan
+  verdict all take it, so none of them interleaves with a capture
   deduplicating onto the same generation.
-- **Reclamation** runs in the web under a PostgreSQL advisory lock.
-  Admission excludes any tree a pending or publishing capture names, any
-  open claim and any live read lease; the delete is the exact generation
-  the lifecycle recorded.
+- **Reclamation** is one pass in the web under a PostgreSQL advisory lock.
+  It selects registered generations past publication grace that no live
+  claim, no pending or publishing capture and no unregistered input
+  publication names, and for each, in one transaction: takes the tree lock
+  and the lifecycle row, rechecks those exclusions, deletes the exact
+  generation, and stamps `reclaimed_at` once the store answered. The locks
+  are held across the delete on purpose: a claimant waits on the row and
+  then finds the generation reclaimed. Confirmed, already absent and a
+  generation conflict (the exact generation is gone; the object at the key
+  is another's) all stamp; unauthorized records a principal-denial finding
+  and leaves the row registered; a timeout or infrastructure failure rolls
+  back and the next pass retries the delete.
 - The **orphan sweep** runs in the web under the same lock. It lists the
-  output namespace and deletes, by the exact listed generation, only an
-  object whose marker names this store, with no lifecycle, nothing pending
-  or publishing that could register it, and older than twice the capture
-  deadline. The marker's store is the bucket, the deployment prefix and the
-  scope, so two installs sharing a bucket never delete each other's
-  objects. A foreign-marked or unmarked object is counted and never
-  touched. The sweep judges one listed page at a time, re-judges only that
-  page's orphans under the tree lock in the transaction that deletes them,
-  stops at a duration budget and resumes from its place; failed passes are
-  counted and alerted on.
+  output namespace from the start and deletes, by the exact listed
+  generation, only an object whose marker names this store, with no
+  lifecycle, nothing pending or publishing that could register it, and
+  older than twice the capture deadline. The marker's store is the bucket,
+  the deployment prefix and the scope, so two installs sharing a bucket
+  never delete each other's objects. A foreign-marked or unmarked object is
+  counted and never touched. The sweep judges one listed page at a time,
+  re-judges only that page's orphans under the tree lock in the transaction
+  that deletes them, and stops at a per-pass duration budget; failed passes
+  are counted and alerted on.
 
 ## In service and drain
 
@@ -150,8 +166,8 @@ generation missing records one, and the read fails closed.
 
 Drain: turn the plane out of service; in-flight captures finish; `fly
 hangar-status` reports the residue (pending and publishing captures,
-terminal captures not yet released, open claims, live read leases,
-unfinished reclaim jobs) and, beside it, releases no node acknowledged.
+terminal captures not yet released, open claims) and, beside it, releases
+no node acknowledged.
 Remove the plane when every residue count is zero at once.
 
 ## Trust

@@ -1,18 +1,16 @@
 package conformance
 
-// The injected-fault flows, and the two typed delete outcomes nothing
-// asserted.
+// The injected-fault flows, and the typed delete outcomes nothing else
+// asserts.
 //
 // The conformance suite beside this file covers the SUBSTRATE: what a store
 // does with create-if-absent, a generation pin, a prefix list, a metadata stat.
-// What it did not cover is the fault side of two of the six delete outcomes.
-// `output.DeleteUnauthorized` and `output.DeleteTimedOut` appeared in
-// `DeleteOutcomes()`, in the schema's enum and in the reclaimer's switch, and a
-// repository-wide grep over `*_test.go` returned zero assertions on either --
-// while `gcstest.Faults` already carried `Unauthorized` and `DeleteTimeout`
-// seams that no test injected. An outcome nothing exercises is a branch, not a
-// contract: the whole point is that these six are distinguished rather than
-// collapsed, and two of them were only distinguished on paper.
+// What it did not cover is the fault side of the reclaimer's outcomes:
+// `reclaimer.Unauthorized`, and the timed-out delete that is `reclaimer.Failed`
+// with an ErrTimeout error. `gcstest.Faults` already carried `Unauthorized` and
+// `DeleteTimeout` seams that no test injected. An outcome nothing exercises is
+// a branch, not a contract: the whole point is that these five are
+// distinguished rather than collapsed.
 //
 // Tier 1 for every case here, and the reason is the plan's own: fault injection
 // is what the in-package memory fake exists for, and fake-gcs-server has no seam
@@ -22,6 +20,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"testing"
 
 	"github.com/concourse/concourse/hangar"
@@ -68,9 +70,9 @@ func TestADeleteWithNoFaultInjectedIsConfirmed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deleting an object with no fault injected: %v", err)
 	}
-	if outcome != output.DeleteConfirmed {
+	if outcome != reclaimer.Deleted {
 		t.Fatalf("a clean conditional delete reported %q, not %q",
-			outcome, output.DeleteConfirmed)
+			outcome, reclaimer.Deleted)
 	}
 }
 
@@ -86,9 +88,9 @@ func TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure(t *testi
 	tier.memory.Inject(gcstest.Faults{Unauthorized: true})
 
 	outcome, err := sweeper.DeleteExactGeneration(context.Background(), ref, precondition)
-	if outcome != output.DeleteUnauthorized {
+	if outcome != reclaimer.Unauthorized {
 		t.Errorf("a delete the store refused with 403 reported %q, expected %q (%v)",
-			outcome, output.DeleteUnauthorized, err)
+			outcome, reclaimer.Unauthorized, err)
 	}
 	if !errors.Is(err, output.ErrUnauthorized) {
 		t.Errorf("the error is not typed as unauthorized: %v", err)
@@ -108,20 +110,21 @@ func TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure(t *testi
 	// say it; none here does, and real GCS is where it belongs.
 }
 
-// And `timeout`, for the same reason inverted: a delete that timed out MAY have
-// happened. Reporting it as confirmed would finalize a reclaim on no evidence,
-// and reporting it as already_absent would be worse -- that is the inferred
-// path, and it requires a stat nobody took.
-func TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed(t *testing.T) {
+// And a timeout, for the same reason inverted: a delete that timed out MAY
+// have happened. Reporting it as deleted would stamp the generation reclaimed
+// on no evidence, and reporting it as already_absent would be worse -- that
+// is an answer the store never gave. It is Failed, typed as a timeout, and the
+// pass retries it.
+func TestADeleteThatTimedOutIsFailedAndNeverDeleted(t *testing.T) {
 	tier := tier1(t)
 	sweeper, ref, precondition := publishedForDeletion(t, tier, "a3")
 
 	tier.memory.Inject(gcstest.Faults{DeleteTimeout: true})
 
 	outcome, err := sweeper.DeleteExactGeneration(context.Background(), ref, precondition)
-	if outcome != output.DeleteTimedOut {
+	if outcome != reclaimer.Failed {
 		t.Errorf("a delete that exceeded its deadline reported %q, expected %q (%v)",
-			outcome, output.DeleteTimedOut, err)
+			outcome, reclaimer.Failed, err)
 	}
 	if !errors.Is(err, output.ErrTimeout) {
 		t.Errorf("the error is not typed as a timeout: %v", err)
@@ -132,21 +135,24 @@ func TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed(t *testing.T) {
 	// than an assertion.
 }
 
-// Every one of the six delete outcomes is now reachable from a test, and this row
-// is what keeps that true: it fails if a new outcome is added to the enum with
-// nothing exercising it, and it names which.
+// Every one of the reclaimer's outcomes is reachable from a test, and this row
+// is what keeps that true: it fails if a new outcome is declared with nothing
+// exercising it, and it names which.
 //
 // The map is written out rather than derived, because deriving it from the same
-// list it checks would make it a tautology.
+// list it checks would make it a tautology. The list it is checked against is
+// read from the reclaimer's own source -- the typed constants of
+// reclaimer.Outcome -- because the package deliberately exports no enumerator:
+// nothing stores an outcome, so nothing needs to iterate one.
 func TestEveryTypedDeleteOutcomeIsExercisedSomewhere(t *testing.T) {
-	exercised := map[output.DeleteOutcome]string{
-		output.DeleteConfirmed: "TestADeleteWithNoFaultInjectedIsConfirmed, and " +
+	exercised := map[reclaimer.Outcome]string{
+		reclaimer.Deleted: "TestADeleteWithNoFaultInjectedIsConfirmed, and " +
 			"TestTheExactGenerationDeleteIsConditionalAndTyped",
-		output.DeleteAlreadyAbsent:      "TestTheExactGenerationDeleteIsConditionalAndTyped",
-		output.DeleteGenerationConflict: "TestTheExactGenerationDeleteIsConditionalAndTyped (tier 1)",
-		output.DeleteUnauthorized:       "TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure",
-		output.DeleteTimedOut:           "TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed",
-		output.DeleteInfrastructure:     "TestALostDeleteResponseIsNeverReportedAsConfirmed",
+		reclaimer.AlreadyAbsent:      "TestTheExactGenerationDeleteIsConditionalAndTyped",
+		reclaimer.GenerationConflict: "TestTheExactGenerationDeleteIsConditionalAndTyped (tier 1)",
+		reclaimer.Unauthorized:       "TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure",
+		reclaimer.Failed: "TestADeleteThatTimedOutIsFailedAndNeverDeleted, and " +
+			"TestALostDeleteResponseIsNeverReportedAsConfirmed",
 	}
 
 	// The names above are strings, and a string is not a reference: deleting or
@@ -157,22 +163,68 @@ func TestEveryTypedDeleteOutcomeIsExercisedSomewhere(t *testing.T) {
 		TestADeleteWithNoFaultInjectedIsConfirmed,
 		TestTheExactGenerationDeleteIsConditionalAndTyped,
 		TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure,
-		TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed,
+		TestADeleteThatTimedOutIsFailedAndNeverDeleted,
 		TestALostDeleteResponseIsNeverReportedAsConfirmed,
 	}
 
-	for _, outcome := range output.DeleteOutcomes() {
+	declared := declaredReclaimerOutcomes(t)
+	if len(declared) == 0 {
+		t.Fatal("no reclaimer.Outcome constant was found in the reclaimer's source; this guard would pass vacuously")
+	}
+	for _, outcome := range declared {
 		if _, ok := exercised[outcome]; !ok {
-			t.Errorf("output.DeleteOutcomes() includes %q and no test in this package "+
+			t.Errorf("reclaimer declares the outcome %q and no test in this package "+
 				"exercises it. These outcomes are DISTINGUISHED; an "+
 				"outcome nothing reaches is a branch, not a contract.", outcome)
 		}
 	}
-	if len(exercised) != len(output.DeleteOutcomes()) {
-		t.Errorf("this map names %d outcomes and DeleteOutcomes() has %d; one of them was "+
+	if len(exercised) != len(declared) {
+		t.Errorf("this map names %d outcomes and the reclaimer declares %d; one of them was "+
 			"removed and this map still claims it",
-			len(exercised), len(output.DeleteOutcomes()))
+			len(exercised), len(declared))
 	}
+}
+
+// declaredReclaimerOutcomes reads the typed constants of reclaimer.Outcome out
+// of the reclaimer's source.
+func declaredReclaimerOutcomes(t *testing.T) []reclaimer.Outcome {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "../reclaimer/reclaimer.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing the reclaimer's source: %v", err)
+	}
+
+	var outcomes []reclaimer.Outcome
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range general.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			named, ok := value.Type.(*ast.Ident)
+			if !ok || named.Name != "Outcome" {
+				continue
+			}
+			for _, expression := range value.Values {
+				literal, ok := expression.(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					t.Fatalf("the Outcome constant %v is not a string literal", value.Names)
+				}
+				text, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("unquoting %s: %v", literal.Value, err)
+				}
+				outcomes = append(outcomes, reclaimer.Outcome(text))
+			}
+		}
+	}
+
+	return outcomes
 }
 
 // An ambiguous create response converges only through verified per-capture

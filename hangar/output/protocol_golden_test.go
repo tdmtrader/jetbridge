@@ -155,7 +155,6 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 
 	"claim-acquire.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimAcquisition](t, raw) },
 	"claim-release.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimRelease](t, raw) },
-	"read-lease.json":          func(t *testing.T, raw []byte) { roundTrip[ReadLease](t, raw) },
 	"delete-precondition.json": func(t *testing.T, raw []byte) { roundTrip[DeletePrecondition](t, raw) },
 	"gcs-marker-metadata.json": roundTripMarker,
 
@@ -176,7 +175,10 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 		refuse[CallerNamespaceRequest](t, raw)
 	},
 
+	// A claim is the one hold: a consumer's (no expiry; this one released)
+	// and a reader's (expiring on the database clock) are one record shape.
 	"claim-record.json":         func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
+	"claim-record-reader.json":  func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
 	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
 	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
 

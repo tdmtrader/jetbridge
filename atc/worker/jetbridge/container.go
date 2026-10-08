@@ -700,7 +700,7 @@ func strictlyWithin(parent, child string) bool {
 func (c *Container) validateInputs() error {
 	for _, input := range c.containerSpec.Inputs {
 		if input.RunInput != "" && input.HangarRead == nil {
-			return fmt.Errorf("Run input has no admitted read lease")
+			return fmt.Errorf("Run input has no admitted read")
 		}
 		if input.HangarRead != nil && (input.HangarTree == nil || input.HangarRead.Validate() != nil || input.HangarRead.Ref != *input.HangarTree) {
 			return fmt.Errorf("managed input lacks its exact read authority")

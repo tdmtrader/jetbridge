@@ -20,8 +20,7 @@ rules:
   #
   # Execution control adds list: web selects a Run execution's node, and the
   # node serving a result read or input upload, by listing nodes on their
-  # readiness labels, and the read-lease handler lists them to resolve a node
-  # name. Without it every Run start is a 403. Nodes carry no secrets; list is
+  # readiness labels. Without it every Run start is a 403. Nodes carry no secrets; list is
   # granted only where that code is wired.
   - apiGroups: [""]
     resources: ["nodes"]

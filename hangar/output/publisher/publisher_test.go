@@ -191,7 +191,7 @@ func TestOpenExactObjectRefusesAWarrantForAnotherRefBeforeTheStoreIsReached(t *t
 	testsupport.ExpectNoRPC(t, recorder)
 
 	incomplete := warrant
-	incomplete.Nonce = ""
+	incomplete.NodeUID = ""
 	if _, _, err := built.OpenExactObject(ctx, ref, incomplete); err == nil {
 		t.Error("a warrant that does not validate authorized a read")
 	}

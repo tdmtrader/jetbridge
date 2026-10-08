@@ -264,7 +264,7 @@ func noUserDestinationInTheVerificationCommand(in PodCreated) error {
 // TreeRefs, which carry no "ref" key at all. So the batch count this walked is 1
 // whenever it is not 0, and `naming != batches` could only restate the arm above
 // it. An arm nothing can redden is not a check, it is a sentence about one --
-// the standard the read-lease fence was decided on in round 1 -- so it is gone.
+// the standard decided in round 1 -- so it is gone.
 //
 // Saying "exactly" in the other direction means reading the request's ITEM LIST
 // and comparing it against the set of receipts, over a consumer that takes more

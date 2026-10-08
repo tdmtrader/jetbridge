@@ -67,7 +67,7 @@ type PrometheusEmitter struct {
 	hangarOutputAtRisk         *prometheus.GaugeVec
 	hangarOutputViolations     *prometheus.GaugeVec
 	hangarOutputPlaneInventory *prometheus.GaugeVec
-	hangarOutputReclaimJobs    *prometheus.CounterVec
+	hangarOutputReclaimed      *prometheus.CounterVec
 	hangarOutputSweepObjects   *prometheus.GaugeVec
 	hangarOutputSweepPasses    prometheus.Counter
 	hangarOutputSweepFailures  prometheus.Counter
@@ -861,19 +861,19 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		Namespace:   "concourse",
 		Subsystem:   "hangar_output",
 		Name:        "plane_inventory",
-		Help:        "What the Hangar output plane is holding: live generations, captures by state, open claims, live read leases, unfinalized reclaim jobs, open integrity findings, and the residue a drain waits on",
+		Help:        "What the Hangar output plane is holding: live generations, captures by state, open claims, open integrity findings, and the residue a drain waits on",
 		ConstLabels: attributes,
 	}, []string{"kind"})
 	prometheus.MustRegister(hangarOutputPlaneInventory)
 
-	hangarOutputReclaimJobs := prometheus.NewCounterVec(prometheus.CounterOpts{
+	hangarOutputReclaimed := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "concourse",
 		Subsystem:   "hangar_output",
-		Name:        "reclaim_jobs_total",
-		Help:        "Reclaim jobs the web's reclaim pass admitted, finalized, or left open for its next pass",
+		Name:        "reclaim_generations_total",
+		Help:        "Generations the web's reclaim pass reclaimed, deferred to a later pass, or failed to delete",
 		ConstLabels: attributes,
 	}, []string{"outcome"})
-	prometheus.MustRegister(hangarOutputReclaimJobs)
+	prometheus.MustRegister(hangarOutputReclaimed)
 
 	hangarOutputSweepObjects := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "concourse",
@@ -981,7 +981,7 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		hangarOutputAtRisk:         hangarOutputAtRisk,
 		hangarOutputViolations:     hangarOutputViolations,
 		hangarOutputPlaneInventory: hangarOutputPlaneInventory,
-		hangarOutputReclaimJobs:    hangarOutputReclaimJobs,
+		hangarOutputReclaimed:      hangarOutputReclaimed,
 		hangarOutputSweepObjects:   hangarOutputSweepObjects,
 		hangarOutputSweepPasses:    hangarOutputSweepPasses,
 		hangarOutputSweepFailures:  hangarOutputSweepFailures,
@@ -1168,8 +1168,8 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 			WithLabelValues(event.Attributes["violation"]).Set(event.Value)
 	case "hangar output enabled":
 		emitter.hangarOutputEnabled.Set(event.Value)
-	case "hangar output reclaim jobs":
-		emitter.hangarOutputReclaimJobs.
+	case "hangar output reclaim generations":
+		emitter.hangarOutputReclaimed.
 			WithLabelValues(event.Attributes["outcome"]).Add(event.Value)
 	case "hangar output orphan sweep objects":
 		emitter.hangarOutputSweepObjects.

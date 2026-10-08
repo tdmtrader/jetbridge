@@ -15,7 +15,8 @@ package db_test
 //     published transition: `features/hangar-binding.feature`, plus
 //     hangar_output_test.go:2758-3040 over the `opaque_consumer_bindings`
 //     product-neutral consumer.
-//   - Claimant/reader/reclaimer inversions: hangar_output_test.go:129-310.
+//   - Claimant/reclaimer inversions: hangar_output_test.go and
+//     hangar_output_lock_order_test.go.
 //   - The opposite-input-order batch: hangar_output_test.go:2167-2420, which
 //     uses a blocking holder and a NOWAIT probe because the obvious form --
 //     two goroutines and "neither deadlocked" -- passed with the sorting
@@ -32,10 +33,10 @@ package db_test
 //
 // Two specs, therefore, and both of them span seams no other spec spans:
 //
-//  1. One capture from its pending row to a confirmed reclamation, with nothing
-//     staged between legs: whatever `CASPublishingToPublished` committed is what
-//     `AcquireClaim` is given, whatever that committed is what `AcquireReadLease`
-//     is given, and so on to `FinalizeReclaim`.
+//  1. One capture from its pending row to its reclamation, with nothing staged
+//     between legs: whatever `CASPublishingToPublished` committed is what
+//     `AcquireClaim` is given, whatever that committed is what the reader's
+//     own `AcquireClaim` is given, and so on to `StampReclaimed`.
 //  2. The drain's residue count over state the PRODUCTION capture path
 //     produced: that the rows a real capture writes are the rows the count
 //     sees. A count that missed a class would silently permit removing a
@@ -52,7 +53,6 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -62,22 +62,8 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		repository *db.HangarOutputRepository
 	)
 
-	const (
-		acceptanceEpoch = executioncontrol.ActivationEpoch(1)
-		deleteTimeout   = 2 * time.Minute
-	)
-
 	BeforeEach(func() {
 		ctx = context.Background()
-
-		// The suite runs on one pooled connection so that code needing a second
-		// deadlocks visibly. These specs need two, and the reason is
-		// `hangarReadLeaseRequest` (hangar_output_fixture_test.go:350): it does
-		// a bare `dbConn.QueryRow` for the marker's reservation WHILE the
-		// caller's transaction is open, which is exactly the second connection
-		// the default is there to surface. It goes back to one afterwards.
-		dbConn.SetMaxOpenConns(2)
-		DeferCleanup(func() { dbConn.SetMaxOpenConns(1) })
 
 		consumer, err := db.HangarConsumerPrefixHeld("acceptance-consumer")
 		Expect(err).NotTo(HaveOccurred())
@@ -102,18 +88,28 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		Expect(tx.Commit()).To(Succeed())
 	}
 
-	lifecycleStateOf := func(ref hangar.TreeRef) string {
+	reclaimedAt := func(ref hangar.TreeRef) sql.NullTime {
 		GinkgoHelper()
-		var state string
+		var at sql.NullTime
 		Expect(dbConn.QueryRow(`
-			SELECT state FROM hangar_exact_lifecycles
+			SELECT reclaimed_at FROM hangar_exact_lifecycles
 			WHERE scope = $1 AND digest = $2 AND generation = $3`,
-			string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&state)).To(Succeed())
+			string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&at)).To(Succeed())
 
-		return state
+		return at
 	}
 
-	It("carries one capture from its pending row to a confirmed reclamation, each leg reading what the last one committed", func() {
+	// reclaim is the pass's transaction with the store call elided: hold the
+	// generation under the locks and stamp it, in one commit.
+	reclaim := func(ref hangar.TreeRef) {
+		GinkgoHelper()
+		in(func(tx db.HangarOutputTx) {
+			Expect(repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)).To(Succeed())
+			Expect(repository.StampReclaimed(ctx, tx, ref)).To(Succeed())
+		})
+	}
+
+	It("carries one capture from its pending row to its reclamation, each leg reading what the last one committed", func() {
 		digest := hangarDigest(91)
 		generation := int64(1725830823000091)
 
@@ -126,7 +122,7 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		capture := hangarPublishAt(ctx, repository, digest, generation,
 			output.DefaultCaptureDeadline)
 
-		Expect(lifecycleStateOf(capture.Ref)).To(Equal("registered"))
+		Expect(reclaimedAt(capture.Ref).Valid).To(BeFalse())
 
 		// Publication is what makes the exact generation readable. Before the
 		// source is released the capture is not settled, and that is a state
@@ -180,44 +176,43 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 				VALUES ('binding-1', 'hidden', $1)`, string(claimID))
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-				ProtocolVersion:   output.ProtocolVersion,
-				ClaimID:           claimID,
-				Ref:               capture.Ref,
-				ConsumerBindingID: output.OpaqueID("binding-1"),
-				RequestedAt:       output.NewTimestamp(time.Now()),
-			})).To(Succeed())
+			Expect(hangarAcquireClaim(ctx, repository, tx, claimID, capture.Ref, "binding-1")).To(Succeed())
 		})
 
-		// --- the reader takes a lease under the same claim ------------------
+		// --- the reader takes its own claim, with a term ---------------------
 		//
-		// The lease request carries a stat proof, and the fixture reads the
-		// reservation id back out of the row the capture above wrote rather
-		// than inventing one. That is the seam: a marker the publisher did not
-		// write would not match, and only a real chain produces a matching one.
-		var lease output.ReadLease
+		// A reader's hold is a claim like the consumer's, and it expires: the
+		// record it gets back is what its warrant is minted from, and the
+		// expiry on it is the row's, on the database clock.
+		var reader output.ClaimRecord
 		in(func(tx db.HangarOutputTx) {
 			var err error
-			lease, err = repository.AcquireReadLease(ctx, tx,
-				hangarReadLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, capture.Ref))
+			reader, err = repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+				ProtocolVersion:   output.ProtocolVersion,
+				ClaimID:           output.ClaimID(uuid.NewString()),
+				Ref:               capture.Ref,
+				ConsumerBindingID: output.OpaqueID("result-read:task-handle"),
+				RequestedAt:       output.NewTimestamp(time.Now()),
+				Term:              10*time.Minute + output.ReadClaimMargin,
+			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+		Expect(reader.ExpiresAt).NotTo(BeNil())
 
-		// --- the reclaimer is refused, twice, for two different reasons -----
+		// --- the reclaim pass is refused, three times, for three reasons ----
 		//
 		// Grace has not elapsed yet, so the first refusal is grace. Age the
-		// publication and the refusal becomes the claim; release the claim and
-		// it becomes the lease. Three refusals over one ref, in order, is what
-		// says the preconditions are independent rather than one check wearing
-		// three messages.
+		// publication and the refusal becomes the claims; release the
+		// consumer's and it is still the reader's. Three refusals over one
+		// ref, in order, is what says the preconditions are independent
+		// rather than one check wearing three messages.
 		hangarAgeCapture(capture, 48*time.Hour)
 
 		reclaimRefusal := func() error {
 			tx := begin()
 			defer db.Rollback(tx)
 
-			return repository.AdmitReclaim(ctx, tx, capture.Ref, uuid.NewString(), 1,
-				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)
+			return repository.HoldForReclaim(ctx, tx, capture.Ref, output.DefaultPublicationGrace)
 		}
 
 		err = reclaimRefusal()
@@ -228,7 +223,7 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 
 		err = reclaimRefusal()
 		Expect(err).To(MatchError(output.ErrConflict))
-		Expect(err.Error()).To(ContainSubstring("claim"))
+		Expect(err.Error()).To(ContainSubstring("2 live claim(s)"))
 
 		// --- the consumer unbinds and releases, in ONE transaction ----------
 		in(func(tx db.HangarOutputTx) {
@@ -244,46 +239,25 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			})).To(Succeed())
 		})
 
-		// Releasing the LAST claim during a transfer cannot delete until the
-		// read lease closes. The claim is gone and the reader is still
-		// holding, so the refusal must now be the lease.
+		// Releasing the consumer's LAST claim during a transfer cannot delete
+		// until the reader's hold lapses. The consumer's is gone and the
+		// reader is still holding, so the refusal must now be the reader's.
 		err = reclaimRefusal()
 		Expect(err).To(MatchError(output.ErrConflict))
-		Expect(err.Error()).To(ContainSubstring("read lease"))
+		Expect(err.Error()).To(ContainSubstring("1 live claim(s)"))
 
 		in(func(tx db.HangarOutputTx) {
-			Expect(repository.ReleaseReadLease(ctx, tx, lease)).To(Succeed())
+			Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+				ProtocolVersion: output.ProtocolVersion,
+				ClaimID:         reader.ClaimID,
+				Ref:             capture.Ref,
+				RequestedAt:     output.NewTimestamp(time.Now()),
+			})).To(Succeed())
 		})
 
 		// --- reclaim, and only now -----------------------------------------
-		var job db.HangarReclaimJob
-		in(func(tx db.HangarOutputTx) {
-			Expect(repository.AdmitReclaim(ctx, tx, capture.Ref, uuid.NewString(), 1,
-				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)).To(Succeed())
-		})
-		Expect(lifecycleStateOf(capture.Ref)).To(Equal("reclaiming"),
-			"admission must mark the generation `reclaiming` durably BEFORE any external delete")
-
-		in(func(tx db.HangarOutputTx) {
-			var err error
-			job, err = repository.LoadReclaimJob(ctx, tx, capture.Ref)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		var attempt int64
-		in(func(tx db.HangarOutputTx) {
-			var err error
-			attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-			Expect(err).NotTo(HaveOccurred())
-		})
-		in(func(tx db.HangarOutputTx) {
-			Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-				output.DeleteConfirmed)).To(Succeed())
-			Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)).
-				To(Succeed())
-		})
-
-		Expect(lifecycleStateOf(capture.Ref)).To(Equal("reclaimed_confirmed"))
+		reclaim(capture.Ref)
+		Expect(reclaimedAt(capture.Ref).Valid).To(BeTrue())
 
 		// --- and the far end of the chain holds ----------------------------
 		//
@@ -297,27 +271,22 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			claims, err = repository.ReadClaims(ctx, tx, capture.Ref)
 			Expect(err).NotTo(HaveOccurred())
 		})
-		Expect(claims).To(HaveLen(2),
-			"the released claim identities -- the capture's and the consumer's -- must remain "+
-				"tombstoned; a purged tombstone is a claim id that can silently reactivate")
+		Expect(claims).To(HaveLen(3),
+			"the released claim identities -- the capture's, the consumer's and the reader's -- "+
+				"must remain tombstoned; a purged tombstone is a claim id that can silently reactivate")
 		ids := []output.ClaimID{}
 		for _, claim := range claims {
 			ids = append(ids, claim.ClaimID)
 			Expect(claim.Active()).To(BeFalse(),
 				"claim %s is still active after it was released", claim.ClaimID)
 		}
-		Expect(ids).To(ConsistOf(claimID, capture.Key.ClaimID()))
+		Expect(ids).To(ConsistOf(claimID, capture.Key.ClaimID(), reader.ClaimID))
 
 		tx := begin()
 		defer db.Rollback(tx)
-		err = repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-			ProtocolVersion:   output.ProtocolVersion,
-			ClaimID:           output.ClaimID(uuid.NewString()),
-			Ref:               capture.Ref,
-			ConsumerBindingID: output.OpaqueID("binding-2"),
-			RequestedAt:       output.NewTimestamp(time.Now()),
-		})
-		Expect(err).To(MatchError(output.ErrConflict))
+		err = hangarAcquireClaim(ctx, repository, tx, output.ClaimID(uuid.NewString()), capture.Ref,
+			"binding-2")
+		Expect(err).To(MatchError(output.ErrNotFound))
 		Expect(tx.Rollback()).To(Succeed())
 	})
 
@@ -344,13 +313,7 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 
 		claimID := output.ClaimID(uuid.NewString())
 		in(func(tx db.HangarOutputTx) {
-			Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-				ProtocolVersion:   output.ProtocolVersion,
-				ClaimID:           claimID,
-				Ref:               capture.Ref,
-				ConsumerBindingID: output.OpaqueID("binding-1"),
-				RequestedAt:       output.NewTimestamp(time.Now()),
-			})).To(Succeed())
+			Expect(hangarAcquireClaim(ctx, repository, tx, claimID, capture.Ref, "binding-1")).To(Succeed())
 		})
 
 		counts := residue()
@@ -372,33 +335,13 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		hangarAgeCapture(capture, 48*time.Hour)
 		hangarAgePublication(capture.Ref, hangarGraceElapsed)
 
-		var job db.HangarReclaimJob
-		in(func(tx db.HangarOutputTx) {
-			Expect(repository.AdmitReclaim(ctx, tx, capture.Ref, uuid.NewString(), 1,
-				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)).To(Succeed())
-		})
-		in(func(tx db.HangarOutputTx) {
-			var err error
-			job, err = repository.LoadReclaimJob(ctx, tx, capture.Ref)
-			Expect(err).NotTo(HaveOccurred())
-		})
+		// Released and settled, the generation is live and nothing holds it:
+		// not residue, but still this plane's to delete.
+		counts = residue()
+		Expect(counts.Residue()).To(BeZero())
+		Expect(counts.LiveGenerations).To(Equal(1))
 
-		// Mid-reclaim the residue is an unfinalized job: an object whose
-		// disposition is unknown.
-		Expect(residue().UnfinalizedReclaimJobs).To(Equal(1))
-
-		var attempt int64
-		in(func(tx db.HangarOutputTx) {
-			var err error
-			attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-			Expect(err).NotTo(HaveOccurred())
-		})
-		in(func(tx db.HangarOutputTx) {
-			Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-				output.DeleteConfirmed)).To(Succeed())
-			Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)).
-				To(Succeed())
-		})
+		reclaim(capture.Ref)
 
 		counts = residue()
 		Expect(counts.Residue()).To(BeZero(),

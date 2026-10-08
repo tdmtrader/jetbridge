@@ -820,7 +820,7 @@ func (f *closureCaptures) publishSibling() {
 			return err
 		}
 		_, err := repository.CASPublishingToPublished(f.ctx, tx, output.PublishedCapture{
-			Key: a.Capture, Generation: 1, Metageneration: 1, ActivationEpoch: 1,
+			Key: a.Capture, Generation: 1, ActivationEpoch: 1,
 		})
 		return err
 	})).To(Succeed())

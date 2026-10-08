@@ -178,8 +178,6 @@
 {{- $output := .Values.hangarOutput -}}
 {{- $capture := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.captureDeadline" "value" $output.captureDeadline)) -}}
 {{- $grace := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.publicationGrace" "value" $output.publicationGrace)) -}}
-{{- $lease := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.leaseTerm" "value" $output.leaseTerm)) -}}
-{{- $renew := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.leaseRenewInterval" "value" $output.leaseRenewInterval)) -}}
 
 {{- if or (lt $capture 3600) (gt $capture 604800) -}}
 {{- fail (printf "hangarOutput.captureDeadline is %s; it is configurable from 1h to 168h. Below an hour a legitimate slow capture is terminalised; above a week a lost capture pins its correlation for longer than anybody will look." $output.captureDeadline) -}}
@@ -188,16 +186,7 @@
 {{- fail (printf "hangarOutput.publicationGrace is %s; the maximum is 720h (30 days)." $output.publicationGrace) -}}
 {{- end -}}
 {{- if lt $grace (add $capture 3600) -}}
-{{- fail (printf "hangarOutput.publicationGrace is %s and hangarOutput.captureDeadline is %s. Grace must exceed the maximum capture deadline by at least an hour: below that, reclaim can admit an object whose capture is still entitled to register it, and the object is deleted out from under a live capture." $output.publicationGrace $output.captureDeadline) -}}
-{{- end -}}
-{{- if lt $lease 900 -}}
-{{- fail (printf "hangarOutput.leaseTerm is %s; the minimum is 15m. A shorter term makes expiry -- rather than a fence -- the thing a worker races." $output.leaseTerm) -}}
-{{- end -}}
-{{- if gt $renew 60 -}}
-{{- fail (printf "hangarOutput.leaseRenewInterval is %s; a lease is renewed at least once a minute, so a longer interval is a lease that expires under its own owner." $output.leaseRenewInterval) -}}
-{{- end -}}
-{{- if ge $renew $lease -}}
-{{- fail (printf "hangarOutput.leaseRenewInterval (%s) is not shorter than hangarOutput.leaseTerm (%s)." $output.leaseRenewInterval $output.leaseTerm) -}}
+{{- fail (printf "hangarOutput.publicationGrace is %s and hangarOutput.captureDeadline is %s. Grace must exceed the maximum capture deadline by at least an hour: below that, the reclaim pass can delete an object whose capture is still entitled to register it, out from under a live capture." $output.publicationGrace $output.captureDeadline) -}}
 {{- end -}}
 {{- end }}
 

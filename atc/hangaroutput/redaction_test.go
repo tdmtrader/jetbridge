@@ -24,15 +24,14 @@ import (
 
 // permittedLogKeys is everything this package may put in a structured log.
 //
-// A directory, a scope, a digest, a warrant and a key id are not here: each
-// is either an identity a consumer may treat as sensitive or unbounded.
-var permittedLogKeys = map[string]string{
-	"class": "a bounded word derived from the leaf's sentinels, never an error's own text",
-	"closed": "a COUNT of read leases a recovery pass closed. It is an integer and it names " +
-		"nobody: a log line naming the lease would put an opaque id a consumer may treat as " +
-		"sensitive into a system nobody thinks of as a log, and a metric keyed by one would be " +
-		"a series per reader forever",
-}
+// It is EMPTY. The one field this package ever logged -- the count of read
+// leases a cleanup pass closed -- went with the read-lease protocol, and the
+// package now says nothing structured at all: a directory, a scope, a digest, a
+// warrant, a key id and an opaque consumer reference are each either an
+// identity a consumer may treat as sensitive or unbounded, and nothing here has
+// a bounded word left to say. A field added later is named here with its
+// reason, or the guard fails.
+var permittedLogKeys = map[string]string{}
 
 func TestThisPackageSaysNothingItShouldNot(t *testing.T) {
 	set := token.NewFileSet()
@@ -43,9 +42,10 @@ func TestThisPackageSaysNothingItShouldNot(t *testing.T) {
 		t.Fatalf("parsing: %v", err)
 	}
 
-	found := 0
+	found, scanned := 0, 0
 	for _, pkg := range files {
 		for name, file := range pkg.Files {
+			scanned++
 			ast.Inspect(file, func(n ast.Node) bool {
 				literal, ok := n.(*ast.CompositeLit)
 				if !ok {
@@ -81,10 +81,13 @@ func TestThisPackageSaysNothingItShouldNot(t *testing.T) {
 		}
 	}
 
-	if found == 0 {
-		t.Fatal("this package logs nothing structured at all; the rule would pass vacuously")
+	// The guard proves it scanned the package rather than an empty directory:
+	// a scan that parsed nothing would pass vacuously. "Nothing structured" is
+	// the expectation, and it is only an expectation over files that were read.
+	if scanned == 0 {
+		t.Fatal("this guard parsed no file of this package; the rule would pass vacuously")
 	}
-	t.Logf("inventoried %d structured log fields", found)
+	t.Logf("scanned %d files and inventoried %d structured log fields", scanned, found)
 }
 
 func keysOf(m map[string]string) []string {

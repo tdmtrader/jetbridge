@@ -69,8 +69,6 @@ func statusEvent(status Status) metric.HangarOutputSnapshot {
 		UnreleasedCaptures:     status.Counts.UnreleasedCaptures,
 		UnacknowledgedReleases: status.Counts.UnacknowledgedReleases,
 		OpenClaims:             status.Counts.OpenClaims,
-		OpenReadLeases:         status.Counts.OpenReadLeases,
-		UnfinalizedReclaimJobs: status.Counts.UnfinalizedReclaimJobs,
 		OpenIntegrityFindings:  status.Counts.OpenIntegrityFindings,
 		Residue:                status.Counts.Residue(),
 		Violations:             map[string]int{},

@@ -157,6 +157,8 @@ var removedKeys = []string{
 	"hangarOutput.daemon",
 	"hangarOutput.database",
 	"hangarOutput.inventory",
+	"hangarOutput.leaseRenewInterval",
+	"hangarOutput.leaseTerm",
 	"hangarOutput.readControlCA",
 	"hangarOutput.readControlURL",
 	"hangarOutput.receipt",

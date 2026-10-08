@@ -451,7 +451,6 @@ func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capt
 		_, err := coordinator.Rows.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
 			Key:             capture.Key,
 			Generation:      result.Ref.Generation,
-			Metageneration:  result.Metageneration,
 			ActivationEpoch: coordinator.ActivationEpoch,
 		})
 		return err

@@ -1,4 +1,4 @@
-Feature: The worker delivers each retained Run input under an exact lease
+Feature: The worker delivers each retained Run input under an exact reader's claim
 
   @core-review
   Scenario Outline: The actual container receives only admitted managed inputs

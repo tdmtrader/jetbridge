@@ -6,6 +6,7 @@
     "generation": 1725830823000001
   },
   "consumer_binding_id": "opaque-consumer-binding-1",
+  "activation_epoch": 3,
   "acquired_at": "2026-09-08T21:52:00.000000000Z",
   "released_at": "2026-09-08T22:07:00.000000000Z"
 }

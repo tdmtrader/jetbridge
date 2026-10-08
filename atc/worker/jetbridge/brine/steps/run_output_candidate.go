@@ -92,13 +92,27 @@ func checkCandidateBuildComplete(in RunOutputCandidate) error {
 	return nil
 }
 
+// claims reads the consumers' claims on the candidate's generation: the
+// capture's own and any Run binding's. A reader's claim (one with an expiry)
+// is a read's hold, taken and given back by result and input reads earlier in
+// a chain, and no sentence about the candidate's protection counts it.
 func (in RunOutputCandidate) claims() ([]output.ClaimRecord, error) {
 	tx, err := in.Start.DB.Conn.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer db.Rollback(tx)
-	return runCaptureRepository().ReadClaims(context.Background(), tx, in.Record.Ref)
+	records, err := runCaptureRepository().ReadClaims(context.Background(), tx, in.Record.Ref)
+	if err != nil {
+		return nil, err
+	}
+	consumers := records[:0]
+	for _, record := range records {
+		if record.ExpiresAt == nil {
+			consumers = append(consumers, record)
+		}
+	}
+	return consumers, nil
 }
 
 // The model's fixed output is the only substituted content. All admission,

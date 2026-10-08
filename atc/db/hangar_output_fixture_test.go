@@ -11,7 +11,6 @@ package db_test
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -91,7 +90,7 @@ func hangarPending(ctx context.Context, repository *db.HangarOutputRepository, d
 
 // hangarReserve drives a capture as far as publishing and stops there: the
 // digest is written and no generation is known for it, which is the state
-// reclaim admission and adoption must treat as protecting its correlation.
+// the reclaim pass must treat as protecting its tree.
 func hangarReserve(ctx context.Context, repository *db.HangarOutputRepository, digest hangar.Digest, deadline time.Duration) HangarCapture {
 	GinkgoHelper()
 
@@ -114,12 +113,26 @@ func hangarPublishAt(ctx context.Context, repository *db.HangarOutputRepository,
 	capture.Ref.Generation = generation
 	hangarCaptureTx(func(tx db.Tx) {
 		_, err := repository.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
-			Key: capture.Key, Generation: generation, Metageneration: 1, ActivationEpoch: 1,
+			Key: capture.Key, Generation: generation, ActivationEpoch: 1,
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	return capture
+}
+
+// hangarAcquireClaim takes a consumer's claim on a ref in the given
+// transaction, for the specs that want the hold and not the record.
+func hangarAcquireClaim(ctx context.Context, repository *db.HangarOutputRepository, tx output.Tx, id output.ClaimID, ref hangar.TreeRef, binding string) error {
+	_, err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+		ProtocolVersion:   output.ProtocolVersion,
+		ClaimID:           id,
+		Ref:               ref,
+		ConsumerBindingID: output.OpaqueID(binding),
+		RequestedAt:       output.NewTimestamp(time.Now()),
+	})
+
+	return err
 }
 
 // hangarReleaseCaptureClaim gives back the claim a capture's publication took.
@@ -140,54 +153,6 @@ func hangarReleaseSource(ctx context.Context, repository *db.HangarOutputReposit
 		_, err := repository.SetReleased(ctx, tx, capture.Key)
 		Expect(err).NotTo(HaveOccurred())
 	})
-}
-
-// readLeaseRequest is a well-formed managed-read admission: an exact stat
-// taken a moment ago, a destination that is a handle and a volume, and a
-// nonce minted once for this lease. Every refusal spec below starts from
-// this and changes exactly one thing, so a red row names the check rather
-// than "a lease was refused".
-func hangarReadLeaseRequest(id output.ReadLeaseID, claimID output.ClaimID, ref hangar.TreeRef) output.ReadLeaseRequest {
-	GinkgoHelper()
-	nonce, err := output.NewReadWarrantNonce(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-
-	// The marker on a real stat carries the capture that created the object.
-	// The fixture reads it back rather than inventing one, so a well-formed
-	// stat proof here is the shape production actually observes.
-	var execution, outputName string
-	Expect(dbConn.QueryRow(`
-		SELECT execution_id, output_name FROM hangar_captures WHERE scope = $1 AND digest = $2
-		ORDER BY created_at LIMIT 1`,
-		string(ref.Scope), string(ref.Digest)).Scan(&execution, &outputName)).To(Succeed())
-	reservation := output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(execution),
-		Output: output.OutputName(outputName)}.MarkerID()
-
-	return output.ReadLeaseRequest{
-		ReadLeaseID:            id,
-		ClaimID:                claimID,
-		Ref:                    ref,
-		ActivationEpoch:        1,
-		RequestedAt:            output.NewTimestamp(time.Now()),
-		MaterializationTimeout: 10 * time.Minute,
-		Destination:            output.ReadDestination{Handle: "task-handle", Volume: "input-0"},
-		WarrantNonce:           nonce,
-		StatProof: output.PublishedObject{
-			Attributes: hangar.TreeAttributes{
-				Ref: ref, StoredBytes: 1024, LogicalBytes: 4096,
-				CreatedAt: time.Now().Add(-time.Minute),
-			},
-			Metageneration: 1,
-			Marker: output.ObjectMarker{
-				Scope:           ref.Scope,
-				Digest:          ref.Digest,
-				ReservationID:   reservation,
-				ActivationEpoch: 1,
-				CreatedAt:       output.NewTimestamp(time.Now().Add(-time.Minute)),
-			},
-		},
-		StatObservedAt: output.NewTimestamp(time.Now()),
-	}
 }
 
 // hangarAgeCapture moves one capture's creation and deadline into the past.
@@ -220,8 +185,8 @@ func hangarAgeCapture(capture HangarCapture, by time.Duration) {
 // hangarAgePublication moves a lifecycle row into the past on the database
 // clock.
 //
-// Elapsed publication grace is one of reclaim admission's seven preconditions
-// and the default is eight days, so every spec that admits a reclamation has to
+// Elapsed publication grace is one of the reclaim pass's preconditions and
+// the default is eight days, so every spec that reclaims a generation has to
 // arrange it. Moving the row is the honest form: what is being arranged is time
 // passing, and the comparison the repository makes is still the database's own
 // against the row's own registered_at.
@@ -235,7 +200,7 @@ func hangarAgePublication(ref hangar.TreeRef, by time.Duration) {
 	Expect(err).NotTo(HaveOccurred())
 }
 
-// hangarGraceElapsed is the aging every admission spec applies: the default
+// hangarGraceElapsed is the aging every reclaim spec applies: the default
 // publication grace plus an hour, so the row is outside grace by a margin no
 // clock skew can close.
 const hangarGraceElapsed = output.DefaultPublicationGrace + time.Hour

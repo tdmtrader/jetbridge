@@ -239,7 +239,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 			return fmt.Errorf("expire upload claims: %w", err)
 		}
 		var uploads, active int
-		if err := jdb.Conn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_input_uploads WHERE template_pipeline_id=$1), (SELECT count(*) FROM hangar_claims c JOIN hangar_exact_lifecycles l ON l.id=c.lifecycle_id WHERE l.scope=$2 AND l.digest=$3 AND l.generation=$4 AND c.released_at IS NULL)`, template.ID(), string(tree.Scope), string(tree.Digest), tree.Generation).Scan(&uploads, &active); err != nil {
+		if err := jdb.Conn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_input_uploads WHERE template_pipeline_id=$1), (SELECT count(*) FROM hangar_claims c JOIN hangar_exact_lifecycles l ON l.id=c.lifecycle_id WHERE l.scope=$2 AND l.digest=$3 AND l.generation=$4 AND c.released_at IS NULL AND c.expires_at IS NULL)`, template.ID(), string(tree.Scope), string(tree.Digest), tree.Generation).Scan(&uploads, &active); err != nil {
 			return err
 		}
 		want := 0

@@ -13,14 +13,13 @@ import (
 )
 
 // The work every Hangar output repository method does the same way, in one
-// place: reading a row over the two methods output.Tx has, turning a lease term
-// into something SQL will accept, mapping a PostgreSQL failure onto the leaf's
-// typed outcomes, and waking a worker after a commit.
+// place: reading a row over the two methods output.Tx has, turning a duration
+// into something SQL will accept, and mapping a PostgreSQL failure onto the
+// leaf's typed outcomes.
 //
 // Each was written three or four times before it lived here, and each is
-// somewhere a second spelling would be a second behaviour: a lease term rounded
-// differently, a conflict that mapped to the wrong sentinel, or a notification
-// sent before the commit it announces.
+// somewhere a second spelling would be a second behaviour: a term rounded
+// differently, or a conflict that mapped to the wrong sentinel.
 //
 // Every deadline in this plane is still measured on the database clock -- Reqs
 // 10, 11, 36, 39 and 48 all say so, and a node whose clock drifts must not be
@@ -55,24 +54,8 @@ func hangarQueryRow(ctx context.Context, tx output.Tx, query string, args []any,
 	return rows.Err()
 }
 
-// hangarLeaseInterval renders a lease term for `now() + $n::interval`.
-//
-// Whole seconds, once, here: a term rendered two ways in two call sites is two
-// terms, and the floor checks that guard them would then be checking different
-// things from what the database stores.
-func hangarLeaseInterval(term time.Duration) (string, error) {
-	if term < output.MinLeaseTerm {
-		return "", fmt.Errorf("%w: lease term %s is under the %s floor",
-			output.ErrIncomplete, term, output.MinLeaseTerm)
-	}
-
-	return hangarInterval(term), nil
-}
-
-// hangarInterval renders a term with NO floor, for the bounded windows that are
-// not ownership leases: a stat challenge's freshness window is capped at five
-// minutes by the schema and would fail the lease floor, and a challenge is not
-// a lease -- nothing is owned for its duration.
+// hangarInterval renders a duration for `now() + $n::interval`, in whole
+// seconds, once, here: a term rendered two ways in two call sites is two terms.
 func hangarInterval(term time.Duration) string {
 	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds()))
 }
@@ -153,10 +136,9 @@ func hangarConflict(err error) error {
 // mid-transaction failure is mapped to.
 //
 // A DEFERRED constraint trigger raises its refusal at commit and nowhere
-// earlier -- hangar_policy_admits_new_protection and hangar_reclaim_exclusion
-// are both deferred, because both read rows another transaction may write
-// between a Go check and the commit, so a check ahead of them could only ever
-// be a guess. The error that comes back is the driver's, carrying the same
+// earlier -- hangar_policy_admits_new_protection is deferred, because it reads
+// rows another transaction may write between a Go check and the commit, so a
+// check ahead of it could only ever be a guess. The error that comes back is the driver's, carrying the same
 // SQLSTATE an immediate RAISE would have carried, and a caller that did not map
 // it sees an unclassified failure.
 //

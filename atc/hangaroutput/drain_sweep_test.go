@@ -338,10 +338,10 @@ func (lister *failingLister) List(ctx context.Context, bucket string, request ob
 	return lister.inner.List(ctx, bucket, request)
 }
 
-// A list that fails mid-pass fails the pass and keeps its progress: the next
-// pass resumes after the last page it judged instead of silently starting
-// over.
-func TestAnOrphanSweepThatCannotListFailsAndResumesWhereItStopped(t *testing.T) {
+// A list that fails mid-pass fails the pass and keeps the counts it made.
+// The sweep keeps no cursor: the next pass lists from the start again, and
+// judges every object, including the ones the failed pass already saw.
+func TestAnOrphanSweepThatCannotListFailsAndTheNextPassStartsOver(t *testing.T) {
 	h := newHarness(t)
 	sweep, _ := sweepFor(t, h, time.Hour)
 	namespace := sweep.Namespace
@@ -367,10 +367,10 @@ func TestAnOrphanSweepThatCannotListFailsAndResumesWhereItStopped(t *testing.T) 
 	lister.failAt = 0
 	counts, err = sweep.Once(context.Background())
 	if err != nil {
-		t.Fatalf("the resumed pass: %v", err)
+		t.Fatalf("the next pass: %v", err)
 	}
-	if counts[reclaim.SweepUnmarked] != 3 {
-		t.Errorf("the resumed pass judged %d objects, want the 3 after the first page: %v",
+	if counts[reclaim.SweepUnmarked] != 5 {
+		t.Errorf("the next pass judged %d objects, want all 5 from the start: %v",
 			counts[reclaim.SweepUnmarked], counts)
 	}
 }

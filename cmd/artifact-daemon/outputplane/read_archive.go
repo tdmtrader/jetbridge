@@ -24,14 +24,12 @@ type managedReads struct {
 // configureReads arms the managed-read routes. They need the read-warrant key,
 // which only an output-facet daemon holds.
 //
-// There is no control-plane client here, and that is the change from when the
-// output plane was its own daemon: it no longer asks the web whether a read
-// lease is live, and it no longer gives one back. The warrant IS the bound: it
-// is minted from the committed lease's own instants, so its window is the
-// lease's window, and work starts only with the operation's timeout plus the
-// start margin left on it (output.MayStartWork), and it is single-use on this
-// node (spentReads). The web gives the lease back when its read ends, and the
-// abandoned-lease cleaner closes any other at expiry on the database clock.
+// There is no control-plane client here: the daemon never asks the web whether
+// the reader's claim is live, and never gives one back. The warrant IS the
+// bound: it is minted from the committed claim's own instants, so its window
+// is the claim's window (the read's timeout plus output.ReadClaimMargin), and
+// it is single-use on this node (spentReads). The web gives the claim back
+// when its read ends; an abandoned read's claim expires on the database clock.
 func (server *Server) configureReads(config Config, store *controlStore) error {
 	if strings.TrimSpace(config.MaterializationKeyFile) == "" {
 		return nil
@@ -126,13 +124,8 @@ func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) 
 // private copy survives reclamation of the object.
 //
 // The warrant is verified -- binding and window -- by the route before this is
-// called; what is checked here is that enough of its window is left to begin
-// work that may take the whole operation timeout.
+// called.
 func (server *Server) stageRead(ctx context.Context, claims output.ReadWarrantClaims) (tree *hangar.CapturedTree, attributes hangar.TreeAttributes, err error) {
-	if !output.MayStartWork(claims.ExpiresAt.Sub(nowUTC()), server.reads.timeout) {
-		return nil, attributes, fmt.Errorf("%w: the read warrant has too little of its window "+
-			"left to begin a read", output.ErrUnauthorized)
-	}
 	defer func() {
 		if err != nil && tree != nil {
 			_ = tree.Close()

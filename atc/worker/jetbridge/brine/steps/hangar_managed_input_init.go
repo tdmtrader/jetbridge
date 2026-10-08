@@ -14,14 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 )
 
-func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, warrant hangaroutput.ReadWarrant) error {
+func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, warrant mintedRead) error {
 	daemon := in.Tree.Outcome.Source.Draft.Daemon
 	_, host, portText, ok := splitDaemonAddress(daemon.Output.URL)
 	if !ok {
@@ -37,7 +36,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 	config.HangarEnabled = true
 	config.ArtifactDaemonPort = port
 	backend := jetbridge.NewDaemonSetBackend(config, nil, nil, nil)
-	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}
+	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Destination, Warrant: warrant.Token}
 	// Before the new runtime field exists this same payload loses its read
 	// authority and reaches the old strict-input path: the red is behavioral.
 	data, err := json.Marshal(map[string]any{"HangarTree": in.Tree.Ref, "HangarRead": request, "DestinationPath": "/work/source"})
@@ -100,7 +99,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 			return restoreErr
 		}
 		if err != nil {
-			return fmt.Errorf("a transient failure spent the read lease: %w", err)
+			return fmt.Errorf("a transient failure spent the warrant: %w", err)
 		}
 		if err := verifyManagedMaterialization(in, root); err != nil {
 			return err

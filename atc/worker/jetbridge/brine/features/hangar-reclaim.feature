@@ -12,21 +12,23 @@ Feature: What the web's deleting passes leave in the output bucket
   the listing and the delete (atc/hangaroutput/drain_sweep_test.go and the
   reclaim specs).
 
-  # A read warrant is minted together with a read lease under the exact
-  # lifecycle, and reclaim admission refuses any generation with a live lease
-  # -- in the candidate query, under the lifecycle lock, and in the schema's
-  # exclusion trigger. So the exact generation CANNOT be reclaimed between
+  # A read warrant is minted over a reader's claim on the exact lifecycle: a
+  # claim like any consumer's, with an expiry. The reclaim pass defers any
+  # generation with a live claim -- in its candidate query and again under the
+  # lifecycle lock -- so the exact generation CANNOT be reclaimed between
   # minting a warrant and the archive read: the first half of this scenario
-  # pins that, with every claim released so the leases are the only
-  # protection left. The second half is the out-of-band case the lease cannot
-  # prevent: the generation removed from the bucket by anything else, after
-  # which the archive read under a still-unspent warrant fails closed as a
-  # typed outcome and never returns a tree.
+  # pins that, with every consumer's claim released so the readers' claims are
+  # the only protection left. The second half is the out-of-band case a claim
+  # cannot prevent: the generation removed from the bucket by anything else,
+  # after which the archive read under a still-unspent warrant fails closed as
+  # a typed outcome and never returns a tree. Once the readers' claims are
+  # given back the pass reclaims the generation: already absent, stamped
+  # reclaimed.
   #
-  # Reddened by: ReclaimCandidates and AdmitReclaim ignoring
-  # hangar_read_leases -- the admission line reddens.
+  # Reddened by: ReclaimableGenerations and HoldForReclaim counting only
+  # claims with no expiry -- the deferral line reddens.
   @HOP-36 @HOP-37 @HOP-38 @HOP-46
-  Scenario: A live read warrant keeps its exact generation from reclaim, and an out-of-band delete makes the archive read fail closed
+  Scenario: A live read warrant's claim defers reclaim of its exact generation, and an out-of-band delete makes the archive read fail closed
     Given an artifact daemon serving the output plane over authenticated TLS
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon writes the held marker
@@ -35,13 +37,15 @@ Feature: What the web's deleting passes leave in the output bucket
     And the published tree is read back from the output bucket
     And the consumer binds the output inside its own transaction
     When two archive read warrants are minted for the published generation
-    And every claim on the published generation is released
-    And the reclaim pass is asked to admit the published generation
-    Then reclaim admission is refused while the read leases are live
+    And every consumer's claim on the published generation is released
+    And the reclaim pass runs over the published generation
+    Then the reclaim pass defers the generation while the readers' claims are live
     When the archive read under the first warrant is made
     Then the first warrant's archive read returned the exact published tree
     When the published generation is deleted out of band
     Then the second warrant's archive read fails closed as "not found"
+    When the readers' claims are released and the reclaim pass runs again
+    Then the generation is stamped reclaimed
 
   # The orphan sweep deletes an object only when its marker names THIS store,
   # no lifecycle row exists for it, nothing pending or publishing could still

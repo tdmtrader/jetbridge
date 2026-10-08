@@ -46,22 +46,6 @@ const (
 	// plane's execution control; see runs.ExecutionStarter.)
 	ComponentRunResults = "run_results"
 
-	// ComponentHangarOutputReadLeaseCleanup closes read leases whose readers
-	// are gone.
-	//
-	// A read lease is the READER's protection and it outlives the claim, so
-	// that releasing the last claim during a transfer cannot delete the bytes
-	// out from under a materializing task. The cost of that is a lease nobody
-	// closes if the materializer dies mid-transfer: the generation stays
-	// protected against reclaim for the life of the deployment, because an
-	// active lease refuses reclaim admission.
-	//
-	// Expiry alone is what bounds it, and expiry is measured on the DATABASE
-	// clock rather than the reader's -- but something still has to notice. This
-	// is that something, and until Phase 7 it did not exist: the repository
-	// method was written, specified and unreachable.
-	ComponentHangarOutputReadLeaseCleanup = "hangar_output_read_lease_cleanup"
-
 	// ComponentHangarOutputStatus publishes the output plane's operational
 	// state as metrics on the existing scrape path: the in-service flag, the
 	// open integrity findings, captures by state, and the residue a drain
@@ -73,9 +57,10 @@ const (
 	ComponentHangarOutputStatus = "hangar_output_status"
 
 	// ComponentHangarReclaim is the web's reclaim pass over the output
-	// namespace: admission, then the conditional delete of each admitted
-	// generation, then finalization. It shares one advisory lock with the
-	// orphan sweep, so across every web replica one of them deletes at a time.
+	// namespace: each registered generation nothing holds is deleted by its
+	// exact generation and stamped reclaimed. It shares one advisory lock with
+	// the orphan sweep, so across every web replica one of them deletes at a
+	// time.
 	ComponentHangarReclaim = "hangar_reclaim"
 
 	// ComponentHangarOrphanSweep lists the output namespace and deletes only

@@ -142,7 +142,7 @@ func retainRunInputs(ctx context.Context, tx Tx, runID int, inputs []pendingRunI
 				return atc.ErrRunInputUnavailable
 			}
 		}
-		if err = repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{ProtocolVersion: output.ProtocolVersion, ClaimID: binding.ClaimID, Ref: binding.Ref, ConsumerBindingID: output.OpaqueID(binding.ClaimID), RequestedAt: output.NewTimestamp(now)}); err != nil {
+		if _, err = repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{ProtocolVersion: output.ProtocolVersion, ClaimID: binding.ClaimID, Ref: binding.Ref, ConsumerBindingID: output.OpaqueID(binding.ClaimID), RequestedAt: output.NewTimestamp(now)}); err != nil {
 			if binding.Source.SourceID != "" {
 				return atc.ErrRunInputUnavailable
 			}

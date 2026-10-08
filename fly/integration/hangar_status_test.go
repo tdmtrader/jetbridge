@@ -28,7 +28,7 @@ var _ = Describe("hangar-status", func() {
 				ghttp.RespondWithJSONEncoded(200, atc.HangarStatus{
 					Enabled: false,
 					AtRisk:  true,
-					Residue: atc.HangarResidue{PendingCaptures: 2, OpenClaims: 3, LiveReadLeases: 1, UnfinalizedReclaimJobs: 4, Total: 10, UnacknowledgedReleases: 5},
+					Residue: atc.HangarResidue{PendingCaptures: 2, OpenClaims: 3, Total: 5, UnacknowledgedReleases: 5},
 					Findings: []atc.HangarFinding{{
 						ID: 42, Violation: "out_of_band_absence", Subject: "scope/digest/9", BlocksAdmission: true,
 					}},
@@ -41,9 +41,7 @@ var _ = Describe("hangar-status", func() {
 		Expect(sess.Out).To(gbytes.Say("out of service, draining"))
 		Expect(sess.Out).To(gbytes.Say(`pending captures\s+2`))
 		Expect(sess.Out).To(gbytes.Say(`open claims\s+3`))
-		Expect(sess.Out).To(gbytes.Say(`live read leases\s+1`))
-		Expect(sess.Out).To(gbytes.Say(`unfinalized reclaim jobs\s+4`))
-		Expect(sess.Out).To(gbytes.Say(`total\s+10`))
+		Expect(sess.Out).To(gbytes.Say(`total\s+5`))
 		Expect(sess.Out).To(gbytes.Say(`captures released without node acknowledgement\s+5`))
 		Expect(sess.Out).To(gbytes.Say(`open integrity findings\s+1`))
 		Expect(sess.Out).To(gbytes.Say(`42\s+out_of_band_absence\s+scope/digest/9`))

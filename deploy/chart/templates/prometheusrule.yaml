@@ -124,7 +124,7 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
             severity: critical
           annotations:
             summary: "The Hangar output plane is at risk and has stopped admitting new work"
-            description: "The output plane has unresolved runtime integrity failures ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants and reclaim admission are all blocked; releases and diagnosis still work. Reconcile missing objects or denied runtime operations before explicitly resolving the recorded findings."
+            description: "The output plane has unresolved runtime integrity failures ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants and the reclaim pass are all blocked; releases and diagnosis still work. Reconcile missing objects or denied runtime operations before explicitly resolving the recorded findings."
         - alert: HangarOutputCapturesStuckPublishing
           # A capture is publishing from the moment its daemon starts the upload
           # until the web records the published generation. That is minutes,
@@ -147,14 +147,6 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
           annotations:
             summary: "Hangar output captures are not being released"
             description: "{{ `{{ $value }}` }} terminal capture(s) have not been released for an hour; nothing they hold can be reclaimed until they are."
-        - alert: HangarOutputReclaimBacklog
-          expr: concourse_hangar_output_plane_inventory{kind="unfinalized_reclaim_jobs"} > 0
-          for: 1h
-          labels:
-            severity: warning
-          annotations:
-            summary: "Hangar output reclaim jobs are not finalizing"
-            description: "{{ `{{ $value }}` }} admitted conditional delete(s) have no outcome after an hour. Every one of them is an object whose disposition is unknown: the delete may have happened and the answer may have been lost. The web runs the reclaim pass; look at its logs."
         - alert: HangarOutputOrphanSweepStalled
           # The web's orphan sweep counts every pass that judged a page and did
           # not fail; a failed pass and one that found the lock held elsewhere

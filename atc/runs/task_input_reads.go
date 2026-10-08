@@ -2,7 +2,6 @@ package runs
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"time"
@@ -86,39 +85,43 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 		if !mapped {
 			continue
 		}
-		nonce, err := output.NewReadWarrantNonce(rand.Reader)
-		if err != nil {
-			return spec, err
-		}
 		admission := hangaroutput.ReadAdmission{
 			Transactor: taskInputReadTransaction{ctx: ctx, conn: s.Conn, buildID: buildID, planID: planID, handle: handle, spec: spec, index: i, binding: binding, epoch: int64(s.Epoch)},
-			Leases:     db.NewHangarOutputRepository(prefix),
+			Claims:     db.NewHangarOutputRepository(prefix),
 			Stat:       taskInputStat{source: source, name: node.Name, uid: string(node.UID), epoch: s.Epoch},
 			Minter:     s.inputReadMinter, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 			Absences: &db.HangarAbsences{Conn: s.Conn},
 		}
 		destination := output.ReadDestination{Handle: handle, Volume: volumeNames[i]}
-		warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ReadLeaseID: output.ReadLeaseID(uuid.NewString()), WarrantNonce: nonce, ClaimID: binding.ClaimID, Ref: binding.Ref, Destination: destination, ActivationEpoch: s.Epoch, MaterializationTimeout: source.ManagedInputTimeout(len(bindings)), NodeUID: node.UID})
+		warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ClaimID: output.ClaimID(uuid.NewString()), Binding: inputReadBinding(destination), Ref: binding.Ref, Destination: destination, MaterializationTimeout: source.ManagedInputTimeout(len(bindings)), NodeUID: node.UID})
 		if err != nil {
 			return spec, err
 		}
 		prepared.Inputs[i].HangarRead = &output.ManagedReadRequest{Ref: binding.Ref, Destination: destination, Warrant: warrant.Token}
 	}
-	// Cancellation during the node stat or lease transaction closes start
-	// admission. Any unused committed lease is bounded by the existing cleaner.
+	// Cancellation during the node stat or claim transaction closes start
+	// admission. Any unused committed claim expires on its own.
 	return prepared, s.CheckStart(ctx, owner, prepared)
 }
 
-// releaseInputReads gives back the read leases of a task's managed inputs once
-// the node has recorded the task's exact start. The inputs are materialized by
-// init containers, and the exact command starts only in the main container,
-// after every init container -- each of which checks its input's
-// materialization receipt -- has exited 0. So by the start witness every read
-// those leases protected is over, and the web that holds them releases them:
-// the node daemon has no client for the web and never releases a lease.
+// inputReadBinding is the opaque name a task input's reader's claim is taken
+// under: the destination it was minted for, which is how releaseInputReads
+// finds the claims of one task again.
+func inputReadBinding(destination output.ReadDestination) output.OpaqueID {
+	return output.OpaqueID("input-read:" + destination.Handle + "/" + destination.Volume)
+}
+
+// releaseInputReads gives back the readers' claims of a task's managed inputs
+// once the node has recorded the task's exact start. The inputs are
+// materialized by init containers, and the exact command starts only in the
+// main container, after every init container -- each of which checks its
+// input's materialization receipt -- has exited 0. So by the start witness
+// every read those claims protected is over, and the web that holds them
+// releases them: the node daemon has no client for the web and never releases
+// a claim.
 //
-// Best effort, one transaction per lease: a failed release is not the start's
-// failure, and an unreleased lease still closes at its expiry.
+// Best effort, one transaction per claim: a failed release is not the start's
+// failure, and an unreleased claim still expires.
 func (s *ExecutionStarter) releaseInputReads(ctx context.Context, buildID int, planID atc.PlanID) {
 	logger := lagerctx.FromContext(ctx).Session("release-input-reads", lager.Data{
 		"build": buildID, "plan": string(planID),
@@ -129,57 +132,60 @@ func (s *ExecutionStarter) releaseInputReads(ctx context.Context, buildID int, p
 		return
 	}
 	rows, err := s.Conn.QueryContext(release, `
-		SELECT r.read_lease_id
-		  FROM hangar_read_leases r
-		  JOIN containers c ON c.handle = r.destination_handle
-		 WHERE c.build_id = $1 AND c.plan_id = $2 AND r.released_at IS NULL`, buildID, string(planID))
+		SELECT k.claim_id, l.scope, l.digest, l.generation
+		  FROM hangar_claims k
+		  JOIN hangar_exact_lifecycles l ON l.id = k.lifecycle_id
+		  JOIN containers c ON starts_with(k.consumer_binding_id, 'input-read:' || c.handle || '/')
+		 WHERE c.build_id = $1 AND c.plan_id = $2
+		   AND k.released_at IS NULL AND k.expires_at IS NOT NULL`, buildID, string(planID))
 	if err != nil {
-		logger.Error("query-leases", err)
+		logger.Error("query-claims", err)
 		return
 	}
-	var ids []output.ReadLeaseID
+	var releases []output.ClaimRelease
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			logger.Error("scan-lease", err)
+		var id, scope, digest string
+		var generation int64
+		if err := rows.Scan(&id, &scope, &digest, &generation); err != nil {
+			logger.Error("scan-claim", err)
 			continue
 		}
-		ids = append(ids, output.ReadLeaseID(id))
+		releases = append(releases, output.ClaimRelease{
+			ProtocolVersion: output.ProtocolVersion, ClaimID: output.ClaimID(id),
+			Ref: hangar.TreeRef{Scope: hangar.Scope(scope), Digest: hangar.Digest(digest), Generation: generation},
+		})
 	}
 	if err := rows.Err(); err != nil {
-		logger.Error("iterate-leases", err)
+		logger.Error("iterate-claims", err)
 	}
 	_ = rows.Close()
-	if len(ids) == 0 {
+	if len(releases) == 0 {
 		return
 	}
 	// The token is minted without a consumer prefix lock: the release
-	// transaction takes only suffix locks (the logical, exact and read-lease
-	// rows ReleaseReadLease names), so there is no prefix for it to hold.
+	// transaction takes only suffix locks (the logical, exact and claim rows
+	// ReleaseClaim names), so there is no prefix for it to hold.
 	prefix, err := db.HangarConsumerPrefixHeld("pipeline-run-input-read")
 	if err != nil {
 		logger.Error("prefix", err)
 		return
 	}
-	leases := db.NewHangarOutputRepository(prefix)
-	for _, id := range ids {
-		if err := releaseInputRead(release, s.Conn, leases, id); err != nil {
-			logger.Error("release-lease", err, lager.Data{"read-lease": string(id)})
+	claims := db.NewHangarOutputRepository(prefix)
+	for _, claim := range releases {
+		claim.RequestedAt = output.NewTimestamp(time.Now().UTC())
+		if err := releaseInputRead(release, s.Conn, claims, claim); err != nil {
+			logger.Error("release-claim", err, lager.Data{"claim": string(claim.ClaimID)})
 		}
 	}
 }
 
-func releaseInputRead(ctx context.Context, conn db.DbConn, leases *db.HangarOutputRepository, id output.ReadLeaseID) error {
+func releaseInputRead(ctx context.Context, conn db.DbConn, claims *db.HangarOutputRepository, release output.ClaimRelease) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer db.Rollback(tx)
-	record, err := leases.LoadReadLease(ctx, db.HangarOutputTx{Tx: tx}, id)
-	if err != nil {
-		return fmt.Errorf("load: %w", err)
-	}
-	if err := leases.ReleaseReadLease(ctx, db.HangarOutputTx{Tx: tx}, record.Lease); err != nil {
+	if err := claims.ReleaseClaim(ctx, db.HangarOutputTx{Tx: tx}, release); err != nil {
 		return fmt.Errorf("release: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

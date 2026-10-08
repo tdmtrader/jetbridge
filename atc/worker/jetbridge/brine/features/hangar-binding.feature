@@ -6,7 +6,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
   (../../steps/resources.go), reached by the fixture rather than by a phrase.
 
   Concurrent acquisitions racing on one claim, both crash halves of every
-  commit, and read-lease expiry stay in Go: brine has no way to say two of
+  commit, and reader's-claim expiry stay in Go: brine has no way to say two of
   these at once, and no injectable clock.
 
   @HOP-30

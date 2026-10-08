@@ -12,7 +12,7 @@ import (
 
 // Managed reads are independent of the producer's execution lifetime. The
 // control plane asks this bucket-owning daemon for an exact stat before creating
-// a read lease. A stat grants no authority to read the object's bytes.
+// a reader's claim. A stat grants no authority to read the object's bytes.
 func (server *Server) readStat(w http.ResponseWriter, request *http.Request) {
 	if !server.authorizeRead(w, request) {
 		return

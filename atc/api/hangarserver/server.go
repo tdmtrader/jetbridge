@@ -97,8 +97,6 @@ func Present(status hangaroutput.Status) atc.HangarStatus {
 			PublishingCaptures:     counts.PublishingCaptures,
 			UnreleasedCaptures:     counts.UnreleasedCaptures,
 			OpenClaims:             counts.OpenClaims,
-			LiveReadLeases:         counts.OpenReadLeases,
-			UnfinalizedReclaimJobs: counts.UnfinalizedReclaimJobs,
 			Total:                  counts.Residue(),
 			UnacknowledgedReleases: counts.UnacknowledgedReleases,
 		},

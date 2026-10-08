@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/google/uuid"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/hangarserver"
@@ -92,13 +91,14 @@ func (cmd *RunCommand) hangarOutputNamespace() (output.OutputNamespace, error) {
 }
 
 // hangarOutputDeleteComponents are the web's two deleting passes over the
-// output namespace: hangar_reclaim (admission, delete, finalization) and
-// hangar_orphan_sweep. Both run under one advisory lock (reclaim.LockID), so
-// across every web replica at most one of them deletes at a time.
+// output namespace: hangar_reclaim (an unclaimed generation is deleted and
+// stamped reclaimed) and hangar_orphan_sweep. Both run under one advisory lock
+// (reclaim.LockID), so across every web replica at most one of them deletes at
+// a time.
 //
 // They run whenever an output bucket is configured, in service or not: a
-// drained plane still finalizes its reclaim jobs, and the sweep still
-// collects what a crash left behind.
+// drained plane still reclaims what its consumers release, and the sweep
+// still collects what a crash left behind.
 func (cmd *RunCommand) hangarOutputDeleteComponents(dbConn db.DbConn, locker lock.LockFactory) ([]RunnableComponent, error) {
 	if !cmd.Kubernetes.OutputPlaneEnabled || cmd.Kubernetes.OutputBucket == "" {
 		return nil, nil
@@ -138,7 +138,6 @@ func (cmd *RunCommand) hangarOutputDeleteComponents(dbConn db.DbConn, locker loc
 				Grace:         cmd.Kubernetes.OutputPublicationGrace,
 				DeleteTimeout: cmd.Kubernetes.OutputDeleteTimeout,
 				Batch:         cmd.Kubernetes.OutputReclaimBatch,
-				OwnerID:       uuid.NewString(),
 			},
 			Interval: cmd.Kubernetes.OutputReclaimInterval,
 		},

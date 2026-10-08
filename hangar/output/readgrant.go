@@ -31,20 +31,24 @@ import (
 //     prefix of these. A signer that could be persuaded to produce one while
 //     believing it produced the other is a signer with one authority.
 //   - A DIFFERENT SHAPE. A strict input warrant binds a ref and a destination. A
-//     read warrant also binds the READ LEASE, because a managed read is only ever
-//     authorized by a committed lease, and a token that did not name one could
-//     outlive the protection it was issued under. It binds the lease's identity.
+//     read warrant also binds the READER'S CLAIM, because a managed read is
+//     only ever authorized by a committed claim, and a token that did not name
+//     one could outlive the protection it was issued under.
 //
-// The daemon verifies the warrant against its key and the token's own window
-// and never calls the web. The control plane calls VerifyBinding for a
-// release, comparing the warrant's claims against the committed lease row.
+// A read is: the web, in the consumer's transaction, acquires a claim with a
+// term (the materialization timeout plus ReadClaimMargin) on the registered
+// generation; then it mints a warrant bound to that claim's id, the ref, the
+// destination handle and volume, the node, and the claim's own acquired-at and
+// expires-at. The node daemon verifies the warrant against its key and the
+// token's window, keeps it single-use per claim id on itself, and never calls
+// the web. When the read ends the web releases the claim; an abandoned read's
+// claim expires on its own.
 //
-// THE WARRANT'S WINDOW IS THE LEASE'S WINDOW, so an ambiguous mint is retryable
-// with a BYTE-IDENTICAL warrant rather than with a second lease: nothing in the
-// token may come from the instant it was minted. Issue and expiry are the
-// lease's own granted-at and expires-at, and the nonce is the one stored with
-// the lease row. Two mints of one committed lease produce the same bytes, and
-// a mint cannot extend the authority the database committed.
+// THE WARRANT'S WINDOW IS THE CLAIM'S WINDOW, and nothing in the token comes
+// from the instant it was minted: no nonce, no mint time. Two mints of one
+// committed claim are byte-identical, so a mint whose commit answer was lost
+// is retried by acquiring the same claim again (idempotent) and minting again.
+// A mint cannot extend the authority the database committed.
 
 const (
 	// readWarrantVersion is the version inside every warrant. It moves when the
@@ -55,9 +59,6 @@ const (
 	// minimum: a "long enough" key check accepts a 33-byte key that somebody
 	// pasted a newline into.
 	ReadWarrantKeyBytes = sha256.Size
-
-	// ReadWarrantNonceBytes is the length of the durable per-lease nonce.
-	ReadWarrantNonceBytes = 16
 
 	// MaxCanonicalReadWarrantBytes bounds the canonical form: the encoding is
 	// length-prefixed and a verifier reads those lengths.
@@ -119,15 +120,13 @@ func validDestinationSegment(segment string) bool {
 
 // ReadWarrantClaims is everything a read warrant binds.
 //
-// Every field here is checked by the verifier and re-checked by the control
-// plane against the committed lease. There is no field a caller may supply that
-// is not covered by the signature, which is the property that makes "a valid
-// HMAC bound to a released lease authorizes nothing" a statement about the
-// LEASE rather than about the token.
+// Every field here is checked by the verifier. There is no field a caller may
+// supply that is not covered by the signature, which is the property that
+// makes "a valid HMAC bound to a released claim authorizes nothing" a statement
+// about the CLAIM rather than about the token.
 type ReadWarrantClaims struct {
 	Domain          string                           `json:"domain"`
 	Version         string                           `json:"version"`
-	ReadLeaseID     ReadLeaseID                      `json:"read_lease_id"`
 	ClaimID         ClaimID                          `json:"claim_id"`
 	Ref             hangar.TreeRef                   `json:"ref"`
 	Destination     ReadDestination                  `json:"destination"`
@@ -138,7 +137,6 @@ type ReadWarrantClaims struct {
 	NodeUID   executioncontrol.NodeUID `json:"node_uid"`
 	IssuedAt  Timestamp                `json:"issued_at"`
 	ExpiresAt Timestamp                `json:"expires_at"`
-	Nonce     string                   `json:"nonce"`
 }
 
 func (claims ReadWarrantClaims) Validate() error {
@@ -149,9 +147,6 @@ func (claims ReadWarrantClaims) Validate() error {
 	if claims.Version != readWarrantVersion {
 		return fmt.Errorf("%w: read warrant version is %q, not %q", ErrUnauthorized,
 			claims.Version, readWarrantVersion)
-	}
-	if err := claims.ReadLeaseID.Validate(); err != nil {
-		return err
 	}
 	if err := claims.ClaimID.Validate(); err != nil {
 		return err
@@ -177,35 +172,8 @@ func (claims ReadWarrantClaims) Validate() error {
 	if !claims.ExpiresAt.After(claims.IssuedAt.Time) {
 		return fmt.Errorf("%w: read warrant expires at or before it was issued", ErrIncomplete)
 	}
-	return validateReadWarrantNonce(claims.Nonce)
-}
-
-// validateReadWarrantNonce is the nonce rule, stated once and used by both the
-// claims and the lease request.
-func validateReadWarrantNonce(nonce string) error {
-	raw, err := base64.RawURLEncoding.Strict().DecodeString(nonce)
-	if err != nil || len(raw) != ReadWarrantNonceBytes ||
-		base64.RawURLEncoding.EncodeToString(raw) != nonce {
-		return fmt.Errorf("%w: a read warrant nonce is %d raw bytes in strict raw-url base64",
-			ErrIncomplete, ReadWarrantNonceBytes)
-	}
 
 	return nil
-}
-
-// NewReadWarrantNonce mints the durable per-lease nonce.
-//
-// It is generated once, by the caller that creates the lease, and stored with
-// it -- not generated at mint time. A nonce chosen when the token is minted
-// would make two mints of one lease differ, and requirement 37's replay would
-// have to create a second lease to be answerable.
-func NewReadWarrantNonce(random io.Reader) (string, error) {
-	raw := make([]byte, ReadWarrantNonceBytes)
-	if _, err := io.ReadFull(random, raw); err != nil {
-		return "", fmt.Errorf("%w: generating a read warrant nonce: %v", ErrInfrastructure, err)
-	}
-
-	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 // CanonicalReadWarrantBytes is the exact byte string a read warrant's MAC covers.
@@ -227,7 +195,6 @@ func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 
 	field(MaterializeDomain)
 	field(readWarrantVersion)
-	field(string(claims.ReadLeaseID))
 	field(string(claims.ClaimID))
 	field(string(claims.Ref.Scope))
 	field(string(claims.Ref.Digest))
@@ -238,7 +205,6 @@ func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 	field(string(claims.NodeUID))
 	field(claims.IssuedAt.UTC().Format(time.RFC3339Nano))
 	field(claims.ExpiresAt.UTC().Format(time.RFC3339Nano))
-	field(claims.Nonce)
 
 	if len(canonical) > MaxCanonicalReadWarrantBytes {
 		return nil, fmt.Errorf("%w: the canonical read warrant is %d bytes, the bound is %d",
@@ -248,10 +214,10 @@ func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 	return canonical, nil
 }
 
-// ReadWarrantSigner mints a warrant for one committed lease.
+// ReadWarrantSigner mints a warrant for one committed claim.
 //
 // It holds no clock, on purpose. Everything dated in a warrant comes from the
-// lease the database committed, so there is no instant a signer could choose
+// claim the database committed, so there is no instant a signer could choose
 // and no way for a mint to widen the window the transaction agreed to.
 type ReadWarrantSigner struct {
 	key [ReadWarrantKeyBytes]byte
@@ -290,35 +256,46 @@ func NewReadWarrantVerifier(material []byte, clock Clock) (*ReadWarrantVerifier,
 	return verifier, nil
 }
 
-// WarrantClaimsFor is everything a read warrant over one committed lease binds:
-// every dated and fenced value comes from the lease row itself.
-func WarrantClaimsFor(lease ReadLease, destination ReadDestination, node executioncontrol.NodeUID, nonce string) ReadWarrantClaims {
-	return ReadWarrantClaims{
+// WarrantClaimsFor is everything a read warrant over one committed claim
+// binds: every dated value comes from the claim row itself.
+func WarrantClaimsFor(claim ClaimRecord, destination ReadDestination, node executioncontrol.NodeUID) ReadWarrantClaims {
+	claims := ReadWarrantClaims{
 		Domain:          MaterializeDomain,
 		Version:         readWarrantVersion,
-		ReadLeaseID:     lease.ReadLeaseID,
-		ClaimID:         lease.ClaimID,
-		Ref:             lease.Ref,
+		ClaimID:         claim.ClaimID,
+		Ref:             claim.Ref,
 		Destination:     destination,
-		ActivationEpoch: lease.ActivationEpoch,
+		ActivationEpoch: claim.ActivationEpoch,
 		NodeUID:         node,
-		IssuedAt:        lease.GrantedAt,
-		ExpiresAt:       lease.ExpiresAt,
-		Nonce:           nonce,
+		IssuedAt:        claim.AcquiredAt,
 	}
+	if claim.ExpiresAt != nil {
+		claims.ExpiresAt = *claim.ExpiresAt
+	}
+
+	return claims
 }
 
-// Sign mints the warrant for an already-committed lease.
+// Sign mints the warrant for an already-committed reader's claim.
 //
-// The lease is the parameter rather than a pile of fields because every dated
-// and fenced value in the token must come from the committed row: a signature
-// over a caller's idea of the lease would be a signature over a lease that may
-// never have existed.
-func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestination, node executioncontrol.NodeUID, nonce string) (string, error) {
-	if err := lease.Validate(); err != nil {
+// The claim is the parameter rather than a pile of fields because every dated
+// value in the token must come from the committed row: a signature over a
+// caller's idea of the claim would be a signature over a claim that may never
+// have existed. A consumer's claim -- one with no expiry -- is refused: a read
+// warrant has a window, and the window is the claim's.
+func (signer *ReadWarrantSigner) Sign(claim ClaimRecord, destination ReadDestination, node executioncontrol.NodeUID) (string, error) {
+	if err := claim.Validate(); err != nil {
 		return "", err
 	}
-	claims := WarrantClaimsFor(lease, destination, node, nonce)
+	if claim.ExpiresAt == nil {
+		return "", fmt.Errorf("%w: claim %s has no expiry; a read warrant is minted over a "+
+			"reader's expiring claim, never a consumer's hold", ErrIncomplete, claim.ClaimID)
+	}
+	if !claim.Active() {
+		return "", fmt.Errorf("%w: claim %s was released; a read warrant is minted over a live claim",
+			ErrConflict, claim.ClaimID)
+	}
+	claims := WarrantClaimsFor(claim, destination, node)
 
 	canonical, err := CanonicalReadWarrantBytes(claims)
 	if err != nil {
@@ -346,12 +323,11 @@ func (signer *ReadWarrantSigner) Sign(lease ReadLease, destination ReadDestinati
 //
 // It answers ErrUnauthorized and nothing more specific. A verifier that said
 // which field failed would tell a caller holding a forged token exactly which
-// byte to change next; the operator's diagnosis comes from the lease row.
+// byte to change next; the operator's diagnosis comes from the claim row.
 //
 // It is the BINDING plus the token's own window, and it is what the DAEMON
 // calls: nothing is opened under a token whose window has passed, and that
-// check runs on the node before any question is asked. The control plane calls
-// VerifyBinding instead, for the reason written there.
+// check runs on the node before any question is asked.
 func (verifier *ReadWarrantVerifier) Verify(token string, ref hangar.TreeRef, destination ReadDestination) (ReadWarrantClaims, error) {
 	claims, err := verifier.VerifyBinding(token, ref, destination)
 	if err != nil {
@@ -367,25 +343,10 @@ func (verifier *ReadWarrantVerifier) Verify(token string, ref hangar.TreeRef, de
 	return claims, nil
 }
 
-// VerifyBinding checks everything the MAC covers EXCEPT the token's window.
-//
-// The split is not a weakening, it is a statement about which clock owns which
-// question. What a warrant binds -- the lease, the claim, the ref, the
-// destination, the epoch, the nonce -- is settled by the MAC and is true
-// forever. Whether that lease is still a live protection is settled by the ROW,
-// on the database clock, and only the row knows about a renewal: a renewal
-// moves the row's expiry and cannot move a token already in a reader's hands.
-//
-// So the control plane authenticates the binding here and then asks the
-// repository, which refuses a released, expired, or no-longer-readable lease on
-// the clock that owns those facts. A control plane that had refused on the
-// token's window instead would have answered `unauthorized` to a legitimately
-// renewed reader trying to RELEASE, and the protection would have been held
-// until recovery closed it.
-//
-// The daemon still calls Verify. A stale token opening an object is exactly
-// what the window is for; what it is not for is deciding, on the control
-// plane's side, a question the database has a better answer to.
+// VerifyBinding checks everything the MAC covers EXCEPT the token's window:
+// what a warrant binds -- the claim, the ref, the destination, the epoch, the
+// node -- is settled by the MAC and is true forever. Whether the claim is still
+// a live hold is the database's question, on its own clock.
 func (verifier *ReadWarrantVerifier) VerifyBinding(token string, ref hangar.TreeRef, destination ReadDestination) (ReadWarrantClaims, error) {
 	unauthorized := func() (ReadWarrantClaims, error) {
 		return ReadWarrantClaims{}, fmt.Errorf("%w: the read warrant does not authorize this read",

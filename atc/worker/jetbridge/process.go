@@ -1702,7 +1702,7 @@ func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName strin
 }
 
 // waitForRunning bounds scheduling, startup and queued managed inputs with the
-// same readiness budget that protects those inputs' pre-admitted read leases.
+// same readiness budget that protects those inputs' pre-admitted readers' claims.
 func (p *execProcess) waitForRunning(ctx context.Context) error {
 	timeout := p.podReadyTimeout()
 	startTime := time.Now()

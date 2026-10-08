@@ -2,7 +2,6 @@ package runs
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"io"
 	"time"
@@ -35,8 +34,9 @@ type ResultReader struct {
 	Scratch string
 }
 
-// Read resolves a named retained result, admits its lease after exact metadata
-// validation, then verifies a private copy before returning any external bytes.
+// Read resolves a named retained result, takes a reader's claim on it after
+// exact metadata validation, then verifies a private copy before returning any
+// external bytes.
 func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hangar.CapturedTree, error) {
 	if r == nil || r.Source == nil || r.Minter == nil {
 		return nil, atc.ErrRunResultsUnavailable
@@ -57,44 +57,40 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	if err != nil {
 		return nil, err
 	}
-	nonce, err := output.NewReadWarrantNonce(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
 	prefix, err := db.HangarConsumerPrefixHeld("pipeline-run-result-read")
 	if err != nil {
 		return nil, err
 	}
-	leases := db.NewHangarOutputRepository(prefix)
+	claims := db.NewHangarOutputRepository(prefix)
 	admission := hangaroutput.ReadAdmission{
 		Transactor: resultReadTransaction{ctx: ctx, conn: r.Conn, runID: runID, name: name, selected: selected},
-		Leases:     leases, Stat: source, Minter: r.Minter,
+		Claims:     claims, Stat: source, Minter: r.Minter,
 		Clock:    output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 		Absences: &db.HangarAbsences{Conn: r.Conn},
 	}
 	destination := output.ReadDestination{Handle: id.String(), Volume: "result"}
 	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{
-		ReadLeaseID: output.ReadLeaseID(id.String()), WarrantNonce: nonce, ClaimID: selected.Binding.ClaimID,
-		Ref: selected.Binding.Ref, Destination: destination, ActivationEpoch: selected.Epoch, MaterializationTimeout: source.ManagedReadTimeout(),
+		ClaimID: output.ClaimID(id.String()), Binding: output.OpaqueID("result-read:" + id.String()),
+		Ref: selected.Binding.Ref, Destination: destination, MaterializationTimeout: source.ManagedReadTimeout(),
 		NodeUID: source.NodeUID(),
 	})
 	if err != nil {
 		return nil, err
 	}
 	archive, attributes, err := source.OpenManagedOutput(ctx, output.ManagedReadRequest{Ref: selected.Binding.Ref, Destination: destination, Warrant: warrant.Token}, maxResultArchiveBytes)
-	// If the transport failed, the node may still be staging under this lease.
-	// The abandoned-lease cleaner closes it at expiry; releasing it now would
-	// end protection a read in progress may still need.
+	// If the transport failed, the node may still be staging under this
+	// claim. It expires on its own; releasing it now would end protection a
+	// read in progress may still need.
 	if err != nil {
 		return nil, err
 	}
 	tree, err := (hangar.Canonicalizer{TempDir: r.Scratch, MaxContentBytes: maxResultArchiveBytes}).Capture(ctx, io.LimitReader(archive, maxResultArchiveBytes+1))
 	err = errors.Join(err, archive.Close())
 	// The archive is consumed: the node's read of the object is over, so this
-	// read's protection is given back here, by the web that holds it. The node
-	// daemon has no client for the web and never releases a lease. A failed
-	// release is not the read's failure -- the lease still closes at expiry.
-	r.releaseLease(ctx, leases, warrant.Lease)
+	// read's claim is given back here, by the web that holds it. The node
+	// daemon has no client for the web and never releases a claim. A failed
+	// release is not the read's failure -- the claim still expires.
+	r.releaseClaim(ctx, claims, warrant.Claim)
 	if err == nil && (tree.Digest != selected.Binding.Ref.Digest || tree.ByteSize != attributes.LogicalBytes) {
 		err = output.ErrCorrupt
 	}
@@ -107,10 +103,9 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	return tree, nil
 }
 
-// releaseLease gives one read lease back in its own transaction. Best effort:
-// an unreleased lease is bounded by its term and closed by the abandoned-lease
-// cleaner.
-func (r *ResultReader) releaseLease(ctx context.Context, leases resultLeaseReleaser, lease output.ReadLease) {
+// releaseClaim gives one reader's claim back in its own transaction. Best
+// effort: an unreleased claim is bounded by its term.
+func (r *ResultReader) releaseClaim(ctx context.Context, claims *db.HangarOutputRepository, claim output.ClaimRecord) {
 	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	tx, err := r.Conn.BeginTx(release, nil)
@@ -118,15 +113,13 @@ func (r *ResultReader) releaseLease(ctx context.Context, leases resultLeaseRelea
 		return
 	}
 	defer db.Rollback(tx)
-	if err := leases.ReleaseReadLease(release, db.HangarOutputTx{Tx: tx}, lease); err != nil {
+	if err := claims.ReleaseClaim(release, db.HangarOutputTx{Tx: tx}, output.ClaimRelease{
+		ProtocolVersion: output.ProtocolVersion, ClaimID: claim.ClaimID, Ref: claim.Ref,
+		RequestedAt: output.NewTimestamp(time.Now().UTC()),
+	}); err != nil {
 		return
 	}
 	_ = tx.Commit()
-}
-
-// resultLeaseReleaser is the one repository method the release needs.
-type resultLeaseReleaser interface {
-	ReleaseReadLease(context.Context, output.Tx, output.ReadLease) error
 }
 
 type resultReadTransaction struct {

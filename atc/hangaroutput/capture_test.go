@@ -5,7 +5,7 @@ package hangaroutput_test
 //
 // The five acceptance criteria are A1-A5 below. Every one is asserted as an
 // OUTCOME -- the row's state, the objects in the bucket, the marker on the
-// node's disk, the reclaim jobs in the database -- and a call count appears
+// node's disk, the lifecycle row's reclaimed stamp -- and a call count appears
 // only where the count is the claim ("recovery created nothing" is "publish
 // was called once").
 
@@ -28,9 +28,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
-	"github.com/concourse/concourse/atc/hangaroutput/reclaim"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -287,17 +285,6 @@ func (h *harness) treeEntries(t *testing.T) map[string]string {
 	}
 
 	return entries
-}
-
-func (h *harness) reclaimJobs(t *testing.T) int {
-	t.Helper()
-
-	var jobs int
-	if err := h.Conn.QueryRow(`SELECT count(*) FROM hangar_reclaim_jobs`).Scan(&jobs); err != nil {
-		t.Fatalf("counting reclaim jobs: %v", err)
-	}
-
-	return jobs
 }
 
 // injectingDialer hands the coordinator the real daemon client, wrapped so a
@@ -640,23 +627,35 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 	h := newHarness(t)
 	ctx := context.Background()
 
-	pass := &reclaim.Pass{
-		Repository: h.Repository,
-		Transactor: &connTransactor{conn: h.Conn},
-		Grace:      time.Millisecond,
-		OwnerID:    "harness-reclaimer",
-	}
-	candidates := func() []db.HangarReclaimCandidate {
+	pass, recorder := reclaimPassFor(t, h, time.Millisecond)
+	candidates := func() []hangar.TreeRef {
 		tx, err := h.Conn.Begin()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		found, err := h.Repository.ReclaimCandidates(ctx, tx, time.Millisecond, 10)
+		found, err := h.Repository.ReclaimableGenerations(ctx, tx, time.Millisecond, 10)
 		if err != nil {
-			t.Fatalf("reclaim candidates: %v", err)
+			t.Fatalf("reclaimable generations: %v", err)
 		}
 		return found
+	}
+	nothingReclaimed := func(when string) {
+		t.Helper()
+		reclaimed, deferred, failed, err := pass.Reclaim(ctx)
+		if err != nil {
+			t.Fatalf("the reclaim pass %s: %v", when, err)
+		}
+		if reclaimed != 0 || failed != 0 {
+			t.Fatalf("the reclaim pass %s reclaimed %d and failed %d; a generation a capture is "+
+				"publishing onto or claims is never a candidate", when, reclaimed, failed)
+		}
+		if deferred != 0 {
+			t.Errorf("the reclaim pass %s deferred %d; the candidate query already excludes it", when, deferred)
+		}
+		if len(recorder.deletes) != 0 {
+			t.Fatalf("the reclaim pass %s asked the store to delete %v", when, recorder.deletes)
+		}
 	}
 
 	// G: published, its capture's claim given back, grace elapsed.
@@ -677,7 +676,7 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 	}
 	time.Sleep(10 * time.Millisecond)
 	// The control: with nothing in flight, G IS a reclaim candidate.
-	if found := candidates(); len(found) != 1 || found[0].Ref != g {
+	if found := candidates(); len(found) != 1 || found[0] != g {
 		t.Fatalf("an unclaimed generation past grace is not a reclaim candidate: %v", found)
 	}
 
@@ -692,16 +691,14 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 		t.Fatalf("the second capture is %s at %s, want publishing at G's digest", record.State, record.Digest)
 	}
 
-	// The reclaimer runs while it is publishing: G is excluded, and nothing
+	// The reclaim pass runs while it is publishing: G is excluded, and nothing
 	// else protects it.
 	if found := candidates(); len(found) != 0 {
 		t.Errorf("a generation a publishing capture is about to join is a reclaim candidate: %v", found)
 	}
-	if _, err := pass.Admit(ctx); err != nil {
-		t.Fatalf("the reclaim admission pass: %v", err)
-	}
-	if jobs := h.reclaimJobs(t); jobs != 0 {
-		t.Fatalf("the reclaimer admitted %d deletes of a generation a capture was publishing onto", jobs)
+	nothingReclaimed("while the second capture was publishing")
+	if reclaimedAt(t, h, g) != nil {
+		t.Fatal("the reclaim pass stamped reclaimed a generation a capture was publishing onto")
 	}
 
 	release()
@@ -712,11 +709,10 @@ func TestA4IdenticalTreesShareOneObjectAndTheReclaimerDeletesNothing(t *testing.
 	if keys := h.bucketKeys(t); len(keys) != 1 {
 		t.Errorf("identical trees left %d objects: %v", len(keys), keys)
 	}
-	if _, err := pass.Admit(ctx); err != nil {
-		t.Fatalf("the reclaim admission pass: %v", err)
-	}
-	if jobs := h.reclaimJobs(t); jobs != 0 {
-		t.Errorf("the reclaimer admitted %d deletes of a generation the second capture claims", jobs)
+	// The second capture's own claim now protects G.
+	nothingReclaimed("after the second capture claimed G")
+	if reclaimedAt(t, h, g) != nil {
+		t.Error("the reclaim pass stamped reclaimed a generation the second capture claims")
 	}
 }
 

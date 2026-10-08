@@ -376,7 +376,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				var (
 					scope, digest string
 					generation    int64
-					state         string
+					live          bool
 				)
 				// By GENERATION, not by (scope, digest). A replacement
 				// registers a SECOND lifecycle for the same logical pair, and
@@ -384,11 +384,11 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				// whichever row the planner handed back -- which is how this
 				// check would pass while looking at the superseded row.
 				err := in.Outcome.Plane.DB.Conn.QueryRow(`
-					SELECT scope, digest, generation, state
+					SELECT scope, digest, generation, reclaimed_at IS NULL
 					  FROM hangar_exact_lifecycles
 					 WHERE scope = $1 AND digest = $2 AND generation = $3`,
 					string(in.Ref.Scope), string(in.Ref.Digest), in.Ref.Generation).
-					Scan(&scope, &digest, &generation, &state)
+					Scan(&scope, &digest, &generation, &live)
 				if err != nil {
 					return fmt.Errorf("no exact lifecycle for %s/%s at generation %d: %v",
 						in.Ref.Scope, in.Ref.Digest, in.Ref.Generation, err)
@@ -404,8 +404,8 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 						"lifecycle that is not about the exact generation is a lifecycle that "+
 						"floats to whatever is at the key", registered, in.Ref)
 				}
-				if state != "registered" {
-					return fmt.Errorf("the exact lifecycle is %q, not registered", state)
+				if !live {
+					return fmt.Errorf("the exact lifecycle is stamped reclaimed, not registered")
 				}
 
 				return nil

@@ -54,13 +54,14 @@ var _ = Describe("the output-plane transaction", func() {
 	})
 
 	claim := func(tx output.Tx) error {
-		return repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+		_, err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
 			ProtocolVersion:   output.ProtocolVersion,
 			ClaimID:           output.ClaimID(uuid.NewString()),
 			Ref:               ref,
 			ConsumerBindingID: output.OpaqueID("binding-transactor"),
 			RequestedAt:       output.NewTimestamp(time.Now()),
 		})
+		return err
 	}
 
 	It("types the deferred refusal a raw commit reports as a bare driver error", func() {

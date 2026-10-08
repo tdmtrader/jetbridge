@@ -22,10 +22,8 @@ package steps
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -53,11 +51,6 @@ const (
 // It is exactly 32 raw bytes, which is what the signer requires: a key
 // of any other shape is refused at construction.
 var brineReadWarrantKey = []byte("0123456789abcdef0123456789abcdef")
-
-// freshReader is the randomness a nonce comes from. It is the real one: a
-// deterministic reader would make two scenarios' nonces collide, and a nonce
-// that repeats is a warrant that replays.
-func freshReader() io.Reader { return rand.Reader }
 
 // neutralConsumer is the product-neutral test consumer: a table of opaque
 // bindings and the four things a consumer does with one.
@@ -98,7 +91,7 @@ func (consumer neutralConsumer) bind(binding string, claimID hangaroutputleaf.Cl
 		VALUES ($1, 'hidden', $2)`, binding, string(claimID)); err != nil {
 		return err
 	}
-	if err := consumer.Repository.AcquireClaim(context.Background(), tx,
+	if _, err := consumer.Repository.AcquireClaim(context.Background(), tx,
 		hangaroutputleaf.ClaimAcquisition{
 			ProtocolVersion:   hangaroutputleaf.ProtocolVersion,
 			ClaimID:           claimID,
@@ -125,7 +118,7 @@ func (consumer neutralConsumer) acquire(binding string, claimID hangaroutputleaf
 	}
 	defer db.Rollback(tx)
 
-	if err := consumer.Repository.AcquireClaim(context.Background(), tx,
+	if _, err := consumer.Repository.AcquireClaim(context.Background(), tx,
 		hangaroutputleaf.ClaimAcquisition{
 			ProtocolVersion:   hangaroutputleaf.ProtocolVersion,
 			ClaimID:           claimID,
@@ -212,15 +205,17 @@ func (consumer neutralConsumer) ledger(ref hangar.TreeRef) ([]hangaroutputleaf.C
 	return consumer.Repository.ReadClaims(context.Background(), tx, ref)
 }
 
-// consumerClaims counts the active claims on the ref OTHER than the capture's
-// own. A publication takes a claim of its own -- CaptureKey.ClaimID, acquired
-// in the transaction that moves the row to published -- so the claims a
-// consumer's sentence counts are the ones beside it.
+// consumerClaims counts the active consumers' claims on the ref OTHER than the
+// capture's own. A publication takes a claim of its own -- CaptureKey.ClaimID,
+// acquired in the transaction that moves the row to published -- so the claims
+// a consumer's sentence counts are the ones beside it. A reader's claim (one
+// with an expiry) is a read's hold, not a consumer's binding, and a scenario
+// that warranted a read earlier is not counting it here.
 func (in BoundOutput) consumerClaims() int {
 	own := in.Tree.Outcome.Capture.Key.ClaimID()
 	active := 0
 	for _, claim := range in.Claims {
-		if claim.Active() && claim.ClaimID != own {
+		if claim.Active() && claim.ExpiresAt == nil && claim.ClaimID != own {
 			active++
 		}
 	}
@@ -279,62 +274,73 @@ func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, erro
 	return stat, closeObjects, nil
 }
 
-// managedRead admits one read through the production admission and reports what
-// happened.
-func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
-	warrant, err := managedReadWarrant(in)
-	return warrant.Lease, err
+// mintedRead is a warrant together with the destination it was minted for.
+// The warrant carries the reader's claim; the destination is the caller's,
+// and every read under the warrant has to name the same one.
+type mintedRead struct {
+	hangaroutput.ReadWarrant
+	Destination hangaroutputleaf.ReadDestination
 }
 
-func managedReadWarrant(in BoundOutput) (hangaroutput.ReadWarrant, error) {
+// managedRead admits one read through the production admission and reports
+// the reader's claim it took.
+func managedRead(in BoundOutput) (hangaroutputleaf.ClaimRecord, error) {
+	warrant, err := managedReadWarrant(in)
+	return warrant.Claim, err
+}
+
+func managedReadWarrant(in BoundOutput) (mintedRead, error) {
 	return managedReadWarrantInto(in, "input-0")
 }
 
 // managedReadWarrantInto admits one read whose warrant names the given input
-// volume, so one consumer can hold two unspent warrants for one tree.
-func managedReadWarrantInto(in BoundOutput, volume string) (hangaroutput.ReadWarrant, error) {
+// volume, so one consumer can hold two unspent warrants for one tree. Each
+// read takes a reader's claim of its own, under a fresh claim id, bound by the
+// destination it is minted for.
+func managedReadWarrantInto(in BoundOutput, volume string) (mintedRead, error) {
 	plane := in.Tree.Outcome.Plane
 	if plane == nil {
-		return hangaroutput.ReadWarrant{}, fmt.Errorf("this chain never settled a capture")
+		return mintedRead{}, fmt.Errorf("this chain never settled a capture")
 	}
 
 	stat, closeStat, err := outputStat(in.Tree.Outcome.Source.Draft.Daemon)
 	if err != nil {
-		return hangaroutput.ReadWarrant{}, err
+		return mintedRead{}, err
 	}
 	defer func() { _ = closeStat() }()
 	signer, err := hangaroutputleaf.NewReadWarrantSigner(brineReadWarrantKey)
 	if err != nil {
-		return hangaroutput.ReadWarrant{}, err
-	}
-	nonce, err := hangaroutputleaf.NewReadWarrantNonce(freshReader())
-	if err != nil {
-		return hangaroutput.ReadWarrant{}, err
+		return mintedRead{}, err
 	}
 
 	admission := &hangaroutput.ReadAdmission{
 		Transactor: brineTransactor{conn: plane.DB.Conn},
-		Leases:     plane.Repository,
+		Claims:     plane.Repository,
 		Stat:       stat,
 		Minter:     signer,
 		Clock:      hangaroutputleaf.ClockFunc(func() time.Time { return time.Now().UTC() }),
 	}
 
+	destination := hangaroutputleaf.ReadDestination{Handle: "consumer", Volume: volume}
 	warrant, err := admission.Admit(context.Background(), hangaroutput.ReadRequest{
-		ReadLeaseID:            hangaroutputleaf.ReadLeaseID(freshUUID()),
-		WarrantNonce:           nonce,
-		ClaimID:                in.Acquisition.ClaimID,
+		ClaimID:                hangaroutputleaf.ClaimID(freshUUID()),
+		Binding:                readBindingFor(destination),
 		Ref:                    in.Tree.Ref,
-		Destination:            hangaroutputleaf.ReadDestination{Handle: "consumer", Volume: volume},
-		ActivationEpoch:        executioncontrol.ActivationEpoch(hangarEpoch),
+		Destination:            destination,
 		MaterializationTimeout: 10 * time.Minute,
 		NodeUID:                executioncontrol.NodeUID(in.Tree.Outcome.Source.Draft.Daemon.NodeUID),
 	})
 	if err != nil {
-		return hangaroutput.ReadWarrant{}, err
+		return mintedRead{}, err
 	}
 
-	return warrant, nil
+	return mintedRead{ReadWarrant: warrant, Destination: destination}, nil
+}
+
+// readBindingFor is the opaque binding a scenario's reader's claim is taken
+// under: the destination, the way a task's input reads name theirs.
+func readBindingFor(destination hangaroutputleaf.ReadDestination) hangaroutputleaf.OpaqueID {
+	return hangaroutputleaf.OpaqueID("input-read:" + destination.Handle + "/" + destination.Volume)
 }
 
 // refusalWords is the closed vocabulary, in one place, so that a phrase taking
@@ -583,16 +589,45 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// A read's authority is its own reader's claim, and a claim protects a
+		// registered generation: once every hold is gone -- the consumer's
+		// binding, the capture's own, and the reader's claim the warranted
+		// read above took -- and the reclaim pass has deleted the generation
+		// and stamped it reclaimed, there is nothing left to take a claim on.
+		// The pass is the production one, and the step refuses to go on if it
+		// reclaimed anything but this generation, so the refusal below is
+		// about the stamp rather than about a pass that did nothing.
 		brine.DefineMap[BoundOutput, BoundOutput](
-			"the consumer holds no active claim",
+			"every claim is released and the reclaim pass runs",
 			func(in BoundOutput, _ brine.Params, _ *brine.Recorder) (BoundOutput, error) {
 				if err := in.Consumer.release(in.Binding, in.Acquisition.ClaimID,
 					in.Tree.Ref); err != nil {
 					return in, err
 				}
+				claims, err := in.Consumer.ledger(in.Tree.Ref)
+				if err != nil {
+					return in, err
+				}
+				for _, claim := range claims {
+					if !claim.Active() {
+						continue
+					}
+					if err := releaseClaim(in, claim.ClaimID); err != nil {
+						return in, fmt.Errorf("releasing claim %s: %w", claim.ClaimID, err)
+					}
+				}
+				reclaimed, _, _, err := runReclaimPass(in)
+				if err != nil {
+					return in, fmt.Errorf("the reclaim pass: %w", err)
+				}
+				if reclaimed != 1 {
+					return in, fmt.Errorf("the reclaim pass reclaimed %d generation(s) with every "+
+						"claim on %s/%s/%d released; want exactly that one", reclaimed,
+						in.Tree.Ref.Scope, in.Tree.Ref.Digest, in.Tree.Ref.Generation)
+				}
 
-				lease, err := managedRead(in)
-				in.Lease, in.Err = lease, err
+				claim, err := managedRead(in)
+				in.Claim, in.Err = claim, err
 
 				return in, nil
 			},
@@ -749,14 +784,14 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 
 		CheckThat[BoundOutput]("the managed read is warranted",
 			func(in BoundOutput) error {
-				lease, err := managedRead(in)
+				claim, err := managedRead(in)
 				if err != nil {
 					return fmt.Errorf("a read against a claimed registered generation was "+
 						"refused: %w", err)
 				}
-				if lease.Ref != in.Tree.Ref {
-					return fmt.Errorf("the lease reads %s/%s/%d and the capture published "+
-						"%s/%s/%d", lease.Ref.Scope, lease.Ref.Digest, lease.Ref.Generation,
+				if claim.Ref != in.Tree.Ref {
+					return fmt.Errorf("the reader's claim protects %s/%s/%d and the capture "+
+						"published %s/%s/%d", claim.Ref.Scope, claim.Ref.Digest, claim.Ref.Generation,
 						in.Tree.Ref.Scope, in.Tree.Ref.Digest, in.Tree.Ref.Generation)
 				}
 
@@ -778,7 +813,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 						want, refusalWords())
 				}
 				if in.Err == nil {
-					return fmt.Errorf("the read was granted: %+v", in.Lease.ReadLeaseID)
+					return fmt.Errorf("the read was granted under reader's claim %s", in.Claim.ClaimID)
 				}
 				got, refused := refusalWord(in.Err)
 				if !refused {

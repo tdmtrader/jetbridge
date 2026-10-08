@@ -2,6 +2,8 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,24 +12,23 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// Reclamation's durable half: who may admit one, who may finish one, and which
-// of four things a finished one is allowed to claim happened.
+// Reclamation's durable half: which registered generations the pass may
+// select, what it rechecks under the locks before it asks the store, and the
+// one stamp that records the store's answer.
 //
 // Real PostgreSQL, because every case is either two transactions arriving in an
 // order neither chose, or a crash between a record and its effect. The typed
-// conditional delete itself -- the six answers a real store gives -- lives
-// beside the reclaimer role in hangar/output/conformance.
+// conditional delete itself -- the answers a real store gives -- lives beside
+// the reclaimer role in hangar/output/conformance.
 var _ = Describe("reclaiming an exact generation", func() {
 	var (
 		ctx        context.Context
 		repository *db.HangarOutputRepository
-		owner      string
 	)
-
-	const deleteTimeout = 2 * time.Minute
 
 	begin := func() db.HangarOutputTx {
 		GinkgoHelper()
@@ -45,12 +46,11 @@ var _ = Describe("reclaiming an exact generation", func() {
 		Expect(tx.Commit()).To(Succeed())
 	}
 
-	// reclaimable publishes a capture, settles it completely, and returns an
-	// tree ref nothing protects: no claim, no read lease, no unresolved
-	// reservation, a terminal and settled capture past its deadline.
 	// published is a settled capture whose generation is still inside its
-	// publication grace. Elapsed grace is a precondition in its own right and
-	// one spec below is about exactly that, so the two are separate helpers.
+	// publication grace: no claim, no reader, a terminal and released capture
+	// past its deadline. reclaimable is the same with the grace elapsed.
+	// Elapsed grace is a precondition in its own right and one spec below is
+	// about exactly that, so the two are separate helpers.
 	published := func(digest hangar.Digest, generation int64) hangar.TreeRef {
 		GinkgoHelper()
 		capture := hangarPublishAt(ctx, repository, digest, generation,
@@ -70,48 +70,118 @@ var _ = Describe("reclaiming an exact generation", func() {
 		return ref
 	}
 
-	admit := func(ref hangar.TreeRef) db.HangarReclaimJob {
+	reclaimedAt := func(ref hangar.TreeRef) sql.NullTime {
 		GinkgoHelper()
-		var job db.HangarReclaimJob
-		in(func(tx db.HangarOutputTx) {
-			Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1,
-				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)).To(Succeed())
-		})
+		var at sql.NullTime
+		Expect(dbConn.QueryRow(`
+			SELECT reclaimed_at FROM hangar_exact_lifecycles
+			WHERE scope = $1 AND digest = $2 AND generation = $3`,
+			string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&at)).To(Succeed())
+
+		return at
+	}
+
+	// candidates is the pass's work query at the default grace, wide enough
+	// to hold every generation a spec publishes.
+	candidates := func() []hangar.TreeRef {
+		GinkgoHelper()
+		var refs []hangar.TreeRef
 		in(func(tx db.HangarOutputTx) {
 			var err error
-			job, err = repository.LoadReclaimJob(ctx, tx, ref)
+			refs, err = repository.ReclaimableGenerations(ctx, tx, output.DefaultPublicationGrace, 100)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		return job
+		return refs
 	}
 
-	lifecycleStateOf := func(ref hangar.TreeRef) string {
+	// hold is HoldForReclaim in a transaction that is then rolled back: the
+	// answer, with nothing left behind.
+	hold := func(ref hangar.TreeRef) error {
 		GinkgoHelper()
-		var state string
-		Expect(dbConn.QueryRow(`
-			SELECT state FROM hangar_exact_lifecycles
-			WHERE scope = $1 AND digest = $2 AND generation = $3`,
-			string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&state)).To(Succeed())
+		tx := begin()
+		defer db.Rollback(tx)
 
-		return state
+		return repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)
 	}
 
-	expireTheLease := func(job db.HangarReclaimJob) {
+	// reclaim is the pass's transaction with the store call elided: hold the
+	// generation and stamp it, in one commit.
+	reclaim := func(ref hangar.TreeRef) {
 		GinkgoHelper()
-		// Moved wholesale into the past rather than shortened: the schema
-		// refuses a term under fifteen minutes, and what is being arranged is
-		// time passing, not an illegally short lease.
-		_, err := dbConn.Exec(`
-			UPDATE hangar_reclaim_jobs
-			   SET renewed_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
-			 WHERE id = $1`, job.ID)
+		in(func(tx db.HangarOutputTx) {
+			Expect(repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)).To(Succeed())
+			Expect(repository.StampReclaimed(ctx, tx, ref)).To(Succeed())
+		})
+	}
+
+	consumersClaim := func(ref hangar.TreeRef, binding string) output.ClaimID {
+		GinkgoHelper()
+		id := output.ClaimID(uuid.NewString())
+		in(func(tx db.HangarOutputTx) {
+			Expect(hangarAcquireClaim(ctx, repository, tx, id, ref, binding)).To(Succeed())
+		})
+
+		return id
+	}
+
+	readersClaim := func(ref hangar.TreeRef, term time.Duration) output.ClaimRecord {
+		GinkgoHelper()
+		var record output.ClaimRecord
+		in(func(tx db.HangarOutputTx) {
+			var err error
+			record, err = repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+				ProtocolVersion:   output.ProtocolVersion,
+				ClaimID:           output.ClaimID(uuid.NewString()),
+				Ref:               ref,
+				ConsumerBindingID: "input-read:task-handle/input-0",
+				RequestedAt:       output.NewTimestamp(time.Now()),
+				Term:              term,
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		return record
+	}
+
+	release := func(ref hangar.TreeRef, id output.ClaimID) {
+		GinkgoHelper()
+		in(func(tx db.HangarOutputTx) {
+			Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+				ProtocolVersion: output.ProtocolVersion,
+				ClaimID:         id,
+				Ref:             ref,
+				RequestedAt:     output.NewTimestamp(time.Now()),
+			})).To(Succeed())
+		})
+	}
+
+	// expire moves a reader's claim past its term on the database clock. What
+	// is being arranged is time passing: the row keeps its term, and the
+	// comparison the repository makes is still the database's own.
+	expire := func(id output.ClaimID) {
+		GinkgoHelper()
+		result, err := dbConn.Exec(`
+			UPDATE hangar_claims SET expires_at = now() - interval '1 second' WHERE claim_id = $1`,
+			string(id))
 		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RowsAffected()).To(BeEquivalentTo(1))
+	}
+
+	openClaims := func() int {
+		GinkgoHelper()
+		var counts output.PlaneCounts
+		in(func(tx db.HangarOutputTx) {
+			var err error
+			counts, err = repository.CountOutputPlaneState(ctx, tx)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		return counts.OpenClaims
 	}
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		owner = uuid.NewString()
 		dbConn.SetMaxOpenConns(4)
 		DeferCleanup(func() { dbConn.SetMaxOpenConns(1) })
 
@@ -122,670 +192,301 @@ var _ = Describe("reclaiming an exact generation", func() {
 		hangarActivateEpoch(ctx, repository)
 	})
 
-	Describe("admission", func() {
-		It("refuses a generation whose publication grace has not elapsed", func() {
-			// Elapsed grace is one of admission's preconditions. Without it a
-			// generation is admissible the instant it publishes: the capture
+	Describe("what the pass may select", func() {
+		It("names a registered, unclaimed generation once its publication grace has elapsed", func() {
+			// Elapsed grace is one of the preconditions. Without it a
+			// generation is reclaimable the instant it publishes: the capture
 			// that made the object has settled, so nothing else here objects,
 			// and the plane would delete a freshly published tree because no
 			// claim had been taken yet.
 			ref := published(hangarDigest(60), 1725830823000060)
+			Expect(candidates()).NotTo(ContainElement(ref))
 
-			tx := begin()
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1,
-				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)
-			db.Rollback(tx)
+			err := hold(ref)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("publication grace"))
-			Expect(lifecycleStateOf(ref)).To(Equal("registered"),
-				"a generation inside its publication grace was marked reclaiming")
+			Expect(reclaimedAt(ref).Valid).To(BeFalse())
 
 			// And the control: the same generation, once its grace has
-			// elapsed on the database clock, is admitted.
+			// elapsed on the database clock, is selected and may be held.
 			hangarAgePublication(ref, hangarGraceElapsed)
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1,
-					output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)).
-					To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
+			Expect(candidates()).To(ConsistOf(ref))
+			Expect(hold(ref)).To(Succeed())
 		})
 
-		It("marks the generation reclaiming before any external delete", func() {
-			ref := reclaimable(hangarDigest(50), 1725830823000050)
-			Expect(lifecycleStateOf(ref)).To(Equal("registered"))
-
-			job := admit(ref)
-			Expect(job.Ref).To(Equal(ref))
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"),
-				"admission did not mark the generation reclaiming durably before the delete; a "+
-					"crash here would leave an object deleted and a row saying it is registered")
-			Expect(job.AdmittedDeletes).To(Equal(0),
-				"admission recorded a delete nobody has attempted")
-		})
-
-		It("is refused while a claim is active, and admitted once it is released", func() {
+		It("excludes a generation under a consumer's live claim, until it is released", func() {
 			ref := reclaimable(hangarDigest(51), 1725830823000051)
-			claimID := output.ClaimID(uuid.NewString())
+			claimID := consumersClaim(ref, "binding-reclaim")
 
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-					ProtocolVersion:   output.ProtocolVersion,
-					ClaimID:           claimID,
-					Ref:               ref,
-					ConsumerBindingID: "binding-reclaim",
-					RequestedAt:       output.NewTimestamp(time.Now()),
-				})).To(Succeed())
-			})
-
-			tx := begin()
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
-				output.DefaultPublicationGrace)
-			db.Rollback(tx)
+			Expect(candidates()).NotTo(ContainElement(ref))
+			err := hold(ref)
 			Expect(err).To(MatchError(output.ErrConflict))
-			Expect(err.Error()).To(ContainSubstring("claim"),
-				"the refusal is about something other than the active claim; a precondition "+
+			Expect(err.Error()).To(ContainSubstring("1 live claim(s)"),
+				"the refusal is about something other than the live claim; a precondition "+
 					"added later must not quietly become the reason this spec is green")
-			Expect(lifecycleStateOf(ref)).To(Equal("registered"))
 
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
-					ProtocolVersion: output.ProtocolVersion,
-					ClaimID:         claimID,
-					Ref:             ref,
-					RequestedAt:     output.NewTimestamp(time.Now()),
-				})).To(Succeed())
-			})
-
-			admit(ref)
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
+			release(ref, claimID)
+			Expect(candidates()).To(ConsistOf(ref))
+			Expect(hold(ref)).To(Succeed())
 		})
 
-		It("loses to a claim that arrives first, and wins against one that arrives after", func() {
-			// Both orders, over one generation, with two real transactions.
-			// Either the claimant wins and reclamation is refused, or
-			// reclamation wins and the claim is refused; never both.
-			ref := reclaimable(hangarDigest(52), 1725830823000052)
+		// A reader's claim is the reader's protection and it outlives the
+		// consumer's; an EXPIRED one is not protection at all, which is what
+		// stops one crashed materializer pinning a generation for the life of
+		// the deployment.
+		It("excludes a reader's live claim and not an expired one", func() {
+			ref := reclaimable(hangarDigest(70), 1725830823000070)
+			reader := readersClaim(ref, 30*time.Minute)
+			Expect(reader.ExpiresAt).NotTo(BeNil())
 
-			claiming := begin()
-			defer db.Rollback(claiming)
-			Expect(repository.AcquireClaim(ctx, claiming, output.ClaimAcquisition{
-				ProtocolVersion:   output.ProtocolVersion,
-				ClaimID:           output.ClaimID(uuid.NewString()),
-				Ref:               ref,
-				ConsumerBindingID: "binding-first",
-				RequestedAt:       output.NewTimestamp(time.Now()),
-			})).To(Succeed())
+			Expect(candidates()).NotTo(ContainElement(ref))
+			err := hold(ref)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("1 live claim(s)"))
+			Expect(openClaims()).To(Equal(1), "a reader's live claim is an open claim")
 
-			admitted := make(chan error, 1)
-			go func() {
-				defer GinkgoRecover()
-				tx, err := dbConn.Begin()
-				if err != nil {
-					admitted <- err
-
-					return
-				}
-				if err := repository.AdmitReclaim(ctx, db.HangarOutputTx{Tx: tx}, ref, owner, 1,
-					output.MinLeaseTerm, output.DefaultPublicationGrace); err != nil {
-					_ = tx.Rollback()
-					admitted <- err
-
-					return
-				}
-				admitted <- tx.Commit()
-			}()
-
-			Consistently(admitted, 300*time.Millisecond).ShouldNot(Receive(),
-				"reclaim admission did not serialize with the claim on the exact-lifecycle lock")
-			Expect(claiming.Commit()).To(Succeed())
-
-			var err error
-			Eventually(admitted, 5*time.Second).Should(Receive(&err))
-			Expect(err).To(MatchError(output.ErrConflict),
-				"reclamation was admitted beside an active claim")
-			Expect(lifecycleStateOf(ref)).To(Equal("registered"))
+			expire(reader.ClaimID)
+			Expect(openClaims()).To(BeZero(),
+				"an expired reader's claim was counted as residue a drain would wait on")
+			Expect(candidates()).To(ConsistOf(ref))
+			Expect(hold(ref)).To(Succeed())
 		})
 
-		It("is refused while a pending capture names the same tree", func() {
+		It("excludes a generation while a pending or publishing capture names the same tree", func() {
 			digest := hangarDigest(53)
 			ref := reclaimable(digest, 1725830823000053)
 
 			// A second capture of the same content opens and does not publish.
-			hangarReserve(ctx, repository, digest,
-				output.DefaultCaptureDeadline)
+			hangarReserve(ctx, repository, digest, output.DefaultCaptureDeadline)
 
-			tx := begin()
-			defer db.Rollback(tx)
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
-				output.DefaultPublicationGrace)
+			Expect(candidates()).NotTo(ContainElement(ref))
+			err := hold(ref)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("pending or publishing capture"))
 		})
 
-		It("is refused while the policy is at risk, and already-admitted work still finishes", func() {
-			ref := reclaimable(hangarDigest(54), 1725830823000054)
-			other := reclaimable(hangarDigest(55), 1725830823000055)
-			job := admit(ref)
+		It("excludes a generation while an unregistered input publication names the same tree", func() {
+			digest := hangarDigest(54)
+			ref := reclaimable(digest, 1725830823000054)
 
-			// The policy goes at-risk BETWEEN admission and delete. A finding
-			// stops new admission from detection onward and lets
-			// already-admitted conditional delete work finish.
+			// A Run input of the same content is reserved and the node has not
+			// yet answered with the publication, so no generation is known for
+			// it. It could be this one. The reservation row is immutable and
+			// the schema refuses one reserved already lapsed, so the lapsed
+			// case is the schema's: an unanswered reservation lapses within
+			// two minutes of its creation and protects nothing after.
+			Expect(candidates()).To(ConsistOf(ref))
+			now := time.Now().UTC()
 			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+				Expect(repository.ReserveInputPublication(ctx, tx, output.InputStage{
+					Version:         output.InputPublicationVersion,
+					ReservationID:   output.ReservationID(uuid.NewString()),
+					NodeUID:         executioncontrol.NodeUID("node-uid"),
+					ActivationEpoch: 1,
+					Scope:           ref.Scope,
+					Digest:          digest,
+					Bytes:           1024,
+					CreatedAt:       output.NewTimestamp(now),
+					ExpiresAt:       output.NewTimestamp(now.Add(90 * time.Second)),
+				}, uuid.NewString())).To(Succeed())
 			})
 
-			// New admission stops. The generation it would be admitted for is
-			// published BEFORE the policy turns, because a capture is one of
-			// the admissions a finding also stops -- a fixture built after
-			// the turn would be refused for the wrong reason.
-			// The refusal arrives at COMMIT: the policy gate is a deferred
-			// constraint trigger, so an admission that looked fine statement by
-			// statement is still refused before it is durable. That is the
-			// arrangement the rest of this plane uses, and HangarOutputTx is
-			// what turns the refusal into this leaf's vocabulary.
-			tx := begin()
-			Expect(repository.AdmitReclaim(ctx, tx, other, owner, 1,
-				output.MinLeaseTerm, output.DefaultPublicationGrace)).To(Succeed())
-			err := tx.Commit()
-			db.Rollback(tx)
-			Expect(err).To(HaveOccurred())
+			Expect(candidates()).NotTo(ContainElement(ref))
+			err := hold(ref)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("unregistered input publication"))
+		})
+
+		It("refuses the hold while a blocking integrity finding is open", func() {
+			ref := reclaimable(hangarDigest(55), 1725830823000055)
+
+			in(func(tx db.HangarOutputTx) {
+				Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{
+					Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation",
+					Detail: "unexpected object loss",
+				})).To(Succeed())
+			})
+
+			// The query is the bound and not the decision: the finding is
+			// about the plane, not this generation, and the pass learns it at
+			// the hold, before any store call.
+			Expect(candidates()).To(ConsistOf(ref))
+			err := hold(ref)
+			Expect(err).To(MatchError(output.ErrAtRisk))
 			Expect(err.Error()).To(ContainSubstring("storage integrity"))
+			Expect(reclaimedAt(ref).Valid).To(BeFalse())
 
-			// The admitted job finishes: the delete record, its outcome and the
-			// finalization all go through.
-			var attempt int64
+			var finding int64
+			Expect(dbConn.QueryRow(`
+				SELECT id FROM hangar_integrity_findings WHERE resolved_at IS NULL`).Scan(&finding)).
+				To(Succeed())
 			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
+				Expect(repository.ResolveIntegrityFinding(ctx, tx, finding)).To(Succeed())
 			})
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-					output.DeleteConfirmed)).To(Succeed())
-				Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)).
-					To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaimed_confirmed"))
+			Expect(hold(ref)).To(Succeed())
 		})
-	})
 
-	Describe("the lease", func() {
-		It("refuses to begin work without the delete timeout plus two minutes left", func() {
+		It("stops naming a generation once it is stamped reclaimed", func() {
 			ref := reclaimable(hangarDigest(56), 1725830823000056)
-			job := admit(ref)
+			Expect(candidates()).To(ConsistOf(ref))
 
-			// The control: with a full term, work begins.
-			in(func(tx db.HangarOutputTx) {
-				_, err := repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
+			reclaim(ref)
 
-			// One minute left, and a two-minute delete needs four. Both columns
-			// move: the schema's term floor is fifteen minutes, and what is
-			// being arranged is a lease nearly used up rather than a short one.
-			_, err := dbConn.Exec(`
-				UPDATE hangar_reclaim_jobs
-				   SET renewed_at = now() - interval '20 minutes',
-				       expires_at = now() + interval '1 minute'
-				 WHERE id = $1`, job.ID)
-			Expect(err).NotTo(HaveOccurred())
-
-			tx := begin()
-			defer db.Rollback(tx)
-			_, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-			Expect(err).To(MatchError(output.ErrTimeout))
-			Expect(err.Error()).To(ContainSubstring("work begins only with"))
-		})
-
-		It("refuses a renewal from an owner that was taken over", func() {
-			ref := reclaimable(hangarDigest(57), 1725830823000057)
-			job := admit(ref)
-
-			// The control: a live owner renews.
-			in(func(tx db.HangarOutputTx) {
-				renewed, err := repository.RenewReclaimLease(ctx, tx, job, output.MinLeaseTerm)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(renewed.LeaseFence).To(Equal(job.LeaseFence))
-			})
-
-			expireTheLease(job)
-
-			var taken db.HangarReclaimJob
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				taken, err = repository.TakeOverReclaimJob(ctx, tx, job, uuid.NewString(),
-					output.MinLeaseTerm)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			Expect(taken.LeaseFence).To(BeNumerically(">", job.LeaseFence))
-
-			tx := begin()
-			defer db.Rollback(tx)
-			_, err := repository.RenewReclaimLease(ctx, tx, job, output.MinLeaseTerm)
+			Expect(candidates()).To(BeEmpty())
+			err := hold(ref)
 			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("already reclaimed"))
 		})
 
-		It("refuses a stale fence even when the owner is the same process", func() {
-			// The case the fence exists for, and the one the owner check cannot
-			// cover: a controller whose lease lapsed takes its OWN job back,
-			// under its own id, and is still holding the job value it had
-			// before. That value's fence is behind the row's, and every write
-			// it makes has to refuse -- otherwise a delete decided under the
-			// old lease lands under the new one.
-			ref := reclaimable(hangarDigest(71), 1725830823000071)
-			stale := admit(ref)
-			expireTheLease(stale)
-
-			var retaken db.HangarReclaimJob
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				retaken, err = repository.TakeOverReclaimJob(ctx, tx, stale, owner,
-					output.MinLeaseTerm)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			Expect(retaken.OwnerID).To(Equal(stale.OwnerID))
-			Expect(retaken.LeaseFence).To(BeNumerically(">", stale.LeaseFence))
-
-			// The control: the re-read job renews, so the refusal below is the
-			// fence's and not a lease that is simply gone.
-			in(func(tx db.HangarOutputTx) {
-				_, err := repository.RenewReclaimLease(ctx, tx, retaken, output.MinLeaseTerm)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			tx := begin()
-			_, err := repository.RenewReclaimLease(ctx, tx, stale, output.MinLeaseTerm)
-			db.Rollback(tx)
-			Expect(err).To(MatchError(output.ErrConflict),
-				"the same process renewed under a fence it no longer holds")
-
-			// And its delete admission refuses too, before any record is
-			// written: a stale owner that could admit a delete would put a
-			// durable "we asked" on a job somebody else is running.
-			tx = begin()
-			_, err = repository.AdmitDelete(ctx, tx, stale, deleteTimeout)
-			db.Rollback(tx)
-			Expect(err).To(MatchError(output.ErrConflict))
-
-			// And its outcome and finalization refuse for the same reason.
-			var attempt int64
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, retaken, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			tx = begin()
-			defer db.Rollback(tx)
-			Expect(repository.RecordDeleteOutcome(ctx, tx, stale, attempt, output.DeleteConfirmed)).
-				To(MatchError(output.ErrConflict))
-			Expect(repository.FinalizeReclaim(ctx, tx, stale, output.ReclaimAbandoned, false)).
-				To(MatchError(output.ErrConflict))
-		})
-
-		It("refuses a taken-over owner's delete outcome and its finalization", func() {
-			ref := reclaimable(hangarDigest(58), 1725830823000058)
-			job := admit(ref)
-
-			var attempt int64
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			expireTheLease(job)
-			in(func(tx db.HangarOutputTx) {
-				_, err := repository.TakeOverReclaimJob(ctx, tx, job, uuid.NewString(),
-					output.MinLeaseTerm)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			// The old owner's delete comes back, after the takeover. It writes
-			// nothing: two owners writing two answers about one attempt is how
-			// an ambiguous delete becomes a confirmed one.
-			tx := begin()
-			defer db.Rollback(tx)
-			Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt, output.DeleteConfirmed)).
-				To(MatchError(output.ErrConflict))
-			Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)).
-				To(MatchError(output.ErrConflict))
-		})
-
-		It("refuses a finalization from an expired owner that was not taken over", func() {
-			ref := reclaimable(hangarDigest(59), 1725830823000059)
-			job := admit(ref)
+		It("is bounded, oldest first, and names its grace", func() {
+			newer := reclaimable(hangarDigest(57), 1725830823000057)
+			older := reclaimable(hangarDigest(58), 1725830823000058)
+			hangarAgePublication(older, time.Hour)
 
 			in(func(tx db.HangarOutputTx) {
-				_, err := repository.AdmitDelete(ctx, tx, job, deleteTimeout)
+				refs, err := repository.ReclaimableGenerations(ctx, tx, output.DefaultPublicationGrace, 1)
 				Expect(err).NotTo(HaveOccurred())
-			})
-			expireTheLease(job)
+				Expect(refs).To(Equal([]hangar.TreeRef{older}))
 
-			tx := begin()
-			defer db.Rollback(tx)
-			Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimAbandoned, false)).
-				To(MatchError(output.ErrConflict))
+				refs, err = repository.ReclaimableGenerations(ctx, tx, output.DefaultPublicationGrace, 2)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(refs).To(Equal([]hangar.TreeRef{older, newer}))
+
+				_, err = repository.ReclaimableGenerations(ctx, tx, output.DefaultPublicationGrace, 0)
+				Expect(err).To(MatchError(output.ErrIncomplete))
+				_, err = repository.ReclaimableGenerations(ctx, tx, 0, 10)
+				Expect(err).To(MatchError(output.ErrIncomplete))
+				Expect(repository.HoldForReclaim(ctx, tx, older, 0)).To(MatchError(output.ErrIncomplete))
+			})
 		})
 	})
 
-	Describe("the evidence a finished job may claim", func() {
-		It("confirms only with an acknowledged conditional delete", func() {
-			ref := reclaimable(hangarDigest(60), 1725830823000060)
-			job := admit(ref)
-
-			// No attempt at all: `reclaimed_confirmed` has nothing behind it.
-			tx := begin()
-			err := repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)
-			if err == nil {
-				err = tx.Commit()
-			}
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("acknowledged conditional delete"))
-			db.Rollback(tx)
-
-			// An admitted delete whose answer never came is still not a
-			// confirmation.
-			var attempt int64
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			tx = begin()
-			err = repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)
-			if err == nil {
-				err = tx.Commit()
-			}
-			Expect(err).To(HaveOccurred())
-			db.Rollback(tx)
-
-			// And with the acknowledgement it is one.
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-					output.DeleteConfirmed)).To(Succeed())
-				Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)).
-					To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaimed_confirmed"))
-		})
-
-		It("infers only from an admitted delete plus observed exact absence", func() {
+	Describe("the stamp", func() {
+		It("records the delete once, and a second stamp is a conflict", func() {
 			ref := reclaimable(hangarDigest(61), 1725830823000061)
-			job := admit(ref)
+			Expect(reclaimedAt(ref).Valid).To(BeFalse())
 
-			var attempt int64
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
+			reclaim(ref)
+			stamped := reclaimedAt(ref)
+			Expect(stamped.Valid).To(BeTrue())
 
-			// The delete happened and the response was lost. That is an
-			// infrastructure failure on the attempt, not a confirmation.
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-					output.DeleteInfrastructure)).To(Succeed())
-			})
-
-			// Without observing absence, inference is refused.
 			tx := begin()
-			err := repository.FinalizeReclaim(ctx, tx, job, output.ReclaimInferred, false)
-			if err == nil {
-				err = tx.Commit()
-			}
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("absence"))
-			db.Rollback(tx)
-
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimInferred, true)).
-					To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaimed_inferred"))
-
-			var confirmed bool
-			Expect(dbConn.QueryRow(`
-				SELECT EXISTS (SELECT 1 FROM hangar_reclaim_attempts
-				                WHERE job_id = $1 AND outcome = 'deleted')`,
-				job.ID).Scan(&confirmed)).To(Succeed())
-			Expect(confirmed).To(BeFalse(),
-				"an inferred reclamation recorded an acknowledged delete it never received")
+			defer db.Rollback(tx)
+			Expect(repository.StampReclaimed(ctx, tx, ref)).To(MatchError(output.ErrConflict))
+			Expect(reclaimedAt(ref)).To(Equal(stamped), "a second stamp moved the first")
 		})
 
-		It("makes a generation conflict debt and never an unconditional delete", func() {
-			ref := reclaimable(hangarDigest(62), 1725830823000062)
-			job := admit(ref)
-
-			var attempt int64
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-					output.DeleteGenerationConflict)).To(Succeed())
-				Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConflicted, false)).
-					To(Succeed())
-			})
-
-			Expect(lifecycleStateOf(ref)).To(Equal("conflicted"))
-
-			var attempts int
-			Expect(dbConn.QueryRow(`
-				SELECT count(*) FROM hangar_reclaim_attempts WHERE job_id = $1`,
-				job.ID).Scan(&attempts)).To(Succeed())
-			Expect(attempts).To(Equal(1),
-				"a refused conditional delete was retried, and the only retry available to it "+
-					"would be a broader one")
-		})
-
-		It("gives an abandoned job's generation back its protection", func() {
-			ref := reclaimable(hangarDigest(63), 1725830823000063)
-			job := admit(ref)
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
-
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimAbandoned, false)).
-					To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("registered"),
-				"an abandoned reclaim left its generation reclaiming, which no claim may "+
-					"protect and no reader may be granted")
-
-			// And it can be admitted again, which is what "abandoned" has to
-			// mean for a job that was given up on rather than finished.
-			admit(ref)
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
+		It("refuses to stamp a generation no publication registered", func() {
+			tx := begin()
+			defer db.Rollback(tx)
+			Expect(repository.StampReclaimed(ctx, tx, hangar.TreeRef{
+				Scope: "team-a", Digest: hangarDigest(62), Generation: 1725830823000062,
+			})).To(MatchError(output.ErrNotFound))
 		})
 
 		It("never resurrects a reclaimed generation", func() {
-			ref := reclaimable(hangarDigest(64), 1725830823000064)
-			job := admit(ref)
-			var attempt int64
-			in(func(tx db.HangarOutputTx) {
-				var err error
-				attempt, err = repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordDeleteOutcome(ctx, tx, job, attempt,
-					output.DeleteConfirmed)).To(Succeed())
-				Expect(repository.FinalizeReclaim(ctx, tx, job, output.ReclaimConfirmed, false)).
-					To(Succeed())
-			})
+			digest := hangarDigest(63)
+			ref := reclaimable(digest, 1725830823000063)
+			reclaim(ref)
 
+			// A claim on it is refused: the stamped row is the tombstone that
+			// stops a stale resurrection.
 			tx := begin()
-			defer db.Rollback(tx)
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
-				output.DefaultPublicationGrace)
+			err := repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
+			err = hangarAcquireClaim(ctx, repository, tx, output.ClaimID(uuid.NewString()), ref,
+				"binding-after-reclaim")
+			Expect(err).To(MatchError(output.ErrNotFound))
+			Expect(err.Error()).To(ContainSubstring("reclaimed"))
+			db.Rollback(tx)
 
-			// And a claim on it is refused: the tombstone is what stops a
-			// stale resurrection.
-			Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-				ProtocolVersion:   output.ProtocolVersion,
-				ClaimID:           output.ClaimID(uuid.NewString()),
-				Ref:               ref,
-				ConsumerBindingID: "binding-after-reclaim",
-				RequestedAt:       output.NewTimestamp(time.Now()),
-			})).To(HaveOccurred())
+			// And so is registering it again: a second capture of the same
+			// content that publishes at the same generation finds the row
+			// stamped and is refused rather than reusing it.
+			again := hangarReserve(ctx, repository, digest, output.DefaultCaptureDeadline)
+			tx = begin()
+			defer db.Rollback(tx)
+			_, err = repository.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
+				Key: again.Key, Generation: ref.Generation, ActivationEpoch: 1,
+			})
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("never resurrects"))
 		})
 	})
 
-	Describe("absence with no admitted delete", func() {
-		It("is an out-of-band lifetime violation and never a reclamation", func() {
+	Describe("a crash between the delete and the stamp", func() {
+		It("leaves the generation registered for the next pass to retry", func() {
+			ref := reclaimable(hangarDigest(67), 1725830823000067)
+
+			// The pass holds the generation, asks the store, and dies before
+			// the commit. Nothing durable changed: the row is registered, the
+			// next pass selects it again, and the store answers already-absent
+			// to a delete that already landed.
+			tx := begin()
+			Expect(repository.HoldForReclaim(ctx, tx, ref, output.DefaultPublicationGrace)).To(Succeed())
+			Expect(repository.StampReclaimed(ctx, tx, ref)).To(Succeed())
+			db.Rollback(tx)
+
+			Expect(reclaimedAt(ref).Valid).To(BeFalse(),
+				"a stamp outlived the transaction that was going to justify it")
+			Expect(candidates()).To(ConsistOf(ref))
+			reclaim(ref)
+			Expect(reclaimedAt(ref).Valid).To(BeTrue())
+		})
+	})
+
+	Describe("an absence a read found", func() {
+		absences := func() db.HangarAbsences { return db.HangarAbsences{Conn: dbConn} }
+
+		openFindings := func() []string {
+			GinkgoHelper()
+			rows, err := dbConn.Query(`
+				SELECT violation || ':' || subject FROM hangar_integrity_findings
+				WHERE resolved_at IS NULL ORDER BY id`)
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Close(rows)
+			var findings []string
+			for rows.Next() {
+				var finding string
+				Expect(rows.Scan(&finding)).To(Succeed())
+				findings = append(findings, finding)
+			}
+			Expect(rows.Err()).NotTo(HaveOccurred())
+
+			return findings
+		}
+
+		It("is a lifetime violation for a registered generation, which stays registered", func() {
 			ref := reclaimable(hangarDigest(65), 1725830823000065)
 
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordOutOfBandAbsence(ctx, tx, ref)).To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("missing_out_of_band"))
+			Expect(absences().RecordUnexpectedAbsence(ctx, ref)).To(Succeed())
+			Expect(openFindings()).To(ConsistOf(fmt.Sprintf("%s:%s/%s/%d",
+				output.ViolationOutOfBandAbsence, ref.Scope, ref.Digest, ref.Generation)))
+			Expect(reclaimedAt(ref).Valid).To(BeFalse(),
+				"an absence nothing this plane did explains was recorded as a reclamation")
 
-			// It is not a reclamation, and nothing may later call it one: the
-			// state is terminal and a reclaim job over it is refused.
-			tx := begin()
-			defer db.Rollback(tx)
-			Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
-				output.DefaultPublicationGrace)).
-				To(MatchError(output.ErrConflict))
+			// Recorded once: the finding is the operator's to resolve, and a
+			// second read of the same absence is the same finding.
+			Expect(absences().RecordUnexpectedAbsence(ctx, ref)).To(Succeed())
+			Expect(openFindings()).To(HaveLen(1))
+
+			// The pass finds the object absent once nothing claims it and the
+			// finding is resolved, and stamps it then; until then the finding
+			// blocks it.
+			Expect(hold(ref)).To(MatchError(output.ErrAtRisk))
 		})
 
-		It("is refused for a generation this plane admitted a delete for", func() {
+		It("is not news for a reclaimed generation, nor for one never registered", func() {
 			ref := reclaimable(hangarDigest(66), 1725830823000066)
-			job := admit(ref)
-			in(func(tx db.HangarOutputTx) {
-				_, err := repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-				Expect(err).NotTo(HaveOccurred())
-			})
+			reclaim(ref)
 
-			tx := begin()
-			defer db.Rollback(tx)
-			err := repository.RecordOutOfBandAbsence(ctx, tx, ref)
-			Expect(err).To(MatchError(output.ErrConflict))
-			Expect(err.Error()).To(ContainSubstring("admitted delete"))
-		})
-	})
-
-	Describe("a crash between the record and its effect", func() {
-		It("replays the admitted delete rather than losing that it asked", func() {
-			ref := reclaimable(hangarDigest(67), 1725830823000067)
-			job := admit(ref)
-
-			// The admitted-delete record is written and the transaction dies
-			// before the commit. Nothing durable says this plane asked, so an
-			// absence found afterwards is an out-of-band violation -- which is
-			// the honest answer, and exactly why the record must precede the
-			// external call rather than follow it.
-			tx := begin()
-			_, err := repository.AdmitDelete(ctx, tx, job, deleteTimeout)
-			Expect(err).NotTo(HaveOccurred())
-			db.Rollback(tx)
-
-			in(func(tx db.HangarOutputTx) {
-				replayed, err := repository.LoadReclaimJob(ctx, tx, ref)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(replayed.AdmittedDeletes).To(Equal(0),
-					"an admitted delete outlived the transaction that was going to justify it")
-			})
-
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordOutOfBandAbsence(ctx, tx, ref)).To(Succeed())
-			})
-			Expect(lifecycleStateOf(ref)).To(Equal("missing_out_of_band"))
-		})
-	})
-
-	Describe("the work query", func() {
-		It("returns open jobs and stops returning finalized ones", func() {
-			first := reclaimable(hangarDigest(68), 1725830823000068)
-			second := reclaimable(hangarDigest(69), 1725830823000069)
-			firstJob := admit(first)
-			admit(second)
-
-			in(func(tx db.HangarOutputTx) {
-				jobs, err := repository.DueReclaimJobs(ctx, tx, 10)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(jobs).To(HaveLen(2))
-			})
-
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.FinalizeReclaim(ctx, tx, firstJob, output.ReclaimAbandoned,
-					false)).To(Succeed())
-			})
-
-			in(func(tx db.HangarOutputTx) {
-				jobs, err := repository.DueReclaimJobs(ctx, tx, 10)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(jobs).To(HaveLen(1))
-				Expect(jobs[0].Ref).To(Equal(second))
-			})
-		})
-
-		It("is bounded", func() {
-			tx := begin()
-			defer db.Rollback(tx)
-			_, err := repository.DueReclaimJobs(ctx, tx, 0)
-			Expect(err).To(MatchError(output.ErrIncomplete))
-		})
-	})
-
-	// A read lease is the reader's protection and it outlives the claim; an
-	// EXPIRED one is not protection at all, which is what stops one crashed
-	// materializer pinning a generation forever.
-	Describe("read leases against admission", func() {
-		It("blocks admission while live and permits it once closed", func() {
-			ref := reclaimable(hangarDigest(70), 1725830823000070)
-			claimID := output.ClaimID(uuid.NewString())
-			leaseID := output.ReadLeaseID(uuid.NewString())
-
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
-					ProtocolVersion:   output.ProtocolVersion,
-					ClaimID:           claimID,
-					Ref:               ref,
-					ConsumerBindingID: "binding-reader",
-					RequestedAt:       output.NewTimestamp(time.Now()),
-				})).To(Succeed())
-			})
-			in(func(tx db.HangarOutputTx) {
-				_, err := repository.AcquireReadLease(ctx, tx,
-					hangarReadLeaseRequest(leaseID, claimID, ref))
-				Expect(err).NotTo(HaveOccurred())
-			})
-			in(func(tx db.HangarOutputTx) {
-				Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
-					ProtocolVersion: output.ProtocolVersion,
-					ClaimID:         claimID,
-					Ref:             ref,
-					RequestedAt:     output.NewTimestamp(time.Now()),
-				})).To(Succeed())
-			})
-
-			// The last claim is gone and the reader is still transferring.
-			tx := begin()
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
-				output.DefaultPublicationGrace)
-			db.Rollback(tx)
-			Expect(err).To(MatchError(output.ErrConflict))
-			Expect(err.Error()).To(ContainSubstring("read lease"))
-
-			closed := 0
-			in(func(tx db.HangarOutputTx) {
-				_, err := dbConn.Exec(`
-					UPDATE hangar_read_leases
-					   SET granted_at = now() - interval '2 hours',
-					       expires_at = now() - interval '1 minute'
-					 WHERE read_lease_id = $1`, string(leaseID))
-				Expect(err).NotTo(HaveOccurred())
-				closed, err = repository.CloseAbandonedReadLeases(ctx, tx, 10)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			Expect(closed).To(Equal(1))
-
-			admit(ref)
-			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
+			Expect(absences().RecordUnexpectedAbsence(ctx, ref)).To(Succeed())
+			Expect(absences().RecordUnexpectedAbsence(ctx, hangar.TreeRef{
+				Scope: "team-a", Digest: hangarDigest(68), Generation: 1725830823000068,
+			})).To(Succeed())
+			Expect(openFindings()).To(BeEmpty(),
+				"this plane's own delete, or a generation it never managed, was reported as "+
+					"somebody else removing an object")
 		})
 	})
 })

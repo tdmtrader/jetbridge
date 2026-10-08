@@ -21,13 +21,11 @@ type HangarStatus struct {
 // findings are not residue: they block admission, not removal, and are listed
 // in HangarStatus.Findings.
 type HangarResidue struct {
-	PendingCaptures        int `json:"pending_captures"`
-	PublishingCaptures     int `json:"publishing_captures"`
-	UnreleasedCaptures     int `json:"unreleased_captures"`
-	OpenClaims             int `json:"open_claims"`
-	LiveReadLeases         int `json:"live_read_leases"`
-	UnfinalizedReclaimJobs int `json:"unfinalized_reclaim_jobs"`
-	Total                  int `json:"total"`
+	PendingCaptures    int `json:"pending_captures"`
+	PublishingCaptures int `json:"publishing_captures"`
+	UnreleasedCaptures int `json:"unreleased_captures"`
+	OpenClaims         int `json:"open_claims"`
+	Total              int `json:"total"`
 
 	// UnacknowledgedReleases are not in Total: captures released because
 	// their node was gone or re-registered, whose step marker no node

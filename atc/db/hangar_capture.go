@@ -238,8 +238,8 @@ func (repository *HangarOutputRepository) MarkFailed(ctx context.Context, tx out
 // scope and digest, this one included), then the exact lifecycle, then the
 // claim.
 func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.Context, tx output.Tx, published output.PublishedCapture) (output.Capture, error) {
-	if published.Generation <= 0 || published.Metageneration <= 0 || published.ActivationEpoch == 0 {
-		return output.Capture{}, fmt.Errorf("%w: a publication names no generation, metageneration or epoch",
+	if published.Generation <= 0 || published.ActivationEpoch == 0 {
+		return output.Capture{}, fmt.Errorf("%w: a publication names no generation or epoch",
 			output.ErrIncomplete)
 	}
 	current, err := repository.GetCapture(ctx, tx, published.Key)
@@ -270,15 +270,14 @@ func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.C
 	if err != nil {
 		return output.Capture{}, err
 	}
-	if _, err := repository.upsertLifecycle(ctx, tx, ref, published.Metageneration,
-		int64(published.ActivationEpoch), "registered"); err != nil {
+	if _, err := repository.registerLifecycle(ctx, tx, ref, int64(published.ActivationEpoch)); err != nil {
 		return output.Capture{}, err
 	}
 	var now time.Time
 	if err := hangarQueryRow(ctx, tx, `SELECT now()`, nil, &now); err != nil {
 		return output.Capture{}, err
 	}
-	if err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+	if _, err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
 		ProtocolVersion:   output.ProtocolVersion,
 		ClaimID:           published.Key.ClaimID(),
 		Ref:               ref,

@@ -6,7 +6,7 @@ package hangaroutput_test
 // rolled-back admission reaches none. That is the right assertion and it is not
 // sufficient: it covers the paths the specs drive, and the rule requirement 35
 // states is about every path there is -- "only after that transaction commits
-// may the control plane mint and deliver a usable lease-bound warrant".
+// may the control plane mint and deliver a usable claim-bound warrant".
 //
 // So this reads the source. A function that holds an open transaction and signs
 // inside it is minting under a transaction that may still roll back, and that
@@ -16,7 +16,7 @@ package hangaroutput_test
 // IT FOLLOWS ONE STEP OF INDIRECTION. A guard matching only a literal `Sign`
 // selector in the same function body as `Begin` is narrower than its own name:
 // a mint reached through a helper on the same receiver -- `admission.mint(...)`
-// inside `commitLease` -- would walk straight past it. So the functions each
+// inside `commitClaim` -- would walk straight past it. So the functions each
 // file declares are resolved against each other and "signs" is transitive.
 // Across files it is not, which is why every file that mints is in the list
 // below rather than only the one that started out that way.

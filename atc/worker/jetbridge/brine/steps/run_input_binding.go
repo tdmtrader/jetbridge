@@ -169,7 +169,7 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 			}
 			var activeClaims int
 			ref := in.Source.Candidate.Record.Ref
-			if err := in.Source.Start.DB.Conn.QueryRow(`SELECT count(*) FROM hangar_claims c JOIN hangar_exact_lifecycles l ON l.id=c.lifecycle_id WHERE c.released_at IS NULL AND l.scope=$1 AND l.digest=$2 AND l.generation=$3`, string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&activeClaims); err != nil {
+			if err := in.Source.Start.DB.Conn.QueryRow(`SELECT count(*) FROM hangar_claims c JOIN hangar_exact_lifecycles l ON l.id=c.lifecycle_id WHERE c.released_at IS NULL AND c.expires_at IS NULL AND l.scope=$1 AND l.digest=$2 AND l.generation=$3`, string(ref.Scope), string(ref.Digest), ref.Generation).Scan(&activeClaims); err != nil {
 				return err
 			}
 			if activeClaims != 1+count*bindingsPerRun {

@@ -39,15 +39,14 @@ func TestManagedReadClientsCoverTheConfiguredOperation(t *testing.T) {
 	if reader.ManagedReadTimeout() != 15*time.Minute {
 		t.Fatalf("result admission lost the configured operation budget: %s", reader.ManagedReadTimeout())
 	}
-	if !output.MayStartWork(output.LeaseTermFor(reader.ManagedReadTimeout()), config.OutputOperationTimeout) {
-		t.Fatal("result lease cannot admit the configured node operation")
-	}
-	// Both leases are minted before the pod exists. After startup and the first
-	// full transfer, the second input must still be allowed to open its tree.
-	remaining := output.LeaseTermFor(source.ManagedInputTimeout(2)) -
+	// Both readers' claims are taken before the pod exists. After startup and
+	// the first full transfer, the second input's claim must still be live
+	// for the whole of its own operation.
+	remaining := source.ManagedInputTimeout(2) + output.ReadClaimMargin -
 		DefaultPodSchedulingTimeout - output.ReadTransferTimeout(config.OutputOperationTimeout)
-	if !output.MayStartWork(remaining, config.OutputOperationTimeout) {
-		t.Fatal("the second input loses its lease while waiting for the first")
+	if remaining < config.OutputOperationTimeout {
+		t.Fatalf("the second input's claim lapses while waiting for the first: %s left of a %s operation",
+			remaining, config.OutputOperationTimeout)
 	}
 	if reader.http.Timeout <= config.OutputOperationTimeout {
 		t.Fatal("result transport expires before the node operation can finish")

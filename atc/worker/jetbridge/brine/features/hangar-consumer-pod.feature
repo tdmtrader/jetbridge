@@ -72,9 +72,12 @@ Feature: What a consuming step's Pod says about a published output
     And the step sees a volume mounted at "/tmp/build/from-earlier"
 
   # Control first: the granted read is the line above the refusal, because a
-  # refusal passes on a daemon that refuses everything.
+  # refusal passes on a daemon that refuses everything. A read's authority is
+  # its own reader's claim, and a claim protects a registered generation:
+  # once every claim is given back and the reclaim pass has stamped the
+  # generation reclaimed, the same read is refused as not found.
   @HOP-35 @HOP-36
-  Scenario: Without an active claim the consumer's read is refused, while the same read with a claim succeeds
+  Scenario: Once the generation is reclaimed the consumer's read is refused, while the same read before it succeeds
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon writes the held marker
@@ -83,5 +86,5 @@ Feature: What a consuming step's Pod says about a published output
     And the published tree is read back from the output bucket
     And the consumer binds the output inside its own transaction
     Then the managed read is warranted
-    When the consumer holds no active claim
-    Then the managed read is refused as "lifecycle conflict"
+    When every claim is released and the reclaim pass runs
+    Then the managed read is refused as "not found"
