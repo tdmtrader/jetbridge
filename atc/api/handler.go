@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/atc/api/hangarserver"
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
+	"github.com/concourse/concourse/atc/api/landingserver"
 	"github.com/concourse/concourse/atc/api/loglevelserver"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
@@ -61,6 +62,7 @@ func NewHandler(
 	dbCheckFactory db.CheckFactory,
 	dbResourceConfigFactory db.ResourceConfigFactory,
 	dbUserFactory db.UserFactory,
+	dbLandingQueueFactory db.LandingQueueFactory,
 
 	eventHandlerFactory buildserver.EventHandlerFactory,
 
@@ -115,6 +117,7 @@ func NewHandler(
 	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
 	volumesServer := volumeserver.NewServer(logger, volumeRepository)
 	teamServer := teamserver.NewServer(logger, dbTeamFactory, externalURL)
+	landingServer := landingserver.NewServer(logger, dbLandingQueueFactory)
 	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers, jetBridgeVersion, concourseVersion, dbPinger, dbWorkerFactory)
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
@@ -236,12 +239,15 @@ func NewHandler(
 
 		atc.ListVolumes: teamHandlerFactory.HandlerFor(volumesServer.ListVolumes),
 
-		atc.ListTeams:      http.HandlerFunc(teamServer.ListTeams),
-		atc.GetTeam:        teamHandlerFactory.HandlerFor(teamServer.GetTeam),
-		atc.SetTeam:        http.HandlerFunc(teamServer.SetTeam),
-		atc.RenameTeam:     teamHandlerFactory.HandlerFor(teamServer.RenameTeam),
-		atc.DestroyTeam:    teamHandlerFactory.HandlerFor(teamServer.DestroyTeam),
-		atc.ListTeamBuilds: teamHandlerFactory.HandlerFor(teamServer.ListTeamBuilds),
+		atc.ListTeams:       http.HandlerFunc(teamServer.ListTeams),
+		atc.GetTeam:         teamHandlerFactory.HandlerFor(teamServer.GetTeam),
+		atc.SetLandingQueue: teamHandlerFactory.HandlerFor(landingServer.SetLandingQueue),
+		atc.SubmitLanding:   teamHandlerFactory.HandlerFor(landingServer.SubmitLanding),
+		atc.GetLandingQueue: teamHandlerFactory.HandlerFor(landingServer.GetLandingQueue),
+		atc.SetTeam:         http.HandlerFunc(teamServer.SetTeam),
+		atc.RenameTeam:      teamHandlerFactory.HandlerFor(teamServer.RenameTeam),
+		atc.DestroyTeam:     teamHandlerFactory.HandlerFor(teamServer.DestroyTeam),
+		atc.ListTeamBuilds:  teamHandlerFactory.HandlerFor(teamServer.ListTeamBuilds),
 
 		atc.CreateArtifact: teamHandlerFactory.HandlerFor(artifactServer.CreateArtifact),
 		atc.GetArtifact:    teamHandlerFactory.HandlerFor(artifactServer.GetArtifact),

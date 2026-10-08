@@ -185,6 +185,7 @@ type apiDBDeps struct {
 	checkFactory          db.CheckFactory
 	resourceConfigFactory db.ResourceConfigFactory
 	userFactory           db.UserFactory
+	landingQueueFactory   db.LandingQueueFactory
 
 	wall              db.Wall
 	signingKeyFactory db.SigningKeyFactory
@@ -275,6 +276,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		deps.checkFactory,
 		deps.resourceConfigFactory,
 		deps.userFactory,
+		deps.landingQueueFactory,
 
 		constructedEventHandler.Construct,
 

@@ -117,7 +117,11 @@ const (
 	GetArtifact        = "GetArtifact"
 	ListBuildArtifacts = "ListBuildArtifacts"
 
-	GetUser              = "GetUser"
+	GetUser = "GetUser"
+
+	SetLandingQueue      = "SetLandingQueue"
+	SubmitLanding        = "SubmitLanding"
+	GetLandingQueue      = "GetLandingQueue"
 	ListActiveUsersSince = "ListActiveUsersSince"
 
 	SetWall   = "SetWall"
@@ -238,6 +242,10 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/health", Method: "GET", Name: GetHealth},
 
 	{Path: "/api/v1/user", Method: "GET", Name: GetUser},
+
+	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name", Method: "PUT", Name: SetLandingQueue},
+	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name/entries", Method: "POST", Name: SubmitLanding},
+	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name", Method: "GET", Name: GetLandingQueue},
 	{Path: "/api/v1/users", Method: "GET", Name: ListActiveUsersSince},
 
 	{Path: "/api/v1/teams/:team_name/containers", Method: "GET", Name: ListContainers},

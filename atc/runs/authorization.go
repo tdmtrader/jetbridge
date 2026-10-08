@@ -62,10 +62,16 @@ func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principa
 	// mapping is weighed: a request that names two identities, or none, is
 	// malformed rather than unauthorized, and answering it with a verdict
 	// would mean having picked one of them.
-	hasClaims, hasBuild := principal.Claims != nil, principal.Build != nil
-	if hasClaims == hasBuild {
+	forms := 0
+	for _, set := range []bool{principal.Claims != nil, principal.Build != nil, principal.Queue != nil} {
+		if set {
+			forms++
+		}
+	}
+	if forms != 1 {
 		return authorization{}, ErrPrincipalAmbiguous
 	}
+	hasBuild := principal.Build != nil
 
 	// Refused at admission rather than at construction so the refusal is an
 	// admission outcome a caller can observe. atccmd validates the same map at
@@ -81,6 +87,9 @@ func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principa
 
 	if hasBuild {
 		return authorizeBuild(tx, teams, teamName, principal.Build, a.customRoles, action)
+	}
+	if principal.Queue != nil {
+		return authorizeQueue(teams, teamName, principal.Queue, a.customRoles, action)
 	}
 
 	// HasToken and IsTokenValid are true because the caller has already

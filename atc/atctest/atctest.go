@@ -287,7 +287,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 	return api.NewHandler(logger, p.URL, "", "atctest", wrapper,
 		p.teams, db.NewPipelineFactory(p.conn, p.locks), p.runs, db.NewJobFactory(p.conn, p.locks),
 		db.NewResourceFactory(p.conn, p.locks), workers, p.teams, db.NewVolumeRepository(p.conn), p.builds,
-		db.NewCheckFactory(p.conn, p.locks, make(chan db.Build, 64), nil), db.NewResourceConfigFactory(p.conn, p.locks), users,
+		db.NewCheckFactory(p.conn, p.locks, make(chan db.Build, 64), nil), db.NewResourceConfigFactory(p.conn, p.locks), users, db.NewLandingQueueFactory(p.conn),
 		buildserver.NewEventHandler, nil, lager.NewReconfigurableSink(lager.NewWriterSink(os.Stderr, lager.ERROR), lager.ERROR), false, os.TempDir(),
 		concourse.Version, concourse.WorkerVersion, concourse.JetBridgeVersion, concourse.ConcourseVersion,
 		noop.Noop{}, creds.NewVarSourcePool(logger, creds.CredentialManagementConfig{}, time.Minute, time.Minute, clock.NewClock()), creds.Managers{},
