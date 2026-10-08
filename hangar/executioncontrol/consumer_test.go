@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// This file is the compile-only generic consumer the plan's Phase 0 asks for.
+// This file is a compile-only generic consumer of the protocol.
 //
 // Its job is to fail to compile if the protocol ever needs an output, a source
 // path, a consumer lifecycle or a product-domain value to be usable. It is
@@ -42,8 +42,7 @@ func (consumer ordinaryConsumer) supervise(ctx context.Context, envelope Envelop
 	}
 	if !observed.Classification.Terminal() {
 		// Not knowing is a legitimate answer, and it is not a failure to
-		// convert into one. Requirement 4's unresolved/lost distinction is this
-		// branch.
+		// convert into one: the unresolved/lost distinction is this branch.
 		return observed.Classification, nil
 	}
 

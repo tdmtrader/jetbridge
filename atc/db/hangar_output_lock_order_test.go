@@ -153,7 +153,7 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 		// read, not a mutex: with the renewal still uncommitted, the
 		// admission's constraint phase saw no live lease and both committed --
 		// a generation admitted to reclamation with a renewed read lease over
-		// it, which is what AC 13 and Req 36 forbid.
+		// it, which is forbidden.
 		//
 		// What is asserted is the blocking, not only the outcome: a spec that
 		// merely committed one then the other would pass against the broken
@@ -186,8 +186,8 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(db.HangarOutputTx{Tx: granting}.Commit()).To(Succeed())
 
-			// AC 13's own setup: the consumer released its last claim during
-			// the transfer, so the read lease is the only protection left.
+			// The consumer released its last claim during the transfer, so
+			// the read lease is the only protection left.
 			releasing, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(releasing)
@@ -261,10 +261,10 @@ var _ = Describe("the Hangar lock order under two connections", func() {
 	Describe("the capture class of the suffix", func() {
 		// F3. The capture-row statement (class 1, after the correlations) was
 		// once pinned by nothing: deleting `FOR NO KEY UPDATE` from it left 138
-		// specs green. This is the NOWAIT arm the AC 11 specs already use for
-		// the correlation and exact classes, applied to a capture row named by
-		// key: a holder takes the row, and a third connection asks whether it
-		// is really held.
+		// specs green. This is the NOWAIT arm the lock-order specs already use
+		// for the correlation and exact classes, applied to a capture row named
+		// by key: a holder takes the row, and a third connection asks whether
+		// it is really held.
 		It("really holds the capture row it says it locked", func() {
 			digest := hangarDigest(64)
 			capture := hangarReserve(ctx, repository, digest, deadline())

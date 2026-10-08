@@ -22,10 +22,10 @@ import (
 //     pipeline Run, and the leaf rule in 6 already keeps the consumer's
 //     packages out of these two.)
 //  2. There is exactly one TreeRef, and it is the foundation's. A second exact
-//     reference type is how two object models start diverging. (Req 20)
+//     reference type is how two object models start diverging.
 //  3. Output code is never routed through the durable *cache* tier, which is a
 //     fail-open, name-keyed cache whose every method swallows its errors.
-//     (Reqs 20, 59) The cache shares the object interface and backends with
+//     The cache shares the object interface and backends with
 //     this plane but never a namespace: the daemon and web refuse to start
 //     with the cache bucket equal to the output or input one
 //     (objectstore.Namespaces), and the artifact daemon, which mounts the
@@ -41,10 +41,8 @@ import (
 //     require a caller to send a precondition once delete permission exists,
 //     so the seam has to be the code -- and the code that matters is the
 //     concrete role type each binary holds, not an interface nobody dials.
-//     (Reqs 47, 55; AC 20)
 //  5. No production API accepts a bucket, object key, absolute path, hostPath
 //     or caller-chosen scope. A handle string alone is never an identity.
-//     (Reqs 7, 20, 24; AC 7)
 //  6. Both packages stay leaves, for the reason hangar/architecture_test.go
 //     already states about package hangar.
 //  7. Each principal binary under cmd/ links exactly its role and not the
@@ -511,7 +509,7 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 				if isCallerChosenString(param.Type) {
 					problems = append(problems, callable.File+": "+describe(callable)+
 						" takes a bare string parameter "+param.Name+" ("+param.Type+"). A key-only or "+
-						"unconditional delete route is exactly what Req 55 forbids.")
+						"unconditional delete route is forbidden.")
 				}
 			}
 			if !hasRef {
@@ -630,8 +628,8 @@ var storeSeams = map[string]string{
 // checkRoleTypesTakeNoCallerChosenLocation is the bare-string rule over the
 // concrete object roles. Every identity a role type takes is a distinct type --
 // a TreeRef, a resolved reservation, a cursor, a lease -- so the only thing a
-// plain string could be is a name somebody chose, and Req 7 says a handle
-// string alone is never an identity.
+// plain string could be is a name somebody chose, and a handle string alone is
+// never an identity.
 func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 	var problems []string
 
@@ -728,7 +726,7 @@ func checkEachPrincipalLinksExactlyItsRole(linked map[string][]string) []string 
 		if !links[own] {
 			problems = append(problems, binary+" does not link "+rolePackagePrefix+string(own)+
 				". The binary is that role's principal; a principal that holds no role is a "+
-				"process nothing can attest.")
+				"process with no role.")
 		}
 		for _, other := range roles {
 			if other != own && links[other] {
@@ -762,8 +760,8 @@ var locationParamTypes = []string{"hangar.Scope"}
 //
 // The rule used to be `param.Type == "string"`, which is the one spelling out
 // of five that a reviewer thinks of first. `[]string`, `...string`, `*string`
-// and `map[string]string` are each exactly "a string a caller chose" (Req 7,
-// AC 7) and each walked straight past it. Tokenizing is what makes the rule
+// and `map[string]string` are each exactly "a string a caller chose" and each
+// walked straight past it. Tokenizing is what makes the rule
 // about the type rather than about how it was written.
 func isCallerChosenString(rendered string) bool {
 	for _, token := range tokenize(rendered) {
@@ -819,7 +817,7 @@ func checkNoAPIAcceptsAStorageLocation(found surface) []string {
 				problems = append(problems, callable.File+": "+describe(callable)+
 					" accepts a caller-chosen "+param.Name+". The control plane derives the "+
 					"bucket, scope and key prefix from authenticated deployment context alone; "+
-					"no task, consumer or receipt may select or broaden them.")
+					"no task, consumer or request may select or broaden them.")
 			}
 			for _, forbidden := range locationParamTypes {
 				if param.Type != forbidden {

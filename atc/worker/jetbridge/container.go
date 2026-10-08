@@ -226,8 +226,8 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			}
 			// A hijack is a new writer over the step's tree, and the ATC has
 			// no execution identity for a looked-up container -- so it cannot
-			// take a ticket on that writer's behalf. Req 18 says a
-			// capture-enabled task loses post-completion hijack; this is
+			// take a ticket on that writer's behalf. A capture-enabled task
+			// loses post-completion hijack; this is
 			// where that loss is spelled, as a refusal that names itself
 			// rather than a session that races the capture.
 			if err := c.refuseIfCaptureHeld(ctx, "intercepting this container"); err != nil {
@@ -255,8 +255,8 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
 			// A replacement is a NEW POD UID getting a write-capable mount over
 			// this step's tree, and for a capture-selected step that tree is
-			// the capture's step directory. Req 16 forbids one over a held
-			// source, so it asks the ledger.
+			// the capture's step directory. A held source may not receive
+			// one, so it asks the ledger.
 			//
 			// This is the OTHER pause-pod replacement site. execProcess's
 			// recreatePausePod covers a pod that died after Run returned; this
@@ -523,7 +523,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// on, and land on a worker whose output plane is not enabled.
 	//
 	// This is a refusal at ADMISSION rather than an omission in the Pod. The
-	// difference is the whole of Req 58: a worker that quietly built the
+	// difference matters: a worker that quietly built the
 	// ordinary pod would produce a step that ran, succeeded and captured
 	// nothing, and its pending capture row would sit until its capture
 	// deadline. There is no cache-tier fallback to
@@ -586,7 +586,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	// The capture control init goes FIRST, before every writer.
 	//
-	// Requirement 3 puts the durable source hold ahead of the producer main
+	// The durable source hold goes ahead of the producer main
 	// process, and every other container this pod builds writes into the tree
 	// that hold protects: `cleanup-stale` removes it, `artifact-fetch` stages
 	// inputs into it, the main container and its sidecars produce into it. So
@@ -596,7 +596,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	//
 	// An execution that selected no capture reaches none of this: the ordinary
 	// pod is byte-identical to the one this runtime built before the output
-	// plane existed, which is Req 59 and the control scenario for the whole
+	// plane existed, which is the control scenario for the whole
 	// capture-pod feature.
 	//
 	// OutputPlaneEnabled deliberately does NOT gate this, and Phase 8 is where
@@ -998,7 +998,7 @@ func (c *Container) buildPodLabels() map[string]string {
 //
 // The capture's step directory is stamped here because a looked-up Container
 // has no ContainerSpec to read it from -- `LookupContainer` builds one with an
-// empty spec -- and the hijack refusal Req 18 requires has to know WHICH
+// empty spec -- and the hijack refusal has to know WHICH
 // directory the capture holds. The handle is a sibling of it, so a guard that
 // fell back to the handle could only ever be told `unmanaged`.
 func (c *Container) buildPodAnnotations() map[string]string {

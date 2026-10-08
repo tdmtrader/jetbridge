@@ -89,8 +89,8 @@ import (
 )
 
 // The identities a capture-selected execution is admitted with. They are
-// constants because the assertions name them, and because the whole point of
-// Req 7 is that a task cannot choose one.
+// constants because the assertions name them, and because the whole point is
+// that a task cannot choose one.
 const (
 	liveCaptureExecution = "11111111-1111-4111-8111-111111111111"
 	liveCaptureOutput    = "result"
@@ -221,9 +221,8 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	//     control init to completion before this container started, and the
 	//     fixture only writes the marker when it answers a hold;
 	//   - the reserved incarnation is the directory this container's declared
-	//     output is mounted at, and it is WRITABLE, which is contract 3 and
-	//     Req 3's "the hold prevents cleanup ... while allowing the admitted
-	//     producer to write";
+	//     output is mounted at, and it is WRITABLE, which is contract 3: the
+	//     hold prevents cleanup while allowing the admitted producer to write;
 	//   - the request the daemon received is echoed to stdout, so the test can
 	//     compare the pod_uid in it against the one the API server assigned,
 	//     which is contract 2.
@@ -424,7 +423,7 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 		}
 	}
 
-	// Req 24, on a Pod a kubelet actually ran: the source-control warrant is in
+	// On a Pod a kubelet actually ran: the source-control warrant is in
 	// the control init and in nothing else.
 	for _, container := range append(
 		append([]corev1.Container{}, scheduled.Spec.InitContainers...),

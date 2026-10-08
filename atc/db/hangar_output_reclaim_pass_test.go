@@ -383,8 +383,8 @@ var _ = Describe("the web's reclaim pass", func() {
 			// The other side of the branch above, and the thing that stops it
 			// being "never infer anything". The attempt that timed out is what
 			// makes the later absence this plane's own: a delete WAS issued
-			// and its answer never arrived, which is the exact state Req 49
-			// calls inferred rather than confirmed.
+			// and its answer never arrived, which is the exact state that
+			// is inferred rather than confirmed.
 			ref := published(hangarDigest(92))
 			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
 			key, err := hangar.TreeKey(namespace.Prefix(), ref.Scope, ref.Digest)
@@ -426,7 +426,7 @@ var _ = Describe("the web's reclaim pass", func() {
 			Expect(admitted).To(Equal(1))
 
 			// The store says 403 for the one call this principal exists to
-			// make. That is Req 52's platform-principal mismatch arriving at
+			// make. That is the platform-principal mismatch arriving at
 			// runtime rather than in an IAM reading: the matrix says what the
 			// bindings claim, and this is the store saying otherwise.
 			store.Inject(gcstest.Faults{Unauthorized: true})

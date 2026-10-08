@@ -97,7 +97,7 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				return newWorkerReady(res, rec, "k8s-worker-1", "", func(cfg *jetbridge.Config) {
 					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 					cfg.OutputPlaneEnabled = true
-					// And the epoch this cohort speaks for. Without one the
+					// And the control-key generation the worker admits under. Without one the
 					// worker's stale-epoch refusal is unconfigured and checks
 					// nothing, so every capture scenario in this family would
 					// be exercising a plane with that arm switched off.
@@ -105,8 +105,8 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 					// Strict inputs, the foundation tier. Inert for every
 					// scenario that declares no tree input -- the strict-input
 					// branch of BuildFetchInitContainers only runs for an input
-					// that has one -- and required by the AC 20 twin, which is
-					// about a step that takes both.
+					// that has one -- and required by the strict-input regression
+					// twin, which is about a step that takes both.
 					cfg.HangarEnabled = true
 					cfg.HangarWarrantSigner = signer
 				})

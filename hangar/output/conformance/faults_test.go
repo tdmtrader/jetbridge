@@ -1,17 +1,17 @@
 package conformance
 
-// Phase 9's injected-fault flows, and the two typed delete outcomes nothing
+// The injected-fault flows, and the two typed delete outcomes nothing
 // asserted.
 //
 // The conformance suite beside this file covers the SUBSTRATE: what a store
 // does with create-if-absent, a generation pin, a prefix list, a metadata stat.
-// What it did not cover is the fault side of two of Req 47's six outcomes.
+// What it did not cover is the fault side of two of the six delete outcomes.
 // `output.DeleteUnauthorized` and `output.DeleteTimedOut` appeared in
 // `DeleteOutcomes()`, in the schema's enum and in the reclaimer's switch, and a
 // repository-wide grep over `*_test.go` returned zero assertions on either --
 // while `gcstest.Faults` already carried `Unauthorized` and `DeleteTimeout`
 // seams that no test injected. An outcome nothing exercises is a branch, not a
-// contract: Req 47's whole point is that these six are distinguished rather than
+// contract: the whole point is that these six are distinguished rather than
 // collapsed, and two of them were only distinguished on paper.
 //
 // Tier 1 for every case here, and the reason is the plan's own: fault injection
@@ -54,8 +54,7 @@ func publishedForDeletion(t *testing.T, tier substrate, fill string) (
 	}
 
 	return sweeper, object.Attributes.Ref, output.DeletePrecondition{
-		Generation:     object.Attributes.Ref.Generation,
-		Metageneration: object.Metageneration,
+		Generation: object.Attributes.Ref.Generation,
 	}
 }
 
@@ -75,8 +74,8 @@ func TestADeleteWithNoFaultInjectedIsConfirmed(t *testing.T) {
 	}
 }
 
-// Req 47 names `unauthorized` as its own outcome, and it has to be its own
-// outcome: a reclaimer whose cloud principal lost its grant is a DEPLOYMENT
+// `unauthorized` is its own outcome, and it has to be its own outcome: a
+// reclaimer whose cloud principal lost its grant is a DEPLOYMENT
 // fault an operator must see, and collapsing it into infrastructure_failure
 // makes it look like a retryable blip that the next pass will clear. It will
 // not; every pass will fail the same way.
@@ -133,7 +132,7 @@ func TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed(t *testing.T) {
 	// than an assertion.
 }
 
-// Every one of Req 47's six outcomes is now reachable from a test, and this row
+// Every one of the six delete outcomes is now reachable from a test, and this row
 // is what keeps that true: it fails if a new outcome is added to the enum with
 // nothing exercising it, and it names which.
 //
@@ -165,7 +164,7 @@ func TestEveryTypedDeleteOutcomeIsExercisedSomewhere(t *testing.T) {
 	for _, outcome := range output.DeleteOutcomes() {
 		if _, ok := exercised[outcome]; !ok {
 			t.Errorf("output.DeleteOutcomes() includes %q and no test in this package "+
-				"exercises it. Req 47's claim is that these outcomes are DISTINGUISHED; an "+
+				"exercises it. These outcomes are DISTINGUISHED; an "+
 				"outcome nothing reaches is a branch, not a contract.", outcome)
 		}
 	}
@@ -176,8 +175,8 @@ func TestEveryTypedDeleteOutcomeIsExercisedSomewhere(t *testing.T) {
 	}
 }
 
-// AC 9's last clause: "an ambiguous create response converges only through
-// verified per-capture retry."
+// An ambiguous create response converges only through verified per-capture
+// retry.
 //
 // TestAnAmbiguousUploadIsReconciledByAnExactStat proves one reconciliation.
 // What it does not say is that REPEATING the capture converges -- that the

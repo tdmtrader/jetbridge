@@ -227,12 +227,12 @@ func nearestMetrics(declared map[string]bool, want string) []string {
 // reclaim admission; a class with no alert behind it is builds refusing to run
 // with nothing on the Prometheus rules page to say why.
 //
-// `output.PolicyViolations()` is a closed vocabulary, so the coverage question
+// `output.IntegrityViolations()` is a closed vocabulary, so the coverage question
 // is answerable rather than approximate.
 func TestEveryAtRiskTransitionIsCoveredByARenderedAlert(t *testing.T) {
-	classes := output.PolicyViolations()
+	classes := output.IntegrityViolations()
 	if len(classes) == 0 {
-		t.Fatalf("the policy-violation vocabulary is %d classes; it collapsed and this rule "+
+		t.Fatalf("the integrity-violation vocabulary is %d classes; it collapsed and this rule "+
 			"would pass over almost nothing", len(classes))
 	}
 
@@ -258,7 +258,7 @@ func TestEveryAtRiskTransitionIsCoveredByARenderedAlert(t *testing.T) {
 
 	// The catch-all, found rather than assumed. `Status.AtRisk` is
 	// `len(reasons) != 0` over every open violation of any class, and
-	// TestEveryPolicyViolationClassPutsThePlaneAtRisk proves that against the
+	// TestEveryIntegrityViolationClassPutsThePlaneAtRisk proves that against the
 	// real schema for all eleven -- which is what makes one aggregate rule
 	// legitimate coverage rather than a blanket excuse.
 	var catchAll []string

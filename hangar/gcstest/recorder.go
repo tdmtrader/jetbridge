@@ -15,8 +15,8 @@ import (
 // It is the substrate for exactly one claim, and the claim is narrow: **the
 // code issues only its role's RPCs**. It is not evidence about IAM. No fake
 // enforces a binding, so a green here says the publisher never calls delete --
-// not that the publisher's service account could not. Requirement 41's IAM
-// honesty and AC 16 are real-GCS evidence and are gathered in Phase 9.
+// not that the publisher's service account could not. Whether IAM denies it
+// is real-GCS evidence.
 //
 // It wraps either tier, which is the point: the same assertion runs against the
 // in-memory fake and against fake-gcs-server, so a role that only behaved on

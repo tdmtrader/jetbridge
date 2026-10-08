@@ -7,8 +7,7 @@ package hangaroutput_test
 // filesystem that no response shows -- a sealed directory, a released one --
 // and a double cannot tell you the answer was right.
 //
-// A REAL GCS emulator. Requirement 19 admits only the strict native-GCS
-// profile, so a filesystem store cannot serve output capture at all; the
+// A REAL GCS emulator. These specs exercise the gcs store profile, and the
 // stand-in is the same fake-gcs-server the daemon's own suite uses, reached
 // through the daemon's own --output-endpoint flag. Nothing in the daemon is
 // stubbed to make it work.

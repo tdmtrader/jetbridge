@@ -523,7 +523,7 @@ func (b *DaemonSetBackend) helperImage() string {
 // It FAILS CLOSED, and that is why the probe is only emitted when the output
 // plane is configured. An unreachable daemon is not "nothing is held"; but on a
 // deployment with no output plane there is nothing to ask and today's script is
-// emitted byte for byte, so Req 59's unchanged ordinary behaviour is not
+// emitted byte for byte, so the unchanged ordinary behaviour is not
 // traded for this.
 func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) (*corev1.Container, error) {
 	if !reused {
@@ -870,8 +870,8 @@ func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
 // The register guard refuses an alias onto a capture-held location, and it is
 // right to: a second WRITE-CAPABLE name for bytes a capture is about to seal
 // hands every key-taking destructive path on that daemon a way to reach them
-// under a name the capture never heard of. A read is not that, and Req 16
-// forbids the mount, not the read -- so the captured output stays an ordinary
+// under a name the capture never heard of. A read is not that, and the
+// held-source rule forbids the mount, not the read -- so the captured output stays an ordinary
 // output that downstream steps resolve in the ordinary way, and the alias says
 // which of the two it is.
 func (b *DaemonSetBackend) registerReadOnlyDaemonAlias(nodeName, volumeKey, diskPath string) {

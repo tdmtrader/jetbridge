@@ -10,11 +10,10 @@ import (
 // They are constants rather than configuration defaults scattered across flag
 // declarations because several of them constrain each other, and the
 // constraints are the interesting part: publication grace must exceed the
-// maximum capture deadline by an hour (Req 39), a lease term must exceed the
-// operation it covers plus a margin (Reqs 36, 48), and work may only begin with
-// enough of the lease left to finish (Reqs 36, 48). Startup validates them
-// together, so a deployment cannot be configured into a state where a
-// reclaimer's lease can expire mid-delete.
+// maximum capture deadline by an hour, a lease term must exceed the operation
+// it covers plus a margin, and work may only begin with enough of the lease
+// left to finish. Startup validates them together, so a deployment cannot be
+// configured into a state where a reclaimer's lease can expire mid-delete.
 const (
 	// DefaultOperationTimeout is shared by the output plane and its callers.
 	DefaultOperationTimeout = time.Minute
@@ -50,32 +49,16 @@ const (
 	// constraint's text, which names a column no consumer has heard of.
 	maxLeaseTerm = 24 * time.Hour
 
-	// LeaseRenewInterval is the slowest acceptable renewal. A lease renewed
-	// less often than this cannot be distinguished from an owner that died.
-	LeaseRenewInterval = time.Minute
-
 	// LeaseTermMargin is added to a covered operation's timeout when deriving a
 	// lease term, and LeaseStartMargin is how much of the lease must remain
 	// before work may begin. Work that starts with less has no way to finish
 	// inside its own authority.
 	LeaseTermMargin  = 5 * time.Minute
 	LeaseStartMargin = 2 * time.Minute
-
-	// WorkerFallbackInterval is the slowest acceptable periodic wake for every
-	// worker in this plane. NOTIFY accelerates work; it is never the only way
-	// work is found, because component.Runner with a zero interval wakes only
-	// on NOTIFY and a missed one would strand eligible work until restart.
-	WorkerFallbackInterval = time.Minute
 )
 
-// ValidateCaptureDeadline bounds a configured capture-deadline term.
-//
-// Its only caller was ValidatePublicationGrace, through a parameter every
-// caller passed the constant to -- so removing that parameter left this with
-// none, which is the reachability guard reporting a real thing: the bound
-// exists and nothing in a running process applies it. The deadline is an
-// absolute instant everywhere it is carried today; the duration it is composed
-// from is the coordinator's, and that producer is named and owed.
+// ValidateCaptureDeadline refuses a configured capture deadline outside
+// MinCaptureDeadline..MaxCaptureDeadline.
 func ValidateCaptureDeadline(deadline time.Duration) error {
 	if deadline < MinCaptureDeadline || deadline > MaxCaptureDeadline {
 		return fmt.Errorf("%w: capture deadline %s is outside %s..%s",
@@ -85,7 +68,8 @@ func ValidateCaptureDeadline(deadline time.Duration) error {
 	return nil
 }
 
-// ValidatePublicationGrace is the cross-constraint from Req 39.
+// ValidatePublicationGrace refuses a publication grace that does not exceed the
+// maximum capture deadline by PublicationGraceMargin, or exceeds the maximum.
 //
 // The floor is derived from MaxCaptureDeadline, the plane-wide CEILING on any
 // capture deadline, and not from a deployment-level maximum -- because there is

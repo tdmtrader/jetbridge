@@ -81,9 +81,8 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 		}
 
 		// An exact-generation stat is a body-capable objects.get used for its
-		// metadata. Requirement 41 says IAM has no metadata-only object
-		// permission, so this is the call the plane actually makes and the
-		// call the profile has to admit.
+		// metadata. IAM has no metadata-only object permission, so this is the
+		// call the plane actually makes and the call the profile has to admit.
 		stat, err := role.StatExactObject(ctx, object.Attributes.Ref)
 		if err != nil {
 			t.Fatalf("stat of the exact generation: %v", err)
@@ -94,7 +93,7 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 		}
 
 		// A stat of a generation that is not there is absence, and stays
-		// absence. Req 27: none of these becomes a cache miss.
+		// absence: none of these becomes a cache miss.
 		absent := object.Attributes.Ref
 		absent.Generation++
 		if _, err := role.StatExactObject(ctx, absent); !errors.Is(err, output.ErrNotFound) {
@@ -265,7 +264,7 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 			t.Errorf("the refusal does not say the object is unmanaged: %v", err)
 		}
 
-		// A wrong marker version is a deliberate statement by another cohort
+		// A wrong marker version is a deliberate statement by another deployment
 		// and is likewise never overwritten.
 		wrongDigest := testsupport.Digest("33")
 		wrongKey, err := namespace.ObjectKey(wrongDigest)
@@ -275,11 +274,11 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 		wrongMetadata := namespace.MarkerFor(otherReservation, wrongDigest,
 			output.NewTimestamp(testsupport.FixedInstant)).Metadata()
 		wrongMetadata[output.MarkerKeyVersion] = "hangar-output-v2"
-		seed(t, tier, wrongKey, canonicalBytes("another cohort"), wrongMetadata)
+		seed(t, tier, wrongKey, canonicalBytes("another deployment"), wrongMetadata)
 
 		_, err = role.EnsurePublication(ctx,
 			testsupport.Reservation(t, namespace, testReservation, wrongDigest),
-			bytes.NewReader(canonicalBytes("another cohort")), 14)
+			bytes.NewReader(canonicalBytes("another deployment")), 14)
 		if !errors.Is(err, output.ErrConflict) {
 			t.Errorf("a wrong marker version was answered with %v, expected ErrConflict", err)
 		}
@@ -292,10 +291,10 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 // `classify` compared the marker's scope, the marker's digest, and that the
 // object had some size and some metageneration -- so an object whose BODY had
 // been replaced under the same marker metadata was deduplicated against and
-// registered, and the receipt then attested a generation whose contents are not
-// the tree the capture canonicalized. Req 23 lists corrupt metadata or body as
-// a typed collision "even if a weaker content check appears to match", and
-// "the marker says the right digest" is exactly that weaker check.
+// registered, and the row then named a generation whose contents are not the
+// tree the capture canonicalized. Corrupt metadata or body is a typed collision
+// even if a weaker content check appears to match, and "the marker says the
+// right digest" is exactly that weaker check.
 //
 // Reaching it needs a writer on the output bucket, which the trust model puts
 // in the at-risk class. It is a cheap check regardless: the canonical size is
@@ -488,11 +487,10 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 		// GenerationMatch, or both -- so asserting it there would assert the
 		// emulator's shortcut rather than this code. The row is named in
 		// TestTheSubstrateGapsAreNamed and is covered on tier 1, where the fake
-		// does enforce it, and on real GCS in Phase 9.
+		// does enforce it, and on real GCS.
 		if tier.can.EnforcesDeletePreconditions {
 			wrong := output.DeletePrecondition{
-				Generation:     object.Attributes.Ref.Generation + 1,
-				Metageneration: object.Metageneration,
+				Generation: object.Attributes.Ref.Generation + 1,
 			}
 			wrongRef := object.Attributes.Ref
 			wrongRef.Generation = wrong.Generation
@@ -511,52 +509,15 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 				t.Fatalf("the object is gone after a delete of another generation: %v", err)
 			}
 
-			// A STALE METAGENERATION is not a conflict, and that is a change
-			// this row used to assert the opposite of.
-			//
-			// The delete is about an exact GENERATION. A metageneration moves
-			// on any metadata change -- a SetStorageClass transition,
-			// Autoclass, an ACL edit, a hold -- none of which is a Delete rule,
-			// so the bucket keeps attesting safe while the recorded
-			// metageneration goes stale on every object in it. Conditioned on
-			// it, every delete 412s; conflicted is terminal; the whole
-			// registered set becomes permanently unreclaimable and nothing says
-			// so. The generation pin is what makes the delete exact, and it is
-			// still here. See TestABenignMetadataChangeDoesNotWedgeReclamationForever
-			// for the wedge itself.
-			staleMetageneration := output.DeletePrecondition{
-				Generation:     object.Attributes.Ref.Generation,
-				Metageneration: object.Metageneration + 1,
-			}
-			outcome, err = sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref, staleMetageneration)
-			if outcome != output.DeleteConfirmed {
-				t.Errorf("deleting the right generation while carrying a stale metageneration "+
-					"reported %q (%v), expected %q", outcome, err, output.DeleteConfirmed)
-			}
-			if _, err := role.StatExactObject(ctx, object.Attributes.Ref); err == nil {
-				t.Fatal("the object survived a generation-exact delete")
-			}
-
-			// And it is gone, so the rest of this row needs a new one at the
-			// same reservation, which is what a re-publication is.
-			object, err = role.EnsurePublication(ctx,
-				testsupport.Reservation(t, namespace, testReservation, digest),
-				bytes.NewReader(canonicalBytes("to be reclaimed")), 15)
-			if err != nil {
-				t.Fatalf("re-publishing after the generation-exact delete: %v", err)
-			}
 		} else {
-			t.Logf("%s does not enforce delete preconditions, so neither the wrong-generation "+
-				"nor the wrong-metageneration row runs here; both are tier 1's and real GCS's "+
-				"(Phase 9). knownSubstrateGaps names the gap.", tier.name)
+			t.Logf("%s does not enforce delete preconditions, so the wrong-generation row "+
+				"does not run here; it is tier 1's and real GCS's. knownSubstrateGaps names the "+
+				"gap.", tier.name)
 		}
 
 		// And the right one.
 		outcome, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
-			output.DeletePrecondition{
-				Generation:     object.Attributes.Ref.Generation,
-				Metageneration: object.Metageneration,
-			})
+			output.DeletePrecondition{Generation: object.Attributes.Ref.Generation})
 		if err != nil {
 			t.Fatalf("the conditional delete: %v", err)
 		}
@@ -567,10 +528,7 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 		// Repeating it is absence, not confirmation. Confirming a delete that
 		// removed nothing is how reclamation claims evidence it does not have.
 		outcome, err = sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
-			output.DeletePrecondition{
-				Generation:     object.Attributes.Ref.Generation,
-				Metageneration: object.Metageneration,
-			})
+			output.DeletePrecondition{Generation: object.Attributes.Ref.Generation})
 		if err != nil {
 			t.Fatalf("the repeated delete: %v", err)
 		}
@@ -610,9 +568,8 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 				attrs.Generation)
 		}
 
-		// The old ref no longer resolves; the new one does. Whether the plane
-		// treats that as supersession is Phase 7's; what the profile has to
-		// admit is that the two are distinguishable at all.
+		// The old ref no longer resolves; the new one does. What the profile
+		// has to admit is that the two are distinguishable at all.
 		if _, err := role.StatExactObject(ctx, first.Attributes.Ref); !errors.Is(err, output.ErrNotFound) {
 			t.Errorf("the superseded generation still resolves: %v", err)
 		}
@@ -637,8 +594,7 @@ func TestAnAmbiguousUploadIsReconciledByAnExactStat(t *testing.T) {
 
 	// The object commits and the response is lost. A caller that assumed
 	// failure would retry into its own object and call it a collision; a
-	// caller that assumed success would sign a receipt over a generation it
-	// never read.
+	// caller that assumed success would register a generation it never read.
 	tier.memory.Inject(gcstest.Faults{CreateResponseLost: true})
 
 	object, err := role.EnsurePublication(ctx, reservation,
@@ -688,10 +644,7 @@ func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 
 	tier.memory.Inject(gcstest.Faults{DeleteResponseLost: true})
 	outcome, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
-		output.DeletePrecondition{
-			Generation:     object.Attributes.Ref.Generation,
-			Metageneration: object.Metageneration,
-		})
+		output.DeletePrecondition{Generation: object.Attributes.Ref.Generation})
 	if outcome == output.DeleteConfirmed {
 		t.Error("a delete whose response was lost was reported as confirmed. The object is gone " +
 			"either way; the difference is whether reclamation may claim it proved that, and it " +
@@ -852,10 +805,7 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 			t.Fatalf("observing: %v", err)
 		}
 		if _, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
-			output.DeletePrecondition{
-				Generation:     object.Attributes.Ref.Generation,
-				Metageneration: object.Metageneration,
-			}); err != nil {
+			output.DeletePrecondition{Generation: object.Attributes.Ref.Generation}); err != nil {
 			t.Fatalf("deleting: %v", err)
 		}
 		assertOnly(t, "reclaimer", reclaimRecorder, objectstore.OpStat, objectstore.OpDelete)
@@ -881,8 +831,8 @@ func assertOnly(t *testing.T, role string, recorder *gcstest.Recorder, allowed .
 		}
 		t.Errorf("the %s issued %s. Its role does not include that call.\n\nWhat this proves: "+
 			"the CODE issues only its role's RPCs. What it does not prove: any IAM binding. No "+
-			"fake enforces one, so AC 16's honesty is a real-GCS observation and is recorded "+
-			"with its date and project in Phase 9.", role, operation)
+			"fake enforces one, so whether IAM denies it is a real-GCS observation.",
+			role, operation)
 	}
 }
 
@@ -1013,7 +963,7 @@ var _ = hangar.Scope("")
 var knownSubstrateGaps = map[string]string{
 	"EnforcesDeletePreconditions": "fsouza/fake-gcs-server v1.52.3 deletes whatever is at the " +
 		"key regardless of a generation pin or a GenerationMatch precondition. The row is " +
-		"covered on tier 1, whose fake does enforce it, and is real-GCS evidence in Phase 9. " +
+		"covered on tier 1, whose fake does enforce it, and is real-GCS evidence. " +
 		"Nothing in the plane may treat a tier-2 green as proof that a conditional delete is " +
 		"conditional.",
 }
@@ -1070,23 +1020,21 @@ func TestTheSubstrateGapsAreNamed(t *testing.T) {
 	}
 }
 
-// Req 47, and the silent, unbounded, permanent failure the metageneration
-// conjunct used to cause.
+// The silent, unbounded, permanent failure a metageneration conjunct on the
+// delete used to cause.
 //
 // An object's GENERATION is stable while its METAGENERATION moves on any
 // metadata change: a SetStorageClass lifecycle transition, Autoclass, an ACL or
-// metadata edit, a retention hold. None of those is a Delete rule, so
-// LifecycleRule.RemovesObjects reports the bucket safe and the attestation
-// stays green -- while every registered object becomes permanently
-// unreclaimable, because the reclaimer conditioned its delete on the
-// metageneration recorded at receipt registration, a 412 is
+// metadata edit, a retention hold. None of those is a Delete rule, yet with the
+// delete conditioned on the metageneration recorded at registration every
+// registered object became permanently unreclaimable: a 412 is
 // DeleteGenerationConflict, and that outcome is TERMINAL with no re-stat and
 // re-register path anywhere.
 //
 // The delete is generation-exact without it. The handle is pinned with
 // .Generation(g) and the precondition carries ifGenerationMatch, which on a
-// versioned bucket is a permanent per-generation delete rather than an archive;
-// Req 47 asks for generation-exact deletion, not metadata-exact.
+// versioned bucket is a permanent per-generation delete rather than an archive.
+// Deletion is generation-exact, not metadata-exact.
 //
 // Tier 1 only, and it is the tier that had to grow a substrate for it:
 // fake-gcs-server ignores delete preconditions outright and reports
@@ -1105,8 +1053,6 @@ func TestABenignMetadataChangeDoesNotWedgeReclamationForever(t *testing.T) {
 	if err != nil {
 		t.Fatalf("publishing: %v", err)
 	}
-	registeredMetageneration := object.Metageneration
-
 	key, err := hangar.TreeKey(namespace.Prefix(), object.Attributes.Ref.Scope,
 		object.Attributes.Ref.Digest)
 	if err != nil {
@@ -1119,15 +1065,12 @@ func TestABenignMetadataChangeDoesNotWedgeReclamationForever(t *testing.T) {
 		t.Fatalf("building the reclaimer: %v", err)
 	}
 	outcome, err := sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref,
-		output.DeletePrecondition{
-			Generation:     object.Attributes.Ref.Generation,
-			Metageneration: registeredMetageneration,
-		})
+		output.DeletePrecondition{Generation: object.Attributes.Ref.Generation})
 	if outcome != output.DeleteConfirmed {
 		t.Fatalf("a benign metadata change wedged reclamation: the delete reported %q (%v).\n\n"+
 			"conflicted is TERMINAL and there is no re-stat-and-re-register path, so every "+
 			"object in a bucket with a storage-class transition becomes permanently "+
-			"unreclaimable while the bucket keeps attesting safe. The bucket grows forever, "+
+			"unreclaimable while the bucket looks safe. The bucket grows forever, "+
 			"nothing says so, and it costs money for as long as it lasts.", outcome, err)
 	}
 	if _, err := role.StatExactObject(ctx, object.Attributes.Ref); err == nil {

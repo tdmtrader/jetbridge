@@ -52,7 +52,7 @@ type OutputControlResolver interface {
 // It is deliberately not a failure. A failure is a command that ran and lost; a
 // step may be failed on one, cleanup may proceed and the source may be
 // released. This is a command whose fate is unknown, and every one of those
-// actions would be a decision taken on an inference. Req 4: inability to prove
+// actions would be a decision taken on an inference. Inability to prove
 // success becomes a typed unresolved or lost outcome and cannot authorize
 // capture.
 var ErrExactOutcomeUnresolved = errors.New("jetbridge: the exact execution's outcome is unresolved")
@@ -241,7 +241,7 @@ func (p *execProcess) beginExactCommand(ctx context.Context) error {
 
 	// Recovery asks first, and asking is what makes it recovery rather than a
 	// second run. An execution the ledger already has an outcome for is
-	// reported, never re-issued: Req 6, from exact process start onward the
+	// reported, never re-issued: from exact process start onward the
 	// producer command is not executed again. The daemon refuses a second
 	// start too -- that is its half -- but a caller that only learned so from
 	// a 409 would have had to try, and trying is the thing.
@@ -473,9 +473,9 @@ func (p *execProcess) recordRunWitness(ctx context.Context, witness executioncon
 
 // refuseIfCaptureHeld is the hijack and pod-replacement door.
 //
-// A capture-selected step LOSES post-completion hijack (Req 18) and a
+// A capture-selected step LOSES post-completion hijack, and a
 // capture-held source may not receive a new write-capable mount or a new Pod
-// UID (Req 16). The ATC has no execution identity for a looked-up container,
+// UID. The ATC has no execution identity for a looked-up container,
 // so the honest answer is a typed refusal.
 func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 	if !c.config.OutputPlaneEnabled {
@@ -530,7 +530,7 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 // The spec knows it on every path that HAS a spec -- pod replacement, the
 // producer's own start -- and a looked-up container has none: `LookupContainer`
 // builds its Container from a handle and a DB row, with `runtime.ContainerSpec{}`.
-// That is the hijack path, and it is the one path Req 18 is about, so the guard
+// That is the hijack path, and it is the one path the hijack rule is about, so the guard
 // there was asking about the handle and being correctly told `unmanaged`.
 //
 // So the Pod is asked. It is the object that exists for exactly as long as the

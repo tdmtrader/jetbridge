@@ -875,11 +875,6 @@ hangarOutput:
   # be pointed at them. Empty means this deployment has no such bucket.
   cacheBucket: ""
   strictInputBucket: ""
-  # -- Declare that trust domains are separated by key prefix inside one shared
-  # bucket. It is REFUSED: object-level permission is not expressible in a
-  # bucket policy, so prefix-only IAM is not a substitute for a dedicated
-  # bucket.
-  sharedBucketPrefixOnlyIsolation: false
 
   # -- Endpoint override for the OUTPUT bucket's store. Empty means real GCS;
   # set it for an emulator. It is the output plane's own: requirement 20

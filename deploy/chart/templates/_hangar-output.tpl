@@ -115,9 +115,6 @@
 {{- if not $output.tenant -}}
 {{- fail "hangarOutput.tenant is required: the opaque output scope is derived from authenticated deployment/tenant identity, and an empty one would make every deployment's scope the same." -}}
 {{- end -}}
-{{- if $output.sharedBucketPrefixOnlyIsolation -}}
-{{- fail "hangarOutput.sharedBucketPrefixOnlyIsolation is refused. Object-level permission is not expressible in a bucket policy, and storage.objects.list authority has no caller-visible prefix boundary, so prefix-only IAM inside a shared bucket is not a substitute for a dedicated one." -}}
-{{- end -}}
 {{- if and $output.cacheBucket (eq $output.bucket $output.cacheBucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.cacheBucket. The output plane needs a DEDICATED bucket: the cache tier is fail-open, name-keyed and re-derivable, and mixing the two puts objects with no ownership marker in the namespace the orphan sweep lists." $output.bucket) -}}
 {{- end -}}

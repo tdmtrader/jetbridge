@@ -684,7 +684,7 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 
 	// The output plane's hold, before anything is created or replaced. A PUT
 	// under a held source would replace the producer's bytes with no record
-	// that it happened (Req 12).
+	// that it happened.
 	if class, err := s.refuseIfCaptureHeld(RelKey(key)); err != nil {
 		s.captureRefusal(w, r, RelKey(key), class, err)
 		return

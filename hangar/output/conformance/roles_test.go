@@ -25,8 +25,8 @@ import (
 // Read the two together and neither is enough alone. The call log would pass on
 // a role that had a delete method it happened not to reach; the type check
 // would pass on a role that called something through a different seam. What
-// neither proves is any IAM binding -- no fake enforces one, and AC 16 is
-// real-GCS evidence gathered in Phase 9 with its date and project.
+// neither proves is any IAM binding -- no fake enforces one, and whether IAM
+// denies a call is real-GCS evidence.
 
 func methodNames(t *testing.T, prototype any) []string {
 	t.Helper()

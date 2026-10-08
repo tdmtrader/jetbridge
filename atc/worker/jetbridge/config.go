@@ -249,7 +249,7 @@ type Config struct {
 	// capture control init, the ledger-checked cleanup probe, the output
 	// plane's node ready label and the ATC's control calls. Off, every one of
 	// those is absent and an ordinary pod is byte-identical to the one this
-	// runtime built before the output plane existed (Req 59).
+	// runtime built before the output plane existed.
 	OutputPlaneEnabled bool
 
 	// OutputOperationTimeout matches the output plane's budget; managed-read

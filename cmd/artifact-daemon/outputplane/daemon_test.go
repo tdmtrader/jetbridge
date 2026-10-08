@@ -104,16 +104,15 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Config){
-		"the durable cache bucket":                   func(c *Config) { c.OutputBucket = c.CacheBucket },
-		"the strict-input bucket":                    func(c *Config) { c.OutputBucket = c.StrictInputBucket },
-		"a shared bucket with prefix-only isolation": func(c *Config) { c.SharedBucketPrefixOnlyIsolation = true },
-		"a filesystem store":                         func(c *Config) { c.OutputStore = "filesystem" },
-		"an S3-compatible store":                     func(c *Config) { c.OutputStore = "s3" },
-		"no bucket":                                  func(c *Config) { c.OutputBucket = "" },
-		"no tenant":                                  func(c *Config) { c.OutputTenant = "" },
-		"no epoch":                                   func(c *Config) { c.ActivationEpoch = 0 },
-		"no control key id":                          func(c *Config) { c.ControlKeyID = "" },
-		"no control key file":                        func(c *Config) { c.ControlKeyFile = "" },
+		"the durable cache bucket": func(c *Config) { c.OutputBucket = c.CacheBucket },
+		"the strict-input bucket":  func(c *Config) { c.OutputBucket = c.StrictInputBucket },
+		"a filesystem store":       func(c *Config) { c.OutputStore = "filesystem" },
+		"an S3-compatible store":   func(c *Config) { c.OutputStore = "s3" },
+		"no bucket":                func(c *Config) { c.OutputBucket = "" },
+		"no tenant":                func(c *Config) { c.OutputTenant = "" },
+		"no epoch":                 func(c *Config) { c.ActivationEpoch = 0 },
+		"no control key id":        func(c *Config) { c.ControlKeyID = "" },
+		"no control key file":      func(c *Config) { c.ControlKeyFile = "" },
 		// One key for both would mean rotating either rotates both.
 		"one key for read warrants and control": func(c *Config) { c.ControlKeyFile = c.MaterializationKeyFile },
 		"a non-positive timeout":                func(c *Config) { c.OperationTimeout = 0 },
@@ -209,7 +208,7 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 
 	for _, name := range []string{
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
-		"cache-bucket", "strict-input-bucket", "shared-bucket-prefix-only-isolation",
+		"cache-bucket", "strict-input-bucket",
 		"activation-epoch", "output-timeout",
 		"control-key-id", "control-key-file", "node-uid", "output-scratch-dir",
 		"capability-key", "capability-ttl",

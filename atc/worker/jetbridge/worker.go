@@ -275,8 +275,8 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 	if w.executionPreparer != nil {
 		container.checkStart = func(ctx context.Context) error { return w.executionPreparer.CheckIntercept(ctx, handle) }
 	}
-	// It is the hijack path -- the one Req 18 takes away from a capture-enabled
-	// task -- and it gets its ledger classifier from newContainer above, like
+	// It is the hijack path -- the one a capture-enabled task loses after
+	// completion -- and it gets its ledger classifier from newContainer above, like
 	// every other container this worker builds. It used to be assigned a second
 	// time here, and at both FindOrCreateContainer returns, all of which had
 	// already been through newContainer. Harmless while the two agreed; the

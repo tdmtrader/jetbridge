@@ -7,8 +7,8 @@ import (
 
 // ReclaimOutcome is how a reclaim job ended.
 //
-// Four members, and the difference between the first two is the whole point of
-// Req 49. `reclaimed_confirmed` needs an acknowledged conditional delete;
+// Four members, and the difference between the first two is the whole point:
+// `reclaimed_confirmed` needs an acknowledged conditional delete;
 // `reclaimed_inferred` is a durable admitted-delete record whose response was
 // lost, plus observed exact absence. They are not the same evidence and this
 // plane never lets one stand in for the other, because confirming a deletion it

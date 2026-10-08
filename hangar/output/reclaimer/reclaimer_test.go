@@ -81,8 +81,7 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 	t.Run("a precondition naming another generation", func(t *testing.T) {
 		built, _, recorder := role(t, namespace)
 		outcome, err := built.DeleteExactGeneration(ctx, ref, output.DeletePrecondition{
-			Generation:     ref.Generation + 1,
-			Metageneration: 1,
+			Generation: ref.Generation + 1,
 		})
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
@@ -95,7 +94,7 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 
 	t.Run("a precondition with no generation", func(t *testing.T) {
 		built, _, recorder := role(t, namespace)
-		outcome, err := built.DeleteExactGeneration(ctx, ref, output.DeletePrecondition{Metageneration: 1})
+		outcome, err := built.DeleteExactGeneration(ctx, ref, output.DeletePrecondition{})
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
@@ -108,7 +107,7 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 	t.Run("a ref that does not validate", func(t *testing.T) {
 		built, _, recorder := role(t, namespace)
 		outcome, err := built.DeleteExactGeneration(ctx, hangar.TreeRef{Scope: namespace.Scope()},
-			output.DeletePrecondition{Generation: 3, Metageneration: 1})
+			output.DeletePrecondition{Generation: 3})
 		if err == nil {
 			t.Error("an incomplete ref was accepted")
 		}
@@ -131,11 +130,9 @@ func TestTheOneDeleteIsPinnedAndConditioned(t *testing.T) {
 	}
 	seeded := memory.Seed(bucket, key, []byte("tree"), nil)
 
-	// The precondition is the generation and only the generation: a
-	// metageneration the registration recorded is evidence about the object,
-	// not a condition on removing it.
+	// The precondition is the generation and only the generation.
 	outcome, err := built.DeleteExactGeneration(ctx, namespace.Ref(digest, seeded.Generation),
-		output.DeletePrecondition{Generation: seeded.Generation, Metageneration: seeded.Metageneration + 5})
+		output.DeletePrecondition{Generation: seeded.Generation})
 	if err != nil {
 		t.Fatalf("deleting: %v", err)
 	}
@@ -152,7 +149,7 @@ func TestTheOneDeleteIsPinnedAndConditioned(t *testing.T) {
 	// And a second delete of the same exact generation is absence, which
 	// this method reports and does not interpret.
 	outcome, err = built.DeleteExactGeneration(ctx, namespace.Ref(digest, seeded.Generation),
-		output.DeletePrecondition{Generation: seeded.Generation, Metageneration: 1})
+		output.DeletePrecondition{Generation: seeded.Generation})
 	if err != nil {
 		t.Fatalf("deleting again: %v", err)
 	}

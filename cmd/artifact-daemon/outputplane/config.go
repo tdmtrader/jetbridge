@@ -42,10 +42,6 @@ type Config struct {
 	CacheBucket       string
 	StrictInputBucket string
 
-	// SharedBucketPrefixOnlyIsolation is an operator declaring that trust
-	// domains are separated by key prefix inside one bucket. It is refused.
-	SharedBucketPrefixOnlyIsolation bool
-
 	// The output read-warrant key: a THIRD key, an exact 32-byte HMAC secret
 	// under the hangar-output-materialize-v1 domain. It is neither the control
 	// capability key nor the foundation's strict-input materialization key.
@@ -124,8 +120,6 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"The durable resource-cache bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
 	flags.StringVar(&config.StrictInputBucket, "strict-input-bucket", "",
 		"The caller-published strict-input Hangar bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
-	flags.BoolVar(&config.SharedBucketPrefixOnlyIsolation, "shared-bucket-prefix-only-isolation", false,
-		"Declare that trust domains are separated by key prefix inside one shared bucket. This is refused: object-level permission is not expressible in a bucket policy, so prefix-only IAM is not a substitute for a dedicated bucket.")
 	flags.StringVar(&config.MaterializationKeyID, "materialization-key-id", "",
 		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which key can check it.")
 	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
@@ -163,7 +157,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 // and a bucket can disagree: "output enabled, no bucket" has no honest reading,
 // and a daemon that took both would have to pick one. A base-only daemon is a
 // real deployment -- the sibling `exact_execution_control` track schedules onto
-// exactly it, and Req 58's output-only downgrade has to be able to REACH it
+// exactly it, and withdrawing the output facet has to be able to REACH it
 // from a running plane without taking exact process control away.
 func (config Config) OutputFacetEnabled() bool {
 	return strings.TrimSpace(config.OutputBucket) != ""
@@ -172,8 +166,8 @@ func (config Config) OutputFacetEnabled() bool {
 // Validate refuses a configuration before anything is built.
 //
 // The bucket rules are delegated to output.DeriveNamespace rather than
-// reimplemented here, so there is exactly one statement of Req 20 and this
-// binary cannot drift from it.
+// reimplemented here, so there is exactly one statement of how a bucket,
+// prefix and tenant derive a namespace, and this binary cannot drift from it.
 func (config Config) Validate() error {
 	if config.OperationTimeout <= 0 {
 		return fmt.Errorf("%w: --output-timeout must be positive", output.ErrIncomplete)
@@ -217,7 +211,7 @@ func (config Config) Validate() error {
 // facet's own values are required when it is ON, and REFUSED when it is off. A
 // daemon configured with a read-warrant key and no bucket is a process holding
 // a key it can never need, which is a key an exploit of that process gets for
-// free (Req 24); and a prefix or a tenant with no bucket is an operator who
+// free; and a prefix or a tenant with no bucket is an operator who
 // believes the plane is on.
 func (config Config) validateOutputFacet() error {
 	if !config.OutputFacetEnabled() {
@@ -319,15 +313,14 @@ func (config Config) RefuseCollidingKeyMaterial() error {
 // Namespace is the derived output namespace this daemon publishes into.
 func (config Config) Namespace() (output.OutputNamespace, error) {
 	return output.DeriveNamespace(output.NamespaceConfig{
-		Store:                           config.OutputStore,
-		StoreID:                         config.OutputStoreID,
-		Bucket:                          config.OutputBucket,
-		DeploymentPrefix:                config.OutputPrefix,
-		TenantID:                        config.OutputTenant,
-		CacheBucket:                     config.CacheBucket,
-		StrictInputBucket:               config.StrictInputBucket,
-		SharedBucketPrefixOnlyIsolation: config.SharedBucketPrefixOnlyIsolation,
-		ActivationEpoch:                 activationEpoch(config.ActivationEpoch),
+		Store:             config.OutputStore,
+		StoreID:           config.OutputStoreID,
+		Bucket:            config.OutputBucket,
+		DeploymentPrefix:  config.OutputPrefix,
+		TenantID:          config.OutputTenant,
+		CacheBucket:       config.CacheBucket,
+		StrictInputBucket: config.StrictInputBucket,
+		ActivationEpoch:   activationEpoch(config.ActivationEpoch),
 	})
 }
 

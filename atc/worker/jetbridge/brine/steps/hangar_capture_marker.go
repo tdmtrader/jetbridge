@@ -491,7 +491,7 @@ func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 		// the execution is destructively cleanup-eligible, which it refuses
 		// while any hold stands -- and the step directory is still
 		// there, because it is the step's own output, aliased read-only at the
-		// ordinary path, and Req 2 keeps a failed producer's output for the
+		// ordinary path, and a failed producer's output is kept for the
 		// build's lifetime. Deletion is reclamation by policy, not a side
 		// effect of a release.
 		CheckThat[HeldSource]("the marker is released and the step directory remains",

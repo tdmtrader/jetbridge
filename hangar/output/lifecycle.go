@@ -3,7 +3,6 @@ package output
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -204,113 +203,18 @@ func (record ReadLeaseRecord) Validate() error {
 	return validateReadWarrantNonce(record.WarrantNonce)
 }
 
-// ReadLeaseValidation is the question the materializing daemon asks the control
-// plane before it opens a single object.
+// DeletePrecondition is the exact generation a conditional delete must match.
 //
-// It repeats every field the warrant carried, and the control plane compares each
-// one against the committed row rather than against the token. That is the
-// whole point of asking: a valid HMAC bound to a lease that is missing,
-// released, expired, superseded or reclaim-conflicted authorizes nothing, and
-// only the database knows which of those is true.
-//
-// RequiredRemaining is the work the caller is about to start. Requirement 36
-// lets work begin only with the operation's timeout plus two minutes left, and
-// putting that here rather than in the daemon means the DATABASE clock decides
-// it -- a node whose clock drifts cannot talk itself into starting.
-type ReadLeaseValidation struct {
-	ReadLeaseID       ReadLeaseID
-	ClaimID           ClaimID
-	Ref               hangar.TreeRef
-	Destination       ReadDestination
-	ActivationEpoch   executioncontrol.ActivationEpoch
-	WarrantNonce      string
-	RequiredRemaining time.Duration
-}
-
-func (validation ReadLeaseValidation) Validate() error {
-	if err := validation.ReadLeaseID.Validate(); err != nil {
-		return err
-	}
-	if err := validation.ClaimID.Validate(); err != nil {
-		return err
-	}
-	if err := validation.Ref.Validate(); err != nil {
-		return err
-	}
-	if err := validation.Destination.Validate(); err != nil {
-		return err
-	}
-	if validation.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: a lease validation names no activation epoch", ErrIncomplete)
-	}
-	if err := validateReadWarrantNonce(validation.WarrantNonce); err != nil {
-		return err
-	}
-	if validation.RequiredRemaining < 0 {
-		return fmt.Errorf("%w: required remaining term is negative", ErrIncomplete)
-	}
-
-	return nil
-}
-
-// Deferred: the read-lease control protocol that asked this of the web is
-// deleted: the node daemon verifies a read warrant against its own window and
-// never calls the web. The row semantics this method pins stay specified until
-// the read rows are rewritten with the capture row
-//
-// ReadWarrantFor is the validation a warrant's own claims imply.
-//
-// It exists so the daemon cannot compose a different question from the one the
-// token answered: every field comes from the verified claims, and the only
-// thing the caller adds is how much work it is about to start.
-func ReadWarrantFor(claims ReadWarrantClaims, remaining time.Duration) ReadLeaseValidation {
-	return ReadLeaseValidation{
-		ReadLeaseID:       claims.ReadLeaseID,
-		ClaimID:           claims.ClaimID,
-		Ref:               claims.Ref,
-		Destination:       claims.Destination,
-		ActivationEpoch:   claims.ActivationEpoch,
-		WarrantNonce:      claims.Nonce,
-		RequiredRemaining: remaining,
-	}
-}
-
-// DeletePrecondition is the exact generation a conditional delete must match,
-// plus the metageneration the object was registered at.
-//
-// It is a required parameter of the one delete route rather than an option on
-// it. GCS IAM cannot require a caller to send a generation precondition once
-// delete permission exists (Req 55), so the only place that requirement can
-// live is the signature -- and architecture_test.go fails the test suite if a delete
-// appears anywhere without one.
-//
-// Metageneration is RECORDED EVIDENCE about the object at registration and is
-// deliberately not sent as a delete precondition, which it used to be. A real
-// object's generation is stable while its metageneration moves on any metadata
-// change -- a SetStorageClass lifecycle transition, Autoclass, an ACL or
-// metadata edit, a retention hold -- and none of those is a Delete rule.
-// Conditioned on the metageneration recorded at registration, every delete in such a bucket 412s;
-// DeleteGenerationConflict is TERMINAL and there is no re-stat-and-re-register
-// path anywhere, so the whole registered set became permanently unreclaimable,
-// silently, forever. Req 47 asks for generation-exact deletion, not
-// metadata-exact, and .Generation(g) plus ifGenerationMatch is already exact.
-//
-// The alternative was to keep the conjunct and add a re-stat arm that refreshes
-// the registered metageneration and re-admits under the same lease. That is a
-// new state machine on the delete path to buy a property the generation pin
-// already has, so it is not what this does.
+// A delete is conditioned on the exact generation and is never unconditional;
+// hangar/output/architecture_test.go fails on a delete route without one.
 type DeletePrecondition struct {
-	Generation     int64 `json:"generation"`
-	Metageneration int64 `json:"metageneration"`
+	Generation int64 `json:"generation"`
 }
 
 func (precondition DeletePrecondition) Validate() error {
 	if precondition.Generation <= 0 {
 		return fmt.Errorf("%w: delete precondition names no generation; an unconditional delete "+
 			"may never broaden from a conditional one", ErrIncomplete)
-	}
-	if precondition.Metageneration <= 0 {
-		return fmt.Errorf("%w: delete precondition names no metageneration", ErrIncomplete)
 	}
 
 	return nil

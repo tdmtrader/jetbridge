@@ -224,8 +224,8 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		//
 		// It is not an overwrite and there is no API for one -- create-if-absent
 		// refuses a key that is occupied, which is what the collision scenarios
-		// above pin. Req 38's "a caller may recapture and claim a newly
-		// published generation" is this sequence, and the old tree ref is a
+		// above pin. "A caller may recapture and claim a newly published
+		// generation" is this sequence, and the old tree ref is a
 		// ref to a generation that is gone.
 		brine.DefineMap[PublishedTree, PublishedTree](
 			"an exact replacement generation is published",
@@ -360,8 +360,8 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		// because what is under test is what the row CONTAINS. A registration
 		// that dropped the generation would leave a lifecycle every read still
 		// finds -- by scope and digest -- and it would be a lifecycle about
-		// whichever bytes are at that key, which is exactly the float Req 28
-		// forbids.
+		// whichever bytes are at that key, which is exactly the float a tree ref
+		// exists to forbid.
 		CheckThat[PublishedTree]("the registered tree ref names the published generation",
 			func(in PublishedTree) error {
 				if in.Outcome.Plane == nil {

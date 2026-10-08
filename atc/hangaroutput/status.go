@@ -39,7 +39,7 @@ type Status struct {
 
 	// Violations counts open findings by class; Findings lists them, oldest
 	// first, with the ids an operator resolves them by.
-	Violations map[output.PolicyViolation]int
+	Violations map[output.IntegrityViolation]int
 	Findings   []output.IntegrityFinding
 
 	// Counts are the plane's residue and the live generations it keeps.
@@ -65,7 +65,7 @@ func (reader *StatusReader) Read(ctx context.Context) (Status, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	status := Status{Violations: map[output.PolicyViolation]int{}}
+	status := Status{Violations: map[output.IntegrityViolation]int{}}
 
 	if status.Enabled, err = reader.Repository.HangarEnabled(ctx, tx); err != nil {
 		return Status{}, err

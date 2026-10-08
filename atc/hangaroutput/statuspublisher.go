@@ -79,7 +79,7 @@ func statusEvent(status Status) metric.HangarOutputSnapshot {
 	// Every member of the closed vocabulary, including the zeroes. A gauge
 	// that only appears when it is nonzero is one an alert cannot distinguish
 	// from a scrape that did not happen.
-	for _, violation := range output.PolicyViolations() {
+	for _, violation := range output.IntegrityViolations() {
 		snapshot.Violations[string(violation)] = status.Violations[violation]
 	}
 

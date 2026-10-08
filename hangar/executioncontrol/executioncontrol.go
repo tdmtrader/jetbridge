@@ -1,5 +1,5 @@
-// Package executioncontrol is the product-neutral protocol by which a control
-// plane learns the exact truth about one controlled execution.
+// Package executioncontrol is the protocol by which the web learns and settles
+// one exact execution's fate on its node.
 //
 // It answers exactly four questions, and nothing else:
 //
@@ -8,18 +8,12 @@
 //	RequestSourcePreservingStop  interrupt the command without destroying anything
 //	DestructiveCleanupEligible   may its remains be deleted yet
 //
-// It deliberately does not know why the caller opted in. There is no Run, job,
-// build kind, check, cancellation reason, ticket, workflow, agent or playbook
-// in this package, and hangar/output/architecture_test.go fails the test suite
-// if one appears. That is what lets one protocol serve an ordinary controlled job, a
-// one-off, and a durable output capture without any of them learning about the
-// others.
-//
-// Durable output capture is an *extension* of this protocol, in hangar/output.
-// It references the same Identity and ActivationEpoch rather than declaring its
-// own, so an execution has one truth however many optional gates hang off it.
-// A base acknowledgement carries no capture, source-hold, handle-generation or
-// output field; those live only on the extension's own acknowledgement.
+// It has one consumer, the pipeline Run. Durable output capture extends it in
+// hangar/output: the extension references the same Identity and
+// ActivationEpoch rather than declaring its own, so an execution has one
+// truth however many gates hang off it. A base acknowledgement carries no
+// capture, source-hold, handle-generation or output field; those live only on
+// the extension's own acknowledgement.
 //
 // The wire contract is frozen, language-neutrally, in testdata/protocol-v1.
 // The Go types here are one implementation of it; the fixtures are the

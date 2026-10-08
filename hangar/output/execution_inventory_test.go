@@ -19,14 +19,11 @@ import (
 // references the same base identity; it does not fork it, restate it, or carry
 // an activation epoch of its own.
 //
-// The guards here are the Phase 0 half of that rule. They inventory the
-// contract rather than the wiring, because the wiring for capture-selected
-// executions lands in Phases 3 and 4 — but they are written so that widening
-// the population is a change of what the walk finds, not a change of shape. The
+// The guards here inventory the contract rather than the wiring, and they are
+// written so that widening the population is a change of what the walk finds,
+// not a change of shape. The
 // sibling track `exact_execution_control` (plan decision F13) widens the same
 // inventory to every controlled non-capture execution.
-//
-// Reqs 1, 3-6; ACs 1, 20.
 
 // baseClassificationVocabulary is the closed set of exact-execution outcomes.
 // A second state machine anywhere in the tree would have to spell at least one

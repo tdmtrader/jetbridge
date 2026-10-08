@@ -83,7 +83,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 	reserve := func(tx db.Tx) error { return port.ReserveInputPublication(in.Ctx, tx, stage, nonce) }
 	if mode == "storage integrity at risk" {
 		if err := transact(false, func(tx db.Tx) error {
-			return repository.RecordRuntimeAtRisk(in.Ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "input-generation", Detail: "unexpected object loss"})
+			return repository.RecordRuntimeAtRisk(in.Ctx, tx, output.IntegrityFindingRecord{Violation: output.ViolationOutOfBandAbsence, Subject: "input-generation", Detail: "unexpected object loss"})
 		}); err != nil {
 			return err
 		}

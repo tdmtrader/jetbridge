@@ -91,7 +91,7 @@ var _ = Describe("Hangar status API", func() {
 			tx, err := realdb.Conn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()).RecordRuntimeAtRisk(
-				context.Background(), db.HangarOutputTx{Tx: tx}, output.PolicyFinding{
+				context.Background(), db.HangarOutputTx{Tx: tx}, output.IntegrityFindingRecord{
 					Violation: output.ViolationOutOfBandAbsence, Subject: "scope/digest/1", Detail: "gone",
 				})).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())

@@ -49,7 +49,7 @@ var _ = Describe("the output-plane transaction", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+		Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 	})
 

@@ -2016,7 +2016,7 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 // that output would fetch an empty directory and nothing would say so.
 //
 // The control is asserted first and it is the unselected output: it still
-// records `<handle>/<name>`, because Req 59 says an ordinary output's behaviour
+// records `<handle>/<name>`, because an ordinary output's behaviour
 // is unchanged.
 func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsStepDirectory(t *testing.T) {
 	type registration struct {
@@ -2070,7 +2070,7 @@ func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsStepDirectory(t 
 	// is the test server's, so that RecordOutputs reaches the register route
 	// the way it does in a cluster. Without it `registerAlias` returns at its
 	// first WARNING line and the whole register body -- including the read-only
-	// flag Req 16 depends on -- is never observed. That is the round-2 finding
+	// flag the held-source rule depends on -- is never observed. That is the round-2 finding
 	// R2-2: the flag was set at a site no committed test could see.
 	backend := NewDaemonSetBackend(cfg, locator, nil, nil)
 	backend.nodeIPResolver = NewNodeIPResolver(fake.NewSimpleClientset(&corev1.Node{

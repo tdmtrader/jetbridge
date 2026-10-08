@@ -64,8 +64,8 @@ func tier2Decision(endpoint string, inCI bool, probe func(string) error) (tier2A
 	if endpoint == "" {
 		if inCI {
 			return tier2Fail, tier2Reason("unset") + ". " + ciVariable + " is set, so this run " +
-				"is CI and tier 2 must execute: the API-level profile Req 41 gates activation " +
-				"on -- create-if-absent, exact-generation get, bucket-wide list with " +
+				"is CI and tier 2 must execute: the API-level profile the plane needs " +
+				"-- create-if-absent, exact-generation get, bucket-wide list with " +
 				"pagination, metageneration and the 404/412/403 split -- is exactly what the " +
 				"in-memory fake cannot answer honestly. Wire the params into the unit-tests task."
 		}

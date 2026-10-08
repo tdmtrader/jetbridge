@@ -69,9 +69,9 @@ func (labeler *FacetLabeler) Advertise(ctx context.Context, output bool) error {
 
 // WithdrawOutput takes the output facet off and leaves the base facet on.
 //
-// Req 59's output-only downgrade: a node that stopped advertising exact control
-// would strand every controlled execution the sibling track placed on it, so
-// the base label is not this operation's business.
+// A node that stopped advertising exact control would strand every controlled
+// execution the sibling track placed on it, so the base label is not this
+// operation's business.
 func (labeler *FacetLabeler) WithdrawOutput(ctx context.Context) error {
 	if labeler == nil {
 		return nil

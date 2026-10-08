@@ -204,17 +204,6 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableWarrant(t *testing.T) {
 		t.Error("the warrant carries a nonce the caller did not generate; a re-mint could not be " +
 			"byte-identical")
 	}
-
-	// And the daemon's own independent question is answerable for it.
-	tx, err := h.Conn.Begin()
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer db.Rollback(tx)
-	if _, err := h.Repository.ValidateReadLease(context.Background(), tx,
-		output.ReadWarrantFor(claims, request.MaterializationTimeout+output.LeaseStartMargin)); err != nil {
-		t.Fatalf("the control plane refused the lease its own warrant names: %v", err)
-	}
 }
 
 // A rolled-back admission mints nothing, and the signer never runs.
@@ -512,7 +501,7 @@ func recordAtRiskPolicy(t *testing.T, h *harness) {
 	}
 	defer db.Rollback(tx)
 
-	if err := h.Repository.RecordRuntimeAtRisk(context.Background(), tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"}); err != nil {
+	if err := h.Repository.RecordRuntimeAtRisk(context.Background(), tx, output.IntegrityFindingRecord{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"}); err != nil {
 		t.Fatalf("recording the runtime finding: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

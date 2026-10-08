@@ -131,11 +131,11 @@ func hangarConflict(err error) error {
 	case hangarRefusalAtRisk:
 		return fmt.Errorf("%w: %s", output.ErrAtRisk, pgErr.Message)
 	case hangarRefusalStaleFence:
-		// Req 10: a stale owner may not seal, publish, sign/register, finalize
-		// or release, and plan.md says a lost CAS is a typed stale refusal and
-		// never a retry loop. Re-running produces the same refusal; the owner
-		// has to take the lease over first, which advances the fence, which is
-		// a different transaction with different facts.
+		// A stale owner may not seal, publish, register, finalize or release,
+		// and a lost CAS is a typed stale refusal and never a retry loop.
+		// Re-running produces the same refusal; the owner has to take the
+		// lease over first, which advances the fence, which is a different
+		// transaction with different facts.
 		return fmt.Errorf("%w: %s", executioncontrol.ErrStaleFence, pgErr.Message)
 	case hangarRefusalIncomplete:
 		return fmt.Errorf("%w: %s", output.ErrIncomplete, pgErr.Message)

@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"time"
@@ -51,7 +50,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 	activate := func() { hangarActivateEpoch(ctx, repository) }
 	// publish, with its publication grace already elapsed on the database
 	// clock. Every spec in this file that admits a reclamation needs that --
-	// elapsed grace is one of Req 46's seven preconditions -- and a spec that
+	// elapsed grace is one of admission's preconditions -- and a spec that
 	// did not arrange it would be asserting the grace refusal under the name of
 	// whatever else it was about.
 	publish := func(digest hangar.Digest, generation int64) (output.CaptureKey, hangar.TreeRef) {
@@ -293,12 +292,12 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 	// A MANAGED READ is admitted by a transaction and validated by another.
 	//
-	// Requirement 35 names four things that must hold together before a warrant
-	// exists: an exact stat proving the registered marked generation is
-	// PRESENT, a readable lifecycle state, at least one active claim, and a
-	// current activation epoch. Requirement 36 adds the lease term. The control
-	// row is first, so a repository that refused every read would fail the
-	// table rather than pass it.
+	// Four things must hold together before a warrant exists: an exact stat
+	// proving the registered marked generation is PRESENT, a readable
+	// lifecycle state, at least one active claim, and a matching control-key
+	// generation; and the lease has one term. The control row is first, so a
+	// repository that refused every read would fail the table rather than
+	// pass it.
 	Describe("a managed read", func() {
 		var ref hangar.TreeRef
 		var claimID output.ClaimID
@@ -444,16 +443,14 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 		// The two states a claimed generation can still reach.
 		//
-		// Requirement 52 keeps existing claims RECORDED when a lifetime
-		// violation is detected -- the consumer's binding does not evaporate --
+		// Existing claims stay RECORDED when a lifetime violation is
+		// detected -- the consumer's binding does not evaporate --
 		// so a claimed ref really can be sitting in `missing_out_of_band` or
 		// `conflicted` when a read is asked for, and a read admitted against
 		// one would be a warrant for content the plane has said is not there.
 		//
-		// Phase 7 owns the code that writes those states; the fixture sets them
-		// directly, which is what a spec for a state whose writer has not
-		// landed yet can honestly do. What it does NOT do is assert through
-		// SQL: the refusal below comes out of the repository.
+		// The fixture sets those states directly. What it does NOT do is
+		// assert through SQL: the refusal below comes out of the repository.
 		DescribeTable("refuses a read for a generation that is no longer readable",
 			func(state string) {
 				_, err := dbConn.Exec(`
@@ -516,7 +513,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+			Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 
 			// The refusal is DEFERRED: it fires at the commit, not at the
@@ -528,9 +525,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err.Error()).To(ContainSubstring("storage integrity"))
 		})
 
-		// The daemon's independent question, asked of the committed row rather
-		// than of the token.
-		Describe("validating the lease a warrant names", func() {
+		Describe("the committed lease a warrant names", func() {
 			var id output.ReadLeaseID
 			var request output.ReadLeaseRequest
 			var lease output.ReadLease
@@ -544,94 +539,11 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			validation := func() output.ReadLeaseValidation {
-				return output.ReadLeaseValidation{
-					ReadLeaseID:       id,
-					ClaimID:           claimID,
-					Ref:               ref,
-					Destination:       request.Destination,
-					ActivationEpoch:   1,
-					WarrantNonce:      request.WarrantNonce,
-					RequiredRemaining: request.MaterializationTimeout + output.LeaseStartMargin,
-				}
-			}
-
-			validate := func(question output.ReadLeaseValidation) (output.ReadLeaseRecord, error) {
-				GinkgoHelper()
-				tx, err := dbConn.Begin()
-				Expect(err).NotTo(HaveOccurred())
-				defer db.Rollback(tx)
-
-				return repository.ValidateReadLease(ctx, tx, question)
-			}
-
-			It("admits the exact committed lease for work that fits inside it", func() {
-				record, err := validate(validation())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(record.Lease.ReadLeaseID).To(Equal(id))
-				Expect(record.WarrantNonce).To(Equal(request.WarrantNonce))
-			})
-
-			It("still admits it after the consumer released its last claim", func() {
-				tx, err := dbConn.Begin()
-				Expect(err).NotTo(HaveOccurred())
-				defer db.Rollback(tx)
-				Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
-					ProtocolVersion: output.ProtocolVersion,
-					ClaimID:         claimID,
-					Ref:             ref,
-					RequestedAt:     output.NewTimestamp(time.Now()),
-				})).To(Succeed())
-				Expect(tx.Commit()).To(Succeed())
-				Expect(countActiveClaims(ref)).To(BeZero())
-
-				_, err = validate(validation())
-				Expect(err).NotTo(HaveOccurred(),
-					"a transfer that released its last claim mid-read was refused; the lease is "+
-						"what protects a read once it has one")
-			})
-
-			DescribeTable("refuses a warrant that does not describe the committed lease",
-				func(sentinel error, spoil func(*output.ReadLeaseValidation)) {
-					question := validation()
-					spoil(&question)
-
-					_, err := validate(question)
-					Expect(err).To(MatchError(sentinel))
-				},
-				Entry("a lease nobody committed", output.ErrNotFound,
-					func(question *output.ReadLeaseValidation) {
-						question.ReadLeaseID = output.ReadLeaseID(uuid.NewString())
-					}),
-				Entry("another claim", output.ErrUnauthorized,
-					func(question *output.ReadLeaseValidation) {
-						question.ClaimID = output.ClaimID(uuid.NewString())
-					}),
-				Entry("another generation", output.ErrUnauthorized,
-					func(question *output.ReadLeaseValidation) { question.Ref.Generation++ }),
-				Entry("another destination", output.ErrUnauthorized,
-					func(question *output.ReadLeaseValidation) {
-						question.Destination.Volume = "input-9"
-					}),
-				Entry("another epoch", output.ErrUnauthorized,
-					func(question *output.ReadLeaseValidation) { question.ActivationEpoch = 2 }),
-				Entry("another nonce", output.ErrUnauthorized,
-					func(question *output.ReadLeaseValidation) {
-						nonce, err := output.NewReadWarrantNonce(rand.Reader)
-						Expect(err).NotTo(HaveOccurred())
-						question.WarrantNonce = nonce
-					}),
-				Entry("work that would outlive the lease", output.ErrTimeout,
-					func(question *output.ReadLeaseValidation) {
-						question.RequiredRemaining = 24 * time.Hour
-					}),
-			)
-
 			// An abandoned reader does not pin a generation forever.
 			//
 			// A materializer that dies mid-staging leaves an unreleased lease.
-			// Requirement 46 asks for "no active read lease" and AC 13 says a
-			// reader's protection ends when the lease closes OR SAFELY EXPIRES,
+			// Reclaim admission needs "no active read lease", and a reader's
+			// protection ends when the lease closes OR SAFELY EXPIRES,
 			// and counting an expired one forever would let one crash pin a
 			// generation for the life of the deployment.
 			//
@@ -713,7 +625,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// reader would pin its generation for term + N(N-1)/2 minutes --
 			// which is exactly the pin CloseAbandonedReadLeases exists to
 			// bound, made unboundable by the mechanism meant to keep a live
-			// reader alive. Requirement 36 names ONE term.
+			// reader alive. There is ONE term.
 			//
 			// The row is aged so that renewing has something to do; ageing
 			// moves both instants together, so what changes is how much is
@@ -750,9 +662,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 			// The repository's own contract, not the handler's composition.
 			//
-			// LeaseControl runs ValidateReadLease first and would refuse both
-			// of these before RenewReadLease saw them -- but RenewReadLease is
-			// on the LeaseControlStore port for any caller, and a method
+			// RenewReadLease is on the repository for any caller, and a method
 			// whose error text says "released, expired or ..." should be the
 			// method that decides it. A renewal that resurrected an expired
 			// lease would re-pin a generation recovery had already released.
@@ -837,22 +747,15 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(rows.Err()).NotTo(HaveOccurred())
 				Expect(released).To(ConsistOf(string(id)))
 
-				// The live one still authorizes work, through the method a
-				// daemon's question really goes through.
-				validating, err := dbConn.Begin()
+				// The live one is still open.
+				loading, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
-				defer db.Rollback(validating)
-				_, err = repository.ValidateReadLease(ctx, validating, output.ReadLeaseValidation{
-					ReadLeaseID:       live,
-					ClaimID:           claimID,
-					Ref:               ref,
-					Destination:       liveRequest.Destination,
-					ActivationEpoch:   1,
-					WarrantNonce:      liveRequest.WarrantNonce,
-					RequiredRemaining: time.Minute,
-				})
+				defer db.Rollback(loading)
+				survivor, err := repository.LoadReadLease(ctx, loading, live)
 				Expect(err).NotTo(HaveOccurred(),
 					"recovery closed a live reader's protection out from under it")
+				Expect(survivor.Lease.ReadLeaseID).To(Equal(live))
+				Expect(survivor.WarrantNonce).To(Equal(liveRequest.WarrantNonce))
 				Expect(liveLease.ReadLeaseID).To(Equal(live))
 
 				// And the generation is still pinned: a reclaimer arriving now
@@ -972,11 +875,11 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					"recovery closed a lease that was renewed while it waited; the decision came "+
 						"from the candidate read taken before the row was held")
 
-				// And the survivor is a lease a daemon may still stage under.
-				validating, err := dbConn.Begin()
+				// And the survivor is still open.
+				loading, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
-				defer db.Rollback(validating)
-				_, err = repository.ValidateReadLease(ctx, validating, validation())
+				defer db.Rollback(loading)
+				_, err = repository.LoadReadLease(ctx, loading, id)
 				Expect(err).NotTo(HaveOccurred(),
 					"the renewed lease no longer authorizes the read it protects")
 			})
@@ -1042,14 +945,17 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(released).To(BeTrue())
 			})
 
-			It("refuses a released lease even though its warrant is still signed", func() {
+			It("refuses to load a released lease even though its warrant is still signed", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(tx)
 				Expect(repository.ReleaseReadLease(ctx, tx, lease)).To(Succeed())
 				Expect(tx.Commit()).To(Succeed())
 
-				_, err = validate(validation())
+				loading, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(loading)
+				_, err = repository.LoadReadLease(ctx, loading, id)
 				Expect(err).To(MatchError(output.ErrConflict))
 				Expect(err.Error()).To(ContainSubstring("was released"))
 			})
@@ -1193,9 +1099,10 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		})
 	})
 
-	// AC 11's two clauses that inverting which actor arrives first does not
-	// cover.
-	Describe("AC 11", func() {
+	// The two lock-order rules that inverting which actor arrives first does
+	// not cover: keys are taken in sorted order, and Hangar never acquires a
+	// consumer-domain row.
+	Describe("lock order and non-interference", func() {
 		// The property is the *input* order, and it is proved by making the
 		// helper block: a holder takes the key that sorts second, the helper is
 		// handed the batch reversed, and a third connection asks with NOWAIT
@@ -1651,7 +1558,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		// The arrival inversion, with a consumer's own binding in it.
 		//
 		// The claimant-versus-reclaimer specs above prove which side wins. This
-		// proves the thing AC 10 actually asks for and they cannot say: that
+		// proves the thing they cannot say: that
 		// the loser leaves no DANGLING BINDING. A consumer whose Hangar half
 		// failed and whose own half committed would have published a reference
 		// to content nothing protects, which is exactly the outcome the shared

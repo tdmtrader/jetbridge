@@ -78,8 +78,8 @@ func TestPublicationGraceCannotBeShortenedIntoACaptureWindow(t *testing.T) {
 		t.Fatalf("the default publication grace was refused: %v", err)
 	}
 	if err := output.ValidatePublicationGrace(floor); err != nil {
-		t.Errorf("the floor itself was refused: %v. Req 39 admits a grace that exceeds the "+
-			"maximum capture deadline by AT LEAST an hour", err)
+		t.Errorf("the floor itself was refused: %v. A grace that exceeds the maximum "+
+			"capture deadline by AT LEAST an hour is admitted", err)
 	}
 
 	if err := output.ValidatePublicationGrace(floor - time.Minute); err == nil {

@@ -130,8 +130,8 @@ type HangarDaemon struct {
 	Pending []byte
 
 	// Output is the daemon that serves the output plane: the same process as
-	// Daemon, which mounts it. OutputBucket is deliberately not Bucket -- Req 20
-	// is that they are never the same one, and this state could not express a
+	// Daemon, which mounts it. OutputBucket is deliberately not Bucket -- they
+	// are never the same one, and this state could not express a
 	// violation of it if it held one field.
 	Output       *realDaemon
 	OutputBucket string

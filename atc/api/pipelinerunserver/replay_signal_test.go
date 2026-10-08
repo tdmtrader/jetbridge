@@ -17,7 +17,7 @@ import (
 	"github.com/concourse/concourse/atc/runs"
 )
 
-// Requirement 20: a committed replay answers 200 with an explicit replay
+// A committed replay answers 200 with an explicit replay
 // outcome and the Idempotency-Replayed header; a new Run answers 201, says it
 // was created, and carries no replay header. The real-database admission path
 // behind this shape is exercised by the brine run-invocation-api feature; this

@@ -49,36 +49,35 @@ func (handshake ExtensionHandshake) Validate() error {
 	return nil
 }
 
-// PolicyViolation is a runtime storage-integrity failure. The name and wire values
-// remain compatible with historical finding records.
-type PolicyViolation string
+// IntegrityViolation is the class of a runtime storage-integrity failure.
+type IntegrityViolation string
 
 const (
-	ViolationOutOfBandAbsence       PolicyViolation = "out_of_band_absence"
-	ViolationRuntimePrincipalDenied PolicyViolation = "runtime_principal_denied"
+	ViolationOutOfBandAbsence       IntegrityViolation = "out_of_band_absence"
+	ViolationRuntimePrincipalDenied IntegrityViolation = "runtime_principal_denied"
 )
 
-func PolicyViolations() []PolicyViolation {
-	return []PolicyViolation{ViolationOutOfBandAbsence, ViolationRuntimePrincipalDenied}
+func IntegrityViolations() []IntegrityViolation {
+	return []IntegrityViolation{ViolationOutOfBandAbsence, ViolationRuntimePrincipalDenied}
 }
 
-func ParsePolicyViolation(value string) (PolicyViolation, error) {
-	for _, member := range PolicyViolations() {
+func ParseIntegrityViolation(value string) (IntegrityViolation, error) {
+	for _, member := range IntegrityViolations() {
 		if string(member) == value {
 			return member, nil
 		}
 	}
 
-	return "", fmt.Errorf("%w: policy violation %q; the vocabulary is %v",
-		ErrUnknownMember, value, PolicyViolations())
+	return "", fmt.Errorf("%w: integrity violation %q; the vocabulary is %v",
+		ErrUnknownMember, value, IntegrityViolations())
 }
 
-func (violation *PolicyViolation) UnmarshalJSON(raw []byte) error {
+func (violation *IntegrityViolation) UnmarshalJSON(raw []byte) error {
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {
 		return err
 	}
-	parsed, err := ParsePolicyViolation(text)
+	parsed, err := ParseIntegrityViolation(text)
 	if err != nil {
 		return err
 	}
@@ -87,16 +86,16 @@ func (violation *PolicyViolation) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-func (violation PolicyViolation) Validate() error {
-	_, err := ParsePolicyViolation(string(violation))
+func (violation IntegrityViolation) Validate() error {
+	_, err := ParseIntegrityViolation(string(violation))
 
 	return err
 }
 
-// PolicyFinding records a runtime failure and the exact object or principal
-// involved. The type name remains compatible with existing repository ports.
-type PolicyFinding struct {
-	Violation PolicyViolation
+// IntegrityFindingRecord records a runtime failure and the exact object or
+// principal involved.
+type IntegrityFindingRecord struct {
+	Violation IntegrityViolation
 	Subject   string
 	Detail    string
 }
@@ -104,12 +103,12 @@ type PolicyFinding struct {
 // maxFindingDetailBytes bounds the stored explanation of one runtime failure.
 const maxFindingDetailBytes = 1024
 
-func (finding PolicyFinding) Validate() error {
+func (finding IntegrityFindingRecord) Validate() error {
 	if err := finding.Violation.Validate(); err != nil {
 		return err
 	}
 	if finding.Subject == "" {
-		return fmt.Errorf("%w: a policy finding names no subject; an operator asked to fix a "+
+		return fmt.Errorf("%w: an integrity finding names no subject; an operator asked to fix a "+
 			"binding needs the binding", ErrIncomplete)
 	}
 	if len(finding.Detail) > maxFindingDetailBytes {
@@ -124,7 +123,7 @@ func (finding PolicyFinding) Validate() error {
 // it by id.
 type IntegrityFinding struct {
 	ID         int64
-	Violation  PolicyViolation
+	Violation  IntegrityViolation
 	Subject    string
 	Detail     string
 	ObservedAt Timestamp

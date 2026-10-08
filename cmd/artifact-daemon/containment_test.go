@@ -113,7 +113,7 @@ func symlinksUnder(t *testing.T, root string) []string {
 	return found
 }
 
-// AC 1 / AC 6 — the reproduced escape: a symlink out, then a write through it.
+// The reproduced escape: a symlink out, then a write through it.
 func TestPeerFetch_SymlinkEscape_Refused(t *testing.T) {
 	// Waits out retry backoff or a probe timeout; overlapping the waits
 	// is most of this package's wall time.
@@ -134,7 +134,7 @@ func TestPeerFetch_SymlinkEscape_Refused(t *testing.T) {
 	}
 }
 
-// AC 2 — a name that walks upward out of the destination.
+// A name that walks upward out of the destination.
 func TestPeerFetch_NameTraversal_Refused(t *testing.T) {
 	// Waits out retry backoff or a probe timeout; overlapping the waits
 	// is most of this package's wall time.
@@ -153,7 +153,7 @@ func TestPeerFetch_NameTraversal_Refused(t *testing.T) {
 	}
 }
 
-// AC 4 — an absolute symlink target is refused, and no symlink is left behind.
+// An absolute symlink target is refused, and no symlink is left behind.
 func TestPeerFetch_AbsoluteSymlink_Refused(t *testing.T) {
 	// Waits out retry backoff or a probe timeout; overlapping the waits
 	// is most of this package's wall time.
@@ -172,7 +172,7 @@ func TestPeerFetch_AbsoluteSymlink_Refused(t *testing.T) {
 	}
 }
 
-// AC 5 — a chain whose composition escapes, even though each hop looks local.
+// A chain whose composition escapes, even though each hop looks local.
 func TestPeerFetch_SymlinkChain_Refused(t *testing.T) {
 	// Waits out retry backoff or a probe timeout; overlapping the waits
 	// is most of this package's wall time.
@@ -200,7 +200,7 @@ func TestPeerFetch_SymlinkChain_Refused(t *testing.T) {
 	}
 }
 
-// AC 3 — a relative symlink that stays inside must survive, produced by the
+// A relative symlink that stays inside must survive, produced by the
 // daemon's OWN tar producer so this is a genuine round trip.
 func TestPeerFetch_InternalSymlinkPreserved(t *testing.T) {
 	peerStorage := t.TempDir()

@@ -2,8 +2,8 @@ package hangaroutput
 
 // Admitting a managed-output read, with the commit boundary in the type system.
 //
-// Requirement 35 and the plan's "managed-read admission has an explicit commit
-// boundary" describe one shape and it is worth stating plainly:
+// Managed-read admission has an explicit commit boundary, and the shape is
+// worth stating plainly:
 //
 //  1. The exact-generation stat runs OUTSIDE every lock. It is a network call,
 //     and no Hangar transaction holds a lock across one.

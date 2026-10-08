@@ -61,7 +61,7 @@ produce this table.
 
 | mutation | the claim it disproves | why |
 | --- | --- | --- |
-| **M22** — the hold handler takes the request's incarnation as authoritative instead of issuing it | `The daemon acknowledges a hold for a server-issued source incarnation` (`@HOP-3 @HOP-7`), whose comment names exactly this mutation | **16 passed, 0 failed.** No scenario in the family ever OFFERS an incarnation different from the one the daemon reserved, so the equality this mutation removes never fires. Req 7's "a handle string alone is never an identity" has a phrase for a PATH (`the hold request names a path instead of an incarnation`) and none for a wrong incarnation. The behaviour is real and is pinned in Go; brine does not pin it, and the comment says it does. |
+| **M22** — the hold handler takes the request's incarnation as authoritative instead of issuing it | `The daemon acknowledges a hold for a server-issued source incarnation` (`@HOP-3 @HOP-7`), whose comment names exactly this mutation | **16 passed, 0 failed.** No scenario in the family ever OFFERS an incarnation different from the one the daemon reserved, so the equality this mutation removes never fires. The rule that a handle string alone is never an identity has a phrase for a PATH (`the hold request names a path instead of an incarnation`) and none for a wrong incarnation. The behaviour is real and is pinned in Go; brine does not pin it, and the comment says it does. |
 | **M42** — `pre_reservation_cancel` forks on the acknowledged hold instead of the reserved source | `A cancelled handoff with no acknowledged hold releases its reservation and closes` (`@HOP-11`), whose comment names exactly this mutation | **10 passed, 0 failed.** The scenario's own state has a reservation AND no acknowledged hold; removing the `!Reserved()` fork changes the answer only for a handoff that reserved NOTHING, which no scenario reaches. |
 | **M50** — the Ed25519 signer omits `Generation` from the signed claim set | `A sealed source publishes one marked object and a receipt naming its scope, digest and generation` (`@HOP-21 @HOP-22 @HOP-25`), whose comment names exactly this mutation and says the whole-receipt check reddens on its one line | **9 passed, 0 failed, and it can never be otherwise.** Signer and verifier both call `CanonicalReceiptBytes`, so dropping a field there is self-consistent: every signature this run produced still verified. What that mutation reddens is the Go golden fixtures (`protocol_golden_test.go`, `receipt_coverage_test.go`), not brine. The `Reddened by:` line is mis-stated rather than the scenario being weak — the scenario DOES assert the whole receipt, and M55 reddens it. |
 
@@ -323,11 +323,11 @@ this table:
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
 **A capture-selected step announces selection, seal start and its terminal disposition**  `@HOP-18`  (:151)
-  - **Reddened by (as the file states it):** the Req 18 emitter dropping the selection announcement and emitting only seal start and the outcome — this reddens on its first announcement line, and the payload scenario below stays green.
+  - **Reddened by (as the file states it):** the announcement emitter dropping the selection announcement and emitting only seal start and the outcome — this reddens on its first announcement line, and the payload scenario below stays green.
   - **BROADER THAN NAMED — M38** — `Stage 2 commits the reservation already resolved` — RED at `the build announces "capture-seal-started"`
   - **BROADER THAN NAMED — M38** — `Stage 2 commits the reservation already resolved` — RED at `the build announces "capture-disposition"`
-  - **MEASURED M45** — `the Req 18 emitter drops the capture-selected announcement` — RED at `the build announces "capture-selected"`, which is exactly the first announcement line the comment names, and the payload scenario it says stays green did stay green
-  - **MEASURED M45** — `the Req 18 emitter drops the capture-selected announcement` — RED at `the build announces "capture-disposition"`
+  - **MEASURED M45** — `the announcement emitter drops the capture-selected announcement` — RED at `the build announces "capture-selected"`, which is exactly the first announcement line the comment names, and the payload scenario it says stays green did stay green
+  - **MEASURED M45** — `the announcement emitter drops the capture-selected announcement` — RED at `the build announces "capture-disposition"`
 
 **An ordinary step announces none of them, while the capture step beside it announces all three**  `@HOP-18`  (:167)
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.

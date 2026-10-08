@@ -15,8 +15,8 @@ import (
 // The two facets, and what a daemon that has only the base one may say.
 //
 // A base-only daemon is a real deployment: it is the one the sibling
-// `exact_execution_control` track schedules onto, and Req 58's downgrade
-// requires reaching it from a running output plane without taking exact process
+// `exact_execution_control` track schedules onto, and withdrawing the output
+// facet must reach it from a running output plane without taking exact process
 // control away. So the output facet is OPTIONAL configuration in this binary
 // rather than a precondition of starting it, and the boundary between "this
 // daemon has no output bucket" and "this daemon refuses to publish" is a typed
@@ -92,7 +92,7 @@ func TestAHalfConfiguredOutputFacetIsRefused(t *testing.T) {
 	}
 }
 
-// Req 24 again, from the other side: a daemon that publishes nothing is given no
+// The same rule from the other side: a daemon that publishes nothing is given no
 // publisher. A capability built into a process that cannot need it is one an
 // exploit of that process gets for free.
 func TestABaseOnlyDaemonHoldsNoPublisher(t *testing.T) {
@@ -106,7 +106,7 @@ func TestABaseOnlyDaemonHoldsNoPublisher(t *testing.T) {
 	}
 }
 
-// Req 58. Mixed or older components refuse durable output capture with a TYPED
+// Mixed or older components refuse durable output capture with a TYPED
 // result and no cache-tier fallback. The control is first and in the same test:
 // the base routes still answer, so "everything is refused" is not what this
 // proves.
@@ -156,7 +156,7 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 			t.Errorf("%s refused with %q, which is not the typed capture-disabled result",
 				route.path, refusal.Error)
 		}
-		// Req 58: no cache-tier fallback. The refusal never mentions one.
+		// No cache-tier fallback. The refusal never mentions one.
 		for _, forbidden := range []string{"cache", "fallback", "resource-cache"} {
 			if strings.Contains(strings.ToLower(refusal.Error), forbidden) {
 				t.Errorf("%s's refusal mentions %q; there is no cache-tier fallback and a "+
@@ -167,7 +167,7 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 	}
 }
 
-// Req 56. The extension handshake says a daemon speaks capture, and it is only
+// The extension handshake says a daemon speaks capture, and it is only
 // truthful where the facet exists.
 func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 	full := newRoutes(t, "")

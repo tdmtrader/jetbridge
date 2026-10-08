@@ -288,7 +288,7 @@ func (sweep *Sweep) deleteOrphan(ctx context.Context, ref hangar.TreeRef, object
 	deleteCtx, cancel := context.WithTimeout(ctx, deleteTimeout(sweep.DeleteTimeout))
 	defer cancel()
 	outcome, err := sweep.Reclaimer.DeleteExactGeneration(deleteCtx, ref,
-		output.DeletePrecondition{Generation: object.Generation, Metageneration: object.Metageneration})
+		output.DeletePrecondition{Generation: object.Generation})
 	switch outcome {
 	case output.DeleteConfirmed:
 		return SweepDeleted, tx.Commit()

@@ -1771,8 +1771,8 @@ func (cmd *RunCommand) gcComponents(
 // non-Kubernetes one included -- grew two `components` rows, two advisory
 // locks and two queries a minute, for a plane it does not have. Each pass is
 // one bounded indexed SELECT rolled back immediately, so the cost was small;
-// Req 59 asks for a deployment with capture disabled to behave as it did
-// before, and "small" is not that.
+// a deployment with capture disabled must behave as it did before, and
+// "small" is not that.
 //
 // The status component keeps its own additional condition, and it is a
 // different question: the flag says this deployment HAS an output plane, and

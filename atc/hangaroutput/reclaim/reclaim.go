@@ -285,7 +285,7 @@ func (pass *Pass) deleteOne(ctx context.Context, job db.HangarReclaimJob) (bool,
 	// up this one generation and nothing else.
 	deleteCtx, cancel := context.WithTimeout(ctx, deleteTimeout(pass.DeleteTimeout))
 	outcome, deleteErr := pass.Reclaimer.DeleteExactGeneration(deleteCtx, job.Ref,
-		output.DeletePrecondition{Generation: job.Ref.Generation, Metageneration: job.Metageneration})
+		output.DeletePrecondition{Generation: job.Ref.Generation})
 	cancel()
 
 	return pass.Finalize(ctx, job, attempt, outcome, deleteErr)

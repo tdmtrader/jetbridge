@@ -17,8 +17,8 @@ package jetbridge
 //
 // NARROWED by decision F13. The job, one-off and check worker paths that carry
 // ExecutionControl WITHOUT a capture belong to the sibling track
-// `exact_execution_control`; this inventory is over capture-selected executions,
-// which is what spec Reqs 3-6 and 58 require of this track.
+// `exact_execution_control`; this inventory is over capture-selected executions
+// only.
 
 import (
 	"go/ast"
@@ -50,7 +50,7 @@ var captureSites = map[string]string{
 		"before every writer",
 	"capture_control.go:captureStepDirectory": "the step directory the selected output's " +
 		"volume must resolve to, through output.CaptureKey.Directory -- the one derivation " +
-		"the node's daemon shares. Req 7 says no API accepts a caller-chosen path",
+		"the node's daemon shares. No API accepts a caller-chosen path",
 	"capture_control.go:captureSelectedOutputName": "which declared output was selected",
 	"capture_control.go:captureSelectedOutputPath": "where that output lives in the container",
 	"storage_daemonset.go:BuildAffinity": "the two ready labels and the capture's node. A " +

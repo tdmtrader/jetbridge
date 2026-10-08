@@ -93,9 +93,9 @@ const supervisorNoSetsidNotice = "[supervisor] setsid is not in this image; " +
 // The exact-execution supervisor is the same script with one more durable
 // record and one more refusal.
 //
-// Requirement 4 puts a start record before the child and an outcome record
-// before the result, and requirement 6 forbids re-executing a producer from
-// exact process start onward. Today's script violates the second: on a re-exec
+// The start record goes before the child and the outcome record before the
+// result, and a producer is never re-executed from exact process start
+// onward. Today's script violates the second: on a re-exec
 // it relaunches whenever there is no exit file and nothing is alive, which is
 // exactly the state a crash after real process start leaves behind. For an
 // ordinary task that is the right behaviour and it is why the script exists;

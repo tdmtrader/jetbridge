@@ -802,7 +802,6 @@
         "activationEpoch": {},
         "cacheBucket": {},
         "strictInputBucket": {},
-        "sharedBucketPrefixOnlyIsolation": {},
         "endpoint": {},
         "captureDeadline": {},
         "sealDeadline": {

@@ -47,8 +47,8 @@ const (
 	// Pod exists. It is the ONLY phase in which a capture may be selected.
 	ControlPhaseAdmitted ControlPhase = "admitted"
 	// controlPhaseStarted is an envelope whose exact start has been recorded.
-	// A capture selected here would be Req 1's late request: a capture of an
-	// already-running task.
+	// A capture selected here would be a late request: a capture of an
+	// already-running task, which is refused.
 	controlPhaseStarted ControlPhase = "started"
 )
 
@@ -138,7 +138,7 @@ type DurableOutputCapture struct {
 // SelectCapture attaches the extension, and is the only way to attach it.
 //
 // It refuses a second selection and a selection after the exact start, which
-// are the two states Req 1 forbids and the two states no brine phrase can
+// are the two forbidden states and the two states no brine phrase can
 // construct -- `CaptureDraft` is refinement-only, so the feature files cannot
 // express them and this is the only place they are pinned.
 func (control *ExecutionControl) SelectCapture(capture DurableOutputCapture) error {

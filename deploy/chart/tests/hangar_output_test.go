@@ -302,15 +302,6 @@ func TestTheOutputBucketIsExplicitAndIsNeitherOtherBucket(t *testing.T) {
 	}
 }
 
-// Prefix-only isolation inside one shared bucket is not an activation-compatible
-// substitute, and Req 20 says so. The chart has no value that expresses it.
-func TestPrefixOnlyIsolationInAMixedBucketIsRefused(t *testing.T) {
-	message := renderOutputError(t, "hangarOutput.sharedBucketPrefixOnlyIsolation=true")
-	if !strings.Contains(message, "prefix") {
-		t.Errorf("prefix-only isolation was accepted:\n%s", message)
-	}
-}
-
 // The prefix, the tenant, the bucket and the control-key generation are server
 // configuration handed to both halves of the plane, and they are the same
 // values in both: an orphan sweep listing a namespace the daemon does not

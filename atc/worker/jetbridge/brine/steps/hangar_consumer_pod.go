@@ -249,7 +249,7 @@ func noUserDestinationInTheVerificationCommand(in PodCreated) error {
 // which the doctrine forbids and which would be asserting the stand-in. The
 // staging proof is elsewhere and is real in both places:
 // TestAManagedMaterializationStagesTheSameBytesAsAStrictOne walks both
-// destinations byte for byte, and AC 19's K3s tier runs the pod.
+// destinations byte for byte, and the K3s tier runs the pod.
 //
 // WHAT "EXACTLY" CAN MEAN IN THIS TIER, AND WHAT IT CANNOT. Two arms, and both
 // of them fire: the command carries a materialization request at all, and one

@@ -1538,7 +1538,7 @@ func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) err
 		return fmt.Errorf("pause pod %s has already been replaced once", p.podName)
 	}
 	// A new Pod is a new Pod UID, and a capture-held incarnation may not give
-	// one a write-capable mount (Req 16). The ordinary recreation is unchanged
+	// one a write-capable mount. The ordinary recreation is unchanged
 	// -- it is the regression this refusal must not become -- so the question
 	// is asked of the ledger rather than answered from a flag.
 	if err := p.container.refuseIfCaptureHeld(ctx, "recreating the pause pod"); err != nil {

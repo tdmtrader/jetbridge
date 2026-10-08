@@ -14,8 +14,8 @@ package steps
 // row the test wrote, or with capture selected after the run:
 //
 //   - CaptureDraft is reached ONLY by a refinement over a draft, so "capture
-//     requested after the task started" has no sentence. That is Req 1 spelled
-//     in the type system rather than asserted.
+//     requested after the task started" has no sentence. Capture is selected
+//     before the run, spelled in the type system rather than asserted.
 //   - HangarDaemon names its own bucket. There is no phrase that sets it.
 //   - CaptureOutcome's Capture is the row production's coordinator left; the
 //     only phrase that fills it is `the capture settles`.
@@ -153,7 +153,7 @@ type CaptureDraft struct {
 	PodUID executioncontrol.PodUID
 
 	// StrictInput is the destination of a strict-input Hangar tree this step
-	// also takes, empty when it takes none. It is the AC 20 regression twin's
+	// also takes, empty when it takes none. It is the strict-input regression twin's
 	// whole subject: a capture-selected step that ALSO consumes an exact
 	// immutable input must still get the ordinary strict-input materialization,
 	// unchanged, beside its capture control init.

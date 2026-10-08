@@ -2,7 +2,7 @@ package jetbridge
 
 // The capture-selected pod's control init container.
 //
-// Requirement 3 puts one ordering ahead of everything else: after the exact Pod
+// One ordering comes ahead of everything else: after the exact Pod
 // exists but BEFORE the producer main process may start, the daemon durably
 // writes a held step marker (the source hold). In a Pod that means an
 // init container, because an init container is the only thing Kubernetes runs
@@ -10,7 +10,7 @@ package jetbridge
 // every other one this pod builds writes into the very tree the hold protects:
 // `cleanup-stale` removes it, `artifact-fetch` stages inputs into it.
 //
-// Requirement 24 decides where the credential goes. The task and sidecar
+// Where the credential goes is fixed. The task and sidecar
 // containers receive no GCS credential, no materialization key
 // and no publication capability, and the source-control grant is the capture
 // extension's own attenuated capability -- so it is carried by THIS container
@@ -40,7 +40,7 @@ import (
 //
 // It exists for the one caller that has no ContainerSpec: `LookupContainer`
 // builds its Container with an empty one -- there is nothing behind a lookup
-// but a handle and a DB row -- and the hijack refusal Req 18 requires cannot
+// but a handle and a DB row -- and the hijack refusal cannot
 // ask about the incarnation it has never heard of. The handle is a SIBLING of
 // the incarnation, so a guard that fell back to it could only ever be told
 // `unmanaged`.
@@ -89,9 +89,9 @@ const captureEnvGrantLegacy = "HANGAR_CAPTURE_CAPABILITY"
 // The init container runs as soon as the kubelet starts the Pod, and the ATC
 // admits the exact execution as soon as the scheduler binds it -- two events
 // with no ordering between them. So the hold RETRIES while the daemon says the
-// execution is not admitted yet, and fails closed when the budget runs out:
-// Req 3's "start and recovery fail closed until the hold matches current
-// execution admission" is a refusal to start, not a hold taken on faith.
+// execution is not admitted yet, and fails closed when the budget runs out.
+// Start and recovery fail closed until the hold matches current execution
+// admission: that is a refusal to start, not a hold taken on faith.
 const defaultHoldAttempts = 60
 
 // buildCaptureControlInitContainer returns the init container that establishes

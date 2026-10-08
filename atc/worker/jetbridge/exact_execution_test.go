@@ -1152,8 +1152,8 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 	// `LookupContainer` builds its Container with `runtime.ContainerSpec{}` --
 	// there is no spec behind a lookup -- so the guard above fell through to
 	// the handle, which is a sibling of the step directory, and the classifier
-	// correctly answered `unmanaged`. Req 18 takes post-completion hijack away
-	// from a capture-enabled task, and it was being taken away from nobody.
+	// correctly answered `unmanaged`. A capture-enabled task loses post-completion
+	// hijack, and it was being taken away from nobody.
 	//
 	// The Pod is where a looked-up container's facts live, so the step
 	// directory is stamped on it as an annotation at build time and read back here. The
@@ -1200,7 +1200,7 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(built.Annotations).To(HaveKeyWithValue(captureStepAnnotation, reserved),
 			"buildPod stamped no step directory, so a looked-up container has nothing to read "+
-				"and the hijack refusal Req 18 requires never fires")
+				"and the hijack refusal never fires")
 
 		Expect(clientset.CoreV1().Pods("test-ns").Delete(ctx, "held-pod",
 			metav1.DeleteOptions{})).To(Succeed())
@@ -1215,7 +1215,7 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 		Expect(classifier.asked).To(ContainElement(reserved),
 			"the hijack door asked about the handle, which a looked-up container is all it has; "+
 				"a classifier answering about a sibling of the held directory can only say "+
-				"unmanaged, so the refusal Req 18 requires never fires")
+				"unmanaged, so the hijack refusal never fires")
 		Expect(classifier.asked).ToNot(ContainElement("held-handle"))
 	})
 

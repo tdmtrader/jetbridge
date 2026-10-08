@@ -161,7 +161,7 @@ type route struct {
 	// another node, so when TLS is configured they require a verified client
 	// certificate -- a bearer capability over plaintext off-node is
 	// interceptable inside its TTL. The capture control init holds no client
-	// certificate and cannot be given one (Req 24 gives the task's Pod no
+	// certificate and cannot be given one (the task's Pod holds no
 	// output-plane credential beyond its one-shot warrant), so its route stays
 	// reachable without one, exactly as cmd/artifact-daemon exempts /resolve
 	// for the same caller and the same reason. It is node-local traffic on the
@@ -241,7 +241,7 @@ func (server *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, server.daemon.BaseHandshake())
 	})
 	mux.HandleFunc("GET /capture/v1/handshake", func(w http.ResponseWriter, request *http.Request) {
-		// Req 56's extension handshake. It is the capture facet's, so a daemon
+		// The extension handshake. It is the capture facet's, so a daemon
 		// without the facet refuses it with the same typed result every other
 		// capture route gives -- an empty handshake would be a daemon claiming
 		// to speak a protocol it does not.
@@ -281,7 +281,7 @@ func (server *Server) Handler() http.Handler {
 func (server *Server) routes() map[string]route {
 	return map[string]route{
 		// The base protocol's four closed operations. Nothing here mentions an
-		// output, a hold, a bucket or a receipt.
+		// output, a hold or a bucket.
 		// Admission and the supervisor's two writes. They are base routes and
 		// they carry no output, source or capture field: this is the shape a
 		// non-capture execution uses unchanged, which is decision F13's
@@ -314,7 +314,7 @@ func (server *Server) routes() map[string]route {
 func (server *Server) protect(declared route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if server.unreadyBecause != "" {
-			// Fail closed. Output-daemon unavailability never warrants authority,
+			// Fail closed. The output plane being unavailable never warrants authority,
 			// and "unavailable" includes "cannot read its own ledger".
 			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
 
@@ -322,7 +322,7 @@ func (server *Server) protect(declared route) http.Handler {
 		}
 
 		// The facet gate, and it is FIRST because it is the only refusal here
-		// that is about this daemon rather than about this request. Req 58: a
+		// that is about this daemon rather than about this request. A
 		// component without the capture facet refuses durable output capture
 		// with a typed result and no cache-tier fallback. Answering "forbidden"
 		// or "bad request" would tell a caller to fix the call; answering 501
@@ -579,7 +579,7 @@ func writeError(w http.ResponseWriter, err error) {
 		// 501 and not 403 or 404. "This component does not implement the
 		// capture extension" is a statement about the daemon; a caller that
 		// read it as "not permitted" or "no such route" would retry, and the
-		// retry Req 58 forbids is the cache tier.
+		// one retry that must never happen is falling back to the cache tier.
 		status = http.StatusNotImplemented
 	case errors.Is(err, output.ErrInfrastructure), errors.Is(err, output.ErrCorrupt):
 		status = http.StatusServiceUnavailable

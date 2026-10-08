@@ -190,7 +190,7 @@ func (repository *HangarOutputRepository) TakeOverReclaimJob(ctx context.Context
 // violation. Ask-then-record would make the second indistinguishable from the
 // first for the width of the window.
 //
-// It also enforces Req 48's start condition: work begins only with the delete
+// It also enforces the start condition: work begins only with the delete
 // timeout plus two minutes of lease remaining, measured on the database clock,
 // because a delete that starts with less has no way to finish inside its own
 // authority.
@@ -459,7 +459,7 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 	// at-risk state and blocks new admissions from detection onward. Moving
 	// one lifecycle row and stopping says one object is gone while the plane
 	// carries on publishing into a bucket something else is deleting from.
-	return repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{
+	return repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{
 		Violation: output.ViolationOutOfBandAbsence,
 		Subject:   fmt.Sprintf("%s/%s/%d", ref.Scope, ref.Digest, ref.Generation),
 		Detail: "the exact generation is absent from the output bucket and no admitted delete " +
@@ -467,7 +467,7 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 	})
 }
 
-// RecordRuntimePrincipalDenial is Req 52's platform-principal mismatch in its
+// RecordRuntimePrincipalDenial is the platform-principal mismatch in its
 // runtime form.
 //
 // The IAM matrix says what the bucket's bindings CLAIM. This is the store
@@ -475,13 +475,14 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 // supposed to authorize, which is either a warrant that was removed or a
 // principal that is not the one the deployment configured. Either way the plane
 // is not the plane that was configured, and carrying on admitting work under an
-// identity that has just been refused is exactly the state Req 52 stops.
+// identity that has just been refused is exactly the state an integrity
+// finding exists to stop.
 func (repository *HangarOutputRepository) RecordRuntimePrincipalDenial(ctx context.Context, tx output.Tx, role output.PrincipalRole, detail string) error {
 	if err := role.Validate(); err != nil {
 		return err
 	}
 
-	return repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{
+	return repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{
 		Violation: output.ViolationRuntimePrincipalDenied,
 		Subject:   string(role),
 		Detail:    detail,
@@ -580,7 +581,7 @@ func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context,
 	}
 	if grace <= 0 {
 		return nil, fmt.Errorf("%w: a reclaim admission pass names no publication grace, and "+
-			"elapsed grace is one of Req 46's preconditions", output.ErrIncomplete)
+			"elapsed grace is one of admission's preconditions", output.ErrIncomplete)
 	}
 
 	rows, err := tx.QueryContext(ctx, `

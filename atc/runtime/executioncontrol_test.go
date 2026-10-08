@@ -80,8 +80,8 @@ func TestABaseExecutionWithNoCaptureIsCompleteAndACaptureSelectedOnceIsAdmitted(
 	}
 }
 
-// Late injection and a second selection: the two states Req 1 forbids, and the
-// two no feature file can build.
+// Late injection and a second selection: the two states a capture may never
+// reach, and the two no feature file can build.
 func TestCaptureIsSelectableOnlyOnceAndOnlyBeforeTheExecutionStarts(t *testing.T) {
 	late := baseEnvelope()
 	late.MarkStarted()

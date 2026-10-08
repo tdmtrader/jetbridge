@@ -15,7 +15,7 @@ import (
 var fixedInstant = time.Date(2026, 9, 9, 4, 5, 6, 123456789, time.UTC)
 
 // The derivation is a pure function over authenticated configuration, and a
-// table is the honest shape for it: Req 20 is a closed statement about which
+// table is the honest shape for it: the rule is a closed statement about which
 // inputs may reach the bucket, the prefix and the scope, so the test that
 // proves it has to enumerate the inputs that must not.
 
@@ -57,11 +57,6 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 			mutate:   func(c *NamespaceConfig) { c.Bucket = c.StrictInputBucket },
 			sentinel: ErrConflict,
 			says:     "strict-input bucket",
-		},
-		"a shared bucket with prefix-only isolation": {
-			mutate:   func(c *NamespaceConfig) { c.SharedBucketPrefixOnlyIsolation = true },
-			sentinel: ErrUnauthorized,
-			says:     "not an activation-compatible substitute",
 		},
 		"a store that is not native GCS": {
 			mutate:   func(c *NamespaceConfig) { c.Store = "filesystem" },

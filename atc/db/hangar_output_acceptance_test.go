@@ -146,7 +146,7 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			Scan(&captureState, &releasedAt)).To(Succeed())
 		Expect(captureState).To(Equal("published"))
 		Expect(releasedAt.Valid).To(BeFalse(),
-			"the capture reported its source released before it was; Req 40 wants the source "+
+			"the capture reported its source released before it was; the source must be "+
 				"released and not only the decision taken")
 
 		hangarReleaseSource(ctx, repository, capture)
@@ -159,9 +159,9 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		// --- the consumer binds and claims, in ONE transaction --------------
 		//
 		// The consumer is product-neutral and opaque: a binding id and a
-		// visibility, and Hangar learns nothing else about it. Req 30's shape
-		// is that both halves commit together, so the claim is acquired inside
-		// the consumer's own transaction rather than beside it.
+		// visibility, and Hangar learns nothing else about it. Both halves
+		// commit together, so the claim is acquired inside the consumer's own
+		// transaction rather than beside it.
 		_, err := dbConn.Exec(`
 			CREATE TABLE acceptance_bindings (
 				binding_id text PRIMARY KEY,
@@ -244,9 +244,9 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 			})).To(Succeed())
 		})
 
-		// AC 13's last clause: releasing the LAST claim during a transfer
-		// cannot delete until the read lease closes. The claim is gone and the
-		// reader is still holding, so the refusal must now be the lease.
+		// Releasing the LAST claim during a transfer cannot delete until the
+		// read lease closes. The claim is gone and the reader is still
+		// holding, so the refusal must now be the lease.
 		err = reclaimRefusal()
 		Expect(err).To(MatchError(output.ErrConflict))
 		Expect(err.Error()).To(ContainSubstring("read lease"))
@@ -288,9 +288,9 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		// --- and the far end of the chain holds ----------------------------
 		//
 		// The released claim stays tombstoned for the lifetime of the tree-ref
-		// record (Req 32), and a caller cannot re-acquire on a reclaimed ref
-		// (Req 38). Both are read from the state the legs above committed, not
-		// from a row this spec wrote.
+		// record, and a caller cannot re-acquire on a reclaimed ref. Both are
+		// read from the state the legs above committed, not from a row this
+		// spec wrote.
 		var claims []output.ClaimRecord
 		in(func(tx db.HangarOutputTx) {
 			var err error

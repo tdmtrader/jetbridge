@@ -12,8 +12,8 @@
 // `already_absent` are different facts, and so are `deleted` and "we asked and
 // never heard back": a delete whose response was lost removed the object but
 // cannot be reported as confirmed, because confirming it would let reclamation
-// claim evidence it does not have. That distinction is Req 48's, and it is why
-// this returns a typed outcome beside its error rather than only an error.
+// claim evidence it does not have. That distinction is why this returns a
+// typed outcome beside its error rather than only an error.
 package reclaimer
 
 import (
@@ -80,11 +80,8 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 		return output.DeleteInfrastructure, err
 	}
 
-	// The generation and only the generation. The registered metageneration is
-	// evidence about the object, not a condition on removing it: a benign
-	// metadata change moves it without moving the generation, and a delete
-	// conditioned on the recorded value 412s forever against an object nobody
-	// has touched the bytes of. See DeletePrecondition.
+	// The generation and only the generation; the recorded metageneration is
+	// evidence about the object, not a condition on removing it.
 	err = reclaimer.store.DeleteExact(ctx, reclaimer.namespace.Bucket(), key, ref.Generation)
 
 	switch {
@@ -119,9 +116,9 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 		return output.DeleteAlreadyAbsent, nil
 
 	case errors.Is(err, objectstore.ErrPreconditionFailed):
-		return output.DeleteGenerationConflict, fmt.Errorf("%w: %s is not at generation %d "+
-			"metageneration %d; the delete was refused and is never retried unconditionally",
-			output.ErrGenerationConflict, key, precondition.Generation, precondition.Metageneration)
+		return output.DeleteGenerationConflict, fmt.Errorf("%w: %s is not at generation %d; "+
+			"the delete was refused and is never retried unconditionally",
+			output.ErrGenerationConflict, key, precondition.Generation)
 
 	case errors.Is(err, objectstore.ErrUnauthorized):
 		return output.DeleteUnauthorized, fmt.Errorf("%w: deleting %s: %v",
@@ -136,9 +133,6 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 	}
 }
 
-// Deferred: the delete pass's own answer already reports absence; a separate
-// stat belongs to the ambiguous-response recovery path in Phase 8
-//
 // ObserveExactAbsence is the stat half of inferred reclamation.
 //
 // It is a separate method because "the object is gone" and "we deleted it" are

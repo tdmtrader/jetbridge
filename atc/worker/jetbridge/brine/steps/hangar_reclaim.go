@@ -199,8 +199,7 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				in.Deleted, err = deletes.DeleteExactGeneration(ctx, in.Bound.Tree.Ref,
-					hangaroutputleaf.DeletePrecondition{Generation: in.Bound.Tree.Ref.Generation,
-						Metageneration: 1})
+					hangaroutputleaf.DeletePrecondition{Generation: in.Bound.Tree.Ref.Generation})
 				if in.Deleted != hangaroutputleaf.DeleteConfirmed {
 					return in, fmt.Errorf("the out-of-band delete answered %v: %v", in.Deleted, err)
 				}

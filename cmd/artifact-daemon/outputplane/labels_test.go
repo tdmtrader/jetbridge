@@ -142,8 +142,8 @@ func TestWithdrawalTakesTheOutputLabelOffFirstAndTheBaseLabelOffLast(t *testing.
 		t.Error("the output ready label survived an output-only withdrawal")
 	}
 	if labels[executioncontrol.ReadyLabel] != "ready" {
-		t.Error("an output-only withdrawal took the BASE label too. Req 59: output-only " +
-			"downgrade leaves base control available, and a node that stopped advertising " +
+		t.Error("an output-only withdrawal took the BASE label too. An output-only " +
+			"withdrawal leaves base control available: a node that stopped advertising " +
 			"exact control would strand every controlled execution the sibling track placed " +
 			"on it.")
 	}

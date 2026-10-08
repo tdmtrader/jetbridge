@@ -57,7 +57,7 @@ func ReconcileHangarEnabled(ctx context.Context, conn DbConn, enabled bool) (boo
 // RecordRuntimeAtRisk preserves a storage failure until explicit operator
 // resolution. Only the two runtime classes are recorded here; both block new
 // admission (hangar_check_policy_admission) until an operator resolves them.
-func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Context, tx output.Tx, finding output.PolicyFinding) error {
+func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Context, tx output.Tx, finding output.IntegrityFindingRecord) error {
 	if err := finding.Validate(); err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ func (repository *HangarOutputRepository) OpenIntegrityFindings(ctx context.Cont
 		}
 		// Not parsed against the runtime vocabulary: a historical finding of a
 		// class that no longer exists is still an open row an operator resolves.
-		finding.Violation = output.PolicyViolation(violation)
+		finding.Violation = output.IntegrityViolation(violation)
 		finding.ObservedAt = output.NewTimestamp(observed.UTC())
 		findings = append(findings, finding)
 	}

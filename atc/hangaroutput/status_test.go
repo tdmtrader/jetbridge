@@ -33,7 +33,7 @@ func readStatus(t *testing.T, h *harness) hangaroutput.Status {
 	return status
 }
 
-func recordFinding(t *testing.T, h *harness, violation output.PolicyViolation) {
+func recordFinding(t *testing.T, h *harness, violation output.IntegrityViolation) {
 	t.Helper()
 
 	tx, err := h.Conn.Begin()
@@ -41,7 +41,7 @@ func recordFinding(t *testing.T, h *harness, violation output.PolicyViolation) {
 		t.Fatalf("begin: %v", err)
 	}
 	if err := h.Repository.RecordRuntimeAtRisk(context.Background(), db.HangarOutputTx{Tx: tx},
-		output.PolicyFinding{
+		output.IntegrityFindingRecord{
 			Violation: violation,
 			Subject:   "gs://harness-output/some/object",
 			Detail:    "recorded by the status specs",
@@ -78,7 +78,7 @@ func TestAnInServicePlaneWithNothingInFlightReportsItself(t *testing.T) {
 // finding with the id an operator resolves it by -- and resolving it by that
 // id clears it.
 func TestEveryRuntimeFindingClassPutsThePlaneAtRiskAndResolvesByID(t *testing.T) {
-	for _, class := range output.PolicyViolations() {
+	for _, class := range output.IntegrityViolations() {
 		t.Run(string(class), func(t *testing.T) {
 			h := newHarness(t)
 			recordFinding(t, h, class)

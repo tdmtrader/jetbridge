@@ -25,8 +25,8 @@ import (
 //
 //	(a) a golden of the exported symbol set and signatures of package hangar,
 //	    so an incompatible foundation change fails here — in one file, with the
-//	    diff in front of the reader — rather than at whichever call site Phase 2
-//	    happens to add first;
+//	    diff in front of the reader — rather than at whichever call site
+//	    happens to use it first;
 //	(b) the integration commit pinned in the track's verification report,
 //	    asserted as an ancestor of HEAD; and
 //	(c) the presence of the daemon composition, the runtime input seam and the
@@ -34,8 +34,6 @@ import (
 //
 // A failure here is a diagnosis, not an invitation to copy the missing piece
 // into this track. The foundation is a prerequisite; this package extends it.
-//
-// Reqs 19, 24, 37.
 
 // integrationCommit is the commit this track pins, recorded in the track's
 // verification report and in plan.md ("the integration commit this track pins
@@ -325,7 +323,7 @@ func TestFoundationCompositionIsPresent(t *testing.T) {
 			name:     "chart capability",
 			path:     "deploy/chart/templates/artifact-daemon-daemonset.yaml",
 			contains: []string{"concourse.dev/hangar-v1"},
-			why:      "the strict-input capability label, which the output capability must never reuse (Req 56)",
+			why:      "the strict-input capability label, which the output capability must never reuse",
 		},
 	}
 

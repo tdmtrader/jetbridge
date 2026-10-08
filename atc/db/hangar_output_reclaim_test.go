@@ -124,11 +124,11 @@ var _ = Describe("reclaiming an exact generation", func() {
 
 	Describe("admission", func() {
 		It("refuses a generation whose publication grace has not elapsed", func() {
-			// Req 46 lists seven preconditions and elapsed grace is one of
-			// them. Without it a generation is admissible the instant its
-			// receipt lands: the capture that made the object has settled, so
-			// nothing else here objects, and the plane would delete a freshly
-			// published tree because no claim had been taken yet.
+			// Elapsed grace is one of admission's preconditions. Without it a
+			// generation is admissible the instant it publishes: the capture
+			// that made the object has settled, so nothing else here objects,
+			// and the plane would delete a freshly published tree because no
+			// claim had been taken yet.
 			ref := published(hangarDigest(60), 1725830823000060)
 
 			tx := begin()
@@ -268,16 +268,16 @@ var _ = Describe("reclaiming an exact generation", func() {
 			other := reclaimable(hangarDigest(55), 1725830823000055)
 			job := admit(ref)
 
-			// The policy goes at-risk BETWEEN admission and delete. Req 52
+			// The policy goes at-risk BETWEEN admission and delete. A finding
 			// stops new admission from detection onward and lets
 			// already-admitted conditional delete work finish.
 			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
+				Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 			})
 
 			// New admission stops. The generation it would be admitted for is
 			// published BEFORE the policy turns, because a capture is one of
-			// the five admissions Req 52 also stops -- a fixture built after
+			// the admissions a finding also stops -- a fixture built after
 			// the turn would be refused for the wrong reason.
 			// The refusal arrives at COMMIT: the policy gate is a deferred
 			// constraint trigger, so an admission that looked fine statement by

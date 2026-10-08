@@ -314,7 +314,7 @@ func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
 //
 // This is decision F13's contract obligation stated where it can fail: a base
 // caller sends an identity and gets a classification, and nothing on the way
-// there or back mentions a hold, a capture, a bucket or a receipt.
+// there or back mentions a hold, a capture or a bucket.
 func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
@@ -349,7 +349,7 @@ func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 
 // An unready daemon fails closed on every control route.
 //
-// Output-daemon unavailability never warrants destructive authority, and
+// The output plane being unavailable never warrants destructive authority, and
 // "unavailable" includes "cannot read its own ledger".
 func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 	// The control: the same fixture, ready, serves.

@@ -14,7 +14,7 @@ func TestTheStatusEventCarriesEveryViolationClassAndTheResidue(t *testing.T) {
 		Counts:  output.PlaneCounts{PendingCaptures: 2, OpenClaims: 1},
 	})
 
-	for _, violation := range output.PolicyViolations() {
+	for _, violation := range output.IntegrityViolations() {
 		if _, ok := event.Violations[string(violation)]; !ok {
 			t.Errorf("no %s series: a gauge that appears only when nonzero is one an alert "+
 				"cannot tell from a scrape that did not happen", violation)

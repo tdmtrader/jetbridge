@@ -2,15 +2,16 @@ package outputplane
 
 // The control API's transport, now that its caller is off-node.
 //
-// Phase 3 listened on 127.0.0.1 in plaintext and that was the right shape: every
-// caller was a pod on this node and the capability is a signed, facet-scoped,
-// single-use bearer token. Phase 4 wires the ATC, which is on the web pod, and a
-// bearer token over plaintext off-node is interceptable inside its TTL.
+// The control API first listened on 127.0.0.1 in plaintext and that was the
+// right shape: every caller was a pod on this node and the capability is a
+// signed, facet-scoped, single-use bearer token. Its caller is now the ATC,
+// which is on the web pod, and a bearer token over plaintext off-node is
+// interceptable inside its TTL.
 //
 // The pair is the whole test. Every control-plane route requires a verified
 // client certificate, and the ONE route whose caller is a container in a Pod on
 // this node stays reachable without one -- because the capture control init
-// holds no client certificate and Req 24 will not give it one. A daemon that
+// holds no client certificate and the task's Pod is never given one. A daemon that
 // refused everything would be an outage; a daemon that refused nothing would be
 // the exposure.
 
@@ -207,7 +208,7 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 // structural half: a route added later with `nodeLocal: true` -- or a
 // misplaced `true` in a copied row -- would open the control API to anything
 // that can reach the port, and no drive test names a route nobody wrote yet.
-// Phase 5 adds `canonicalize` and this is what says it did not become exempt.
+// `canonicalize` was added later, and this is what says it did not become exempt.
 func TestExactlyOneControlRouteIsExemptFromTheClientCertificate(t *testing.T) {
 	var exempt []string
 	for pattern, declared := range (&Server{}).routes() {

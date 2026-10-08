@@ -152,7 +152,7 @@ var _ = Describe("Task exec supervisor script execution", func() {
 			Expect(web.Start()).To(Succeed())
 
 			// The start record is durable BEFORE the outcome is, which is the
-			// ordering Req 4 puts around the finish witness: while the command is
+			// ordering around the finish witness: while the command is
 			// still running there is a start and no exit.
 			Eventually(func() bool {
 				_, err := os.Stat(filepath.Join(exactStateDir(command), "start"))
@@ -166,8 +166,8 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		})
 
 		It("never runs the command again once its start is recorded and its outcome is unprovable", func() {
-			// The state today's supervisor relaunches into, and the one Req 6
-			// forbids: the command really started, the web died, and the runner
+			// The state today's supervisor relaunches into, and the one that is
+			// forbidden: the command really started, the web died, and the runner
 			// died with it. There is no exit file and nothing is alive, and an
 			// ordinary task's supervisor would start the command over.
 			const command = "echo run-marker; sleep 30"

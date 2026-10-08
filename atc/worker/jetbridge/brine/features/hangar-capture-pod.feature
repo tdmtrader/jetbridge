@@ -8,8 +8,8 @@ Feature: What a capture-selected task's Pod says
   The whole file needs the control scenario in it. An unchanged-pod assertion
   passes on a worker that builds no capture pods at all, so it is only
   meaningful beside them — which is why the ordinary pod is asserted here
-  rather than in a file of its own, and why Phase 9 cites it as the AC 20
-  regression twin instead of writing a second copy.
+  rather than in a file of its own, and why the strict-input twin at the end
+  cites it as its regression control instead of writing a second copy.
 
   The scheduling block below arrived in Phase 8, which is where a worker can be
   told which ready labels its nodes carry; the strict-input twin at the end
@@ -197,7 +197,7 @@ Feature: What a capture-selected task's Pod says
     And no capture pod is built
     And the same worker admits a capture under its own control epoch
 
-  # The AC 20 twin that is not a pod shape: turning the output plane on must
+  # The regression twin that is not a pod shape: turning the output plane on must
   # change nothing about a strict INPUT.
   #
   # This scenario was drafted as "the pod's fetch init container reads from the
@@ -206,8 +206,9 @@ Feature: What a capture-selected task's Pod says
   # strict-input scenario in container-pod.feature at all, and NO BUCKET APPEARS
   # IN A POD: the strict-input init carries a TreeRef and a signed warrant and the
   # daemon resolves the bucket from its own configuration, which is the
-  # containment Req 20 asks for. The phrase named a state production cannot
-  # reach, and features/pending/ is where that could sit unnoticed.
+  # containment the plane requires: no bucket name reaches a task pod. The
+  # phrase named a state production cannot reach, and features/pending/ is
+  # where that could sit unnoticed.
   #
   # Its control is the presence arm inside the check itself, evaluated first: an
   # "unchanged" assertion passes against a worker that builds no init container

@@ -33,7 +33,7 @@ type Daemon struct {
 	// namespace and publisher are the OUTPUT facet, and both are
 	// zero on a base-control-only daemon. That is a real deployment and not a
 	// degraded one: the sibling `exact_execution_control` track schedules onto
-	// it, and Req 58's output-only downgrade has to reach it from a running
+	// it, and withdrawing the output facet has to reach it from a running
 	// plane. What makes it safe is that the route table already names a facet
 	// per route, so "there is no publisher" is a typed refusal at the boundary
 	// rather than a nil dereference three calls in.

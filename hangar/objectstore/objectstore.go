@@ -11,9 +11,9 @@ import (
 	"github.com/concourse/concourse/hangar"
 )
 
-// The typed status split. Requirement 27 says absence, authorization failure
-// and precondition failure stay distinct and none becomes a cache miss, and
-// this is where a transport's 404, 403 and 412 stop being numbers.
+// The typed status split. Absence, authorization failure and precondition
+// failure stay distinct and none becomes a cache miss; this is where a
+// transport's 404, 403 and 412 stop being numbers.
 var (
 	// ErrNotFound is 404: no object, or no object at that exact generation.
 	ErrNotFound = hangar.ErrNotFound
@@ -89,7 +89,7 @@ type ListRequest struct {
 	After    string
 
 	// AfterGeneration is the second half of the lexicographic (key, generation)
-	// after-key Req 43 makes the durable cursor out of.
+	// after-key the durable cursor is made of.
 	//
 	// A listing resumed from a key alone cannot tell "I already did this
 	// object" from "this key was recreated while I was away": the second is a

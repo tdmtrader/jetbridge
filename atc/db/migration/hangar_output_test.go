@@ -276,8 +276,8 @@ var _ = Describe("the Hangar output plane schema", func() {
 			}
 		})
 
-		// The migration must not turn the feature on. Req 57 says the epoch
-		// attests migrations, keys, workers, bucket, policy, namespaces and
+		// The migration must not turn the feature on. An epoch attests
+		// migrations, keys, workers, bucket, policy, namespaces and
 		// principals, and a DDL script can observe none of them.
 		It("creates held state only, with no default-ready epoch", func() {
 			var epochs int
@@ -870,8 +870,8 @@ var _ = Describe("the Hangar output plane schema", func() {
 					WHERE reservation_id = '%s'`, reservationID))
 			})
 
-			// Req 11 says a capture may *terminally* cancel, and this is the
-			// word made true (review finding R2-3). The live twin comes first:
+			// A capture may *terminally* cancel, and this is the word made
+			// true (review finding R2-3). The live twin comes first:
 			// a rule that refused every state change would pass the refusal
 			// below on a schema that had frozen the table.
 			It("refuses a terminal capture moving to any other state", func() {
@@ -1301,10 +1301,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 			//
 			// A renewal grants one term from now, and the term is the row's --
 			// so a renewal that could also move lease_term_seconds would be a
-			// renewal that chose its own length. Requirement 36 puts the length
-			// of a protection with the party that admitted it, never with the
-			// party being protected, and this is the arm that makes that true
-			// of the row rather than of the one method that writes it.
+			// renewal that chose its own length. The length of a protection
+			// lies with the party that admitted it, never with the party being
+			// protected, and this is the arm that makes that true of the row
+			// rather than of the one method that writes it.
 			It("refuses changing a read lease's admitted term", func() {
 				seedClaim(claimID, lifecycle)
 				mustExec(database, fmt.Sprintf(`
@@ -1572,7 +1572,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					To(ContainSubstring("hangar_policy_safe_has_no_delete_rules"))
 			})
 
-			// Req 52 names five admissions that stop from detection onward:
+			// Five admissions stop from detection onward:
 			// new captures, claim acquires, managed-output warrants, orphan
 			// adoption and reclaim admission. Each vector below is one of
 			// them, and each runs twice against the same statement -- once
@@ -1627,7 +1627,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 				// observation; refusing its receipt would leave the
 				// generation in the bucket as an unregistered orphan with
 				// nothing correlating it -- the exact state adoption exists to
-				// clean up. Req 52 blocks admission and lets already-admitted
+				// clean up. A finding blocks admission and lets already-admitted
 				// work finish, and this is that work finishing.
 				expectAccepted(database, "a registration completing while at risk", fmt.Sprintf(`
 					INSERT INTO hangar_exact_lifecycles
@@ -1657,7 +1657,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
 			})
 
-			// The other half of Req 6: a repeat of the same handoff is
+			// The other half of the rule: a repeat of the same handoff is
 			// idempotent, and the ON CONFLICT DO NOTHING path fires no INSERT
 			// trigger -- so a producer that predeclared while the policy was
 			// healthy still gets the same answer when it retries afterwards.
@@ -2030,7 +2030,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 				"hangar_claims", "hangar_reclaim_jobs"), vector...)...)).To(Succeed())
 		})
 
-		// The other three admissions Req 52 names. Each drops only the copy on
+		// The other three gated admissions. Each drops only the copy on
 		// its own table, so a passing row says which attachment carried the
 		// refusal rather than that some copy somewhere did.
 		It("without hangar_policy_admits_new_protection on hangar_read_leases, an at-risk plane grants", func() {

@@ -319,8 +319,8 @@ func TestResolveWillNotClearACaptureHeldDestinationAndStillClearsAnUnheldOne(t *
 // takes a key can then reach it under the new one.
 //
 // Alias REMAP: a key that names a held source, pointed somewhere else, does not
-// destroy the bytes -- it destroys the only way anything finds them. Req 3
-// names remap and reuse beside cleanup for that reason.
+// destroy the bytes -- it destroys the only way anything finds them. That is
+// why remap and reuse are refused under a hold exactly as cleanup is.
 func TestAnAliasIsNeitherReusedForNorRemappedOffACaptureHeldSource(t *testing.T) {
 	server, storage := capturedServer(t)
 	handler := server.Handler()

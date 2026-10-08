@@ -186,8 +186,8 @@ func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, 
 //
 // It is not paranoia about the store: the writer's Attrs carry the generation
 // but a marker read back off the object is the only thing that proves the
-// metadata landed with it, and Req 26 says a receipt is signed over an exact
-// stat rather than over what the writer believed.
+// metadata landed with it, so what is registered is an exact stat rather than
+// what the writer believed.
 func (publisher *Publisher) verifyExact(ctx context.Context, key string, reservation output.ObjectMarker, generation, size int64) (output.PublishedObject, error) {
 	if generation <= 0 {
 		return output.PublishedObject{}, fmt.Errorf("%w: the store reported no generation for "+
@@ -209,11 +209,10 @@ func (publisher *Publisher) verifyExact(ctx context.Context, key string, reserva
 // `size` is the canonical size of the tree THIS capture holds, and it is
 // checked against what the store reports because a marker is a claim ABOUT
 // bytes and not the bytes. Without it, an object whose body was replaced under
-// the same marker metadata deduplicates and is registered, and the receipt then
-// attests a generation whose contents are not the tree that was canonicalized.
-// Req 23 calls corrupt metadata or body a typed collision "even if a weaker
-// content check appears to match", and "the marker says the right digest" is
-// precisely the weaker check.
+// the same marker metadata deduplicates and is registered as a generation whose
+// contents are not the tree that was canonicalized. Corrupt metadata or body is
+// a typed collision even if a weaker content check appears to match, and "the
+// marker says the right digest" is precisely the weaker check.
 //
 // A size is not a digest, and this does not pretend otherwise: what it refuses
 // is a body that is not the same tree, and the store has no content hash this
@@ -254,13 +253,11 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 	// SIZE, and only size. It catches a replaced body of a different length and
 	// nothing else: a same-size replacement still deduplicates.
 	//
-	// TODO(phase 9, real GCS): compare the store's CRC32C against the marker as
+	// TODO(real GCS): compare the store's CRC32C against the marker as
 	// well. `objectstore.Attrs` carries no checksum, so this role cannot read
 	// one today -- but GCS reports one and so does the emulator.
 	//
-	// Round-2 review finding R2-F5 pointed this at "when the list principal
-	// lands". The list principal landed in Phase 7 and this did not move, for a
-	// reason worth writing down: widening `Attrs` with a checksum changes the
+	// It has not moved, for a reason worth writing down: widening `Attrs` with a checksum changes the
 	// PUBLISHER's dedup comparison, which is reachable only from a capture, and
 	// the evidence that the value is what GCS actually returns is a real-store
 	// observation. Adding the field on the strength of an emulator would be
@@ -384,13 +381,13 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 
 // translate maps a store status onto the plane's typed outcomes.
 //
-// Absence is ErrNotFound and stays ErrNotFound: Req 27 says none of these
-// becomes a cache miss, and the way that rule is broken is by a helper that
-// turns "not there" into a nil error and an empty value.
+// Absence is ErrNotFound and stays ErrNotFound: none of these becomes a cache
+// miss, and the way that rule is broken is by a helper that turns "not there"
+// into a nil error and an empty value.
 //
-// It takes the key and DELIBERATELY DOES NOT PUT IT IN THE MESSAGE. Reqs 3, 7
-// and 12 say the bucket, the prefix, the opaque scope and the object key are
-// server-derived and never crossed the boundary in either direction: this
+// It takes the key and DELIBERATELY DOES NOT PUT IT IN THE MESSAGE. The
+// bucket, the prefix, the opaque scope and the object key are server-derived
+// and never cross the boundary in either direction: this
 // plane refuses a request that names one, and it must not answer with one
 // either. It did -- the exact stat of an object that was not there answered
 // with the whole key, prefix and derived scope included -- which told a caller
@@ -400,7 +397,7 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 // back at the call site by hand. `_ = key` is the whole point: it is the fact
 // that this function knows the key and says nothing about it.
 //
-// What is lost is real, and it is the cost Req 7 chose. A node operator
+// What is lost is real, and it is the cost of that rule. A node operator
 // reading a "not found" no longer sees which object. What they do have is the
 // typed outcome and the reservation the caller named, and the daemon's own
 // startup banner names the bucket and prefix once, at boot, to its own stdout.

@@ -107,7 +107,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
     Then the output bucket holds exactly one object, marked "hangar-output-v1"
     And the registered tree ref names the published generation
 
-  # The sequential form of AC 8, which is the only form this runner can honestly
+  # The sequential form of content-addressed dedup, which is the only form this runner can honestly
   # say. It does NOT stand alone as a dedup assertion: its discriminators are
   # the wrong-variant and unmarked twins above, which it cites rather than
   # seeding a fourth time.
@@ -131,8 +131,8 @@ Feature: What a sealed source becomes, and what the bucket then holds
   # nothing), and that a superseded generation stops resolving when asked for
   # BY generation at a key that is still occupied.
   #
-  # It does NOT pin the second half of Req 38, "a caller may recapture and
-  # claim a newly published generation". The replacement is published through
+  # It does NOT pin the second half of the replacement rule, that a caller may
+  # recapture and claim a newly published generation. The replacement is published through
   # the DAEMON -- `captureAgain` admits, writes the held marker, seals and publishes,
   # and stops there -- so nothing settles it and no lifecycle row exists for
   # the new generation to read back. Asserting the registration a second time

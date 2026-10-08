@@ -180,7 +180,7 @@ Feature: What the artifact daemon answers about a capture's marker
   # A pause pod that dies before the step's command runs is REPLACED, and a
   # replacement is a new Pod UID getting a write-capable mount over the step's
   # tree. For a capture-selected step that tree is the held step directory, and
-  # Req 16 says a held step directory may not receive one. This is the one
+  # a held step directory may not receive one. This is the one
   # destructive path with no execution identity to ask about, which is why it
   # goes through the ledger classifier instead.
   #
@@ -216,7 +216,7 @@ Feature: What the artifact daemon answers about a capture's marker
   #
   # The FAILING producer between them is not decoration. The control plane
   # releases a capture whose row is terminal, and a row is terminal only after
-  # the node's finish or stop (Req 5). Without this line the scenario asked
+  # the node's finish or stop. Without this line the scenario asked
   # for a state production cannot reach.
   #
   # Reddened by: the release route leaving the hold's gate open -- the first

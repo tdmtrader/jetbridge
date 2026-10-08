@@ -23,8 +23,7 @@ package hangaroutput_test
 //
 // It asserts it FOUND something first. A guard that scanned nothing and
 // reported nothing is the silent-skip failure this tree warns about elsewhere,
-// and it is the reason AC 20 says architecture guards must prove they scanned
-// at least one file.
+// which is why architecture guards must prove they scanned at least one file.
 
 import (
 	"go/ast"

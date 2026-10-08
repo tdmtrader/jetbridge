@@ -111,10 +111,9 @@ type ReadLeaseRequest struct {
 	WarrantNonce string
 
 	// StatProof is the exact-generation metadata stat, performed OUTSIDE the
-	// locks and revalidated inside them. Requirement 35 admits a managed-output
-	// warrant only after a stat proves the registered marked generation is
-	// present; a lease created without one would be protection for content
-	// nobody looked at.
+	// locks and revalidated inside them. A read warrant is admitted only after
+	// a stat proves the registered marked generation is present; a lease
+	// created without one would be protection for content nobody looked at.
 	StatProof PublishedObject
 
 	// StatObservedAt is when that stat was taken. It is separate from

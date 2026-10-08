@@ -39,7 +39,7 @@ type Registry struct {
 	logger      lager.Logger
 
 	// sourceLedger is the output plane's read-only source ledger. A mapping is
-	// not a file, but a remap or a reuse is destructive in the way Req 3 means:
+	// not a file, but a remap or a reuse is as destructive as a cleanup:
 	// one hands another consumer a name for bytes a capture is about to seal,
 	// the other takes away the only name those bytes had.
 	sourceLedger *ledger.Classifier
@@ -125,7 +125,7 @@ func (r *Registry) RegisterAlias(key, localPath string) (RelKey, error) {
 // sibling nothing wrote into, and a downstream step must still be able to fetch
 // the output by its ordinary key. Capture is additive -- a captured output is
 // still an output -- and this is the narrow door that keeps it so without
-// reopening the one Req 16 closes.
+// reopening the write path a hold closes.
 func (r *Registry) RegisterReadOnlyAlias(key, localPath string) (RelKey, error) {
 	return r.registerAlias(key, localPath, true)
 }
@@ -147,14 +147,14 @@ func (r *Registry) registerAlias(key, localPath string, readOnly bool) (RelKey, 
 	//
 	// REMAP is the old end: pointing a key that currently names a held source
 	// somewhere else destroys no bytes at all -- it destroys the only way
-	// anything finds them, which is worse, because nothing reports it. Req 3
-	// names remap and reuse beside cleanup for exactly this reason.
+	// anything finds them, which is worse, because nothing reports it. That is
+	// why remap and reuse are refused under a hold exactly as cleanup is.
 	//
 	// Asked here rather than in the handler because this is the one function
 	// that holds both ends; a handler-side check would have to look the old
 	// end up, and the lookup and the write would not be the same operation.
 	// The NEW end, and the mode decides it. A write-capable alias onto a held
-	// incarnation is the second name Req 3 names beside cleanup; a READ-ONLY
+	// incarnation is the reuse a hold refuses; a READ-ONLY
 	// one is how a capture-selected task's output stays an ordinary output that
 	// downstream steps can fetch, which is what "capture is additive" means.
 	// Every destructive and write-capable route on this daemon asks the ledger

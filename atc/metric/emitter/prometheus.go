@@ -59,8 +59,8 @@ type PrometheusEmitter struct {
 	gcVolumeCollectorDuration                     prometheus.Histogram
 	pipelineRunReclaimBacklog                     prometheus.Gauge
 
-	// The Hangar output plane's operator surface. Requirement 52 asks the plane
-	// to ALERT when it goes fail-closed, and an alert is a rule over a series
+	// The Hangar output plane's operator surface. The plane must ALERT when it
+	// goes fail-closed, and an alert is a rule over a series
 	// somebody is already scraping -- a status page nobody has open at three in
 	// the morning is the same as no status page.
 	hangarOutputEnabled        prometheus.Gauge

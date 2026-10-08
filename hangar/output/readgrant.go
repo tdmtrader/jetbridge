@@ -33,27 +33,18 @@ import (
 //   - A DIFFERENT SHAPE. A strict input warrant binds a ref and a destination. A
 //     read warrant also binds the READ LEASE, because a managed read is only ever
 //     authorized by a committed lease, and a token that did not name one could
-//     outlive the protection it was issued under. It binds the lease's IDENTITY
-//     and not a fence: the read lease's fence has no writer anywhere in this
-//     plane -- it is inserted as 1 and never moved, and Phase 7's takeover works
-//     on the CAPTURE fence, which is a different column on a different table --
-//     so a fence in the token would have been a field with exactly one possible
-//     value, checked against itself. The column stays (see the migration's note
-//     at hangar_read_leases.lease_fence); the claim does not.
+//     outlive the protection it was issued under. It binds the lease's identity.
 //
-// THE WARRANT IS NOT AUTHORITY BY ITSELF. A valid HMAC over a lease that is
-// missing, released, expired, superseded or reclaim-conflicted authorizes
-// nothing: the daemon verifies the signature and then independently asks the
-// control plane whether that exact lease is still active. This type is the
-// first half of that pair and never the whole of it.
+// The daemon verifies the warrant against its key and the token's own window
+// and never calls the web. The control plane calls VerifyBinding for a
+// release, comparing the warrant's claims against the committed lease row.
 //
-// THE WARRANT'S WINDOW IS THE LEASE'S WINDOW, and that is a choice with a reason.
-// Requirement 37 wants an ambiguous mint to be retryable with a BYTE-IDENTICAL
-// warrant rather than with a second lease, so nothing in the token may come from
-// the instant it was minted: issue and expiry are the lease's own granted-at
-// and expires-at, and the nonce is the one stored with the lease row. Two mints
-// of one committed lease produce the same bytes, and a mint cannot extend the
-// authority the database committed.
+// THE WARRANT'S WINDOW IS THE LEASE'S WINDOW, so an ambiguous mint is retryable
+// with a BYTE-IDENTICAL warrant rather than with a second lease: nothing in the
+// token may come from the instant it was minted. Issue and expiry are the
+// lease's own granted-at and expires-at, and the nonce is the one stored with
+// the lease row. Two mints of one committed lease produce the same bytes, and
+// a mint cannot extend the authority the database committed.
 
 const (
 	// readWarrantVersion is the version inside every warrant. It moves when the

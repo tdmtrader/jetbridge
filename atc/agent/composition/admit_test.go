@@ -188,7 +188,7 @@ var _ = Describe("admitting a child run", func() {
 		})
 	})
 
-	// Requirement 46's acceptance row: exactly one dedup path exists. The
+	// Exactly one dedup path exists. The
 	// server-scoped key record decides; the call and iteration rows are a join
 	// that follows it and can neither admit nor suppress a Run.
 	Describe("the call record is a join, not a dedup path", func() {
@@ -239,9 +239,9 @@ var _ = Describe("admitting a child run", func() {
 			Expect(composition.ContractKey(buildID, atc.PlanID("1/2"))).NotTo(BeEmpty())
 		})
 
-		// Requirement 46: the build-side value must be a valid requirement-14
-		// key, so that moving run_pipeline onto versioned admission changes
-		// nothing a caller supplies.
+		// The build-side value must be a valid versioned invocation key, so
+		// that moving run_pipeline onto versioned admission changes nothing a
+		// caller supplies.
 		It("is always a valid versioned invocation key, one per call identity", func() {
 			long := atc.PlanID(strings.Repeat("a", 200))
 			plans := []atc.PlanID{"5a", "5a/image-get", "5a/sidecar/db", "1/2", "has space", long, long + "b"}

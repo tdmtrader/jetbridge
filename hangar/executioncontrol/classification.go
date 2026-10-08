@@ -12,7 +12,7 @@ import (
 // testdata/protocol-v1/classifications.json. The two unhappy members carry the
 // weight: `unresolved` and `lost` are the honest answers when the truth cannot
 // be proved, and neither may ever be rounded down to "it finished" or up to
-// "re-run it". Requirement 4 turns on exactly that distinction.
+// "re-run it".
 type Classification string
 
 const (

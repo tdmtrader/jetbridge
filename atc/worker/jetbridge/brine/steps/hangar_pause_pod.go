@@ -6,8 +6,8 @@ package steps
 // destructive path with no execution identity to ask about: a pause pod that
 // goes terminal before the step's command runs is REPLACED, and a replacement
 // is a new Pod UID getting a write-capable mount over the step's tree. For a
-// capture-selected step that tree is the held step directory, and Req 16 says
-// a held step directory may not receive one.
+// capture-selected step that tree is the held step directory, and a held step
+// directory may not receive one.
 //
 // Everything here drives PRODUCTION code over a REAL artifact daemon. The
 // refusal comes out of Container.Run consulting DaemonSetBackend.CaptureClass,

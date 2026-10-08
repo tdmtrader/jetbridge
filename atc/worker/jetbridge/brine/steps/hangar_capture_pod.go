@@ -41,7 +41,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// THE ONLY WAY INTO CaptureDraft, and it is a REFINEMENT over a draft
 		// that has not run. There is deliberately no sentence that selects
 		// capture after the container runs, so "a late request captures an
-		// already-running task" is a state no scenario can build (Req 1).
+		// already-running task" is a state no scenario can build.
 		brine.DefineMap[ContainerDraft, CaptureDraft](
 			"its output {string} is captured when the step succeeds",
 			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
@@ -319,7 +319,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				return in.Err.Error(), nil
 			}),
 
-		// The AC 20 regression twin, and the one assertion about it a Pod can
+		// The strict-input regression twin, and the one assertion about it a Pod can
 		// carry.
 		//
 		// The scenario this replaces asked that "the pod's fetch init container
@@ -330,7 +330,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// `strict`, `Hangar` or `hangar`), and NO BUCKET APPEARS IN A POD. The
 		// strict-input init carries a TreeRef and a signed warrant; the daemon
 		// resolves the bucket from its own configuration, which is exactly the
-		// containment Req 20 requires. A phrase naming a bucket would have been
+		// containment the plane requires: no bucket name reaches a task pod. A phrase naming a bucket would have been
 		// a phrase constructing a state production cannot reach -- convention 3
 		// -- and it sat in features/pending/ where nothing ran it.
 		//
@@ -531,7 +531,7 @@ func taskContainersCarryNoHangarCredential(in CapturePodCreated) error {
 				continue
 			}
 
-			return fmt.Errorf("container %q carries %s; Req 24 gives the task and its sidecars "+
+			return fmt.Errorf("container %q carries %s; the task and its sidecars get "+
 				"no output-plane credential at all", carrier, name)
 		}
 	}
@@ -957,7 +957,7 @@ var scenarioStrictInputRef = hangar.TreeRef{
 	Generation: 1725830823000777,
 }
 
-// strictInputMaterializationIsUnchanged is the AC 20 twin's body.
+// strictInputMaterializationIsUnchanged is the strict-input regression twin's body.
 //
 // Three arms, and the ORDER is the assertion because brine stops at the first
 // red step: the strict-input init is PRESENT (the control -- an absence check

@@ -16,7 +16,7 @@ import (
 // The at-risk matrix: the exact set of operations that stop from detection
 // onward, and the exact set that does not.
 //
-// Req 52 names five admissions that stop and three things that continue, and
+// Five admissions stop and three things continue, and
 // the value of this file is that both halves are asserted. A suite that only
 // proved the refusals would pass for a plane that stopped doing anything at all
 // the moment a monitor blinked -- which is the failure mode an operator cannot
@@ -45,7 +45,7 @@ var _ = Describe("the storage-integrity admission gate", func() {
 
 	recordFailure := func() {
 		in(func(tx db.HangarOutputTx) {
-			Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.PolicyFinding{
+			Expect(repository.RecordRuntimeAtRisk(ctx, tx, output.IntegrityFindingRecord{
 				Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected loss",
 			})).To(Succeed())
 		})

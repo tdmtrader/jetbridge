@@ -66,17 +66,17 @@ const (
 // The typed outcomes. Absence, signature failure, replay, collision,
 // corruption, containment failure, authorization failure, limit rejection,
 // cancellation, ambiguity and infrastructure failure all stay distinct, and
-// none of them is ever a cache miss (Req 27).
+// none of them is ever a cache miss.
 //
 // The first six are the foundation's own sentinels rather than new ones, so a
 // caller's errors.Is keeps working across the boundary between strict input and
 // durable output. A parallel set would have meant every caller checking twice
 // and eventually checking once.
 //
-// # Req 38's eight managed-generation states, and the narrowing this set is
+// # The eight managed-generation states, and the narrowing this set is
 //
-// Req 38 asks for a distinct typed outcome per managed-generation state:
-// `reclaiming`, `reclaimed`, authoritatively missing, out-of-band missing,
+// A managed generation is in one of eight states: `reclaiming`, `reclaimed`,
+// authoritatively missing, out-of-band missing,
 // conflicted, unregistered, unclaimed and policy-at-risk. A consumer asking for
 // a generation gets one of FOUR values, and this is the mapping, written down
 // rather than left for somebody to infer from a message:
@@ -176,9 +176,9 @@ var (
 	// ErrCaptureDisabled is a durable-output-capture operation asked of a
 	// component that does not have the facet.
 	//
-	// Req 58 makes this a TYPED result with no cache-tier fallback, and the
-	// distinction is the whole of the requirement: "this daemon has no output
-	// bucket" and "this capture failed" must not be the same answer, because a
+	// It is a TYPED result with no cache-tier fallback, and the distinction is
+	// the whole point: "this daemon has no output bucket" and "this capture
+	// failed" must not be the same answer, because a
 	// caller that cannot tell them apart writes the retry, and the retry it
 	// writes is the cache tier. Nothing in this plane degrades into a cache
 	// miss.
@@ -300,9 +300,9 @@ func NewTimestamp(at time.Time) Timestamp { return executioncontrol.NewTimestamp
 // Clock is the seam every deadline in this package is measured against.
 //
 // It exists so that no production path can accidentally measure a lease against
-// a daemon's wall clock. Requirements 10, 11, 36, 39 and 48 all say "database
-// clock", and they mean it: a node whose clock drifts must not be able to
-// expire its own hold, and expiry alone is never proof or release authority.
+// a daemon's wall clock. Every deadline is on the database clock: a node whose
+// clock drifts must not be able to expire its own hold, and expiry alone is
+// never proof or release authority.
 type Clock interface {
 	Now() time.Time
 }

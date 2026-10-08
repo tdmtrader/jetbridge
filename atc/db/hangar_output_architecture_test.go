@@ -519,8 +519,8 @@ func other(builder Builder) {
 	})
 }
 
-// The other half of AC 11's non-interference clause: "Hangar never acquires a
-// consumer-domain row."
+// The other half of the non-interference rule: Hangar never acquires a
+// consumer-domain row.
 //
 // The behavioural spec beside this one can only see what a lock looks like from
 // outside the transaction, and PostgreSQL holds one pg_locks row per (relation,
@@ -645,8 +645,8 @@ func TestTheOutputPlaneNamesNoTableOutsideItself(t *testing.T) {
 					t.Errorf("atc/db/%s names the table %q.\n\nThe output plane's production code "+
 						"names only its own tables. A consumer's rows are the consumer's -- Hangar "+
 						"cannot know what locks the caller already holds on them, so touching one "+
-						"is how an already-held domain lock gets acquired or inverted, which AC 11 "+
-						"forbids. Statement: %q", name, table, firstLine(statement))
+						"is how an already-held domain lock gets acquired or inverted, which is "+
+						"forbidden. Statement: %q", name, table, firstLine(statement))
 				}
 			}
 		}
@@ -982,8 +982,8 @@ func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
 			writers++
 			if !locked {
 				t.Errorf("atc/db/%s: %s writes hangar_read_leases without entering the suffix "+
-					"for the lease it writes.\n\nRequirement 33 and \"lock order is an API, not a "+
-					"convention\" put warrant and read-lease work inside one complete suffix. A bare "+
+					"for the lease it writes.\n\n\"Lock order is an API, not a convention\" puts "+
+					"warrant and read-lease work inside one complete suffix. A bare "+
 					"UPDATE takes the row at the write's own moment, in whatever order the writes "+
 					"arrive; that the deferred hangar_reclaim_exclusion trigger happens to catch "+
 					"the race today is the schema's doing, not this transaction's. Call "+
@@ -1010,7 +1010,7 @@ func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
 // commit's SQLSTATE onto the output leaf's vocabulary, and a coordinator handed
 // an unmapped commit failure reads a refusal ("stop, or change something
 // first") as a lost answer ("ask again with the same identity") -- against an
-// at-risk lifetime policy only an attestor can change, that is a retry loop
+// at-risk lifetime policy only an operator can resolve, that is a retry loop
 // with no exit.
 //
 // The mapping moved into one adapter so that the three places which hand the
@@ -1022,9 +1022,8 @@ func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
 // written against, and it is the one production wiring site R1-F1 was about.
 //
 // It is derived from the source rather than from a list of files, so a SECOND
-// wiring site -- Phase 8 serves LeaseControl from the ATC -- inherits the rule
-// without anyone remembering it, and the floor below fails if it is added
-// without the wrapper.
+// wiring site inherits the rule without anyone remembering it, and the floor
+// below fails if it is added without the wrapper.
 func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
@@ -1142,7 +1141,7 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 					"db.HangarOutputTx at %s.\n\nTwo of this plane's constraint triggers are "+
 					"DEFERRED: their refusals arrive at COMMIT, and a raw transaction's Commit "+
 					"answers an unclassified driver error. The coordinator reads that as a LOST "+
-					"answer and retries the same identity against a refusal only an attestor can "+
+					"answer and retries the same identity against a refusal only an operator can "+
 					"lift. Wrap it: db.HangarOutputTx{Tx: tx}.", relative, function.Name.Name,
 					fileSet.Position(statement.Pos()))
 
@@ -1160,8 +1159,7 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 		t.Fatal("this guard read no file naming hangaroutput.Transaction, so it is passing " +
 			"vacuously -- the port was renamed, or the walk no longer reaches the tree")
 	}
-	// The floor. Today: the ATC's own wiring and the brine harness's. Phase 8
-	// adds a second ATC site (serving LeaseControl), which raises it.
+	// The floor. Today: the ATC's own wiring and the brine harness's.
 	if len(sites) < 2 {
 		t.Errorf("this guard found %d production implementation(s) of the transaction port %v; "+
 			"there are at least two (the ATC's wiring and brine's), so either they moved or the "+

@@ -9,19 +9,17 @@ import (
 	"github.com/concourse/concourse/hangar"
 )
 
-// The receipt is the one artefact that travels from the node that sealed the
-// bytes to the transaction that binds them, and every claim in it is something
-// a verifier must match exactly (Reqs 25-26). A field with more than one wire
-// spelling per instant is therefore a canonicalization hazard there, and only
-// there: everywhere else this package's own fixed-width Timestamp is used.
+// The tree attributes travel from the node that sealed the bytes to the
+// transaction that binds them, and every claim in them is something a verifier
+// must match exactly. A field with more than one wire spelling per instant is
+// therefore a canonicalization hazard there, and only there: everywhere else
+// this package's own fixed-width Timestamp is used.
 //
 // hangar.TreeAttributes.CreatedAt is a time.Time, and Go's RFC 3339 encoding
 // trims trailing zeros, so one instant has several spellings. The fix is a wire
 // *projection*, not a second attribute model: output.TreeAttributes declares no
 // new fact, converts losslessly in both directions, and leaves the foundation's
 // type untouched for every in-process use.
-//
-// Reqs 25, 26.
 
 // nineDigitUTC is the one spelling this protocol has.
 var nineDigitUTC = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z$`)
@@ -115,7 +113,7 @@ func TestTheAttributesHaveOneWireSpellingPerInstant(t *testing.T) {
 		}
 		if !nineDigitUTC.MatchString(decoded.Attributes.CreatedAt) {
 			t.Errorf("the signed attributes spell their creation time %q. Every other claim in "+
-				"this receipt has exactly one spelling; a verifier must not have to accept two "+
+				"this record has exactly one spelling; a verifier must not have to accept two "+
 				"widths on one of them.", decoded.Attributes.CreatedAt)
 		}
 	})

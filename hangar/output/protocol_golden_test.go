@@ -143,7 +143,7 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	// The reservation the ATC repeats into the producing Pod's volume. Its
 	// refusal twin is a reservation whose directory does not derive from the
 	// incarnation beside it -- a chosen path wearing a server-issued identity,
-	// which is the shape Req 7 exists to refuse.
+	// which is the shape the no-caller-chosen-path rule exists to refuse.
 
 	// Sealing's two halves are two statements, so each gets its own frozen
 	// fixture and each is asserted to be of its own kind. A single fixture

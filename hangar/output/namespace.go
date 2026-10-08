@@ -13,8 +13,8 @@ import (
 
 // The output plane's storage identity, derived and never chosen.
 //
-// Requirement 20 is a rule about *who decides*: the bucket, the object-key
-// prefix and the opaque scope come only from authenticated deployment and
+// The rule is about *who decides*: the bucket, the object-key prefix and the
+// opaque scope come only from authenticated deployment and
 // tenant configuration plus the store they live in. A task, a domain
 // consumer, a path parameter or a request body cannot select or broaden any of
 // them. This file is that rule as a pure function, which is the only shape in
@@ -48,8 +48,8 @@ const (
 // derived from.
 //
 // CacheBucket and StrictInputBucket are named here rather than assumed absent:
-// Req 20 forbids the output bucket from *being* either of them, and a
-// deployment that has both cannot state that rule unless it can name them. An
+// the output bucket may not *be* either of them, and a deployment that has
+// both cannot state that rule unless it can name them. An
 // empty value means "this deployment has no such bucket", which is why they are
 // compared only when set.
 type NamespaceConfig struct {
@@ -73,13 +73,6 @@ type NamespaceConfig struct {
 	// be.
 	CacheBucket       string
 	StrictInputBucket string
-
-	// SharedBucketPrefixOnlyIsolation is a deployment declaring that its
-	// trust domains are separated by key prefix inside one bucket. Req 20
-	// refuses that as an activation-compatible substitute for separate
-	// buckets, and it is a field rather than an inference because a
-	// deployment that believes it has isolation must be told it does not.
-	SharedBucketPrefixOnlyIsolation bool
 
 	// ActivationEpoch is the control-key generation the deployment's
 	// capabilities are minted under. It is recorded in each object's marker
@@ -121,13 +114,6 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 
 	if strings.TrimSpace(config.Bucket) == "" {
 		return OutputNamespace{}, fmt.Errorf("%w: no output bucket is configured", ErrIncomplete)
-	}
-	if config.SharedBucketPrefixOnlyIsolation {
-		return OutputNamespace{}, fmt.Errorf("%w: this deployment separates trust domains by key "+
-			"prefix inside one bucket. Prefix-only IAM is not an activation-compatible substitute "+
-			"for a dedicated output bucket: object-level permission is not expressible in a "+
-			"bucket policy, so every principal that can read one prefix can read them all",
-			ErrUnauthorized)
 	}
 	if config.CacheBucket != "" && config.Bucket == config.CacheBucket {
 		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the durable cache bucket "+

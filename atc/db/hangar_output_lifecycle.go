@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -57,7 +56,7 @@ func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, t
 // binding.
 //
 // THE COMMIT IS THE CONSUMER'S, AND SO IS THE REFUSAL. This runs inside the
-// consumer's transaction (Reqs 30 and 31), so the deferred
+// consumer's transaction, so the deferred
 // hangar_policy_admits_new_protection fires at the CONSUMER's COMMIT and
 // arrives there as a bare driver error carrying SQLSTATE JB002 -- nothing this
 // method returns, and nothing a caller can branch on. A consumer composing this
@@ -197,8 +196,8 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		return output.ReadLease{}, err
 	}
 
-	// The exact lifecycle, under the lock, before anything is written. Req 35
-	// admits a managed-output warrant only for a REGISTERED MARKED generation
+	// The exact lifecycle, under the lock, before anything is written. A
+	// managed-output warrant is admitted only for a REGISTERED MARKED generation
 	// whose lifecycle state is readable: a caller-supplied ref, a capture row
 	// that never published or the ordinary strict-input path cannot reach this, and neither can a
 	// generation that reclamation has already admitted.
@@ -350,13 +349,12 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 // what the previous renewal moved and granted_at never moves, so the k-th
 // renewal would be k-1 intervals longer than the first and an abandoned reader
 // would pin its generation for far longer than the term it was admitted under.
-// Requirement 36 names one term, and lease_term_seconds is where it lives.
+// There is one term, and lease_term_seconds is where it lives.
 //
-// The row's own state is checked HERE rather than left to the caller. The one
-// production caller does run ValidateReadLease first, which refuses an expired
-// lease -- but this method is on the repository contract for any caller, and a
-// renewal that resurrected an expired lease would re-pin a generation recovery
-// had already released. The lifecycle join is the same rule AcquireReadLease
+// The row's own state is checked HERE rather than left to the caller: this
+// method is on the repository contract for any caller, and a renewal that
+// resurrected an expired lease would re-pin a generation recovery had already
+// released. The lifecycle join is the same rule AcquireReadLease
 // admits under: a generation recorded missing or conflicted is not one a reader
 // may keep protecting.
 func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx output.Tx, lease output.ReadLease) (output.ReadLease, error) {
@@ -374,7 +372,7 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 	// transactions whose constraint phases overlap each see the other as
 	// uncommitted and BOTH commit. That was reproduced: a live renewed read
 	// lease and an admitted reclaim job committed together for the same
-	// generation, which is what AC 13 and Req 36 forbid.
+	// generation, which is forbidden.
 	//
 	// The trigger stays, and it is a good backstop -- it closes every SEQUENTIAL
 	// pair, which is what a backstop is for. It is the exact-lifecycle row,
@@ -640,92 +638,6 @@ func (repository *HangarOutputRepository) LoadReadLease(ctx context.Context, tx 
 	}, nil
 }
 
-// Deferred: the read-lease control protocol that asked this of the web is
-// deleted: the node daemon verifies a read warrant against its own window and
-// never calls the web. The row semantics this method pins stay specified until
-// the read rows are rewritten with the capture row
-//
-// ValidateReadLease answers the materializing daemon's independent question.
-//
-// Every field the warrant carried is compared against the committed row, and the
-// row's own state -- released, expired, superseded by a later fence, or beside
-// a lifecycle that reclamation has admitted -- is what decides. A valid HMAC
-// bound to any of those authorizes nothing, and this is the method that says so.
-//
-// The remaining term is measured in SQL. Requirement 36 lets work begin only
-// with the operation's timeout plus two minutes left, and a daemon that
-// measured that against its own clock would be deciding, on a node, a question
-// the database owns.
-func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context, tx output.Tx, validation output.ReadLeaseValidation) (output.ReadLeaseRecord, error) {
-	if err := validation.Validate(); err != nil {
-		return output.ReadLeaseRecord{}, err
-	}
-
-	record, err := repository.LoadReadLease(ctx, tx, validation.ReadLeaseID)
-	if err != nil {
-		return output.ReadLeaseRecord{}, err
-	}
-
-	// THERE IS NO FENCE CHECK, and its absence is a fact about the plane rather
-	// than an omission.
-	//
-	// hangar_read_leases.lease_fence has no writer: AcquireReadLease inserts 1
-	// and nothing anywhere moves it. A retry of an ambiguous commit deliberately
-	// does not advance it -- requirement 37 wants a byte-identical re-mint, and
-	// a moving fence would make that impossible -- and Phase 7's takeover works
-	// on the CAPTURE fence, a different column on a different table. So a
-	// comparison here could only ever be a value checked against itself, which
-	// is the kind of check that passes for a reason nobody can state.
-	//
-	// The column stays, with a note at the migration, because a column with no
-	// reader is cheaper than renumbering a migration; the warrant no longer binds
-	// one. What supersession this lease HAS is the released tombstone, which
-	// LoadReadLease above has already refused.
-	if record.Lease.ClaimID != validation.ClaimID ||
-		record.Lease.Ref != validation.Ref ||
-		record.Lease.ActivationEpoch != validation.ActivationEpoch ||
-		record.Destination != validation.Destination ||
-		subtle.ConstantTimeCompare([]byte(record.WarrantNonce), []byte(validation.WarrantNonce)) != 1 {
-		return output.ReadLeaseRecord{}, fmt.Errorf("%w: the warrant presented for read lease %s "+
-			"does not describe the lease this transaction committed", output.ErrUnauthorized,
-			validation.ReadLeaseID)
-	}
-
-	// The claim is deliberately NOT rechecked here.
-	//
-	// Requirement 36 and AC 13 are explicit: reclaim admission is refused while
-	// any read lease is active EVEN IF the domain releases its last claim, and
-	// releasing the last claim during a transfer must not delete the bytes out
-	// from under a reader. A claim is what admits a warrant; the lease is what
-	// protects the read once it has one. A daemon that refused to stage because
-	// the consumer had already unbound would be enforcing the opposite rule.
-	// There is no reclaim check here, and its absence is the schema's doing
-	// rather than an omission. hangar_reclaim_exclusion refuses an admitted
-	// reclaim beside an active read lease and refuses an active read lease
-	// beside an admitted reclaim, so the two states cannot coexist: a lease a
-	// reclaimer got past was released first, and LoadReadLease above has
-	// already answered that. A count here would be code no state can reach.
-	var expired, tooShort bool
-	if err := hangarQueryRow(ctx, tx, `
-		SELECT r.expires_at <= now(), r.expires_at < now() + $2::interval
-		FROM hangar_read_leases r WHERE r.read_lease_id = $1`,
-		[]any{string(validation.ReadLeaseID), hangarInterval(validation.RequiredRemaining)},
-		&expired, &tooShort); err != nil {
-		return output.ReadLeaseRecord{}, err
-	}
-	if expired {
-		return output.ReadLeaseRecord{}, fmt.Errorf("%w: read lease %s has expired on the "+
-			"database clock", output.ErrTimeout, validation.ReadLeaseID)
-	}
-	if tooShort {
-		return output.ReadLeaseRecord{}, fmt.Errorf("%w: read lease %s has less than %s left and "+
-			"that is what the work needs; work begins only with the operation's timeout plus %s "+
-			"remaining", output.ErrTimeout, validation.ReadLeaseID, validation.RequiredRemaining,
-			output.LeaseStartMargin)
-	}
-	return record, nil
-}
-
 // ReadClaims reports every claim recorded for one tree ref, active and
 // tombstoned, in acquisition order.
 //
@@ -781,8 +693,9 @@ func (repository *HangarOutputRepository) ReadClaims(ctx context.Context, tx out
 //
 // It is recovery, and it is the reason an abandoned reader does not pin a
 // generation forever: a materializer that died mid-staging leaves an unreleased
-// lease, and requirement 46's "no active read lease" plus AC 13's "closes or
-// safely EXPIRES" both mean the same thing about it. Nothing here guesses -- the
+// lease, and reclaim admission's "no active read lease" and a reader's
+// protection ending when its lease "closes or safely EXPIRES" both mean the
+// same thing about it. Nothing here guesses -- the
 // only leases it touches are ones the database itself says have expired, and it
 // closes them by writing the release the daemon never got to write, so the
 // tombstone that prevents resurrection exists either way.

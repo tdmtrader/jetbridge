@@ -494,9 +494,9 @@ func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
 //
 // The capture advancer and the read-lease cleanup were appended to the
 // component table outside both the Kubernetes block and any output-plane
-// check. Requirement 59 asks for a deployment with capture disabled to behave
-// as it did before, and two `components` rows, two advisory locks and two
-// queries a minute is not that -- however cheap each pass is.
+// check. A deployment with capture disabled must behave as it did before,
+// and two `components` rows, two advisory locks and two queries a minute is
+// not that -- however cheap each pass is.
 func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnabled() {
 	names := func(components []atccmd.RunnableComponent) []string {
 		var named []string

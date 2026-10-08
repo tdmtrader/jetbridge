@@ -146,7 +146,7 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 		if strings.Contains(string(data), source.Bearer) {
 			return fmt.Errorf("Run response disclosed the input bearer")
 		}
-		// Requirement 20: a new Run says so and carries no replay header.
+		// A new Run says so and carries no replay header.
 		if first.AdmissionOutcome != atc.RunAdmissionCreated || header.Get(atc.IdempotencyReplayedHeader) != "" {
 			return fmt.Errorf("new Run signalled outcome %q with replay header %q", first.AdmissionOutcome, header.Get(atc.IdempotencyReplayedHeader))
 		}

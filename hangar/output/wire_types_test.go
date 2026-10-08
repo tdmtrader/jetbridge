@@ -22,10 +22,9 @@ import (
 //
 // The map points each type at the fixture that covers it, including types
 // covered transitively as part of a larger value. That is a stronger statement
-// than an exemption list: "ReceiptClaims is frozen inside receipt.json" is
-// checkable, and "ReceiptClaims does not need freezing" would not be.
-//
-// Reqs 22, 25-27, 35-38, 48-54, 58; AC 20.
+// than an exemption list: "ReadWarrantClaims is frozen inside
+// read-warrant-claims.json" is checkable, and "ReadWarrantClaims does not need
+// freezing" would not be.
 
 // baseFixtureDir is where hangar/executioncontrol keeps its half of the
 // contract. This file asserts the fixture exists; that package's own

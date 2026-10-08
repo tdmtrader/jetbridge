@@ -119,7 +119,7 @@ func admittedCapture() *runtime.ExecutionControl {
 //
 // The two pods come from the same Container code under two configurations, so
 // a field that moved shows up as a field rather than as a count somebody
-// forgot to update. Req 59 and AC 20.
+// forgot to update.
 func TestTheOutputPlaneChangesNoOrdinaryPodWhenNothingIsCaptured(t *testing.T) {
 	for _, reused := range []bool{false, true} {
 		off, err := capturingContainer(t, capturePodConfig(false), reused, nil).
@@ -234,7 +234,7 @@ func TestTheCleanupInitAsksTheLedgerBeforeRemovingAnything(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(plain.Command, " "), "capture-held") {
 		t.Error("a deployment with no output plane emits the ledger probe; there is no ledger " +
-			"to probe and Req 59 says the ordinary path is unchanged")
+			"to probe and the ordinary path must be unchanged")
 	}
 }
 
@@ -460,7 +460,7 @@ func TestTheCaptureSelectedOutputMountsTheCaptureStepDirectory(t *testing.T) {
 // runtime.DurableOutputCapture.Directory and nowhere else. A second spelling of
 // the layout is a second answer to "which directory is held", and the first one
 // to drift points a producer -- or a destructive guard -- at a sibling directory
-// nobody holds. Req 7 as a scan rather than as a comment.
+// nobody holds. The one-derivation rule as a scan rather than as a comment.
 //
 // Two things make it non-vacuous. The callers of the derivation are PINNED with
 // a reason and the pin fails if the file stops calling it, so a rename cannot

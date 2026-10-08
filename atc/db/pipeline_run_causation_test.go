@@ -12,10 +12,10 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Requirements 16, 43 and 44 of the durable Run invocation contract: a v2 Run
-// may carry one opaque correlation and one caused_by_run edge to an earlier
-// Run of its team. Both are immutable caller intent, covered by the
-// caller-intent digest, and refused without an existence leak.
+// The durable Run invocation contract's causation rules: a v2 Run may carry
+// one opaque correlation and one caused_by_run edge to an earlier Run of its
+// team. Both are immutable caller intent, covered by the caller-intent digest,
+// and refused without an existence leak.
 var _ = Describe("Run causation and correlation", func() {
 	var (
 		ctx      context.Context

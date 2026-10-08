@@ -1,6 +1,6 @@
 package jetbridge
 
-// Req 59's twins that are not about a capture pod's shape.
+// The byte-compatibility twins that are not about a capture pod's shape.
 //
 // The claim is byte-compatibility: with durable output capture disabled --
 // and, for everything a capture does not select, with it ENABLED -- the
@@ -19,8 +19,8 @@ package jetbridge
 //     TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsStepDirectory
 //     (daemonset_integration_test.go:2382), whose control is the unselected
 //     output.
-//   - post-completion HIJACK, which Req 18 takes away from a capture-held
-//     source and leaves alone everywhere else: the refuseIfCaptureHeld specs
+//   - post-completion HIJACK, which a capture-held source loses and every
+//     other source keeps: the refuseIfCaptureHeld specs
 //     in exact_execution_test.go:605-780, including the looked-up container
 //     with no spec, which is the one path that is hijack.
 //   - the durable CACHE tier's miss semantics: brine's
@@ -33,7 +33,7 @@ package jetbridge
 // What was left is the one below, and it is the strongest form of the
 // strict-input half: not "the init is still there" but "the Pod is the same
 // Pod". A brine scenario can say the first; only a comparison of two renders
-// can say the second, and the second is what Req 59 actually promises.
+// can say the second, and the second is the byte-compatibility promise.
 
 import (
 	"bytes"
@@ -97,7 +97,7 @@ func strictInputContainer(t *testing.T, cfg Config) *Container {
 	}
 }
 
-// Req 59, at its strongest: turning the output plane on does not change one
+// Byte-compatibility at its strongest: turning the output plane on does not change one
 // byte of a strict-input consumer's Pod -- except the one byte-range that
 // CANNOT be equal, which is named rather than papered over.
 //
@@ -165,7 +165,7 @@ func TestEnablingTheOutputPlaneChangesNoStrictInputPod(t *testing.T) {
 	normaliseWarrant(on)
 	if !reflect.DeepEqual(off.Spec, on.Spec) {
 		t.Errorf("enabling the output plane changed a strict-input consumer's pod somewhere "+
-			"other than the signed warrant. Req 59 says the original strict-input capability is "+
+			"other than the signed warrant. The original strict-input capability must stay "+
 			"byte-compatible, and this step selects no capture at all.\n off: %+v\n  on: %+v",
 			off.Spec, on.Spec)
 	}
@@ -181,7 +181,7 @@ type materializationItem struct {
 
 // warrantSubject is the stable half of a signed materialization warrant: what it
 // authorises, without the nonce and the two timestamps that make every token
-// unique. Comparing this rather than the token is what lets Req 59's claim be
+// unique. Comparing this rather than the token is what lets byte-compatibility be
 // asserted at all.
 type warrantSubject struct {
 	Domain  string         `json:"domain"`

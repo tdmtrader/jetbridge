@@ -19,9 +19,9 @@ import (
 
 // Nothing this daemon emits may name where anything is.
 //
-// Reqs 3, 7 and 12 say the control API takes identities and never a path, a
-// hostPath, a bucket, a scope or an object key, and that the server derives
-// every location. That is a rule about REQUESTS, and the route table already
+// The control API takes identities and never a path, a hostPath, a bucket, a
+// scope or an object key, and the server derives every location. That is a
+// rule about REQUESTS, and the route table already
 // enforces it. This is the other half, which nothing enforced: a daemon that
 // refuses to accept an object key and then prints one in its refusal has told
 // the caller the thing the rule exists to withhold.
@@ -267,7 +267,7 @@ func forEachProductionFile(t *testing.T, dir string, visit func(name, source str
 //
 // So the emptiness is pinned. When a logger arrives, this fails, and whoever
 // adds it has to route it through the scan.
-func TestTheOutputDaemonWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
+func TestTheOutputPlaneWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
 	// plane.go is the one exception, and it is worth naming precisely rather
 	// than waving at.
 	//
@@ -277,7 +277,7 @@ func TestTheOutputDaemonWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
 	// this daemon restating its OWN flags, which are already in its Pod spec
 	// and readable by anyone who can read the Pod at all; withholding them from
 	// the operator's `kubectl logs` while leaving them in `kubectl get pod -o
-	// yaml` would protect nobody. What Reqs 3, 7 and 12 forbid is telling a
+	// yaml` would protect nobody. What the rule forbids is telling a
 	// CALLER where things are, and no caller can reach a line printed before
 	// the first request.
 	//
