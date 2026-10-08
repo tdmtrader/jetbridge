@@ -106,10 +106,10 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 	"daemon.mtls":              func(d *liveDeployment) string { return onOff(d.daemonFlag("tls-cert")) },
 	"daemon.resolveCapability": func(d *liveDeployment) string { return onOff(d.daemonFlag("resolve-capability-key")) },
 	"daemon.hangar":            func(d *liveDeployment) string { return onOff(d.daemonFlag("hangar-enabled")) },
-	// The output plane is mounted in the artifact daemon when it is given a
-	// control key. The disk store behind both namespaces is a workload, not a
-	// flag, so it is read by presence.
-	"daemon.hangarOutput": func(d *liveDeployment) string { return onOff(d.daemonFlag("capability-key")) },
+	// The output plane is mounted in the artifact daemon when it is told to
+	// serve execution control. The disk store behind both namespaces is a
+	// workload, not a flag, so it is read by presence.
+	"daemon.hangarOutput": func(d *liveDeployment) string { return onOff(d.daemonFlag("execution-control")) },
 	"store.disk":          func(d *liveDeployment) string { return onOff("", d.diskStorePods > 0) },
 	// The plain-HTTP listener Prometheus scrapes; without it the daemon's
 	// metrics exist only behind mTLS and nothing collects them.

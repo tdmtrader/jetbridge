@@ -396,7 +396,7 @@ var _ = Describe("A Run-owned resource command's exit journal", func() {
 		}
 		Eventually(func() error { _, err := os.Stat(marker); return err }).Should(Succeed())
 
-		source := NewOutputSource(clientset, config, harness.Minter)
+		source := NewOutputSource(clientset, config, harness.Signer)
 		source.SetExecutor(executor)
 		_, err = source.RecoverExecutionOutcome(ctx, "node-1", starts[0])
 		Expect(err).To(MatchError(hangaroutput.ErrUnresolved),
@@ -608,7 +608,7 @@ var _ = Describe("An exact command whose start was never delivered", func() {
 			start, err := harness.Client.RecordStart(ctx, identity, executioncontrol.PodUID(podUID), process.exactProcessIdentity())
 			Expect(err).NotTo(HaveOccurred())
 
-			source := NewOutputSource(clientset, config, harness.Minter)
+			source := NewOutputSource(clientset, config, harness.Signer)
 			source.SetExecutor(executor)
 			_, err = source.RecoverExecutionOutcome(ctx, "node-1", start)
 			Expect(err).To(MatchError(hangaroutput.ErrUnresolved), "an undelivered start was closed by a read")
@@ -643,7 +643,7 @@ var _ = Describe("An exact command whose start was never delivered", func() {
 	// the start. Cancellation reads it from the node that acknowledged it -- and
 	// only from that node, for that identity.
 	It("reads the node's start acknowledgement for a Run that never retained it", func() {
-		source := NewOutputSource(clientset, config, harness.Minter)
+		source := NewOutputSource(clientset, config, harness.Signer)
 		_, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, identity)
 		Expect(err).To(MatchError(hangaroutput.ErrNotFound), "an unadmitted execution answered for a start")
 

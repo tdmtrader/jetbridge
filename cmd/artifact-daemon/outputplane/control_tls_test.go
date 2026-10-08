@@ -3,10 +3,10 @@ package outputplane
 // The control API's transport, now that its caller is off-node.
 //
 // The control API first listened on 127.0.0.1 in plaintext and that was the
-// right shape: every caller was a pod on this node and the capability is a
-// MAC'd, facet-scoped, single-use bearer token. Its caller is now the ATC,
-// which is on the web pod, and a bearer token over plaintext off-node is
-// interceptable inside its TTL.
+// right shape: every caller was a pod on this node and the warrant is a
+// MAC'd, purpose-bound, single-use bearer. Its caller is now the ATC, which
+// is on the web pod, and a bearer over plaintext off-node is interceptable
+// inside its window.
 //
 // The pair is the whole test. Every control-plane route requires a verified
 // client certificate, and the ONE route whose caller is a container in a Pod on
@@ -30,7 +30,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +37,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -48,11 +47,8 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 
 	pki := mintControlPKI(t)
 
-	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
-	if err != nil {
-		t.Fatalf("building the verifier: %v", err)
-	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
+	warrants, spent := fixture.verifying(t, fixture.captureFixture.store)
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, warrants, spent)
 	server.RequireClientCertificates()
 
 	secured := httptest.NewUnstartedServer(server.Handler())
@@ -78,20 +74,11 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		RootCAs:    pki.pool,
 	}}}
 
-	nonce := 0
-	answer := func(client *http.Client, path string, facet executioncontrol.Facet,
+	answer := func(client *http.Client, path string, purpose hangar.Purpose,
 		operation string, body any) (int, []byte) {
 		t.Helper()
 
-		nonce++
-		token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-			Facet:     facet,
-			Operation: operation,
-			Identity:  identity(1),
-		}, "tls-"+operation+"-"+strconv.Itoa(nonce))
-		if err != nil {
-			t.Fatalf("minting: %v", err)
-		}
+		token := fixture.mint(t, purpose, operation, identity(1))
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			t.Fatalf("encoding: %v", err)
@@ -100,7 +87,7 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		if err != nil {
 			t.Fatalf("building the request: %v", err)
 		}
-		request.Header.Set(CapabilityHeader, string(token))
+		request.Header.Set(WarrantHeader, token)
 		response, err := client.Do(request)
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)
@@ -110,10 +97,10 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 
 		return response.StatusCode, answered
 	}
-	call := func(client *http.Client, path string, facet executioncontrol.Facet,
+	call := func(client *http.Client, path string, purpose hangar.Purpose,
 		operation string, body any) int {
 		t.Helper()
-		code, _ := answer(client, path, facet, operation, body)
+		code, _ := answer(client, path, purpose, operation, body)
 
 		return code
 	}
@@ -122,24 +109,24 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	// controls: a refusal below means nothing unless these succeed.
 	for _, row := range []struct {
 		path      string
-		facet     executioncontrol.Facet
+		purpose   hangar.Purpose
 		operation string
 		body      any
 	}{
-		{"/execution/v1/classify", executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))},
-		{"/execution/v1/cleanup-eligible", executioncontrol.BaseFacet, "cleanup-eligible",
+		{"/execution/v1/classify", hangar.PurposeControlBase, "classify", identifiedBy(identity(1))},
+		{"/execution/v1/cleanup-eligible", hangar.PurposeControlBase, "cleanup-eligible",
 			identifiedBy(identity(1))},
-		// The release is a CAPTURE-facet route and it is still the control
+		// The release is an output-capture route and it is still the control
 		// plane's. Its presence here is what stops the node-local exemption
 		// below from being read as "capture routes are exempt".
-		{"/capture/v1/release", output.CaptureFacet, "release", output.CaptureReleaseRequest{
+		{"/capture/v1/release", hangar.PurposeControlCapture, "release", output.CaptureReleaseRequest{
 			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}},
 	} {
-		if code := call(withCert, row.path, row.facet, row.operation, row.body); code != http.StatusOK {
+		if code := call(withCert, row.path, row.purpose, row.operation, row.body); code != http.StatusOK {
 			t.Fatalf("%s answered %d to the control plane's own certificate", row.path, code)
 		}
-		if code := call(withoutCert, row.path, row.facet, row.operation, row.body); code != http.StatusUnauthorized {
-			t.Errorf("%s answered %d with no client certificate; the ATC's capability would be "+
+		if code := call(withoutCert, row.path, row.purpose, row.operation, row.body); code != http.StatusUnauthorized {
+			t.Errorf("%s answered %d with no client certificate; the ATC's warrant would be "+
 				"honoured from anything that could reach this port", row.path, code)
 		}
 	}
@@ -147,11 +134,11 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	// The start inspection reads a recorded node fact and is the control
 	// plane's alone. This execution has no start, so the certificate is
 	// answered with the ledger's 404 and its absence with 401.
-	if code := call(withCert, "/execution/v1/start/inspect", executioncontrol.BaseFacet, "inspect-start",
+	if code := call(withCert, "/execution/v1/start/inspect", hangar.PurposeControlBase, "inspect-start",
 		identifiedBy(identity(1))); code != http.StatusNotFound {
 		t.Fatalf("the start inspection answered %d to the control plane's own certificate", code)
 	}
-	if code := call(withoutCert, "/execution/v1/start/inspect", executioncontrol.BaseFacet, "inspect-start",
+	if code := call(withoutCert, "/execution/v1/start/inspect", hangar.PurposeControlBase, "inspect-start",
 		identifiedBy(identity(1))); code != http.StatusUnauthorized {
 		t.Errorf("the start inspection answered %d with no client certificate", code)
 	}
@@ -162,7 +149,7 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	// tombstone that refuses every later hold.
 	unreleased := holdRequest()
 	unreleased.Output = "unreleased"
-	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold", unreleased)
+	code := call(withoutCert, "/capture/v1/hold", hangar.PurposeControlCapture, "hold", unreleased)
 	if code != http.StatusOK {
 		t.Errorf("the node-local capture hold answered %d without a client certificate; the "+
 			"control init holds none and cannot be given one, so this refusal would stop every "+
@@ -309,11 +296,8 @@ func mintControlPKI(t *testing.T) controlPKI {
 // unaffected, and a different certificate from the same CA is admitted.
 func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
 	fixture := newRoutes(t)
-	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
-	if err != nil {
-		t.Fatalf("building the verifier: %v", err)
-	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
+	warrants, spent := fixture.verifying(t, fixture.captureFixture.store)
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, warrants, spent)
 	server.RequireClientCertificates()
 	daemonDER := []byte("the daemons' serving certificate")
 	server.RefuseDaemonCertificate(daemonDER)

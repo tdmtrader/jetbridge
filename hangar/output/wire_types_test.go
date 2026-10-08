@@ -22,8 +22,8 @@ import (
 //
 // The map points each type at the fixture that covers it, including types
 // covered transitively as part of a larger value. That is a stronger statement
-// than an exemption list: "ReadWarrantClaims is frozen inside
-// read-warrant-claims.json" is checkable, and "ReadWarrantClaims does not need
+// than an exemption list: "ManagedReadRequest is frozen inside
+// managed-read-request.json" is checkable, and "ManagedReadRequest does not need
 // freezing" would not be.
 
 // baseFixtureDir is where hangar/executioncontrol keeps its half of the
@@ -39,9 +39,8 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":ClaimAcquisition":              "claim-acquire.json",
 	outputPackageDir + ":ClaimRelease":                  "claim-release.json",
 	outputPackageDir + ":ClaimRecord":                   "claim-record.json",
-	outputPackageDir + ":ReadWarrantClaims":             "read-warrant-claims.json",
 	outputPackageDir + ":ManagedReadRequest":            "managed-read-request.json",
-	outputPackageDir + ":ReadDestination":               "read-warrant-claims.json",
+	outputPackageDir + ":ReadDestination":               "managed-read-request.json",
 	outputPackageDir + ":DeletePrecondition":            "delete-precondition.json",
 	outputPackageDir + ":ExtensionHandshake":            "capture-extension-handshake.json",
 	outputPackageDir + ":CallerNamespaceRequest":        "caller-namespace-request.json",

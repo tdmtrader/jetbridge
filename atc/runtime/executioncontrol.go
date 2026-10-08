@@ -69,7 +69,7 @@ var ErrInvalidExecutionControl = fmt.Errorf("runtime: invalid execution control"
 // ExecutionControl is the base envelope.
 //
 // It contains an opaque exact identity, its fence, the node-local control
-// endpoint and an attenuated control capability. It contains no output, no capture, no source hold, no bucket and
+// endpoint and a control warrant. It contains no output, no capture, no source hold, no bucket and
 // no product-domain field of any kind -- there is a test that walks this
 // struct's fields and fails if one appears.
 type ExecutionControl struct {
@@ -80,9 +80,9 @@ type ExecutionControl struct {
 	// Endpoint is the node-local control API this execution's truth lives on.
 	Endpoint string
 
-	// Capability is the attenuated bearer capability for this execution's BASE
-	// operations. It authorizes stop and observation and nothing else, and it
-	// is never the capture extension's grant.
+	// Capability is the control warrant for this execution's BASE operations,
+	// under the execution-control purpose. It authorizes stop and observation
+	// and nothing else, and it is never the capture extension's warrant.
 	Capability executioncontrol.ControlCapability
 
 	// Node pins executions whose owning domain reserved an exact node before
@@ -114,10 +114,11 @@ type DurableOutputCapture struct {
 	// be a task choosing where the output plane reads from.
 	Output string
 
-	// SourceControlGrant is the capture extension's OWN one-shot capability,
-	// carried by the capture control init container and by nothing else. It is
-	// never the base Capability: a capture riding the base capability would be
-	// a capture holding the authority to stop the execution.
+	// SourceControlGrant is the capture extension's OWN one-shot warrant,
+	// under the output-capture purpose, carried by the capture control init
+	// container and by nothing else. It is never the base Capability: a capture
+	// riding the base warrant would be a capture holding the authority to stop
+	// the execution.
 	SourceControlGrant executioncontrol.ControlCapability
 
 	// CaptureDeadline is the database-clock deadline the capture was admitted
@@ -238,12 +239,12 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 			"has nothing to present and the hold could never be established",
 			ErrInvalidExecutionControl)
 	}
-	// The capture may not ride the base capability. The base capability
-	// authorizes stopping the execution; a capture holding it would hold the
-	// authority to stop the process it is capturing from.
+	// The capture may not ride the base warrant. The base warrant authorizes
+	// stopping the execution; a capture holding it would hold the authority to
+	// stop the process it is capturing from.
 	if capture.SourceControlGrant == control.Capability {
 		return fmt.Errorf("%w: the capture's source-control grant is the base control "+
-			"capability. They are different facets: one stops and observes an execution, the "+
+			"capability. They are different purposes: one stops and observes an execution, the "+
 			"other holds a source, and a capture that held both would be able to stop the "+
 			"process whose output it is taking", ErrInvalidExecutionControl)
 	}

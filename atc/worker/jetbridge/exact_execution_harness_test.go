@@ -36,8 +36,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar"
 )
 
 const (
@@ -55,7 +54,7 @@ type outputDaemonHarness struct {
 	// what a standalone daemon's capture seal waits for.
 	TerminationsDir string
 	Client          *OutputControlClient
-	Minter          *executioncontrol.CapabilityMinter
+	Signer          *hangar.Signer
 	// PKI is set for a TLS daemon: what a real OutputSource needs to reach it.
 	PKI *harnessControlPKI
 
@@ -144,23 +143,14 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 			return nil, err
 		}
 	}
-	secret := make([]byte, executioncontrol.CapabilityKeyBytes)
+	// The one Hangar key: the daemon verifies every warrant against it and
+	// the harness mints every warrant with it.
+	secret := make([]byte, hangar.WarrantKeyBytes)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
-	capabilityKey := filepath.Join(dir, "capability.key")
-	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
-		return nil, err
-	}
-	// The output read-warrant key, distinct from the control capability key: a
-	// warrant must not be signable by anything that can mint a control
-	// capability.
-	materializeSecret := make([]byte, output.ReadWarrantKeyBytes)
-	if _, err := rand.Read(materializeSecret); err != nil {
-		return nil, err
-	}
-	materializeKey := filepath.Join(dir, "materialize.key")
-	if err := os.WriteFile(materializeKey, materializeSecret, 0o600); err != nil {
+	keyFile := filepath.Join(dir, "hangar.key")
+	if err := os.WriteFile(keyFile, secret, 0o600); err != nil {
 		return nil, err
 	}
 
@@ -182,9 +172,8 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--output-bucket", "jetbridge-harness-output",
 		"--output-prefix", "harness/one",
 		"--output-tenant", "harness",
-		"--capability-key", capabilityKey,
-		"--materialization-key-id", "harness-materialize-1",
-		"--materialization-key-file", materializeKey,
+		"--hangar-key", keyFile,
+		"--execution-control",
 		"--node-uid", harnessNodeUID,
 		"--storage-path", filepath.Join(dir, "storage"),
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
@@ -218,7 +207,7 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		return nil, err
 	}
 
-	minter, err := executioncontrol.NewCapabilityMinter(secret, time.Minute, time.Now)
+	signer, err := hangar.NewSigner(secret, time.Minute, time.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -228,9 +217,9 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		StepsDir:        filepath.Join(dir, "storage", "steps"),
 		StorageRoot:     filepath.Join(dir, "storage"),
 		TerminationsDir: filepath.Join(dir, "terminations"),
-		Minter:          minter,
+		Signer:          signer,
 		PKI:             pki,
-		Client:          NewOutputControlClient(endpoint, transport, minter),
+		Client:          NewOutputControlClient(endpoint, transport, signer),
 		cmd:             daemon,
 	}, nil
 }

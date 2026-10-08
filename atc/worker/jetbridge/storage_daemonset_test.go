@@ -287,13 +287,13 @@ func TestDaemonSetBackend_BuildFetchInitContainers_NoInputs(t *testing.T) {
 
 func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewWarrantSigner(key, hangar.MaxWarrantTTL, func() time.Time {
+	signer, err := hangar.NewSigner(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_000, 0).UTC()
 	})
 	if err != nil {
 		t.Fatalf("new warrant signer: %v", err)
 	}
-	verifier, err := hangar.NewWarrantVerifier(key, hangar.MaxWarrantTTL, func() time.Time {
+	verifier, err := hangar.NewVerifier(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_001, 0).UTC()
 	})
 	if err != nil {
@@ -302,7 +302,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 
 	cfg := testDaemonConfig()
 	cfg.HangarEnabled = true
-	cfg.HangarWarrantSigner = signer
+	cfg.HangarSigner = signer
 	b := NewDaemonSetBackend(cfg, nil, nil, nil)
 	ref := hangar.TreeRef{
 		Scope:      "builds",
@@ -368,7 +368,9 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 		t.Fatalf("unexpected exact request binding: %+v", item)
 	}
 	token := strings.TrimPrefix(item.Warrant, "Bearer ")
-	if token == item.Warrant || verifier.Verify(token, ref, "task-handle", "input-1") != nil {
+	if _, err := verifier.Verify(token, hangar.Warrant{
+		Purpose: hangar.PurposeMaterializeInput, Ref: ref, Handle: "task-handle", Volume: "input-1",
+	}); token == item.Warrant || err != nil {
 		t.Fatal("Hangar item did not carry a valid exact bearer warrant")
 	}
 	if strings.Contains(command, string(key)) {
@@ -532,7 +534,7 @@ type hangarShellResult struct {
 func runHangarInitShell(t *testing.T, ref hangar.TreeRef, fixture hangarShellFixture) hangarShellResult {
 	t.Helper()
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewWarrantSigner(key, hangar.MaxWarrantTTL, func() time.Time {
+	signer, err := hangar.NewSigner(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_000, 0).UTC()
 	})
 	if err != nil {
@@ -540,7 +542,7 @@ func runHangarInitShell(t *testing.T, ref hangar.TreeRef, fixture hangarShellFix
 	}
 	cfg := testDaemonConfig()
 	cfg.HangarEnabled = true
-	cfg.HangarWarrantSigner = signer
+	cfg.HangarSigner = signer
 	b := NewDaemonSetBackend(cfg, nil, nil, nil)
 	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}

@@ -213,9 +213,9 @@ func putOutputPlaneInService(jdb JetbridgeDB) error {
 }
 
 // jetbridgeClientFor is the production client bound to this fixture's output
-// daemon, minting capabilities with the fixture's own minter.
+// daemon, minting control warrants with the fixture's own signer.
 //
-// Not a second HTTP client written here: the capability minting, the facet
+// Not a second HTTP client written here: the warrant minting, the purpose
 // scoping, the per-call nonce and the wire encoding are the ones a deployment
 // uses, and a fixture that reimplemented them would be asserting its own
 // encoding rather than the ATC's.

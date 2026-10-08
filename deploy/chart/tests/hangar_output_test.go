@@ -63,7 +63,9 @@ var webDiskFlags = []string{
 // track schedules onto exactly these nodes.
 var baseControlSets = []string{
 	"hangarOutput.executionControl.enabled=true",
-	"hangarOutput.capabilityKeySecret=op-capability-key",
+	// The one Hangar key: the web signs every warrant with it and the daemon
+	// verifies against it. Required under the BASE switch.
+	"artifactDaemon.hangar.keySecret=op-hangar-key",
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
 	"artifactDaemon.outputScratch.sizeLimit=32Gi",
@@ -77,7 +79,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.tenant=tenant-a",
 	"hangarOutput.cacheBucket=jb-cache",
 	"hangarOutput.strictInputBucket=jb-strict-input",
-	"hangarOutput.materializationKeySecret=op-output-materialize",
 	// The two Workload Identity annotations: the publisher's on the artifact
 	// daemon, and the reclaim principal's on the web. Not required (see
 	// hangar_output_principals_test.go), but declared, so the rules over
@@ -187,7 +188,7 @@ func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
 	// The artifact daemon always renders; it is the output plane's flags, and
 	// the web's reclaim and orphan sweep, that are opt-in.
 	for _, unexpected := range append([]string{
-		"--output-bucket", "--materialization-key-file", "--capability-key",
+		"--output-bucket", "--execution-control", "--hangar-key",
 		"concourse.dev/hangar-output-v1", "concourse.dev/hangar-execution-control-v1",
 		"hangar-output-scratch", "hangar-output-list", "hangar-output-delete",
 	}, webReclaimFlags...) {
@@ -213,12 +214,12 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 	if strings.Contains(daemon.body, "--output-bucket") {
 		t.Error("a base-control-only daemon is configured with an output bucket")
 	}
-	if strings.Contains(daemon.body, "--materialization-key-file") {
-		t.Error("a base-control-only daemon mounts the read-warrant key; it serves no reads")
+	if !strings.Contains(daemon.body, "- --execution-control\n") {
+		t.Error("a base-control-only daemon is not told to mount the output plane (--execution-control)")
 	}
-	if !strings.Contains(daemon.body, "--capability-key=") {
-		t.Error("a base-control-only daemon is given no capability key; it is what mounts " +
-			"the output plane, and the base facet cannot verify a capability without it")
+	if got := strings.Count(daemon.body, "--hangar-key="); got != 1 {
+		t.Errorf("a base-control-only daemon is given the Hangar key %d times, want exactly once; "+
+			"it verifies every warrant with it", got)
 	}
 	web := objectNamed(t, out, "Deployment", "-"+webComponent)
 	for _, flag := range webReclaimFlags {
@@ -229,21 +230,20 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 	}
 }
 
-// The base facet gives the web node the capability key and nothing of the
+// The base facet gives the web node the Hangar key and nothing of the
 // capture facet's. There is no epoch: the output plane has no control-key
-// generation, and every capability is minted under the one key.
-func TestTheWebNodeIsGivenOnlyTheBaseFacetUnderTheBaseFacet(t *testing.T) {
+// generation, and every warrant is signed under the one key.
+func TestTheWebNodeIsGivenOnlyExecutionControlUnderExecutionControl(t *testing.T) {
 	web := objectNamed(t, renderBaseControl(t), "Deployment", "-web")
 
-	if !strings.Contains(web.body, "--kubernetes-hangar-output-warrant-key=") {
-		t.Error("a base-control-only web node is given no capability key, so it can mint " +
-			"no control capability")
+	if got := strings.Count(web.body, "--kubernetes-hangar-key="); got != 1 {
+		t.Errorf("a base-control-only web node is given the Hangar key %d times, want exactly once; "+
+			"it signs every control warrant with it", got)
 	}
 	if strings.Contains(web.body, "--kubernetes-hangar-output-activation-epoch") {
 		t.Error("the web node is given a Hangar activation epoch; there is no control-key generation")
 	}
 	for _, captureOnly := range append([]string{
-		"--kubernetes-hangar-output-materialization-key=",
 		"--kubernetes-hangar-output-bucket=",
 	}, webReclaimFlags...) {
 		if strings.Contains(web.body, captureOnly) {
@@ -506,13 +506,12 @@ func TestTheDiskStoreAdmitsTheDaemonAndTheWeb(t *testing.T) {
 func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 	out := renderOutput(t)
 
-	// Both keys legitimately reach the control plane -- web MINTS capabilities
-	// and read warrants -- so the rule is per secret and not "anything with
-	// the word output in it". What must not leave the two principals is either
-	// key and the bucket itself.
+	// The Hangar key legitimately reaches the control plane -- web SIGNS every
+	// warrant with it -- so the rule is per secret and not "anything with the
+	// word output in it". What must not leave the two principals is the key
+	// and the bucket itself.
 	allowed := map[string][]string{
-		"op-capability-key":     {outputDaemonComponent, "-web"},
-		"op-output-materialize": {outputDaemonComponent, "-web"},
+		"op-hangar-key": {outputDaemonComponent, "-web"},
 	}
 	for secret, carriers := range allowed {
 		found := 0
@@ -611,21 +610,6 @@ func TestTheRemovedReceiptValuesAreRefused(t *testing.T) {
 	}
 }
 
-// The two key roles say different things and are pinned separately. One
-// Secret serving both means rotating either rotates both.
-func TestTheKeyRolesAreDistinctSecrets(t *testing.T) {
-	for _, collapse := range [][]string{
-		{"hangarOutput.materializationKeySecret=op-capability-key"},
-		{"hangarOutput.capabilityKeySecret=op-output-materialize"},
-	} {
-		message := renderOutputError(t, collapse...)
-		if !strings.Contains(message, "same") {
-			t.Errorf("%v collapsed two key roles into one Secret and was accepted:\n%s",
-				collapse, message)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Deadlines, grace and leases
 // ---------------------------------------------------------------------------
@@ -668,7 +652,6 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 		"hangarOutput.enabled=true",
 		"hangarOutput.bucket=jb-output",
 		"hangarOutput.tenant=tenant-a",
-		"hangarOutput.materializationKeySecret=op-output-materialize",
 		"artifactDaemon.outputScratch.sizeLimit=",
 	)...)
 	if !strings.Contains(message, "sizeLimit") {
@@ -1045,17 +1028,17 @@ func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
 	}
 
 	// The output facet is what the output label attests, and a base-only daemon
-	// has none of it: no bucket, no read-warrant key, no publisher. It therefore
-	// cannot advertise the output label however the code is written, which is a
-	// stronger statement than a render asserting the string is absent.
+	// has none of it: no bucket, no publisher. It therefore cannot advertise
+	// the output label however the code is written, which is a stronger
+	// statement than a render asserting the string is absent.
 	base := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
-	for _, absent := range []string{"--output-bucket", "--materialization-key-file"} {
+	for _, absent := range []string{"--output-bucket"} {
 		if strings.Contains(base.body, absent) {
 			t.Errorf("a base-control-only daemon carries %s", absent)
 		}
 	}
 	full := objectNamed(t, renderOutput(t), "DaemonSet", "-"+outputDaemonComponent)
-	for _, present := range []string{"--output-bucket", "--materialization-key-file"} {
+	for _, present := range []string{"--output-bucket"} {
 		if !strings.Contains(full.body, present) {
 			t.Errorf("the artifact daemon does not carry %s", present)
 		}
@@ -1522,15 +1505,64 @@ func TestTheControlKeyValuesAreRefused(t *testing.T) {
 	}
 }
 
-// The base facet cannot render without the capability key: it is what mounts
-// the daemon's output plane, and the base facet verifies every capability
-// with it. The refusal an operator most needs is the one at render time.
-func TestTheCapabilityKeyIsRequiredWithTheBaseFacet(t *testing.T) {
+// The base facet cannot render without the Hangar key: the daemon verifies
+// every warrant with it. With no key Secret named, no daemon TLS Secret to
+// hold hangar.key and no generated key allowed, the refusal names where to
+// put it. The refusal an operator most needs is the one at render time.
+func TestTheHangarKeyIsRequiredWithExecutionControl(t *testing.T) {
 	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
-		"hangarOutput.capabilityKeySecret=")...)
-	if !strings.Contains(message, "hangarOutput.capabilityKeySecret") {
-		t.Errorf("an empty capability key Secret rendered, or was refused by something else:\n%s",
+		"artifactDaemon.hangar.keySecret=",
+		"artifactDaemon.tls.source=generated",
+		"artifactDaemon.tls.existingSecret=")...)
+	if !strings.Contains(message, "artifactDaemon.hangar.keySecret") {
+		t.Errorf("the base facet rendered with no Hangar key, or was refused by something else:\n%s",
 			message)
+	}
+}
+
+// One Hangar key, one flag. With strict inputs and the output plane both on,
+// the daemon and the web are each handed the key exactly once, from the one
+// mount, and the daemon is told to mount the output plane. Nothing of the old
+// per-kind keys renders.
+func TestOneHangarKeyFlagUnderBothSwitches(t *testing.T) {
+	out := render(t, append(append([]string{}, enabledHangarSets...), baseControlSets...)...)
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	web := objectNamed(t, out, "Deployment", "-"+webComponent)
+
+	if got := strings.Count(daemon.body, "--hangar-key="); got != 1 {
+		t.Errorf("the daemon is handed --hangar-key %d times, want exactly once", got)
+	}
+	if !strings.Contains(daemon.body, "--hangar-key=/etc/concourse/hangar-key/hangar.key") {
+		t.Error("the daemon does not read the Hangar key from the artifactDaemon.hangar.keySecret mount")
+	}
+	if !strings.Contains(daemon.body, "- --execution-control\n") {
+		t.Error("the daemon is not told to mount the output plane")
+	}
+	if got := strings.Count(web.body, "--kubernetes-hangar-key="); got != 1 {
+		t.Errorf("web is handed --kubernetes-hangar-key %d times, want exactly once", got)
+	}
+	if !strings.Contains(web.body, "--kubernetes-hangar-key=/etc/concourse/hangar-key/hangar.key") {
+		t.Error("web does not read the Hangar key from the artifactDaemon.hangar.keySecret mount")
+	}
+	if got := strings.Count(web.body, "--kubernetes-hangar-warrant-ttl="); got != 1 {
+		t.Errorf("web is handed --kubernetes-hangar-warrant-ttl %d times, want exactly once", got)
+	}
+	for _, gone := range []string{
+		"--capability-key", "--capability-ttl", "--materialization-key", "--hangar-warrant-key", "--hangar-warrant-ttl",
+		"--kubernetes-hangar-output-warrant-key", "--kubernetes-hangar-output-materialization-key",
+		"--kubernetes-hangar-warrant-key", "hangar-warrant-key", "capability.key", "materialize.key",
+	} {
+		if strings.Contains(out, gone) {
+			t.Errorf("the render still carries %q", gone)
+		}
+	}
+	for _, body := range []string{daemon.body, web.body} {
+		if strings.Count(body, "mountPath: /etc/concourse/hangar-key\n") != 1 {
+			t.Error("the Hangar key is not mounted exactly once at /etc/concourse/hangar-key")
+		}
+		if strings.Count(body, "secretName: op-hangar-key") != 1 {
+			t.Error("the Hangar key Secret is not mounted exactly once")
+		}
 	}
 }
 

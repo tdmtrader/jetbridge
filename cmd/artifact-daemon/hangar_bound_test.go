@@ -65,14 +65,14 @@ func TestHangarMaterializationBoundsConcurrentWorkAndCountsTheRefusal(t *testing
 	server, _, key := newHangarTestServer(t, store)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
-	signer, err := hangar.NewWarrantSigner(key, time.Minute, nil)
+	signer, err := hangar.NewSigner(key, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	post := func(volume string) (int, string) {
-		warrant, err := signer.Sign(ref, "handle", volume)
+		warrant, err := signer.Sign(materializeWarrant(ref, "handle", volume))
 		if err != nil {
 			return 0, err.Error()
 		}

@@ -826,9 +826,9 @@ func describe(callable declaredCallable) string {
 // as possible", but exactly these, each with a reason — and per package, so
 // that the direction between them is part of the rule rather than an accident.
 //
-// hangar/executioncontrol is the stricter of the two. It is the product-neutral
-// base protocol a sibling track and later consumers link, so it imports nothing
-// first-party at all, not even hangar: an exact TreeRef is an output concept.
+// hangar/executioncontrol imports hangar alone: its control warrant is the one
+// Hangar warrant under a control purpose (product neutrality, which once kept
+// it from importing even hangar, was dropped by ADR-0009).
 var allowedFirstPartyImports = map[string]map[string]string{
 	".": {
 		"github.com/concourse/concourse/hangar": "the foundation's exact TreeRef, Scope, Digest " +
@@ -836,7 +836,10 @@ var allowedFirstPartyImports = map[string]map[string]string{
 		"github.com/concourse/concourse/hangar/executioncontrol": "the base exact-execution " +
 			"identity that DurableOutputCapture extends rather than forks",
 	},
-	"../executioncontrol": {},
+	"../executioncontrol": {
+		"github.com/concourse/concourse/hangar": "the one warrant and its purposes; a control " +
+			"warrant is a hangar.Warrant",
+	},
 }
 
 func checkPackagesAreLeaves(found surface) []string {

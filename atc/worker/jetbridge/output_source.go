@@ -134,9 +134,9 @@ func (s *OutputSource) recoveryClient(ctx context.Context, name, uid string) (*O
 	return s.exactClient(ctx, name, uid)
 }
 
-func NewOutputSource(client kubernetes.Interface, config Config, minter *executioncontrol.CapabilityMinter) *OutputSource {
+func NewOutputSource(client kubernetes.Interface, config Config, signer *hangar.Signer) *OutputSource {
 	return &OutputSource{client: client, controls: &nodeOutputControls{
-		config: config, resolver: NewNodeIPResolver(client), minter: minter,
+		config: config, resolver: NewNodeIPResolver(client), signer: signer,
 	}}
 }
 
@@ -204,7 +204,7 @@ func (s *OutputSource) RuntimeControl(ctx context.Context, capture output.Captur
 	if err != nil {
 		return nil, err
 	}
-	baseGrant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", capture.Execution)
+	baseGrant, err := client.MintGrant(hangar.PurposeControlBase, "observe", capture.Execution)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func (s *OutputSource) RuntimeControl(ctx context.Context, capture output.Captur
 	}); err != nil {
 		return nil, err
 	}
-	holdGrant, err := client.MintGrant(output.CaptureFacet, "hold", capture.Execution)
+	holdGrant, err := client.MintGrant(hangar.PurposeControlCapture, "hold", capture.Execution)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +239,7 @@ func (s *OutputSource) BaseRuntimeControl(ctx context.Context, name, uid string,
 	if err != nil {
 		return nil, err
 	}
-	grant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", id)
+	grant, err := client.MintGrant(hangar.PurposeControlBase, "observe", id)
 	if err != nil {
 		return nil, err
 	}

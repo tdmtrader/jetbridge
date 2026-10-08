@@ -52,9 +52,3 @@ func HangarOutputDeleteComponentsForTest(cmd *RunCommand) ([]RunnableComponent, 
 func RunComponentsForTest(cmd *RunCommand, dbConn db.DbConn) []RunnableComponent {
 	return cmd.runComponents(dbConn)
 }
-
-// ValidateHangarOutputPlaneForTest exports the private
-// validateHangarOutputPlane method for external test packages.
-func ValidateHangarOutputPlaneForTest(cmd *RunCommand) error {
-	return cmd.validateHangarOutputPlane()
-}

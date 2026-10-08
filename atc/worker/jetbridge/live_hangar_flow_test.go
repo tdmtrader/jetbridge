@@ -106,7 +106,7 @@ func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 		Generation: 7,
 	}
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewWarrantSigner(key, time.Minute, nil)
+	signer, err := hangar.NewSigner(key, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 	cfg.ArtifactDaemonPort = 31780
 	cfg.ArtifactHelperImage = "busybox:latest"
 	cfg.HangarEnabled = true
-	cfg.HangarWarrantSigner = signer
+	cfg.HangarSigner = signer
 
 	handle := "strict-consumer"
 	container := &Container{

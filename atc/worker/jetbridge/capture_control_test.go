@@ -279,7 +279,7 @@ func TestTheControlInitPresentsTheHeaderTheOutputDaemonReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the daemon's route table: %v", err)
 	}
-	want := `const CapabilityHeader = "` + CapabilityHeaderName + `"`
+	want := `const WarrantHeader = "` + CapabilityHeaderName + `"`
 	if !strings.Contains(string(source), want) {
 		t.Errorf("cmd/artifact-daemon/outputplane/routes.go does not declare %s; the control init "+
 			"presents a header the daemon does not read", want)

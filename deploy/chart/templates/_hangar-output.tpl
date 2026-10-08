@@ -59,8 +59,8 @@
 {{- if not $.Values.hangarOutput.webEnabled -}}
 {{- fail "web.runInputSigningKeySecret requires hangarOutput.webEnabled" -}}
 {{- end -}}
-{{- if or (eq . $output.capabilityKeySecret) (eq . $output.materializationKeySecret) (eq . $.Values.artifactDaemon.resolveCapability.existingSecret) (eq . $.Values.artifactDaemon.tls.existingSecret) -}}
-{{- fail "web.runInputSigningKeySecret must be separate from node capability and materialization Secrets" -}}
+{{- if or (eq . $.Values.artifactDaemon.hangar.keySecret) (eq . $.Values.artifactDaemon.resolveCapability.existingSecret) (eq . $.Values.artifactDaemon.tls.existingSecret) -}}
+{{- fail "web.runInputSigningKeySecret must be separate from the Hangar key, resolve key and daemon TLS Secrets" -}}
 {{- end -}}
 {{- end -}}
 
@@ -76,8 +76,8 @@
 {{- end -}}
 
 {{- if $base -}}
-{{- if not $output.capabilityKeySecret -}}
-{{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key, and the daemon mounts its output plane only when it is given that key." -}}
+{{- if not (or .Values.artifactDaemon.hangar.keySecret .Values.artifactDaemon.tls.existingSecret (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) -}}
+{{- fail "hangarOutput.executionControl.enabled needs the Hangar key: name a Secret holding hangar.key in artifactDaemon.hangar.keySecret, or hold hangar.key in artifactDaemon.tls.existingSecret, or set artifactDaemon.hangar.allowGeneratedKey=true. The daemon verifies every warrant with it." -}}
 {{- end -}}
 {{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- end -}}
@@ -85,7 +85,6 @@
 {{- if $capture -}}
 {{- include "concourse.hangarOutput.validateBucket" . -}}
 {{- include "concourse.hangarOutput.validateIntervals" . -}}
-{{- include "concourse.hangarOutput.validateKeys" . -}}
 {{- include "concourse.hangarOutput.validateDurations" . -}}
 {{- include "concourse.hangarOutput.validatePrincipals" . -}}
 {{- end -}}
@@ -104,17 +103,6 @@
 {{- end -}}
 {{- if and $output.strictInputBucket (eq $output.bucket $output.strictInputBucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published." $output.bucket) -}}
-{{- end -}}
-{{- end }}
-
-{{- define "concourse.hangarOutput.validateKeys" -}}
-{{- $output := .Values.hangarOutput -}}
-{{- if not $output.materializationKeySecret -}}
-{{- fail "hangarOutput.materializationKeySecret is required: output read warrants use their own key and their own domain, never the node control key." -}}
-{{- end -}}
-
-{{- if and $output.capabilityKeySecret (eq $output.capabilityKeySecret $output.materializationKeySecret) -}}
-{{- fail (printf "hangarOutput.capabilityKeySecret and hangarOutput.materializationKeySecret name the same Secret %q. They say different things -- a control capability authorizes one operation, a read warrant authorizes one staged read -- and they are pinned separately, so one Secret for two roles means rotating either rotates both." $output.capabilityKeySecret) -}}
 {{- end -}}
 {{- end }}
 

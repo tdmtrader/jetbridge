@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
@@ -16,13 +15,14 @@ import (
 )
 
 type managedReads struct {
-	verifier *output.ReadWarrantVerifier
-	spent    *spentReads
-	timeout  time.Duration
+	spent   *spentReads
+	timeout time.Duration
 }
 
-// configureReads arms the managed-read routes. They need the read-warrant key,
-// which only an output-facet daemon holds.
+// configureReads arms the managed-read routes on a daemon with the capture
+// extension. The read warrant is verified by the plane's one verifier against
+// the Hangar key, which every output plane holds; what the extension adds is
+// the bucket the read opens.
 //
 // There is no control-plane client here: the daemon never asks the web whether
 // the reader's claim is live, and never gives one back. The warrant IS the
@@ -31,23 +31,28 @@ type managedReads struct {
 // it is single-use on this node (spentReads). The web gives the claim back
 // when its read ends; an abandoned read's claim expires on the database clock.
 func (server *Server) configureReads(config Config, store *controlStore) error {
-	if strings.TrimSpace(config.MaterializationKeyFile) == "" {
+	if !server.daemon.OutputEnabled() {
 		return nil
-	}
-	key, err := os.ReadFile(config.MaterializationKeyFile)
-	if err != nil {
-		return fmt.Errorf("read materialization key: %w", err)
-	}
-	verifier, err := output.NewReadWarrantVerifier(key, output.ClockFunc(nowUTC))
-	if err != nil {
-		return err
 	}
 	spent, err := openSpentReads(store, nowUTC)
 	if err != nil {
 		return err
 	}
-	server.reads = &managedReads{verifier: verifier, spent: spent, timeout: config.OperationTimeout}
+	server.reads = &managedReads{spent: spent, timeout: config.OperationTimeout}
 	return nil
+}
+
+// verifyRead admits a read warrant for exactly this request's tree,
+// destination and node. The claim id is the warrant's to tell; it is what the
+// node keeps the warrant single-use by.
+func (server *Server) verifyRead(input output.ManagedReadRequest) (hangar.Warrant, error) {
+	return server.warrants.Verify(input.Warrant, hangar.Warrant{
+		Purpose: hangar.PurposeReadResult,
+		Ref:     input.Ref,
+		Handle:  input.Destination.Handle,
+		Volume:  input.Destination.Volume,
+		NodeUID: string(server.daemon.nodeUID),
+	})
 }
 
 func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) {
@@ -67,9 +72,9 @@ func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) 
 		readRefusal(w, output.ErrIncomplete)
 		return
 	}
-	claims, err := server.reads.verifier.Verify(input.Warrant, input.Ref, input.Destination)
 	// The warrant names its node; on any other it opens nothing.
-	if err != nil || claims.NodeUID == "" || claims.NodeUID != server.daemon.nodeUID {
+	warrant, err := server.verifyRead(input)
+	if err != nil {
 		readRefusal(w, output.ErrUnauthorized)
 		return
 	}
@@ -81,14 +86,14 @@ func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) 
 		return
 	}
 	defer release()
-	if err := server.reads.spent.begin(claims); err != nil {
+	if err := server.reads.spent.begin(warrant); err != nil {
 		readRefusal(w, err)
 		return
 	}
-	tree, attributes, err := server.stageRead(ctx, claims)
+	tree, attributes, err := server.stageRead(ctx, warrant)
 	// The private copy is complete and verified, or the read failed: either
 	// way this warrant's read is over unless the failure is a retryable one.
-	if spendErr := server.reads.spent.end(claims, err); spendErr != nil && err == nil {
+	if spendErr := server.reads.spent.end(warrant, err); spendErr != nil && err == nil {
 		err = spendErr
 		_ = tree.Close()
 	}
@@ -124,14 +129,14 @@ func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) 
 //
 // The warrant is verified -- binding and window -- by the route before this is
 // called.
-func (server *Server) stageRead(ctx context.Context, claims output.ReadWarrantClaims) (tree *hangar.CapturedTree, attributes hangar.TreeAttributes, err error) {
+func (server *Server) stageRead(ctx context.Context, warrant hangar.Warrant) (tree *hangar.CapturedTree, attributes hangar.TreeAttributes, err error) {
 	defer func() {
 		if err != nil && tree != nil {
 			_ = tree.Close()
 			tree = nil
 		}
 	}()
-	archive, object, err := server.daemon.OpenRead(ctx, claims)
+	archive, object, err := server.daemon.OpenRead(ctx, warrant)
 	if err != nil {
 		return nil, attributes, err
 	}
@@ -141,7 +146,7 @@ func (server *Server) stageRead(ctx context.Context, claims output.ReadWarrantCl
 	if err != nil {
 		return tree, attributes, err
 	}
-	if tree.Digest != claims.Ref.Digest || tree.ByteSize != attributes.LogicalBytes {
+	if tree.Digest != warrant.Ref.Digest || tree.ByteSize != attributes.LogicalBytes {
 		return tree, attributes, output.ErrCorrupt
 	}
 	return tree, attributes, nil

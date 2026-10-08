@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
@@ -24,12 +25,12 @@ func TestRunResultScratchIsAPrivateChildOfTheConfiguredDirectory(t *testing.T) {
 	if hangar.ValidateTempDir(parent) == nil {
 		t.Fatal("fixture: a 0777 non-sticky parent should be refused by the canonicalizer")
 	}
-	signer, err := output.NewReadWarrantSigner(bytes.Repeat([]byte{0x61}, output.ReadWarrantKeyBytes))
+	signer, err := hangar.NewSigner(bytes.Repeat([]byte{0x61}, hangar.WarrantKeyBytes), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := &RunCommand{RunResultScratchDir: parent, RunResultReadConcurrency: 3}
-	cmd.outputReadSigner = signer
+	cmd.readWarrantMinter = output.ReadWarrantMinter{Signer: signer}
 	if err := cmd.validateRunResultReads(); err != nil {
 		t.Fatalf("valid configuration refused: %v", err)
 	}
@@ -65,12 +66,12 @@ func TestRunResultScratchIsAPrivateChildOfTheConfiguredDirectory(t *testing.T) {
 }
 
 func TestRunResultScratchDefaultsToTheProcessTempDir(t *testing.T) {
-	signer, err := output.NewReadWarrantSigner(bytes.Repeat([]byte{0x62}, output.ReadWarrantKeyBytes))
+	signer, err := hangar.NewSigner(bytes.Repeat([]byte{0x62}, hangar.WarrantKeyBytes), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := &RunCommand{RunResultReadConcurrency: 2}
-	cmd.outputReadSigner = signer
+	cmd.readWarrantMinter = output.ReadWarrantMinter{Signer: signer}
 	if err := cmd.configureOutputReads(nil, nil); err != nil {
 		t.Fatal(err)
 	}

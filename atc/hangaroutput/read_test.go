@@ -36,10 +36,9 @@ import (
 	"github.com/concourse/concourse/hangar/output/publisher"
 )
 
-// readWarrantKey is the output plane's materialization key. It is not the receipt
-// key and it is not the foundation's strict-input key, and nothing in this file
-// lets it be either.
-var readWarrantKey = []byte("0123456789abcdef0123456789abcdef")
+// hangarKey is the one Hangar key: the daemon this harness starts verifies
+// every warrant against it, and the harness mints every warrant with it.
+var hangarKey = []byte("0123456789abcdef0123456789abcdef")
 
 // registeredRef drives one whole capture to published and returns the tree
 // ref it published.
@@ -163,7 +162,7 @@ func claimRows(t *testing.T, h *harness, id output.ClaimID) int {
 // that a rolled-back admission cannot have leaked a token into a log, a metric
 // or an error message on its way out.
 type countingMinter struct {
-	inner *output.ReadWarrantSigner
+	inner output.ReadWarrantMinter
 	calls int
 	// signed is the claim the signer was last handed: the row, not the request.
 	signed output.ClaimRecord
@@ -179,11 +178,11 @@ func (minter *countingMinter) Sign(claim output.ClaimRecord, destination output.
 func readAdmission(t *testing.T, h *harness) (*hangaroutput.ReadAdmission, *countingMinter) {
 	t.Helper()
 
-	signer, err := output.NewReadWarrantSigner(readWarrantKey)
+	signer, err := hangar.NewSigner(hangarKey, time.Minute, time.Now)
 	if err != nil {
-		t.Fatalf("read warrant signer: %v", err)
+		t.Fatalf("Hangar signer: %v", err)
 	}
-	minter := &countingMinter{inner: signer}
+	minter := &countingMinter{inner: output.ReadWarrantMinter{Signer: signer}}
 
 	return &hangaroutput.ReadAdmission{
 		Transactor: h.Coordinator.Transactor,
@@ -210,16 +209,25 @@ func readRequest(t *testing.T, ref hangar.TreeRef) hangaroutput.ReadRequest {
 	}
 }
 
-func readVerifier(t *testing.T) *output.ReadWarrantVerifier {
+// verifyRead checks a read warrant the way the daemon does: against the
+// Hangar key, under the read-result purpose, bound to the ref, the destination
+// and the node the daemon is.
+func verifyRead(t *testing.T, token string, ref hangar.TreeRef, destination output.ReadDestination) hangar.Warrant {
 	t.Helper()
 
-	verifier, err := output.NewReadWarrantVerifier(readWarrantKey,
-		output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	verifier, err := hangar.NewVerifier(hangarKey, hangar.MaxWarrantTTL, func() time.Time { return time.Now().UTC() })
 	if err != nil {
-		t.Fatalf("read warrant verifier: %v", err)
+		t.Fatalf("Hangar verifier: %v", err)
+	}
+	warrant, err := verifier.Verify(token, hangar.Warrant{
+		Purpose: hangar.PurposeReadResult, Ref: ref,
+		Handle: destination.Handle, Volume: destination.Volume, NodeUID: harnessNode,
+	})
+	if err != nil {
+		t.Fatalf("the warrant a managed read handed back does not verify: %v", err)
 	}
 
-	return verifier
+	return warrant
 }
 
 // The control, asserted before every refusal below: a registered, marked
@@ -241,11 +249,8 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableWarrant(t *testing.T) {
 		t.Errorf("the signer ran %d times for one admission", minter.calls)
 	}
 
-	claims, err := readVerifier(t).Verify(warrant.Token, ref, request.Destination)
-	if err != nil {
-		t.Fatalf("the warrant a managed read handed back does not verify: %v", err)
-	}
-	if claims.ClaimID != request.ClaimID {
+	claims := verifyRead(t, warrant.Token, ref, request.Destination)
+	if claims.ClaimID != string(request.ClaimID) {
 		t.Errorf("the warrant names claim %q, the request asked for %q", claims.ClaimID, request.ClaimID)
 	}
 	if claims.NodeUID != harnessNode {
@@ -262,9 +267,9 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableWarrant(t *testing.T) {
 	if term := claim.ExpiresAt.Sub(claim.AcquiredAt.Time); term != request.Term() {
 		t.Errorf("the claim's term is %s, the request derived %s", term, request.Term())
 	}
-	if !claims.IssuedAt.Equal(claim.AcquiredAt.Time) || !claims.ExpiresAt.Equal(claim.ExpiresAt.Time) {
+	if claims.IssuedAt != claim.AcquiredAt.UTC().UnixNano() || claims.ExpiresAt != claim.ExpiresAt.UTC().UnixNano() {
 		t.Errorf("the warrant's window [%s, %s] is not the claim's [%s, %s]",
-			claims.IssuedAt, claims.ExpiresAt, claim.AcquiredAt, *claim.ExpiresAt)
+			time.Unix(0, claims.IssuedAt).UTC(), time.Unix(0, claims.ExpiresAt).UTC(), claim.AcquiredAt, *claim.ExpiresAt)
 	}
 	if claimRows(t, h, request.ClaimID) != 1 {
 		t.Error("the admitted read left no claim row behind")
@@ -506,9 +511,7 @@ func TestACommitAnswerLostOnceIsResolvedByTheIdentityRepeat(t *testing.T) {
 	if claimRows(t, h, request.ClaimID) != 1 {
 		t.Error("the repeat did not take the claim the lost commit rolled back")
 	}
-	if _, err := readVerifier(t).Verify(warrant.Token, ref, request.Destination); err != nil {
-		t.Errorf("the warrant minted from the repeat's row does not verify: %v", err)
-	}
+	verifyRead(t, warrant.Token, ref, request.Destination)
 }
 
 // AND A COMMIT CARRYING A CLASS NOBODY NAMED IS STILL A LOST ANSWER.

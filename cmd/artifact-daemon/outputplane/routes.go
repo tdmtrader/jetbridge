@@ -3,12 +3,13 @@ package outputplane
 // The output plane's protected, versioned control API.
 //
 // Two disjoint surfaces, and the disjointness is enforced rather than
-// documented. /execution/v1/* is the base protocol's four closed operations;
-// /capture/v1/* is the optional extension. Every route declares the facet it
-// belongs to, and the capability a request carries must have been minted for
-// that facet, that operation and that exact execution -- so a base control
-// capability presented at a hold, a seal or a publish is refused however valid
-// it is, and a capture capability presented at a base route is refused there.
+// documented. /execution/v1/* is the base protocol's closed operations;
+// /capture/v1/* is the optional extension. Every route declares the warrant
+// purpose it admits, and the warrant a request carries must have been minted
+// for that purpose, that operation and that exact execution -- so an
+// execution-control warrant presented at a hold, a seal or a publish is
+// refused however valid it is, and an output-capture warrant presented at a
+// base route is refused there.
 //
 // ROUTES ACCEPT IDS. Not paths, not buckets, not scopes, not object keys. The
 // server derives every location from the identity it issued and from
@@ -32,20 +33,26 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// CapabilityHeader carries the attenuated bearer capability for one operation.
-const CapabilityHeader = "Hangar-Control-Capability"
+// WarrantHeader carries the control warrant for one operation. The header's
+// name is the wire's and predates the vocabulary.
+const WarrantHeader = "Hangar-Control-Capability"
 
 // Server is the daemon's HTTP surface.
 type Server struct {
-	inputs     inputStages
-	daemon     *Daemon
-	base       *ExecutionLedger
-	capture    *CaptureLedger
-	capability *executioncontrol.CapabilityVerifier
+	inputs  inputStages
+	daemon  *Daemon
+	base    *ExecutionLedger
+	capture *CaptureLedger
+
+	// warrants verifies every warrant the plane admits against the one Hangar
+	// key; spent keeps the control purposes single-use by nonce on this node.
+	warrants *hangar.Verifier
+	spent    *spentWarrants
 
 	// spool bounds how many trees are being canonicalized or published at once.
 	//
@@ -103,21 +110,21 @@ func (server *Server) controlPlaneCaller(request *http.Request) bool {
 }
 
 func NewServer(daemon *Daemon, base *ExecutionLedger, capture *CaptureLedger,
-	capability *executioncontrol.CapabilityVerifier) *Server {
-	return NewServerWithSpool(daemon, base, capture, capability, 1)
+	warrants *hangar.Verifier, spent *spentWarrants) *Server {
+	return NewServerWithSpool(daemon, base, capture, warrants, spent, 1)
 }
 
 // NewServerWithSpool is NewServer with the scratch concurrency bound named.
 func NewServerWithSpool(daemon *Daemon, base *ExecutionLedger, capture *CaptureLedger,
-	capability *executioncontrol.CapabilityVerifier, concurrency int) *Server {
+	warrants *hangar.Verifier, spent *spentWarrants, concurrency int) *Server {
 	if concurrency < 1 {
 		concurrency = 1
 	}
 
 	return &Server{
 		daemon: daemon, base: base, capture: capture,
-		capability: capability,
-		spool:      make(chan struct{}, concurrency),
+		warrants: warrants, spent: spent,
+		spool: make(chan struct{}, concurrency),
 	}
 }
 
@@ -136,14 +143,15 @@ func (server *Server) spooling(ctx context.Context) (func(), error) {
 	}
 }
 
-// route is one endpoint: its facet, its operation name, and what it does.
+// route is one endpoint: its warrant purpose, its operation name, and what it
+// does.
 //
-// facet and operation are data rather than something each handler remembers to
-// check, because "the middleware checks the token is valid" and "the middleware
-// checks the token is valid FOR THIS ROUTE" look identical at every call site
-// and differ completely in what they permit.
+// purpose and operation are data rather than something each handler remembers
+// to check, because "the middleware checks the warrant is valid" and "the
+// middleware checks the warrant is valid FOR THIS ROUTE" look identical at
+// every call site and differ completely in what they permit.
 type route struct {
-	facet     executioncontrol.Facet
+	purpose   hangar.Purpose
 	operation string
 	handle    func(*Server, http.ResponseWriter, *http.Request, executioncontrol.Identity) (any, error)
 
@@ -152,18 +160,18 @@ type route struct {
 	//
 	// Every other route on this API is now called by the ATC, which is on
 	// another node, so when TLS is configured they require a verified client
-	// certificate -- a bearer capability over plaintext off-node is
-	// interceptable inside its TTL. The capture control init holds no client
+	// certificate -- a warrant over plaintext off-node is interceptable
+	// inside its window. The capture control init holds no client
 	// certificate and cannot be given one (the task's Pod holds no
 	// output-plane credential beyond its one-shot warrant), so its route stays
 	// reachable without one, exactly as cmd/artifact-daemon exempts /resolve
 	// for the same caller and the same reason. It is node-local traffic on the
-	// node's own loopback or CNI path, and the warrant is still a signed,
-	// facet-scoped, single-use capability.
+	// node's own loopback or CNI path, and the warrant is still signed, bound
+	// to its purpose and single-use.
 	nodeLocal bool
 }
 
-// identified is how the middleware finds the execution a capability must be
+// identified is how the middleware finds the execution a warrant must be
 // bound to, and it has to read TWO shapes.
 //
 // The base protocol's frozen types EMBED Identity, so an Envelope or a
@@ -174,7 +182,7 @@ type route struct {
 // either being changed to suit it.
 //
 // Reading the identity out of the BODY rather than a header is deliberate: the
-// capability is bound to that identity, and a header the body could contradict
+// warrant is bound to that identity, and a header the body could contradict
 // would put the authorization key outside the thing being authorized.
 type identified struct {
 	Execution   *executioncontrol.Identity   `json:"execution"`
@@ -219,13 +227,13 @@ func (server *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, server.daemon.BaseHandshake())
 	})
 	mux.HandleFunc("GET /capture/v1/handshake", func(w http.ResponseWriter, request *http.Request) {
-		// The extension handshake. It is the capture facet's, so a daemon
-		// without the facet refuses it with the same typed result every other
+		// The extension handshake. It is the capture extension's, so a daemon
+		// without it refuses it with the same typed result every other
 		// capture route gives -- an empty handshake would be a daemon claiming
 		// to speak a protocol it does not.
 		if !server.daemon.OutputEnabled() {
-			writeError(w, fmt.Errorf("%w: this daemon carries the base "+
-				"exact-execution-control facet only, so it publishes nothing and has no "+
+			writeError(w, fmt.Errorf("%w: this daemon carries exact execution "+
+				"control only, so it publishes nothing and has no "+
 				"extension to describe", output.ErrCaptureDisabled))
 
 			return
@@ -249,7 +257,7 @@ func (server *Server) Handler() http.Handler {
 	return mux
 }
 
-// routes is the whole table. Every entry names its facet; there is no entry
+// routes is the whole table. Every entry names its purpose; there is no entry
 // that inherits one.
 func (server *Server) routes() map[string]route {
 	return map[string]route{
@@ -259,52 +267,52 @@ func (server *Server) routes() map[string]route {
 		// they carry no output, source or capture field: this is the shape a
 		// non-capture execution uses unchanged, which is decision F13's
 		// contract obligation stated as a route rather than promised.
-		"POST /execution/v1/admit":   {executioncontrol.BaseFacet, "admit", (*Server).admit, false},
-		"POST /execution/v1/start":   {executioncontrol.BaseFacet, "start", (*Server).start, false},
-		"POST /execution/v1/outcome": {executioncontrol.BaseFacet, "outcome", (*Server).outcome, false},
+		"POST /execution/v1/admit":   {hangar.PurposeControlBase, "admit", (*Server).admit, false},
+		"POST /execution/v1/start":   {hangar.PurposeControlBase, "start", (*Server).start, false},
+		"POST /execution/v1/outcome": {hangar.PurposeControlBase, "outcome", (*Server).outcome, false},
 
-		"POST /execution/v1/classify": {executioncontrol.BaseFacet, "classify", (*Server).classify, false},
+		"POST /execution/v1/classify": {hangar.PurposeControlBase, "classify", (*Server).classify, false},
 		// A read of the node's stored start: what a control plane
 		// that never retained it needs to interrupt and close the execution.
-		"POST /execution/v1/start/inspect":    {executioncontrol.BaseFacet, "inspect-start", (*Server).inspectStart, false},
-		"POST /execution/v1/observe":          {executioncontrol.BaseFacet, "observe", (*Server).observe, false},
-		"POST /execution/v1/stop":             {executioncontrol.BaseFacet, "stop", (*Server).stop, false},
-		"POST /execution/v1/cleanup-eligible": {executioncontrol.BaseFacet, "cleanup-eligible", (*Server).cleanupEligible, false},
+		"POST /execution/v1/start/inspect":    {hangar.PurposeControlBase, "inspect-start", (*Server).inspectStart, false},
+		"POST /execution/v1/observe":          {hangar.PurposeControlBase, "observe", (*Server).observe, false},
+		"POST /execution/v1/stop":             {hangar.PurposeControlBase, "stop", (*Server).stop, false},
+		"POST /execution/v1/cleanup-eligible": {hangar.PurposeControlBase, "cleanup-eligible", (*Server).cleanupEligible, false},
 
-		// The optional capture extension. Disjoint surface, disjoint facet.
+		// The optional capture extension. Disjoint surface, disjoint purpose.
 		// Hold is the one node-local route: its caller is the capture control
 		// init in the producing Pod, which holds no client certificate. Every
 		// other one is the control plane's, off-node.
-		"POST /capture/v1/hold":    {output.CaptureFacet, "hold", (*Server).hold, true},
-		"POST /capture/v1/seal":    {output.CaptureFacet, "seal", (*Server).seal, false},
-		"POST /capture/v1/publish": {output.CaptureFacet, "publish", (*Server).publish, false},
-		"POST /capture/v1/release": {output.CaptureFacet, "release", (*Server).release, false},
-		"POST /capture/v1/stat":    {output.CaptureFacet, "stat", (*Server).stat, false},
+		"POST /capture/v1/hold":    {hangar.PurposeControlCapture, "hold", (*Server).hold, true},
+		"POST /capture/v1/seal":    {hangar.PurposeControlCapture, "seal", (*Server).seal, false},
+		"POST /capture/v1/publish": {hangar.PurposeControlCapture, "publish", (*Server).publish, false},
+		"POST /capture/v1/release": {hangar.PurposeControlCapture, "release", (*Server).release, false},
+		"POST /capture/v1/stat":    {hangar.PurposeControlCapture, "stat", (*Server).stat, false},
 	}
 }
 
-// protect is the facet check and the replay refusal.
+// protect is the purpose check and the replay refusal.
 func (server *Server) protect(declared route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		// The facet gate, and it is FIRST because it is the only refusal here
-		// that is about this daemon rather than about this request. A
-		// component without the capture facet refuses durable output capture
-		// with a typed result and no cache-tier fallback. Answering "forbidden"
-		// or "bad request" would tell a caller to fix the call; answering 501
-		// tells it this daemon does not do this, which is the one answer that
-		// does not produce a retry.
-		if declared.facet == output.CaptureFacet && !server.daemon.OutputEnabled() {
+		// The extension gate, and it is FIRST because it is the only refusal
+		// here that is about this daemon rather than about this request. A
+		// component without the capture extension refuses durable output
+		// capture with a typed result and no cache-tier fallback. Answering
+		// "forbidden" or "bad request" would tell a caller to fix the call;
+		// answering 501 tells it this daemon does not do this, which is the
+		// one answer that does not produce a retry.
+		if declared.purpose == hangar.PurposeControlCapture && !server.daemon.OutputEnabled() {
 			writeError(w, fmt.Errorf("%w: the %s operation needs the durable-capture "+
-				"extension, and this daemon carries the base exact-execution-control facet "+
+				"extension, and this daemon carries exact execution control "+
 				"only", output.ErrCaptureDisabled, declared.operation))
 
 			return
 		}
 
-		// The transport check comes before the capability check, and that
-		// order is the point: a capability presented over an unauthenticated
+		// The transport check comes before the warrant check, and that
+		// order is the point: a warrant presented over an unauthenticated
 		// transport has already been on the wire in the clear, and verifying
-		// it would be deciding whether to honour a token that may have been
+		// it would be deciding whether to honour one that may have been
 		// copied on the way in.
 		if !declared.nodeLocal && !server.controlPlaneCaller(request) {
 			http.Error(w, "the control plane's verified client certificate is required for its "+
@@ -335,18 +343,19 @@ func (server *Server) protect(declared route) http.Handler {
 			return
 		}
 
-		// The claims are the ROUTE's, not the token's. A verifier that decoded
-		// the facet out of the capability and then checked the capability
-		// against it would authorize every facet.
-		if err := server.capability.Verify(
-			executioncontrol.ControlCapability(request.Header.Get(CapabilityHeader)),
-			executioncontrol.CapabilityClaims{
-				Facet:     declared.facet,
-				Operation: declared.operation,
-				Identity:  identity,
-			}); err != nil {
-			writeError(w, fmt.Errorf("%w: %s facet, %s operation: %v",
-				output.ErrUnauthorized, declared.facet, declared.operation, err))
+		// The expected warrant is the ROUTE's, not the token's. A verifier
+		// that decoded the purpose out of the warrant and then checked the
+		// warrant against it would authorize every purpose. The spend comes
+		// after the verification and before the operation: a nonce is
+		// remembered durably or the operation is refused.
+		warrant, err := server.warrants.Verify(request.Header.Get(WarrantHeader),
+			executioncontrol.ControlWarrant(declared.purpose, declared.operation, identity))
+		if err == nil {
+			err = server.spent.spend(warrant)
+		}
+		if err != nil {
+			writeError(w, fmt.Errorf("%w: %s purpose, %s operation: %v",
+				output.ErrUnauthorized, declared.purpose, declared.operation, err))
 
 			return
 		}
@@ -513,7 +522,7 @@ func (server *Server) stat(_ http.ResponseWriter, request *http.Request,
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, output.ErrUnauthorized), errors.Is(err, executioncontrol.ErrUnauthorized):
+	case errors.Is(err, output.ErrUnauthorized):
 		status = http.StatusForbidden
 	case errors.Is(err, output.ErrNotFound):
 		status = http.StatusNotFound
@@ -591,8 +600,8 @@ func decode(request *http.Request, into any) error {
 }
 
 // readerOf lets the body be read twice: once by the middleware, to learn which
-// execution the capability must be checked against, and once by the handler.
+// execution the warrant must be checked against, and once by the handler.
 // A control request is bounded above, so buffering it is cheap and the
-// alternative -- trusting a header for the identity the token is bound to --
+// alternative -- trusting a header for the identity the warrant is bound to --
 // would put the authorization key outside the signed body.
 func readerOf(body []byte) io.ReadCloser { return io.NopCloser(bytes.NewReader(body)) }

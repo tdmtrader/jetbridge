@@ -44,17 +44,12 @@ const (
 
 	// ReadyLabel says the capture extension is served on a node. A capture
 	// Pod requires it *and* executioncontrol.ReadyLabel; neither is authority,
-	// because the capability the daemon verifies is.
+	// because the warrant the daemon verifies is.
 	//
 	// It is deliberately not concourse.dev/hangar-v1, which advertises strict
 	// inputs only. Reusing that label would let a strict-input daemon schedule
 	// a capture it cannot perform.
 	ReadyLabel = "concourse.dev/hangar-output-v1"
-
-	// MaterializeDomain is the HMAC domain for managed-output read warrants. It
-	// is a separate key from the control capability key and from the
-	// foundation's strict-input materialization key.
-	MaterializeDomain = "hangar-output-materialize-v1"
 )
 
 // The typed outcomes. Absence, signature failure, replay, collision,

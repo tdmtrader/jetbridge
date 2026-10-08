@@ -24,19 +24,15 @@ import (
 // capability, and no database handle. The durable half of a capture is the
 // control plane's row; this process answers a digest and a generation.
 type Daemon struct {
-	// namespace and publisher are the OUTPUT facet, and both are
+	// namespace and publisher are the capture extension, and both are
 	// zero on a base-control-only daemon. That is a real deployment and not a
 	// degraded one: the sibling `exact_execution_control` track schedules onto
-	// it, and withdrawing the output facet has to reach it from a running
-	// plane. What makes it safe is that the route table already names a facet
-	// per route, so "there is no publisher" is a typed refusal at the boundary
-	// rather than a nil dereference three calls in.
+	// it, and withdrawing the extension has to reach it from a running
+	// plane. What makes it safe is that the route table already names a
+	// purpose per route, so "there is no publisher" is a typed refusal at the
+	// boundary rather than a nil dereference three calls in.
 	namespace output.OutputNamespace
 	publisher *publisher.Publisher
-
-	// materializationKeyID is what the extension handshake reports so a control
-	// plane knows which pinned key checks this node's read warrants.
-	materializationKeyID string
 
 	// canonicalizer turns a sealed source directory into the one canonical form
 	// this repository has. It is the foundation's, not a second implementation:
@@ -55,24 +51,17 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	// Validate's key separation is over PATHS. This is the same rule over the
-	// bytes, which is what authority actually follows.
-	if err := config.RefuseCollidingKeyMaterial(); err != nil {
-		return nil, err
-	}
 	var err error
 
-	// The output facet, or nothing. Everything below is the capture extension,
+	// The capture extension, or nothing. Everything below is the extension,
 	// and a base-only daemon builds none of it -- no namespace, no object
-	// client, no publisher, and no read-warrant key. A key mounted into a
-	// process that cannot need it is a key an exploit of that process gets for
-	// free.
+	// client and no publisher.
 	var (
 		namespace     output.OutputNamespace
 		role          *publisher.Publisher
 		canonicalizer hangar.Canonicalizer
 	)
-	if config.OutputFacetEnabled() {
+	if config.CaptureEnabled() {
 		namespace, err = config.Namespace()
 		if err != nil {
 			return nil, err
@@ -111,10 +100,9 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 
 	return &Daemon{
 		namespace: namespace, publisher: role,
-		materializationKeyID: config.MaterializationKeyID,
-		canonicalizer:        canonicalizer,
-		nodeUID:              executioncontrol.NodeUID(config.NodeUID),
-		operationTimeout:     config.OperationTimeout,
+		canonicalizer:    canonicalizer,
+		nodeUID:          executioncontrol.NodeUID(config.NodeUID),
+		operationTimeout: config.OperationTimeout,
 	}, nil
 }
 
@@ -124,8 +112,9 @@ func (daemon *Daemon) OutputEnabled() bool { return !daemon.namespace.IsZero() }
 func (daemon *Daemon) Publisher() *publisher.Publisher { return daemon.publisher }
 
 // ExtensionHandshake is what this daemon reports about its capture
-// extension: which protocol it speaks, which key checks its read warrants, and
-// which bucket and namespace it publishes into.
+// extension: which protocol it speaks, which key domain checks its read
+// warrants (there is one: the Hangar key's), and which bucket and namespace it
+// publishes into.
 //
 // It embeds the base handshake rather than restating it, so a base-only daemon
 // answers for exact control alone. None of it is authority.
@@ -134,7 +123,6 @@ func (daemon *Daemon) ExtensionHandshake() output.ExtensionHandshake {
 		Base:                    daemon.BaseHandshake(),
 		CaptureExtensionVersion: output.ProtocolVersion,
 		SourceLedgerVersion:     output.SourceLedgerVersion,
-		MaterializationKeyID:    daemon.materializationKeyID,
 		BucketFingerprint:       daemon.namespace.BucketFingerprint(),
 		DerivedNamespace:        daemon.namespace.ListPrefix(),
 	}
@@ -152,7 +140,7 @@ func (daemon *Daemon) BaseHandshake() executioncontrol.Handshake {
 func (daemon *Daemon) Namespace() output.OutputNamespace { return daemon.namespace }
 
 // OpenRead opens one published object's bytes under a verified read warrant.
-func (daemon *Daemon) OpenRead(ctx context.Context, warrant output.ReadWarrantClaims) (io.ReadCloser, output.PublishedObject, error) {
+func (daemon *Daemon) OpenRead(ctx context.Context, warrant hangar.Warrant) (io.ReadCloser, output.PublishedObject, error) {
 	return daemon.publisher.OpenExactObject(ctx, warrant.Ref, warrant)
 }
 

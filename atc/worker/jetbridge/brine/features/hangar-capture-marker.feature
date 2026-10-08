@@ -144,23 +144,24 @@ Feature: What the artifact daemon answers about a capture's marker
     When the step directory is replaced by a symlink to "/etc"
     Then the daemon's refusal says "not a directory"
 
-  # Reddened by: the capability middleware checking that a token is VALID
-  # without checking that its facet matches the route it arrived on. The control
-  # is the same token succeeding at its own operation, asserted first, so this
-  # cannot go green on a daemon that rejects the token outright.
+  # Reddened by: the warrant middleware checking that a warrant is VALID
+  # without checking that its purpose matches the route it arrived on. The
+  # control is the same warrant succeeding at its own operation, asserted first,
+  # so this cannot go green on a daemon that rejects the warrant outright. The
+  # refusal names the purpose the route admits and the operation it refused.
   @HOP-3 @HOP-24
-  Scenario: A base control capability cannot hold, seal or publish
+  Scenario: A base control warrant cannot hold, seal or publish
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon writes the held marker
-    When a base control capability is used to "classify"
+    When a base control warrant is used to "classify"
     Then the Hangar daemon answers 200, the marker held
-    When a base control capability is used to "hold"
-    Then the daemon's refusal says "facet"
-    When a base control capability is used to "seal"
-    Then the daemon's refusal says "facet"
-    When a base control capability is used to "publish"
-    Then the daemon's refusal says "facet"
+    When a base control warrant is used to "hold"
+    Then the daemon's refusal says "purpose"
+    When a base control warrant is used to "seal"
+    Then the daemon's refusal says "purpose"
+    When a base control warrant is used to "publish"
+    Then the daemon's refusal says "purpose"
 
 
   # The CONTROL, and it is the regression the refusal must not become: without

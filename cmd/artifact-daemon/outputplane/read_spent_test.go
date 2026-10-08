@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +15,8 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-func readClaims(claim string, expires time.Time) output.ReadWarrantClaims {
-	return output.ReadWarrantClaims{ClaimID: output.ClaimID(claim), ExpiresAt: output.NewTimestamp(expires)}
+func readWarrant(claim string, expires time.Time) hangar.Warrant {
+	return hangar.Warrant{Purpose: hangar.PurposeReadResult, ClaimID: claim, ExpiresAt: expires.UnixNano()}
 }
 
 // A read warrant opens one read on a node, and the node remembers it across a
@@ -35,7 +34,7 @@ func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims := readClaims("11111111-1111-4111-8111-111111111111", now.Add(time.Hour))
+	claims := readWarrant("11111111-1111-4111-8111-111111111111", now.Add(time.Hour))
 
 	if err := reads.begin(claims); err != nil {
 		t.Fatalf("a fresh warrant was refused: %v", err)
@@ -76,7 +75,7 @@ func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 	}
 
 	// A refusal the reader caused spends it too.
-	refused := readClaims("22222222-2222-4222-8222-222222222222", now.Add(time.Hour))
+	refused := readWarrant("22222222-2222-4222-8222-222222222222", now.Add(time.Hour))
 	if err := restarted.begin(refused); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +88,7 @@ func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 
 	// A read in flight is durable before it begins: a process that dies
 	// mid-read leaves the warrant used, not reusable.
-	crashed := readClaims("44444444-4444-4444-8444-444444444444", now.Add(time.Hour))
+	crashed := readWarrant("44444444-4444-4444-8444-444444444444", now.Add(time.Hour))
 	if err := restarted.begin(crashed); err != nil {
 		t.Fatal(err)
 	}
@@ -117,31 +116,34 @@ func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 // with the spent record this makes a warrant one read in the whole cluster.
 func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
 	fixture := newRoutes(t)
-	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
+	// The read warrant's window is its claim's, on the wall clock, so this
+	// server verifies on the wall clock too.
+	warrants, err := hangar.NewVerifier(hangarKey(), hangar.MaxWarrantTTL, nowUTC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
 	store, err := openControlStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	spent, err := openSpentWarrants(store, nowUTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, warrants, spent)
 	if err := server.configureReads(fixture.config, store); err != nil {
 		t.Fatal(err)
 	}
-	key, err := os.ReadFile(fixture.config.MaterializationKeyFile)
+	webSigner, err := hangar.NewSigner(hangarKey(), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer, err := output.NewReadWarrantSigner(key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signer := output.ReadWarrantMinter{Signer: webSigner}
 
 	now := time.Now().UTC()
 	ref := fixture.daemon.Namespace().Ref(hangar.Digest("sha256:"+strings.Repeat("ab", 32)), 1)
-	expires := output.NewTimestamp(now.Add(30 * time.Minute))
+	expires := output.NewTimestamp(now.Add(10 * time.Minute))
 	claim := output.ClaimRecord{
 		ClaimID:           "66666666-6666-4666-8666-666666666666",
 		Ref:               ref,

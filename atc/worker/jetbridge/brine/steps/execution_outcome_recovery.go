@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -115,7 +116,7 @@ func exerciseExecutionOutcomeRecovery(in RunOutputRuntime, workspace string, rec
 	})
 	identity := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(freshUUID()), Fence: 1}
 	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
-	grant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", identity)
+	grant, err := client.MintGrant(hangar.PurposeControlBase, "observe", identity)
 	if err != nil {
 		return err
 	}

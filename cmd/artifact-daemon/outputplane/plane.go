@@ -3,9 +3,10 @@
 //
 // It used to be its own binary and its own DaemonSet. It is now a part of
 // cmd/artifact-daemon, served on that daemon's one listener under that
-// daemon's one TLS configuration, and mounted only when the daemon is given a
-// capability key. The wire is unchanged: /execution/v1/*, /capture/v1/*,
-// /input/v1/* and /read/v1/* keep their paths and their bodies.
+// daemon's one TLS configuration, and mounted only when the daemon is given
+// --execution-control. Every warrant it verifies -- control and read -- is
+// checked against the one Hangar key. The wire is unchanged: /execution/v1/*,
+// /capture/v1/*, /input/v1/* and /read/v1/* keep their paths and their bodies.
 //
 // What it still holds no handle to is the point: no database handle, no list
 // or delete capability over the output bucket, and no way to call the web.
@@ -17,12 +18,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -34,7 +35,7 @@ type Plane struct {
 	server  *Server
 	store   *controlStore
 	capture *CaptureLedger
-	labeler *FacetLabeler
+	labeler *Labeler
 }
 
 // Patterns are the mux patterns the plane serves. They are prefixes and two
@@ -60,11 +61,11 @@ var Patterns = []string{
 func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemonCertificate []byte, out io.Writer) (_ *Plane, err error) {
 	if len(daemonCertificate) == 0 {
 		return nil, fmt.Errorf("%w: the output plane needs the daemon's mTLS (--tls-cert, "+
-			"--tls-key, --tls-ca-cert): its off-node routes carry control capabilities and "+
-			"read warrants, and over plaintext those are interceptable inside their TTL",
+			"--tls-key, --tls-ca-cert): its off-node routes carry warrants, and over "+
+			"plaintext those are interceptable inside their window",
 			output.ErrIncomplete)
 	}
-	labeler := NewFacetLabeler(nodes, config.NodeName)
+	labeler := NewLabeler(nodes, config.NodeName)
 	if labeler != nil {
 		lookup, cancel := context.WithTimeout(ctx, 10*time.Second)
 		node, lookupErr := labeler.nodes.CoreV1().Nodes().Get(lookup, config.NodeName, metav1.GetOptions{})
@@ -100,7 +101,7 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	if err != nil {
 		return nil, err
 	}
-	// The source ledger belongs to the OUTPUT facet: it reads step markers,
+	// The source ledger belongs to the capture extension: it reads step markers,
 	// and a daemon that captures nothing opens none. The route
 	// table refuses every capture route on such a daemon before a handler could
 	// reach this, so a nil here is unreachable rather than tolerated.
@@ -127,12 +128,19 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		}
 	}
 
-	capability, err := newCapabilityVerifier(config, store)
+	// One verifier for every warrant the plane admits, over the one Hangar
+	// key; it is stateless, and the control purposes' single use lives beside
+	// the ledgers in the control directory.
+	warrants, err := hangar.NewVerifier(config.Key, hangar.MaxWarrantTTL, nowUTC)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", output.ErrIncomplete, err)
+	}
+	spent, err := openSpentWarrants(store, nowUTC)
 	if err != nil {
 		return nil, err
 	}
 
-	plane.server = NewServerWithSpool(daemon, base, plane.capture, capability,
+	plane.server = NewServerWithSpool(daemon, base, plane.capture, warrants, spent,
 		config.PublishConcurrency)
 	if err := plane.server.configureReads(config, store); err != nil {
 		return nil, err
@@ -148,9 +156,8 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		fmt.Fprintf(out, "  bucket:           %s\n", namespace.Bucket())
 		fmt.Fprintf(out, "  key prefix:       %s\n", namespace.Prefix())
 		fmt.Fprintf(out, "  derived scope:    %s\n", namespace.Scope())
-		fmt.Fprintf(out, "  materialize key:  %s\n", config.MaterializationKeyID)
 	} else {
-		fmt.Fprintf(out, "  facets:           base exact-execution-control only; "+
+		fmt.Fprintf(out, "  capture:          exact execution control only; "+
 			"durable output capture is NOT enabled on this node\n")
 	}
 	fmt.Fprintf(out, "  control API:      https, the control plane's client certificate "+
@@ -159,31 +166,11 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	return plane, nil
 }
 
-// newCapabilityVerifier reads the capability key and remembers spent nonces in
-// the control directory. A verifier that kept them in memory would be one
-// restart away from admitting a captured capability a second time inside its
-// TTL.
-func newCapabilityVerifier(config Config, store *controlStore) (*executioncontrol.CapabilityVerifier, error) {
-	secret, err := os.ReadFile(config.CapabilityKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("%w: reading the capability key: %v", output.ErrIncomplete, err)
-	}
-	capability, err := executioncontrol.NewCapabilityVerifier(secret, config.CapabilityTTL, nowUTC)
-	if err != nil {
-		return nil, err
-	}
-	if err := capability.RememberSpentIn(capabilityReplayStore{store: store}); err != nil {
-		return nil, err
-	}
-
-	return capability, nil
-}
-
 // Handler serves the plane's routes. The artifact daemon mounts it under
 // Patterns on its own mux.
 func (plane *Plane) Handler() http.Handler { return plane.server.Handler() }
 
-// Advertise puts the facet labels on, LAST, after everything has built and the
+// Advertise puts the readiness labels on, LAST, after everything has built and the
 // listener exists. A label advertised before the daemon can answer is a pod
 // scheduled onto a node whose hold is refused on arrival.
 func (plane *Plane) Advertise(ctx context.Context) error {
@@ -191,7 +178,7 @@ func (plane *Plane) Advertise(ctx context.Context) error {
 }
 
 // Withdraw takes the labels off. Shutdown calls it before the listener closes:
-// a node that still advertises a facet it has stopped serving is where the
+// a node that still advertises a protocol it has stopped serving is where the
 // scheduler sends the next capture.
 func (plane *Plane) Withdraw(ctx context.Context) error { return plane.labeler.WithdrawAll(ctx) }
 

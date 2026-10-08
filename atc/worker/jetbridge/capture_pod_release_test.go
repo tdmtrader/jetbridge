@@ -43,6 +43,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -213,7 +214,7 @@ func (fixture *exactPausePodFixture) hold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("admitting: %v", err)
 	}
-	warrant, err := fixture.harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", fixture.identity)
+	warrant, err := fixture.harness.Client.MintGrant(hangar.PurposeControlCapture, "hold", fixture.identity)
 	if err != nil {
 		t.Fatalf("minting the hold grant: %v", err)
 	}

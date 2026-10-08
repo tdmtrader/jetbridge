@@ -47,10 +47,29 @@ const (
 	brineOutputTenant = "brine-tenant"
 )
 
-// brineReadWarrantKey is the output plane's materialization key for this fixture.
-// It is exactly 32 raw bytes, which is what the signer requires: a key
-// of any other shape is refused at construction.
-var brineReadWarrantKey = []byte("0123456789abcdef0123456789abcdef")
+// brineHangarKey is this fixture's one Hangar key: the daemon's --hangar-key
+// is a file holding exactly these bytes, and every warrant a step mints --
+// materialization, read or control -- is signed with them. It is exactly 32
+// raw bytes, which is what the signer requires: a key of any other shape is
+// refused at construction.
+var brineHangarKey = []byte("0123456789abcdef0123456789abcdef")
+
+// brineHangarSigner is the web's half of the warrant seam over the one key,
+// on a UTC clock, at the longest window a warrant may have.
+func brineHangarSigner() (*hangar.Signer, error) {
+	return hangar.NewSigner(brineHangarKey, hangar.MaxWarrantTTL, func() time.Time { return time.Now().UTC() })
+}
+
+// brineReadWarrantMinter mints read warrants over committed readers' claims
+// with the one key.
+func brineReadWarrantMinter() (hangaroutputleaf.ReadWarrantMinter, error) {
+	signer, err := brineHangarSigner()
+	if err != nil {
+		return hangaroutputleaf.ReadWarrantMinter{}, err
+	}
+
+	return hangaroutputleaf.ReadWarrantMinter{Signer: signer}, nil
+}
 
 // neutralConsumer is the product-neutral test consumer: a table of opaque
 // bindings and the four things a consumer does with one.
@@ -307,7 +326,7 @@ func managedReadWarrantInto(in BoundOutput, volume string) (mintedRead, error) {
 		return mintedRead{}, err
 	}
 	defer func() { _ = closeStat() }()
-	signer, err := hangaroutputleaf.NewReadWarrantSigner(brineReadWarrantKey)
+	signer, err := brineReadWarrantMinter()
 	if err != nil {
 		return mintedRead{}, err
 	}

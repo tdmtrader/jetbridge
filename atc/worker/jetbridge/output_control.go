@@ -4,7 +4,7 @@ package jetbridge
 //
 // This is the first OFF-NODE caller of that API. Phase 3's daemon listened on
 // 127.0.0.1 with no TLS, which was the right shape while every caller was a pod
-// on the same node; the web pod is not, and a bearer capability over plaintext
+// on the same node; the web pod is not, and a bearer warrant over plaintext
 // off-node is interceptable inside its TTL. So this client speaks the same mTLS
 // the ATC already speaks to the artifact daemon -- same certificate, same CA,
 // same predicate (DaemonTLSConfigured) -- and the daemon requires a client
@@ -23,8 +23,6 @@ package jetbridge
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -74,7 +73,7 @@ type OutputControl interface {
 type OutputControlClient struct {
 	endpoint    string
 	http        *http.Client
-	minter      *executioncontrol.CapabilityMinter
+	signer      *hangar.Signer
 	readTimeout time.Duration
 	// node is the UID of the node this client's daemon runs on, when the
 	// client was chosen for one: a read warrant is bound to it.
@@ -94,51 +93,39 @@ func (client *OutputControlClient) OnNode(node executioncontrol.NodeUID) *Output
 
 // NewOutputControlClient builds the client for one node's daemon.
 func NewOutputControlClient(endpoint string, httpClient *http.Client,
-	minter *executioncontrol.CapabilityMinter) *OutputControlClient {
-	return &OutputControlClient{endpoint: endpoint, http: httpClient, minter: minter, readTimeout: output.DefaultOperationTimeout}
+	signer *hangar.Signer) *OutputControlClient {
+	return &OutputControlClient{endpoint: endpoint, http: httpClient, signer: signer, readTimeout: output.DefaultOperationTimeout}
 }
 
 var _ OutputControl = (*OutputControlClient)(nil)
 
-// MintGrant issues the capture extension's own attenuated capability for one
-// operation on one execution.
+// MintGrant mints a control warrant under one purpose for one operation on
+// one execution.
 //
 // It is exported because the capture control init container carries one, and
-// the pod builder is where it is placed. It is NEVER the base capability: the
-// base capability stops and observes an execution, and a capture holding it
-// could stop the process it is capturing from.
-func (client *OutputControlClient) MintGrant(facet executioncontrol.Facet, operation string,
+// the pod builder is where it is placed. A capture carries a warrant under
+// the output-capture purpose, NEVER the execution-control one: that purpose
+// stops and observes an execution, and a capture holding it could stop the
+// process it is capturing from. The nonce and the window are the signer's.
+func (client *OutputControlClient) MintGrant(purpose hangar.Purpose, operation string,
 	id executioncontrol.Identity) (executioncontrol.ControlCapability, error) {
-	nonce, err := freshNonce()
+	token, err := client.signer.Sign(executioncontrol.ControlWarrant(purpose, operation, id))
 	if err != nil {
 		return "", err
 	}
 
-	return client.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:     facet,
-		Operation: operation,
-		Identity:  id,
-	}, nonce)
+	return executioncontrol.ControlCapability(token), nil
 }
 
-func freshNonce() (string, error) {
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("minting a control capability nonce: %w", err)
-	}
-
-	return hex.EncodeToString(raw), nil
-}
-
-// call is every request: mint a capability for THIS route's facet and
+// call is every request: mint a warrant for THIS route's purpose and
 // operation, present it, decode or fail.
 //
-// A capability is minted per call and never reused. The daemon refuses a
-// replayed nonce inside its TTL, so a client that cached one would work until
-// the second call and then fail in a way that looked like a daemon fault.
-func (client *OutputControlClient) call(ctx context.Context, facet executioncontrol.Facet,
+// A warrant is minted per call and never reused. The daemon refuses a
+// replayed nonce inside its window, so a client that cached one would work
+// until the second call and then fail in a way that looked like a daemon fault.
+func (client *OutputControlClient) call(ctx context.Context, purpose hangar.Purpose,
 	operation, path string, id executioncontrol.Identity, body any, into any) error {
-	capability, err := client.MintGrant(facet, operation, id)
+	warrant, err := client.MintGrant(purpose, operation, id)
 	if err != nil {
 		return err
 	}
@@ -153,7 +140,7 @@ func (client *OutputControlClient) call(ctx context.Context, facet executioncont
 		return fmt.Errorf("building a %s request: %w", operation, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(CapabilityHeaderName, string(capability))
+	request.Header.Set(CapabilityHeaderName, string(warrant))
 
 	response, err := client.http.Do(request)
 	if err != nil {
@@ -187,7 +174,7 @@ func (client *OutputControlClient) call(ctx context.Context, facet executioncont
 // OutputControlRefusal is a typed refusal from the daemon.
 //
 // It keeps the status because the difference between 409 (this execution is
-// past the point you are asking about) and 403 (your capability does not
+// past the point you are asking about) and 403 (your warrant does not
 // authorize this) and 503 (the daemon cannot read its own ledger) is the
 // difference between failing the step, retrying and holding everything -- and a
 // caller that saw only "an error" would treat all three the same.
@@ -242,7 +229,7 @@ func (refusal *OutputControlRefusal) Unwrap() error {
 func (client *OutputControlClient) Admit(ctx context.Context,
 	envelope executioncontrol.Envelope) (executioncontrol.ClassifyResult, error) {
 	var result executioncontrol.ClassifyResult
-	err := client.call(ctx, executioncontrol.BaseFacet, "admit", "/execution/v1/admit",
+	err := client.call(ctx, hangar.PurposeControlBase, "admit", "/execution/v1/admit",
 		envelope.Identity, envelope, &result)
 
 	return result, err
@@ -251,7 +238,7 @@ func (client *OutputControlClient) Admit(ctx context.Context,
 func (client *OutputControlClient) Classify(ctx context.Context,
 	id executioncontrol.Identity) (executioncontrol.ClassifyResult, error) {
 	var result executioncontrol.ClassifyResult
-	err := client.call(ctx, executioncontrol.BaseFacet, "classify", "/execution/v1/classify", id,
+	err := client.call(ctx, hangar.PurposeControlBase, "classify", "/execution/v1/classify", id,
 		executioncontrol.ClassifyRequest{
 			ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id,
 		}, &result)
@@ -263,7 +250,7 @@ func (client *OutputControlClient) RecordStart(ctx context.Context, id execution
 	pod executioncontrol.PodUID,
 	process executioncontrol.ProcessIdentity) (executioncontrol.Acknowledgement, error) {
 	var ack executioncontrol.Acknowledgement
-	err := client.call(ctx, executioncontrol.BaseFacet, "start", "/execution/v1/start", id,
+	err := client.call(ctx, hangar.PurposeControlBase, "start", "/execution/v1/start", id,
 		map[string]any{
 			"execution":        id,
 			"pod_uid":          pod,
@@ -278,7 +265,7 @@ func (client *OutputControlClient) RecordStart(ctx context.Context, id execution
 func (client *OutputControlClient) InspectStart(ctx context.Context,
 	id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
 	var ack executioncontrol.Acknowledgement
-	err := client.call(ctx, executioncontrol.BaseFacet, "inspect-start", "/execution/v1/start/inspect", id,
+	err := client.call(ctx, hangar.PurposeControlBase, "inspect-start", "/execution/v1/start/inspect", id,
 		executioncontrol.ClassifyRequest{
 			ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id,
 		}, &ack)
@@ -290,7 +277,7 @@ func (client *OutputControlClient) RecordOutcome(ctx context.Context, id executi
 	kind executioncontrol.AcknowledgementKind,
 	outcome executioncontrol.ExitOutcome) (executioncontrol.Acknowledgement, error) {
 	var ack executioncontrol.Acknowledgement
-	err := client.call(ctx, executioncontrol.BaseFacet, "outcome", "/execution/v1/outcome", id,
+	err := client.call(ctx, hangar.PurposeControlBase, "outcome", "/execution/v1/outcome", id,
 		map[string]any{"execution": id, "kind": kind, "outcome": outcome}, &ack)
 
 	return ack, err
@@ -299,7 +286,7 @@ func (client *OutputControlClient) RecordOutcome(ctx context.Context, id executi
 func (client *OutputControlClient) Observe(ctx context.Context, id executioncontrol.Identity,
 	wait time.Duration) (executioncontrol.ObserveFinishOrStopResult, error) {
 	var result executioncontrol.ObserveFinishOrStopResult
-	err := client.call(ctx, executioncontrol.BaseFacet, "observe", "/execution/v1/observe", id,
+	err := client.call(ctx, hangar.PurposeControlBase, "observe", "/execution/v1/observe", id,
 		executioncontrol.ObserveFinishOrStopRequest{
 			ProtocolVersion:  executioncontrol.ProtocolVersion,
 			Identity:         id,
@@ -312,15 +299,15 @@ func (client *OutputControlClient) Observe(ctx context.Context, id executioncont
 func (client *OutputControlClient) RequestStop(ctx context.Context,
 	id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
 	var result executioncontrol.RequestSourcePreservingStopResult
-	capability, err := client.MintGrant(executioncontrol.BaseFacet, "stop", id)
+	warrant, err := client.MintGrant(hangar.PurposeControlBase, "stop", id)
 	if err != nil {
 		return result, err
 	}
-	err = client.call(ctx, executioncontrol.BaseFacet, "stop", "/execution/v1/stop", id,
+	err = client.call(ctx, hangar.PurposeControlBase, "stop", "/execution/v1/stop", id,
 		executioncontrol.RequestSourcePreservingStopRequest{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        id,
-			Capability:      capability,
+			Capability:      warrant,
 		}, &result)
 
 	return result, err
@@ -329,7 +316,7 @@ func (client *OutputControlClient) RequestStop(ctx context.Context,
 func (client *OutputControlClient) CleanupEligible(ctx context.Context,
 	id executioncontrol.Identity) (executioncontrol.DestructiveCleanupEligibleResult, error) {
 	var result executioncontrol.DestructiveCleanupEligibleResult
-	err := client.call(ctx, executioncontrol.BaseFacet, "cleanup-eligible",
+	err := client.call(ctx, hangar.PurposeControlBase, "cleanup-eligible",
 		"/execution/v1/cleanup-eligible", id,
 		executioncontrol.DestructiveCleanupEligibleRequest{
 			ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id,
@@ -345,13 +332,13 @@ func (client *OutputControlClient) CleanupEligible(ctx context.Context,
 type nodeOutputControls struct {
 	config   Config
 	resolver *NodeIPResolver
-	minter   *executioncontrol.CapabilityMinter
+	signer   *hangar.Signer
 }
 
 // NewOutputControls builds the resolver a Worker is given.
 func NewOutputControls(config Config, resolver *NodeIPResolver,
-	minter *executioncontrol.CapabilityMinter) OutputControlResolver {
-	return &nodeOutputControls{config: config, resolver: resolver, minter: minter}
+	signer *hangar.Signer) OutputControlResolver {
+	return &nodeOutputControls{config: config, resolver: resolver, signer: signer}
 }
 
 func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string) (OutputControl, error) {
@@ -376,7 +363,7 @@ func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName 
 	client := NewOutputControlClient(
 		fmt.Sprintf("%s://%s:%d", outputPlaneURLScheme(), nodeIP, port),
 		newOutputPlaneHTTPClient(controls.config, 30*time.Second),
-		controls.minter)
+		controls.signer)
 	client.readTimeout = controls.config.OutputOperationTimeout
 	return client, nil
 }
@@ -389,7 +376,7 @@ func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName 
 func (client *OutputControlClient) Seal(ctx context.Context,
 	request output.CaptureSealRequest) (output.CaptureSealResult, error) {
 	var result output.CaptureSealResult
-	err := client.call(ctx, output.CaptureFacet, "seal", "/capture/v1/seal",
+	err := client.call(ctx, hangar.PurposeControlCapture, "seal", "/capture/v1/seal",
 		request.Execution, request, &result)
 
 	return result, err
@@ -398,7 +385,7 @@ func (client *OutputControlClient) Seal(ctx context.Context,
 func (client *OutputControlClient) Publish(ctx context.Context,
 	request output.CapturePublishRequest) (output.CapturePublishResult, error) {
 	var result output.CapturePublishResult
-	err := client.call(ctx, output.CaptureFacet, "publish", "/capture/v1/publish",
+	err := client.call(ctx, hangar.PurposeControlCapture, "publish", "/capture/v1/publish",
 		request.Execution, request, &result)
 
 	return result, err
@@ -407,7 +394,7 @@ func (client *OutputControlClient) Publish(ctx context.Context,
 func (client *OutputControlClient) Release(ctx context.Context,
 	request output.CaptureReleaseRequest) (output.CaptureReleaseAcknowledgement, error) {
 	var ack output.CaptureReleaseAcknowledgement
-	err := client.call(ctx, output.CaptureFacet, "release", "/capture/v1/release",
+	err := client.call(ctx, hangar.PurposeControlCapture, "release", "/capture/v1/release",
 		request.Execution, request, &ack)
 
 	return ack, err
@@ -416,7 +403,7 @@ func (client *OutputControlClient) Release(ctx context.Context,
 func (client *OutputControlClient) Stat(ctx context.Context,
 	request output.CaptureStatRequest) (output.CapturePublishResult, error) {
 	var result output.CapturePublishResult
-	err := client.call(ctx, output.CaptureFacet, "stat", "/capture/v1/stat",
+	err := client.call(ctx, hangar.PurposeControlCapture, "stat", "/capture/v1/stat",
 		request.Execution, request, &result)
 
 	return result, err

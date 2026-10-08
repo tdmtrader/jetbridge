@@ -88,8 +88,7 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 			"a jetbridge worker with an artifact store and the output plane on",
 			[]string{"jetbridge-db", "real-cluster"},
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (WorkerReady, error) {
-				signer, err := hangar.NewWarrantSigner(brineReadWarrantKey, hangar.MaxWarrantTTL,
-					time.Now)
+				signer, err := hangar.NewSigner(brineHangarKey, hangar.MaxWarrantTTL, time.Now)
 				if err != nil {
 					return WorkerReady{}, err
 				}
@@ -103,7 +102,7 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 					// that has one -- and required by the strict-input regression
 					// twin, which is about a step that takes both.
 					cfg.HangarEnabled = true
-					cfg.HangarWarrantSigner = signer
+					cfg.HangarSigner = signer
 				})
 			},
 		),

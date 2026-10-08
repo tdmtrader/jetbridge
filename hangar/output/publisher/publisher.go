@@ -318,9 +318,9 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 
 // OpenExactObject reads the bytes, under a verified read warrant.
 //
-// The warrant is the read's authority: it binds one lease's tree ref and window
-// and was verified by the caller (output.ReadWarrantVerifier.Verify). What is
-// checked again here is that it is a whole set of claims and that it names the
+// The warrant is the read's authority: it binds one claim's tree ref and
+// window and was verified by the caller (hangar.Verifier.Verify). What is
+// checked again here is that it is a whole read warrant and that it names the
 // ref being opened, so a warrant for one object never opens another.
 // StatCurrentObject reports the live generation at the key a digest derives,
 // classified exactly as a create conflict is: an object this plane did not
@@ -345,9 +345,13 @@ func (publisher *Publisher) StatCurrentObject(ctx context.Context, digest hangar
 	return publisher.classify(attrs, output.ObjectMarker{Digest: digest}, sizeUnknown)
 }
 
-func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, warrant output.ReadWarrantClaims) (io.ReadCloser, output.PublishedObject, error) {
+func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, warrant hangar.Warrant) (io.ReadCloser, output.PublishedObject, error) {
 	if err := warrant.Validate(); err != nil {
 		return nil, output.PublishedObject{}, err
+	}
+	if warrant.Purpose != hangar.PurposeReadResult {
+		return nil, output.PublishedObject{}, fmt.Errorf("%w: a %s warrant opens no published object",
+			output.ErrUnauthorized, warrant.Purpose)
 	}
 	if warrant.Ref != ref {
 		return nil, output.PublishedObject{}, fmt.Errorf("%w: the warrant is for %s/%s/%d and the "+

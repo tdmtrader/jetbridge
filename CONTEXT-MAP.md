@@ -66,7 +66,7 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
   published object in Hangar. Context makes it clear; do not coin a third
   word.
 - **Grant** is an MCP authorization in the agentic context. Hangar's
-  capability is a warrant, never a grant. JetBridge's **step pod grant**
+  authorization is a warrant, never a grant. JetBridge's **step pod grant**
   maps a build's owner to a step pod identity; always qualify it.
 - **Materialization** is a template resolving into a payload in core and
   the daemon capturing a tree in Hangar. Qualify it when both are near.
@@ -75,8 +75,6 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
 - **Principal** is a caller's verified claims in core and a storage
   identity in Hangar.
 - **Operation** is an exposed application action in the agentic context.
-- **Facet** is a capability authorization domain in Hangar's execution
-  control, and nothing else.
 - **Run** is a pipeline run in core. A build is never called a run. The
   prototype `run:` step is a step, and is named as such.
 - **Transition** is a brine step's state change. A capture row moves by

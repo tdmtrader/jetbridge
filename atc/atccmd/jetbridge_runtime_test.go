@@ -193,13 +193,13 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 			t.Fatalf("parse flags: %v", err)
 		}
 	}
-	// Startup validation builds the warrant signer before anything is
+	// Startup validation builds the Hangar signer before anything is
 	// assembled; stand in for it.
-	signer, err := hangar.NewWarrantSigner(bytes.Repeat([]byte{0x57}, 32), 15*time.Minute, nil)
+	signer, err := hangar.NewSigner(bytes.Repeat([]byte{0x57}, 32), 15*time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.k8sHangarWarrantSigner = signer
+	cmd.hangarSigner = signer
 
 	rt, err := cmd.jetbridgeConfig()
 	if err != nil {
@@ -241,7 +241,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		OutputPlaneEnabled:                 true,
 		OutputOperationTimeout:             2 * time.Minute,
 		HangarEnabled:                      true,
-		HangarWarrantSigner:                signer,
+		HangarSigner:                       signer,
 		StepPodGrants: []jetbridge.StepPodGrant{
 			{Name: "brine-live", Owner: jetbridge.StepPodOwner{Team: "main", OneOff: true}, ServiceAccount: "concourse-brine-live"},
 			{Name: "release", Owner: jetbridge.StepPodOwner{Team: "main", Pipeline: "jetbridge", Job: "release"}, ServiceAccount: "jetbridge-releaser"},

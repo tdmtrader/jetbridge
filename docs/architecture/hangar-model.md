@@ -172,9 +172,10 @@ Remove the plane when every residue count is zero at once.
 
 ## Trust
 
-Step pods are untrusted. Every pod-originated daemon call carries a warrant;
-warrant keys never enter a task pod; no callable accepts a bare string or a
-caller-chosen scope (`hangar/output/architecture_test.go`). The node daemon
+Step pods are untrusted. Every pod-originated daemon call carries a warrant,
+and every web-originated control call a control warrant; all are signed with
+the one Hangar key, which never enters a task pod; a route admits only its
+own purpose; no callable accepts a bare string or a caller-chosen scope (`hangar/output/architecture_test.go`). The node daemon
 is inside the trusted computing base, reached over mTLS from the web only:
 an acknowledgement is the node's answer on that channel, not a signed
 statement, and the node holds no control key. The daemon holds no database

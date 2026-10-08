@@ -163,7 +163,7 @@ jobs:
 # the task.
 #
 # It needs no Hangar store and no deployed artifact daemon, so there is no
-# artifactDaemon.hangar.* chart value to set here, no capability-key Secret to
+# artifactDaemon.hangar.* chart value to set here, no Hangar key Secret to
 # mint and nothing to point at GCS. The contract plants its own daemon stand-in
 # -- a hostNetwork BusyBox Pod that writes the strict tree onto the node and
 # answers POST /hangar/v1/materializations on 31780 with an exact empty 204 --

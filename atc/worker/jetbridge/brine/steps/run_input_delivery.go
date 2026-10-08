@@ -206,7 +206,7 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 			}
 		}
 	}
-	verifier, err := output.NewReadWarrantVerifier(brineReadWarrantKey, output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	verifier, err := hangar.NewVerifier(brineHangarKey, hangar.MaxWarrantTTL, func() time.Time { return time.Now().UTC() })
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,15 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 		if request.Ref != in.Source.Candidate.Record.Ref || request.Destination.Handle != handle || request.Destination.Volume != mount.Name {
 			return nil, fmt.Errorf("read warrant is not bound to the actual consumer volume")
 		}
-		claims, err := verifier.Verify(request.Warrant, request.Ref, request.Destination)
+		// The daemon's own check: the read-result purpose, this tree, this
+		// destination, this node.
+		warrant, err := verifier.Verify(request.Warrant, hangar.Warrant{
+			Purpose: hangar.PurposeReadResult,
+			Ref:     request.Ref,
+			Handle:  request.Destination.Handle,
+			Volume:  request.Destination.Volume,
+			NodeUID: in.Source.Start.Daemon.NodeUID,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -288,13 +296,13 @@ func verifyRunInputPod(ctx context.Context, in RunInputAdmission, handle string,
 		// claim still protects the generation here. observeRunTaskStart
 		// releases it.
 		var live bool
-		if err := in.Source.Start.DB.Conn.QueryRowContext(ctx, `SELECT released_at IS NULL AND expires_at > now() FROM hangar_claims WHERE claim_id=$1 AND expires_at IS NOT NULL`, string(claims.ClaimID)).Scan(&live); err != nil {
-			return nil, fmt.Errorf("the materialized input's reader's claim %s: %v", claims.ClaimID, err)
+		if err := in.Source.Start.DB.Conn.QueryRowContext(ctx, `SELECT released_at IS NULL AND expires_at > now() FROM hangar_claims WHERE claim_id=$1 AND expires_at IS NOT NULL`, warrant.ClaimID).Scan(&live); err != nil {
+			return nil, fmt.Errorf("the materialized input's reader's claim %s: %v", warrant.ClaimID, err)
 		}
 		if !live {
-			return nil, fmt.Errorf("the materialized input's reader's claim %s is not live before the task starts", claims.ClaimID)
+			return nil, fmt.Errorf("the materialized input's reader's claim %s is not live before the task starts", warrant.ClaimID)
 		}
-		readers = append(readers, claims.ClaimID)
+		readers = append(readers, output.ClaimID(warrant.ClaimID))
 	}
 	if count == 0 || count != len(task.RunInputs) {
 		return nil, fmt.Errorf("not every task input was initialized")

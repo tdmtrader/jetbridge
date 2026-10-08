@@ -63,7 +63,7 @@ var strictInputRegressionRef = hangar.TreeRef{
 func strictInputConfig(t *testing.T, outputPlane bool) Config {
 	t.Helper()
 
-	signer, err := hangar.NewWarrantSigner(
+	signer, err := hangar.NewSigner(
 		[]byte("0123456789abcdef0123456789abcdef"), hangar.MaxWarrantTTL, time.Now)
 	if err != nil {
 		t.Fatalf("build the strict-input warrant signer: %v", err)
@@ -71,7 +71,7 @@ func strictInputConfig(t *testing.T, outputPlane bool) Config {
 
 	cfg := capturePodConfig(outputPlane)
 	cfg.HangarEnabled = true
-	cfg.HangarWarrantSigner = signer
+	cfg.HangarSigner = signer
 
 	return cfg
 }

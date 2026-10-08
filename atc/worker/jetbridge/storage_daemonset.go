@@ -205,8 +205,8 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			if !b.config.HangarEnabled {
 				return nil, errors.New("Hangar tree input requires Hangar to be enabled")
 			}
-			if b.config.HangarWarrantSigner == nil {
-				return nil, errors.New("Hangar tree input requires a materialization warrant signer")
+			if b.config.HangarSigner == nil {
+				return nil, errors.New("Hangar tree input requires the Hangar signer")
 			}
 			if err := input.HangarTree.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid Hangar tree input: %w", err)
@@ -219,9 +219,11 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			if actualHostPath := hostPathForVolume(podVolumes, volumeName); actualHostPath != expectedHostPath {
 				return nil, fmt.Errorf("Hangar tree input %q volume does not resolve to its exact node-local destination", input.DestinationPath)
 			}
-			warrant, err := b.config.HangarWarrantSigner.Sign(*input.HangarTree, handle, volumeName)
+			warrant, err := b.config.HangarSigner.Sign(hangar.Warrant{
+				Purpose: hangar.PurposeMaterializeInput, Ref: *input.HangarTree, Handle: handle, Volume: volumeName,
+			})
 			if err != nil {
-				return nil, fmt.Errorf("sign Hangar tree input warrant: %w", err)
+				return nil, fmt.Errorf("sign the materialization warrant: %w", err)
 			}
 			hangarItems = append(hangarItems, artifactwire.MaterializationItem{
 				Ref: wireTreeRef(*input.HangarTree), Handle: handle, Volume: volumeName, Warrant: "Bearer " + warrant,
@@ -606,7 +608,7 @@ esac
 `, shellQuote(handle), b.wire.ShellPrelude(), artifactwire.CaptureHeldStepsPrefix, shellQuote(cleanupPath))
 }
 
-// BuildAffinity places the pod on a node that can serve every facet it needs.
+// BuildAffinity places the pod on a node that can serve every tier it needs.
 //
 // A capture-selected execution needs TWO ready labels and not one. The base
 // label says this node's daemon serves the exact-execution protocol; the output

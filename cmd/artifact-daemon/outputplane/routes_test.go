@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,9 +23,9 @@ import (
 
 // The route table, driven over real HTTP against the real ledgers.
 //
-// What is under test is the boundary rather than the ledgers: which facet a
-// route admits, what a replayed capability does, and whether a base request
-// can be made to mention an output.
+// What is under test is the boundary rather than the ledgers: which warrant
+// purpose a route admits, what a replayed warrant does, and whether a base
+// request can be made to mention an output.
 
 type routeFixture struct {
 	*captureFixture
@@ -35,8 +34,7 @@ type routeFixture struct {
 	api    *Server
 	client *http.Client
 	daemon *Daemon
-	minter *executioncontrol.CapabilityMinter
-	nonce  int
+	signer *hangar.Signer
 
 	// The store this daemon was pointed at, and the configuration it was built
 	// from. The redaction scan needs both: it has to know the bucket name and
@@ -46,9 +44,9 @@ type routeFixture struct {
 	bucket string
 	config Config
 
-	// minted records every capability this fixture handed the daemon, so the
+	// minted records every warrant this fixture handed the daemon, so the
 	// scan can assert none of them came back.
-	minted []executioncontrol.ControlCapability
+	minted []string
 	// emitted records every response the daemon produced, for the same reason.
 	emitted []string
 }
@@ -57,15 +55,15 @@ func newRoutes(t *testing.T) *routeFixture {
 	t.Helper()
 
 	capture := newCaptureLedger(t)
-	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret(), time.Minute, capture.clock)
+	signer, err := hangar.NewSigner(hangarKey(), time.Minute, capture.clock)
 	if err != nil {
-		t.Fatalf("building the minter: %v", err)
+		t.Fatalf("building the signer: %v", err)
 	}
 
 	fixture := &routeFixture{
 		captureFixture: capture,
 		daemon:         capture.daemon,
-		minter:         minter,
+		signer:         signer,
 		store:          capture.objects,
 		bucket:         capture.bucket,
 		config:         capture.config,
@@ -75,43 +73,52 @@ func newRoutes(t *testing.T) *routeFixture {
 	return fixture
 }
 
-// capabilitySecret is the one key the minter and every verifier in these tests
-// share.
-func capabilitySecret() []byte {
-	return bytes.Repeat([]byte{7}, executioncontrol.CapabilityKeyBytes)
+// hangarKey is the one Hangar key the signer and every verifier in these
+// tests share.
+func hangarKey() []byte {
+	return bytes.Repeat([]byte{7}, hangar.WarrantKeyBytes)
+}
+
+// verifying builds the plane's verifier and spent set the way Open does: one
+// verifier over the Hangar key, and the spent control nonces in the control
+// directory rather than in one process's memory.
+func (fixture *routeFixture) verifying(t *testing.T, store *controlStore) (*hangar.Verifier, *spentWarrants) {
+	t.Helper()
+
+	warrants, err := hangar.NewVerifier(hangarKey(), hangar.MaxWarrantTTL, fixture.clock)
+	if err != nil {
+		t.Fatalf("building the verifier: %v", err)
+	}
+	spent, err := openSpentWarrants(store, fixture.clock)
+	if err != nil {
+		t.Fatalf("opening the spent-warrant record: %v", err)
+	}
+
+	return warrants, spent
 }
 
 // serve builds a verifier the way the daemon builds one and puts a server in
 // front of it.
 //
 // It is called again by the restart row, which is the whole reason it is a
-// method: what a restart must not lose is the set of capabilities already
-// spent, and the only way to see that is to build a second verifier over the
-// same control directory.
+// method: what a restart must not lose is the set of warrants already spent,
+// and the only way to see that is to build a second spent set over the same
+// control directory.
 func (fixture *routeFixture) serve(t *testing.T) {
 	t.Helper()
 
 	if fixture.server != nil {
 		fixture.server.Close()
 	}
-	verifier, err := executioncontrol.NewCapabilityVerifier(
-		capabilitySecret(), time.Minute, fixture.clock)
-	if err != nil {
-		t.Fatalf("building the verifier: %v", err)
-	}
-	// The same wiring main.go does: the spent nonces belong in the control
-	// directory, not in one process's memory.
-	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.captureFixture.store}); err != nil {
-		t.Fatalf("opening the spent-capability record: %v", err)
-	}
-	fixture.api = NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
+	warrants, spent := fixture.verifying(t, fixture.captureFixture.store)
+	fixture.api = NewServer(fixture.daemon, fixture.ledger, fixture.capture, warrants, spent)
 	fixture.server = httptest.NewServer(fixture.api.Handler())
 	t.Cleanup(fixture.server.Close)
 }
 
-// call presents a capability minted for exactly the facet and operation given,
-// which is what makes a cross-facet row a real cross-facet row: the token is
-// valid, it is simply not for this route.
+// call presents a warrant minted for exactly the purpose and operation given,
+// which is what makes a cross-purpose row a real cross-purpose row: the
+// warrant is valid, it is simply not for this route.
 // identifiedBy is the body a base route takes: the frozen types embed Identity,
 // so the execution is flat rather than nested.
 // sealOverHTTP asks the seal route until it stops answering 202.
@@ -120,7 +127,7 @@ func (fixture *routeFixture) sealOverHTTP(t *testing.T) (int, []byte) {
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+		status, body := fixture.call(t, "/capture/v1/seal", hangar.PurposeControlCapture, "seal", sealRequest())
 		if status != http.StatusAccepted || time.Now().After(deadline) {
 			return status, body
 		}
@@ -134,7 +141,7 @@ func (fixture *routeFixture) publishOverHTTP(t *testing.T, body any) (int, []byt
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		status, answer := fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", body)
+		status, answer := fixture.call(t, "/capture/v1/publish", hangar.PurposeControlCapture, "publish", body)
 		if status != http.StatusAccepted || time.Now().After(deadline) {
 			return status, answer
 		}
@@ -146,39 +153,44 @@ func identifiedBy(id executioncontrol.Identity) map[string]any {
 	return map[string]any{"execution_id": id.ExecutionID, "fence": id.Fence}
 }
 
-func (fixture *routeFixture) call(t *testing.T, path string, facet executioncontrol.Facet,
+func (fixture *routeFixture) call(t *testing.T, path string, purpose hangar.Purpose,
 	operation string, body any) (int, []byte) {
 	t.Helper()
 
-	return fixture.callAs(t, identity(1), path, facet, operation, body)
+	return fixture.callAs(t, identity(1), path, purpose, operation, body)
 }
 
-// callAs is call for a capability minted for an execution the test names.
+// callAs is call for a warrant minted for an execution the test names.
 //
 // The default is the fixture's one execution; a cross-execution row needs a
-// token that is valid for a DIFFERENT one, because the finding it is about is
-// a route that verifies the capability against the identity in the body and
+// warrant that is valid for a DIFFERENT one, because the finding it is about
+// is a route that verifies the warrant against the identity in the body and
 // then acts on a handoff that identity has nothing to do with.
 func (fixture *routeFixture) callAs(t *testing.T, as executioncontrol.Identity, path string,
-	facet executioncontrol.Facet, operation string, body any) (int, []byte) {
+	purpose hangar.Purpose, operation string, body any) (int, []byte) {
 	t.Helper()
 
-	fixture.nonce++
-	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:     facet,
-		Operation: operation,
-		Identity:  as,
-	}, "nonce-"+strings.ReplaceAll(path, "/", "-")+"-"+operation+"-"+strconv.Itoa(fixture.nonce))
+	token := fixture.mint(t, purpose, operation, as)
+
+	return fixture.callWith(t, path, token, body)
+}
+
+// mint signs one control warrant and remembers it for the redaction scan.
+func (fixture *routeFixture) mint(t *testing.T, purpose hangar.Purpose, operation string,
+	as executioncontrol.Identity) string {
+	t.Helper()
+
+	token, err := fixture.signer.Sign(executioncontrol.ControlWarrant(purpose, operation, as))
 	if err != nil {
 		t.Fatalf("minting: %v", err)
 	}
 	fixture.minted = append(fixture.minted, token)
 
-	return fixture.callWith(t, path, token, body)
+	return token
 }
 
 func (fixture *routeFixture) callWith(t *testing.T, path string,
-	token executioncontrol.ControlCapability, body any) (int, []byte) {
+	token string, body any) (int, []byte) {
 	t.Helper()
 
 	encoded, err := json.Marshal(body)
@@ -189,7 +201,7 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 	if err != nil {
 		t.Fatalf("building the request: %v", err)
 	}
-	request.Header.Set(CapabilityHeader, string(token))
+	request.Header.Set(WarrantHeader, token)
 
 	client := http.DefaultClient
 	if fixture.client != nil {
@@ -211,9 +223,9 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 
 // What the route table has that no scenario can reach.
 //
-// `A base control capability cannot hold, seal or publish` pins the facet rule
-// over the wire, at hold, seal and publish, with the same token succeeding at
-// its own operation first. This used to repeat all three of those rows and the
+// `A base control capability cannot hold, seal or publish` pins the purpose
+// rule over the wire, at hold, seal and publish, with the same warrant
+// succeeding at its own operation first. This used to repeat all three of those rows and the
 // checkpoint's clause says no Go test here duplicates an answer a scenario
 // already pins, so what is left is the three things the scenario cannot say:
 //
@@ -221,24 +233,24 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 //     so an Envelope carries execution_id and fence at the top level while the
 //     extension's types nest them under `execution`. The middleware reads both,
 //     and nothing else in the tree exercises the flat one.
-//   - the MIRROR: a capture capability at a base route. The fixture speaks the
-//     capture facet; it has no phrase for presenting one at /execution/v1.
-//   - every capture route, because a facet check that was data per route
+//   - the MIRROR: an output-capture warrant at a base route. The fixture speaks
+//     the capture extension; it has no phrase for presenting one at /execution/v1.
+//   - every capture route, because a purpose check that was data per route
 //     could be true of three routes and not of five.
-func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
+func TestTheRouteTableReadsBothIdentityShapesAndNoPurposeCrosses(t *testing.T) {
 	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
-	// The control: the base capability at its own operation.
+	// The control: the execution-control warrant at its own operation.
 	if status, body := fixture.call(t, "/execution/v1/classify",
-		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
-		t.Fatalf("the base capability was refused at its own operation: %d %s", status, body)
+		hangar.PurposeControlBase, "classify", identifiedBy(identity(1))); status != http.StatusOK {
+		t.Fatalf("the execution-control warrant was refused at its own operation: %d %s", status, body)
 	}
 
 	// The flat identity body, over HTTP.
 	flattened := newRoutes(t)
 	if status, body := flattened.call(t, "/execution/v1/admit",
-		executioncontrol.BaseFacet, "admit", executioncontrol.Envelope{
+		hangar.PurposeControlBase, "admit", executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        identity(1),
 			NodeUID:         testNode,
@@ -255,36 +267,29 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 		"/capture/v1/release": "release",
 		"/capture/v1/stat":    "stat",
 	} {
-		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
+		status, body := fixture.call(t, path, hangar.PurposeControlBase, operation,
 			identifiedBy(identity(1)))
 		if status != http.StatusForbidden {
-			t.Errorf("a base control capability was admitted at %s: %d %s", path, status, body)
+			t.Errorf("an execution-control warrant was admitted at %s: %d %s", path, status, body)
 		}
-		if !strings.Contains(string(body), string(output.CaptureFacet)) {
-			t.Errorf("the refusal at %s does not name the facet it wanted: %s", path, body)
+		if !strings.Contains(string(body), string(hangar.PurposeControlCapture)+" purpose") {
+			t.Errorf("the refusal at %s does not name the purpose it wanted: %s", path, body)
 		}
 	}
 
-	// The mirror: a capture capability at a base route.
+	// The mirror: an output-capture warrant at a base route.
 	if status, body := fixture.call(t, "/execution/v1/classify",
-		output.CaptureFacet, "classify", identifiedBy(identity(1))); status != http.StatusForbidden {
-		t.Errorf("a capture capability was admitted at a base route: %d %s", status, body)
+		hangar.PurposeControlCapture, "classify", identifiedBy(identity(1))); status != http.StatusForbidden {
+		t.Errorf("an output-capture warrant was admitted at a base route: %d %s", status, body)
 	}
 }
 
-// A capability authorizes one operation.
-func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
+// A warrant authorizes one operation.
+func TestAReplayedWarrantIsRefusedAndAFreshOneIsNot(t *testing.T) {
 	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
-	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:     executioncontrol.BaseFacet,
-		Operation: "classify",
-		Identity:  identity(1),
-	}, "nonce-replayed")
-	if err != nil {
-		t.Fatalf("minting: %v", err)
-	}
+	token := fixture.mint(t, hangar.PurposeControlBase, "classify", identity(1))
 
 	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
 		identifiedBy(identity(1))); status != http.StatusOK {
@@ -292,14 +297,14 @@ func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
 	}
 	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
 		identifiedBy(identity(1))); status != http.StatusForbidden {
-		t.Errorf("a replayed capability was admitted: %d %s", status, body)
+		t.Errorf("a replayed warrant was admitted: %d %s", status, body)
 	}
 
 	// A fresh one still works, so the refusal is about this nonce and not about
 	// the daemon having given up.
 	if status, body := fixture.call(t, "/execution/v1/classify",
-		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
-		t.Errorf("a fresh capability was refused after a replay: %d %s", status, body)
+		hangar.PurposeControlBase, "classify", identifiedBy(identity(1))); status != http.StatusOK {
+		t.Errorf("a fresh warrant was refused after a replay: %d %s", status, body)
 	}
 }
 
@@ -324,7 +329,7 @@ func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 		"/execution/v1/observe":          "observe",
 		"/execution/v1/cleanup-eligible": "cleanup-eligible",
 	} {
-		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
+		status, body := fixture.call(t, path, hangar.PurposeControlBase, operation,
 			identifiedBy(identity(1)))
 		if status != http.StatusOK {
 			t.Fatalf("%s answered %d: %s", path, status, body)
@@ -345,7 +350,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest())
+	status, body := fixture.call(t, "/capture/v1/hold", hangar.PurposeControlCapture, "hold", holdRequest())
 	if status != http.StatusOK || !strings.Contains(string(body), `"kind":"hold_acknowledged"`) {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
@@ -358,7 +363,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 		Digest: hangar.Digest("sha256:" + string(make64('b'))),
 	}
 	if status, body := fixture.call(t, "/capture/v1/publish",
-		output.CaptureFacet, "publish", publication); status != http.StatusPreconditionFailed {
+		hangar.PurposeControlCapture, "publish", publication); status != http.StatusPreconditionFailed {
 		t.Errorf("an unsealed step directory was published: %d %s", status, body)
 	}
 
@@ -389,13 +394,13 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 		t.Errorf("the publish answered %+v", result)
 	}
 
-	status, body = fixture.call(t, "/capture/v1/stat", output.CaptureFacet, "stat",
+	status, body = fixture.call(t, "/capture/v1/stat", hangar.PurposeControlCapture, "stat",
 		output.CaptureStatRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Digest: sealed.Digest})
 	if status != http.StatusOK || !strings.Contains(string(body), fmt.Sprint(result.Ref.Generation)) {
 		t.Errorf("stat answered %d %s", status, body)
 	}
 
-	status, body = fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release",
+	status, body = fixture.call(t, "/capture/v1/release", hangar.PurposeControlCapture, "release",
 		output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput})
 	if status != http.StatusOK || !strings.Contains(string(body), output.ReleaseAcknowledged) {
 		t.Errorf("release answered %d %s", status, body)
@@ -436,25 +441,25 @@ func TestTheHandshakeNamesTheProtocolAndLedger(t *testing.T) {
 	}
 }
 
-// A capability minted for one execution must not act on another's handoff.
+// A warrant minted for one execution must not act on another's handoff.
 //
-// The middleware reads the identity out of the body and checks the capability
+// The middleware reads the identity out of the body and checks the warrant
 // against it, and five capture routes then act on facts derived from that same
 // identity. Three did not: inspect-hold and inspect-seal took the handoff
 // straight out of the body, and confirm-seal read its execution out of the
-// caller-supplied SealStarted rather than out of the identity the token was
-// bound to. So execution B, holding nothing, presenting a capability minted
+// caller-supplied SealStarted rather than out of the identity the warrant was
+// bound to. So execution B, holding nothing, presenting a warrant minted
 // for B, read A's hold and A's captured drain set -- and moved A's source to
 // `sealed`, which is the state that admits a canonical read.
 //
 // The control is asserted first, and it is the same three routes answering for
 // the execution they belong to.
-func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
+func TestAWarrantForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	// A holds.
-	if status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
+	if status, body := fixture.call(t, "/capture/v1/hold", hangar.PurposeControlCapture, "hold",
 		holdRequest()); status != http.StatusOK {
 		t.Fatalf("A's hold was refused: %d %s", status, body)
 	}
@@ -468,7 +473,7 @@ func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 		t.Fatalf("admitting B: %v", err)
 	}
 
-	// B's capabilities, presented with bodies naming A's capture.
+	// B's warrants, presented with bodies naming A's capture.
 	for _, row := range []struct {
 		path, operation string
 		body            any
@@ -477,7 +482,7 @@ func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 		{"/capture/v1/release", "release", output.CaptureReleaseRequest{
 			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}},
 	} {
-		status, body := fixture.callAs(t, b, row.path, output.CaptureFacet, row.operation, row.body)
+		status, body := fixture.callAs(t, b, row.path, hangar.PurposeControlCapture, row.operation, row.body)
 		if status != http.StatusForbidden {
 			t.Errorf("%s let execution B act on A's capture: %d %s", row.path, status, body)
 		}
@@ -489,47 +494,49 @@ func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 	}
 }
 
-// A capability is spent once, and a restart does not forget that.
+// A warrant is spent once, and a restart does not forget that.
 //
-// The replay refusal lived in the verifier's memory. A daemon restart -- a
-// crash, a rollout, an OOM kill -- emptied it, so a token captured off the
-// wire was admitted a second time inside its TTL, which is up to fifteen
+// The replay refusal once lived in the verifier's memory. A daemon restart --
+// a crash, a rollout, an OOM kill -- emptied it, so a warrant captured off the
+// wire was admitted a second time inside its window, which is up to fifteen
 // minutes. The bound was the ledgers' own idempotency rather than the
-// capability, and the auth test said "replayed capability ... fail closed"
-// without the row that a restart is.
+// warrant, and the auth test said "replayed warrant ... fail closed" without
+// the row that a restart is.
 //
-// The pair: a fresh capability still works after the restart, so the refusal
+// The pair: a fresh warrant still works after the restart, so the refusal
 // is about this nonce and not about the daemon having given up.
-func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
+func TestASpentWarrantIsStillSpentAfterARestart(t *testing.T) {
 	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
-	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:     executioncontrol.BaseFacet,
-		Operation: "classify",
-		Identity:  identity(1),
-	}, "nonce-spent-across-a-restart")
-	if err != nil {
-		t.Fatalf("minting: %v", err)
-	}
+	token := fixture.mint(t, hangar.PurposeControlBase, "classify", identity(1))
 	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
 		identifiedBy(identity(1))); status != http.StatusOK {
 		t.Fatalf("the first presentation was refused: %d %s", status, body)
 	}
 
-	// A nonce that has already expired, planted in the record. It cannot
-	// authorize anything, and a record that kept them would grow with every
-	// capability this node ever saw.
-	spent := capabilityReplayStore{store: fixture.captureFixture.store}
-	nonces, err := spent.LoadSpentCapabilities()
-	if err != nil {
-		t.Fatalf("reading the spent record: %v", err)
+	// The record holds the one spent nonce, under its purpose. A nonce that
+	// has already expired is planted beside it: it cannot authorize anything,
+	// and a record that kept them would grow with every warrant this node
+	// ever saw.
+	store := fixture.captureFixture.store
+	var nonces map[string]time.Time
+	if found, err := store.get(controlWarrantRecordName, &nonces); err != nil || !found {
+		t.Fatalf("reading the spent record: found=%v err=%v", found, err)
 	}
-	if _, recorded := nonces["nonce-spent-across-a-restart"]; !recorded {
-		t.Fatalf("the presented capability was not recorded as spent: %v", nonces)
+	if len(nonces) != 1 {
+		t.Fatalf("the presented warrant was not recorded as spent: %v", nonces)
 	}
-	nonces["nonce-from-an-hour-ago"] = fixedNow().Add(-time.Hour)
-	if err := spent.SaveSpentCapabilities(nonces); err != nil {
+	var recorded string
+	for key := range nonces {
+		recorded = key
+	}
+	if !strings.HasPrefix(recorded, string(hangar.PurposeControlBase)+"|") {
+		t.Fatalf("the spent record is keyed %q, not by purpose and nonce", recorded)
+	}
+	const stale = "execution-control|nonce-from-an-hour-ago"
+	nonces[stale] = fixedNow().Add(-time.Hour)
+	if err := store.put(controlWarrantRecordName, nonces); err != nil {
 		t.Fatalf("planting an expired nonce: %v", err)
 	}
 
@@ -538,33 +545,33 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 
 	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
 		identifiedBy(identity(1))); status != http.StatusForbidden {
-		t.Errorf("a capability spent before the restart was admitted after it: %d %s", status, body)
+		t.Errorf("a warrant spent before the restart was admitted after it: %d %s", status, body)
 	}
 	if status, body := fixture.call(t, "/execution/v1/classify",
-		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
-		t.Errorf("a fresh capability was refused after the restart: %d %s", status, body)
+		hangar.PurposeControlBase, "classify", identifiedBy(identity(1))); status != http.StatusOK {
+		t.Errorf("a fresh warrant was refused after the restart: %d %s", status, body)
 	}
 
-	kept, err := spent.LoadSpentCapabilities()
-	if err != nil {
+	var kept map[string]time.Time
+	if _, err := store.get(controlWarrantRecordName, &kept); err != nil {
 		t.Fatalf("re-reading the spent record: %v", err)
 	}
-	if _, stale := kept["nonce-from-an-hour-ago"]; stale {
+	if _, found := kept[stale]; found {
 		t.Error("an expired nonce survived the restart; the record grows without bound")
 	}
-	if _, recorded := kept["nonce-spent-across-a-restart"]; !recorded {
+	if _, found := kept[recorded]; !found {
 		t.Error("the spent nonce was pruned along with the expired one")
 	}
 }
 
 // The recorded start is read over the base surface, under its own operation: a
-// capability minted for classify does not read it, and the answer is the
+// warrant minted for classify does not read it, and the answer is the
 // stored statement.
 func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
 	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
-	if status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
+	if status, body := fixture.call(t, "/execution/v1/start/inspect", hangar.PurposeControlBase,
 		"inspect-start", identifiedBy(identity(1))); status != http.StatusNotFound {
 		t.Fatalf("an unstarted execution answered %d: %s", status, body)
 	}
@@ -572,7 +579,7 @@ func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("starting: %v", err)
 	}
-	status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
+	status, body := fixture.call(t, "/execution/v1/start/inspect", hangar.PurposeControlBase,
 		"inspect-start", identifiedBy(identity(1)))
 	if status != http.StatusOK {
 		t.Fatalf("the start inspection answered %d: %s", status, body)
@@ -584,9 +591,9 @@ func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
 	if !sameStatement(read, started) {
 		t.Fatalf("the route answered a different statement: %s", body)
 	}
-	if status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
+	if status, body := fixture.call(t, "/execution/v1/start/inspect", hangar.PurposeControlBase,
 		"classify", identifiedBy(identity(1))); status != http.StatusForbidden {
-		t.Fatalf("a classify capability read the start: %d %s", status, body)
+		t.Fatalf("a classify warrant read the start: %d %s", status, body)
 	}
 }
 
@@ -598,7 +605,7 @@ func TestAPublishSlowerThanTheClientTimeoutIsPolledToItsGeneration(t *testing.T)
 	fixture := newRoutes(t)
 	fixture.capture.sealWait = time.Minute
 	admitted(t, &fixture.ledgerFixture)
-	if status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest()); status != http.StatusOK {
+	if status, body := fixture.call(t, "/capture/v1/hold", hangar.PurposeControlCapture, "hold", holdRequest()); status != http.StatusOK {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
 	writeFile(t, filepath.Join(fixture.stepDir(), "artifact.txt"), "the bytes")
@@ -631,7 +638,7 @@ func TestAPublishSlowerThanTheClientTimeoutIsPolledToItsGeneration(t *testing.T)
 		Digest: sealed.Digest,
 	}
 	started := time.Now()
-	status, body = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	status, body = fixture.call(t, "/capture/v1/publish", hangar.PurposeControlCapture, "publish", publication)
 	if status != http.StatusAccepted || !strings.Contains(string(body), `"publishing"`) {
 		t.Fatalf("the first publish answered %d %s, want 202 publishing", status, body)
 	}
@@ -639,7 +646,7 @@ func TestAPublishSlowerThanTheClientTimeoutIsPolledToItsGeneration(t *testing.T)
 		t.Errorf("the first publish took %s; it should only start the upload", time.Since(started))
 	}
 	// Concurrent polls see the one job.
-	status, _ = fixture.call(t, "/capture/v1/publish", output.CaptureFacet, "publish", publication)
+	status, _ = fixture.call(t, "/capture/v1/publish", hangar.PurposeControlCapture, "publish", publication)
 	if status != http.StatusAccepted {
 		t.Fatalf("a poll while the slot is busy answered %d", status)
 	}

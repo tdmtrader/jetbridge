@@ -129,7 +129,7 @@ func configureRunDownload(in RunResultPublication, auth *AuthFixture, rec *brine
 
 // serveRunResults has the authenticated API read Run results through an
 // already configured read plane.
-func serveRunResults(auth *AuthFixture, conn db.DbConn, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner) error {
+func serveRunResults(auth *AuthFixture, conn db.DbConn, source *jetbridge.OutputSource, signer output.ReadWarrantMinter) error {
 	reader := &runs.ResultReader{Conn: conn, Minter: signer, Source: func(ctx context.Context) (runs.ResultSource, error) {
 		return source.ForResultRead(ctx)
 	}}
@@ -142,33 +142,33 @@ func serveRunResults(auth *AuthFixture, conn db.DbConn, source *jetbridge.Output
 }
 
 // The same real control plane and node transport serve downloads and task inputs.
-func configureRunReadPlane(in RunResultPublication, rec *brine.Recorder, res brine.Resources) (*jetbridge.OutputSource, *output.ReadWarrantSigner, jetbridge.Config, error) {
+func configureRunReadPlane(in RunResultPublication, rec *brine.Recorder, res brine.Resources) (*jetbridge.OutputSource, output.ReadWarrantMinter, jetbridge.Config, error) {
 	cluster, err := getRealCluster(res)
 	if err != nil {
-		return nil, nil, jetbridge.Config{}, err
+		return nil, output.ReadWarrantMinter{}, jetbridge.Config{}, err
 	}
 	return configureRunReadPlaneForClient(in, rec, cluster.Clientset, jetbridge.NewConfig("default", ""))
 }
 
-func configureRunReadPlaneForClient(in RunResultPublication, rec *brine.Recorder, client kubernetes.Interface, config jetbridge.Config) (*jetbridge.OutputSource, *output.ReadWarrantSigner, jetbridge.Config, error) {
+func configureRunReadPlaneForClient(in RunResultPublication, rec *brine.Recorder, client kubernetes.Interface, config jetbridge.Config) (*jetbridge.OutputSource, output.ReadWarrantMinter, jetbridge.Config, error) {
 	daemon := in.Start.Daemon
-	signer, err := output.NewReadWarrantSigner(brineReadWarrantKey)
+	signer, err := brineReadWarrantMinter()
 	if err != nil {
-		return nil, nil, jetbridge.Config{}, err
+		return nil, output.ReadWarrantMinter{}, jetbridge.Config{}, err
 	}
 	// The node daemon verifies the warrant and asks the web nothing; the web
 	// gives the reader's claim back itself when its read ends. The daemon is
 	// restarted so arguments a caller appended (an operation timeout) apply.
 	if err = daemon.Output.crash(); err != nil {
-		return nil, nil, jetbridge.Config{}, err
+		return nil, output.ReadWarrantMinter{}, jetbridge.Config{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err = daemon.Output.restart(ctx, daemon.HTTP); err != nil {
-		return nil, nil, jetbridge.Config{}, err
+		return nil, output.ReadWarrantMinter{}, jetbridge.Config{}, err
 	}
 	if err = outputPlaneConfig(&config, daemon.Output.URL, daemon.CertDir); err != nil {
-		return nil, nil, jetbridge.Config{}, err
+		return nil, output.ReadWarrantMinter{}, jetbridge.Config{}, err
 	}
 	source := jetbridge.NewOutputSource(client, config, daemon.Minter)
 

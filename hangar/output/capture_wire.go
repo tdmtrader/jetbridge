@@ -7,7 +7,11 @@ package output
 // execution and an output, and the daemon derives the step directory
 // (CaptureKey.Directory) and the object key (its own namespace and the digest
 // it computed) itself. A request also names the execution's exact identity,
-// because the capability that authorizes it is bound to that identity.
+// because the warrant that authorizes it is bound to that identity.
+//
+// The capture routes admit a control warrant of hangar.PurposeControlCapture
+// and nothing else: a base control warrant presented at a capture route is
+// refused, and a capture warrant presented at a base route is refused there.
 
 import (
 	"context"
@@ -17,11 +21,6 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
-
-// CaptureFacet is the capture routes' authorization surface. A base control
-// capability presented at a capture route is refused, and a capture capability
-// presented at a base route is refused there.
-const CaptureFacet executioncontrol.Facet = "durable-output-capture"
 
 // SourceControl is the control plane's seam to one node's capture routes.
 // Every method takes a request naming an execution and an output -- never a

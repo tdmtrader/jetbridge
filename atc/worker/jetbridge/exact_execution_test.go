@@ -32,6 +32,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/ledger"
@@ -131,7 +132,7 @@ var _ = Describe("An execProcess under exact control", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
-		warrant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+		warrant, err := harness.Client.MintGrant(hangar.PurposeControlCapture, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
 		_, err = postHold(harness.Endpoint, string(warrant), holdRequest(podUID))
 		Expect(err).ToNot(HaveOccurred())
@@ -646,7 +647,7 @@ var _ = Describe("An execProcess under exact control", func() {
 		Expect(pod.UID).ToNot(BeEmpty())
 
 		// 3. The control init's hold, presenting the Downward API's value.
-		warrant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+		warrant, err := harness.Client.MintGrant(hangar.PurposeControlCapture, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
 		acknowledged, err := postHold(harness.Endpoint, string(warrant), holdRequest(pod.UID))
 		Expect(err).ToNot(HaveOccurred())

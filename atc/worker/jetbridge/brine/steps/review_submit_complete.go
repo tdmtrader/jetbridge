@@ -353,7 +353,7 @@ func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, facto
 	return candidate, nil
 }
 
-func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner, name string) (string, error) {
+func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer output.ReadWarrantMinter, name string) (string, error) {
 	tx, err := start.DB.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err

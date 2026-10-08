@@ -2,10 +2,8 @@ package outputplane
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"flag"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -46,8 +44,6 @@ func emulator(t *testing.T) (*fakestorage.Server, string) {
 func validConfig(t *testing.T, endpoint, bucket string) Config {
 	t.Helper()
 
-	materializeKeyFile := writeMaterializationKey(t)
-
 	return Config{
 		OutputStore:       output.StoreGCS,
 		OutputEndpoint:    endpoint,
@@ -57,14 +53,11 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 		CacheBucket:       "deployment-durable-cache",
 		StrictInputBucket: "deployment-strict-input",
 
-		MaterializationKeyID:   "materialize-key-1",
-		MaterializationKeyFile: materializeKeyFile,
-		CapabilityKeyFile:      writeCapabilityKey(t),
-		NodeUID:                "node-1",
-		ScratchDir:             t.TempDir(),
-		CapabilityTTL:          time.Minute,
-		PublishConcurrency:     1,
-		OperationTimeout:       10 * time.Second,
+		Key:                hangarKey(),
+		NodeUID:            "node-1",
+		ScratchDir:         t.TempDir(),
+		PublishConcurrency: 1,
+		OperationTimeout:   10 * time.Second,
 	}
 }
 
@@ -83,10 +76,9 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"an S3-compatible store":   func(c *Config) { c.OutputStore = "s3" },
 		"no bucket":                func(c *Config) { c.OutputBucket = "" },
 		"no tenant":                func(c *Config) { c.OutputTenant = "" },
-		"no capability key file":   func(c *Config) { c.CapabilityKeyFile = "" },
-		// One key for both would mean rotating either rotates both.
-		"one key for read warrants and capabilities": func(c *Config) { c.MaterializationKeyFile = c.CapabilityKeyFile },
-		"a non-positive timeout":                     func(c *Config) { c.OperationTimeout = 0 },
+		"no Hangar key":            func(c *Config) { c.Key = nil },
+		"a short Hangar key":       func(c *Config) { c.Key = []byte("short") },
+		"a non-positive timeout":   func(c *Config) { c.OperationTimeout = 0 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -145,7 +137,6 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
 		"cache-bucket", "strict-input-bucket",
 		"output-timeout", "node-uid", "output-scratch-dir",
-		"capability-key", "capability-ttl",
 	} {
 		if flags.Lookup(name) == nil {
 			t.Errorf("the daemon has no --%s flag", name)
@@ -153,10 +144,12 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 	}
 
 	// And the flags it must NOT have. A durable-store flag here would be the
-	// bucket isolation undone by a helm value.
+	// bucket isolation undone by a helm value; the Hangar key and the mount
+	// switch are the daemon's own flags, loaded before the node is labelled,
+	// and a second spelling of either here would be a second key path.
 	for _, forbidden := range []string{
 		"durable-store", "durable-bucket", "durable-endpoint", "durable-path",
-		"storage-path", "hangar-enabled", "hangar-capability-key",
+		"storage-path", "hangar-enabled", "hangar-key", "execution-control",
 	} {
 		if flags.Lookup(forbidden) != nil {
 			t.Errorf("the output plane declares --%s. It has no cache client and no "+
@@ -238,36 +231,4 @@ func listKeys(t *testing.T, server *fakestorage.Server, bucket string) []string 
 
 func hangarDigest(fill string) hangar.Digest {
 	return hangar.Digest("sha256:" + strings.Repeat(fill, 32))
-}
-
-// writeCapabilityKey puts the route fixtures' capability secret on disk in the
-// form the daemon reads, so a daemon built from validConfig verifies what
-// capabilitySecret mints.
-func writeCapabilityKey(t *testing.T) string {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "capability.key")
-	if err := os.WriteFile(path, capabilitySecret(), 0o600); err != nil {
-		t.Fatalf("writing the capability key: %v", err)
-	}
-
-	return path
-}
-
-// writeMaterializationKey writes the exact 32 raw bytes an output read warrant is
-// signed with. It is a second key on purpose: a warrant must not be signable by
-// anything that can mint a control capability.
-func writeMaterializationKey(t *testing.T) string {
-	t.Helper()
-
-	material := make([]byte, output.ReadWarrantKeyBytes)
-	if _, err := rand.Read(material); err != nil {
-		t.Fatalf("generating the read-warrant key: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "materialize.key")
-	if err := os.WriteFile(path, material, 0o600); err != nil {
-		t.Fatalf("writing the read-warrant key: %v", err)
-	}
-
-	return path
 }

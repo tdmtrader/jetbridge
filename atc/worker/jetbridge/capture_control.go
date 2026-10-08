@@ -11,7 +11,7 @@ package jetbridge
 // `cleanup-stale` removes it, `artifact-fetch` stages inputs into it.
 //
 // Where the credential goes is fixed. The task and sidecar
-// containers receive no GCS credential, no materialization key
+// containers receive no GCS credential, no Hangar key
 // and no publication capability, and the source-control grant is the capture
 // extension's own attenuated capability -- so it is carried by THIS container
 // and by nothing else in the pod. `buildPod` never copies it into the main
@@ -217,8 +217,8 @@ exit 1
 	)
 }
 
-// CapabilityHeaderName is the header the output plane reads an attenuated
-// control capability from. It is restated here rather than imported because
+// CapabilityHeaderName is the header the output plane reads a control warrant
+// from. It is restated here rather than imported because
 // the ATC does not import cmd/artifact-daemon; capture_control_test.go pins the
 // two spellings against each other so they cannot drift.
 const CapabilityHeaderName = "Hangar-Control-Capability"

@@ -259,10 +259,10 @@ type Config struct {
 	// HangarEnabled permits exact immutable Hangar tree inputs.
 	HangarEnabled bool
 
-	// HangarWarrantSigner mints short-lived warrants bound to an exact tree,
-	// container handle, and input volume. The raw signing key is never passed
-	// to task pods.
-	HangarWarrantSigner *hangar.WarrantSigner
+	// HangarSigner mints the materialization warrant bound to an exact tree,
+	// handle and volume, and the control warrants the output plane presents.
+	// It holds the one Hangar key, which is never passed to task pods.
+	HangarSigner *hangar.Signer
 }
 
 // ImageRegistryConfig holds configuration for a container image registry

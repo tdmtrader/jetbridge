@@ -179,7 +179,6 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	// and a reader's (expiring on the database clock) are one record shape.
 	"claim-record.json":         func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
 	"claim-record-reader.json":  func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
-	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
 	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
 
 	"refusal-malformed-marker-metadata.json": refuseMarker,

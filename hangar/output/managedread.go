@@ -23,7 +23,7 @@ func (request ManagedReadRequest) Validate() error {
 	if err := request.Destination.Validate(); err != nil {
 		return err
 	}
-	if request.Warrant == "" || len(request.Warrant) > MaxReadWarrantBytes {
+	if request.Warrant == "" || len(request.Warrant) > hangar.MaxWarrantBytes {
 		return fmt.Errorf("%w: invalid managed-read warrant size", ErrIncomplete)
 	}
 	return nil

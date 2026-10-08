@@ -3,7 +3,7 @@ package steps
 // The client half of the artifact daemon's capture control API.
 //
 // The fixture plays two production roles here and it is worth naming which.
-// The ATC admits an execution and mints a capability per operation; the
+// The ATC admits an execution and mints a control warrant per operation; the
 // supervisor writes the start and outcome records. In Phase 4 execProcess takes
 // both parts over. Neither role is a double of the daemon -- every call below
 // goes over HTTP to the real binary, and every answer is decoded with the
@@ -20,17 +20,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
-
-// nonces make every minted capability distinct. A capability authorizes one
-// operation, so a fixture that reused one would be testing the replay refusal
-// by accident on every second call.
-var controlNonces atomic.Uint64
 
 // controlAnswer is one call's raw result. Err is a value rather than a fatal so
 // a refusal is assertable, which is what every "the refusal says" line reads.
@@ -55,20 +49,18 @@ func (answer controlAnswer) describe() string {
 	return strconv.Itoa(answer.Status) + " " + abbrev(string(answer.Body))
 }
 
-// control calls one route with a capability minted for that route's own facet
-// and operation.
+// control calls one route with a control warrant minted for that route's own
+// purpose and operation. A warrant is minted per call and never reused: the
+// signer's nonce is fresh each time, so a fixture that reused one would be
+// testing the replay refusal by accident on every second call.
 //
-// The facet is a PARAMETER because one scenario needs to present the wrong one:
-// "a base control capability cannot hold, seal or publish" is exactly a valid
-// token offered at a route it does not belong to, and a helper that always
-// derived the facet from the path could not express it.
-func (s HangarDaemon) control(facet executioncontrol.Facet, operation, path string,
+// The purpose is a PARAMETER because one scenario needs to present the wrong
+// one: "a base control warrant cannot hold, seal or publish" is exactly a valid
+// warrant offered at a route it does not belong to, and a helper that always
+// derived the purpose from the path could not express it.
+func (s HangarDaemon) control(purpose hangar.Purpose, operation, path string,
 	identity executioncontrol.Identity, body any) controlAnswer {
-	token, err := s.Minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:     facet,
-		Operation: operation,
-		Identity:  identity,
-	}, fmt.Sprintf("brine-%s-%d", operation, controlNonces.Add(1)))
+	token, err := s.Minter.Sign(executioncontrol.ControlWarrant(purpose, operation, identity))
 	if err != nil {
 		return controlAnswer{Err: err}
 	}
@@ -93,11 +85,11 @@ func (s HangarDaemon) control(facet executioncontrol.Facet, operation, path stri
 	return controlAnswer{Status: response.StatusCode, Body: answer, Err: err}
 }
 
-// capture is control with the extension's facet, which is what every route
-// under /capture/v1 requires.
+// capture is control under the output-capture purpose, which is what every
+// route under /capture/v1 requires.
 func (s HangarDaemon) capture(operation, path string, identity executioncontrol.Identity,
 	body any) controlAnswer {
-	return s.control(hangaroutput.CaptureFacet, operation, path, identity, body)
+	return s.control(hangar.PurposeControlCapture, operation, path, identity, body)
 }
 
 // captureSettled is capture for the two ASYNCHRONOUS operations, seal and
@@ -122,10 +114,10 @@ const (
 	captureSettlePoll  = 50 * time.Millisecond
 )
 
-// base is control with the base protocol's facet.
+// base is control under the base protocol's purpose.
 func (s HangarDaemon) base(operation, path string, identity executioncontrol.Identity,
 	body any) controlAnswer {
-	return s.control(executioncontrol.BaseFacet, operation, path, identity, body)
+	return s.control(hangar.PurposeControlBase, operation, path, identity, body)
 }
 
 // rawCapture posts a body the production types cannot express.

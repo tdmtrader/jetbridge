@@ -45,9 +45,10 @@ package steps
 //
 // THE OUTPUT PLANE IS MOUNTED IN THE SAME DAEMON. One artifact daemon process
 // serves the STRICT-INPUT surface, which is what the proving sentences at the
-// bottom of this file exercise end to end against the emulator, and -- given
-// a capability key -- the output plane: the capture control API and the publish
-// route, against ITS OWN bucket, reached over the same mTLS channel.
+// bottom of this file exercise end to end against the emulator, and -- with
+// --execution-control -- the output plane: the capture control API and the
+// publish route, against ITS OWN bucket, reached over the same mTLS channel.
+// Both verify every warrant against the one Hangar key.
 // hangarOutputDaemonFlags below is where the bucket separation is stated, and
 // a fixture that pointed both at one bucket would be testing a deployment the
 // daemon refuses to be.
@@ -134,10 +135,11 @@ type HangarDaemon struct {
 	Output       *realDaemon
 	OutputBucket string
 
-	// Minter is the control plane's half of the capability seam. A scenario
-	// never sees it: the step definitions mint per call, for the facet and
-	// operation the route they are about to call declares.
-	Minter *executioncontrol.CapabilityMinter
+	// Minter is the web's half of the warrant seam: the signer over the one
+	// Hangar key the daemon verifies against. A scenario never sees it: the
+	// step definitions mint per call, for the purpose and operation the route
+	// they are about to call declares.
+	Minter *hangar.Signer
 
 	NodeUID string
 
@@ -175,16 +177,13 @@ func (s HangarDaemon) stepRoot(key hangaroutput.CaptureKey) string {
 //
 // It names a DIFFERENT bucket from the artifact daemon's, which is the point:
 // the two buckets are the trust boundary between the planes.
-func hangarOutputDaemonFlags(endpoint, bucket, capabilityKey,
-	materializeKey, nodeUID, terminations string) []string {
+func hangarOutputDaemonFlags(endpoint, bucket, nodeUID, terminations string) []string {
 	return []string{
+		"--execution-control",
 		"--output-endpoint", endpoint,
 		"--output-bucket", bucket,
 		"--output-prefix", "brine/deployments/one",
 		"--output-tenant", "brine-tenant",
-		"--capability-key", capabilityKey,
-		"--materialization-key-id", hangarMaterializationKeyID,
-		"--materialization-key-file", materializeKey,
 		"--node-uid", nodeUID,
 		"--pod-terminations-dir", terminations,
 	}
@@ -194,10 +193,7 @@ func hangarOutputDaemonFlags(endpoint, bucket, capabilityKey,
 // because no scenario may choose one: a Run activation epoch a feature file
 // could set would be a feature file choosing which contract admitted it.
 const (
-	// The read-warrant key's id: the one key per warrant kind the daemon
-	// verifies a consumer's read under.
-	hangarMaterializationKeyID = "brine-materialize-key-1"
-	hangarNodeUID              = "brine-node-1"
+	hangarNodeUID = "brine-node-1"
 	// runActivationEpoch is the Run contract's activation epoch every Run
 	// this fixture admits is born under. It is the Run's, not Hangar's: the
 	// output plane has no generation of its own.
@@ -251,16 +247,16 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	}
 	TrackDisposer(rec, "the Hangar certificate directory", func() error { return os.RemoveAll(certDir) })
 
+	// hangar.key is the one Hangar key: the same bytes every step signs a
+	// warrant with (brineHangarKey), which is what makes a warrant this fixture
+	// mints one the daemon can verify.
 	paths := map[string][]byte{
-		"server.crt":     material.serverCert,
-		"server.key":     material.serverKey,
-		"ca.crt":         material.caPEM,
-		"client.crt":     material.clientCert,
-		"client.key":     material.clientKey,
-		"capability.key": make([]byte, 32),
-	}
-	if _, err := rand.Read(paths["capability.key"]); err != nil {
-		return HangarDaemon{}, err
+		"server.crt": material.serverCert,
+		"server.key": material.serverKey,
+		"ca.crt":     material.caPEM,
+		"client.crt": material.clientCert,
+		"client.key": material.clientKey,
+		"hangar.key": brineHangarKey,
 	}
 	for name, body := range paths {
 		if err := os.WriteFile(filepath.Join(certDir, name), body, 0o600); err != nil {
@@ -283,7 +279,7 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	args := []string{
 		"--hangar-enabled",
 		"--hangar-scratch-dir", scratch,
-		"--hangar-warrant-key", filepath.Join(certDir, "capability.key"),
+		"--hangar-key", filepath.Join(certDir, "hangar.key"),
 		"--hangar-store", "gcs",
 		"--hangar-bucket", bucket,
 		"--hangar-endpoint", endpoint,
@@ -320,7 +316,7 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 		CertDir:  certDir,
 		NodeUID:  nodeUID,
 	}
-	outputFlags, err := prepareOutputPlane(rec, &state, certDir)
+	outputFlags, err := prepareOutputPlane(rec, &state)
 	if err != nil {
 		return HangarDaemon{}, err
 	}
@@ -351,14 +347,15 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	return state, nil
 }
 
-// prepareOutputPlane creates the output plane's own bucket and mints its
-// capability secret, and returns the flags that mount it: the daemon mounts
-// the plane when it is given a capability key.
+// prepareOutputPlane creates the output plane's own bucket and the signer the
+// steps mint control warrants with, and returns the flags that mount the
+// plane: the daemon mounts it with --execution-control, verifying every
+// warrant against the Hangar key it already holds.
 //
 // The bucket is created here and named by the fixture, never by a feature file
 // -- convention 3 applied to the fixture itself -- and it is a different bucket
 // from the strict-input one.
-func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string) ([]string, error) {
+func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon) ([]string, error) {
 	state.OutputBucket = uniqueBucketName()
 	if err := createOutputBucket(state.Ctx, state.Endpoint, state.OutputBucket,
 		hangarBucketCreateAttempts, hangarBucketCreateTimeout,
@@ -368,23 +365,7 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string
 		return nil, err
 	}
 
-	capabilitySecret := make([]byte, executioncontrol.CapabilityKeyBytes)
-	if _, err := rand.Read(capabilitySecret); err != nil {
-		return nil, err
-	}
-	capabilityFile := filepath.Join(certDir, "capability-control.key")
-	if err := os.WriteFile(capabilityFile, capabilitySecret, 0o600); err != nil {
-		return nil, err
-	}
-	// The output read-warrant key, which is the SAME material the consumer-side
-	// fixture mints warrants with (brineReadWarrantKey): one key on both sides is
-	// what makes a warrant this fixture signs one the daemon can verify.
-	materializeFile := filepath.Join(certDir, "materialize.key")
-	if err := os.WriteFile(materializeFile, brineReadWarrantKey, 0o600); err != nil {
-		return nil, err
-	}
-
-	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret, time.Minute,
+	minter, err := hangar.NewSigner(brineHangarKey, time.Minute,
 		func() time.Time { return time.Now().UTC() })
 	if err != nil {
 		return nil, err
@@ -412,8 +393,7 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string
 		func() error { return os.RemoveAll(terminations) })
 	state.Terminations = terminations
 
-	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
-		capabilityFile, materializeFile, state.NodeUID, terminations)
+	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket, state.NodeUID, terminations)
 
 	return append(flags, "--output-scratch-dir", scratch), nil
 }

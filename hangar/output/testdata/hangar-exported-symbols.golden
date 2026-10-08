@@ -1,21 +1,31 @@
 const CanonicalizerTempPrefix
 const DefaultMaxTreeContentBytes int64
 const DefaultMaxTreeEntries int64
+const MaxWarrantBytes
 const MaxWarrantTTL
+const PurposeControlBase Purpose
+const PurposeControlCapture Purpose
+const PurposeMaterializeInput Purpose
+const PurposeReadResult Purpose
+const WarrantDomain
+const WarrantKeyBytes
 func (*CapturedTree) Close() error
 func (*CapturedTree) Materialize(ctx context.Context, steps *os.Root, ref TreeRef, handle, volume string) (err error)
 func (*CapturedTree) OpenRoot() (*os.Root, error)
 func (*Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error)
-func (*WarrantSigner) Sign(ref TreeRef, handle, volume string) (string, error)
-func (*WarrantVerifier) Verify(token string, ref TreeRef, handle, volume string) error
+func (*Signer) Sign(warrant Warrant) (string, error)
+func (*Verifier) Verify(token string, expected Warrant) (Warrant, error)
 func (Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *CapturedTree, err error)
 func (Digest) Validate() error
+func (Purpose) Validate() error
 func (Scope) Validate() error
 func (TreeRef) Validate() error
+func (Warrant) Validate() error
 func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error)
+func CanonicalWarrantBytes(warrant Warrant) ([]byte, error)
+func NewSigner(key []byte, ttl time.Duration, clock func() time.Time) (*Signer, error)
 func NewTreeRef(scope Scope, digest Digest, generation int64) (TreeRef, error)
-func NewWarrantSigner(key []byte, ttl time.Duration, clock func() time.Time) (*WarrantSigner, error)
-func NewWarrantVerifier(key []byte, maxTTL time.Duration, clock func() time.Time) (*WarrantVerifier, error)
+func NewVerifier(key []byte, maxTTL time.Duration, clock func() time.Time) (*Verifier, error)
 func TreeKey(prefix string, scope Scope, digest Digest) (string, error)
 func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits TreeLimits) error
 func ValidateDeploymentPrefix(prefix string) error
@@ -24,13 +34,15 @@ type Canonicalizer struct { MaxEntries int64 MaxContentBytes int64 TempDir strin
 type CapturedTree struct { Root string ArchivePath string Digest Digest ByteSize int64 FileCount int64 }
 type Digest string
 type Materializer struct { Store Store Canonicalizer Canonicalizer StoragePath string MaxTreeBytes int64 }
+type Purpose string
 type Scope string
+type Signer struct { }
 type Store interface { EnsureTree(context.Context, Scope, Digest, io.Reader, int64) (TreeAttributes, bool, error) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) OpenTree(context.Context, TreeRef, int64) (io.ReadCloser, TreeAttributes, error) }
 type TreeAttributes struct { Ref TreeRef StoredBytes int64 LogicalBytes int64 CreatedAt time.Time }
 type TreeLimits struct { MaxContentBytes int64 MaxEntries int64 }
 type TreeRef struct { Scope Scope Digest Digest Generation int64 }
-type WarrantSigner struct { }
-type WarrantVerifier struct { }
+type Verifier struct { }
+type Warrant struct { Purpose Purpose Version int Ref TreeRef Handle string Volume string ClaimID string NodeUID string Operation string ExecutionID string Fence uint64 IssuedAt int64 ExpiresAt int64 Nonce string }
 var ErrConflict
 var ErrCorrupt
 var ErrInfrastructure

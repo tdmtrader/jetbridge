@@ -67,14 +67,14 @@ func (cmd *RunCommand) prepareRunResultScratch() (string, error) {
 }
 
 func (cmd *RunCommand) configureOutputReads(conn db.DbConn, source *jetbridge.OutputSource) error {
-	if cmd.outputReadSigner == nil {
+	if cmd.readWarrantMinter == nil {
 		return nil
 	}
 	scratch, err := cmd.prepareRunResultScratch()
 	if err != nil {
 		return err
 	}
-	cmd.runResultReader = &runs.ResultReader{Conn: conn, Minter: cmd.outputReadSigner, Scratch: scratch,
+	cmd.runResultReader = &runs.ResultReader{Conn: conn, Minter: cmd.readWarrantMinter, Scratch: scratch,
 		Source: func(ctx context.Context) (runs.ResultSource, error) {
 			return source.ForResultRead(ctx)
 		}}

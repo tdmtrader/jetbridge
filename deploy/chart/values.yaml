@@ -127,8 +127,9 @@ web:
   # is still admitted only while hangarOutput.webEnabled puts the output plane
   # in service. Admission checks nothing more, but EXECUTING any Run, with or
   # without results, needs the output plane's execution control
-  # (hangarOutput.executionControl.enabled) with the output capability key
-  # (hangarOutput.capabilityKeySecret) configured: every step of a Run
+  # (hangarOutput.executionControl.enabled) with the Hangar key
+  # (artifactDaemon.hangar.keySecret, or hangar.key in the daemon TLS Secret)
+  # configured: every step of a Run
   # build starts through the exact-execution check. Without them, Runs are
   # admitted and every step fails with "Run result execution is not
   # activated" -- set this to 0 on such a deploy to keep admission closed.
@@ -592,10 +593,13 @@ artifactDaemon:
     # Secret. Offline/GitOps rendering must leave this false and provide
     # tls.existingSecret with all TLS keys plus an exact raw-32-byte hangar.key.
     allowGeneratedKey: false
-    # -- Secret holding hangar.key, the raw 32-byte strict-input warrant key,
-    # on its own. When set, web and the artifact daemon mount it from here
-    # instead of from artifactDaemon.tls.existingSecret, and the Hangar
-    # bootstrap creates it if it is absent.
+    # -- Secret holding hangar.key, the raw 32-byte Hangar key the web signs
+    # every warrant with -- materialization, read and control -- and every
+    # artifact daemon verifies against. It is the one key for strict inputs
+    # (hangar.enabled) and the output plane (hangarOutput.executionControl)
+    # alike. When set, web and the artifact daemon mount it from here instead
+    # of from artifactDaemon.tls.existingSecret, and the Hangar bootstrap
+    # creates it if it is absent.
     keySecret: ""
     # -- Private transient canonicalization scratch. This must be an absolute
     # path disjoint from artifactDaemon.hostPath; the chart mounts a dedicated
@@ -615,8 +619,8 @@ artifactDaemon:
     maxContentBytes: 10737418240
     # -- Maximum filesystem entries admitted in one immutable tree.
     maxEntries: 100000
-    # -- Lifetime of attenuated per-input materialization warrants, expressed as
-    # positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).
+    # -- Lifetime of every warrant the web signs with the Hangar key, expressed
+    # as positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).
     capabilityTTL: "900s"
 
   # -- Override the headless service name. When set, used verbatim.
@@ -689,7 +693,8 @@ artifactDaemon:
     source: existingSecret
     # -- Secret containing ca.crt, tls.crt, tls.key, client.crt, client.key.
     # Required for source: existingSecret; must be empty for source: generated.
-    # Hangar additionally requires hangar.key when explicitly enabled.
+    # Hangar (strict inputs or the output plane) additionally requires
+    # hangar.key, the Hangar key, unless artifactDaemon.hangar.keySecret names it.
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
   resolveCapability:
@@ -780,8 +785,8 @@ artifactDaemon:
 # -- The Hangar bootstrap: a Job at the start of every Argo sync that creates
 # the absent Secrets of the bootstrap inventory and never changes one.
 # An entry joins the inventory once its values key names a Secret (for
-# example hangarOutput.capabilityKeySecret), so the operator turns each
-# Secret on by naming it. Off renders nothing.
+# example artifactDaemon.hangar.keySecret, the Hangar key), so the operator
+# turns each Secret on by naming it. Off renders nothing.
 #
 # Trusted readers (proposal amendments M-4 and M-5): the inventory's
 # consumers, web, the cluster administrators the operator lists, and every
@@ -806,7 +811,7 @@ hangarOutput:
   # its own -- durable output capture is an extension of it, never a synonym
   # for it. Once the output facet passes as well, the same daemon adds
   # `concourse.dev/hangar-output-v1`. A capture-selected pod's affinity requires
-  # BOTH, and neither alone admits it. Neither is authority -- the capability
+  # BOTH, and neither alone admits it. Neither is authority -- the warrant
   # the daemon verifies and the web's hangar_enabled row are -- so a label buys
   # only that the pod does not land somewhere its hold could never be
   # acknowledged.
@@ -814,18 +819,14 @@ hangarOutput:
   # `concourse.dev/hangar-v1` is a THIRD label and is not this plane's: it
   # advertises strict INPUTS.
   #
-  # The node signs nothing: it is inside the trusted computing base and is
-  # reached over mTLS, so its acknowledgement is its answer on that channel.
-  # There is no node control key, no key id and no verification ring.
+  # The daemon verifies every warrant with the one Hangar key
+  # (artifactDaemon.hangar.keySecret, or hangar.key in the daemon TLS Secret),
+  # which this switch requires. The node signs nothing: it is inside the
+  # trusted computing base and is reached over mTLS, so its acknowledgement is
+  # its answer on that channel. There is no node control key, no key id and no
+  # verification ring.
   executionControl:
     enabled: false
-
-  # -- Existing Secret holding capability.key: the raw 32 bytes control
-  # capabilities are minted and verified with, shared between the control plane
-  # and this daemon and with nothing else. Required with
-  # executionControl.enabled: the daemon mounts its output plane when it is
-  # given this key, and cannot verify a capability without it.
-  capabilityKeySecret: ""
 
   # -- The OUTPUT facet: durable capture, claims and reclamation.
   # Requires executionControl.enabled. Never the other way round.
@@ -871,14 +872,6 @@ hangarOutput:
   # minutes) and caller deadlines.
   operationTimeout: "1m"
 
-  # -- Existing Secret holding materialize.key: the exact raw 32 bytes output
-  # READ WARRANTS are signed with, under the hangar-output-materialize-v1 domain.
-  # Its own key: a read warrant must not be mintable with the control
-  # capability key, and it is never the foundation's strict-input
-  # materialization key either.
-  materializationKeySecret: ""
-  # -- Key id for the above.
-  materializationKeyID: "output-materialize-1"
   # -- The web's reclaim pass: a registered generation nothing claims is
   # deleted by its exact generation and stamped reclaimed. It runs in every
   # web node with the output plane enabled; a database lock keeps passes from

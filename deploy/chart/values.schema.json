@@ -795,7 +795,9 @@
           ]
         },
         "executionControl": {},
-        "capabilityKeySecret": {},
+        "capabilityKeySecret": {
+          "$ref": "#/definitions/removed"
+        },
         "enabled": {},
         "webEnabled": {},
         "bucket": {},
@@ -822,8 +824,12 @@
         "receipt": {
           "$ref": "#/definitions/removed"
         },
-        "materializationKeySecret": {},
-        "materializationKeyID": {},
+        "materializationKeySecret": {
+          "$ref": "#/definitions/removed"
+        },
+        "materializationKeyID": {
+          "$ref": "#/definitions/removed"
+        },
         "reclaim": {},
         "orphanSweep": {},
         "readControlURL": {

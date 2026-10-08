@@ -10,8 +10,8 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// readWarrantRecordName is where the used read warrants live. Like the
-// capability replay record it carries neither ledger's record prefix, so
+// readWarrantRecordName is where the used read warrants live. Like the spent
+// control-warrant record it carries neither ledger's record prefix, so
 // neither ledger, nor the artifact daemon's classifier, enumerates it.
 const readWarrantRecordName = "read-warrants-spent.json"
 
@@ -74,31 +74,33 @@ func openSpentReads(store *controlStore, clock func() time.Time) (*spentReads, e
 // begin admits one read under a warrant -- recording it in flight before
 // returning -- or refuses it as unauthorized when the warrant was already used
 // or is in use.
-func (reads *spentReads) begin(claims output.ReadWarrantClaims) error {
+func (reads *spentReads) begin(warrant hangar.Warrant) error {
 	reads.mu.Lock()
 	defer reads.mu.Unlock()
 
-	claim := string(claims.ClaimID)
+	claim := warrant.ClaimID
 	if _, used := reads.used[claim]; used {
 		return fmt.Errorf("%w: the read warrant was already used on this node", output.ErrUnauthorized)
 	}
 
-	return reads.save(claim, &usedWarrant{ExpiresAt: claims.ExpiresAt.UTC(), InFlight: true})
+	return reads.save(claim, &usedWarrant{ExpiresAt: warrantExpiry(warrant), InFlight: true})
 }
+
+func warrantExpiry(warrant hangar.Warrant) time.Time { return time.Unix(0, warrant.ExpiresAt).UTC() }
 
 // end closes the read begin admitted: the warrant stays used unless the read's
 // own error is one a retry can change, in which case it is given back.
-func (reads *spentReads) end(claims output.ReadWarrantClaims, readErr error) error {
+func (reads *spentReads) end(warrant hangar.Warrant, readErr error) error {
 	reads.mu.Lock()
 	defer reads.mu.Unlock()
 
-	claim := string(claims.ClaimID)
+	claim := warrant.ClaimID
 	if readErr != nil && readRefusalClass(readErr) == output.ErrInfrastructure &&
 		!errors.Is(readErr, output.ErrCorrupt) && !errors.Is(readErr, hangar.ErrCorrupt) {
 		return reads.save(claim, nil)
 	}
 
-	return reads.save(claim, &usedWarrant{ExpiresAt: claims.ExpiresAt.UTC()})
+	return reads.save(claim, &usedWarrant{ExpiresAt: warrantExpiry(warrant)})
 }
 
 // save writes the set with one entry set (or removed, for nil), pruning

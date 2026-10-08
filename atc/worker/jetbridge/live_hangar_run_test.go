@@ -83,7 +83,7 @@ func TestLiveHangarStrictInputFromTheInputNamespace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	clientset, cfg := kubeClient(t)
-	signer := liveHangarWarrantSigner(t, ctx, clientset)
+	signer := liveHangarSigner(t, ctx, clientset)
 
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	payload := "strict input " + suffix
@@ -99,7 +99,7 @@ func TestLiveHangarStrictInputFromTheInputNamespace(t *testing.T) {
 
 	worker, delegate, _, _ := newLiveWorker(t, nil, nil, func(c *jetbridge.Config) {
 		c.HangarEnabled = true
-		c.HangarWarrantSigner = signer
+		c.HangarSigner = signer
 	})
 	handle := "live-hangar-strict-" + suffix
 	cleanupPod(t, clientset, cfg.Namespace, handle)
@@ -232,28 +232,22 @@ func liveHangarTar(t *testing.T, files map[string]string) []byte {
 	return raw.Bytes()
 }
 
-// liveHangarWarrantSigner signs materialization warrants with the key the
-// deployed daemon verifies them with, read from the Secret it mounts.
-func liveHangarWarrantSigner(t *testing.T, ctx context.Context, clientset kubernetes.Interface) *hangar.WarrantSigner {
+// liveHangarSigner signs warrants with the Hangar key the deployed daemon
+// verifies them against, read from the Secret it mounts.
+func liveHangarSigner(t *testing.T, ctx context.Context, clientset kubernetes.Interface) *hangar.Signer {
 	t.Helper()
-	secretName := deployed.daemonSecretVolume("hangar-warrant-key")
+	secretName := deployed.daemonSecretVolume("hangar-key")
 	if secretName == "" {
 		secretName = deployed.daemonSecretVolume("daemon-tls")
 	}
 	secret, err := clientset.CoreV1().Secrets(deployed.namespace).Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("read the daemon's warrant key Secret %s/%s: %v", deployed.namespace, secretName, err)
+		t.Fatalf("read the daemon's Hangar key Secret %s/%s: %v", deployed.namespace, secretName, err)
 	}
 	key := secret.Data["hangar.key"]
-	ttl := 5 * time.Minute
-	if v, ok := deployed.daemonFlag("hangar-warrant-ttl"); ok {
-		if ttl, err = time.ParseDuration(v); err != nil {
-			t.Fatalf("daemon --hangar-warrant-ttl=%q: %v", v, err)
-		}
-	}
-	signer, err := hangar.NewWarrantSigner(key, ttl, nil)
+	signer, err := hangar.NewSigner(key, 5*time.Minute, nil)
 	if err != nil {
-		t.Fatalf("the warrant key in %s/%s: %v", deployed.namespace, secretName, err)
+		t.Fatalf("the Hangar key in %s/%s: %v", deployed.namespace, secretName, err)
 	}
 	return signer
 }

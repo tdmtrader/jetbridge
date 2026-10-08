@@ -1,12 +1,10 @@
 package outputplane
 
 import (
-	"crypto/subtle"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -40,11 +38,12 @@ type Config struct {
 	CacheBucket       string
 	StrictInputBucket string
 
-	// The output read-warrant key: a SECOND key, an exact 32-byte HMAC secret
-	// under the hangar-output-materialize-v1 domain. It is neither the control
-	// capability key nor the foundation's strict-input materialization key.
-	MaterializationKeyID   string
-	MaterializationKeyFile string
+	// Key is the Hangar key: the one raw 32-byte secret every warrant the web
+	// presents to this daemon is signed with -- a control warrant at an
+	// execution or capture route, a read warrant at a read route. It is not a
+	// flag: the daemon loads it once at startup, before the node is labelled,
+	// and sets it here.
+	Key []byte
 
 	// PublishConcurrency bounds how many trees may be spooled to scratch at
 	// once.
@@ -58,16 +57,12 @@ type Config struct {
 	PublishConcurrency int
 
 	// The node-local surfaces. NodeName, ControlDir and StepsDir are set by
-	// the artifact daemon from its own configuration. CapabilityKeyFile is the
-	// one key every facet needs: the base facet cannot verify a capability
-	// without it, which is why giving it is what mounts the output plane.
-	NodeName          string
-	NodeUID           string
-	ControlDir        string
-	StepsDir          string
-	ScratchDir        string
-	CapabilityKeyFile string
-	CapabilityTTL     time.Duration
+	// the artifact daemon from its own configuration.
+	NodeName   string
+	NodeUID    string
+	ControlDir string
+	StepsDir   string
+	ScratchDir string
 
 	OperationTimeout time.Duration
 
@@ -93,7 +88,8 @@ type Config struct {
 // BindFlags declares the output plane's flags on the artifact daemon's set.
 //
 // Every flag names an output-plane fact. The output plane is mounted when
-// --capability-key is given.
+// --execution-control is given; the Hangar key it verifies every warrant
+// against is the daemon's --hangar-key, loaded by the daemon, not a flag here.
 func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.OutputStore, "output-store", output.StoreGCS,
 		"Store profile for the output plane. Supported profiles: gcs and disk.")
@@ -112,10 +108,6 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"The durable resource-cache bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
 	flags.StringVar(&config.StrictInputBucket, "strict-input-bucket", "",
 		"The caller-published strict-input Hangar bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
-	flags.StringVar(&config.MaterializationKeyID, "materialization-key-id", "",
-		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which key can check it.")
-	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
-		"Path to the raw 32-byte key output read warrants are signed with, under the hangar-output-materialize-v1 domain. It is never the control capability key and never the foundation's strict-input materialization key.")
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
 		"How long one background capture job may run: a seal (the wait for every container of the producing Pod to terminate, and the canonicalization after it) or a publish (the upload). Both are asynchronous -- the control plane polls them -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
 	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
@@ -128,24 +120,20 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Explicit node UID for standalone operation. With --node-name, the UID is resolved from Kubernetes and an explicit mismatch is refused.")
 	flags.StringVar(&config.ScratchDir, "output-scratch-dir", "",
 		"Absolute scratch directory for canonicalization, outside the storage root.")
-	flags.StringVar(&config.CapabilityKeyFile, "capability-key", "",
-		"Path to the raw 32-byte key control capabilities are minted and verified with. It is shared with the control plane and with nothing else. Giving it mounts the output plane on this daemon's listener.")
-	flags.DurationVar(&config.CapabilityTTL, "capability-ttl", 15*time.Minute,
-		"Maximum accepted lifetime of a control capability. A capability is presented once, within one operation; an hour-long one is a credential.")
 	flags.DurationVar(&config.OperationTimeout, "output-timeout", output.DefaultOperationTimeout,
 		"Per-operation timeout against the output bucket.")
 }
 
-// OutputFacetEnabled reports whether this daemon carries the durable-capture
+// CaptureEnabled reports whether this daemon carries the durable-capture
 // extension as well as the base exact-execution-control protocol.
 //
 // The bucket is the discriminator and not a separate boolean, because a boolean
 // and a bucket can disagree: "output enabled, no bucket" has no honest reading,
 // and a daemon that took both would have to pick one. A base-only daemon is a
 // real deployment -- the sibling `exact_execution_control` track schedules onto
-// exactly it, and withdrawing the output facet has to be able to REACH it
+// exactly it, and withdrawing the capture extension has to be able to REACH it
 // from a running plane without taking exact process control away.
-func (config Config) OutputFacetEnabled() bool {
+func (config Config) CaptureEnabled() bool {
 	return strings.TrimSpace(config.OutputBucket) != ""
 }
 
@@ -158,18 +146,18 @@ func (config Config) Validate() error {
 	if config.OperationTimeout <= 0 {
 		return fmt.Errorf("%w: --output-timeout must be positive", output.ErrIncomplete)
 	}
-	if strings.TrimSpace(config.CapabilityKeyFile) == "" {
-		return fmt.Errorf("%w: --capability-key is required; the base facet cannot verify "+
-			"a capability without it", output.ErrIncomplete)
+	if len(config.Key) != hangar.WarrantKeyBytes {
+		return fmt.Errorf("%w: the output plane needs the Hangar key (--hangar-key, exactly %d raw "+
+			"bytes); no route can verify a warrant without it", output.ErrIncomplete, hangar.WarrantKeyBytes)
 	}
 	if config.PublishConcurrency < 1 {
 		return fmt.Errorf("%w: --publish-concurrency must be at least 1; zero would admit no "+
 			"capture at all", output.ErrIncomplete)
 	}
-	if err := config.validateOutputFacet(); err != nil {
+	if err := config.validateCaptureExtension(); err != nil {
 		return err
 	}
-	if !config.OutputFacetEnabled() {
+	if !config.CaptureEnabled() {
 		return nil
 	}
 	_, err := config.Namespace()
@@ -177,100 +165,26 @@ func (config Config) Validate() error {
 	return err
 }
 
-// validateOutputFacet is the whole of the optional half, stated in one place.
-//
-// Two directions, and the second is the one that is easy to leave out: the
-// facet's own values are required when it is ON, and REFUSED when it is off. A
-// daemon configured with a read-warrant key and no bucket is a process holding
-// a key it can never need, which is a key an exploit of that process gets for
-// free; and a prefix or a tenant with no bucket is an operator who
-// believes the plane is on.
-func (config Config) validateOutputFacet() error {
-	if !config.OutputFacetEnabled() {
-		for _, set := range []struct{ flag, value string }{
-			{"--output-prefix", config.OutputPrefix},
-			{"--output-tenant", config.OutputTenant},
-			{"--output-endpoint", config.OutputEndpoint},
-			{"--output-store-id", config.OutputStoreID},
-			{"--output-token-file", config.OutputTokenFile},
-			{"--output-ca-cert", config.OutputCACert},
-			{"--materialization-key-id", config.MaterializationKeyID},
-			{"--materialization-key-file", config.MaterializationKeyFile},
-		} {
-			if strings.TrimSpace(set.value) != "" {
-				return fmt.Errorf("%w: %s is set and --output-bucket is not. This daemon "+
-					"carries the base exact-execution-control facet only; a half-configured "+
-					"output facet is not a base-only daemon, it is a deployment that believes "+
-					"it is publishing", output.ErrIncomplete, set.flag)
-			}
-		}
-
+// validateCaptureExtension is the optional half's refusal, stated in one place: the
+// capture extension's own values are REFUSED when it is off. A prefix or a
+// tenant with no bucket is an operator who believes the plane is on.
+func (config Config) validateCaptureExtension() error {
+	if config.CaptureEnabled() {
 		return nil
 	}
-
-	for _, required := range []struct{ flag, value, why string }{
-		{"--materialization-key-id", config.MaterializationKeyID,
-			"a read warrant names the key that can check it"},
-		{"--materialization-key-file", config.MaterializationKeyFile,
-			"the output read warrant uses its own key and its own domain"},
+	for _, set := range []struct{ flag, value string }{
+		{"--output-prefix", config.OutputPrefix},
+		{"--output-tenant", config.OutputTenant},
+		{"--output-endpoint", config.OutputEndpoint},
+		{"--output-store-id", config.OutputStoreID},
+		{"--output-token-file", config.OutputTokenFile},
+		{"--output-ca-cert", config.OutputCACert},
 	} {
-		if strings.TrimSpace(required.value) == "" {
-			return fmt.Errorf("%w: %s is required when --output-bucket is set; %s",
-				output.ErrIncomplete, required.flag, required.why)
-		}
-	}
-
-	// Two key roles, two files. They say different things, and one file for
-	// both means rotating either rotates both.
-	if config.MaterializationKeyFile != "" && config.MaterializationKeyFile == config.CapabilityKeyFile {
-		return fmt.Errorf("%w: --materialization-key-file and --capability-key name the same "+
-			"key. They say different things, so one key would mean rotating either rotates both",
-			output.ErrIncomplete)
-	}
-	return nil
-}
-
-// RefuseCollidingKeyMaterial compares the key BYTES, not the paths.
-//
-// Validate above refuses the path pair, and that comparison is over NAMES:
-// two flags pointing at symlinks to one file pass it, and so do two Secrets
-// holding identical material. The
-// separation the plan promises is a separation of authority -- a read warrant
-// must not be signable by anything that can mint a control capability -- and
-// authority follows the bytes.
-//
-// The comparison is constant-time. It compares secrets, and a comparison that
-// returns early on the first differing byte is a comparison somebody can time.
-// The refusal names the two flags and nothing about the material.
-func (config Config) RefuseCollidingKeyMaterial() error {
-	loaded := map[string][]byte{}
-	for _, key := range []struct{ flag, file string }{
-		{"--materialization-key-file", config.MaterializationKeyFile},
-		{"--capability-key", config.CapabilityKeyFile},
-	} {
-		if strings.TrimSpace(key.file) == "" {
-			continue
-		}
-		material, err := os.ReadFile(key.file)
-		if err != nil {
-			return fmt.Errorf("%w: reading the key named by %s: %v",
-				output.ErrIncomplete, key.flag, err)
-		}
-		loaded[key.flag] = material
-	}
-
-	flags := make([]string, 0, len(loaded))
-	for flag := range loaded {
-		flags = append(flags, flag)
-	}
-	sort.Strings(flags)
-	for i := range flags {
-		for j := i + 1; j < len(flags); j++ {
-			if subtle.ConstantTimeCompare(loaded[flags[i]], loaded[flags[j]]) == 1 {
-				return fmt.Errorf("%w: %s and %s name different files holding the SAME key "+
-					"material. They say different things, so one key would "+
-					"mean rotating either rotates both", output.ErrIncomplete, flags[i], flags[j])
-			}
+		if strings.TrimSpace(set.value) != "" {
+			return fmt.Errorf("%w: %s is set and --output-bucket is not. This daemon "+
+				"carries exact execution control only; a half-configured capture "+
+				"extension is not a base-only daemon, it is a deployment that believes "+
+				"it is publishing", output.ErrIncomplete, set.flag)
 		}
 	}
 

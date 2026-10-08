@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -32,8 +31,8 @@ import (
 // everything the process wrote to stderr and to the standard logger, and grep
 // for the values this test knows and the caller must not learn.
 //
-// Capabilities are in the forbidden set for a different reason than the paths.
-// A path in a refusal tells a caller where to go looking; a capability in one
+// Warrants are in the forbidden set for a different reason than the paths.
+// A path in a refusal tells a caller where to go looking; a warrant in one
 // tells whoever reads the log how to be that caller.
 
 // forbidden is one value that must not appear, with what it would give away.
@@ -51,13 +50,12 @@ func (fixture *routeFixture) forbiddenValues(t *testing.T, extra ...forbidden) [
 		{fixture.bucket, "the output bucket"},
 		{fixture.config.OutputPrefix, "the output bucket's prefix"},
 		{fixture.config.ScratchDir, "the daemon's scratch directory"},
-		{fixture.config.CapabilityKeyFile, "the capability key's location"},
 	}
 	for _, key := range listKeys(t, fixture.store, fixture.bucket) {
 		values = append(values, forbidden{key, "a published object's key"})
 	}
 	for _, token := range fixture.minted {
-		values = append(values, forbidden{string(token), "a control capability"})
+		values = append(values, forbidden{token, "a control warrant"})
 	}
 
 	return append(values, extra...)
@@ -103,7 +101,7 @@ func capturedStderr(t *testing.T) func() string {
 	}
 }
 
-func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T) {
+func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrWarrant(t *testing.T) {
 	stderr := capturedStderr(t)
 	defer func() {
 		if text := stderr(); text != "" {
@@ -116,7 +114,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 
 	// ---- hold ----
 	held := holdRequest()
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", held)
+	status, body := fixture.call(t, "/capture/v1/hold", hangar.PurposeControlCapture, "hold", held)
 	if status != http.StatusOK {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
@@ -124,11 +122,11 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	// A hold from another Pod: a typed conflict naming the capture.
 	conflicting := held
 	conflicting.PodUID = "pod-recreated"
-	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", conflicting)
+	fixture.call(t, "/capture/v1/hold", hangar.PurposeControlCapture, "hold", conflicting)
 
 	// A hold naming a PATH. The refusal for this one is the most tempting place
 	// in the whole surface to echo what the caller sent.
-	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", map[string]any{
+	fixture.call(t, "/capture/v1/hold", hangar.PurposeControlCapture, "hold", map[string]any{
 		"protocol_version": output.ProtocolVersion,
 		"execution":        identity(1),
 		"output":           testOutput,
@@ -139,7 +137,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	writeFile(t, filepath.Join(fixture.stepDir(), "artifact.txt"), "the bytes")
 
 	// ---- seal: first while the Pod still runs, then after it stops ----
-	fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	fixture.call(t, "/capture/v1/seal", hangar.PurposeControlCapture, "seal", sealRequest())
 	fixture.pods.stop(testPod)
 	status, body = fixture.sealOverHTTP(t)
 	if status != http.StatusOK {
@@ -189,22 +187,22 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	// error is translated -- the single most likely place in this daemon for a
 	// key to escape into a message.
 	for _, digest := range []hangar.Digest{sealed.Digest, hangar.Digest("sha256:" + strings.Repeat("de", 32))} {
-		fixture.call(t, "/capture/v1/stat", output.CaptureFacet, "stat", output.CaptureStatRequest{
+		fixture.call(t, "/capture/v1/stat", hangar.PurposeControlCapture, "stat", output.CaptureStatRequest{
 			ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Digest: digest,
 		})
 	}
 
 	// ---- release, twice ----
 	release := output.CaptureReleaseRequest{ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput}
-	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release", release)
-	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release", release)
+	fixture.call(t, "/capture/v1/release", hangar.PurposeControlCapture, "release", release)
+	fixture.call(t, "/capture/v1/release", hangar.PurposeControlCapture, "release", release)
 
 	// A seal of the released capture: the refusal names the missing marker.
-	fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "seal", sealRequest())
+	fixture.call(t, "/capture/v1/seal", hangar.PurposeControlCapture, "seal", sealRequest())
 
-	// ---- the authorization refusals, where a token could be echoed ----
-	fixture.call(t, "/capture/v1/hold", executioncontrol.BaseFacet, "hold", held)
-	fixture.callWith(t, "/capture/v1/hold", "a-forged-capability", held)
+	// ---- the authorization refusals, where a warrant could be echoed ----
+	fixture.call(t, "/capture/v1/hold", hangar.PurposeControlBase, "hold", held)
+	fixture.callWith(t, "/capture/v1/hold", "a-forged-warrant", held)
 	if len(fixture.minted) > 0 {
 		fixture.callWith(t, "/capture/v1/seal", fixture.minted[0], sealRequest())
 	}
@@ -304,8 +302,8 @@ func TestTheOutputPlaneWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
 	for name, found := range writers {
 		t.Errorf("%s writes to a log or to stdout/stderr: %v\n"+
 			"    Every line this daemon emits after startup is on a request path and must be "+
-			"walked by TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability, which "+
-			"greps it for source paths, buckets, object keys and capabilities. Add it to that "+
+			"walked by TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrWarrant, which "+
+			"greps it for source paths, buckets, object keys and warrants. Add it to that "+
 			"scan's collection, then list it here with the reason it is safe.", name, found)
 	}
 
@@ -348,7 +346,7 @@ func TestTheDaemonsOwnFaultsAreNotCallerRefusals(t *testing.T) {
 		status int
 		what   string
 	}{
-		{output.ErrUnauthorized, http.StatusForbidden, "a capability that does not authorize this"},
+		{output.ErrUnauthorized, http.StatusForbidden, "a warrant that does not authorize this"},
 		{output.ErrNotFound, http.StatusNotFound, "an identity this node does not know"},
 		{output.ErrConflict, http.StatusConflict, "a fact that disagrees with a durable one"},
 		{output.ErrSealed, http.StatusConflict, "a write over a sealed source"},

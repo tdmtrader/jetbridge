@@ -1,7 +1,19 @@
 {{- $hangarEnabled := .Values.artifactDaemon.hangar.enabled | default false }}
 {{- $hangarWebEnabled := .Values.artifactDaemon.hangar.webEnabled | default false }}
+{{- $output := .Values.hangarOutput }}
+{{- $base := $output.executionControl.enabled | default false }}
+{{- /*
+The Hangar key, hangar.key: the one raw 32-byte key the web signs every
+warrant with (materialization, read and control) and this daemon verifies
+against. The daemon needs it for strict inputs and for the output plane alike,
+so it is mounted, and its source checked, under either switch.
+*/}}
+{{- $hangarKey := or $hangarEnabled $base }}
 {{- if and $hangarWebEnabled (not $hangarEnabled) }}
   {{- fail "artifactDaemon.hangar.webEnabled requires artifactDaemon.hangar.enabled" }}
+{{- end }}
+{{- if and $hangarKey (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
+  {{- fail "the Hangar key is required: name a Secret holding hangar.key in artifactDaemon.hangar.keySecret, hold hangar.key in artifactDaemon.tls.existingSecret, or set artifactDaemon.hangar.allowGeneratedKey=true (live Helm only; offline/GitOps rendering cannot preserve a generated key)" }}
 {{- end }}
 {{- if $hangarEnabled }}
   {{- if not (has .Values.artifactDaemon.hangar.store (list "gcs" "disk")) }}
@@ -9,9 +21,6 @@
   {{- end }}
   {{- if empty .Values.artifactDaemon.hangar.bucket }}
     {{- fail "artifactDaemon.hangar.bucket is required when Hangar is enabled" }}
-  {{- end }}
-  {{- if and (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
-    {{- fail "artifactDaemon.hangar.allowGeneratedKey=true is required to generate hangar.key; offline/GitOps rendering must use artifactDaemon.tls.existingSecret" }}
   {{- end }}
   {{- $scratch := clean .Values.artifactDaemon.hangar.scratchPath }}
   {{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") }}
@@ -38,17 +47,14 @@
   {{- end }}
 {{- end }}
 {{- /*
-The output plane is mounted in this daemon when exact execution control is on,
-which hands the daemon its capability key (--capability-key; the daemon mounts
-the plane when it is given one): its control ledger is this daemon's storage
-root, its steps are steps/ beneath it, and it is served on this daemon's port
-under this daemon's TLS. The validation runs unconditionally, because the
-refusal an operator most needs is the one for a configuration that renders
-nothing.
+The output plane is mounted in this daemon when exact execution control is on
+(--execution-control; the daemon verifies every warrant with the Hangar key):
+its control ledger is this daemon's storage root, its steps are steps/ beneath
+it, and it is served on this daemon's port under this daemon's TLS. The
+validation runs unconditionally, because the refusal an operator most needs
+is the one for a configuration that renders nothing.
 */}}
 {{- include "concourse.hangarOutput.validate" . }}
-{{- $output := .Values.hangarOutput }}
-{{- $base := $output.executionControl.enabled | default false }}
 {{- $capture := and $base ($output.enabled | default false) }}
 {{- $outputDisk := and $capture (eq $output.store "disk") }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
@@ -143,24 +149,25 @@ spec:
             - --hangar-endpoint={{ .Values.artifactDaemon.hangar.endpoint }}
             {{- end }}
             - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
-            {{- if .Values.artifactDaemon.hangar.keySecret }}
-            - --hangar-warrant-key=/etc/concourse/hangar-warrant-key/hangar.key
-            {{- else }}
-            - --hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
-            {{- end }}
-            - --hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
             - --hangar-max-content-bytes={{ .Values.artifactDaemon.hangar.maxContentBytes | int64 }}
             - --hangar-max-entries={{ .Values.artifactDaemon.hangar.maxEntries | int64 }}
+            {{- end }}
+            {{- if $hangarKey }}
+            # The one Hangar key: the daemon verifies every warrant with it
+            # and signs nothing -- its acknowledgement is its answer over mTLS.
+            {{- if .Values.artifactDaemon.hangar.keySecret }}
+            - --hangar-key=/etc/concourse/hangar-key/hangar.key
+            {{- else }}
+            - --hangar-key=/etc/concourse/daemon-tls/hangar.key
+            {{- end }}
             {{- end }}
             - --mirror-replicas={{ $mirrorReplicas }}
             - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
             - --mirror-timeout={{ .Values.artifactDaemon.mirror.timeout | default "5m" }}
             {{- if $base }}
             # The output plane: exact execution control, and with the output
-            # facet the durable-capture extension. The capability key is what
-            # mounts the plane: the daemon verifies every capability with it,
-            # and signs nothing -- its acknowledgement is its answer over mTLS.
-            - --capability-key=/etc/concourse/hangar-output/capability/capability.key
+            # facet the durable-capture extension.
+            - --execution-control
             - --output-timeout={{ $output.operationTimeout }}
             - --output-scratch-dir={{ .Values.artifactDaemon.outputScratch.path }}
             - --publish-concurrency={{ int .Values.artifactDaemon.outputScratch.concurrency }}
@@ -173,8 +180,6 @@ spec:
             {{- if $output.strictInputBucket }}
             - --strict-input-bucket={{ $output.strictInputBucket }}
             {{- end }}
-            - --materialization-key-id={{ $output.materializationKeyID }}
-            - --materialization-key-file=/etc/concourse/hangar-output/materialize/materialize.key
             {{- end }}
             {{- end }}
           env:
@@ -236,9 +241,9 @@ spec:
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
-            {{- if and $hangarEnabled .Values.artifactDaemon.hangar.keySecret }}
-            - name: hangar-warrant-key
-              mountPath: /etc/concourse/hangar-warrant-key
+            {{- if and $hangarKey .Values.artifactDaemon.hangar.keySecret }}
+            - name: hangar-key
+              mountPath: /etc/concourse/hangar-key
               readOnly: true
             {{- end }}
             - name: resolve-capability
@@ -254,14 +259,6 @@ spec:
             {{- end }}
             - name: output-scratch
               mountPath: {{ .Values.artifactDaemon.outputScratch.path }}
-            - name: output-capability-key
-              mountPath: /etc/concourse/hangar-output/capability
-              readOnly: true
-            {{- if $capture }}
-            - name: output-materialize-key
-              mountPath: /etc/concourse/hangar-output/materialize
-              readOnly: true
-            {{- end }}
             {{- end }}
       volumes:
         {{- if and $hangarEnabled (eq .Values.artifactDaemon.hangar.store "disk") }}
@@ -281,12 +278,12 @@ spec:
                 path: tls.key
               - key: ca.crt
                 path: ca.crt
-              {{- if and $hangarEnabled (not .Values.artifactDaemon.hangar.keySecret) }}
+              {{- if and $hangarKey (not .Values.artifactDaemon.hangar.keySecret) }}
               - key: hangar.key
                 path: hangar.key
               {{- end }}
-        {{- if and $hangarEnabled .Values.artifactDaemon.hangar.keySecret }}
-        - name: hangar-warrant-key
+        {{- if and $hangarKey .Values.artifactDaemon.hangar.keySecret }}
+        - name: hangar-key
           secret:
             secretName: {{ .Values.artifactDaemon.hangar.keySecret }}
             items:
@@ -317,14 +314,6 @@ spec:
             # concurrency. An emptyDir with no sizeLimit is bounded by the
             # node's disk: filling it evicts every Pod on the node.
             sizeLimit: {{ .Values.artifactDaemon.outputScratch.sizeLimit }}
-        - name: output-capability-key
-          secret:
-            secretName: {{ $output.capabilityKeySecret }}
-        {{- if $capture }}
-        - name: output-materialize-key
-          secret:
-            secretName: {{ $output.materializationKeySecret }}
-        {{- end }}
         {{- end }}
       {{- with .Values.artifactDaemon.nodeSelector }}
       nodeSelector:

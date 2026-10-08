@@ -44,11 +44,11 @@ func TestRunInputSigningKeyIsReadAndSeparatedAtStartup(t *testing.T) {
 		})
 	}
 	cmd.RunInputSigningKey = valid
-	cmd.Kubernetes.OutputMaterializationKey = write("same-material.key", bytes.Repeat([]byte{0x51}, 32))
+	cmd.Kubernetes.HangarKey = write("same-hangar.key", bytes.Repeat([]byte{0x51}, 32))
 	if err := cmd.validateRunInputSigningKey(); err == nil || cmd.runInputAuthority != nil {
-		t.Fatal("node-owned key material could mint Run input grants")
+		t.Fatal("the Hangar key could mint Run input grants")
 	}
-	cmd.Kubernetes.OutputMaterializationKey = write("different.key", bytes.Repeat([]byte{0x54}, 32))
+	cmd.Kubernetes.HangarKey = write("different.key", bytes.Repeat([]byte{0x54}, 32))
 	if err := cmd.validateRunInputSigningKey(); err != nil {
 		t.Fatal(err)
 	}

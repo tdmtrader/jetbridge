@@ -29,6 +29,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
@@ -37,9 +38,8 @@ import (
 
 // The node's identities.
 const (
-	nodeName       = "atctest-node"
-	materializeKey = "atctest-materialize-1"
-	serverName     = "artifact-daemon"
+	nodeName   = "atctest-node"
+	serverName = "artifact-daemon"
 )
 
 // node is the one output node: the real artifact daemon, with its output plane
@@ -66,14 +66,15 @@ const (
 // Everything the web node decides about those answers -- authorization,
 // claims, readiness, seals, publication -- is production code.
 type node struct {
-	uid           executioncontrol.NodeUID
-	dir           string
-	process       *exec.Cmd
-	emulator      *fakestorage.Server
-	client        *jetbridge.OutputControlClient
-	http          *http.Client
-	minter        *executioncontrol.CapabilityMinter
-	warrants      *output.ReadWarrantSigner
+	uid      executioncontrol.NodeUID
+	dir      string
+	process  *exec.Cmd
+	emulator *fakestorage.Server
+	client   *jetbridge.OutputControlClient
+	http     *http.Client
+	// signer holds the one Hangar key the daemon verifies against; it mints
+	// the control warrants and the read warrants the harness presents.
+	signer        *hangar.Signer
 	steps         string
 	terminations  string
 	endpoint      string
@@ -123,22 +124,14 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	n.http = &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{pki.client}, RootCAs: pki.roots, ServerName: serverName, MinVersion: tls.VersionTLS12}}}
 
-	capability := make([]byte, executioncontrol.CapabilityKeyBytes)
-	warrant := make([]byte, output.ReadWarrantKeyBytes)
-	for _, key := range [][]byte{capability, warrant} {
-		if _, err = rand.Read(key); err != nil {
-			return n, err
-		}
-	}
-	for name, key := range map[string][]byte{"capability.key": capability, "materialize.key": warrant} {
-		if err = os.WriteFile(filepath.Join(tlsDir, name), key, 0o600); err != nil {
-			return n, err
-		}
-	}
-	if n.minter, err = executioncontrol.NewCapabilityMinter(capability, time.Minute, time.Now); err != nil {
+	key := make([]byte, hangar.WarrantKeyBytes)
+	if _, err = rand.Read(key); err != nil {
 		return n, err
 	}
-	if n.warrants, err = output.NewReadWarrantSigner(warrant); err != nil {
+	if err = os.WriteFile(filepath.Join(tlsDir, "hangar.key"), key, 0o600); err != nil {
+		return n, err
+	}
+	if n.signer, err = hangar.NewSigner(key, time.Minute, time.Now); err != nil {
 		return n, err
 	}
 
@@ -152,8 +145,7 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	n.process = exec.Command(binary,
 		"--output-endpoint", n.emulator.URL(), "--output-bucket", bucket, "--output-prefix", "atctest/one", "--output-tenant", "atctest",
 		"--pod-terminations-dir", n.terminations,
-		"--capability-key", filepath.Join(tlsDir, "capability.key"),
-		"--materialization-key-id", materializeKey, "--materialization-key-file", filepath.Join(tlsDir, "materialize.key"),
+		"--hangar-key", filepath.Join(tlsDir, "hangar.key"), "--execution-control",
 		"--node-uid", string(n.uid),
 		"--storage-path", filepath.Join(dir, "storage"), "--output-scratch-dir", filepath.Join(dir, "scratch"),
 		// The daemon binds a port of its own choosing and reports it, so no
@@ -170,7 +162,7 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	if err = n.awaitReady(logged); err != nil {
 		return n, fmt.Errorf("%w\n%s", err, logged.String())
 	}
-	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.minter).OnNode(n.uid)
+	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.signer).OnNode(n.uid)
 	if err = n.activate(conn); err != nil {
 		return n, err
 	}
@@ -273,7 +265,7 @@ func (n *node) ExecBoundSession(_ context.Context, node string, start executionc
 // execution, the output and the Pod's UID to the daemon, as the generated
 // script does. It is a raw POST because in production it is not a client call.
 func (n *node) hold(ctx context.Context, capture output.Capture, pod executioncontrol.PodUID) error {
-	warrant, err := n.client.MintGrant(output.CaptureFacet, "hold", capture.Execution)
+	warrant, err := n.client.MintGrant(hangar.PurposeControlCapture, "hold", capture.Execution)
 	if err != nil {
 		return err
 	}

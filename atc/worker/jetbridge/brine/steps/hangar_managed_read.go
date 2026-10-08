@@ -95,7 +95,7 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	daemon := in.Tree.Outcome.Source.Draft.Daemon
 	plane := in.Tree.Outcome.Plane
 	clock := output.ClockFunc(func() time.Time { return time.Now().UTC() })
-	signer, err := output.NewReadWarrantSigner(brineReadWarrantKey)
+	signer, err := brineReadWarrantMinter()
 	if err != nil {
 		return in, err
 	}

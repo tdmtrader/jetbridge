@@ -5,7 +5,6 @@
   },
   "capture_extension_version": "hangar-output-v1",
   "source_ledger_version": "hangar-output-source-ledger-v1",
-  "materialization_key_id": "materialize-key-2026-09",
   "bucket_fingerprint": "sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
   "derived_namespace": "deployment-a/0192b3c4d5e6f708"
 }

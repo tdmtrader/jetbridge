@@ -13,8 +13,8 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// FacetLabeler advertises to the scheduler which capability facets this
-// node's daemon serves.
+// Labeler advertises to the scheduler which protocols this node's daemon
+// serves.
 //
 // Two labels, not one, and they go on in order. The base label says this
 // node's daemon serves the exact-execution protocol; the output label says it
@@ -23,37 +23,38 @@ import (
 // and a capture pod's affinity requires both, so a pod placed on that node would
 // have its hold refused on arrival.
 //
-// Neither label is authority: the capability the daemon verifies is, and
+// Neither label is authority: the warrant the daemon verifies is, and
 // hangar_enabled decides whether the plane admits anything at all. What the
 // label buys is that the pod does not land somewhere the hold could never be
 // acknowledged.
-type FacetLabeler struct {
+type Labeler struct {
 	nodes kubernetes.Interface
 	node  string
 }
 
-// NewFacetLabeler returns nil when there is no node to label.
+// NewLabeler returns nil when there is no node to label.
 //
 // Nil is a real answer rather than an error: this daemon runs outside Kubernetes
 // in every test in this package and in the tier-2 conformance suite, and
 // refusing to start there would be the chart's rule enforced in the wrong
 // process. The chart is what makes --node-name present in a cluster.
-func NewFacetLabeler(client kubernetes.Interface, node string) *FacetLabeler {
+func NewLabeler(client kubernetes.Interface, node string) *Labeler {
 	if client == nil || node == "" {
 		return nil
 	}
 
-	return &FacetLabeler{nodes: client, node: node}
+	return &Labeler{nodes: client, node: node}
 }
 
-// Advertise puts the base facet on, then the output facet if there is one.
+// Advertise puts the base label on, then the output label if there is one.
 //
 // TWO patches and not one. They are two claims made at two different moments:
-// the base facet is ready when the execution ledger, the capability key, the
-// protocol and the runtime handshake pass, and the output facet only once the
-// source ledger, the publisher and the read-warrant key pass as well. One patch would make the second claim true at the instant the
-// first one became true, which is the thing the two labels exist to keep apart.
-func (labeler *FacetLabeler) Advertise(ctx context.Context, output bool) error {
+// the base protocol is ready when the execution ledger, the Hangar key, the
+// protocol and the runtime handshake pass, and the capture extension only
+// once the source ledger and the publisher pass as well. One patch would make
+// the second claim true at the instant the first one became true, which is
+// the thing the two labels exist to keep apart.
+func (labeler *Labeler) Advertise(ctx context.Context, output bool) error {
 	if labeler == nil {
 		return nil
 	}
@@ -67,12 +68,12 @@ func (labeler *FacetLabeler) Advertise(ctx context.Context, output bool) error {
 	return labeler.set(ctx, outputReadyLabel, ready())
 }
 
-// WithdrawOutput takes the output facet off and leaves the base facet on.
+// WithdrawOutput takes the output label off and leaves the base label on.
 //
 // A node that stopped advertising exact control would strand every controlled
 // execution the sibling track placed on it, so the base label is not this
 // operation's business.
-func (labeler *FacetLabeler) WithdrawOutput(ctx context.Context) error {
+func (labeler *Labeler) WithdrawOutput(ctx context.Context) error {
 	if labeler == nil {
 		return nil
 	}
@@ -81,7 +82,7 @@ func (labeler *FacetLabeler) WithdrawOutput(ctx context.Context) error {
 }
 
 // WithdrawAll takes both off, output first.
-func (labeler *FacetLabeler) WithdrawAll(ctx context.Context) error {
+func (labeler *Labeler) WithdrawAll(ctx context.Context) error {
 	if labeler == nil {
 		return nil
 	}
@@ -107,7 +108,7 @@ func ready() *string {
 // A merge patch rather than a read-modify-write, because two daemons' labelers
 // and the artifact daemon's all patch the same Node object, and a full update
 // would be last-writer-wins over labels this process does not own.
-func (labeler *FacetLabeler) set(ctx context.Context, label string, value *string) error {
+func (labeler *Labeler) set(ctx context.Context, label string, value *string) error {
 	labels := map[string]any{label: nil}
 	if value != nil {
 		labels[label] = *value

@@ -17,14 +17,14 @@ import (
 
 // The two node labels, and the order they go on and come off in.
 //
-// A ready label is a scheduling HINT and never authority -- the capability
-// the daemon verifies is that -- but the hint decides where the scheduler PUTS a pod, so
-// a label that outlives the facet it advertises is a pod pending forever on a
-// node that cannot admit it, and a label that appears before the facet is a pod
-// whose hold is refused on arrival.
+// A ready label is a scheduling HINT and never authority -- the warrant the
+// daemon verifies is that -- but the hint decides where the scheduler PUTS a
+// pod, so a label that outlives the protocol it advertises is a pod pending
+// forever on a node that cannot admit it, and a label that appears before the
+// protocol is a pod whose hold is refused on arrival.
 //
 // So the order is asserted rather than assumed: base goes on first and comes
-// off last, because the output facet is an extension of it and a node
+// off last, because the capture extension is an extension of it and a node
 // advertising output without base would be offering capture with no
 // exact-execution protocol underneath.
 
@@ -45,12 +45,12 @@ func freshNode(name string) *fake.Clientset {
 	})
 }
 
-func TestTheDaemonAdvertisesTheBaseFacetAloneWhenThatIsAllItHas(t *testing.T) {
+func TestTheDaemonAdvertisesTheBaseLabelAloneWhenThatIsAllItHas(t *testing.T) {
 	client := freshNode("node-a")
-	labeler := NewFacetLabeler(client, "node-a")
+	labeler := NewLabeler(client, "node-a")
 
 	if err := labeler.Advertise(t.Context(), false); err != nil {
-		t.Fatalf("advertising the base facet: %v", err)
+		t.Fatalf("advertising the base label: %v", err)
 	}
 
 	labels := nodeLabels(t, client, "node-a")
@@ -58,17 +58,17 @@ func TestTheDaemonAdvertisesTheBaseFacetAloneWhenThatIsAllItHas(t *testing.T) {
 		t.Errorf("the base ready label is %q, not \"ready\"", labels[executioncontrol.ReadyLabel])
 	}
 	if _, found := labels[output.ReadyLabel]; found {
-		t.Error("a base-control-only daemon advertised the output facet; a capture pod " +
+		t.Error("a base-control-only daemon advertised the output label; a capture pod " +
 			"scheduled onto it would find no publisher")
 	}
 	// And it never claims the strict-input label, which advertises strict
-	// inputs, a different capability of the artifact daemon.
+	// inputs, a different service of the artifact daemon.
 	if _, found := labels["concourse.dev/hangar-v1"]; found {
-		t.Error("the output plane advertised the strict-input capability")
+		t.Error("the output plane advertised the strict-input label")
 	}
 }
 
-func TestTheOutputFacetIsAdvertisedOnlyOnTopOfTheBaseOne(t *testing.T) {
+func TestTheOutputLabelIsAdvertisedOnlyOnTopOfTheBaseOne(t *testing.T) {
 	client := freshNode("node-a")
 
 	var patched []map[string]string
@@ -82,8 +82,8 @@ func TestTheOutputFacetIsAdvertisedOnlyOnTopOfTheBaseOne(t *testing.T) {
 		return false, nil, nil
 	})
 
-	if err := NewFacetLabeler(client, "node-a").Advertise(t.Context(), true); err != nil {
-		t.Fatalf("advertising both facets: %v", err)
+	if err := NewLabeler(client, "node-a").Advertise(t.Context(), true); err != nil {
+		t.Fatalf("advertising both labels: %v", err)
 	}
 
 	labels := nodeLabels(t, client, "node-a")
@@ -94,16 +94,16 @@ func TestTheOutputFacetIsAdvertisedOnlyOnTopOfTheBaseOne(t *testing.T) {
 	}
 
 	if len(patched) != 2 {
-		t.Fatalf("the two facets were advertised in %d patches; they are two claims and a "+
+		t.Fatalf("the two labels were advertised in %d patches; they are two claims and a "+
 			"single patch would make the output label appear at the same instant as the base "+
 			"one it depends on", len(patched))
 	}
 	if _, base := patched[0][executioncontrol.ReadyLabel]; !base {
-		t.Errorf("the FIRST patch is %v; the base facet goes on first, because the output "+
-			"facet is an extension of it", patched[0])
+		t.Errorf("the FIRST patch is %v; the base label goes on first, because the output "+
+			"label is an extension of it", patched[0])
 	}
 	if _, out := patched[1][output.ReadyLabel]; !out {
-		t.Errorf("the SECOND patch is %v; it should be the output facet", patched[1])
+		t.Errorf("the SECOND patch is %v; it should be the output label", patched[1])
 	}
 }
 
@@ -132,9 +132,9 @@ func TestWithdrawalTakesTheOutputLabelOffFirstAndTheBaseLabelOffLast(t *testing.
 		return false, nil, nil
 	})
 
-	labeler := NewFacetLabeler(client, "node-a")
+	labeler := NewLabeler(client, "node-a")
 	if err := labeler.WithdrawOutput(t.Context()); err != nil {
-		t.Fatalf("withdrawing the output facet: %v", err)
+		t.Fatalf("withdrawing the output label: %v", err)
 	}
 
 	labels := nodeLabels(t, client, "node-a")
@@ -166,10 +166,10 @@ func TestWithdrawalTakesTheOutputLabelOffFirstAndTheBaseLabelOffLast(t *testing.
 			"assertion to mean anything: %v", len(order), order)
 	}
 	if order[0] != output.ReadyLabel {
-		t.Errorf("the first label withdrawn was %q; the output facet comes off first", order[0])
+		t.Errorf("the first label withdrawn was %q; the output label comes off first", order[0])
 	}
 	if order[len(order)-1] != executioncontrol.ReadyLabel {
-		t.Errorf("the last label withdrawn was %q; the base facet comes off last",
+		t.Errorf("the last label withdrawn was %q; the base label comes off last",
 			order[len(order)-1])
 	}
 }
@@ -182,7 +182,7 @@ func TestAFailedLabelPatchIsAnError(t *testing.T) {
 		return true, nil, errors.New("the API server said no")
 	})
 
-	if err := NewFacetLabeler(client, "node-a").Advertise(t.Context(), true); err == nil {
+	if err := NewLabeler(client, "node-a").Advertise(t.Context(), true); err == nil {
 		t.Error("a failed patch was swallowed; a daemon whose readiness never reached the " +
 			"node is one the scheduler will never send work to, and it should say so")
 	}
@@ -192,7 +192,7 @@ func TestAFailedLabelPatchIsAnError(t *testing.T) {
 // test in this package and in the conformance tier, and refusing to start there
 // would be the chart's rule enforced in the wrong process.
 func TestNoNodeNameMeansNoLabeling(t *testing.T) {
-	if NewFacetLabeler(nil, "") != nil {
+	if NewLabeler(nil, "") != nil {
 		t.Error("a labeler was built with no node to label")
 	}
 }

@@ -17,7 +17,7 @@ package hangaroutput_test
 // would be a second answer to that question.
 //
 // A REAL HTTP client -- jetbridge's own OutputControlClient, the one production
-// uses -- so the capability minting, the facet scoping and the wire encoding
+// uses -- so the warrant minting, the purpose scoping and the wire encoding
 // are the production ones. Importing it here is a test-only edge and creates no
 // cycle: the runtime does not import this package, the command that wires them
 // together does.
@@ -61,6 +61,7 @@ import (
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -274,10 +275,10 @@ type daemonProcess struct {
 	// what a pod on the node holds.
 	Node *http.Client
 
-	// controlHTTP and minter are what Client was built from, for a spec that
+	// controlHTTP and signer are what Client was built from, for a spec that
 	// needs a second client with a different timeout.
 	controlHTTP *http.Client
-	minter      *executioncontrol.CapabilityMinter
+	signer      *hangar.Signer
 
 	cmd  *exec.Cmd
 	args []string
@@ -300,21 +301,12 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		}
 	}
 
-	secret := make([]byte, executioncontrol.CapabilityKeyBytes)
-	if _, err := rand.Read(secret); err != nil {
-		t.Fatalf("secret: %v", err)
-	}
-	capabilityKey := filepath.Join(dir, "capability.key")
-	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
-		t.Fatalf("capability key: %v", err)
-	}
-	// The output read-warrant key, and it is the SAME material the control-plane
-	// side of this harness mints warrants with: one key on both sides is what
-	// makes a warrant the harness signs one the daemon can verify. The daemon
-	// refuses a configuration where two of its keys are one file.
-	materializeKey := filepath.Join(dir, "materialize.key")
-	if err := os.WriteFile(materializeKey, readWarrantKey, 0o600); err != nil {
-		t.Fatalf("read-warrant key: %v", err)
+	// The one Hangar key, and it is the SAME material the control-plane side
+	// of this harness mints every warrant with: one key on both sides is what
+	// makes a warrant the harness signs one the daemon can verify.
+	keyFile := filepath.Join(dir, "hangar.key")
+	if err := os.WriteFile(keyFile, hangarKey, 0o600); err != nil {
+		t.Fatalf("Hangar key: %v", err)
 	}
 
 	port := freePort(t)
@@ -330,9 +322,8 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--output-tenant", "harness",
 		"--pod-terminations-dir", filepath.Join(dir, "terminations"),
 		"--capture-seal-wait", "30s",
-		"--capability-key", capabilityKey,
-		"--materialization-key-id", "harness-materialize-1",
-		"--materialization-key-file", materializeKey,
+		"--hangar-key", keyFile,
+		"--execution-control",
 		"--node-uid", harnessNode,
 		"--storage-path", filepath.Join(dir, "storage"),
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
@@ -343,9 +334,9 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--tls-ca-cert", filepath.Join(dir, "ca.crt"),
 	}
 
-	minter, err := executioncontrol.NewCapabilityMinter(secret, time.Minute, time.Now)
+	signer, err := hangar.NewSigner(hangarKey, time.Minute, time.Now)
 	if err != nil {
-		t.Fatalf("minter: %v", err)
+		t.Fatalf("Hangar signer: %v", err)
 	}
 
 	process := &daemonProcess{
@@ -357,8 +348,8 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		Node:         nodeClient,
 		args:         args,
 	}
-	process.controlHTTP, process.minter = controlClient, minter
-	process.Client = jetbridge.NewOutputControlClient(base, controlClient, minter)
+	process.controlHTTP, process.signer = controlClient, signer
+	process.Client = jetbridge.NewOutputControlClient(base, controlClient, signer)
 	process.start(t, binary)
 
 	return process
@@ -395,7 +386,7 @@ func (process *daemonProcess) ClientWithTimeout(timeout time.Duration) *jetbridg
 	httpClient := *process.controlHTTP
 	httpClient.Timeout = timeout
 
-	return jetbridge.NewOutputControlClient(process.Endpoint, &httpClient, process.minter)
+	return jetbridge.NewOutputControlClient(process.Endpoint, &httpClient, process.signer)
 }
 
 // Kill is a SIGKILL: the process gets no chance to finish anything it was
@@ -449,7 +440,7 @@ func (process *daemonProcess) holdSource(t *testing.T, execution executioncontro
 	name output.OutputName, pod executioncontrol.PodUID) (int, output.CaptureHoldAcknowledgement) {
 	t.Helper()
 
-	warrant, err := process.Client.MintGrant(output.CaptureFacet, "hold", execution)
+	warrant, err := process.Client.MintGrant(hangar.PurposeControlCapture, "hold", execution)
 	if err != nil {
 		t.Fatalf("minting the hold warrant: %v", err)
 	}

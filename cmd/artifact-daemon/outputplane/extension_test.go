@@ -8,21 +8,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// The two facets, and what a daemon that has only the base one may say.
+// The capture extension, and what a daemon that has only the base protocol
+// may say.
 //
 // A base-only daemon is a real deployment: it is the one the sibling
-// `exact_execution_control` track schedules onto, and withdrawing the output
-// facet must reach it from a running output plane without taking exact process
-// control away. So the output facet is OPTIONAL configuration in this binary
+// `exact_execution_control` track schedules onto, and withdrawing the capture
+// extension must reach it from a running output plane without taking exact
+// process control away. So the extension is OPTIONAL configuration in this binary
 // rather than a precondition of starting it, and the boundary between "this
 // daemon has no output bucket" and "this daemon refuses to publish" is a typed
 // refusal rather than a nil dereference.
 
-// baseOnlyConfig is validConfig with the whole output facet removed.
+// baseOnlyConfig is validConfig with the whole capture extension removed.
 func baseOnlyConfig(t *testing.T) Config {
 	t.Helper()
 
@@ -33,47 +34,40 @@ func baseOnlyConfig(t *testing.T) Config {
 	config.OutputEndpoint = ""
 	config.CacheBucket = ""
 	config.StrictInputBucket = ""
-	config.MaterializationKeyID = ""
-	config.MaterializationKeyFile = ""
 
 	return config
 }
 
-func TestABaseControlDaemonBuildsWithNoOutputFacetAtAll(t *testing.T) {
+func TestABaseControlDaemonBuildsWithNoCaptureExtensionAtAll(t *testing.T) {
 	daemon, err := Build(t.Context(), baseOnlyConfig(t))
 	if err != nil {
 		t.Fatalf("a base-control-only daemon did not build: %v", err)
 	}
 
 	if daemon.OutputEnabled() {
-		t.Error("a daemon with no output bucket reports the output facet enabled")
+		t.Error("a daemon with no output bucket reports the capture extension enabled")
 	}
 
 	// The control, so the row above is not "a daemon that builds from anything":
-	// the output facet still builds when it is configured.
+	// the capture extension still builds when it is configured.
 	server, bucket := emulator(t)
 	withOutput, err := Build(t.Context(), validConfig(t, server.URL(), bucket))
 	if err != nil {
-		t.Fatalf("the output facet did not build: %v", err)
+		t.Fatalf("the capture extension did not build: %v", err)
 	}
 	if !withOutput.OutputEnabled() {
-		t.Error("a daemon with an output bucket reports the output facet disabled")
+		t.Error("a daemon with an output bucket reports the capture extension disabled")
 	}
 }
 
-// A half-configured output facet is not a base-only daemon. Reaching base-only
-// by deleting one value would be a deployment that believes it is publishing.
-func TestAHalfConfiguredOutputFacetIsRefused(t *testing.T) {
+// A half-configured capture extension is not a base-only daemon. Reaching
+// base-only by deleting one value would be a deployment that believes it is
+// publishing.
+func TestAHalfConfiguredCaptureExtensionIsRefused(t *testing.T) {
 	for name, mutate := range map[string]func(*Config){
 		"a prefix with no bucket":    func(c *Config) { c.OutputPrefix = "deployments/blue" },
 		"a tenant with no bucket":    func(c *Config) { c.OutputTenant = "tenant-a" },
 		"an endpoint with no bucket": func(c *Config) { c.OutputEndpoint = "http://gcs.test" },
-		"a materialization key id with no bucket": func(c *Config) {
-			c.MaterializationKeyID = "materialize-1"
-		},
-		"a materialization key with no bucket": func(c *Config) {
-			c.MaterializationKeyFile = writeMaterializationKey(t)
-		},
 	} {
 		config := baseOnlyConfig(t)
 		mutate(&config)
@@ -85,7 +79,7 @@ func TestAHalfConfiguredOutputFacetIsRefused(t *testing.T) {
 }
 
 // The same rule from the other side: a daemon that publishes nothing is given no
-// publisher. A capability built into a process that cannot need it is one an
+// publisher. A power built into a process that cannot need it is one an
 // exploit of that process gets for free.
 func TestABaseOnlyDaemonHoldsNoPublisher(t *testing.T) {
 	daemon, err := Build(t.Context(), baseOnlyConfig(t))
@@ -106,7 +100,7 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 	fixture := newBaseOnlyRoutes(t)
 
 	// The control.
-	status, body := fixture.call(t, "/execution/v1/classify", executioncontrol.BaseFacet,
+	status, body := fixture.call(t, "/execution/v1/classify", hangar.PurposeControlBase,
 		"classify", identifiedBy(identity(1)))
 	if status == http.StatusNotImplemented {
 		t.Fatalf("a base route was refused as unimplemented: %d %s", status, body)
@@ -128,10 +122,10 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 	}
 
 	for _, route := range captureRoutes {
-		status, body := fixture.call(t, route.path, output.CaptureFacet, route.operation,
+		status, body := fixture.call(t, route.path, hangar.PurposeControlCapture, route.operation,
 			map[string]any{"execution": identifiedBy(identity(1))})
 		if status != http.StatusNotImplemented {
-			t.Errorf("%s answered %d, not 501: a daemon with no output facet must refuse "+
+			t.Errorf("%s answered %d, not 501: a daemon with no capture extension must refuse "+
 				"capture, not attempt it\n%s", route.path, status, body)
 
 			continue
@@ -160,8 +154,8 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 }
 
 // The extension handshake says a daemon speaks capture, and it is only
-// truthful where the facet exists.
-func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
+// truthful where the extension exists.
+func TestTheExtensionHandshakeIsServedOnlyWithTheCaptureExtension(t *testing.T) {
 	full := newRoutes(t)
 
 	response, err := http.Get(full.server.URL + "/capture/v1/handshake")
@@ -208,7 +202,7 @@ func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 	}
 }
 
-// newBaseOnlyRoutes serves a daemon whose output facet was never configured.
+// newBaseOnlyRoutes serves a daemon whose capture extension was never configured.
 //
 // It shares the route fixture's plumbing so the two are driven identically; the
 // difference under test is the daemon, not the harness.
@@ -223,15 +217,15 @@ func newBaseOnlyRoutes(t *testing.T) *routeFixture {
 		t.Fatalf("building a base-control-only daemon: %v", err)
 	}
 
-	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret(), time.Minute, source.clock)
+	signer, err := hangar.NewSigner(hangarKey(), time.Minute, source.clock)
 	if err != nil {
-		t.Fatalf("building the minter: %v", err)
+		t.Fatalf("building the signer: %v", err)
 	}
 
 	fixture := &routeFixture{
 		captureFixture: source,
 		daemon:         daemon,
-		minter:         minter,
+		signer:         signer,
 		config:         config,
 	}
 	fixture.serveBaseOnly(t)
@@ -240,7 +234,7 @@ func newBaseOnlyRoutes(t *testing.T) *routeFixture {
 }
 
 // serveBaseOnly is serve with a nil capture ledger, which is what main.go builds
-// when the output facet is off: a daemon that captures nothing opens no
+// when the capture extension is off: a daemon that captures nothing opens no
 // capture ledger.
 func (fixture *routeFixture) serveBaseOnly(t *testing.T) {
 	t.Helper()
@@ -248,15 +242,8 @@ func (fixture *routeFixture) serveBaseOnly(t *testing.T) {
 	if fixture.server != nil {
 		fixture.server.Close()
 	}
-	verifier, err := executioncontrol.NewCapabilityVerifier(
-		capabilitySecret(), time.Minute, fixture.clock)
-	if err != nil {
-		t.Fatalf("building the verifier: %v", err)
-	}
-	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.captureFixture.store}); err != nil {
-		t.Fatalf("opening the spent-capability record: %v", err)
-	}
+	warrants, spent := fixture.verifying(t, fixture.captureFixture.store)
 	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,
-		nil, verifier).Handler())
+		nil, warrants, spent).Handler())
 	t.Cleanup(fixture.server.Close)
 }

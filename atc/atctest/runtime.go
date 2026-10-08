@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/google/uuid"
@@ -130,7 +131,7 @@ func (p *Platform) start(ctx context.Context, team, template string, number int,
 		return nil, err
 	}
 	c := producer.capture
-	observe, err := n.client.MintGrant(executioncontrol.BaseFacet, "observe", c.Execution)
+	observe, err := n.client.MintGrant(hangar.PurposeControlBase, "observe", c.Execution)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +373,7 @@ func (p *Platform) Input(t testing.TB, team, template string, number int, name s
 	}
 	destination := output.ReadDestination{Handle: uuid.NewString(), Volume: "input"}
 	admission := hangaroutput.ReadAdmission{Transactor: transactor{p.conn}, Claims: db.NewHangarOutputRepository(prefix), Stat: p.node.client,
-		Minter: p.node.warrants, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
+		Minter: output.ReadWarrantMinter{Signer: p.node.signer}, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() })}
 	warrant, err := admission.Admit(ctx, hangaroutput.ReadRequest{ClaimID: output.ClaimID(uuid.NewString()), Binding: output.OpaqueID("atctest-read:" + destination.Handle),
 		Ref: binding.Ref, Destination: destination, MaterializationTimeout: time.Minute, NodeUID: p.node.uid})
 	if err != nil {

@@ -270,7 +270,7 @@ this table:
   - **MEASURED M30** — `the source-control route string-joins the request's path` — RED at `the daemon's refusal says "containment"`
 
 **A base control capability cannot hold, seal or publish**  `@HOP-3 @HOP-24`  (:150)
-  - **Reddened by (as the file states it):** the capability middleware checking that a token is VALID without checking that its facet matches the route it arrived on. The control is the same token succeeding at its own operation, asserted first, so this cannot go green on a daemon that rejects the token outright.
+  - **Reddened by (as the file states it):** the capability middleware checking that a token is VALID without checking that its purpose matches the route it arrived on. The control is the same token succeeding at its own operation, asserted first, so this cannot go green on a daemon that rejects the token outright.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
 **A writer ticket issued after the seal is a typed refusal, and one issued before it is not**  `@HOP-12 @HOP-13`  (:164)

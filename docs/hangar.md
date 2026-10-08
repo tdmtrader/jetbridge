@@ -56,10 +56,14 @@ the largest admitted canonical tree plus compressed/object-transfer staging.
 Lower `maxContentBytes` and `maxEntries` to fit the node budget. The scratch
 path must not equal, contain, or sit beneath `artifactDaemon.hostPath`.
 
-## Capability key
+## The Hangar key
 
-With chart-managed artifact-daemon TLS, the same Secret also contains a
-separate `hangar.key`. This mode requires the explicit
+One raw 32-byte key, `hangar.key`, signs every warrant -- materialization,
+read and control -- and every artifact daemon verifies against it. Name a
+Secret holding it in `artifactDaemon.hangar.keySecret`; the web reads it
+through `--kubernetes-hangar-key` and the daemon through `--hangar-key`.
+Without `keySecret`, with chart-managed artifact-daemon TLS, the same Secret
+also contains `hangar.key`. That mode requires the explicit
 `hangar.allowGeneratedKey: true` opt-in and is supported only for live Helm
 install/upgrade, where `lookup` can read and preserve the existing Secret.
 Helm generates 32 cryptographically random bytes only when the key is absent;
@@ -77,13 +81,14 @@ The chart mounts that selected key read-only into only the web and daemon
 containers. A missing entry prevents the Pods from starting; a wrong-length
 entry is rejected by both binaries at startup.
 
-The web process signs short-lived warrants and the daemon verifies the same
-configured `capabilityTTL`. Chart values use positive whole-second syntax; the
-default and maximum are `900s` (15 minutes), and `1s` is the minimum. Shorter
-values reduce replay exposure. Task Pod specs contain only attenuated warrants
-bound to one tree ref, handle, volume, and expiry. Anyone who can read
-Pod specs during that window can see those warrants, but the long-lived signing
-key is never placed in a task Pod command, environment, or volume.
+The web process signs short-lived warrants with the configured `capabilityTTL`
+window, and the daemon accepts none that lives longer than 15 minutes. Chart
+values use positive whole-second syntax; the default and maximum are `900s`
+(15 minutes), and `1s` is the minimum. Shorter values reduce replay exposure.
+Task Pod specs contain only attenuated warrants bound to one tree ref, handle,
+volume, and expiry. Anyone who can read Pod specs during that window can see
+those warrants, but the long-lived signing key is never placed in a task Pod
+command, environment, or volume.
 
 ## Runtime and failure semantics
 
@@ -162,12 +167,12 @@ refs, and protects them with claims: a consumer's hold lasts until released,
 a reader's expires. The node's artifact daemon publishes; the web reclaims,
 through two components of its own -- `hangar_reclaim` (an unclaimed
 generation is deleted and stamped reclaimed) and `hangar_orphan_sweep` --
-which share one PostgreSQL advisory lock across web replicas. It remains opt-in: `hangarOutput.executionControl.enabled` turns on the
-daemon's base execution-control protocol; `hangarOutput.enabled` mounts the
-output plane in the artifact daemon, which mounts it once its capability key
-is configured (the base facet cannot verify a capability without it); and
-`hangarOutput.webEnabled` puts the plane **in service**. Configure keys and
-mutual TLS as described in `deploy/chart/values.yaml`. Changing the storage
+which share one PostgreSQL advisory lock across web replicas. It remains opt-in: `hangarOutput.executionControl.enabled` renders the
+daemon's `--execution-control`, which mounts the output plane (the base
+execution-control protocol, and with `hangarOutput.enabled` the capture
+extension), verifying every warrant with the Hangar key it already holds; and
+`hangarOutput.webEnabled` puts the plane **in service**. Configure the Hangar
+key and mutual TLS as described in `deploy/chart/values.yaml`. Changing the storage
 selector does not bypass these gates.
 
 ### In service, and the drain

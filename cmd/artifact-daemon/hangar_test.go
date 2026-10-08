@@ -82,6 +82,12 @@ func canonicalHangarTree(t *testing.T, scratch string, raw []byte) ([]byte, hang
 	return content, tree.Digest
 }
 
+// materializeWarrant is the bound fields of a materialization warrant, as the
+// web mints one.
+func materializeWarrant(ref hangar.TreeRef, handle, volume string) hangar.Warrant {
+	return hangar.Warrant{Purpose: hangar.PurposeMaterializeInput, Ref: ref, Handle: handle, Volume: volume}
+}
+
 func newHangarTestServer(t *testing.T, store hangar.Store) (*Server, *HangarService, []byte) {
 	t.Helper()
 	return newHangarTestServerWithLogger(t, store, lagertest.NewTestLogger("hangar-daemon"))
@@ -92,13 +98,13 @@ func newHangarTestServerWithLogger(t *testing.T, store hangar.Store, logger lage
 	storage := t.TempDir()
 	scratch := t.TempDir()
 	key := bytes.Repeat([]byte{0x42}, 32)
-	verifier, err := hangar.NewWarrantVerifier(key, hangar.MaxWarrantTTL, nil)
+	verifier, err := hangar.NewVerifier(key, hangar.MaxWarrantTTL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	canonicalizer := hangar.Canonicalizer{TempDir: scratch, MaxEntries: 10, MaxContentBytes: 1024}
 	service := &HangarService{
-		Store: store, Canonicalizer: canonicalizer, WarrantVerifier: verifier,
+		Store: store, Canonicalizer: canonicalizer, Verifier: verifier,
 		Materializer:    &hangar.Materializer{Store: store, Canonicalizer: canonicalizer, StoragePath: storage, MaxTreeBytes: 1 << 20},
 		MaxContentBytes: 1024, MaxEntries: 10, MaxArchiveBytes: 1 << 20, MaxControlBytes: 16 << 10,
 	}
@@ -314,8 +320,8 @@ func TestHangarMaterializationAuthorizesEntireBatchBeforeMutation(t *testing.T) 
 		return io.NopCloser(bytes.NewReader(canonical)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(canonical))}, nil
 	}
 	server, _, key := newHangarTestServer(t, store)
-	signer, _ := hangar.NewWarrantSigner(key, time.Minute, nil)
-	valid, _ := signer.Sign(ref, "handle", "volume-a")
+	signer, _ := hangar.NewSigner(key, time.Minute, nil)
+	valid, _ := signer.Sign(materializeWarrant(ref, "handle", "volume-a"))
 	body := map[string]any{"items": []any{
 		map[string]any{"ref": ref, "handle": "handle", "volume": "volume-a", "warrant": "Bearer " + valid},
 		map[string]any{"ref": ref, "handle": "handle", "volume": "volume-b", "warrant": "Bearer invalid"},
@@ -342,8 +348,8 @@ func TestHangarMaterializesWithExactWarrantAndSafeSegments(t *testing.T) {
 		return io.NopCloser(bytes.NewReader(canonical)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(canonical))}, nil
 	}
 	server, _, key := newHangarTestServer(t, store)
-	signer, _ := hangar.NewWarrantSigner(key, time.Minute, nil)
-	token, _ := signer.Sign(ref, "handle", "volume")
+	signer, _ := hangar.NewSigner(key, time.Minute, nil)
+	token, _ := signer.Sign(materializeWarrant(ref, "handle", "volume"))
 	body, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"ref": ref, "handle": "handle", "volume": "volume", "warrant": "Bearer " + token}}})
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", bytes.NewReader(body)))
@@ -420,8 +426,8 @@ func TestHangarMaterializationStoreFailureLeavesTargetUntouched(t *testing.T) {
 		return nil, hangar.TreeAttributes{}, hangar.ErrInfrastructure
 	}
 	server, _, key := newHangarTestServer(t, store)
-	signer, _ := hangar.NewWarrantSigner(key, time.Minute, nil)
-	token, _ := signer.Sign(ref, "handle", "volume")
+	signer, _ := hangar.NewSigner(key, time.Minute, nil)
+	token, _ := signer.Sign(materializeWarrant(ref, "handle", "volume"))
 	body, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"ref": ref, "handle": "handle", "volume": "volume", "warrant": "Bearer " + token}}})
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", bytes.NewReader(body)))
@@ -448,11 +454,11 @@ func TestHangarInfrastructureFailureIsNotCountedAsARefusal(t *testing.T) {
 	}
 	logger := lagertest.NewTestLogger("hangar-fault")
 	server, _, key := newHangarTestServerWithLogger(t, store, logger)
-	signer, err := hangar.NewWarrantSigner(key, time.Minute, nil)
+	signer, err := hangar.NewSigner(key, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := signer.Sign(ref, "handle", "volume")
+	token, err := signer.Sign(materializeWarrant(ref, "handle", "volume"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,12 +638,9 @@ func TestHangarConcurrentIdenticalPublish(t *testing.T) {
 
 func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testing.T) {
 	base := hangarOptions{
-		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), WarrantKey: filepath.Join(t.TempDir(), "key"),
-		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute, Store: "gcs", Bucket: "bucket", Timeout: time.Minute,
+		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), Key: bytes.Repeat([]byte{1}, 32),
+		MaxContentBytes: 1024, MaxEntries: 10, Store: "gcs", Bucket: "bucket", Timeout: time.Minute,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
-	}
-	if err := os.WriteFile(base.WarrantKey, bytes.Repeat([]byte{1}, 32), 0600); err != nil {
-		t.Fatal(err)
 	}
 	disk := base
 	disk.Store = "disk"
@@ -667,10 +670,8 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 		{"filesystem", func(o *hangarOptions) { o.Store = "filesystem" }},
 		{"empty-bucket", func(o *hangarOptions) { o.Bucket = "" }},
 		{"relative-scratch", func(o *hangarOptions) { o.ScratchDir = "relative" }},
-		{"bad-key", func(o *hangarOptions) {
-			o.WarrantKey = filepath.Join(t.TempDir(), "short")
-			_ = os.WriteFile(o.WarrantKey, []byte("short"), 0600)
-		}},
+		{"no-key", func(o *hangarOptions) { o.Key = nil }},
+		{"short-key", func(o *hangarOptions) { o.Key = []byte("short") }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -680,26 +681,6 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 				t.Fatal("accepted invalid Hangar configuration")
 			}
 		})
-	}
-}
-
-func TestHangarConfigRejectsCapabilityTTLOutsideCoreBound(t *testing.T) {
-	keyPath := filepath.Join(t.TempDir(), "hangar.key")
-	if err := os.WriteFile(keyPath, bytes.Repeat([]byte("k"), 32), 0600); err != nil {
-		t.Fatal(err)
-	}
-	base := hangarOptions{
-		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), WarrantKey: keyPath,
-		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute,
-		Store: "gcs", Bucket: "bucket", Timeout: time.Minute,
-		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
-	}
-	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxWarrantTTL + time.Nanosecond} {
-		opts := base
-		opts.WarrantTTL = ttl
-		if err := validateHangarOptions(opts, filepath.Join(t.TempDir(), "artifacts")); err == nil || !strings.Contains(err.Error(), "hangar-warrant-ttl") {
-			t.Fatalf("TTL %s: got %v, want bounded warrant TTL error", ttl, err)
-		}
 	}
 }
 
@@ -721,14 +702,10 @@ func TestHangarGCSValidatesItsBucketAtBuild(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"missing"}}`))
 	}))
 	defer fakeGCS.Close()
-	keyPath := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyPath, bytes.Repeat([]byte{7}, 32), 0600); err != nil {
-		t.Fatal(err)
-	}
 	storage := t.TempDir()
 	scratch := filepath.Join(t.TempDir(), "scratch")
 	service, closeService, err := buildHangarService(context.Background(), lagertest.NewTestLogger("hangar-build"), storage, hangarOptions{
-		Enabled: true, ScratchDir: scratch, WarrantKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute,
+		Enabled: true, ScratchDir: scratch, Key: bytes.Repeat([]byte{7}, 32), MaxContentBytes: 1024, MaxEntries: 10,
 		Store: "gcs", Bucket: "bucket", Endpoint: fakeGCS.URL, Timeout: time.Second,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	})

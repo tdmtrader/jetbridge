@@ -20,9 +20,9 @@
 // contract. Every enum is closed: an unknown or newly added member is refused
 // at decode, never absorbed into a zero value.
 //
-// This package is a leaf. It imports nothing first-party — not even hangar,
-// because an exact TreeRef is an output concept and this protocol has no
-// outputs.
+// This package imports hangar, and nothing else first-party: the control
+// warrant the web presents on every call is the one Hangar warrant
+// (hangar.Warrant), minted with the one Hangar key under a control purpose.
 package executioncontrol
 
 import (
@@ -39,7 +39,7 @@ import (
 const ProtocolVersion = "hangar-execution-control-v1"
 
 // ReadyLabel says a node's daemon serves this protocol. It is a scheduling
-// hint and never an authority: the capability the daemon verifies is.
+// hint and never an authority: the warrant the daemon verifies is.
 //
 // It is deliberately distinct from concourse.dev/hangar-v1, which advertises
 // strict inputs only, and from concourse.dev/hangar-output-v1, which
@@ -110,9 +110,10 @@ type PodUID string
 // alone is not one: PIDs are reused.
 type ProcessIdentity string
 
-// ControlCapability is an attenuated, opaque bearer capability for one
-// execution's control operations. It authorizes stop and observation, never
-// deletion, and is not a credential for any object store.
+// ControlCapability is the opaque wire form of a control warrant for one
+// execution's control operations (hangar.PurposeControlBase or
+// hangar.PurposeControlCapture). It authorizes one operation, never deletion,
+// and is not a credential for any object store.
 type ControlCapability string
 
 // Identity is the exact identity of one controlled execution under one fence.

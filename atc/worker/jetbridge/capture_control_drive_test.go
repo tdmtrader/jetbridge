@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/ledger"
@@ -105,7 +106,7 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	}); err != nil {
 		return "", fmt.Errorf("admitting: %w", err)
 	}
-	grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+	grant, err := harness.Client.MintGrant(hangar.PurposeControlCapture, "hold", identity)
 	if err != nil {
 		return "", fmt.Errorf("minting the grant: %w", err)
 	}

@@ -25,13 +25,11 @@ var bootstrapSets = []string{
 	"hangarBootstrap.enabled=true",
 	"postgresql.existingSecret=op-db-password",
 	"hangarOutput.executionControl.enabled=true",
-	"hangarOutput.capabilityKeySecret=op-capability-key",
 	"artifactDaemon.outputScratch.sizeLimit=32Gi",
 	"hangarOutput.enabled=true",
 	"hangarOutput.webEnabled=true",
 	"hangarOutput.tenant=tenant-a",
 	"hangarOutput.bucket=outputs",
-	"hangarOutput.materializationKeySecret=op-output-materialize",
 	"hangarStorage.disk.enabled=true",
 	"hangarStorage.disk.storeID=store-1",
 	"hangarStorage.disk.tls.existingSecret=storage-tls",
@@ -57,7 +55,7 @@ func TestTheHangarBootstrapIsOffByDefault(t *testing.T) {
 	if strings.Contains(out, "argocd.argoproj.io/sync-wave") {
 		t.Error("the default render carries a sync-wave annotation")
 	}
-	if strings.Contains(out, "hangar-warrant-key") {
+	if strings.Contains(out, "hangar-key") {
 		t.Error("the default render mounts a bootstrap Secret")
 	}
 }
@@ -67,14 +65,14 @@ func TestTheHangarBootstrapIsOffByDefault(t *testing.T) {
 func TestTheBootstrapRendersWithEveryFeatureOff(t *testing.T) {
 	out := render(t,
 		"hangarBootstrap.enabled=true",
-		"hangarOutput.capabilityKeySecret=op-capability-key",
-		"hangarOutput.materializationKeySecret=op-output-materialize",
 		"hangarStorage.disk.tls.existingSecret=storage-tls",
 		"hangarStorage.disk.credentials.existingSecret=storage-credentials",
 		"artifactDaemon.hangar.keySecret=op-hangar-key",
 	)
 	inv := renderedInventory(t, out)
-	if len(inv.Entries) < 5 {
+	// The Hangar key, the disk store's TLS bundle and tokens, and the Run
+	// input signing key the bootstrap always declares.
+	if len(inv.Entries) != 4 {
 		t.Errorf("the inventory has %d entries, want every named Secret", len(inv.Entries))
 	}
 }

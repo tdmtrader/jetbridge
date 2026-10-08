@@ -62,9 +62,11 @@ _Avoid_: receipt (alone)
 
 **Warrant**:
 A short-lived, signed, attenuated authorization for exactly one target,
-issued by the web and verified by the daemon. Always qualified by what it
-authorizes: a materialization warrant or a read warrant.
-_Avoid_: grant (that is the agentic context's word), capability, token
+issued by the web with the one Hangar key and verified by the daemon;
+qualified by purpose: a materialization warrant, a read warrant, or a
+control warrant (execution control or output capture). A route admits only
+its own purpose.
+_Avoid_: grant (that is the agentic context's word), capability, token, facet
 
 **Materialization warrant**:
 The warrant bound to one tree ref, handle, volume and expiry that lets the
@@ -73,14 +75,15 @@ _Avoid_: input token
 
 **Read warrant**:
 The warrant bound to one reader's claim that lets a reader open that
-generation on one node while the claim lasts.
+generation on one node while the claim lasts; single-use by claim on the
+node.
 _Avoid_: download token
 
 **Warrant key**:
-The secret the web signs one kind of warrant with and the daemon verifies
-against. One key per warrant kind. Never present in a task pod. The daemon
-holds no signing key of its own: there is no node control key.
-_Avoid_: capability key, control key
+The one raw 32-byte secret, `hangar.key`, the web signs every warrant with
+and every artifact daemon verifies against. Never present in a task pod.
+The daemon holds no signing key of its own: there is no node control key.
+_Avoid_: capability key, materialization key, control key
 
 **Scratch path**:
 The daemon's private transient space where canonicalization and
@@ -92,8 +95,8 @@ _Avoid_: temp dir, work dir
 **Output plane**:
 The half of Hangar that turns a task's declared output into durable,
 claimable content. A part of the artifact daemon on each node and of the
-web; not a process of its own. The daemon mounts it when its capability
-key is configured.
+web; not a process of its own. The daemon mounts it when exact execution
+control is configured.
 _Avoid_: durable output publication, output daemon
 
 **Capture**:
@@ -241,14 +244,10 @@ lists and deletes; strict inputs have their own. Delete exists only in the
 web.
 _Avoid_: role, persona
 
-**Facet**:
-The authorization domain of an execution-control capability: base or
-capture. A capability is admitted only by routes of its own facet.
-_Avoid_: facet (alone, for anything else), signing domain
-
 **Execution control**:
 The base protocol by which the web learns and settles one exact
-execution's fate on its node; capture extends it. The node answers over
+execution's fate on its node; capture extends it. Every call carries a
+control warrant of the route's purpose. The node answers over
 the mTLS channel the web reached it on; an acknowledgement is that answer,
 and the channel, not a signature, is what makes it the node's. There is no
 node control key and no key generation.

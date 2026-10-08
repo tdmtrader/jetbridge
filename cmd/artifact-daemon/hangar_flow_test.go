@@ -368,11 +368,11 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 
 	materialize := func(handle, volume string) *httptest.ResponseRecorder {
 		t.Helper()
-		signer, signErr := hangar.NewWarrantSigner(key, time.Minute, nil)
+		signer, signErr := hangar.NewSigner(key, time.Minute, nil)
 		if signErr != nil {
 			t.Fatal(signErr)
 		}
-		token, signErr := signer.Sign(attributes.Ref, handle, volume)
+		token, signErr := signer.Sign(materializeWarrant(attributes.Ref, handle, volume))
 		if signErr != nil {
 			t.Fatal(signErr)
 		}

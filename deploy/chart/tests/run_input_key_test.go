@@ -46,8 +46,10 @@ func TestRunInputKeyIsWebOnlyAndExplicit(t *testing.T) {
 func TestRunInputKeyRequiresCaptureAndSeparateSecret(t *testing.T) {
 	for _, sets := range [][]string{
 		{"web.runInputSigningKeySecret=review-input-key"},
-		{"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=op-capability-key"},
-		{"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=op-output-materialize"},
+		// Separate from the Hangar key Secret: a node holding the Run input
+		// signing key could forge cross-team input grants.
+		{"hangarOutput.webEnabled=true", "artifactDaemon.hangar.keySecret=op-hangar-key", "web.runInputSigningKeySecret=op-hangar-key"},
+		{"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=test-daemon-tls"},
 	} {
 		if got := renderOutputError(t, sets...); !strings.Contains(got, "runInputSigningKeySecret") {
 			t.Fatalf("wrong configuration refusal: %s", got)

@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -87,15 +88,15 @@ var _ = Describe("DefaultFactory", func() {
 			cfg := jetbridge.NewConfig("test-namespace", "")
 			cfg.ArtifactDaemonHostPath = "/var/lib/artifacts"
 			clientset := fake.NewSimpleClientset()
-			minter, err := executioncontrol.NewCapabilityMinter(
-				bytes.Repeat([]byte{7}, executioncontrol.CapabilityKeyBytes),
+			signer, err := hangar.NewSigner(
+				bytes.Repeat([]byte{7}, hangar.WarrantKeyBytes),
 				time.Minute, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			executor := jetbridge.NewSPDYExecutor(clientset, &rest.Config{Host: "https://kube.invalid"})
 			locator := jetbridge.NewArtifactLocator()
 			daemonClient := jetbridge.NewDaemonClient(logger, clientset, cfg.Namespace, "artifact-daemon", 7780, nil)
-			controls := jetbridge.NewOutputControls(cfg, jetbridge.NewNodeIPResolver(clientset), minter)
+			controls := jetbridge.NewOutputControls(cfg, jetbridge.NewNodeIPResolver(clientset), signer)
 			preparer := &recordingPreparer{}
 
 			factory := worker.DefaultFactory{

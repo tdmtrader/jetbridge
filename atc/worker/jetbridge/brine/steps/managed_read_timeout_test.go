@@ -175,7 +175,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	if err != nil {
 		return err
 	}
-	verifier, err := output.NewReadWarrantVerifier(brineReadWarrantKey, output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	verifier, err := hangar.NewVerifier(brineHangarKey, hangar.MaxWarrantTTL, func() time.Time { return time.Now().UTC() })
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,13 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 		if request.Ref != publication.Candidate.Record.Ref || request.Destination.Handle != container.DBContainer().Handle() {
 			return fmt.Errorf("generated input request changed its admitted tree or container")
 		}
-		claims, err := verifier.Verify(request.Warrant, request.Ref, request.Destination)
+		warrant, err := verifier.Verify(request.Warrant, hangar.Warrant{
+			Purpose: hangar.PurposeReadResult,
+			Ref:     request.Ref,
+			Handle:  request.Destination.Handle,
+			Volume:  request.Destination.Volume,
+			NodeUID: string(readerClient.NodeUID()),
+		})
 		if err != nil {
 			return err
 		}
@@ -216,7 +222,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 			return fmt.Errorf("input has no exact sealed receipt: %v", err)
 		}
 		var released bool
-		if err := conn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id=$1`, string(claims.ClaimID)).Scan(&released); err != nil {
+		if err := conn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id=$1`, warrant.ClaimID).Scan(&released); err != nil {
 			return err
 		}
 		// The node gave nothing back: it holds no client for the web. An input's

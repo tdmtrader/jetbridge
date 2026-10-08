@@ -183,7 +183,7 @@ func TestTheOutputPlaneIsServedOverTheArtifactDaemonsTLS(t *testing.T) {
 			// The server half: the daemon is given a certificate, a key and a
 			// client CA, and both probes speak HTTPS.
 			daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
-			for _, flag := range []string{"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--capability-key="} {
+			for _, flag := range []string{"--tls-cert=", "--tls-key=", "--tls-ca-cert=", "--execution-control", "--hangar-key="} {
 				if !strings.Contains(daemon.body, flag) {
 					t.Errorf("the artifact daemon renders no %s with the output plane on", flag)
 				}

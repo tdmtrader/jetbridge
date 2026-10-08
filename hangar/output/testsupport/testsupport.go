@@ -77,7 +77,7 @@ func Reservation(t *testing.T, namespace output.OutputNamespace, id output.Reser
 func ReadClaim(t *testing.T, ref hangar.TreeRef) output.ClaimRecord {
 	t.Helper()
 
-	expires := output.NewTimestamp(FixedInstant.Add(20 * time.Minute))
+	expires := output.NewTimestamp(FixedInstant.Add(10 * time.Minute))
 	claim := output.ClaimRecord{
 		ClaimID:           "66666666-6666-4666-8666-666666666666",
 		Ref:               ref,
@@ -92,18 +92,20 @@ func ReadClaim(t *testing.T, ref hangar.TreeRef) output.ClaimRecord {
 	return claim
 }
 
-// Warrant is a fixture read warrant's claims over ReadClaim's claim.
-func Warrant(t *testing.T, ref hangar.TreeRef) output.ReadWarrantClaims {
+// Warrant is a fixture read warrant over ReadClaim's claim, as a verifier
+// would hand it back.
+func Warrant(t *testing.T, ref hangar.TreeRef) hangar.Warrant {
 	t.Helper()
 
-	claims := output.WarrantClaimsFor(ReadClaim(t, ref),
+	warrant, err := output.ReadWarrant(ReadClaim(t, ref),
 		output.ReadDestination{Handle: "fixture-handle", Volume: "fixture-volume"},
 		"fixture-node")
-	if err := claims.Validate(); err != nil {
+	if err != nil {
 		t.Fatalf("the fixture warrant does not validate: %v", err)
 	}
+	warrant.Version = 1
 
-	return claims
+	return warrant
 }
 
 // RecordedMemory is the tier-1 store with its bucket created, behind a

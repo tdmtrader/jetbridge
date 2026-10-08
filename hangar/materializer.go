@@ -57,7 +57,7 @@ func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, 
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if !validMaterializationSegment(handle) || !validMaterializationSegment(volume) {
+	if !validWarrantSegment(handle) || !validWarrantSegment(volume) {
 		return errors.New("hangar: materialization handle and volume must be canonical path segments")
 	}
 	if materializer.StoragePath == "" {

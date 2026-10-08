@@ -112,10 +112,16 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 	}
 
 	// This loop must finish for the entire batch before Materialize is called.
-	// An invalid capability therefore cannot leave an authorized prefix visible.
+	// An invalid warrant therefore cannot leave an authorized prefix visible.
 	for _, item := range request.Items {
 		token, ok := exactBearerWarrant(item.Warrant)
-		if !ok || service.WarrantVerifier == nil || service.WarrantVerifier.Verify(token, hangarTreeRef(item.Ref), item.Handle, item.Volume) != nil {
+		if !ok || service.Verifier == nil {
+			s.refuseHangar(w, r, hangar.ErrUnauthorized)
+			return
+		}
+		if _, err := service.Verifier.Verify(token, hangar.Warrant{
+			Purpose: hangar.PurposeMaterializeInput, Ref: hangarTreeRef(item.Ref), Handle: item.Handle, Volume: item.Volume,
+		}); err != nil {
 			s.refuseHangar(w, r, hangar.ErrUnauthorized)
 			return
 		}

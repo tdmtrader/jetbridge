@@ -42,7 +42,7 @@ func (cmd *RunCommand) validateRunInputSigningKey() error {
 	if len(key) != 32 {
 		return errors.New("Run input signing key must contain exactly 32 raw bytes")
 	}
-	for _, path := range []string{cmd.Kubernetes.OutputWarrantKey, cmd.Kubernetes.OutputMaterializationKey, cmd.Kubernetes.HangarWarrantKey, cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey} {
+	for _, path := range []string{cmd.Kubernetes.HangarKey, cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey} {
 		if path == "" {
 			continue
 		}
@@ -53,7 +53,7 @@ func (cmd *RunCommand) validateRunInputSigningKey() error {
 		same := bytes.Equal(key, other)
 		clear(other)
 		if same {
-			return errors.New("Run input signing key must differ from every node-owned capability or materialization key")
+			return errors.New("Run input signing key must differ from the Hangar key and the resolve capability key")
 		}
 	}
 	cmd.runInputAuthority, err = runinput.NewAuthority(key, time.Now)

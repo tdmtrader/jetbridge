@@ -13,13 +13,12 @@ import (
 // It embeds the base handshake rather than restating it, so the base facet
 // can be served before an output bucket exists at all.
 //
-// None of this is authority; it is a description. The capability the daemon
+// None of this is authority; it is a description. The warrant the daemon
 // verifies is the authority, and a node label is only a scheduling hint.
 type ExtensionHandshake struct {
 	Base                    executioncontrol.Handshake `json:"base"`
 	CaptureExtensionVersion string                     `json:"capture_extension_version"`
 	SourceLedgerVersion     string                     `json:"source_ledger_version"`
-	MaterializationKeyID    string                     `json:"materialization_key_id"`
 	BucketFingerprint       string                     `json:"bucket_fingerprint"`
 	DerivedNamespace        string                     `json:"derived_namespace"`
 }
@@ -35,9 +34,6 @@ func (handshake ExtensionHandshake) Validate() error {
 	if handshake.SourceLedgerVersion != SourceLedgerVersion {
 		return fmt.Errorf("%w: source ledger version %q, this daemon speaks %q",
 			ErrUnsupportedProtocol, handshake.SourceLedgerVersion, SourceLedgerVersion)
-	}
-	if handshake.MaterializationKeyID == "" {
-		return fmt.Errorf("%w: handshake reports no materialization key id", ErrIncomplete)
 	}
 	if handshake.BucketFingerprint == "" {
 		return fmt.Errorf("%w: handshake reports no output bucket", ErrIncomplete)

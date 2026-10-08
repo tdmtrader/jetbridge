@@ -90,7 +90,7 @@ const (
 // runtime generates, whose init container asks the artifact daemon to
 // materialize the tree. Nothing is stood in. The only things the contract
 // holds that a deployment's web would are the daemon client certificate it
-// publishes with and the warrant key it signs materialization warrants with.
+// publishes with and the Hangar key it signs materialization warrants with.
 //
 // It proves, in order:
 //
@@ -257,7 +257,7 @@ func TestLiveHangarDiskStoreRoundTripSurvivesRestart(t *testing.T) {
 	}
 
 	// 2. Materialize through a generated step pod.
-	signer, err := hangar.NewWarrantSigner(warrantKey, 5*time.Minute, nil)
+	signer, err := hangar.NewSigner(warrantKey, 5*time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestLiveHangarDiskStoreRoundTripSurvivesRestart(t *testing.T) {
 	// through ssl_client, as it does in every deployment.
 	cfg.ArtifactHelperImage = "alpine:latest"
 	cfg.HangarEnabled = true
-	cfg.HangarWarrantSigner = signer
+	cfg.HangarSigner = signer
 	liveDiskMaterialize(t, ctx, client, cfg, "before-restart-"+suffix, published.Ref)
 
 	// 3. Restart the store: delete its pod, let the Deployment replace it.

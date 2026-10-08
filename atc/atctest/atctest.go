@@ -58,6 +58,7 @@ import (
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/wrappa"
+	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 	skystorage "github.com/concourse/concourse/skymarshal/storage"
@@ -314,7 +315,7 @@ func (p *Platform) runServices(displayUserID atc.DisplayUserIdGenerator) (pipeli
 	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(context.Context) (runs.InputUploadNode, error) {
 		return runs.InputUploadNode{UID: p.node.uid, Publisher: p.node.client}, nil
 	}})
-	reader := &runs.ResultReader{Conn: p.conn, Minter: p.node.warrants, Scratch: p.node.resultScratch,
+	reader := &runs.ResultReader{Conn: p.conn, Minter: output.ReadWarrantMinter{Signer: p.node.signer}, Scratch: p.node.resultScratch,
 		Source: func(context.Context) (runs.ResultSource, error) {
 			return p.node.client, nil
 		}}

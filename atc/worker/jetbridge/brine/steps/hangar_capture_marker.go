@@ -225,13 +225,13 @@ func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// A VALID token, at a route it does not belong to. The control is the
-		// same token succeeding at its own operation, which is why the facet is
-		// a parameter of the client rather than derived from the path.
+		// A VALID warrant, at a route it does not belong to. The control is the
+		// same warrant succeeding at its own operation, which is why the purpose
+		// is a parameter of the client rather than derived from the path.
 		brine.DefineMap[HeldSource, HeldSource](
-			"a base control capability is used to {string}",
+			"a base control warrant is used to {string}",
 			func(in HeldSource, p brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				operation, err := paramAt("a base control capability is used to {string}", p, 0)
+				operation, err := paramAt("a base control warrant is used to {string}", p, 0)
 				if err != nil {
 					return in, err
 				}
@@ -240,15 +240,15 @@ func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 					return in.answered(in.Draft.Daemon.base("classify", "/execution/v1/classify",
 						in.Execution, identifiedBy(in.Execution))), nil
 				case "publish":
-					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
+					return in.answered(in.Draft.Daemon.control(hangar.PurposeControlBase,
 						"publish", "/capture/v1/publish", in.Execution,
 						in.publishRequest(placeholderDigest))), nil
 				case "hold":
-					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
+					return in.answered(in.Draft.Daemon.control(hangar.PurposeControlBase,
 						"hold", "/capture/v1/hold", in.Execution,
 						holdBody(in.Execution, in.Admission.Output, in.PodUID))), nil
 				case "seal":
-					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
+					return in.answered(in.Draft.Daemon.control(hangar.PurposeControlBase,
 						"seal", "/capture/v1/seal", in.Execution, in.sealRequest())), nil
 				}
 
@@ -695,8 +695,8 @@ func (source HeldSource) recordWitness(kind executioncontrol.AcknowledgementKind
 }
 
 // placeholderDigest is a well-formed digest for a request that is refused
-// before any digest is compared: the refusal scenarios are about a facet or a
-// caller-chosen location, never about which bytes.
+// before any digest is compared: the refusal scenarios are about a purpose or
+// a caller-chosen location, never about which bytes.
 var placeholderDigest = hangar.Digest("sha256:" + strings.Repeat("0", 64))
 
 // sealRequest, publishRequest and release re-derive their identities from the

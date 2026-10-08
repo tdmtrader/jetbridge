@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -415,15 +416,15 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			},
 			want: "complete artifact daemon TLS",
 		},
-		"capability key path": {
-			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarWarrantKey = "" },
-			want:      "kubernetes-hangar-warrant-key",
+		"Hangar key path": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarKey = "" },
+			want:      "kubernetes-hangar-key",
 		},
 		"exact raw key": {
 			configure: func(cmd *atccmd.RunCommand) {
 				shortKey := filepath.Join(s.T().TempDir(), "short.key")
 				s.Require().NoError(os.WriteFile(shortKey, []byte("too-short"), 0600))
-				cmd.Kubernetes.HangarWarrantKey = shortKey
+				cmd.Kubernetes.HangarKey = shortKey
 			},
 			want: "exactly 32 raw bytes",
 		},
@@ -438,7 +439,7 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 			cmd.Kubernetes.HangarEnabled = true
-			cmd.Kubernetes.HangarWarrantKey = validKey
+			cmd.Kubernetes.HangarKey = validKey
 			cmd.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 			test.configure(cmd)
 
@@ -460,18 +461,18 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	enabled.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 	enabled.Kubernetes.HangarEnabled = true
-	enabled.Kubernetes.HangarWarrantKey = validKey
+	enabled.Kubernetes.HangarKey = validKey
 	enabled.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(enabled))
 
 	disabled := &atccmd.RunCommand{}
 	disabled.Kubernetes.Namespace = "concourse"
 	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-	disabled.Kubernetes.HangarWarrantKey = "/does/not/exist"
+	disabled.Kubernetes.HangarKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "disabled Hangar must not load or require its key")
 }
 
-func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
+func (s *CommandSuite) TestHangarRuntimeRejectsWarrantTTLOutsideCoreBound() {
 	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
 	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
 	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxWarrantTTL + time.Nanosecond} {
@@ -482,7 +483,7 @@ func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
 		cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 		cmd.Kubernetes.HangarEnabled = true
-		cmd.Kubernetes.HangarWarrantKey = validKey
+		cmd.Kubernetes.HangarKey = validKey
 		cmd.Kubernetes.HangarWarrantTTL = ttl
 		err := atccmd.ValidateK8sRuntimeForTest(cmd)
 		s.Error(err)
@@ -562,62 +563,95 @@ func (s *CommandSuite) TestTheWebRunsTheReclaimPassAndTheOrphanSweepWhereAnOutpu
 	s.ErrorContains(err, "publication-grace")
 }
 
-// A REQUIRED SECRET THAT NOTHING EVER OPENED.
+// ONE KEY FOR EVERY WARRANT.
 //
-// --kubernetes-hangar-output-warrant-key was refused when empty, compared
-// with two other flags for distinctness, and never read: the message said "a
-// control plane that cannot mint one can make no call at all" while nothing
-// established that the file contained a key at all, let alone one a minter
-// would accept. That is the failure class this track spent three review rounds
-// removing -- a refusal claiming more than the code checks.
-func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyNamed() {
+// The output plane signs every control call with the Hangar key, so turning
+// it on without naming that key is refused at startup by the flag's name,
+// and a deployment with no Hangar tier at all neither requires nor opens it.
+func (s *CommandSuite) TestTheOutputPlaneRequiresTheHangarKey() {
 	dir := s.T().TempDir()
-	valid := filepath.Join(dir, "capability.key")
+	valid := filepath.Join(dir, "hangar.key")
 	s.Require().NoError(os.WriteFile(valid, []byte("0123456789abcdef0123456789abcdef"), 0600))
-	short := filepath.Join(dir, "short.key")
-	s.Require().NoError(os.WriteFile(short, []byte("too short"), 0600))
 
 	plane := func(key string) *atccmd.RunCommand {
 		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.Namespace = "concourse"
+		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 		cmd.Kubernetes.OutputPlaneEnabled = true
-		cmd.Kubernetes.OutputWarrantKey = key
+		cmd.Kubernetes.HangarKey = key
+		cmd.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 		cmd.Kubernetes.ArtifactDaemonTLSCert = filepath.Join(dir, "tls.crt")
 		cmd.Kubernetes.ArtifactDaemonTLSKey = filepath.Join(dir, "tls.key")
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = filepath.Join(dir, "ca.crt")
-		cmd.Kubernetes.OutputOperationTimeout = 15 * time.Minute
+		cmd.Kubernetes.OutputOperationTimeout = time.Minute
 		cmd.Kubernetes.OutputCaptureDeadline = 2 * time.Hour
 
 		return cmd
 	}
 
-	err := atccmd.ValidateHangarOutputPlaneForTest(plane(filepath.Join(dir, "absent.key")))
-	s.Require().Error(err, "a capability key that is not there was accepted, so the refusal for "+
-		"an EMPTY flag is the only thing that was ever checked about it")
-	s.Contains(err.Error(), "kubernetes-hangar-output-warrant-key")
+	err := atccmd.ValidateK8sRuntimeForTest(plane(""))
+	s.Require().Error(err, "--kubernetes-hangar-output-enabled without --kubernetes-hangar-key was accepted")
+	s.Contains(err.Error(), "kubernetes-hangar-key")
 
-	err = atccmd.ValidateHangarOutputPlaneForTest(plane(short))
-	s.Require().Error(err, "a file too short to be a capability key was accepted at startup; the "+
-		"first control call would be the thing that discovered it")
-	s.Contains(err.Error(), "kubernetes-hangar-output-warrant-key")
+	err = atccmd.ValidateK8sRuntimeForTest(plane(filepath.Join(dir, "absent.key")))
+	s.Require().Error(err, "a Hangar key that is not there was accepted")
+	s.Contains(err.Error(), "kubernetes-hangar-key")
 
-	// The control: a real key passes, so the two refusals above are about the
-	// key rather than about the rest of the configuration.
-	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(plane(valid)))
+	// The control: a real key passes, so the refusals above are about the key
+	// rather than about the rest of the configuration.
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(plane(valid)))
 
-	// The operation timeout need only be positive: a reader's claim term is
-	// derived from it, and a claim's term has no ceiling of its own.
+	// The operation timeout must be positive: a reader's claim term is
+	// derived from it.
 	for _, timeout := range []time.Duration{0, -time.Second} {
 		invalid := plane(valid)
 		invalid.Kubernetes.OutputOperationTimeout = timeout
-		err = atccmd.ValidateHangarOutputPlaneForTest(invalid)
+		err = atccmd.ValidateK8sRuntimeForTest(invalid)
 		s.Require().Error(err)
 		s.Contains(err.Error(), "kubernetes-hangar-output-operation-timeout")
 	}
 
-	// A deployment with no output plane neither requires nor opens a key.
+	// A deployment with no Hangar tier neither requires nor opens the key.
 	off := &atccmd.RunCommand{}
-	off.Kubernetes.OutputWarrantKey = "/does/not/exist"
-	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(off))
+	off.Kubernetes.Namespace = "concourse"
+	off.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	off.Kubernetes.HangarKey = "/does/not/exist"
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(off))
+}
+
+// A READ WARRANT'S WINDOW IS ITS CLAIM'S, AND A WARRANT LIVES AT MOST 15m.
+//
+// With capture enabled the reader's claim term is the operation timeout plus
+// the read claim margin; a term the one warrant bound cannot cover would mint
+// a warrant the daemon refuses on every read.
+func (s *CommandSuite) TestCaptureRefusesAnOperationTimeoutTheWarrantBoundCannotCover() {
+	dir := s.T().TempDir()
+	valid := filepath.Join(dir, "hangar.key")
+	s.Require().NoError(os.WriteFile(valid, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	capture := func(timeout time.Duration) *atccmd.RunCommand {
+		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.Namespace = "concourse"
+		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.OutputPlaneEnabled = true
+		cmd.Kubernetes.OutputCaptureEnabled = true
+		cmd.Kubernetes.HangarKey = valid
+		cmd.Kubernetes.HangarWarrantTTL = 15 * time.Minute
+		cmd.Kubernetes.ArtifactDaemonTLSCert = filepath.Join(dir, "tls.crt")
+		cmd.Kubernetes.ArtifactDaemonTLSKey = filepath.Join(dir, "tls.key")
+		cmd.Kubernetes.ArtifactDaemonTLSCACert = filepath.Join(dir, "ca.crt")
+		cmd.Kubernetes.OutputOperationTimeout = timeout
+		cmd.Kubernetes.OutputCaptureDeadline = 2 * time.Hour
+
+		return cmd
+	}
+
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(capture(hangar.MaxWarrantTTL - output.ReadClaimMargin)))
+
+	err := atccmd.ValidateK8sRuntimeForTest(capture(hangar.MaxWarrantTTL - output.ReadClaimMargin + time.Second))
+	s.Require().Error(err, "an operation timeout whose claim term exceeds the warrant bound was accepted")
+	s.Contains(err.Error(), "kubernetes-hangar-output-operation-timeout")
+	s.Contains(err.Error(), "a warrant lives at most 15m")
 }
 
 // AN ACCEPTED FENCE THAT NOTHING WOULD EVER CONVERGE.

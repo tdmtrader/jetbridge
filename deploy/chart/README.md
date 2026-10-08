@@ -266,17 +266,29 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hangar.scratchPath` | `/var/concourse/hangar-scratch` | Private daemon-only `emptyDir` mount, disjoint from `hostPath`. |
 | `artifactDaemon.hangar.maxContentBytes` | `10737418240` | Maximum regular-file content in one exact tree. |
 | `artifactDaemon.hangar.maxEntries` | `100000` | Maximum filesystem entries in one exact tree. |
-| `artifactDaemon.hangar.capabilityTTL` | `900s` | Shared web/daemon warrant TTL in positive whole seconds, at most 900s. |
+| `artifactDaemon.hangar.keySecret` | `""` | Secret holding `hangar.key`, the Hangar key. Empty reads `hangar.key` from `artifactDaemon.tls.existingSecret`. |
+| `artifactDaemon.hangar.capabilityTTL` | `900s` | Lifetime of every warrant the web signs, in positive whole seconds, at most 900s. |
 
 `artifactDaemon` also carries `mirror`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
 
 Hangar names its own store, bucket, prefix and endpoint and shares nothing
 with the resource-cache store. Native GCS authenticates with Workload
-Identity; S3-compatible and filesystem stores are unsupported. When
-`artifactDaemon.tls.existingSecret` is set, that Secret must include
-`hangar.key` containing exactly 32 raw bytes after base64 decoding. The key is
-mounted only into web and artifact-daemon Pods, never task Pods. See
+Identity; S3-compatible and filesystem stores are unsupported.
+
+One Hangar key, `hangar.key` (exactly 32 raw bytes after base64 decoding),
+signs every warrant the web issues -- materialization, read and control -- and
+every artifact daemon verifies against it. Strict inputs
+(`artifactDaemon.hangar.enabled`) and the output plane
+(`hangarOutput.executionControl.enabled`) share it. Name a Secret holding it in
+`artifactDaemon.hangar.keySecret` (the Hangar bootstrap creates an absent one);
+otherwise `artifactDaemon.tls.existingSecret` must carry `hangar.key` beside
+the TLS material, or `artifactDaemon.hangar.allowGeneratedKey` lets live Helm
+generate it. The web is handed `--kubernetes-hangar-key` and the daemon
+`--hangar-key`, each the path of that one file. The key is mounted only into
+web and artifact-daemon Pods, never task Pods. The Run input signing key
+(`web.runInputSigningKeySecret`) is web-only and must be a different Secret.
+See
 [`docs/hangar.md`](../../docs/hangar.md) for rollout order, sizing, security,
 and fail-closed behavior.
 

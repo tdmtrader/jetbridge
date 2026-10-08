@@ -21,18 +21,19 @@ concourse-hangar-bootstrap
 {{- end -}}
 
 {{/*
-The inventory holds CAs, leaves, bundles, symmetric keys and tokens. There is
-no signing key and no verification ring: the daemon is trusted over mTLS and
-nothing it says is signed.
+The inventory holds CAs, leaves, bundles, symmetric keys and tokens. The one
+symmetric key Hangar needs is the Hangar key (hangar.key): the web signs every
+warrant with it and the daemon verifies against it. There is no node signing
+key and no verification ring: the daemon is trusted over mTLS and nothing it
+says is signed.
 */}}
 {{- define "concourse.hangarBootstrap.inventory" -}}
 {{- $ := . -}}
-{{- $out := .Values.hangarOutput -}}
 {{- $entries := list -}}
 
 {{- with .Values.artifactDaemon.hangar.keySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "random32" "key" "hangar.key"
-  "purposes" (dict "hangar.key" "strict-input materialization warrant key")
+  "purposes" (dict "hangar.key" "the Hangar key: signs every warrant (materialization, read, control)")
   "consumers" (list "web" "artifact-daemon")) -}}
 {{- end -}}
 
@@ -47,18 +48,6 @@ nothing it says is signed.
 {{- $entries = append $entries (dict "name" . "kind" "store-tokens"
   "purposes" (dict "input" "strict-input principal token" "publisher" "output publisher token" "inventory" "list-and-stat token the web's orphan sweep lists with" "reclaimer" "stat-and-delete token the web's reclaim pass and orphan sweep delete with" "server.json" "the store's principal-to-token map")
   "consumers" (list "hangar-store" "artifact-daemon" "web")) -}}
-{{- end -}}
-
-{{- with $out.capabilityKeySecret -}}
-{{- $entries = append $entries (dict "name" . "kind" "random32" "key" "capability.key"
-  "purposes" (dict "capability.key" "output control warrant key")
-  "consumers" (list "web" "artifact-daemon")) -}}
-{{- end -}}
-
-{{- with $out.materializationKeySecret -}}
-{{- $entries = append $entries (dict "name" . "kind" "random32" "key" "materialize.key"
-  "purposes" (dict "materialize.key" "output read warrant key")
-  "consumers" (list "web" "artifact-daemon")) -}}
 {{- end -}}
 
 {{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.runInputKeyName" $) "kind" "random32" "key" "input.key"

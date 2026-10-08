@@ -200,34 +200,38 @@ spec:
             - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
-            {{- if .Values.artifactDaemon.hangar.webEnabled }}
-            - --kubernetes-hangar-enabled
+            {{- if or .Values.artifactDaemon.hangar.webEnabled .Values.hangarOutput.executionControl.enabled }}
+            # The one Hangar key: the web signs every warrant with it --
+            # materialization, read and control -- and every artifact daemon
+            # verifies against it. Strict inputs and the output plane alike.
             {{- if .Values.artifactDaemon.hangar.keySecret }}
-            - --kubernetes-hangar-warrant-key=/etc/concourse/hangar-warrant-key/hangar.key
+            - --kubernetes-hangar-key=/etc/concourse/hangar-key/hangar.key
             {{- else }}
-            - --kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
+            - --kubernetes-hangar-key=/etc/concourse/daemon-tls/hangar.key
             {{- end }}
             - --kubernetes-hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            {{- end }}
+            {{- if .Values.artifactDaemon.hangar.webEnabled }}
+            - --kubernetes-hangar-enabled
             # Named only so web refuses to start when the strict-input
             # namespace is also the output one (ADR-0002); web never reaches it.
             - --kubernetes-hangar-input-bucket={{ .Values.artifactDaemon.hangar.bucket }}
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
-            # The output plane's control-plane half. The web node mints control
-            # capabilities; it verifies nothing the daemon says and holds no
-            # public key for it. A capture is one database row: the daemon's
-            # word reaches web over mTLS and nothing signs it. With the capture
-            # facet on (below) the web is also the plane's reclaimer, the one
-            # principal that may list and delete in the output namespace.
+            # The output plane's control-plane half. The web node signs control
+            # warrants with the Hangar key; it verifies nothing the daemon says
+            # and holds no public key for it. A capture is one database row:
+            # the daemon's word reaches web over mTLS and nothing signs it.
+            # With the capture facet on (below) the web is also the plane's
+            # reclaimer, the one principal that may list and delete in the
+            # output namespace.
             - --kubernetes-hangar-output-enabled
             # The output plane is served by the artifact daemon on its one
             # port, over its one TLS configuration: the web reaches it with the
             # artifact daemon's client certificate above.
-            - --kubernetes-hangar-output-warrant-key=/etc/concourse/hangar-output/capability/capability.key
             - --kubernetes-hangar-output-operation-timeout={{ .Values.hangarOutput.operationTimeout }}
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             {{- if .Values.hangarOutput.enabled }}
-            - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
             # The output namespace. Server configuration and never a request
             # field: no task, consumer, path parameter or request can select or
             # broaden it. The web is the plane's only reclaimer: its reclaim
@@ -380,22 +384,16 @@ spec:
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
-            {{- if and .Values.artifactDaemon.hangar.webEnabled .Values.artifactDaemon.hangar.keySecret }}
-            - name: hangar-warrant-key
-              mountPath: /etc/concourse/hangar-warrant-key
+            {{- if and (or .Values.artifactDaemon.hangar.webEnabled .Values.hangarOutput.executionControl.enabled) .Values.artifactDaemon.hangar.keySecret }}
+            - name: hangar-key
+              mountPath: /etc/concourse/hangar-key
               readOnly: true
             {{- end }}
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
             {{- if .Values.hangarOutput.executionControl.enabled }}
-            - name: hangar-output-capability
-              mountPath: /etc/concourse/hangar-output/capability
-              readOnly: true
             {{- if .Values.hangarOutput.enabled }}
-            - name: hangar-output-materialize
-              mountPath: /etc/concourse/hangar-output/materialize
-              readOnly: true
             {{- if eq .Values.hangarOutput.store "disk" }}
             - name: hangar-output-list
               mountPath: /etc/concourse/hangar-output-list
@@ -452,12 +450,12 @@ spec:
                 path: client.key
               - key: ca.crt
                 path: ca.crt
-              {{- if and .Values.artifactDaemon.hangar.webEnabled (not .Values.artifactDaemon.hangar.keySecret) }}
+              {{- if and (or .Values.artifactDaemon.hangar.webEnabled .Values.hangarOutput.executionControl.enabled) (not .Values.artifactDaemon.hangar.keySecret) }}
               - key: hangar.key
                 path: hangar.key
               {{- end }}
-        {{- if and .Values.artifactDaemon.hangar.webEnabled .Values.artifactDaemon.hangar.keySecret }}
-        - name: hangar-warrant-key
+        {{- if and (or .Values.artifactDaemon.hangar.webEnabled .Values.hangarOutput.executionControl.enabled) .Values.artifactDaemon.hangar.keySecret }}
+        - name: hangar-key
           secret:
             secretName: {{ .Values.artifactDaemon.hangar.keySecret }}
             items:
@@ -468,16 +466,7 @@ spec:
           secret:
             secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret }}
         {{- if .Values.hangarOutput.executionControl.enabled }}
-        - name: hangar-output-capability
-          secret:
-            secretName: {{ .Values.hangarOutput.capabilityKeySecret }}
         {{- if .Values.hangarOutput.enabled }}
-        - name: hangar-output-materialize
-          secret:
-            # The read-warrant key. The control plane MINTS warrants, so it holds
-            # this one -- and it is a different key and a different domain from
-            # the control capability key, so the two are rotated apart.
-            secretName: {{ .Values.hangarOutput.materializationKeySecret }}
         {{- if eq .Values.hangarOutput.store "disk" }}
         {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "inventory" "name" "hangar-output-list") | nindent 8 }}
         {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "reclaimer" "name" "hangar-output-delete") | nindent 8 }}

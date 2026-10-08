@@ -17,6 +17,7 @@ import (
 
 	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
+	"github.com/concourse/concourse/hangar"
 
 	"code.cloudfoundry.org/lager/v3"
 	"k8s.io/client-go/kubernetes"
@@ -76,20 +77,16 @@ func main() {
 	hangarCACert := flag.String("hangar-ca-cert", "", "Disk storage CA certificate")
 	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
 	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
-	hangarWarrantKey := flag.String("hangar-warrant-key", "", "Path to the raw 32-byte materialization warrant key")
-	hangarWarrantTTL := flag.Duration("hangar-warrant-ttl", 15*time.Minute, "Maximum accepted Hangar materialization warrant lifetime")
-	// The pre-rename spellings stay accepted so a chart or operator still
-	// passing them keeps working; both names write the same variable.
-	flag.StringVar(hangarWarrantKey, "hangar-capability-key", "", "Deprecated alias for --hangar-warrant-key")
-	flag.DurationVar(hangarWarrantTTL, "hangar-capability-ttl", 15*time.Minute, "Deprecated alias for --hangar-warrant-ttl")
+	hangarKeyFile := flag.String("hangar-key", "", "Path to the raw 32-byte Hangar key. It signs every warrant the web presents: materialization, read and control. Required with --hangar-enabled or --execution-control.")
 	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
 	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
 
 	// The output plane: exact execution control, and with --output-bucket the
 	// durable-capture extension. Mounted on this daemon's listener when
-	// --capability-key is given (the base facet cannot verify a capability
-	// without it); its control and steps directories are this daemon's storage
-	// root and its steps/ beneath it.
+	// --execution-control is given; its warrants are verified against the
+	// Hangar key, and its control and steps directories are this daemon's
+	// storage root and its steps/ beneath it.
+	executionControl := flag.Bool("execution-control", false, "Mount the output plane on this daemon's listener: exact execution control, and with --output-bucket the capture extension. Requires --hangar-key.")
 	var planeConfig outputplane.Config
 	outputplane.BindFlags(flag.CommandLine, &planeConfig)
 
@@ -116,6 +113,15 @@ func main() {
 		logger.Error("failed-to-load-resolve-capability-key", err)
 		os.Exit(1)
 	}
+	// The Hangar key, for the same reason and at the same moment. One key
+	// signs every warrant the web presents, so the strict-input service and
+	// the output plane both verify against these bytes.
+	hangarKey, err := loadHangarKey(*hangarKeyFile, *hangarEnabled || *executionControl)
+	if err != nil {
+		logger.Error("failed-to-load-hangar-key", err)
+		os.Exit(1)
+	}
+	planeConfig.Key = hangarKey
 
 	// How the daemon reaches the cluster is an INPUT, resolved once here and
 	// handed to everything that needs it: the node labelers and, below, peer
@@ -239,7 +245,7 @@ func main() {
 	// The cache, the strict-input store and the output plane's store are three
 	// namespaces, and no two may be one, refused before any is dialled.
 	if err := validateStorageNamespaces(*durableBucket, hangarInputNamespace(*hangarEnabled, *hangarBucket),
-		outputNamespace(planeConfig)); err != nil {
+		outputNamespace(*executionControl, planeConfig)); err != nil {
 		logger.Error("storage-namespaces-invalid", err)
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
@@ -302,8 +308,8 @@ func main() {
 	}
 
 	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
-		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, WarrantKey: *hangarWarrantKey,
-		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, WarrantTTL: *hangarWarrantTTL,
+		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, Key: hangarKey,
+		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries,
 		Store: *hangarStore, StoreID: *hangarStoreID, TokenFile: *hangarTokenFile, CACert: *hangarCACert, Bucket: *hangarBucket, Prefix: *hangarPrefix, Endpoint: *hangarEndpoint, Timeout: *durableTimeout,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
 	})
@@ -320,7 +326,7 @@ func main() {
 	}
 
 	var plane *outputplane.Plane
-	if planeConfig.CapabilityKeyFile != "" {
+	if *executionControl {
 		planeConfig.NodeName = *nodeName
 		planeConfig.ControlDir = *storagePath
 		planeConfig.StepsDir = filepath.Join(*storagePath, "steps")
@@ -486,7 +492,7 @@ func main() {
 	// and a harness that started the daemon that way learns it from here
 	// rather than from a probe that another process could answer.
 	fmt.Fprintf(os.Stdout, "artifact-daemon listening on %s\n", listener.Addr())
-	// The output plane's facet labels go on last, after the listener exists:
+	// The output plane's readiness labels go on last, after the listener exists:
 	// a label advertised before the daemon can answer is a pod scheduled onto
 	// a node whose hold is refused on arrival.
 	if plane != nil {
@@ -547,7 +553,7 @@ func main() {
 	// The grace budget goes to the requests in flight first -- an output-plane
 	// publish or seal among them -- and to the background work after, each
 	// bounded by what is left of it. The labels come off before the listener
-	// closes: a node that still advertises a facet it has stopped serving is
+	// closes: a node that still advertises a protocol it has stopped serving is
 	// where the scheduler sends the next capture.
 	ctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 	defer cancel()
@@ -657,6 +663,32 @@ func loadResolveCapabilityKey(path string) ([]byte, error) {
 	}
 	if _, err := artifactcap.NewVerifier(key); err != nil {
 		return nil, err
+	}
+	return key, nil
+}
+
+// loadHangarKey reads --hangar-key and checks it is exactly the raw key a
+// warrant verifier accepts, before the daemon advertises itself. It is
+// required when anything on this daemon verifies a warrant -- the strict-input
+// service or the output plane -- and refused otherwise: a key mounted into a
+// process that cannot need it is a key an exploit of that process gets for
+// free.
+func loadHangarKey(path string, required bool) ([]byte, error) {
+	if path == "" {
+		if required {
+			return nil, errors.New("--hangar-key is required with --hangar-enabled or --execution-control")
+		}
+		return nil, nil
+	}
+	if !required {
+		return nil, errors.New("--hangar-key is set but neither --hangar-enabled nor --execution-control is; nothing on this daemon verifies a warrant")
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read --hangar-key: %w", err)
+	}
+	if len(key) != hangar.WarrantKeyBytes {
+		return nil, fmt.Errorf("--hangar-key must contain exactly %d raw bytes, not %d", hangar.WarrantKeyBytes, len(key))
 	}
 	return key, nil
 }

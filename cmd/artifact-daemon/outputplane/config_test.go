@@ -3,7 +3,6 @@ package outputplane
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/hangar"
@@ -49,57 +48,5 @@ func TestPrepareScratchSweepsWhatAKilledCanonicalizationLeft(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(scratch, "not-ours")); err != nil {
 		t.Errorf("the sweep removed something that is not a canonicalization directory: %v", err)
-	}
-}
-
-// Key separation is over the BYTES, not over the paths.
-//
-// Validate refuses five path pairs and two equal key ids, and every one of
-// those comparisons is over names: two flags pointing at symlinks to one file
-// pass all of them, and so do two Secrets holding identical material. The
-// separation the plan promises is a separation of AUTHORITY -- a read warrant
-// must not be signable by anything that can mint a control capability -- and
-// authority follows the material.
-func TestTwoKeyFilesHoldingOneKeyAreRefused(t *testing.T) {
-	dir := t.TempDir()
-	same := []byte("-----BEGIN PRIVATE KEY-----\nthe same thirty-two bytes, twice\n")
-	first := filepath.Join(dir, "capability.key")
-	second := filepath.Join(dir, "materialize.key")
-	for _, file := range []string{first, second} {
-		if err := os.WriteFile(file, same, 0o600); err != nil {
-			t.Fatalf("writing %s: %v", file, err)
-		}
-	}
-
-	config := Config{CapabilityKeyFile: first, MaterializationKeyFile: second}
-	err := config.RefuseCollidingKeyMaterial()
-	if err == nil {
-		t.Fatal("two different files holding the SAME key material were accepted. The path " +
-			"check passes -- they are different paths -- and the two domains are then signable " +
-			"by one key.")
-	}
-	for _, fragment := range []string{"--capability-key", "--materialization-key-file"} {
-		if !strings.Contains(err.Error(), fragment) {
-			t.Errorf("the refusal %q does not name %s", err, fragment)
-		}
-	}
-
-	// A symlink is the same collision wearing a different name, and the path
-	// check cannot see it either.
-	linked := filepath.Join(dir, "linked.key")
-	if err := os.Symlink(first, linked); err != nil {
-		t.Fatalf("linking: %v", err)
-	}
-	if err := (Config{CapabilityKeyFile: first, MaterializationKeyFile: linked}).
-		RefuseCollidingKeyMaterial(); err == nil {
-		t.Error("two flags pointing at one file through a symlink were accepted")
-	}
-
-	// The control: genuinely different material passes.
-	if err := os.WriteFile(second, []byte("a different key entirely\n"), 0o600); err != nil {
-		t.Fatalf("rewriting: %v", err)
-	}
-	if err := config.RefuseCollidingKeyMaterial(); err != nil {
-		t.Errorf("two distinct keys were refused: %v", err)
 	}
 }

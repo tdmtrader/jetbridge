@@ -28,9 +28,9 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 		readRefusal(w, output.ErrIncomplete)
 		return
 	}
-	claims, err := server.reads.verifier.Verify(input.Warrant, input.Ref, input.Destination)
 	// The warrant names its node; on any other it opens nothing.
-	if err != nil || claims.NodeUID == "" || claims.NodeUID != server.daemon.nodeUID {
+	warrant, err := server.verifyRead(input)
+	if err != nil {
 		readRefusal(w, output.ErrUnauthorized)
 		return
 	}
@@ -42,7 +42,7 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 		return
 	}
 	defer release()
-	if err := server.reads.spent.begin(claims); err != nil {
+	if err := server.reads.spent.begin(warrant); err != nil {
 		readRefusal(w, err)
 		return
 	}
@@ -51,7 +51,7 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 	// init its one warrant to retry with. The lease itself is not given back
 	// from here -- this daemon holds no client for the web -- and closes at the
 	// end of its term, swept by the web's abandoned-lease cleaner.
-	if err := server.materialize(ctx, input, claims); err != nil {
+	if err := server.materialize(ctx, input, warrant); err != nil {
 		readRefusal(w, err)
 		return
 	}
@@ -61,13 +61,13 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 
 // materialize stages and installs one exact tree under a begun warrant, and
 // ends the warrant's read with the outcome.
-func (server *Server) materialize(ctx context.Context, input output.ManagedReadRequest, claims output.ReadWarrantClaims) (err error) {
+func (server *Server) materialize(ctx context.Context, input output.ManagedReadRequest, warrant hangar.Warrant) (err error) {
 	defer func() {
-		if spendErr := server.reads.spent.end(claims, err); spendErr != nil && err == nil {
+		if spendErr := server.reads.spent.end(warrant, err); spendErr != nil && err == nil {
 			err = spendErr
 		}
 	}()
-	tree, _, err := server.stageRead(ctx, claims)
+	tree, _, err := server.stageRead(ctx, warrant)
 	if err != nil {
 		return err
 	}

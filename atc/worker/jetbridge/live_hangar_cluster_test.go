@@ -112,7 +112,7 @@ const (
 //     artifact daemon's output plane accepts web's control-plane client
 //     certificate over mTLS on a route that requires one; the artifact daemon publishes into the
 //     disk store as `input` and verifies a materialization warrant signed with
-//     the generated warrant key; the disk store serves `publisher` a create
+//     the generated Hangar key; the disk store serves `publisher` a create
 //     and a read; web puts the plane in service, its orphan sweep lists the
 //     output namespace with the `inventory` token and counts -- and leaves --
 //     the foreign-marked object that create left; and `reclaimer` stats and
@@ -125,7 +125,7 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 	first := cluster.sync("S1-S2 bootstrap and disk init", cluster.through("S1", "S2"), liveSyncOptions{
 		beforeWave: func(wave int) {
 			if wave == -1 && !policyChecked {
-				cluster.assertPolicyRefusesTokenSecret(names.warrant)
+				cluster.assertPolicyRefusesTokenSecret(names.hangarKey)
 				policyChecked = true
 			}
 		},
@@ -186,8 +186,7 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 type liveClusterNames struct {
 	release, namespace string
 
-	warrant, storeTLS, storeCredentials, capability string
-	materialize, runInput                           string
+	hangarKey, storeTLS, storeCredentials, runInput string
 
 	daemonTLS, resolve, postgres, signingKey string
 }
@@ -195,11 +194,9 @@ type liveClusterNames struct {
 func newLiveClusterNames(release, namespace string) liveClusterNames {
 	return liveClusterNames{
 		release: release, namespace: namespace,
-		warrant:          release + "-hangar-warrant-key",
+		hangarKey:        release + "-hangar-key",
 		storeTLS:         release + "-hangar-store-tls",
 		storeCredentials: release + "-hangar-store-credentials",
-		capability:       release + "-hangar-capability-key",
-		materialize:      release + "-hangar-materialize-key",
 		runInput:         release + "-run-input-signing-key",
 		// Operator-owned, outside the bootstrap inventory: the artifact
 		// daemon's pinned TLS Secret and resolve key, the database password
@@ -407,11 +404,9 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 	case "S1":
 		return []string{
 			"hangarBootstrap.enabled=true",
-			"hangarOutput.capabilityKeySecret=" + names.capability,
-			"hangarOutput.materializationKeySecret=" + names.materialize,
 			"hangarStorage.disk.tls.existingSecret=" + names.storeTLS,
 			"hangarStorage.disk.credentials.existingSecret=" + names.storeCredentials,
-			"artifactDaemon.hangar.keySecret=" + names.warrant,
+			"artifactDaemon.hangar.keySecret=" + names.hangarKey,
 		}
 	case "S2":
 		return []string{"hangarStorage.disk.enabled=true", "hangarStorage.disk.storeID=" + liveClusterStoreID,
@@ -1132,7 +1127,7 @@ func (cluster *liveCluster) assertWebRunsWithCapture() {
 		t.Fatal(err)
 	}
 	args := strings.Join(deployment.Spec.Template.Spec.Containers[0].Args, " ")
-	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-warrant-key=", "--run-input-signing-key="} {
+	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-key=", "--run-input-signing-key="} {
 		if !strings.Contains(args, flag) {
 			t.Fatalf("web runs without %s", flag)
 		}
@@ -1213,7 +1208,7 @@ func liveGet(t *testing.T, ctx context.Context, client *http.Client, address str
 // assertArtifactDaemonUsesWarrantKey publishes a tree through the artifact
 // daemon -- which writes it into the disk store's input namespace as `input`
 // -- and has a generated step pod materialize it under a warrant signed with
-// the generated warrant key, which the daemon verifies.
+// the generated Hangar key, which the daemon verifies.
 func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	t := cluster.t
 	t.Helper()
@@ -1231,9 +1226,9 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	tree := liveDiskTree(t, map[string]string{"literal [x]": "payload", "nested/run.sh": "run"}, []string{"empty", "nested"}, map[string]string{"latest": "nested/run.sh"})
 	published := daemon.publish(t, cluster.ctx, tree, http.StatusCreated)
 
-	signer, err := hangar.NewWarrantSigner(cluster.secret(names.warrant).Data["hangar.key"], 5*time.Minute, nil)
+	signer, err := hangar.NewSigner(cluster.secret(names.hangarKey).Data["hangar.key"], 5*time.Minute, nil)
 	if err != nil {
-		t.Fatalf("the generated warrant key does not make a signer: %v", err)
+		t.Fatalf("the generated Hangar key does not make a signer: %v", err)
 	}
 	cfg := NewConfig(names.namespace, os.Getenv("KUBECONFIG"))
 	cfg.ArtifactDaemonNamespace = names.namespace
@@ -1244,7 +1239,7 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	cfg.ArtifactDaemonTLSCert, cfg.ArtifactDaemonTLSKey, cfg.ArtifactDaemonTLSCACert = certPath, keyPath, caPath
 	cfg.ArtifactHelperImage = "alpine:latest"
 	cfg.HangarEnabled = true
-	cfg.HangarWarrantSigner = signer
+	cfg.HangarSigner = signer
 	liveDiskMaterialize(t, cluster.ctx, cluster.client, cfg, "bootstrap-warrant-"+liveDiskRandomHex(t, 3), published.Ref)
 }
 

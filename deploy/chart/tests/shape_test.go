@@ -58,7 +58,11 @@ import (
 // is trusted over mTLS; nothing it says is signed) took 5 leaves:
 // hangarOutput.activationEpoch, hangarOutput.executionControl's keySecret,
 // keyID and publicKeys, and hangarBootstrap.referencedKeys, leaving 208.
-const maxValues = 208
+// Signing every warrant (materialization, read and control) with the one
+// Hangar key, artifactDaemon.hangar.keySecret, took the output plane's own
+// three: hangarOutput.capabilityKeySecret, materializationKeySecret and
+// materializationKeyID, leaving 205.
+const maxValues = 205
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -160,6 +164,7 @@ var removedKeys = []string{
 	"hangarBootstrap.secretNames.outputCA",
 	"hangarOutput.activation",
 	"hangarOutput.activationEpoch",
+	"hangarOutput.capabilityKeySecret",
 	"hangarOutput.daemon",
 	"hangarOutput.database",
 	"hangarOutput.executionControl.keyID",
@@ -168,6 +173,8 @@ var removedKeys = []string{
 	"hangarOutput.inventory",
 	"hangarOutput.leaseRenewInterval",
 	"hangarOutput.leaseTerm",
+	"hangarOutput.materializationKeyID",
+	"hangarOutput.materializationKeySecret",
 	"hangarOutput.readControlCA",
 	"hangarOutput.readControlURL",
 	"hangarOutput.receipt",
