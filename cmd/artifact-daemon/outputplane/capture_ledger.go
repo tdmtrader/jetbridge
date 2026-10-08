@@ -213,8 +213,8 @@ func markerName(key output.CaptureKey) (string, error) {
 }
 
 // load reads the marker. Absent is (false, nil); every other problem --
-// unreadable, torn, a version this binary does not know -- is an error, and
-// the caller refuses rather than reading it as absent.
+// unreadable or not decodable -- is an error, and the caller refuses rather
+// than reading it as absent.
 func (ledger *CaptureLedger) load(key output.CaptureKey) (output.StepMarker, bool, error) {
 	name, err := markerName(key)
 	if err != nil {
@@ -635,7 +635,6 @@ func (ledger *CaptureLedger) publish(ctx context.Context, key output.CaptureKey,
 		ProtocolVersion: output.ProtocolVersion,
 		Ref:             object.Attributes.Ref,
 		Metageneration:  object.Metageneration,
-		MarkerVersion:   object.Marker.Version,
 		Deduplicated:    object.Deduplicated,
 	}
 
@@ -795,7 +794,6 @@ func (ledger *CaptureLedger) Stat(ctx context.Context, request output.CaptureSta
 		ProtocolVersion: output.ProtocolVersion,
 		Ref:             object.Attributes.Ref,
 		Metageneration:  object.Metageneration,
-		MarkerVersion:   object.Marker.Version,
 		Deduplicated:    true,
 	}
 

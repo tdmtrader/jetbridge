@@ -182,7 +182,6 @@ func recordSettlement(plane settlementPlane, key hangaroutputleaf.CaptureKey,
 		outcome.Published = hangaroutputleaf.CapturePublishResult{
 			ProtocolVersion: hangaroutputleaf.ProtocolVersion,
 			Ref:             ref,
-			MarkerVersion:   hangaroutputleaf.MarkerVersion,
 			Metageneration:  1,
 		}
 	}

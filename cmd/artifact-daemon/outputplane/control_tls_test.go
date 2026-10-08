@@ -43,7 +43,7 @@ import (
 )
 
 func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	pki := mintControlPKI(t)
@@ -52,7 +52,7 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "")
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
 	server.RequireClientCertificates()
 
 	secured := httptest.NewUnstartedServer(server.Handler())
@@ -309,12 +309,12 @@ func mintControlPKI(t *testing.T) controlPKI {
 // only the control plane drives a node's capture plane. The node-local hold is
 // unaffected, and a different certificate from the same CA is admitted.
 func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "")
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
 	server.RequireClientCertificates()
 	daemonDER := []byte("the daemons' serving certificate")
 	server.RefuseDaemonCertificate(daemonDER)
@@ -342,24 +342,5 @@ func TestTheDaemonsOwnCertificateCannotDriveTheOutputPlane(t *testing.T) {
 	}
 	if code := call(http.MethodGet, "/handshake", []byte("the web's client certificate")); code != http.StatusOK {
 		t.Errorf("the control plane's certificate was refused the handshake: %d", code)
-	}
-}
-
-// The pod's readiness is the artifact daemon's, so a plane whose ledger is
-// quarantined says so on its handshakes: a node that cannot answer for its
-// ledger must not claim to speak the protocol.
-func TestAnUnreadyPlaneRefusesItsHandshakes(t *testing.T) {
-	fixture := newRoutes(t, "")
-	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "a record was quarantined").Handler()
-	for _, path := range []string{"/handshake", "/capture/v1/handshake", "/readyz"} {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-		if recorder.Code != http.StatusServiceUnavailable {
-			t.Errorf("%s answered %d with a quarantined ledger", path, recorder.Code)
-		}
 	}
 }

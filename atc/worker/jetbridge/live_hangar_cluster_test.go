@@ -1452,7 +1452,7 @@ func (cluster *liveCluster) storePublisherRoundTrip() liveStoreProbe {
 	namespace := cluster.outputNamespace()
 	key := namespace.ListPrefix() + "hangar-cluster-contract/" + liveDiskRandomHex(t, 4)
 	content := []byte("an object under a foreign marker: the orphan sweep counts it and leaves it")
-	metadata, err := json.Marshal(map[string]string{output.MarkerKeyVersion: "hangar-output-v0"})
+	metadata, err := json.Marshal(map[string]string{"hangar-output-version": "hangar-output-v0"})
 	if err != nil {
 		t.Fatal(err)
 	}

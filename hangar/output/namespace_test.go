@@ -260,9 +260,6 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 	if err := marker.Validate(); err != nil {
 		t.Fatalf("the derived marker does not validate: %v", err)
 	}
-	if marker.Version != MarkerVersion {
-		t.Errorf("the marker version is %q, this store writes %q", marker.Version, MarkerVersion)
-	}
 	if marker.Scope != namespace.Scope() {
 		t.Errorf("the marker says scope %q, the namespace derives %q. An object whose marker "+
 			"disagrees with its key is the corruption ParseObjectMarker exists to notice",
@@ -287,19 +284,26 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 		t.Error("the parsed marker does not match the tree ref for the same identity")
 	}
 
-	// A wrong version is a typed collision, not a parse failure: it is a
-	// deliberate statement by some other system and must never be overwritten.
-	wrongVersion := marker.Metadata()
-	wrongVersion[MarkerKeyVersion] = "hangar-output-v2"
-	if _, err := ParseObjectMarker(wrongVersion); !errors.Is(err, ErrConflict) {
-		t.Errorf("a wrong marker version parsed as %v, expected ErrConflict", err)
+	// A marker that is present but malformed is corrupt, never a cache miss.
+	malformed := marker.Metadata()
+	malformed[MarkerKeyActivation] = "not a number"
+	if _, err := ParseObjectMarker(malformed); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("a malformed marker parsed as %v, expected ErrCorrupt", err)
+	}
+	partial := map[string]string{MarkerKeyStore: marker.Store}
+	if _, err := ParseObjectMarker(partial); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("a marker with one key parsed as %v, expected ErrCorrupt", err)
 	}
 
 	// And no marker at all is unmanaged, which is ErrNotFound and never a
-	// cache miss the publisher fills in.
-	unmarked := marker.Metadata()
-	delete(unmarked, MarkerKeyVersion)
-	if _, err := ParseObjectMarker(unmarked); !errors.Is(err, ErrNotFound) {
-		t.Errorf("an unmarked object parsed as %v, expected ErrNotFound", err)
+	// cache miss the publisher fills in. Metadata under other names is not a
+	// marker.
+	for name, unmarked := range map[string]map[string]string{
+		"no metadata":    {},
+		"other metadata": {"note": "not ours", "hangar": "no"},
+	} {
+		if _, err := ParseObjectMarker(unmarked); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s parsed as %v, expected ErrNotFound", name, err)
+		}
 	}
 }

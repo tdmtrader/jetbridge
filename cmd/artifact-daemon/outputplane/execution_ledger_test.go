@@ -86,13 +86,6 @@ func (fixture *ledgerFixture) reopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the control store: %v", err)
 	}
-	quarantined, err := store.validate()
-	if err != nil {
-		t.Fatalf("validating the control store: %v", err)
-	}
-	if len(quarantined) != 0 {
-		t.Fatalf("the control store quarantined %v at open", quarantined)
-	}
 
 	ledger, err := OpenExecutionLedger(store, testNode, testEpoch, fixture.signer, fixture.clock)
 	if err != nil {
@@ -547,167 +540,51 @@ func TestARestartReturnsTheSameSignedStatementWithoutRelaunchingAnything(t *test
 	}
 }
 
-// The crash halves. Every one of these is a point in the durable write, and the
-// rule is the same at all of them: what a reader sees afterwards is the whole
-// new record or the whole old one.
-func TestACrashDuringADurableWriteLeavesTheOldRecordOrTheNewOneAndNeverHalf(t *testing.T) {
-	for _, stage := range []faultStage{
-		faultBeforeTempWrite, faultAfterTempWrite, faultAfterTempFsync, faultAfterRename,
-	} {
-		t.Run(string(stage), func(t *testing.T) {
-			fixture := newLedger(t)
-			admitted(t, fixture)
-			start, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1")
-			if err != nil {
-				t.Fatalf("starting: %v", err)
-			}
-
-			fixture.store.fault = func(at faultStage) error {
-				if at == stage {
-					return errInjectedCrash
-				}
-
-				return nil
-			}
-			_, err = fixture.ledger.RecordOutcome(identity(1),
-				executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0})
-			crashedBeforeRename := stage != faultAfterRename
-			if crashedBeforeRename && !errors.Is(err, errInjectedCrash) {
-				t.Fatalf("the injected crash at %s was not reported: %v", stage, err)
-			}
-			fixture.store.fault = nil
-
-			// A restart is the only reader that matters: the process that
-			// crashed has no memory left.
-			fixture.reopen(t)
-
-			result, err := fixture.ledger.Classify(identity(1))
-			if err != nil {
-				t.Fatalf("classifying after a crash at %s: %v", stage, err)
-			}
-			switch stage {
-			case faultAfterRename:
-				// The record is in place; only the directory entry was not
-				// fsynced. A reader either sees it or does not, and on this
-				// filesystem it does -- what must never happen is a torn one.
-				if result.Classification != executioncontrol.ClassificationAuthoritativeFinish {
-					t.Errorf("a crash after the rename lost the record: %s", result.Classification)
-				}
-			default:
-				if result.Classification != executioncontrol.ClassificationExecuting {
-					t.Errorf("a crash at %s left classification %s; the previous record must "+
-						"still be the whole truth", stage, result.Classification)
-				}
-				if observed, _ := fixture.ledger.Observe(identity(1)); observed.Acknowledgement != nil {
-					t.Errorf("a crash at %s produced an acknowledgement", stage)
-				}
-			}
-			_ = start
-
-			// And the execution can still be finished afterwards, which is what
-			// makes the crash recoverable rather than merely non-corrupting.
-			if stage != faultAfterRename {
-				if _, err := fixture.ledger.RecordOutcome(identity(1),
-					executioncontrol.AcknowledgementFinish,
-					executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
-					t.Errorf("the execution could not be finished after a crash at %s: %v", stage, err)
-				}
-			}
-		})
+// A record that does not decode refuses its one execution and no other, and
+// a restart still opens the ledger: the other executions' records are the
+// whole truth about them.
+func TestARecordThatDoesNotDecodeRefusesItsExecutionAndNoOther(t *testing.T) {
+	fixture := newLedger(t)
+	admitted(t, fixture)
+	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
+		t.Fatalf("starting: %v", err)
 	}
-}
+	other := executioncontrol.Identity{ExecutionID: "44444444-4444-4444-8444-444444444444", Fence: 1}
+	otherEnvelope := envelope(1)
+	otherEnvelope.Identity = other
+	if err := fixture.ledger.Admit(otherEnvelope); err != nil {
+		t.Fatalf("admitting the other execution: %v", err)
+	}
 
-func TestATornOrUnsupportedRecordQuarantinesAndKeepsTheDaemonUnready(t *testing.T) {
-	for name, corrupt := range map[string]func(path string) error{
-		"a truncated record": func(path string) error {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
+	names, err := fixture.store.names()
+	if err != nil || len(names) == 0 {
+		t.Fatalf("the ledger wrote no record: %v %v", names, err)
+	}
+	name, err := executionRecordName(identity(1).ExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(fixture.dir, ControlDirName, name)
+	raw, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(record, raw[:len(raw)/2], 0o600); err != nil {
+		t.Fatalf("tearing the record: %v", err)
+	}
 
-			return os.WriteFile(path, raw[:len(raw)/2], 0o600)
-		},
-		"a record whose checksum does not match its body": func(path string) error {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			var record controlRecord
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return err
-			}
-			record.Body = append(record.Body[:len(record.Body)-1], []byte(`,"tampered":true}`)...)
-			edited, err := json.Marshal(record)
-			if err != nil {
-				return err
-			}
+	fixture.reopen(t)
 
-			return os.WriteFile(path, edited, 0o600)
-		},
-		"a record from a newer daemon": func(path string) error {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			var record controlRecord
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return err
-			}
-			record.RecordVersion = "hangar-output-control-record-v2"
-			edited, err := json.Marshal(record)
-			if err != nil {
-				return err
-			}
-
-			return os.WriteFile(path, edited, 0o600)
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			fixture := newLedger(t)
-			admitted(t, fixture)
-			if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
-				t.Fatalf("starting: %v", err)
-			}
-
-			names, err := fixture.store.names()
-			if err != nil || len(names) == 0 {
-				t.Fatalf("the ledger wrote no record: %v %v", names, err)
-			}
-			control := filepath.Join(fixture.dir, ControlDirName, names[0])
-			if err := corrupt(control); err != nil {
-				t.Fatalf("corrupting: %v", err)
-			}
-
-			_ = fixture.store.Close()
-			store, err := openControlStore(fixture.dir)
-			if err != nil {
-				t.Fatalf("reopening: %v", err)
-			}
-			t.Cleanup(func() { _ = store.Close() })
-
-			quarantined, err := store.validate()
-			if err != nil {
-				t.Fatalf("validating: %v", err)
-			}
-			if len(quarantined) == 0 {
-				t.Fatalf("%s was accepted at startup", name)
-			}
-
-			// And a further restart still reports it: a corrupt ledger that is
-			// cleared by restarting is a corrupt ledger nobody ever sees.
-			again, err := openControlStore(fixture.dir)
-			if err != nil {
-				t.Fatalf("reopening again: %v", err)
-			}
-			defer again.Close()
-			stillQuarantined, err := again.validate()
-			if err != nil {
-				t.Fatalf("validating again: %v", err)
-			}
-			if len(stillQuarantined) == 0 {
-				t.Errorf("%s stopped being reported after a restart", name)
-			}
-		})
+	if _, err := fixture.ledger.Classify(identity(1)); !errors.Is(err, output.ErrCorrupt) {
+		t.Errorf("the execution with the torn record was classified: %v", err)
+	}
+	if _, err := fixture.ledger.RecordOutcome(identity(1),
+		executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err == nil {
+		t.Error("an outcome was recorded over a record that does not decode")
+	}
+	if result, err := fixture.ledger.Classify(other); err != nil ||
+		result.Classification != executioncontrol.ClassificationNeverStarted {
+		t.Errorf("the other execution was not answered from its own record: %v %v", result, err)
 	}
 }
 

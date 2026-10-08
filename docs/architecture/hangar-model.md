@@ -84,12 +84,17 @@ did not hold the step fails, and no empty tree is published.
 
 ## The step marker
 
-One file per step directory, written by fsync and rename: `held`, `sealed`
-or `released` (a tombstone, so no hold is taken for that step again), with
-the execution, output, node and Pod UID. The daemon's source ledger reads the
+One JSON file per step directory, and nothing around it. It is replaced by
+writing a temp file, fsyncing it, renaming it over the old name and fsyncing
+the directory, so a reader sees the whole new record or the whole old one. It says `held`, `sealed` or
+`released` (a tombstone, so no hold is taken for that step again), with the
+execution, output, node and Pod UID. The daemon's source ledger reads the
 markers and answers every destructive request unmanaged, held, sealed or
-unavailable. Only unmanaged permits destruction; an unreadable marker is
-unavailable and refuses.
+unavailable. Only unmanaged permits destruction. The reader decodes a marker
+leniently and has one rule for what it does not understand: a state it does
+not know is held, and a file it cannot decode makes the whole ledger
+unavailable. The output plane's own ledgers read the same way: a record that
+does not decode refuses the one execution it names.
 
 ## Recovery
 

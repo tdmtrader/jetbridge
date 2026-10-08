@@ -560,14 +560,6 @@ func (s HangarDaemon) objectKeys() ([]string, error) {
 	return keys, nil
 }
 
-func (s HangarDaemon) objectMarkerVersion(key string) (string, error) {
-	attrs, err := s.Client.Bucket(s.Bucket).Object(key).Attrs(s.Ctx)
-	if err != nil {
-		return "", fmt.Errorf("stat %q in the Hangar output bucket: %w", key, err)
-	}
-	return attrs.Metadata[hangaroutput.MarkerKeyVersion], nil
-}
-
 // publish sends a raw tar to the strict publication route. The daemon
 // canonicalizes it, stores it in the emulated bucket and answers with the
 // foundation's attributes — scope, digest, generation, sizes.

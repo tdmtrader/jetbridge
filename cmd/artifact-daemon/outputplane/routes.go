@@ -47,12 +47,6 @@ type Server struct {
 	capture    *CaptureLedger
 	capability *executioncontrol.CapabilityVerifier
 
-	// unreadyBecause is non-empty when live control state could not be
-	// validated at startup. Readiness fails while it is, and every control
-	// route fails closed: a daemon that could not read its own ledger is not a
-	// daemon that may answer questions about what it says.
-	unreadyBecause string
-
 	// spool bounds how many trees are being canonicalized or published at once.
 	//
 	// It is a bound on DISK rather than on CPU. Canonicalization spools a whole
@@ -109,22 +103,21 @@ func (server *Server) controlPlaneCaller(request *http.Request) bool {
 }
 
 func NewServer(daemon *Daemon, base *ExecutionLedger, capture *CaptureLedger,
-	capability *executioncontrol.CapabilityVerifier, unreadyBecause string) *Server {
-	return NewServerWithSpool(daemon, base, capture, capability, unreadyBecause, 1)
+	capability *executioncontrol.CapabilityVerifier) *Server {
+	return NewServerWithSpool(daemon, base, capture, capability, 1)
 }
 
 // NewServerWithSpool is NewServer with the scratch concurrency bound named.
 func NewServerWithSpool(daemon *Daemon, base *ExecutionLedger, capture *CaptureLedger,
-	capability *executioncontrol.CapabilityVerifier, unreadyBecause string,
-	concurrency int) *Server {
+	capability *executioncontrol.CapabilityVerifier, concurrency int) *Server {
 	if concurrency < 1 {
 		concurrency = 1
 	}
 
 	return &Server{
 		daemon: daemon, base: base, capture: capture,
-		capability: capability, unreadyBecause: unreadyBecause,
-		spool: make(chan struct{}, concurrency),
+		capability: capability,
+		spool:      make(chan struct{}, concurrency),
 	}
 }
 
@@ -206,16 +199,9 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /input/v1/publish", server.publishInput)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		// Liveness is not readiness. A daemon whose ledger is quarantined is
-		// alive and must stay alive, so an operator can read the quarantine.
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if server.unreadyBecause != "" {
-			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
-
-			return
-		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /handshake", func(w http.ResponseWriter, request *http.Request) {
@@ -227,14 +213,6 @@ func (server *Server) Handler() http.Handler {
 		if !server.controlPlaneCaller(request) {
 			http.Error(w, "the control plane's verified client certificate is required for the handshake",
 				http.StatusUnauthorized)
-
-			return
-		}
-		// The pod's readiness is the artifact daemon's, not this plane's, so a
-		// plane that could not read its own ledger says so HERE: a node that
-		// cannot answer for its ledger must not claim to speak the protocol.
-		if server.unreadyBecause != "" {
-			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
 
 			return
 		}
@@ -258,11 +236,6 @@ func (server *Server) Handler() http.Handler {
 		if !server.controlPlaneCaller(request) {
 			http.Error(w, "the control plane's verified client certificate is required for the capture "+
 				"extension handshake", http.StatusUnauthorized)
-
-			return
-		}
-		if server.unreadyBecause != "" {
-			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
 
 			return
 		}
@@ -310,17 +283,9 @@ func (server *Server) routes() map[string]route {
 	}
 }
 
-// protect is the facet check, the replay refusal and the fail-closed gate.
+// protect is the facet check and the replay refusal.
 func (server *Server) protect(declared route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if server.unreadyBecause != "" {
-			// Fail closed. The output plane being unavailable never warrants authority,
-			// and "unavailable" includes "cannot read its own ledger".
-			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
-
-			return
-		}
-
 		// The facet gate, and it is FIRST because it is the only refusal here
 		// that is about this daemon rather than about this request. A
 		// component without the capture facet refuses durable output capture

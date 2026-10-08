@@ -21,6 +21,11 @@ func hangarExecutionID(value string) executioncontrol.ExecutionID {
 	return executioncontrol.ExecutionID(value)
 }
 
+// hangarMarkerVersionColumn is the frozen value of the CHECK-constrained
+// marker_version and stat_marker_version columns. The object marker itself
+// carries no version any more; the columns keep their one admitted value.
+const hangarMarkerVersionColumn = "hangar-output-v1"
+
 func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, tx output.Tx, ref hangar.TreeRef, metageneration, epoch int64, origin string) (int64, error) {
 	if metageneration <= 0 {
 		return 0, fmt.Errorf("%w: no metageneration was observed for %s/%s/%d",
@@ -37,7 +42,7 @@ func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, t
 		RETURNING id`,
 		[]any{
 			string(ref.Scope), string(ref.Digest), ref.Generation,
-			metageneration, epoch, output.MarkerVersion, origin,
+			metageneration, epoch, hangarMarkerVersionColumn, origin,
 		}, &id)
 	if err != nil {
 		return 0, err
@@ -288,7 +293,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
 		int64(request.ActivationEpoch), interval, int(term.Round(time.Second).Seconds()),
 		request.WarrantNonce, request.Destination.Handle, request.Destination.Volume,
-		request.StatProof.Metageneration, request.StatProof.Marker.Version,
+		request.StatProof.Metageneration, hangarMarkerVersionColumn,
 		request.StatObservedAt.Time,
 	); err != nil {
 		return output.ReadLease{}, hangarConflict(err)

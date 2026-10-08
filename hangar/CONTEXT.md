@@ -139,8 +139,9 @@ The bound on a pending capture. A capture row still pending past it fails.
 _Avoid_: seal deadline, timeout
 
 **Step marker**:
-The one file beside a step directory that is the only node-local capture
-state: held, sealed, or released (a tombstone).
+The one JSON file beside a step directory that is the only node-local
+capture state: held, sealed, or released (a tombstone). The file is the
+record; nothing wraps it.
 _Avoid_: control record, source incarnation, writer ticket
 
 **Source hold**:
@@ -178,7 +179,8 @@ _Avoid_: upload (alone), reservation (alone)
 
 **Object marker**:
 The ownership metadata written once at object creation and never updated:
-which store, which digest, which marker version.
+which store, which scope, which digest. An object carrying none of it is
+unmanaged; one carrying it malformed is corrupt.
 _Avoid_: label, tag
 
 **Tree lock**:

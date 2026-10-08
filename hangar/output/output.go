@@ -38,12 +38,6 @@ const (
 	// ProtocolVersion is the only version of the capture extension that exists.
 	ProtocolVersion = "hangar-output-v1"
 
-	// MarkerVersion is the versioned ownership evidence written into an
-	// object's immutable-at-creation metadata. An object without it is
-	// unmanaged and is never relabelled, adopted or deleted; an object with a
-	// different version is a typed collision.
-	MarkerVersion = "hangar-output-v1"
-
 	// SourceLedgerVersion is the on-node record format for step markers. It is reported by the handshake beside the base ledger
 	// version, because a node can gain one without the other.
 	SourceLedgerVersion = "hangar-output-source-ledger-v1"

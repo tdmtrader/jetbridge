@@ -51,8 +51,9 @@ const (
 )
 
 // StepMarker is the one marker file per step directory: the only node-local
-// capture state there is. It is written by fsync and rename, and an
-// unreadable one makes the node refuse every destructive path.
+// capture state there is. It is the record's whole JSON body, written by
+// temp file, fsync and rename, and an unreadable one makes the node refuse
+// every destructive path.
 type StepMarker struct {
 	State       StepMarkerState              `json:"state"`
 	ExecutionID executioncontrol.ExecutionID `json:"execution"`
@@ -221,7 +222,6 @@ type CapturePublishResult struct {
 	ProtocolVersion string         `json:"protocol_version"`
 	Ref             hangar.TreeRef `json:"ref"`
 	Metageneration  int64          `json:"metageneration"`
-	MarkerVersion   string         `json:"marker_version"`
 	Deduplicated    bool           `json:"deduplicated"`
 }
 
@@ -231,10 +231,6 @@ func (result CapturePublishResult) Validate() error {
 	}
 	if err := result.Ref.Validate(); err != nil {
 		return err
-	}
-	if result.MarkerVersion != MarkerVersion {
-		return fmt.Errorf("%w: the published object is marked %q and this plane writes %q",
-			ErrUnknownMember, result.MarkerVersion, MarkerVersion)
 	}
 	if result.Metageneration <= 0 {
 		return fmt.Errorf("%w: the published object has no metageneration", ErrIncomplete)

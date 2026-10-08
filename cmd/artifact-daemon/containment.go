@@ -297,10 +297,9 @@ func rejectStructuralName(key string) error {
 // location this daemon served. DELETE of a hold record answered 204, and the
 // delete of the source that hold protected then answered 204 too.
 //
-// It is a FIRST-SEGMENT rule, not an equality one. The directory, the records
-// inside it and the quarantine beneath them are one thing: a daemon that
-// refused the directory and served the records would have moved the vector by
-// one path segment. Folded, because APFS and NTFS fold and an exact-string
+// It is a FIRST-SEGMENT rule, not an equality one. The directory and the
+// records inside it are one thing: a daemon that refused the directory and
+// served the records would have moved the vector by one path segment. Folded, because APFS and NTFS fold and an exact-string
 // check has already let a structural name through here once.
 //
 // The name is the READER package's constant, which is the one this daemon

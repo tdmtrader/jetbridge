@@ -52,7 +52,6 @@ var _ = Describe("the web's reclaim pass", func() {
 		Expect(err).NotTo(HaveOccurred())
 		attrs := store.Seed(namespace.Bucket(), key, []byte("published tree"),
 			output.ObjectMarker{
-				Version:         output.MarkerVersion,
 				Scope:           "team-a",
 				Digest:          digest,
 				ReservationID:   output.ReservationID(uuid.NewString()),

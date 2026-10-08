@@ -175,11 +175,11 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				}
 				tree.BucketKeys = keys
 				for _, key := range keys {
-					version, err := in.Source.Draft.Daemon.outputMarkerVersion(key)
+					marker, err := in.Source.Draft.Daemon.outputMarker(key)
 					if err != nil {
 						return tree, err
 					}
-					tree.MarkerVersions = append(tree.MarkerVersions, version)
+					tree.Markers = append(tree.Markers, marker)
 				}
 
 				return tree, nil
@@ -204,13 +204,13 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 					return in, err
 				}
 				in.BucketKeys = keys
-				in.MarkerVersions = nil
+				in.Markers = nil
 				for _, key := range keys {
-					version, err := in.Outcome.Source.Draft.Daemon.outputMarkerVersion(key)
+					marker, err := in.Outcome.Source.Draft.Daemon.outputMarker(key)
 					if err != nil {
 						return in, err
 					}
-					in.MarkerVersions = append(in.MarkerVersions, version)
+					in.Markers = append(in.Markers, marker)
 				}
 
 				return in, nil
@@ -290,9 +290,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("the object is digest %s and the seal canonicalized %s",
 						in.Published.Ref.Digest, in.Sealed.Digest)
 				}
-				if in.Published.MarkerVersion != hangaroutput.MarkerVersion {
-					return fmt.Errorf("the object is marked %q", in.Published.MarkerVersion)
-				}
 
 				return nil
 			}),
@@ -312,15 +309,18 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			func(in CaptureOutcome) string { return fmt.Sprintf("status %d", in.Answer.Status) }),
 
 		// Checks over the bucket.
-		CheckThat[PublishedTree]("the output bucket holds exactly one object, marked \"hangar-output-v1\"",
+		CheckThat[PublishedTree]("the output bucket holds exactly one object, carrying an object marker",
 			func(in PublishedTree) error {
 				if len(in.BucketKeys) != 1 {
 					return fmt.Errorf("the output bucket holds %d objects: %v",
 						len(in.BucketKeys), in.BucketKeys)
 				}
-				if len(in.MarkerVersions) != 1 || in.MarkerVersions[0] != hangaroutput.MarkerVersion {
-					return fmt.Errorf("the object at %s is marked %v, expected %q",
-						in.BucketKeys[0], in.MarkerVersions, hangaroutput.MarkerVersion)
+				if len(in.Markers) != 1 {
+					return fmt.Errorf("%d markers were read back for one object", len(in.Markers))
+				}
+				if _, err := hangaroutput.ParseObjectMarker(in.Markers[0]); err != nil {
+					return fmt.Errorf("the object at %s carries no readable object marker: %w",
+						in.BucketKeys[0], err)
 				}
 
 				return nil
@@ -551,13 +551,13 @@ func (s HangarDaemon) outputObjectKeys() ([]string, error) {
 	return keys, nil
 }
 
-func (s HangarDaemon) outputMarkerVersion(key string) (string, error) {
+func (s HangarDaemon) outputMarker(key string) (map[string]string, error) {
 	attrs, err := s.Client.Bucket(s.OutputBucket).Object(key).Attrs(s.Ctx)
 	if err != nil {
-		return "", fmt.Errorf("stat %q in the Hangar output bucket: %w", key, err)
+		return nil, fmt.Errorf("stat %q in the Hangar output bucket: %w", key, err)
 	}
 
-	return attrs.Metadata[hangaroutput.MarkerKeyVersion], nil
+	return attrs.Metadata, nil
 }
 
 // seedDerivedKey puts a chosen variant at the key this capture's bytes will

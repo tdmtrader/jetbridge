@@ -111,7 +111,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 		}
 	}()
 
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	// ---- hold ----

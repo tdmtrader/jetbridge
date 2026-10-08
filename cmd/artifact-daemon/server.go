@@ -442,8 +442,7 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 			mux.Handle(pattern, s.outputPlane)
 		}
 	} else {
-		// A daemon without the output plane is ready when it serves; the
-		// plane's own /readyz is what reports a quarantined ledger.
+		// A daemon without the output plane is ready when it serves.
 		mux.HandleFunc("GET /readyz", s.handleHealthz)
 	}
 	if s.hangar != nil {

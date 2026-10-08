@@ -225,7 +225,7 @@ func TestARefPublishedUnderScopeV1IsStillReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := output.ObjectMarker{Version: output.MarkerVersion, Scope: legacy, Digest: digest,
+	marker := output.ObjectMarker{Scope: legacy, Digest: digest,
 		ReservationID: reservation, ActivationEpoch: epoch, CreatedAt: output.NewTimestamp(testsupport.FixedInstant)}
 	attrs := memory.Seed(bucket, key, []byte("published before scope v2"), marker.Metadata())
 

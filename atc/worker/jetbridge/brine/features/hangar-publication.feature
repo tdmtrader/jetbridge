@@ -49,7 +49,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
     When the daemon seals and publishes the step directory
     Then the publication names the server-derived scope and the sealed digest at a store-assigned generation
     When the published tree is read back from the output bucket
-    Then the output bucket holds exactly one object, marked "hangar-output-v1"
+    Then the output bucket holds exactly one object, carrying an object marker
 
 
   # Convention 6 and 7 are why this is three scenarios and not one: repeating a
@@ -64,7 +64,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
     And the daemon seals and publishes the step directory
     When the published tree is read back from the output bucket
     And the same canonical bytes are captured again
-    Then the output bucket holds exactly one object, marked "hangar-output-v1"
+    Then the output bucket holds exactly one object, carrying an object marker
     And the two captures share one object
 
   # Reddened by: the publisher's create-if-absent path falling back to an
@@ -104,7 +104,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
     And the step finishes and the daemon witnesses it
     And the capture settles
     When the published tree is read back from the output bucket
-    Then the output bucket holds exactly one object, marked "hangar-output-v1"
+    Then the output bucket holds exactly one object, carrying an object marker
     And the registered tree ref names the published generation
 
   # The sequential form of content-addressed dedup, which is the only form this runner can honestly

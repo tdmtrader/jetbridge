@@ -49,10 +49,6 @@ func (server *Server) authorizeRead(w http.ResponseWriter, request *http.Request
 }
 
 func (server *Server) readPlaneReady(w http.ResponseWriter) bool {
-	if server.unreadyBecause != "" {
-		readRefusal(w, output.ErrInfrastructure)
-		return false
-	}
 	if !server.daemon.OutputEnabled() {
 		readRefusal(w, output.ErrCaptureDisabled)
 		return false

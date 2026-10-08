@@ -32,6 +32,7 @@ package outputplane
 // not tell which one the control plane's records agree with.
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -136,6 +137,12 @@ func OpenExecutionLedger(store *controlStore, node executioncontrol.NodeUID,
 		var record executionRecord
 		found, err := store.get(name, &record)
 		if err != nil {
+			if errors.Is(err, output.ErrCorrupt) {
+				// A record that does not decode is refused when its execution
+				// is asked about; it carries no sequence to resume above.
+				continue
+			}
+
 			return nil, err
 		}
 		if found && record.HighWater > ledger.sequence {

@@ -116,12 +116,12 @@ func TestAReadWarrantIsSpentOnceItsReadEnds(t *testing.T) {
 // minted for another -- before it opens anything or spends anything. Together
 // with the spent record this makes a warrant one read in the whole cluster.
 func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	verifier, err := executioncontrol.NewCapabilityVerifier(capabilitySecret(), time.Minute, fixture.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, "")
+	server := NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
 	store, err := openControlStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

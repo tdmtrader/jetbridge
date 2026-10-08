@@ -346,7 +346,6 @@ func (request CallerNamespaceRequest) Validate() error {
 // building both from the same value is how that stays impossible.
 func (namespace OutputNamespace) MarkerFor(reservation ReservationID, digest hangar.Digest, createdAt Timestamp) ObjectMarker {
 	return ObjectMarker{
-		Version:         MarkerVersion,
 		Scope:           namespace.scope,
 		Digest:          digest,
 		ReservationID:   reservation,

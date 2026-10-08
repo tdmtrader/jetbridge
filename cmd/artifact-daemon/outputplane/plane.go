@@ -35,7 +35,6 @@ type Plane struct {
 	store   *controlStore
 	capture *CaptureLedger
 	labeler *FacetLabeler
-	unready string
 }
 
 // Patterns are the mux patterns the plane serves. They are prefixes and two
@@ -50,12 +49,7 @@ var Patterns = []string{
 	"/readyz",
 }
 
-// Open builds everything and validates the control store.
-//
-// The order is the fail-closed rule made concrete: the control store is opened
-// and VALIDATED before the routes exist, and a quarantined record makes the
-// plane open and stay unready rather than open and answer. A daemon that could
-// not read its own ledger is not one that may say what it says.
+// Open builds everything over the control store.
 //
 // nodes is the artifact daemon's Kubernetes client; nil means there is no node
 // to label, which is how this runs outside a cluster. daemonCertificate is the
@@ -102,18 +96,6 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		}
 	}()
 
-	quarantined, err := store.validate()
-	if err != nil {
-		return nil, err
-	}
-	if len(quarantined) != 0 {
-		plane.unready = fmt.Sprintf("the output control ledger quarantined %d unreadable record(s) at "+
-			"startup: %v. This daemon is the sole authority for the executions they described, "+
-			"and a lost record is not an execution that never happened. It will stay unready "+
-			"until an operator resolves them under %s/%s.",
-			len(quarantined), quarantined, store.Path(), quarantineDirName)
-	}
-
 	base, err := OpenExecutionLedger(store, executioncontrol.NodeUID(config.NodeUID),
 		daemon.ActivationEpoch(), daemon.ControlSigner(), nowUTC)
 	if err != nil {
@@ -151,7 +133,7 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		return nil, err
 	}
 
-	plane.server = NewServerWithSpool(daemon, base, plane.capture, capability, plane.unready,
+	plane.server = NewServerWithSpool(daemon, base, plane.capture, capability,
 		config.PublishConcurrency)
 	if err := plane.server.configureReads(config, store); err != nil {
 		return nil, err
@@ -177,9 +159,6 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	}
 	fmt.Fprintf(out, "  control API:      https, the control plane's client certificate "+
 		"required (node-local routes exempt)\n")
-	if plane.unready != "" {
-		fmt.Fprintf(out, "\nNOT READY: %s\n", plane.unready)
-	}
 
 	return plane, nil
 }
@@ -208,21 +187,10 @@ func newCapabilityVerifier(config Config, store *controlStore) (*executioncontro
 // Patterns on its own mux.
 func (plane *Plane) Handler() http.Handler { return plane.server.Handler() }
 
-// Ready reports why the plane is not ready, or "" when it is.
-func (plane *Plane) Ready() string { return plane.unready }
-
 // Advertise puts the facet labels on, LAST, after everything has built and the
 // listener exists. A label advertised before the daemon can answer is a pod
 // scheduled onto a node whose hold is refused on arrival.
-//
-// A quarantined ledger advertises nothing at all: readiness is false, and
-// telling the scheduler otherwise would be this daemon's one visible claim
-// contradicting its own /readyz.
 func (plane *Plane) Advertise(ctx context.Context) error {
-	if plane.unready != "" {
-		return nil
-	}
-
 	return plane.labeler.Advertise(ctx, plane.server.daemon.OutputEnabled())
 }
 

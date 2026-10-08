@@ -17,8 +17,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -196,18 +194,9 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 	}
 
 	// Now the hold.
-	markerBody, err := json.Marshal(map[string]any{
+	record, err := json.Marshal(map[string]any{
 		"state": "held", "execution": "33333333-3333-4333-8333-333333333333", "output": "result",
 		"node": "node-1", "pod_uid": "pod-1",
-	})
-	if err != nil {
-		t.Fatalf("encoding: %v", err)
-	}
-	sum := sha256.Sum256(markerBody)
-	record, err := json.Marshal(map[string]any{
-		"record_version": "hangar-output-control-record-v1",
-		"checksum":       hex.EncodeToString(sum[:]),
-		"body":           json.RawMessage(markerBody),
 	})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)

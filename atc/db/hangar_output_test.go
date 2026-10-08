@@ -384,9 +384,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				}),
 			Entry("a stat whose metageneration moved", output.ErrConflict, "metageneration",
 				func(request *output.ReadLeaseRequest) { request.StatProof.Metageneration = 4 }),
-			Entry("a stat carrying no accepted marker", output.ErrConflict, "marker version",
+			Entry("a stat carrying no marker", output.ErrIncomplete, "exact-generation stat",
 				func(request *output.ReadLeaseRequest) {
-					request.StatProof.Marker.Version = "hangar-output-v0"
+					request.StatProof.Marker = output.ObjectMarker{}
 				}),
 			Entry("a stat from ten minutes ago", output.ErrTimeout, "older than",
 				func(request *output.ReadLeaseRequest) {

@@ -328,7 +328,7 @@ type CaptureOutcome struct {
 // PublishedTree is the tree reference, its strict attributes, and A READ OF
 // THE OUTPUT BUCKET.
 //
-// BucketKeys and MarkerVersions are read back from the store at assertion time
+// BucketKeys and Markers are read back from the store at assertion time
 // rather than remembered from the publish, which is what makes "holds exactly
 // one object" an outcome instead of a call count (convention 10).
 type PublishedTree struct {
@@ -336,10 +336,10 @@ type PublishedTree struct {
 
 	Ref hangar.TreeRef
 
-	// BucketKeys and MarkerVersions are read back from the store at assertion
+	// BucketKeys and Markers are read back from the store at assertion
 	// time. They are what makes "holds exactly one object" an outcome.
-	BucketKeys     []string
-	MarkerVersions []string
+	BucketKeys []string
+	Markers    []map[string]string
 
 	// Second is the second capture of the same bytes, for the dedup pair.
 	Second CaptureOutcome

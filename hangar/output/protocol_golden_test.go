@@ -180,8 +180,8 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
 	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
 
-	"refusal-unknown-marker-version.json":   refuseMarker,
-	"refusal-unmarked-object-metadata.json": refuseMarker,
+	"refusal-malformed-marker-metadata.json": refuseMarker,
+	"refusal-unmarked-object-metadata.json":  refuseMarker,
 }
 
 func TestProtocolGoldens(t *testing.T) {

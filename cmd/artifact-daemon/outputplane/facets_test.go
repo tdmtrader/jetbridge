@@ -170,7 +170,7 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 // The extension handshake says a daemon speaks capture, and it is only
 // truthful where the facet exists.
 func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
-	full := newRoutes(t, "")
+	full := newRoutes(t)
 
 	response, err := http.Get(full.server.URL + "/capture/v1/handshake")
 	if err != nil {
@@ -271,6 +271,6 @@ func (fixture *routeFixture) serveBaseOnly(t *testing.T) {
 		t.Fatalf("opening the spent-capability record: %v", err)
 	}
 	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,
-		nil, verifier, "").Handler())
+		nil, verifier).Handler())
 	t.Cleanup(fixture.server.Close)
 }

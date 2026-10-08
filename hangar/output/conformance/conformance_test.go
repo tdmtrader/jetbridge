@@ -72,9 +72,6 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 			t.Errorf("a newly created object reports metageneration %d, expected 1",
 				object.Metageneration)
 		}
-		if object.Marker.Version != output.MarkerVersion {
-			t.Errorf("the object came back marked %q", object.Marker.Version)
-		}
 		if object.Marker.ReservationID != testReservation {
 			t.Errorf("the marker names reservation %q, this capture is %q",
 				object.Marker.ReservationID, testReservation)
@@ -264,23 +261,23 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 			t.Errorf("the refusal does not say the object is unmanaged: %v", err)
 		}
 
-		// A wrong marker version is a deliberate statement by another deployment
-		// and is likewise never overwritten.
-		wrongDigest := testsupport.Digest("33")
-		wrongKey, err := namespace.ObjectKey(wrongDigest)
+		// A marker that is present but malformed is corrupt, and is likewise
+		// never overwritten.
+		malformedDigest := testsupport.Digest("33")
+		malformedKey, err := namespace.ObjectKey(malformedDigest)
 		if err != nil {
-			t.Fatalf("deriving the wrong-version key: %v", err)
+			t.Fatalf("deriving the malformed-marker key: %v", err)
 		}
-		wrongMetadata := namespace.MarkerFor(otherReservation, wrongDigest,
+		malformedMetadata := namespace.MarkerFor(otherReservation, malformedDigest,
 			output.NewTimestamp(testsupport.FixedInstant)).Metadata()
-		wrongMetadata[output.MarkerKeyVersion] = "hangar-output-v2"
-		seed(t, tier, wrongKey, canonicalBytes("another deployment"), wrongMetadata)
+		malformedMetadata[output.MarkerKeyActivation] = "not a number"
+		seed(t, tier, malformedKey, canonicalBytes("another deployment"), malformedMetadata)
 
 		_, err = role.EnsurePublication(ctx,
-			testsupport.Reservation(t, namespace, testReservation, wrongDigest),
+			testsupport.Reservation(t, namespace, testReservation, malformedDigest),
 			bytes.NewReader(canonicalBytes("another deployment")), 14)
-		if !errors.Is(err, output.ErrConflict) {
-			t.Errorf("a wrong marker version was answered with %v, expected ErrConflict", err)
+		if !errors.Is(err, output.ErrCorrupt) {
+			t.Errorf("a malformed marker was answered with %v, expected ErrCorrupt", err)
 		}
 	})
 }

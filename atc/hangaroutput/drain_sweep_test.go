@@ -155,7 +155,6 @@ func plant(t *testing.T, h *harness, key string, metadata map[string]string, cre
 
 func markerFor(store string, scope hangar.Scope, digest hangar.Digest, created time.Time) map[string]string {
 	return output.ObjectMarker{
-		Version:         output.MarkerVersion,
 		Scope:           scope,
 		Digest:          digest,
 		ReservationID:   output.ReservationID(uuid.NewString()),

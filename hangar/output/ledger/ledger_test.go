@@ -1,8 +1,6 @@
 package ledger
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -20,28 +18,19 @@ const (
 )
 
 // writeMarker writes a step marker the way the daemon's control store does:
-// an envelope whose checksum covers the body bytes.
+// the record's JSON body and nothing around it.
 func writeMarker(t *testing.T, dir, state, execution, output string) {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
 		"state": state, "execution": execution, "output": output,
-		"node": "node-1", "pod_uid": "pod-1",
-	})
-	if err != nil {
-		t.Fatalf("encoding: %v", err)
-	}
-	sum := sha256.Sum256(body)
-	wrapper, err := json.Marshal(map[string]any{
-		"record_version": recordVersion,
-		"checksum":       hex.EncodeToString(sum[:]),
-		"body":           json.RawMessage(body),
+		"node": "node-1", "pod_uid": "pod-1", "a_field_this_reader_does_not_know": true,
 	})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
 	name := stepMarkerPrefix + execution + "." + output + ".json"
-	if err := os.WriteFile(filepath.Join(dir, name), wrapper, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
 		t.Fatalf("writing: %v", err)
 	}
 }
@@ -130,9 +119,8 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 
 	for _, name := range []string{
 		"a record that is not JSON",
-		"a record from a newer daemon",
 		"a torn record",
-		"a quarantined record",
+		"a record naming no step directory",
 		"a directory that cannot be listed",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -170,28 +158,18 @@ func corruptIn(t *testing.T, dir, how string) {
 		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 			t.Fatalf("writing: %v", err)
 		}
-	case "a record from a newer daemon":
-		if err := os.WriteFile(path,
-			[]byte(`{"record_version":"hangar-output-control-record-v2","body":{}}`), 0o600); err != nil {
-			t.Fatalf("writing: %v", err)
-		}
 	case "a torn record":
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("reading: %v", err)
 		}
-		// The same envelope with its body changed under the checksum: what a
-		// crash, a truncated restore or a flipped bit leaves.
-		torn := strings.Replace(string(raw), `"held"`, `"sealed"`, 1)
-		if err := os.WriteFile(path, []byte(torn), 0o600); err != nil {
+		// Half the record: what a truncated restore leaves.
+		if err := os.WriteFile(path, raw[:len(raw)/2], 0o600); err != nil {
 			t.Fatalf("writing: %v", err)
 		}
-	case "a quarantined record":
-		if err := os.MkdirAll(filepath.Join(dir, quarantineDirName), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(path, filepath.Join(dir, quarantineDirName, filepath.Base(path))); err != nil {
-			t.Fatal(err)
+	case "a record naming no step directory":
+		if err := os.WriteFile(path, []byte(`{"state":"held"}`), 0o600); err != nil {
+			t.Fatalf("writing: %v", err)
 		}
 	case "a directory that cannot be listed":
 		// Mode bits do not apply to uid 0, and CI runs as root: chmod 000 there

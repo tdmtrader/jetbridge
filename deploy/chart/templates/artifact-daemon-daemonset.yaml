@@ -206,12 +206,9 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
-            # The POD's readiness is the artifact daemon's: a quarantined output
-            # control ledger must not take the node's artifact plane (resolve,
-            # mirroring, caches) out of service. The output plane reports its
-            # own readiness where its consumers look: /readyz, its two node
-            # labels (withheld while the ledger is quarantined) and its
-            # handshakes (503 while quarantined).
+            # The POD's readiness is the artifact daemon's. The output plane
+            # reports where its consumers look: /readyz, its two node labels
+            # and its handshakes.
             httpGet:
               path: /healthz
               port: http

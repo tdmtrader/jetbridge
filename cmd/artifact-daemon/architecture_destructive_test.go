@@ -184,15 +184,11 @@ var destructiveInventory = map[string]struct {
 	// and the step directory becomes the artifact daemon's ordinary business,
 	// subject to its ordinary lifecycle.
 	//
-	// The two entries left are record management: neither touches a source.
+	// The entries left are record management: neither touches a source.
 
 	"outputplane/control_store.go | controlStore.put | store.root.Rename(temp)": {1, admission{
 		why: "the ledger's own atomic record replacement. This IS the writer authority the " +
 			"artifact daemon's read-only classifier reads; it touches no source.",
-	}},
-	"outputplane/control_store.go | controlStore.quarantineRecord | store.root.Rename(name)": {1, admission{
-		why: "moves a torn or unsupported record aside so an operator can read it. It touches " +
-			"no source, and the daemon stays unready until it is resolved.",
 	}},
 	"outputplane/control_store.go | controlStore.remove | store.root.Remove(name)": {1, admission{
 		why: "removes one step marker on release, after the control plane recorded a terminal " +
@@ -324,7 +320,7 @@ func TestArchitecture_EveryDestructiveCallIsAdmittedByANamedGuardOrPinnedAsExemp
 	// scan silently matched nothing passes, and a scan that stops finding
 	// calls -- a renamed directory, a parse that quietly failed -- looks
 	// exactly like a daemon that stopped destroying things.
-	const pinnedTotal = 35
+	const pinnedTotal = 34
 	if total != pinnedTotal {
 		t.Errorf("found %d destructive calls across both daemons and %d are pinned. "+
 			"Every Remove/RemoveAll/Rename must be listed in destructiveInventory with the "+

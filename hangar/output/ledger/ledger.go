@@ -28,8 +28,6 @@
 package ledger
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,13 +44,9 @@ import (
 // writer's package would be one import away from being able to write.
 const ControlDirName = ".hangar-output-control"
 
-const (
-	// stepMarkerPrefix and the record envelope are the writer's; this reader
-	// restates them rather than importing them.
-	stepMarkerPrefix  = "capture-"
-	recordVersion     = "hangar-output-control-record-v1"
-	quarantineDirName = "quarantine"
-)
+// stepMarkerPrefix is the writer's; this reader restates it rather than
+// importing it.
+const stepMarkerPrefix = "capture-"
 
 // Class is the closed set of answers.
 type Class string
@@ -74,18 +68,13 @@ var ErrRefused = errors.New("hangar/output/ledger: the source is held by a durab
 // marker is the subset of the daemon's step marker this reader needs.
 //
 // It is deliberately a SUBSET and decoded leniently: the writer may add fields.
-// What it must never do is read a record whose FORMAT it does not know, or one
-// whose bytes do not match their checksum, as anything but unavailable.
+// A record that does not decode at all, or names no step directory, makes the
+// whole ledger unavailable; a record that decodes with a state this reader
+// does not know is held.
 type marker struct {
 	State     string `json:"state"`
 	Execution string `json:"execution"`
 	Output    string `json:"output"`
-}
-
-type envelope struct {
-	RecordVersion string          `json:"record_version"`
-	Checksum      string          `json:"checksum"`
-	Body          json.RawMessage `json:"body"`
 }
 
 // StepDirectory is the ONE derivation of a capture's step directory from its
@@ -259,24 +248,6 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 	held := map[string]Class{}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() == quarantineDirName {
-			// A quarantined record is one the writer could not read at
-			// startup. Whatever it said -- possibly that a source is held --
-			// is unknown, so nothing here may answer "unmanaged" until an
-			// operator resolves it.
-			quarantined, err := os.ReadDir(path.Join(classifier.dir, quarantineDirName))
-			if err != nil {
-				return nil, fmt.Errorf("reading the quarantine: %w", err)
-			}
-			for _, record := range quarantined {
-				if !record.IsDir() {
-					return nil, fmt.Errorf("%s/%s is a quarantined control record; a record "+
-						"nobody can read may be a hold this reader would miss",
-						quarantineDirName, record.Name())
-				}
-			}
-			continue
-		}
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), stepMarkerPrefix) ||
 			!strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -295,21 +266,9 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 
 			return nil, fmt.Errorf("reading %s: %w", name, err)
 		}
-		var wrapper envelope
-		if err := json.Unmarshal(raw, &wrapper); err != nil {
-			return nil, fmt.Errorf("decoding %s: %w", name, err)
-		}
-		if wrapper.RecordVersion != recordVersion {
-			return nil, fmt.Errorf("%s is record version %q and this reader knows %q; a record "+
-				"it cannot read is a hold it would miss", name, wrapper.RecordVersion, recordVersion)
-		}
-		sum := sha256.Sum256(wrapper.Body)
-		if hex.EncodeToString(sum[:]) != wrapper.Checksum {
-			return nil, fmt.Errorf("%s does not match its checksum", name)
-		}
 		var body marker
-		if err := json.Unmarshal(wrapper.Body, &body); err != nil {
-			return nil, fmt.Errorf("decoding the body of %s: %w", name, err)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, fmt.Errorf("decoding %s: %w", name, err)
 		}
 		if body.Execution == "" || body.Output == "" {
 			return nil, fmt.Errorf("%s names no step directory", name)

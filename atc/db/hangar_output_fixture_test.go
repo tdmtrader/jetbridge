@@ -179,7 +179,6 @@ func hangarReadLeaseRequest(id output.ReadLeaseID, claimID output.ClaimID, ref h
 			},
 			Metageneration: 1,
 			Marker: output.ObjectMarker{
-				Version:         output.MarkerVersion,
 				Scope:           ref.Scope,
 				Digest:          ref.Digest,
 				ReservationID:   reservation,

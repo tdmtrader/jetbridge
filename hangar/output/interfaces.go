@@ -144,15 +144,6 @@ func (request ReadLeaseRequest) Validate() error {
 	if err := validateReadWarrantNonce(request.WarrantNonce); err != nil {
 		return err
 	}
-	// The marker is checked BEFORE the generic stat validation, because both
-	// would refuse a wrong version and only one of them says what happened: an
-	// unmarked or wrong-version object is unmanaged, which is a typed conflict
-	// about ownership, not an incomplete request.
-	if request.StatProof.Marker.Version != MarkerVersion {
-		return fmt.Errorf("%w: the stat carries marker version %q, not %q; an unmarked or "+
-			"wrong-version object is unmanaged and never a managed read", ErrConflict,
-			request.StatProof.Marker.Version, MarkerVersion)
-	}
 	if err := request.StatProof.Validate(); err != nil {
 		return fmt.Errorf("%w: a read lease is admitted on an exact-generation stat: %v",
 			ErrIncomplete, err)

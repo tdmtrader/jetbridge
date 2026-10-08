@@ -3,6 +3,7 @@ package output
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
@@ -21,7 +22,6 @@ import (
 // consumer identifier here, and there is no object key or bucket either -- the
 // reservation id is the correlation handle, and it is one Hangar generated.
 const (
-	MarkerKeyVersion       = "hangar-output-version"
 	MarkerKeyScope         = "hangar-output-scope"
 	MarkerKeyDigest        = "hangar-output-digest"
 	MarkerKeyReservationID = "hangar-output-reservation-id"
@@ -29,6 +29,10 @@ const (
 	MarkerKeyStore         = "hangar-output-store"
 	MarkerKeyCreatedAt     = "hangar-output-created-at"
 )
+
+// markerKeyPrefix is what every marker key starts with. An object carrying no
+// key with it is unmarked.
+const markerKeyPrefix = "hangar-output-"
 
 // markerCreatedAtLayout is the nine-digit RFC 3339 form. Object metadata is
 // string-to-string, so this is written by hand rather than by a JSON encoder,
@@ -48,7 +52,6 @@ const markerCreatedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // the wire, and Metadata/ParseObjectMarker are that encoding; the struct's JSON
 // form is never sent anywhere, so it does not claim to be frozen.
 type ObjectMarker struct {
-	Version         string
 	Scope           hangar.Scope
 	Digest          hangar.Digest
 	ReservationID   ReservationID
@@ -67,7 +70,6 @@ type ObjectMarker struct {
 // Metadata renders the marker as object custom metadata.
 func (marker ObjectMarker) Metadata() map[string]string {
 	metadata := map[string]string{
-		MarkerKeyVersion:       marker.Version,
 		MarkerKeyScope:         string(marker.Scope),
 		MarkerKeyDigest:        string(marker.Digest),
 		MarkerKeyReservationID: string(marker.ReservationID),
@@ -83,26 +85,18 @@ func (marker ObjectMarker) Metadata() map[string]string {
 
 // ParseObjectMarker reads ownership evidence off an object.
 //
-// It fails closed in every direction that matters. Absent evidence is
-// ErrNotFound, because an unmarked object is *unmanaged* -- it is never
-// relabelled, adopted or deleted, and treating "no marker" as "not ours to
-// worry about" is the only safe reading. A different marker version is
-// ErrConflict rather than a parse failure, because a wrong version is a
-// deliberate statement by some other system and must not be overwritten.
-// Anything else malformed is ErrCorrupt, which the orphan sweep counts.
+// Absent evidence -- no key at all under the marker prefix -- is ErrNotFound,
+// because an unmarked object is *unmanaged*: it is never relabelled, adopted
+// or deleted, and treating "no marker" as "not ours to worry about" is the
+// only safe reading. A marker that is present but malformed is ErrCorrupt,
+// which the orphan sweep counts and the publisher refuses.
 func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
-	version, ok := metadata[MarkerKeyVersion]
-	if !ok || version == "" {
-		return ObjectMarker{}, fmt.Errorf("%w: object carries no %s metadata, so it is unmanaged; "+
-			"it is never relabelled, adopted or deleted", ErrNotFound, MarkerKeyVersion)
-	}
-	if version != MarkerVersion {
-		return ObjectMarker{}, fmt.Errorf("%w: object carries marker version %q, this store "+
-			"accepts %q", ErrConflict, version, MarkerVersion)
+	if !markerPresent(metadata) {
+		return ObjectMarker{}, fmt.Errorf("%w: object carries no %s* metadata, so it is unmanaged; "+
+			"it is never relabelled, adopted or deleted", ErrNotFound, markerKeyPrefix)
 	}
 
 	marker := ObjectMarker{
-		Version:       version,
 		Scope:         hangar.Scope(metadata[MarkerKeyScope]),
 		Digest:        hangar.Digest(metadata[MarkerKeyDigest]),
 		ReservationID: ReservationID(metadata[MarkerKeyReservationID]),
@@ -133,11 +127,17 @@ func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
 	return marker, nil
 }
 
-func (marker ObjectMarker) Validate() error {
-	if marker.Version != MarkerVersion {
-		return fmt.Errorf("%w: marker version %q, this store accepts %q",
-			ErrConflict, marker.Version, MarkerVersion)
+func markerPresent(metadata map[string]string) bool {
+	for key := range metadata {
+		if strings.HasPrefix(key, markerKeyPrefix) {
+			return true
+		}
 	}
+
+	return false
+}
+
+func (marker ObjectMarker) Validate() error {
 	if err := marker.Scope.Validate(); err != nil {
 		return fmt.Errorf("%w: marker scope: %v", ErrCorrupt, err)
 	}

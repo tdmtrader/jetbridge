@@ -25,20 +25,19 @@ import (
 // The route table, driven over real HTTP against the real ledgers.
 //
 // What is under test is the boundary rather than the ledgers: which facet a
-// route admits, what a replayed capability does, what an unready daemon
-// answers, and whether a base request can be made to mention an output.
+// route admits, what a replayed capability does, and whether a base request
+// can be made to mention an output.
 
 type routeFixture struct {
 	*captureFixture
 
-	server  *httptest.Server
-	api     *Server
-	client  *http.Client
-	unready string
-	daemon  *Daemon
-	minter  *executioncontrol.CapabilityMinter
-	epoch   executioncontrol.ActivationEpoch
-	nonce   int
+	server *httptest.Server
+	api    *Server
+	client *http.Client
+	daemon *Daemon
+	minter *executioncontrol.CapabilityMinter
+	epoch  executioncontrol.ActivationEpoch
+	nonce  int
 
 	// The store this daemon was pointed at, and the configuration it was built
 	// from. The redaction scan needs both: it has to know the bucket name and
@@ -55,7 +54,7 @@ type routeFixture struct {
 	emitted []string
 }
 
-func newRoutes(t *testing.T, unready string) *routeFixture {
+func newRoutes(t *testing.T) *routeFixture {
 	t.Helper()
 
 	capture := newCaptureLedger(t)
@@ -72,7 +71,6 @@ func newRoutes(t *testing.T, unready string) *routeFixture {
 		store:          capture.objects,
 		bucket:         capture.bucket,
 		config:         capture.config,
-		unready:        unready,
 	}
 	fixture.serve(t)
 
@@ -108,7 +106,7 @@ func (fixture *routeFixture) serve(t *testing.T) {
 	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.captureFixture.store}); err != nil {
 		t.Fatalf("opening the spent-capability record: %v", err)
 	}
-	fixture.api = NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier, fixture.unready)
+	fixture.api = NewServer(fixture.daemon, fixture.ledger, fixture.capture, verifier)
 	fixture.server = httptest.NewServer(fixture.api.Handler())
 	t.Cleanup(fixture.server.Close)
 }
@@ -231,7 +229,7 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 //   - every capture route, because a facet check that was data per route
 //     could be true of three routes and not of five.
 func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	// The control: the base capability at its own operation.
@@ -241,7 +239,7 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 	}
 
 	// The flat identity body, over HTTP.
-	flattened := newRoutes(t, "")
+	flattened := newRoutes(t)
 	if status, body := flattened.call(t, "/execution/v1/admit",
 		executioncontrol.BaseFacet, "admit", executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
@@ -280,7 +278,7 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 
 // A capability authorizes one operation.
 func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
@@ -316,7 +314,7 @@ func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
 // caller sends an identity and gets a classification, and nothing on the way
 // there or back mentions a hold, a capture or a bucket.
 func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
 		t.Fatalf("starting: %v", err)
@@ -347,66 +345,9 @@ func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 	}
 }
 
-// An unready daemon fails closed on every control route.
-//
-// The output plane being unavailable never warrants destructive authority, and
-// "unavailable" includes "cannot read its own ledger".
-func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
-	// The control: the same fixture, ready, serves.
-	ready := newRoutes(t, "")
-	admitted(t, &ready.ledgerFixture)
-	if status, body := ready.call(t, "/execution/v1/cleanup-eligible",
-		executioncontrol.BaseFacet, "cleanup-eligible",
-		identifiedBy(identity(1))); status != http.StatusOK {
-		t.Fatalf("the ready daemon refused: %d %s", status, body)
-	}
-
-	fixture := newRoutes(t, "the control ledger quarantined a record")
-	admitted(t, &fixture.ledgerFixture)
-
-	for path, operation := range map[string]string{
-		"/execution/v1/classify":         "classify",
-		"/execution/v1/cleanup-eligible": "cleanup-eligible",
-		"/capture/v1/hold":               "hold",
-		"/capture/v1/seal":               "seal",
-		"/capture/v1/publish":            "publish",
-	} {
-		facet := executioncontrol.BaseFacet
-		if strings.HasPrefix(path, "/capture/") {
-			facet = output.CaptureFacet
-		}
-		status, body := fixture.call(t, path, facet, operation, identifiedBy(identity(1)))
-		if status != http.StatusServiceUnavailable {
-			t.Errorf("an unready daemon answered %s with %d: %s", path, status, body)
-		}
-		if !strings.Contains(string(body), "quarantined") {
-			t.Errorf("the refusal at %s does not say why: %s", path, body)
-		}
-	}
-
-	// Readiness itself says so, and liveness does not: a daemon whose ledger is
-	// quarantined must stay alive so an operator can read the quarantine.
-	live, err := http.Get(fixture.server.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("healthz: %v", err)
-	}
-	defer live.Body.Close()
-	if live.StatusCode != http.StatusOK {
-		t.Errorf("an unready daemon reported itself dead: %d", live.StatusCode)
-	}
-	rdy, err := http.Get(fixture.server.URL + "/readyz")
-	if err != nil {
-		t.Fatalf("readyz: %v", err)
-	}
-	defer rdy.Body.Close()
-	if rdy.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("a daemon with a quarantined ledger reported ready: %d", rdy.StatusCode)
-	}
-}
-
 // The whole capture chain over HTTP: hold, seal, publish, stat, release.
 func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest())
@@ -449,8 +390,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
-	if result.MarkerVersion != output.MarkerVersion || result.Ref.Generation <= 0 ||
-		result.Deduplicated || result.Ref.Digest != sealed.Digest {
+	if result.Ref.Generation <= 0 || result.Deduplicated || result.Ref.Digest != sealed.Digest {
 		t.Errorf("the publish answered %+v", result)
 	}
 
@@ -470,7 +410,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 // The handshake is the authority on what this daemon speaks. Node labels are
 // hints; this is the thing a control plane reads before trusting a statement.
 func TestTheHandshakeNamesTheProtocolLedgerKeyAndEpoch(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 
 	response, err := http.Get(fixture.server.URL + "/handshake")
 	if err != nil {
@@ -521,7 +461,7 @@ func TestTheHandshakeNamesTheProtocolLedgerKeyAndEpoch(t *testing.T) {
 // The control is asserted first, and it is the same three routes answering for
 // the execution they belong to.
 func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	// A holds.
@@ -572,7 +512,7 @@ func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 // The pair: a fresh capability still works after the restart, so the refusal
 // is about this nonce and not about the daemon having given up.
 func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
@@ -633,7 +573,7 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 // capability minted for classify does not read it, and the answer is the
 // stored statement.
 func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	admitted(t, &fixture.ledgerFixture)
 
 	if status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
@@ -667,7 +607,7 @@ func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
 // the route answers 202 at once, the upload runs on the node, and the next
 // ask after it finishes answers the generation.
 func TestAPublishSlowerThanTheClientTimeoutIsPolledToItsGeneration(t *testing.T) {
-	fixture := newRoutes(t, "")
+	fixture := newRoutes(t)
 	fixture.capture.sealWait = time.Minute
 	admitted(t, &fixture.ledgerFixture)
 	if status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", holdRequest()); status != http.StatusOK {
