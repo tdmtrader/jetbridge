@@ -14,7 +14,7 @@ import (
 // client retries a refused connection with backoff, and on the background
 // context the fixture used to hand it that retry had no end: with
 // HANGAR_FAKE_GCS_ENDPOINT pointed at a closed port, `brine run
-// features/hangar-fixture.feature` did not finish in 300 seconds and had to be
+// features/hangar-publication.feature` did not finish in 300 seconds and had to be
 // killed. A fixture that waits is a job timeout with no reason in it, which
 // tells an operator nothing about the service name they mistyped.
 //

@@ -1,75 +1,11 @@
-Feature: What a consuming step's Pod says about a published output
+Feature: What a consuming step's read of a published output is allowed
 
-  This is where the learning's split row 2 lands: the consumer's Hangar init
-  container's args and mounts are spec, so the two Go tests at
-  atc/worker/jetbridge/storage_daemonset_test.go:492 and :559 move here.
-  TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail (:613) does NOT move —
-  it runs the generated shell with a fake wget on PATH, and script text is not
-  spec.
-
-  The consumer's pod is the existing PodCreated state, so every existing mount
-  and volume check composes with the three new ones below.
-
-  The receipt here is the MATERIALIZATION receipt: the exact TreeRef the init
-  container expects the node to have installed, checked against the
-  .hangar-materialized file the daemon seals beside the tree. It is not a
-  capture receipt; captures have none, and the capture row is the record.
-
-  # Reddened by: BuildFetchInitContainers base64-encoding a receipt whose
-  # Generation has been zeroed before it reaches the init command — the exact
-  # receipt line reddens and the mount scenarios stay green.
-  @HOP-26 @HOP-35
-  Scenario: The consumer's Hangar init verifies exactly the materialization receipt for its TreeRef
-    Given a real artifact daemon publishing to a Hangar output bucket
-    And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon writes the held marker
-    And the step finishes and the daemon witnesses it
-    And the capture settles
-    And the published tree is read back from the output bucket
-    And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
-    When the consumer's pod is built
-    Then the consumer's Hangar init verifies exactly the materialization receipt for its tree
-
-  # A mount COUNT plus ReadOnly, not membership (convention 8).
-  @HOP-26 @HOP-37
-  Scenario: Each verified tree gets one fixed read-only verification mount
-    Given a real artifact daemon publishing to a Hangar output bucket
-    And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon writes the held marker
-    And the step finishes and the daemon witnesses it
-    And the capture settles
-    And the published tree is read back from the output bucket
-    And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
-    When the consumer's pod is built
-    Then the consumer's pod declares exactly 1 read-only verification mount per tree
-
-  # An absence whose control is the receipt assertion in the same scenario,
-  # asserted first.
-  @HOP-7 @HOP-26
-  Scenario: A user-controlled destination never enters the verification command
-    Given a real artifact daemon publishing to a Hangar output bucket
-    And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon writes the held marker
-    And the step finishes and the daemon witnesses it
-    And the capture settles
-    And the published tree is read back from the output bucket
-    And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
-    When the consumer's pod is built
-    Then the consumer's Hangar init verifies exactly the materialization receipt for its tree
-    And no user-controlled destination enters the verification command
-
-  @HOP-35 @HOP-37
-  Scenario: A consumer pod asks for exactly the materialization receipt's tree
-    Given a real artifact daemon publishing to a Hangar output bucket
-    And a capture-selected task "build" built from image "busybox" declares the output "result"
-    And the daemon writes the held marker
-    And the step finishes and the daemon witnesses it
-    And the capture settles
-    And the published tree is read back from the output bucket
-    And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
-    When the consumer's pod is built
-    Then the consumer's pod asks for exactly the materialization receipt's tree
-    And the step sees a volume mounted at "/tmp/build/from-earlier"
+  A consumer's input is a managed read of the output namespace: the web admits
+  the read against the consumer's claim and the daemon serves it at the output
+  plane's read route. The shape of the init container that performs the read
+  is hangar-managed-input-init.feature's; the materialization it produces is
+  hangar-managed-materialization.feature's. What is left here is the one rule
+  the claim ledger imposes on the read.
 
   # Control first: the granted read is the line above the refusal, because a
   # refusal passes on a daemon that refuses everything. A read's authority is

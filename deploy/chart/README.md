@@ -258,29 +258,28 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
 | `artifactDaemon.port` | `7780` | Port the daemon serves on. |
 | `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
-| `artifactDaemon.hangar.enabled` | `false` | Enable fail-closed exact immutable tree inputs. Requires TLS, `hangar.store` and `hangar.bucket`. |
-| `artifactDaemon.hangar.store` | `""` | Hangar's own store, `gcs` or `disk`. Required when `enabled`. |
-| `artifactDaemon.hangar.bucket` | `""` | Hangar's own bucket (GCS) or namespace (disk). Required when `enabled`. |
-| `artifactDaemon.hangar.webEnabled` | `false` | Enable web emission after daemon support is ready. Requires `enabled`. |
 | `artifactDaemon.hangar.allowGeneratedKey` | `false` | Allow live Helm to generate/persist `hangar.key`; unsupported for offline/GitOps rendering. |
-| `artifactDaemon.hangar.scratchPath` | `/var/concourse/hangar-scratch` | Private daemon-only `emptyDir` mount, disjoint from `hostPath`. |
-| `artifactDaemon.hangar.maxContentBytes` | `10737418240` | Maximum regular-file content in one exact tree. |
-| `artifactDaemon.hangar.maxEntries` | `100000` | Maximum filesystem entries in one exact tree. |
-| `artifactDaemon.hangar.keySecret` | `""` | Secret holding `hangar.key`, the Hangar key. Empty reads `hangar.key` from `artifactDaemon.tls.existingSecret`. |
+| `artifactDaemon.hangar.keySecret` | `""` | Secret holding `hangar.key`, the Hangar key. Empty reads `hangar.key` from `artifactDaemon.tls.existingSecret`. Needed with `hangarOutput.executionControl.enabled`. |
 | `artifactDaemon.hangar.capabilityTTL` | `900s` | Lifetime of every warrant the web signs, in positive whole seconds, at most 900s. |
+| `artifactDaemon.outputScratch.path` | `/var/concourse/hangar-output-scratch` | The one canonicalization scratch: a daemon-only `emptyDir`, disjoint from `hostPath`. |
+| `artifactDaemon.outputScratch.sizeLimit` | `""` | Required with `hangarOutput.executionControl.enabled`; at least `concurrency` times `maxContentBytes`. |
+| `artifactDaemon.outputScratch.maxContentBytes` | `10737418240` | Maximum regular-file content in one tree (capture, input publication or managed read); rendered as `--output-max-content-bytes`. |
+| `artifactDaemon.outputScratch.maxEntries` | `100000` | Maximum filesystem entries in one tree; rendered as `--output-max-entries`. |
+| `artifactDaemon.outputScratch.concurrency` | `1` | How many trees may be spooled to scratch at once. |
 
 `artifactDaemon` also carries `mirror`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
 
-Hangar names its own store, bucket, prefix and endpoint and shares nothing
-with the resource-cache store. Native GCS authenticates with Workload
-Identity; S3-compatible and filesystem stores are unsupported.
+Hangar has two namespaces, cache and output, and one tree path: a Run input
+is uploaded as an input publication into the output namespace
+(`hangarOutput.bucket`) and reaches the task as a managed read of it. There
+is no separate input store. Native GCS authenticates with Workload Identity;
+S3-compatible and filesystem stores are unsupported.
 
 One Hangar key, `hangar.key` (exactly 32 raw bytes after base64 decoding),
-signs every warrant the web issues -- materialization, read and control -- and
-every artifact daemon verifies against it. Strict inputs
-(`artifactDaemon.hangar.enabled`) and the output plane
-(`hangarOutput.executionControl.enabled`) share it. Name a Secret holding it in
+signs every warrant the web issues -- read and control -- and every artifact
+daemon verifies against it. The output plane
+(`hangarOutput.executionControl.enabled`) needs it. Name a Secret holding it in
 `artifactDaemon.hangar.keySecret` (the Hangar bootstrap creates an absent one);
 otherwise `artifactDaemon.tls.existingSecret` must carry `hangar.key` beside
 the TLS material, or `artifactDaemon.hangar.allowGeneratedKey` lets live Helm

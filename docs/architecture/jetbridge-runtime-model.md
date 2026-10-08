@@ -7,7 +7,7 @@ Vocabulary: [`atc/worker/jetbridge/CONTEXT.md`](../../atc/worker/jetbridge/CONTE
 ```
 Web node ──registers──▶ Synthetic worker (one per namespace)
 Web node ──creates────▶ Step pod ──mounts──▶ Artifact daemon (one per node)
-Step pod: [control init] [cleanup init] [fetch init] ──▶ step container + sidecars
+Step pod: [control init] [cleanup init] [fetch init] [managed-input init ×N] ──▶ step container + sidecars
 ```
 
 - The **synthetic worker** is one record per namespace, named after it,
@@ -15,8 +15,9 @@ Step pod: [control init] [cleanup init] [fetch init] ──▶ step container + 
   reports how many pods carry its label. Placement is Kubernetes's; the web
   expresses only affinity for the node holding a step's inputs.
 - A **step pod** runs one step. Its init containers run in order: control
-  init (only when a capture is selected), cleanup, fetch. Sidecars share its
-  network namespace.
+  init (only when a capture is selected), cleanup, fetch, then one
+  managed-input init per tree input (a Hangar managed read under a read
+  warrant). Sidecars share its network namespace.
 
 ## Container states
 

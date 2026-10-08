@@ -7,11 +7,10 @@ Feature: What the artifact daemon answers about a capture's marker
   filesystem that no response shows.
 
   There is ONE daemon per node: the artifact daemon serves the output plane's
-  capture routes beside its cache and strict-input routes. A capture's only
-  node-local state is one marker file in its step directory, and the marker is
-  held, sealed or released (a tombstone). The output namespace is never the
-  cache's or the strict input's; the daemon refuses to start if any two
-  coincide.
+  capture routes beside its cache routes. A capture's only node-local state is
+  one marker file in its step directory, and the marker is held, sealed or
+  released (a tombstone). The output namespace is never the cache's; the daemon
+  refuses to start if the two coincide.
 
   NOTHING HERE COUNTS A REQUEST. The scenarios that mean "the daemon was not
   called" say instead that the held step directory is still on the node.

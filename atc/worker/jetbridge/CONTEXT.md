@@ -110,8 +110,15 @@ failure.
 
 **Control init**:
 The first init container of a capture-selected step pod. It takes the source
-hold before any writer runs and is the only container holding a warrant.
+hold before any writer runs and holds the step's control warrant.
 _Avoid_: capture control init, hold init container
+
+**Managed-input init**:
+The init container, one per tree input, that presents a read warrant to the
+node's artifact daemon, which materializes that tree ref into the step's
+volume (Hangar's managed read), and checks the materialization receipt
+before the step starts. The only other container holding a warrant.
+_Avoid_: strict init, materialize init
 
 **Reaper**:
 The periodic sweep that reports live pods, deletes pods marked destroying or
@@ -140,7 +147,8 @@ Kubernetes accessor.
 The per-node DaemonSet pod that stores step outputs and resource caches on a
 host path, mirrors them to peers and serves them to init containers. The
 authoritative artifact store, and the only daemon on a node: Hangar's
-strict-input materialization and output plane are parts of it. It is its own
+output plane, which serves input publications, managed reads and captures,
+is a part of it. It is its own
 binary; the signed capability it accepts from init containers is a shared
 value type, owned by neither side.
 _Avoid_: daemon (alone), DaemonSet (the deployment shape, not the thing),

@@ -26,7 +26,7 @@ type Config struct {
 	Kind string
 
 	// Bucket is the cache's GCS bucket, or its disk namespace. It is never
-	// the strict-input or output one.
+	// the output one.
 	Bucket string
 
 	// Endpoint is a GCS emulator override (empty means real GCS through
@@ -71,8 +71,8 @@ func (c Config) Validate() error {
 // Open builds the cache's own clients over its own namespace.
 //
 // It constructs a fresh client and a fresh delete client every time and never
-// accepts one: the strict-input store's client, and for disk its connection
-// pool, are never shared with cache churn. The returned closer is the caller's.
+// accepts one: the output plane's client, and for disk its connection pool,
+// are never shared with cache churn. The returned closer is the caller's.
 func Open(ctx context.Context, c Config) (Store, func() error, error) {
 	if err := c.Validate(); err != nil {
 		return nil, nil, err

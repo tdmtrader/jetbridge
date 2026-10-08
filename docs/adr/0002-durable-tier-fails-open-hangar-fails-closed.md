@@ -11,7 +11,7 @@ are re-fetchable from their source, so every miss, timeout or corrupt object
 means "not here" and the build proceeds by fetching again. Hangar holds
 exact immutable trees addressed by a complete reference, which nothing else
 can reproduce, so absence, corruption, conflict or an infrastructure failure
-fails the strict input rather than substituting anything. Merging them into
+fails the read rather than substituting anything. Merging them into
 one tier would have forced one failure policy on both kinds of content, and
 either choice is wrong for the other kind.
 
@@ -28,8 +28,12 @@ either choice is wrong for the other kind.
   `hangar/disk` backends, so the separation is a NAMESPACE, not an import ban
   or a key depth. The cache is its own bucket or disk namespace with its own
   client instance; the daemon and web refuse to start with it equal to the
-  input or output one. The tier may import only the object interface and its
+  output one. The tier may import only the object interface and its
   two backends — never `hangar/output` — and nothing under `hangar/` imports
   the tier. The daemon holds a delete only over the cache namespace.
   Reaffirmed by ADR-0009: the cache has its own namespace and its own
   store instance.
+- Amended 2026-10-08 (one tree path): the strict-input namespace is gone; a
+  Run's inputs are input publications in the output namespace, read back as
+  managed reads. The fail-closed principle is unchanged; the namespace
+  inequality is cache ≠ output.

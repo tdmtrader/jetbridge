@@ -1052,15 +1052,6 @@ const (
 	reasonNotFound       = "not_found"
 	reasonClientCert     = "client_cert"
 
-	// Hangar's strict-tree routes. Kept in the same bounded set rather than a
-	// second one of their own: the metric has one series space, and a Hangar
-	// refusal is a refusal.
-	reasonMalformed        = "malformed"
-	reasonLimitExceeded    = "limit_exceeded"
-	reasonConflict         = "conflict"
-	reasonTreeVerification = "tree_verification"
-	reasonOverloaded       = "overloaded"
-
 	// The output plane's hold. This daemon has no output-bucket credential and
 	// no business changing a capture's state, but its destructive paths can be
 	// pointed at a source some capture is about to seal -- so it asks the

@@ -154,8 +154,9 @@ jobs:
           echo "=== kind-runner image built and pushed ==="
 
 # The Hangar generated-Pod contract lists the cluster's Nodes and relabels one
-# (concourse.dev/artifact-cache, concourse.dev/hangar-v1) so the strict Pod it
-# generates has somewhere to schedule. That is cluster-scope mutation, which is
+# (concourse.dev/artifact-cache and the output plane's two readiness labels,
+# concourse.dev/hangar-execution-control-v1 and concourse.dev/hangar-output-v1)
+# so the Pod it generates has somewhere to schedule. That is cluster-scope mutation, which is
 # why live_scope_guard_test.go bars it from the `live` tier -- that tier runs
 # against the deployed cluster under a namespaced ServiceAccount -- and why it
 # carries its own `hangar_live` tag. This job is its CI home: a K3s cluster
@@ -163,19 +164,19 @@ jobs:
 # the task.
 #
 # It needs no Hangar store and no deployed artifact daemon, so there is no
-# artifactDaemon.hangar.* chart value to set here, no Hangar key Secret to
-# mint and nothing to point at GCS. The contract plants its own daemon stand-in
-# -- a hostNetwork BusyBox Pod that writes the strict tree onto the node and
-# answers POST /hangar/v1/materializations on 31780 with an exact empty 204 --
-# and signs its own materialization warrants with a key it holds in process. What
-# is under test is the Pod the runtime GENERATES and the tree the init container
-# will accept, not the store behind the daemon.
+# hangarOutput.* chart value to set here, no Hangar key Secret to mint and
+# nothing to point at a store. The contract plants its own daemon stand-in for
+# the output plane's managed-read route -- a hostNetwork Pod on 31780, socat
+# terminating TLS in front of a shell handler that writes the tree onto the
+# node and answers POST /read/v1/materialize with an exact empty 204 -- and
+# signs its own read warrant with a Hangar key it holds in process. What is
+# under test is the Pod the runtime GENERATES and the materialization its
+# managed-input init will accept, not the daemon behind the route.
 #
 # Phase 9 added a SECOND contract to this job rather than a second job: the
 # capture-selected producer's hold, identity and placement
-# (live_capture_flow_test.go). It labels the same node ready for the OUTPUT
-# plane (concourse.dev/hangar-execution-control-v1,
-# concourse.dev/hangar-output-v1), plants the same kind of BusyBox stand-in on
+# (live_capture_flow_test.go). It labels the same node with the same readiness
+# labels, plants a BusyBox stand-in on
 # 31781 answering POST /capture/v1/hold, and asserts the three things only a
 # kubelet can say: that the control init ran before every writer, that the Pod
 # UID the API server assigned is the one that reached the daemon, and that the
@@ -241,6 +242,8 @@ jobs:
           echo "=== Pulling images ==="
           docker pull ${K3S_IMAGE}
           docker pull busybox:latest
+          docker pull alpine:latest
+          docker pull alpine/socat:latest
 
           echo "=== Creating the disposable K3s cluster ==="
           # Same container shape testcontainers' k3s module uses (privileged,
@@ -278,14 +281,17 @@ jobs:
           chmod 600 ${KUBECONFIG_PATH}
           kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes -o wide
 
-          echo "=== Loading busybox into the cluster's containerd ==="
-          # Both Pods the contract creates run busybox:latest, and the
-          # generated Pod's containers are PullIfNotPresent. Importing the
-          # image the task already pulled keeps the contract off the public
-          # registry once the cluster is up.
-          docker save busybox:latest -o /tmp/busybox.tar
-          docker cp /tmp/busybox.tar ${CLUSTER}:/tmp/busybox.tar
-          docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/busybox.tar
+          echo "=== Loading the contracts' images into the cluster's containerd ==="
+          # The generated Pods' main containers and the capture stand-in run
+          # busybox:latest; the managed-input init runs alpine:latest (the
+          # chart's artifactHelperImage, whose wget speaks TLS); the
+          # managed-read stand-in runs alpine/socat:latest to terminate that
+          # TLS. Every container is PullIfNotPresent, so importing the images
+          # the task already pulled keeps the contracts off the public registry
+          # once the cluster is up.
+          docker save busybox:latest alpine:latest alpine/socat:latest -o /tmp/contract-images.tar
+          docker cp /tmp/contract-images.tar ${CLUSTER}:/tmp/contract-images.tar
+          docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/contract-images.tar
 
           # The contract reads exactly two variables: KUBECONFIG (it must be a
           # single file, not a list) and K8S_TEST_NAMESPACE. It does NOT read
@@ -311,7 +317,7 @@ jobs:
           # A renamed test silently matches nothing and `go test` exits 0 with
           # "no tests to run", so the job would go green having run neither
           # contract. Count them first.
-          FOUND=$(grep -c -E 'func (TestLiveHangarGeneratedPodMaterializesStrictTree|TestLiveCaptureSelectedProducerHoldsAndWrites)\(' \
+          FOUND=$(grep -c -E 'func (TestLiveHangarGeneratedPodMaterializesManagedRead|TestLiveCaptureSelectedProducerHoldsAndWrites)\(' \
             atc/worker/jetbridge/live_hangar_flow_test.go atc/worker/jetbridge/live_capture_flow_test.go \
             | awk -F: '{s+=$2} END {print s}')
           if [ "${FOUND}" -ne 2 ]; then
@@ -320,7 +326,7 @@ jobs:
           fi
 
           go test -tags hangar_live -v -count=1 -timeout 12m \
-            -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$|^TestLiveCaptureSelectedProducerHoldsAndWrites$' \
+            -run '^TestLiveHangarGeneratedPodMaterializesManagedRead$|^TestLiveCaptureSelectedProducerHoldsAndWrites$' \
             ./atc/worker/jetbridge/... || STATUS=1
 
           if [ "${STATUS}" -ne 0 ]; then
@@ -343,10 +349,11 @@ jobs:
 # here is stood in: the contract renders the chart's hangar-store.yaml and the
 # artifact daemon's templates from this checkout with `helm template`, runs
 # hangar-store on a K3s local-path PVC through the chart's own initialize Job,
-# points the artifact daemon's strict inputs at it, publishes a tree, has a
-# generated step pod materialize it, deletes the hangar-store pod, and proves
-# the replacement still serves the same tree ref and never reissues a
-# generation.
+# points the artifact daemon's output plane at it (hangarOutput.store=disk),
+# publishes a Run input publication through the daemon's input routes, has a
+# generated step pod materialize it as a managed read under a read warrant,
+# deletes the hangar-store pod, and proves the replacement still serves the
+# same tree ref and never reissues a generation.
 #
 # A separate job with its own cluster, rather than a third contract in
 # hangar-generated-pod-contract: that job is what k8s-integration-tests is
@@ -358,7 +365,7 @@ jobs:
 # The image is built here, not pulled: static artifact-daemon and hangar-store
 # binaries on busybox at the chart's /usr/local/concourse/bin paths, imported
 # into the cluster's containerd with busybox (the step pod's main container)
-# and alpine (the chart's artifactHelperImage, which runs the materialization
+# and alpine (the chart's artifactHelperImage, which runs the managed-input
 # init). The contract reads the image name from HANGAR_DISK_IMAGE and renders
 # the chart with image.pullPolicy=Never.
 - name: hangar-disk-store-contract
@@ -522,7 +529,7 @@ jobs:
 # The image is built here: every binary the chart runs, static, on busybox at
 # /usr/local/concourse/bin, with concourse as its ENTRYPOINT (web and the
 # bootstrap Job pass only args). It is imported into the cluster's containerd
-# with postgres:16 (the bundled database), alpine (the materialization init)
+# with postgres:16 (the bundled database), alpine (the managed-input init)
 # and busybox (the step pod's main container). The contract reads the image
 # name from HANGAR_CLUSTER_IMAGE and renders the chart with
 # image.pullPolicy=Never.

@@ -1,38 +1,16 @@
-{{- $hangarEnabled := .Values.artifactDaemon.hangar.enabled | default false }}
-{{- $hangarWebEnabled := .Values.artifactDaemon.hangar.webEnabled | default false }}
 {{- $output := .Values.hangarOutput }}
 {{- $base := $output.executionControl.enabled | default false }}
 {{- /*
 The Hangar key, hangar.key: the one raw 32-byte key the web signs every
-warrant with (materialization, read and control) and this daemon verifies
-against. The daemon needs it for strict inputs and for the output plane alike,
-so it is mounted, and its source checked, under either switch.
+warrant with (read and control) and this daemon verifies against. The daemon
+needs it for the output plane, which every Run input is a managed read of, so
+it is mounted, and its source checked, with exact execution control.
 */}}
-{{- $hangarKey := or $hangarEnabled $base }}
-{{- if and $hangarWebEnabled (not $hangarEnabled) }}
-  {{- fail "artifactDaemon.hangar.webEnabled requires artifactDaemon.hangar.enabled" }}
-{{- end }}
+{{- $hangarKey := $base }}
 {{- if and $hangarKey (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
   {{- fail "the Hangar key is required: name a Secret holding hangar.key in artifactDaemon.hangar.keySecret, hold hangar.key in artifactDaemon.tls.existingSecret, or set artifactDaemon.hangar.allowGeneratedKey=true (live Helm only; offline/GitOps rendering cannot preserve a generated key)" }}
 {{- end }}
-{{- if $hangarEnabled }}
-  {{- if not (has .Values.artifactDaemon.hangar.store (list "gcs" "disk")) }}
-    {{- fail "artifactDaemon.hangar.store is required when Hangar is enabled and must be gcs or disk" }}
-  {{- end }}
-  {{- if empty .Values.artifactDaemon.hangar.bucket }}
-    {{- fail "artifactDaemon.hangar.bucket is required when Hangar is enabled" }}
-  {{- end }}
-  {{- $scratch := clean .Values.artifactDaemon.hangar.scratchPath }}
-  {{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") }}
-  {{- if or (not (hasPrefix "/" $scratch)) (eq $scratch "/") }}
-    {{- fail "artifactDaemon.hangar.scratchPath must be an absolute non-root path" }}
-  {{- end }}
-  {{- if or (eq $storage "/") (eq $scratch $storage) (hasPrefix (printf "%s/" $storage) $scratch) (hasPrefix (printf "%s/" $scratch) $storage) }}
-    {{- fail "artifactDaemon.hangar.scratchPath and artifactDaemon.hostPath must be disjoint" }}
-  {{- end }}
-  {{- if or (le (int64 .Values.artifactDaemon.hangar.maxContentBytes) 0) (le (int64 .Values.artifactDaemon.hangar.maxEntries) 0) }}
-    {{- fail "artifactDaemon.hangar content and entry limits must be positive" }}
-  {{- end }}
+{{- if $base }}
   {{- $ttl := toString .Values.artifactDaemon.hangar.capabilityTTL }}
   {{- if not (regexMatch "^[1-9][0-9]*s$" $ttl) }}
     {{- fail "artifactDaemon.hangar.capabilityTTL must use positive whole seconds (for example 900s)" }}
@@ -133,25 +111,6 @@ spec:
             {{- with .Values.artifactDaemon.metrics.port }}
             - --metrics-port={{ . }}
             {{- end }}
-            {{- if $hangarEnabled }}
-            # The daemon adds concourse.dev/hangar-v1=ready to its node only
-            # after strict GCS, key, TLS, and scratch validation succeeds.
-            - --hangar-enabled
-            - --hangar-store={{ .Values.artifactDaemon.hangar.store }}
-            - --hangar-bucket={{ .Values.artifactDaemon.hangar.bucket }}
-            - --hangar-prefix={{ .Values.artifactDaemon.hangar.prefix }}
-            {{- if eq .Values.artifactDaemon.hangar.store "disk" }}
-            - --hangar-endpoint={{ include "concourse.hangarStorage.endpoint" . }}
-            - --hangar-store-id={{ .Values.hangarStorage.disk.storeID }}
-            - --hangar-token-file=/etc/concourse/hangar-disk/token
-            - --hangar-ca-cert=/etc/concourse/hangar-disk/ca.crt
-            {{- else if .Values.artifactDaemon.hangar.endpoint }}
-            - --hangar-endpoint={{ .Values.artifactDaemon.hangar.endpoint }}
-            {{- end }}
-            - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
-            - --hangar-max-content-bytes={{ .Values.artifactDaemon.hangar.maxContentBytes | int64 }}
-            - --hangar-max-entries={{ .Values.artifactDaemon.hangar.maxEntries | int64 }}
-            {{- end }}
             {{- if $hangarKey }}
             # The one Hangar key: the daemon verifies every warrant with it
             # and signs nothing -- its acknowledgement is its answer over mTLS.
@@ -171,14 +130,15 @@ spec:
             - --output-timeout={{ $output.operationTimeout }}
             - --output-scratch-dir={{ .Values.artifactDaemon.outputScratch.path }}
             - --publish-concurrency={{ int .Values.artifactDaemon.outputScratch.concurrency }}
+            # The one set of tree limits: captures, input publications and
+            # managed reads are all bounded by them.
+            - --output-max-content-bytes={{ .Values.artifactDaemon.outputScratch.maxContentBytes | int64 }}
+            - --output-max-entries={{ .Values.artifactDaemon.outputScratch.maxEntries | int64 }}
             {{- if $capture }}
             - --pod-terminations-namespace={{ include "concourse.kubernetesNamespace" . }}
             {{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-output-disk") | nindent 12 }}
             {{- if $output.cacheBucket }}
             - --cache-bucket={{ $output.cacheBucket }}
-            {{- end }}
-            {{- if $output.strictInputBucket }}
-            - --strict-input-bucket={{ $output.strictInputBucket }}
             {{- end }}
             {{- end }}
             {{- end }}
@@ -233,9 +193,6 @@ spec:
           resources:
             {{- toYaml .Values.artifactDaemon.resources | nindent 12 }}
           volumeMounts:
-            {{- if and $hangarEnabled (eq .Values.artifactDaemon.hangar.store "disk") }}
-            {{- include "concourse.hangarStorage.clientMount" . | nindent 12 }}
-            {{- end }}
             - name: artifact-storage
               mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - name: daemon-tls
@@ -249,10 +206,6 @@ spec:
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
-            {{- if $hangarEnabled }}
-            - name: hangar-scratch
-              mountPath: {{ .Values.artifactDaemon.hangar.scratchPath }}
-            {{- end }}
             {{- if $base }}
             {{- if $outputDisk }}
             {{- include "concourse.hangarStorage.outputClientMount" . | nindent 12 }}
@@ -261,9 +214,6 @@ spec:
               mountPath: {{ .Values.artifactDaemon.outputScratch.path }}
             {{- end }}
       volumes:
-        {{- if and $hangarEnabled (eq .Values.artifactDaemon.hangar.store "disk") }}
-        {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "input") | nindent 8 }}
-        {{- end }}
         - name: artifact-storage
           hostPath:
             path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
@@ -289,15 +239,6 @@ spec:
             items:
               - key: hangar.key
                 path: hangar.key
-        {{- end }}
-        {{- if $hangarEnabled }}
-        - name: hangar-scratch
-          {{- if .Values.artifactDaemon.hangar.scratchSizeLimit }}
-          emptyDir:
-            sizeLimit: {{ .Values.artifactDaemon.hangar.scratchSizeLimit }}
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
         {{- end }}
         {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability

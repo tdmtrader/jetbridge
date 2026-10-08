@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,16 +22,11 @@ func TestMaterializerPublishesExactReadOnlyTreeAtDerivedDestination(t *testing.T
 		{name: "link", mode: 0777, kind: tar.TypeSymlink, link: "dir/file"},
 	})
 	ref, canonical := canonicalTreeFixture(t, raw)
-	store := &strictMaterializerStore{want: ref, archive: canonical}
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
-	materializer := Materializer{Store: store, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
 
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); err != nil {
 		t.Fatal(err)
-	}
-	if store.opens != 1 {
-		t.Fatalf("opened tree %d times, want once", store.opens)
 	}
 	destination := filepath.Join(storage, "steps", "handle", "volume")
 	assertMaterializedMode(t, destination, 0555)
@@ -66,8 +60,7 @@ func TestMaterializerPreservesPreopenedEmptyDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, materializerHooks{})}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", withTestReceiptPrivilege(destination, materializerHooks{})); err != nil {
 		t.Fatal(err)
 	}
 	after, err := root.Stat(".")
@@ -109,8 +102,7 @@ func TestMaterializerPublishesIntoExistingDestinationWithoutPrivilege(t *testing
 		modeAtReceipt = info.Mode().Perm()
 		return nil
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err != nil {
 		t.Fatalf("an unprivileged daemon could not publish into an existing destination: %v", err)
 	}
 	if modeAtReceipt != 0555 {
@@ -125,7 +117,7 @@ func TestMaterializerPublishesIntoExistingDestinationWithoutPrivilege(t *testing
 		t.Fatalf("no sealed receipt was published: %v", err)
 	}
 	// The retry path accepts its own completed publication.
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err != nil {
 		t.Fatalf("a retry refused the completed publication: %v", err)
 	}
 }
@@ -134,10 +126,8 @@ func TestMaterializerRejectsInvalidOrOccupiedDestinations(t *testing.T) {
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "data"}}))
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
-	store := &strictMaterializerStore{want: ref, archive: canonical}
-	materializer := Materializer{Store: store, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
 	for _, pair := range [][2]string{{"../escape", "volume"}, {"handle", "a/b"}, {".", "volume"}} {
-		if err := materializer.Materialize(context.Background(), ref, pair[0], pair[1]); err == nil {
+		if err := materializeArchive(t, storage, canonical, ref, pair[0], pair[1], materializerHooks{}); err == nil {
 			t.Fatalf("accepted invalid destination segments %q/%q", pair[0], pair[1])
 		}
 	}
@@ -148,7 +138,7 @@ func TestMaterializerRejectsInvalidOrOccupiedDestinations(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "victim"), []byte("keep"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); !errors.Is(err, ErrConflict) {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("non-empty destination got %v", err)
 	}
 	content, _ := os.ReadFile(filepath.Join(destination, "victim"))
@@ -161,13 +151,12 @@ func TestMaterializerConcurrentExactRequestIsIdempotent(t *testing.T) {
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "data"}}))
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	for index := 0; index < 2; index++ {
 		go func() {
 			<-start
-			errs <- materializer.Materialize(context.Background(), ref, "handle", "volume")
+			errs <- materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{})
 		}()
 	}
 	close(start)
@@ -200,8 +189,7 @@ func TestMaterializerDoesNotAcceptForgedReceiptForPartialTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "file"), []byte("attacker"), 0444); err != nil {
 		t.Fatal(err)
 	}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); !errors.Is(err, ErrConflict) {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("forged partial tree got %v", err)
 	}
 	content, _ := os.ReadFile(filepath.Join(destination, "file"))
@@ -215,13 +203,12 @@ func TestMaterializerRejectsReplacementDuringRetryComparison(t *testing.T) {
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
 	destination := filepath.Join(storage, "steps", "handle", "volume")
-	base := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-	if err := base.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); err != nil {
 		t.Fatal(err)
 	}
 	var once sync.Once
 	attackErr := error(nil)
-	base.hooks.duringRetryCompare = func() error {
+	hooks := materializerHooks{duringRetryCompare: func() error {
 		once.Do(func() {
 			name := filepath.Join(destination, "file")
 			if err := os.Rename(name, name+"-displaced"); err != nil {
@@ -231,8 +218,8 @@ func TestMaterializerRejectsReplacementDuringRetryComparison(t *testing.T) {
 			attackErr = os.WriteFile(name, []byte("same"), 0444)
 		})
 		return attackErr
-	}
-	if err := base.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	}}
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("replacement during retry comparison was accepted")
 	}
 }
@@ -271,14 +258,7 @@ func TestMaterializerRevalidatesPayloadBytesAfterMutationHooks(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			materializer := Materializer{
-				Store:         &strictMaterializerStore{want: ref, archive: canonical},
-				Canonicalizer: Canonicalizer{},
-				StoragePath:   storage,
-				MaxTreeBytes:  1 << 20,
-				hooks:         test.mutate(destination),
-			}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); !errors.Is(err, ErrCorrupt) {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", test.mutate(destination)); !errors.Is(err, ErrCorrupt) {
 				t.Fatalf("same-inode payload rewrite got %v, want ErrCorrupt", err)
 			}
 			if _, err := os.Lstat(filepath.Join(destination, materializationReceiptName)); !errors.Is(err, os.ErrNotExist) {
@@ -293,11 +273,10 @@ func TestMaterializerRetryRechecksAuthorityAfterComparison(t *testing.T) {
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
 	handlePath := filepath.Join(storage, "steps", "handle")
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); err != nil {
 		t.Fatal(err)
 	}
-	materializer.hooks.afterDestinationOpen = func() error {
+	hooks := materializerHooks{afterDestinationOpen: func() error {
 		if err := os.Rename(handlePath, handlePath+"-displaced"); err != nil {
 			return err
 		}
@@ -305,8 +284,8 @@ func TestMaterializerRetryRechecksAuthorityAfterComparison(t *testing.T) {
 			return err
 		}
 		return os.WriteFile(filepath.Join(handlePath, "victim"), []byte("keep"), 0644)
-	}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	}}
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("retry accepted an ancestor swap after opening the destination")
 	}
 	content, err := os.ReadFile(filepath.Join(handlePath, "victim"))
@@ -329,8 +308,7 @@ func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
 			storage := t.TempDir()
 			cleanupMaterializedStorage(t, storage)
 			destination := filepath.Join(storage, "steps", "handle", "volume")
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); err != nil {
 				t.Fatal(err)
 			}
 			var once sync.Once
@@ -343,7 +321,7 @@ func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
 				restoreErr := os.Chmod(destination, 0555)
 				return errors.Join(mutationErr, restoreErr)
 			}
-			materializer.hooks.duringRetryCompare = func() error {
+			hooks := materializerHooks{duringRetryCompare: func() error {
 				once.Do(func() {
 					switch attack {
 					case "extra entry":
@@ -419,8 +397,8 @@ func TestMaterializerRetryComparisonRechecksNamespaceAndMetadata(t *testing.T) {
 					}
 				})
 				return attackErr
-			}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			}}
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 				t.Fatalf("retry accepted %s", attack)
 			}
 		})
@@ -441,8 +419,7 @@ func TestMaterializerReceiptCollisionRaceNeverOverwritesWinner(t *testing.T) {
 		}
 		return os.WriteFile(filepath.Join(destination, materializationReceiptName), []byte("winner"), 0444)
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("receipt collision was overwritten")
 	}
 	contents, err := os.ReadFile(filepath.Join(destination, materializationReceiptName))
@@ -458,8 +435,7 @@ func TestMaterializerRejectsSourceReceiptCollisionWithoutPublishing(t *testing.T
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: materializationReceiptName, kind: tar.TypeReg, body: "forged"}}))
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", materializerHooks{}); err == nil {
 		t.Fatal("accepted a source path colliding with the receipt")
 	}
 	if _, err := os.Lstat(filepath.Join(storage, "steps", "handle", "volume")); !errors.Is(err, os.ErrNotExist) {
@@ -484,8 +460,7 @@ func TestMaterializerCleansExistingDestinationBeforeReceiptButNotAfter(t *testin
 			if err := os.MkdirAll(destination, 0755); err != nil {
 				t.Fatal(err)
 			}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, test.hooks)}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", withTestReceiptPrivilege(destination, test.hooks)); err == nil {
 				t.Fatal("injected failure was ignored")
 			}
 			_, receiptErr := os.Lstat(filepath.Join(destination, materializationReceiptName))
@@ -507,8 +482,7 @@ func TestMaterializerAbsentPostReceiptFailureIsNonDestructive(t *testing.T) {
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
 	hooks := materializerHooks{afterReceipt: func() error { return errors.New("injected after receipt") }}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("post-receipt failure was ignored")
 	}
 	destination := filepath.Join(storage, "steps", "handle", "volume")
@@ -533,8 +507,7 @@ func TestMaterializerKeepsStagePrivateUntilPublication(t *testing.T) {
 		}
 		return err
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err != nil {
 		t.Fatal(err)
 	}
 	if observed != 0700 {
@@ -542,6 +515,8 @@ func TestMaterializerKeepsStagePrivateUntilPublication(t *testing.T) {
 	}
 }
 
+// An unsafe archive never becomes a captured tree, so there is nothing to
+// materialize and no destination appears.
 func TestMaterializerRejectsUnsafeArchiveWithoutVisiblePartialTree(t *testing.T) {
 	ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2)
 	for name, raw := range map[string][]byte{
@@ -551,8 +526,7 @@ func TestMaterializerRejectsUnsafeArchiveWithoutVisiblePartialTree(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			storage := t.TempDir()
 			cleanupMaterializedStorage(t, storage)
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: raw}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			if err := materializeArchive(t, storage, raw, ref, "handle", "volume", materializerHooks{}); err == nil {
 				t.Fatal("unsafe archive was accepted")
 			}
 			if _, err := os.Lstat(filepath.Join(storage, "steps", "handle", "volume")); !errors.Is(err, os.ErrNotExist) {
@@ -562,28 +536,30 @@ func TestMaterializerRejectsUnsafeArchiveWithoutVisiblePartialTree(t *testing.T)
 	}
 }
 
-func TestMaterializerStoreDigestAndCancellationFailuresLeaveNoDestination(t *testing.T) {
+// A ref that names another digest than the captured tree, and a cancelled
+// request, are refused before any destination exists.
+func TestMaterializerDigestAndCancellationFailuresLeaveNoDestination(t *testing.T) {
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "data"}}))
 	wrongDigest := ref
 	wrongDigest.Digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, test := range []struct {
-		name  string
-		ctx   context.Context
-		ref   TreeRef
-		store *strictMaterializerStore
+		name string
+		ctx  context.Context
+		ref  TreeRef
+		want error
 	}{
-		{name: "store", ctx: context.Background(), ref: ref, store: &strictMaterializerStore{want: ref, openErr: ErrInfrastructure}},
-		{name: "digest", ctx: context.Background(), ref: wrongDigest, store: &strictMaterializerStore{want: wrongDigest, archive: canonical}},
-		{name: "cancellation", ctx: canceled, ref: ref, store: &strictMaterializerStore{want: ref, archive: canonical}},
+		{name: "digest", ctx: context.Background(), ref: wrongDigest, want: ErrCorrupt},
+		{name: "cancellation", ctx: canceled, ref: ref, want: context.Canceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			storage := t.TempDir()
 			cleanupMaterializedStorage(t, storage)
-			materializer := Materializer{Store: test.store, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20}
-			if err := materializer.Materialize(test.ctx, test.ref, "handle", "volume"); err == nil {
-				t.Fatal("failure was ignored")
+			tree := captureTestArchive(t, Canonicalizer{}, canonical)
+			defer tree.Close()
+			if err := materializeCapturedTree(t, test.ctx, storage, tree, test.ref, "handle", "volume", materializerHooks{}); !errors.Is(err, test.want) {
+				t.Fatalf("got %v, want %v", err, test.want)
 			}
 			if _, err := os.Lstat(filepath.Join(storage, "steps", "handle", "volume")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("failure left visible state: %v", err)
@@ -592,34 +568,41 @@ func TestMaterializerStoreDigestAndCancellationFailuresLeaveNoDestination(t *tes
 	}
 }
 
+// Materialize reads the captured tree through the descriptor-anchored root
+// Capture returned, never through the CapturedTree.Root pathname, and rebinds
+// the staged bytes to the ref's digest before publishing.
 func TestMaterializerUsesAnchoredCapturedRootAndRebindsStageDigest(t *testing.T) {
 	for _, attack := range []string{"root pathname replacement", "same-length rewrite with restored metadata"} {
 		t.Run(attack, func(t *testing.T) {
 			ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "good"}}))
 			storage := t.TempDir()
 			cleanupMaterializedStorage(t, storage)
-			hooks := materializerHooks{afterCapture: func(tree *CapturedTree) error {
-				if attack == "root pathname replacement" {
-					if err := os.Rename(tree.Root, tree.Root+"-anchored"); err != nil {
-						return err
-					}
-					if err := os.Mkdir(tree.Root, 0700); err != nil {
-						return err
-					}
-					return os.WriteFile(filepath.Join(tree.Root, "file"), []byte("evil"), 0644)
+			tree := captureTestArchive(t, Canonicalizer{}, canonical)
+			defer tree.Close()
+			if attack == "root pathname replacement" {
+				if err := os.Rename(tree.Root, tree.Root+"-anchored"); err != nil {
+					t.Fatal(err)
 				}
+				if err := os.Mkdir(tree.Root, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(tree.Root, "file"), []byte("evil"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
 				name := filepath.Join(tree.Root, "file")
 				info, err := os.Stat(name)
 				if err != nil {
-					return err
+					t.Fatal(err)
 				}
 				if err := os.WriteFile(name, []byte("evil"), info.Mode().Perm()); err != nil {
-					return err
+					t.Fatal(err)
 				}
-				return os.Chtimes(name, info.ModTime(), info.ModTime())
-			}}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-			err := materializer.Materialize(context.Background(), ref, "handle", "volume")
+				if err := os.Chtimes(name, info.ModTime(), info.ModTime()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := materializeCapturedTree(t, context.Background(), storage, tree, ref, "handle", "volume", materializerHooks{})
 			if attack == "same-length rewrite with restored metadata" {
 				if !errors.Is(err, ErrCorrupt) {
 					t.Fatalf("rewritten source got %v, want ErrCorrupt", err)
@@ -640,26 +623,26 @@ func TestMaterializerUsesAnchoredCapturedRootAndRebindsStageDigest(t *testing.T)
 	}
 }
 
-func TestMaterializerReturnsOwnedCaptureCleanupFailureAfterPublication(t *testing.T) {
+// The captured tree's cleanup is owned by Close, after the publication is
+// complete: a failure to remove the private capture is reported, and the
+// published tree and its receipt are untouched by it.
+func TestCapturedTreeCloseReportsOwnedCleanupFailureAfterPublication(t *testing.T) {
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "payload"}}))
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
 	cleanupErr := errors.New("remove captured tree")
-	materializer := Materializer{
-		Store: &strictMaterializerStore{want: ref, archive: canonical},
-		Canonicalizer: Canonicalizer{
-			TempDir: t.TempDir(),
-			removeAll: func(string) error {
-				return cleanupErr
-			},
+	tree := captureTestArchive(t, Canonicalizer{
+		TempDir: t.TempDir(),
+		removeAll: func(string) error {
+			return cleanupErr
 		},
-		StoragePath:  storage,
-		MaxTreeBytes: 1 << 20,
-	}
+	}, canonical)
 
-	err := materializer.Materialize(context.Background(), ref, "handle", "volume")
-	if !errors.Is(err, cleanupErr) {
-		t.Fatalf("Materialize error = %v, want owned cleanup error", err)
+	if err := materializeCapturedTree(t, context.Background(), storage, tree, ref, "handle", "volume", materializerHooks{}); err != nil {
+		t.Fatalf("Materialize error = %v", err)
+	}
+	if err := tree.Close(); !errors.Is(err, cleanupErr) {
+		t.Fatalf("Close error = %v, want owned cleanup error", err)
 	}
 	destination := filepath.Join(storage, "steps", "handle", "volume")
 	content, readErr := os.ReadFile(filepath.Join(destination, "file"))
@@ -685,17 +668,14 @@ func TestMaterializerAbsentDestinationRaceNeverOverwritesWinner(t *testing.T) {
 	secondRef.Generation++
 	storage := t.TempDir()
 	cleanupMaterializedStorage(t, storage)
-	materializers := []*Materializer{
-		{Store: &strictMaterializerStore{want: firstRef, archive: firstArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20},
-		{Store: &strictMaterializerStore{want: secondRef, archive: secondArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20},
-	}
 	refs := []TreeRef{firstRef, secondRef}
+	archives := [][]byte{firstArchive, secondArchive}
 	start := make(chan struct{})
 	errs := make(chan error, 2)
-	for index := range materializers {
+	for index := range refs {
 		go func(index int) {
 			<-start
-			errs <- materializers[index].Materialize(context.Background(), refs[index], "handle", "volume")
+			errs <- materializeArchive(t, storage, archives[index], refs[index], "handle", "volume", materializerHooks{})
 		}(index)
 	}
 	close(start)
@@ -725,15 +705,13 @@ func TestMaterializerSerializesWritersForExistingEmptyDestination(t *testing.T) 
 		<-start
 		return nil
 	}
-	materializers := []*Materializer{
-		{Store: &strictMaterializerStore{want: firstRef, archive: firstArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, materializerHooks{beforeLock: beforeLock})},
-		{Store: &strictMaterializerStore{want: secondRef, archive: secondArchive}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: withTestReceiptPrivilege(destination, materializerHooks{beforeLock: beforeLock})},
-	}
 	refs := []TreeRef{firstRef, secondRef}
+	archives := [][]byte{firstArchive, secondArchive}
 	errs := make(chan error, 2)
-	for index := range materializers {
+	for index := range refs {
 		go func(index int) {
-			errs <- materializers[index].Materialize(context.Background(), refs[index], "handle", "volume")
+			hooks := withTestReceiptPrivilege(destination, materializerHooks{beforeLock: beforeLock})
+			errs <- materializeArchive(t, storage, archives[index], refs[index], "handle", "volume", hooks)
 		}(index)
 	}
 	<-ready
@@ -763,8 +741,7 @@ func TestMaterializerRollbackPreservesUnrelatedInjectedEntry(t *testing.T) {
 	hooks := materializerHooks{beforePayloadSeal: func() error {
 		return os.WriteFile(filepath.Join(destination, "unrelated"), []byte("keep"), 0644)
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("unrelated injection was accepted")
 	}
 	content, err := os.ReadFile(filepath.Join(destination, "unrelated"))
@@ -793,8 +770,7 @@ func TestMaterializerRejectsStagePathReplacementWithoutVictimMutation(t *testing
 		}
 		return os.Symlink(victim, stagePath)
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("accepted a replaced stage path")
 	}
 	content, err := os.ReadFile(filepath.Join(victim, "sentinel"))
@@ -818,8 +794,7 @@ func TestMaterializerDoesNotCleanReplacementStageDirectory(t *testing.T) {
 		replacement = stagePath
 		return os.WriteFile(filepath.Join(stagePath, "victim"), []byte("keep"), 0644)
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+	if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 		t.Fatal("replacement stage directory was accepted")
 	}
 	content, err := os.ReadFile(filepath.Join(replacement, "victim"))
@@ -844,8 +819,7 @@ func TestMaterializerSealsExistingRootBeforeReceipt(t *testing.T) {
 		}
 		return errors.New("stop before receipt")
 	}}
-	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-	_ = materializer.Materialize(context.Background(), ref, "handle", "volume")
+	_ = materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks)
 	if observed != 0555 {
 		t.Fatalf("destination mode before receipt = %#o, want 0555", observed)
 	}
@@ -870,8 +844,7 @@ func TestMaterializerRootChmodAndSyncFailuresPublishNoReceipt(t *testing.T) {
 			if err := os.MkdirAll(destination, 0755); err != nil {
 				t.Fatal(err)
 			}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: test.hooks}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", test.hooks); err == nil {
 				t.Fatal("injected root durability failure was ignored")
 			}
 			if _, err := os.Lstat(filepath.Join(destination, materializationReceiptName)); !errors.Is(err, os.ErrNotExist) {
@@ -910,8 +883,7 @@ func TestMaterializerRechecksAuthorityChainAfterReceipt(t *testing.T) {
 			if existing {
 				hooks = withTestReceiptPrivilege(destination, hooks)
 			}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 				t.Fatal("post-receipt ancestor swap was accepted")
 			}
 			content, err := os.ReadFile(filepath.Join(handlePath, "victim"))
@@ -953,8 +925,7 @@ func TestMaterializerRechecksDestinationNameAfterReceipt(t *testing.T) {
 			if existing {
 				hooks = withTestReceiptPrivilege(destination, hooks)
 			}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 				t.Fatal("post-receipt destination swap was accepted")
 			}
 			content, err := os.ReadFile(filepath.Join(destination, "victim"))
@@ -1000,8 +971,7 @@ func TestMaterializerRejectsParentAndDestinationSwapsWithoutMutatingReplacement(
 					return os.WriteFile(filepath.Join(destination, "victim"), []byte("keep"), 0644)
 				}
 			}
-			materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
-			if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err == nil {
+			if err := materializeArchive(t, storage, canonical, ref, "handle", "volume", hooks); err == nil {
 				t.Fatal("accepted an inode swap")
 			}
 			victimPath := filepath.Join(destination, "victim")
@@ -1016,35 +986,48 @@ func TestMaterializerRejectsParentAndDestinationSwapsWithoutMutatingReplacement(
 	}
 }
 
-type strictMaterializerStore struct {
-	mu      sync.Mutex
-	want    TreeRef
-	archive []byte
-	opens   int
-	openErr error
+// materializeArchive is the managed read's tree path in miniature: capture
+// the archive into a private verified copy, then install that copy beneath
+// the anchored steps directory under storage. The capture error, if any, is
+// returned as the materialization error; a capture that cannot be closed
+// afterwards fails the test.
+func materializeArchive(t *testing.T, storage string, archive []byte, ref TreeRef, handle, volume string, hooks materializerHooks) error {
+	t.Helper()
+	tree, err := (Canonicalizer{}).Capture(context.Background(), bytes.NewReader(archive))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := tree.Close(); err != nil {
+			t.Errorf("close captured tree: %v", err)
+		}
+	}()
+	return materializeCapturedTree(t, context.Background(), storage, tree, ref, handle, volume, hooks)
 }
 
-func (store *strictMaterializerStore) OpenTree(_ context.Context, ref TreeRef, maxBytes int64) (io.ReadCloser, TreeAttributes, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if ref != store.want {
-		return nil, TreeAttributes{}, errors.New("wrong tree ref")
+// materializeCapturedTree installs an already captured tree through the
+// unexported seam, beneath an anchored steps root it creates under storage.
+func materializeCapturedTree(t *testing.T, ctx context.Context, storage string, tree *CapturedTree, ref TreeRef, handle, volume string, hooks materializerHooks) error {
+	t.Helper()
+	stepsPath := filepath.Join(storage, "steps")
+	if err := os.MkdirAll(stepsPath, 0755); err != nil {
+		return err
 	}
-	if store.openErr != nil {
-		return nil, TreeAttributes{}, store.openErr
+	steps, err := os.OpenRoot(stepsPath)
+	if err != nil {
+		return err
 	}
-	if maxBytes <= 0 || int64(len(store.archive)) > maxBytes {
-		return nil, TreeAttributes{}, ErrLimitExceeded
-	}
-	store.opens++
-	return io.NopCloser(bytes.NewReader(store.archive)), TreeAttributes{Ref: ref, StoredBytes: int64(len(store.archive))}, nil
+	defer steps.Close()
+	return tree.materialize(ctx, steps, ref, handle, volume, hooks)
 }
 
-func (*strictMaterializerStore) EnsureTree(context.Context, Scope, Digest, io.Reader, int64) (TreeAttributes, bool, error) {
-	panic("unexpected EnsureTree")
-}
-func (*strictMaterializerStore) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) {
-	panic("unexpected InspectTree")
+func captureTestArchive(t *testing.T, canonicalizer Canonicalizer, archive []byte) *CapturedTree {
+	t.Helper()
+	tree, err := canonicalizer.Capture(context.Background(), bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tree
 }
 
 type testTreeEntry struct {
@@ -1083,6 +1066,9 @@ func testTreeArchive(t *testing.T, entries []testTreeEntry) []byte {
 	return buffer.Bytes()
 }
 
+// canonicalTreeFixture captures raw once to learn its digest and canonical
+// bytes, so a test can hand the canonical archive back in as a managed read
+// would receive it from the output namespace.
 func canonicalTreeFixture(t *testing.T, raw []byte) (TreeRef, []byte) {
 	t.Helper()
 	tree, err := (Canonicalizer{}).Capture(context.Background(), bytes.NewReader(raw))

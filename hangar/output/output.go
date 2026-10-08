@@ -43,12 +43,9 @@ const (
 	SourceLedgerVersion = "hangar-output-source-ledger-v1"
 
 	// ReadyLabel says the capture extension is served on a node. A capture
-	// Pod requires it *and* executioncontrol.ReadyLabel; neither is authority,
-	// because the warrant the daemon verifies is.
-	//
-	// It is deliberately not concourse.dev/hangar-v1, which advertises strict
-	// inputs only. Reusing that label would let a strict-input daemon schedule
-	// a capture it cannot perform.
+	// Pod, and a Pod with a Run input to materialize, requires it *and*
+	// executioncontrol.ReadyLabel; neither is authority, because the warrant
+	// the daemon verifies is.
 	ReadyLabel = "concourse.dev/hangar-output-v1"
 )
 
@@ -58,8 +55,8 @@ const (
 // none of them is ever a cache miss.
 //
 // The first six are the foundation's own sentinels rather than new ones, so a
-// caller's errors.Is keeps working across the boundary between strict input and
-// durable output. A parallel set would have meant every caller checking twice
+// caller's errors.Is keeps working across the boundary between the foundation
+// and the output plane. A parallel set would have meant every caller checking twice
 // and eventually checking once.
 //
 // # The two lifecycle states, and what a consumer sees

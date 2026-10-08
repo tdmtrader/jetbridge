@@ -56,7 +56,6 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 		return err
 	}
 	source.SetExecutor(executor)
-	config.HangarEnabled = true
 	config.ArtifactDaemonHostPath = in.Start.Daemon.Output.Root
 	in.Config = config
 	jdb := in.Start.DB

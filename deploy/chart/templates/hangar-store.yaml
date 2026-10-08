@@ -1,15 +1,10 @@
 {{- $disk := .Values.hangarStorage.disk }}
-{{- $input := and .Values.artifactDaemon.hangar.enabled (eq .Values.artifactDaemon.hangar.store "disk") }}
 {{- $output := and .Values.hangarOutput.enabled (eq .Values.hangarOutput.store "disk") }}
-{{- if and (or $input $output) (not $disk.enabled) }}
+{{- if and $output (not $disk.enabled) }}
 {{- fail "disk Hangar storage requires hangarStorage.disk.enabled" }}
 {{- end }}
 {{- if $disk.enabled }}
-{{- $inputNamespace := ternary .Values.artifactDaemon.hangar.bucket "inputs" $input }}
 {{- $outputNamespace := ternary .Values.hangarOutput.bucket "outputs" $output }}
-{{- if eq $inputNamespace $outputNamespace }}
-{{- fail "disk strict-input and output namespaces must be distinct" }}
-{{- end }}
 {{- if or (empty $disk.storeID) (empty $disk.tls.existingSecret) (empty $disk.credentials.existingSecret) }}
 {{- fail "hangarStorage.disk requires storeID, tls.existingSecret and credentials.existingSecret" }}
 {{- end }}
@@ -82,7 +77,6 @@ spec:
             - --tls-cert=/etc/hangar/tls/tls.crt
             - --tls-key=/etc/hangar/tls/tls.key
             - --credentials-file=/etc/hangar/credentials/server.json
-            - --input-namespace={{  $inputNamespace }}
             - --output-namespace={{ $outputNamespace }}
             - --max-object-bytes={{ int64 $disk.maxObjectBytes }}
             - --max-concurrent={{ int $disk.maxConcurrent }}
@@ -180,9 +174,10 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
-                # The daemon publishes strict inputs and outputs; the web lists,
-                # stats and deletes in the output namespace (reclaim and the
-                # orphan sweep).
+                # The daemon publishes captures and Run input publications
+                # into the output namespace and reads them back; the web
+                # lists, stats and deletes there (reclaim and the orphan
+                # sweep).
                 values: [artifact-daemon, web]
       ports:
         - protocol: TCP

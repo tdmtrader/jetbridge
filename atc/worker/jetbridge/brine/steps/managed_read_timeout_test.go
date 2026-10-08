@@ -134,7 +134,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	if err != nil {
 		return err
 	}
-	config.OutputPlaneEnabled, config.HangarEnabled = true, true
+	config.OutputPlaneEnabled = true
 	config.ArtifactDaemonHostPath = publication.Start.Daemon.Output.Root
 	client := publication.Candidate.Runtime.Client
 	cluster, err := getRealCluster(res)

@@ -33,12 +33,11 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 	config := jetbridge.NewConfig("managed-input", "")
 	config.ArtifactDaemonHostPath = daemon.Output.Root
 	config.OutputPlaneEnabled = true
-	config.HangarEnabled = true
 	config.ArtifactDaemonPort = port
 	backend := jetbridge.NewDaemonSetBackend(config, nil, nil, nil)
 	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Destination, Warrant: warrant.Token}
-	// Before the new runtime field exists this same payload loses its read
-	// authority and reaches the old strict-input path: the red is behavioral.
+	// A payload that lost its HangarRead would be a tree input with no managed
+	// read, which the builder refuses: the red is behavioral.
 	data, err := json.Marshal(map[string]any{"HangarTree": in.Tree.Ref, "HangarRead": request, "DestinationPath": "/work/source"})
 	if err != nil {
 		return err

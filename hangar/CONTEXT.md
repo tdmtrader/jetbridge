@@ -11,8 +11,10 @@ reclaim pass and orphan sweep in `atc/hangaroutput`.
 ### Exact trees
 
 **Hangar**:
-The opt-in tier for immutable tree inputs and results, addressed by exact
-reference and failing closed.
+The durable result plane for a Run's inputs and results: immutable trees
+addressed by exact reference and failing closed. A Run input enters as an
+input publication and reaches a task as a managed read; a Run result enters
+as a capture.
 _Avoid_: exact tree storage, durable storage (that is the runtime's
 fail-open resource-cache tier)
 
@@ -45,39 +47,39 @@ Turning an archive stream or a step directory into a tree under the entry
 and content limits.
 _Avoid_: normalization, packing
 
-**Strict input**:
-A task input naming a complete tree ref. It fails closed on absence,
-corruption, conflict, authorization, limits or infrastructure failure.
+**Managed read**:
+A task's read of one published tree ref out of the output namespace: the
+web takes a reader's claim and mints a read warrant; the step pod's
+managed-input init presents it to the node's artifact daemon, which
+materializes the tree. The only way a tree reaches a task. It fails closed
+on absence, corruption, conflict, authorization, limits or infrastructure
+failure.
 _Avoid_: exact input, immutable input, Hangar input
 
 **Materialization**:
-The daemon opening, capturing and verifying a tree into its scratch space
-for one task.
+The daemon opening, verifying and copying a published tree into one task's
+step volume under a read warrant, through its scratch space.
 _Avoid_: download, restore (those are the durable tier's)
 
 **Materialization receipt**:
-The local, read-only record that a materialization completed for one exact
-tree ref, checked before the task starts.
+The read-only `.hangar-materialized` record a managed read leaves in the
+step volume, naming the exact tree ref it materialized; the managed-input
+init checks it before the task starts.
 _Avoid_: receipt (alone)
 
 **Warrant**:
 A short-lived, signed, attenuated authorization for exactly one target,
 issued by the web with the one Hangar key and verified by the daemon;
-qualified by purpose: a materialization warrant, a read warrant, or a
+qualified by one of three purposes: a read warrant (a managed read), or a
 control warrant (execution control or output capture). A route admits only
 its own purpose.
 _Avoid_: grant (that is the agentic context's word), capability, token, facet
 
-**Materialization warrant**:
-The warrant bound to one tree ref, handle, volume and expiry that lets the
-daemon materialize that tree for that task.
-_Avoid_: input token
-
 **Read warrant**:
 The warrant bound to one reader's claim that lets a reader open that
 generation on one node while the claim lasts; single-use by claim on the
-node.
-_Avoid_: download token
+node. A managed read carries one.
+_Avoid_: download token, input token
 
 **Warrant key**:
 The one raw 32-byte secret, `hangar.key`, the web signs every warrant with
@@ -178,8 +180,8 @@ unmanaged permits destruction.
 _Avoid_: capture ledger
 
 **Input publication**:
-A strict input a Run uploads, staged on a node under a reservation id and
-then published as a tree ref. The reservation id is its correlation handle
+A Run input a Run uploads, staged on a node under a reservation id and
+then published as a tree ref in the output namespace. The reservation id is its correlation handle
 on the wire (`hangar-output-reservation-id`), not a capture reservation.
 _Avoid_: upload (alone), reservation (alone)
 
@@ -240,8 +242,7 @@ _Avoid_: at risk, policy violation
 
 **Principal**:
 The storage identity a process holds: the node daemon publishes; the web
-lists and deletes; strict inputs have their own. Delete exists only in the
-web.
+lists and deletes. Delete exists only in the web.
 _Avoid_: role, persona
 
 **Execution control**:
@@ -256,15 +257,15 @@ _Avoid_: lease control, signed acknowledgement, control-key generation
 ### Deployment
 
 **Disk store**:
-The persistent-volume store one cluster runs for strict inputs and the
-output plane, each in a namespace of its own. Initialized exactly once; its
-store ID is its identity.
+The persistent-volume store one cluster runs for the output plane's
+namespace, with optionally a second, cache-only instance for the runtime's
+fail-open tier. Initialized exactly once; its store ID is its identity.
 _Avoid_: local store, PVC store
 
 **Cache namespace**:
 The bucket or disk namespace the runtime's fail-open durable tier uses. It
-is one of three namespaces -- cache, input, output -- and no two may be
-the same; a process refuses to start otherwise.
+is one of two namespaces -- cache and output -- which may not be the same;
+a process refuses to start otherwise.
 _Avoid_: shared bucket
 
 **Bootstrap inventory**:

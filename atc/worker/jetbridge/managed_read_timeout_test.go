@@ -56,7 +56,7 @@ func TestManagedReadClientsCoverTheConfiguredOperation(t *testing.T) {
 func TestManagedInputDownloaderCoversTheConfiguredOperation(t *testing.T) {
 	config := NewConfig("test-ns", "")
 	config.OutputOperationTimeout = 15 * time.Minute
-	config.OutputPlaneEnabled, config.HangarEnabled = true, true
+	config.OutputPlaneEnabled = true
 	config.ArtifactDaemonHostPath = "/artifacts"
 	ref := hangar.TreeRef{Scope: "scope", Digest: hangar.Digest("sha256:" + strings.Repeat("a", 64)), Generation: 1}
 	input := runtime.Input{DestinationPath: "/workspace/input", HangarTree: &ref,

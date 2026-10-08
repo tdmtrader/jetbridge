@@ -23,34 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func materializeCapturedTree(ctx context.Context, storagePath, handle, volume string, ref TreeRef, sourceRoot *os.Root, hooks materializerHooks) (result error) {
-	resolvedStorage, err := filepath.EvalSymlinks(storagePath)
-	if err != nil {
-		return fmt.Errorf("hangar: resolve materialization storage: %w", err)
-	}
-	storage, err := openAbsoluteDirectoryNoFollow(resolvedStorage)
-	if err != nil {
-		return fmt.Errorf("hangar: anchor materialization storage: %w", err)
-	}
-	defer storage.Close()
-	steps, err := openDirectoryAt(storage, "steps", true, 0755)
-	if err != nil {
-		return fmt.Errorf("hangar: anchor materialization steps: %w", err)
-	}
-	defer steps.Close()
-	verifySteps := func() error {
-		if same, err := sameOpenAbsoluteDirectory(resolvedStorage, storage); err != nil || !same {
-			return errors.Join(err, fmt.Errorf("materialization storage authority changed"))
-		}
-		if same, err := sameOpenEntryAt(storage, "steps", steps); err != nil || !same {
-			return errors.Join(err, fmt.Errorf("materialization steps authority changed"))
-		}
-		return nil
-	}
-	return materializeCapturedTreeAt(ctx, steps, filepath.Join(resolvedStorage, "steps"), handle, volume, ref, sourceRoot, hooks, verifySteps)
-}
-
-func materializeCapturedTreeRoot(ctx context.Context, steps *os.Root, handle, volume string, ref TreeRef, sourceRoot *os.Root) error {
+func materializeCapturedTreeRoot(ctx context.Context, steps *os.Root, handle, volume string, ref TreeRef, sourceRoot *os.Root, hooks materializerHooks) error {
 	parent, err := steps.Open(".")
 	if err != nil {
 		return err
@@ -69,7 +42,7 @@ func materializeCapturedTreeRoot(ctx context.Context, steps *os.Root, handle, vo
 	if err := verifySteps(); err != nil {
 		return err
 	}
-	return materializeCapturedTreeAt(ctx, parent, stepsPath, handle, volume, ref, sourceRoot, materializerHooks{}, verifySteps)
+	return materializeCapturedTreeAt(ctx, parent, stepsPath, handle, volume, ref, sourceRoot, hooks, verifySteps)
 }
 
 func materializeCapturedTreeAt(ctx context.Context, steps *os.File, stepsPath, handle, volume string, ref TreeRef, sourceRoot *os.Root, hooks materializerHooks, verifySteps func() error) (result error) {

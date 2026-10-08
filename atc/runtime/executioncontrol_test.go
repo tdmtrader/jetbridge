@@ -215,14 +215,14 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 			},
 			says: "the task declares",
 		},
-		"a capture whose output overlaps a strict Hangar input": {
+		"a capture whose output overlaps a Run input": {
 			mutate: func(_ *runtime.ExecutionControl, spec *runtime.ContainerSpec) {
 				spec.Inputs = []runtime.Input{{
 					HangarTree:      &hangar.TreeRef{},
 					DestinationPath: "/tmp/build/result/inner",
 				}}
 			},
-			says: "overlaps the strict Hangar input",
+			says: "overlaps the Run input",
 		},
 	} {
 		control := baseEnvelope()

@@ -145,11 +145,6 @@ func (s *OutputSource) SelectNode(ctx context.Context, spec runtime.ContainerSpe
 		"concourse.dev/artifact-cache": "ready",
 		executioncontrol.ReadyLabel:    "ready", output.ReadyLabel: "ready",
 	}
-	for _, input := range spec.Inputs {
-		if input.HangarTree != nil {
-			selector["concourse.dev/hangar-v1"] = "ready"
-		}
-	}
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
 		return "", "", err

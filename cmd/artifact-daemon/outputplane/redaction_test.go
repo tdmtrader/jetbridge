@@ -327,8 +327,8 @@ func TestTheOutputPlaneWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
 // already draws the line: `artifact_daemon_refusals_total` answers "how often
 // did the daemon turn a client away for something the CLIENT did", and a bucket
 // that will not answer, a cancelled context and an unclassified store error are
-// none of those -- so they go through `hangarUnavailable`, which logs and does
-// not count, and `refusal_visibility_test.go`'s `known` map enumerates it
+// none of those -- its durable-restore miss is written outside the refusal
+// path, and `refusal_visibility_test.go`'s `known` map enumerates it
 // deliberately.
 //
 // This daemon has no refusal counter yet, so there is nothing to split. What

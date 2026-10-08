@@ -1,13 +1,12 @@
 package steps
 
 // The fixture the whole Hangar output family stands on: a REAL artifact-daemon
-// process whose Hangar store is a GCS emulator this process controls.
+// process whose output namespace is a GCS emulator this process controls.
 //
-// Why an emulator. Hangar's strict stores are native GCS or the disk store, and
-// the daemon enforces it: validateHangarOptions refuses --hangar-enabled
-// without --hangar-store=gcs|disk (cmd/artifact-daemon/hangar.go). The choice
-// is between a GCS stand-in over HTTP and a real disk store, and this fixture
-// takes the GCS one.
+// Why an emulator. The output plane's stores are native GCS or the disk store,
+// and the daemon enforces it: --execution-control with --output-bucket wants a
+// bucket it can validate at boot. The choice is between a GCS stand-in over
+// HTTP and a real disk store, and this fixture takes the GCS one.
 //
 // The stand-in is github.com/fsouza/fake-gcs-server, reached on the same
 // endpoint convention the production code uses: a non-empty endpoint goes to
@@ -19,7 +18,7 @@ package steps
 // caller holding one holds an arbitrary object delete. This fixture needs a raw
 // client for the one operation no role has permission for (creating a bucket),
 // so it builds its own with the SDK and says so. Nothing in the daemon is
-// modified or stubbed to make this work; the daemon's own --hangar-endpoint
+// modified or stubbed to make this work; the daemon's own --output-endpoint
 // flag is the whole seam, and the daemon validates the bucket at boot, so a
 // fixture pointing at nothing is reported as a daemon that exited during
 // startup rather than as a scenario failure later.
@@ -43,22 +42,20 @@ package steps
 // before EVERY scenario in the corpus, and a daemon registered that way cost
 // 70 seconds to serve five scenarios.
 //
-// THE OUTPUT PLANE IS MOUNTED IN THE SAME DAEMON. One artifact daemon process
-// serves the STRICT-INPUT surface, which is what the proving sentences at the
-// bottom of this file exercise end to end against the emulator, and -- with
-// --execution-control -- the output plane: the capture control API and the
-// publish route, against ITS OWN bucket, reached over the same mTLS channel.
-// Both verify every warrant against the one Hangar key.
-// hangarOutputDaemonFlags below is where the bucket separation is stated, and
-// a fixture that pointed both at one bucket would be testing a deployment the
-// daemon refuses to be.
+// ONE DAEMON, TWO NAMESPACES. The artifact daemon serves its cache from the
+// storage root and -- with --execution-control -- the output plane: execution
+// control, the capture extension, the input publication route and the managed
+// read route, all against the one output bucket, reached over the same mTLS
+// channel. Every warrant is verified against the one Hangar key, which is why
+// --hangar-key travels with --execution-control. The cache and the output
+// namespace are never the same one; a fixture that pointed both at one place
+// would be testing a deployment the daemon refuses to be.
 
 import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -71,7 +68,6 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
-	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
 	"github.com/concourse/concourse/hangar"
@@ -84,8 +80,8 @@ import (
 // conformance suite. When it is set no in-process server is started.
 const FakeGCSEndpointEnv = "HANGAR_FAKE_GCS_ENDPOINT"
 
-// HangarDaemon is a running artifact daemon whose Hangar store is the emulated
-// output bucket, and the last answer it gave.
+// HangarDaemon is a running artifact daemon whose output namespace is the
+// emulated output bucket.
 //
 // What it does NOT carry is as deliberate as what it does: no request log, no
 // handler counters, no list of calls. Every assertion over this state is on
@@ -94,12 +90,11 @@ type HangarDaemon struct {
 	Daemon *realDaemon
 	Ctx    context.Context
 
-	// Endpoint is the emulator's base URL, and Bucket the bucket this
-	// scenario's daemon publishes into. A scenario cannot choose either: the
-	// bucket is created by the fixture and named after nothing the feature
-	// file says, which is convention 3 applied to the fixture itself.
+	// Endpoint is the emulator's base URL. A scenario cannot choose it, nor
+	// the bucket: the bucket is created by the fixture and named after nothing
+	// the feature file says, which is convention 3 applied to the fixture
+	// itself.
 	Endpoint string
-	Bucket   string
 
 	// Client reads the bucket back the way the orphan sweep does: through the same
 	// unauthenticated emulator profile the daemon uses.
@@ -109,29 +104,15 @@ type HangarDaemon struct {
 	// client certificate, because every Hangar route is mTLS-protected.
 	HTTP *http.Client
 
-	// Published is the last publication answer, decoded as the foundation's
-	// attributes. Err carries a transport failure as a value so a refusal is
-	// assertable rather than fatal.
-	Status    int
-	Body      []byte
-	Published hangar.TreeAttributes
-	Err       error
-
 	// CertDir holds the one small PKI the daemon was started with. The ATC
 	// dials the artifact daemon with the client half of it, so a step that
 	// drives production ATC code needs the paths rather than the assembled
 	// client.
 	CertDir string
 
-	// Pending is the canonical archive a step produced and has not published
-	// yet. It is bytes on their way to the daemon, not a record of anything the
-	// daemon did.
-	Pending []byte
-
 	// Output is the daemon that serves the output plane: the same process as
-	// Daemon, which mounts it. OutputBucket is deliberately not Bucket -- they
-	// are never the same one, and this state could not express a
-	// violation of it if it held one field.
+	// Daemon, which mounts it. OutputBucket is the output namespace, the one
+	// bucket every publication and managed read in this family goes through.
 	Output       *realDaemon
 	OutputBucket string
 
@@ -175,11 +156,14 @@ func (s HangarDaemon) stepRoot(key hangaroutput.CaptureKey) string {
 // hangarOutputDaemonFlags is the output plane's whole argv beyond the address,
 // state and TLS flags the artifact daemon already has.
 //
-// It names a DIFFERENT bucket from the artifact daemon's, which is the point:
-// the two buckets are the trust boundary between the planes.
-func hangarOutputDaemonFlags(endpoint, bucket, nodeUID, terminations string) []string {
+// --hangar-key goes with --execution-control and nowhere else: the key signs
+// every warrant the web presents, and the plane is the only thing on this
+// daemon that verifies one. The bucket is the output namespace, which is never
+// the cache's.
+func hangarOutputDaemonFlags(endpoint, bucket, nodeUID, terminations, keyFile string) []string {
 	return []string{
 		"--execution-control",
+		"--hangar-key", keyFile,
 		"--output-endpoint", endpoint,
 		"--output-bucket", bucket,
 		"--output-prefix", "brine/deployments/one",
@@ -225,18 +209,8 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	}
 	TrackDisposer(rec, "the GCS client", client.Close)
 
-	bucket := uniqueBucketName()
-	if err := createOutputBucket(ctx, endpoint, bucket,
-		hangarBucketCreateAttempts, hangarBucketCreateTimeout,
-		func(attemptCtx context.Context) error {
-			return client.Bucket(bucket).Create(attemptCtx, "brine-hangar-output", nil)
-		}); err != nil {
-		return HangarDaemon{}, err
-	}
-
-	// One small PKI, minted the same way daemon_mtls.go mints its own. The
-	// daemon refuses --hangar-enabled without all three files, and every
-	// Hangar route but the materialization one is behind requireClientCert.
+	// One small PKI, minted the same way daemon_mtls.go mints its own. Every
+	// Hangar route but the node-local ones is behind requireClientCert.
 	material, err := mintMTLSMaterial("artifact-daemon", []net.IP{net.ParseIP("127.0.0.1")})
 	if err != nil {
 		return HangarDaemon{}, fmt.Errorf("mint the daemon's TLS material: %w", err)
@@ -264,25 +238,7 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 		}
 	}
 
-	// The scratch directory must be absolute and outside the storage root; the
-	// daemon checks both and refuses otherwise.
-	scratch, err := AttributedTempDir("brine-hangar-scratch-*")
-	if err != nil {
-		return HangarDaemon{}, err
-	}
-	TrackDisposer(rec, "the Hangar scratch directory", func() error { return os.RemoveAll(scratch) })
-	scratch, err = filepath.EvalSymlinks(scratch)
-	if err != nil {
-		return HangarDaemon{}, fmt.Errorf("resolve the Hangar scratch directory: %w", err)
-	}
-
 	args := []string{
-		"--hangar-enabled",
-		"--hangar-scratch-dir", scratch,
-		"--hangar-key", filepath.Join(certDir, "hangar.key"),
-		"--hangar-store", "gcs",
-		"--hangar-bucket", bucket,
-		"--hangar-endpoint", endpoint,
 		"--tls-cert", filepath.Join(certDir, "server.crt"),
 		"--tls-key", filepath.Join(certDir, "server.key"),
 		"--tls-ca-cert", filepath.Join(certDir, "ca.crt"),
@@ -310,7 +266,6 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	state := HangarDaemon{
 		Ctx:      ctx,
 		Endpoint: endpoint,
-		Bucket:   bucket,
 		Client:   client,
 		HTTP:     httpClient,
 		CertDir:  certDir,
@@ -322,8 +277,8 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	}
 
 	// ONE node, ONE storage root, ONE process. The artifact daemon mounts the
-	// output plane: the control ledger it writes is under the storage root it
-	// serves, and its read-only classifier is what reads it before anything
+	// output plane: the step markers it writes are under the storage root it
+	// serves, and its source ledger is what reads them before anything
 	// destructive happens.
 	daemon, err := startRealDaemonProbed("https", func(url string) error {
 		resp, err := httpClient.Get(url + "/readyz")
@@ -347,14 +302,13 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	return state, nil
 }
 
-// prepareOutputPlane creates the output plane's own bucket and the signer the
-// steps mint control warrants with, and returns the flags that mount the
-// plane: the daemon mounts it with --execution-control, verifying every
-// warrant against the Hangar key it already holds.
+// prepareOutputPlane creates the output namespace's bucket and the signer the
+// steps mint warrants with, and returns the flags that mount the plane: the
+// daemon mounts it with --execution-control and verifies every warrant against
+// the Hangar key named beside it.
 //
 // The bucket is created here and named by the fixture, never by a feature file
-// -- convention 3 applied to the fixture itself -- and it is a different bucket
-// from the strict-input one.
+// -- convention 3 applied to the fixture itself.
 func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon) ([]string, error) {
 	state.OutputBucket = uniqueBucketName()
 	if err := createOutputBucket(state.Ctx, state.Endpoint, state.OutputBucket,
@@ -393,7 +347,8 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon) ([]string, err
 		func() error { return os.RemoveAll(terminations) })
 	state.Terminations = terminations
 
-	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket, state.NodeUID, terminations)
+	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket, state.NodeUID, terminations,
+		filepath.Join(state.CertDir, "hangar.key"))
 
 	return append(flags, "--output-scratch-dir", scratch), nil
 }
@@ -424,7 +379,7 @@ func hangarEmulatorEndpoint(rec *brine.Recorder) (string, error) {
 // handed it a background context, so an endpoint nothing answers -- a service
 // name mistyped in the pipeline, say -- never returned. Measured: with
 // HANGAR_FAKE_GCS_ENDPOINT pointed at a closed port, `brine run
-// features/hangar-fixture.feature` did not finish in 300 seconds. What an
+// features/hangar-publication.feature` did not finish in 300 seconds. What an
 // operator got was the brine job's 30-minute timeout with no reason in it,
 // which is the least useful shape a failure can take.
 const (
@@ -487,73 +442,14 @@ func uniqueBucketName() string {
 	return fmt.Sprintf("hangar-output-%x", raw)
 }
 
-// objectKeys lists what the output bucket holds, in the order the API returns
-// them. This is the only read of the store a scenario gets, and it is a read of
-// the bucket rather than of anything the fixture remembered.
-func (s HangarDaemon) objectKeys() ([]string, error) {
-	var keys []string
-	it := s.Client.Bucket(s.Bucket).Objects(s.Ctx, nil)
-	for {
-		attrs, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("list the Hangar output bucket %q: %w", s.Bucket, err)
-		}
-		keys = append(keys, attrs.Name)
-	}
-	return keys, nil
-}
-
-// publish sends a raw tar to the strict publication route. The daemon
-// canonicalizes it, stores it in the emulated bucket and answers with the
-// foundation's attributes — scope, digest, generation, sizes.
-func (s HangarDaemon) publish(scope string, archive []byte) HangarDaemon {
-	resp, err := s.HTTP.Post(
-		s.Daemon.URL+"/hangar/v1/scopes/"+scope+"/trees",
-		"application/octet-stream",
-		strings.NewReader(string(archive)),
-	)
-	if err != nil {
-		s.Status, s.Body, s.Err = 0, nil, err
-		return s
-	}
-	defer resp.Body.Close()
-	body, readErr := io.ReadAll(resp.Body)
-	s.Status, s.Body, s.Err = resp.StatusCode, body, readErr
-	if resp.StatusCode/100 == 2 && readErr == nil {
-		s.Err = json.Unmarshal(body, &s.Published)
-	}
-	return s
-}
-
-// seedObject writes an object straight into the output bucket, the way an
-// object from some other node on some other day got there. It is the
-// daemon-durable seeding device, ported: publishing twice cannot tell dedup
-// from overwrite, so the discriminator has to be a DIFFERENT variant already
-// sitting at the key.
-func (s HangarDaemon) seedObject(key, body string, metadata map[string]string) error {
-	writer := s.Client.Bucket(s.Bucket).Object(key).NewWriter(s.Ctx)
-	writer.Metadata = metadata
-	if _, err := io.WriteString(writer, body); err != nil {
-		_ = writer.Close()
-		return fmt.Errorf("seed %q in the Hangar output bucket: %w", key, err)
-	}
-	return writer.Close()
-}
-
 // HangarFixtureDefinitions is the fixture family: the one Given every Hangar
-// scenario starts from, and the small set of sentences that prove the fixture
-// itself is real.
+// scenario starts from.
 //
-// The proving sentences are strict-input ones on purpose. They exercise the
-// only Hangar surface the daemon has today — canonicalize a tar, store it under
-// a server-derived key, answer with the foundation's attributes — end to end
-// through the real binary, real mTLS, the real GCS client and the emulator. If
-// the emulator were unreachable, the bucket absent, the endpoint seam broken or
-// the mTLS material wrong, the daemon would exit at startup and this Given would
-// say so.
+// There is no proving sentence of the fixture's own any more. Every scenario
+// in the family exercises the fixture end to end -- the real binary, real
+// mTLS, the real GCS client and the emulator -- and if the emulator were
+// unreachable, the bucket absent, the endpoint seam broken or the mTLS
+// material wrong, the daemon would exit at startup and this Given would say so.
 func HangarFixtureDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
@@ -588,81 +484,5 @@ func HangarFixtureDefinitions() []brine.StepDefinition {
 		// capture of the same bytes and reading back what the bucket then
 		// holds. Convention 3 applied to the fixture: not even the fixture
 		// names a location.
-
-		// The proving sentences.
-		brine.DefineMap[HangarDaemon, HangarDaemon](
-			"a step produced a tree whose file {string} reads {string}",
-			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (HangarDaemon, error) {
-				const pattern = "a step produced a tree whose file {string} reads {string}"
-				name, err := paramAt(pattern, p, 0)
-				if err != nil {
-					return in, err
-				}
-				content, err := paramAt(pattern, p, 1)
-				if err != nil {
-					return in, err
-				}
-				archive, err := durableTarOfOneFile(name, content)
-				if err != nil {
-					return in, err
-				}
-				in.Pending = archive
-				return in, nil
-			},
-		),
-
-		brine.DefineMap[HangarDaemon, HangarDaemon](
-			"the tree is published to the scope {string}",
-			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (HangarDaemon, error) {
-				scope, err := paramAt("the tree is published to the scope {string}", p, 0)
-				if err != nil {
-					return in, err
-				}
-				if len(in.Pending) == 0 {
-					return in, fmt.Errorf("no tree was produced to publish")
-				}
-				return in.publish(scope, in.Pending), nil
-			},
-		),
-
-		CheckInt[HangarDaemon]("the Hangar daemon answers {int}",
-			"the daemon's status",
-			func(in HangarDaemon) (int, error) {
-				if in.Err != nil {
-					return 0, fmt.Errorf("no answer at all: %v", in.Err)
-				}
-				return in.Status, nil
-			},
-			func(in HangarDaemon) string { return "body: " + abbrev(string(in.Body)) }),
-
-		CheckString[HangarDaemon]("the published tree is named by the scope {string}",
-			"the scope the daemon derived",
-			func(in HangarDaemon) (string, error) {
-				if in.Err != nil {
-					return "", in.Err
-				}
-				return string(in.Published.Ref.Scope), nil
-			}),
-
-		// The generation is what proves the object reached a STORE rather than a
-		// buffer: it is assigned by the bucket at creation and is not knowable
-		// to the daemon before the write lands.
-		CheckThat[HangarDaemon]("the published tree carries a store-assigned generation",
-			func(in HangarDaemon) error {
-				if in.Err != nil {
-					return in.Err
-				}
-				if err := in.Published.Ref.Validate(); err != nil {
-					return fmt.Errorf("the daemon's answer is not a valid tree reference: %w", err)
-				}
-				if in.Published.Ref.Generation <= 0 {
-					return fmt.Errorf("expected a positive generation, got %d", in.Published.Ref.Generation)
-				}
-				return nil
-			}),
-
-		CheckCount[HangarDaemon]("the Hangar output bucket holds exactly {int} objects",
-			"objects in the output bucket",
-			func(in HangarDaemon) ([]string, error) { return in.objectKeys() }),
 	}
 }

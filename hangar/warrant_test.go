@@ -39,13 +39,6 @@ func newWarrantPair(t *testing.T, now time.Time) (*Signer, *Verifier) {
 	return signer, verifier
 }
 
-func materializeWarrant(t *testing.T) Warrant {
-	t.Helper()
-	return Warrant{Purpose: PurposeMaterializeInput,
-		Ref:    mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 7),
-		Handle: "handle-1", Volume: "volume-1"}
-}
-
 func controlWarrant(purpose Purpose) Warrant {
 	operation := "stop"
 	if purpose == PurposeControlCapture {
@@ -94,10 +87,12 @@ func TestEveryPurposeRoundTripsAndNoPurposeVerifiesAsAnother(t *testing.T) {
 	now := time.Unix(1_800_000_000, 123).UTC()
 	signer, verifier := newWarrantPair(t, now)
 	expected := map[Purpose]Warrant{
-		PurposeMaterializeInput: materializeWarrant(t),
-		PurposeReadResult:       readWarrant(t, now),
-		PurposeControlBase:      controlWarrant(PurposeControlBase),
-		PurposeControlCapture:   controlWarrant(PurposeControlCapture),
+		PurposeReadResult:     readWarrant(t, now),
+		PurposeControlBase:    controlWarrant(PurposeControlBase),
+		PurposeControlCapture: controlWarrant(PurposeControlCapture),
+	}
+	if len(expected) != 3 {
+		t.Fatalf("%d purposes in the round trip, want the three", len(expected))
 	}
 	tokens := map[Purpose]string{}
 	for purpose, warrant := range expected {
@@ -155,7 +150,7 @@ func TestEveryPurposeRoundTripsAndNoPurposeVerifiesAsAnother(t *testing.T) {
 func TestAWarrantBindsEveryFieldAndItsWindow(t *testing.T) {
 	now := time.Unix(1_800_000_000, 123).UTC()
 	signer, verifier := newWarrantPair(t, now)
-	warrant := materializeWarrant(t)
+	warrant := readWarrant(t, now)
 	token, err := signer.Sign(warrant)
 	if err != nil {
 		t.Fatal(err)
@@ -168,10 +163,14 @@ func TestAWarrantBindsEveryFieldAndItsWindow(t *testing.T) {
 		"generation": func(w *Warrant) { w.Ref.Generation++ },
 		"handle":     func(w *Warrant) { w.Handle = "handle-2" },
 		"volume":     func(w *Warrant) { w.Volume = "volume-2" },
+		"claim":      func(w *Warrant) { w.ClaimID = "6f3d2a19-8c47-4e60-b1a2-0d9e8f7c6b5a" },
+		"node":       func(w *Warrant) { w.NodeUID = "node-0" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := warrant
 			edit(&changed)
+			// The route expectation never carries the token's own window.
+			changed.IssuedAt, changed.ExpiresAt = 0, 0
 			if _, err := verifier.Verify(token, changed); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("got %v, want ErrUnauthorized", err)
 			}
@@ -281,14 +280,13 @@ func TestSignRefusesWhatItsPurposeDoesNotBindAndAnOverlongToken(t *testing.T) {
 	cases := map[string]Warrant{
 		"no purpose":                {},
 		"unknown purpose":           {Purpose: "stop"},
-		"materialize with no ref":   {Purpose: PurposeMaterializeInput, Handle: "h", Volume: "v"},
-		"materialize with a path":   {Purpose: PurposeMaterializeInput, Ref: materializeWarrant(t).Ref, Handle: "../h", Volume: "v"},
-		"materialize with a claim":  func() Warrant { w := materializeWarrant(t); w.ClaimID = "c"; return w }(),
-		"materialize with a window": func() Warrant { w := materializeWarrant(t); w.IssuedAt = 1; return w }(),
-		"materialize with a nonce":  func() Warrant { w := materializeWarrant(t); w.Nonce = "x"; return w }(),
+		"materialize-input":         {Purpose: "materialize-input", Ref: readWarrant(t, now).Ref, Handle: "h", Volume: "v"},
+		"read with no ref":          func() Warrant { w := readWarrant(t, now); w.Ref = TreeRef{}; return w }(),
+		"read with a path":          func() Warrant { w := readWarrant(t, now); w.Handle = "../h"; return w }(),
 		"control with no operation": {Purpose: PurposeControlBase, ExecutionID: "e"},
 		"control with no execution": {Purpose: PurposeControlBase, Operation: "stop"},
-		"control with a ref":        func() Warrant { w := controlWarrant(PurposeControlBase); w.Ref = materializeWarrant(t).Ref; return w }(),
+		"control with a ref":        func() Warrant { w := controlWarrant(PurposeControlBase); w.Ref = readWarrant(t, now).Ref; return w }(),
+		"control with a handle":     func() Warrant { w := controlWarrant(PurposeControlCapture); w.Handle = "h"; return w }(),
 		"control with a separator":  func() Warrant { w := controlWarrant(PurposeControlBase); w.Operation = "st op"; return w }(),
 		"read with no claim":        func() Warrant { w := readWarrant(t, now); w.ClaimID = ""; return w }(),
 		"read with no node":         func() Warrant { w := readWarrant(t, now); w.NodeUID = ""; return w }(),
@@ -313,6 +311,43 @@ func TestSignRefusesWhatItsPurposeDoesNotBindAndAnOverlongToken(t *testing.T) {
 				t.Fatal("signed")
 			}
 		})
+	}
+}
+
+// Three purposes, and a tree is bound by exactly one of them: read-result.
+// A warrant for the deleted materialize-input purpose is not a warrant at all,
+// and no control purpose may carry a tree or a destination.
+func TestTheThreePurposesAndOnlyReadResultBindsATree(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	purposes := []Purpose{PurposeReadResult, PurposeControlBase, PurposeControlCapture}
+	for _, purpose := range purposes {
+		if err := purpose.Validate(); err != nil {
+			t.Errorf("%s: %v", purpose, err)
+		}
+	}
+	for _, purpose := range []Purpose{"materialize-input", "materialize", "", "read"} {
+		if err := purpose.Validate(); err == nil {
+			t.Errorf("%q validated as a purpose", purpose)
+		}
+	}
+	signer, _ := newWarrantPair(t, now)
+	ref := readWarrant(t, now).Ref
+	for _, purpose := range purposes {
+		warrant := controlWarrant(purpose)
+		if purpose == PurposeReadResult {
+			warrant = readWarrant(t, now)
+		}
+		bound := warrant.Ref != (TreeRef{}) && warrant.Handle != "" && warrant.Volume != ""
+		if bound != (purpose == PurposeReadResult) {
+			t.Errorf("%s binds a tree = %v", purpose, bound)
+		}
+		if purpose == PurposeReadResult {
+			continue
+		}
+		warrant.Ref, warrant.Handle, warrant.Volume = ref, "h", "v"
+		if _, err := signer.Sign(warrant); err == nil {
+			t.Errorf("a %s warrant signed with a tree and a destination", purpose)
+		}
 	}
 }
 

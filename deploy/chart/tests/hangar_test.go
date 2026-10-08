@@ -7,21 +7,24 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
 )
 
-var daemonHangarSets = []string{
-	"artifactDaemon.hangar.enabled=true",
+// hangarKeySets turn on exact execution control with the Hangar key held in
+// the daemon TLS Secret rather than its own (baseControlSets, in
+// hangar_output_test.go, name artifactDaemon.hangar.keySecret instead). Every
+// Run input is a managed read of the output plane, so this is the one switch
+// the key, its TTL and the tree limits ride on.
+var hangarKeySets = []string{
+	"hangarOutput.executionControl.enabled=true",
 	"artifactDaemon.tls.existingSecret=operator-daemon-tls",
-	"artifactDaemon.hangar.store=gcs",
-	"artifactDaemon.hangar.bucket=hangar-bucket",
+	"artifactDaemon.outputScratch.sizeLimit=32Gi",
 }
-
-var enabledHangarSets = append(append([]string{}, daemonHangarSets...), "artifactDaemon.hangar.webEnabled=true")
 
 func renderHangar(t *testing.T, extra ...string) string {
 	t.Helper()
-	sets := append(append([]string{}, enabledHangarSets...), extra...)
+	sets := append(append([]string{}, hangarKeySets...), extra...)
 	return render(t, sets...)
 }
 
@@ -42,37 +45,60 @@ func renderHangarError(t *testing.T, sets ...string) string {
 
 func TestHangarIsOffWithoutAnyRenderedSurfaceByDefault(t *testing.T) {
 	out := render(t)
-	for _, unexpected := range []string{"--hangar-", "--kubernetes-hangar-", "hangar.key", "hangar-scratch", "concourse.dev/hangar-v1"} {
+	for _, unexpected := range []string{"--hangar-", "--kubernetes-hangar-", "hangar.key", "hangar-scratch", "concourse.dev/hangar-", "--output-max-"} {
 		if strings.Contains(out, unexpected) {
 			t.Errorf("default render contains %q", unexpected)
 		}
 	}
 }
 
-func TestHangarEnabledRendersSharedBoundedConfiguration(t *testing.T) {
+// The artifact daemon's container args, typed-decoded from the DaemonSet.
+func daemonArgs(t *testing.T, manifests string) []string {
+	t.Helper()
+	var daemon appsv1.DaemonSet
+	if err := yaml.UnmarshalStrict([]byte(daemonSetDocument(t, manifests)), &daemon); err != nil {
+		t.Fatal(err)
+	}
+	if len(daemon.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("artifact-daemon containers=%d, want 1", len(daemon.Spec.Template.Spec.Containers))
+	}
+	c := daemon.Spec.Template.Spec.Containers[0]
+	return append(append([]string{}, c.Command...), c.Args...)
+}
+
+// With exact execution control on, the key, the web's warrant TTL and the one
+// set of tree limits (artifactDaemon.outputScratch) all render. The daemon's
+// only --hangar-* flag is the key, and the web's only --kubernetes-hangar-*
+// flags are the key and its TTL.
+func TestHangarKeyRendersWithExecutionControl(t *testing.T) {
 	out := renderHangar(t,
-		"artifactDaemon.hangar.scratchPath=/private/hangar-scratch",
-		"artifactDaemon.hangar.maxContentBytes=123456",
-		"artifactDaemon.hangar.maxEntries=321",
 		"artifactDaemon.hangar.capabilityTTL=420s",
-		"artifactDaemon.hangar.prefix=cluster-a",
-		"artifactDaemon.hangar.endpoint=http://gcs.test",
+		"artifactDaemon.outputScratch.maxContentBytes=123456",
+		"artifactDaemon.outputScratch.maxEntries=321",
 	)
 	for _, want := range []string{
-		"--hangar-enabled", "--hangar-scratch-dir=/private/hangar-scratch",
 		"--hangar-key=/etc/concourse/daemon-tls/hangar.key",
-		"--hangar-max-content-bytes=123456", "--hangar-max-entries=321",
-		"--hangar-store=gcs", "--hangar-bucket=hangar-bucket", "--hangar-prefix=cluster-a",
-		"--hangar-endpoint=http://gcs.test",
-		"--kubernetes-hangar-enabled", "--kubernetes-hangar-key=/etc/concourse/daemon-tls/hangar.key",
-		"--kubernetes-hangar-warrant-ttl=420s", "concourse.dev/hangar-v1", "name: hangar-scratch",
-		// Web is named the strict-input namespace only so it can refuse one
-		// shared with the output namespace at startup.
-		"--kubernetes-hangar-input-bucket=hangar-bucket",
-		"mountPath: /private/hangar-scratch", "emptyDir: {}",
+		"--kubernetes-hangar-key=/etc/concourse/daemon-tls/hangar.key",
+		"--kubernetes-hangar-warrant-ttl=420s",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("enabled render missing %q", want)
+		}
+	}
+	args := daemonArgs(t, out)
+	for _, want := range []string{
+		"--execution-control",
+		"--output-max-content-bytes=123456",
+		"--output-max-entries=321",
+	} {
+		found := false
+		for _, arg := range args {
+			if arg == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the artifact daemon is not handed %q: %v", want, args)
 		}
 	}
 	// The daemon takes no TTL: its verifier caps every warrant at Hangar's
@@ -83,44 +109,50 @@ func TestHangarEnabledRendersSharedBoundedConfiguration(t *testing.T) {
 	if strings.Contains(out, "--hangar-warrant-ttl") {
 		t.Error("the daemon is handed a warrant TTL; it has no such flag")
 	}
-	// Hangar is handed its own store and nothing of the resource-cache tier's.
-	if strings.Contains(out, "--durable-") {
-		t.Error("enabled render passes the daemon a durable-tier flag")
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--hangar-") && !strings.HasPrefix(arg, "--hangar-key=") {
+			t.Errorf("the artifact daemon is handed %q; its only Hangar flag is the key", arg)
+		}
+		if strings.HasPrefix(arg, "--durable-") || strings.Contains(arg, "input-bucket") {
+			t.Errorf("the artifact daemon is handed %q", arg)
+		}
+	}
+	for _, arg := range strictWebDeployment(t, out).Spec.Template.Spec.Containers[0].Args {
+		if strings.HasPrefix(arg, "--kubernetes-hangar-") && !strings.HasPrefix(arg, "--kubernetes-hangar-key=") && !strings.HasPrefix(arg, "--kubernetes-hangar-warrant-ttl=") && !strings.HasPrefix(arg, "--kubernetes-hangar-output-") {
+			t.Errorf("web is handed %q; its only Hangar flags are the key, its TTL and the output plane's", arg)
+		}
+	}
+	for _, gone := range []string{"name: hangar-scratch", "hangar-disk-client"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("enabled render carries %q", gone)
+		}
 	}
 	for _, unwanted := range []string{"GOOGLE_APPLICATION_CREDENTIALS", "credentials.json", "artifactDaemon.hangar.existingSecret"} {
 		if strings.Contains(out, unwanted) {
-			t.Errorf("GCS Hangar render contains credential surface %q", unwanted)
+			t.Errorf("render contains credential surface %q", unwanted)
 		}
 	}
 }
 
 func TestHangarRejectsInvalidPrerequisitesAtRender(t *testing.T) {
+	withKey := func(extra ...string) []string {
+		return append(append([]string{}, hangarKeySets...), extra...)
+	}
 	for _, tc := range []struct {
 		name string
 		sets []string
 		want string
 	}{
-		{"daemon disabled", []string{"artifactDaemon.enabled=false", "artifactDaemon.hangar.enabled=true"}, "artifactDaemon.enabled"},
-		{"web without daemon support", []string{"artifactDaemon.hangar.webEnabled=true"}, "hangar.enabled"},
-		{"TLS disabled", []string{"artifactDaemon.tls.enabled=false", "artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=gcs", "artifactDaemon.hangar.bucket=b"}, "tls.enabled"},
-		// The schema refuses s3 before any template runs. "must be one of" is
-		// the schema's enum message under Helm 3 and Helm 4 alike, and not the
-		// template's own "must be gcs or disk".
-		{"S3 store", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=s3", "artifactDaemon.hangar.bucket=b"}, "must be one of"},
-		{"missing bucket", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=gcs"}, "hangar.bucket"},
-		{"relative scratch", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=relative"), "absolute"},
-		{"scratch below artifacts", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=/var/concourse/artifacts/scratch"), "disjoint"},
-		{"artifacts below scratch", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=/private/hangar-scratch", "artifactDaemon.hostPath=/private/hangar-scratch/artifacts"), "disjoint"},
-		{"zero bytes", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.maxContentBytes=0"), "positive"},
-		{"zero entries", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.maxEntries=0"), "positive"},
-		{"zero TTL", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=0s"), "whole seconds"},
-		{"negative TTL", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=-1s"), "whole seconds"},
-		{"minutes", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=15m"), "whole seconds"},
-		{"nanosecond over max", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=15m1ns"), "whole seconds"},
-		{"fractional max", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=15m500ms"), "whole seconds"},
-		{"milliseconds over max", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=900001ms"), "whole seconds"},
-		{"subsecond", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=999ms"), "whole seconds"},
-		{"TTL above maximum", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.capabilityTTL=901s"), "900s"},
+		{"daemon disabled", withKey("artifactDaemon.enabled=false"), "artifactDaemon.enabled"},
+		{"TLS disabled", withKey("artifactDaemon.tls.enabled=false"), "tls.enabled"},
+		{"zero bytes", withKey("artifactDaemon.outputScratch.maxContentBytes=0"), "artifactDaemon.outputScratch"},
+		{"zero entries", withKey("artifactDaemon.outputScratch.maxEntries=0"), "artifactDaemon.outputScratch"},
+		{"TTL not whole seconds", withKey("artifactDaemon.hangar.capabilityTTL=15m"), "whole seconds"},
+		{"nanosecond over max", withKey("artifactDaemon.hangar.capabilityTTL=15m1ns"), "whole seconds"},
+		{"fractional max", withKey("artifactDaemon.hangar.capabilityTTL=15m500ms"), "whole seconds"},
+		{"milliseconds over max", withKey("artifactDaemon.hangar.capabilityTTL=900001ms"), "whole seconds"},
+		{"subsecond", withKey("artifactDaemon.hangar.capabilityTTL=999ms"), "whole seconds"},
+		{"TTL above maximum", withKey("artifactDaemon.hangar.capabilityTTL=901s"), "900s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out := renderHangarError(t, tc.sets...); !strings.Contains(out, tc.want) {
@@ -130,23 +162,18 @@ func TestHangarRejectsInvalidPrerequisitesAtRender(t *testing.T) {
 	}
 }
 
-// Hangar names its own store. It once borrowed the durable tier's store and
-// bucket when hangar.store was unset; that tier is now a removed key, which
-// shape_test.go's removed-keys guard covers.
-func TestHangarWithoutItsOwnStoreFails(t *testing.T) {
-	out := renderHangarError(t, "artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.bucket=b")
-	if !strings.Contains(out, "artifactDaemon.hangar.store") {
-		t.Fatalf("error did not name artifactDaemon.hangar.store:\n%s", out)
-	}
+// The TTL is checked only where the key is: a deployment without exact
+// execution control signs no warrant, so a bad TTL there is inert.
+func TestHangarTTLIsNotCheckedWithoutExecutionControl(t *testing.T) {
+	render(t, "artifactDaemon.hangar.capabilityTTL=15m")
 }
 
 func TestHangarRejectsImplicitGeneratedKey(t *testing.T) {
 	sets := []string{
 		"artifactDaemon.tls.source=generated",
 		"artifactDaemon.tls.existingSecret=",
-		"artifactDaemon.hangar.enabled=true",
-		"artifactDaemon.hangar.store=gcs",
-		"artifactDaemon.hangar.bucket=hangar-bucket",
+		"hangarOutput.executionControl.enabled=true",
+		"artifactDaemon.outputScratch.sizeLimit=32Gi",
 	}
 	if out := renderHangarError(t, sets...); !strings.Contains(out, "allowGeneratedKey") {
 		t.Fatalf("implicit generated key error did not name the opt-in:\n%s", out)
@@ -157,10 +184,9 @@ func TestHangarExplicitLiveHelmGenerationContainsStrongRawKey(t *testing.T) {
 	out := render(t,
 		"artifactDaemon.tls.source=generated",
 		"artifactDaemon.tls.existingSecret=",
-		"artifactDaemon.hangar.enabled=true",
+		"hangarOutput.executionControl.enabled=true",
+		"artifactDaemon.outputScratch.sizeLimit=32Gi",
 		"artifactDaemon.hangar.allowGeneratedKey=true",
-		"artifactDaemon.hangar.store=gcs",
-		"artifactDaemon.hangar.bucket=hangar-bucket",
 	)
 	for _, doc := range strings.Split(out, "\n---") {
 		var secret struct {
@@ -179,6 +205,18 @@ func TestHangarExplicitLiveHelmGenerationContainsStrongRawKey(t *testing.T) {
 	t.Fatal("auto-generated artifact-daemon Secret had no hangar.key")
 }
 
+// A generated TLS Secret without exact execution control holds no Hangar key:
+// nothing would read it.
+func TestGeneratedTLSSecretHoldsNoHangarKeyWithoutExecutionControl(t *testing.T) {
+	out := render(t,
+		"artifactDaemon.tls.source=generated",
+		"artifactDaemon.tls.existingSecret=",
+	)
+	if strings.Contains(out, "hangar.key") {
+		t.Fatal("the generated TLS Secret carries hangar.key with nothing to sign or verify")
+	}
+}
+
 func TestHangarExistingSecretIsSelectedWithoutParallelSecret(t *testing.T) {
 	out := renderHangar(t)
 	if !strings.Contains(out, "secretName: operator-daemon-tls") || !strings.Contains(out, "key: hangar.key") {
@@ -194,26 +232,6 @@ func TestHangarExistingSecretRenderIsDeterministic(t *testing.T) {
 	second := renderHangar(t)
 	if first != second {
 		t.Fatal("existing-secret Hangar render changed without an input change")
-	}
-}
-
-func TestHangarStagesDaemonSupportBeforeWebEmission(t *testing.T) {
-	daemonOnly := render(t, daemonHangarSets...)
-	for _, want := range []string{"--hangar-enabled", "hangar.key", "concourse.dev/hangar-v1"} {
-		if !strings.Contains(daemonOnly, want) {
-			t.Errorf("daemon-only rollout missing %q", want)
-		}
-	}
-	if strings.Contains(daemonOnly, "--kubernetes-hangar-") {
-		t.Fatal("daemon-only rollout enabled web Hangar emission")
-	}
-
-	full := renderHangar(t)
-	if !strings.Contains(full, "--kubernetes-hangar-enabled") {
-		t.Fatal("full rollout did not enable web Hangar emission")
-	}
-	if daemonSetDocument(t, daemonOnly) != daemonSetDocument(t, full) {
-		t.Fatal("changing only hangar.webEnabled changed the artifact DaemonSet")
 	}
 }
 
@@ -375,8 +393,8 @@ func TestHangarKeyAndScratchRemainPrivateToControlPlanePods(t *testing.T) {
 	if strings.Count(out, "mountPath: /etc/concourse/daemon-tls") != 2 {
 		t.Fatalf("daemon TLS/key Secret should mount only in web and artifact-daemon")
 	}
-	if strings.Count(out, "mountPath: /var/concourse/hangar-scratch") != 1 {
-		t.Fatalf("private scratch should mount only in artifact-daemon")
+	if strings.Count(out, "mountPath: /var/concourse/hangar-output-scratch") != 1 {
+		t.Fatalf("the one canonicalization scratch should mount only in artifact-daemon")
 	}
 	if strings.Contains(out, "--kubernetes-hangar-key=hangar.key") {
 		t.Fatal("key was rendered without its private control-plane mount path")

@@ -130,14 +130,14 @@ type DeleteClient interface {
 	DeleteExact(ctx context.Context, bucket, key string, generation int64) error
 }
 
-// Namespaces are the three dedicated places Hangar and the artifact daemon
+// Namespaces are the two dedicated places Hangar and the artifact daemon
 // keep objects: a GCS bucket each, or a namespace each on one disk store.
 //
 //   - Cache is the artifact daemon's fail-open resource cache (ADR-0002): every
 //     miss, timeout or corrupt object there is "not here", and the daemon may
 //     expire its own objects.
-//   - Input is the strict, fail-closed exact-tree input store.
-//   - Output is the strict, fail-closed result store.
+//   - Output is the fail-closed result plane: a Run's input publications and
+//     captured results alike.
 //
 // Fail-open and fail-closed reads never share a namespace, and the one holder
 // of a cache delete never shares a namespace with an exact tree. That is the
@@ -146,22 +146,15 @@ type DeleteClient interface {
 // these refuses to start when Validate fails.
 type Namespaces struct {
 	Cache  string
-	Input  string
 	Output string
 }
 
-// Validate refuses any two of the configured namespaces being equal. An empty
-// name is a namespace this process does not use and is never compared.
+// Validate refuses the two configured namespaces being equal. An empty name
+// is a namespace this process does not use and is never compared.
 func (n Namespaces) Validate() error {
-	named := []struct{ role, name string }{{"cache", n.Cache}, {"input", n.Input}, {"output", n.Output}}
-	for i := range named {
-		for j := i + 1; j < len(named); j++ {
-			if named[i].name != "" && named[i].name == named[j].name {
-				return fmt.Errorf("the %s and %s namespaces are both %q: the cache, input and output "+
-					"stores must be three different buckets (GCS) or namespaces (disk)",
-					named[i].role, named[j].role, named[i].name)
-			}
-		}
+	if n.Cache != "" && n.Cache == n.Output {
+		return fmt.Errorf("the cache and output namespaces are both %q: the cache and output "+
+			"stores must be two different buckets (GCS) or namespaces (disk)", n.Cache)
 	}
 	return nil
 }

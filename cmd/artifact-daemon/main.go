@@ -49,7 +49,7 @@ func main() {
 	// Durable tier. Off unless --durable-store names a backend, and the daemon
 	// behaves exactly as before when it is off.
 	durableStore := flag.String("durable-store", "", "Fail-open store for resource caches: \"\" (disabled), \"gcs\" or \"disk\"")
-	durableBucket := flag.String("durable-bucket", "", "The cache's own GCS bucket or disk namespace; never the strict-input or output one")
+	durableBucket := flag.String("durable-bucket", "", "The cache's own GCS bucket or disk namespace; never the output one")
 	durableEndpoint := flag.String("durable-endpoint", "", "GCS emulator endpoint (empty is real GCS), or the disk store's HTTPS origin")
 	durableStoreID := flag.String("durable-store-id", "", "Expected persistent disk storage identity, for --durable-store=disk")
 	durableTokenFile := flag.String("durable-token-file", "", "Disk storage cache-role credential file, for --durable-store=disk")
@@ -65,28 +65,14 @@ func main() {
 	flag.Var(&durableRetention, "durable-retention", "Retention for one class of durable artifact, as CLASS=DURATION (e.g. resource-caches=720h). Repeatable. A class with no entry is never reclaimed.")
 	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
 
-	// Hangar is a strict immutable-tree service composed beside the fail-open
-	// cache tier. It names its own store and shares no setting, client or
-	// namespace with the cache.
-	hangarStore := flag.String("hangar-store", "", "Strict-input storage profile: gcs or disk")
-	hangarBucket := flag.String("hangar-bucket", "", "Strict-input bucket or disk namespace")
-	hangarEndpoint := flag.String("hangar-endpoint", "", "Strict-input storage endpoint")
-	hangarPrefix := flag.String("hangar-prefix", "", "Strict-input object prefix; empty selector inherits durable prefix")
-	hangarStoreID := flag.String("hangar-store-id", "", "Expected persistent disk storage identity")
-	hangarTokenFile := flag.String("hangar-token-file", "", "Disk storage input credential file")
-	hangarCACert := flag.String("hangar-ca-cert", "", "Disk storage CA certificate")
-	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
-	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
-	hangarKeyFile := flag.String("hangar-key", "", "Path to the raw 32-byte Hangar key. It signs every warrant the web presents: materialization, read and control. Required with --hangar-enabled or --execution-control.")
-	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
-	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
-
 	// The output plane: exact execution control, and with --output-bucket the
-	// durable-capture extension. Mounted on this daemon's listener when
+	// durable-capture extension -- the one tree path, an input publication in
+	// and a managed read out. Mounted on this daemon's listener when
 	// --execution-control is given; its warrants are verified against the
 	// Hangar key, and its control and steps directories are this daemon's
 	// storage root and its steps/ beneath it.
 	executionControl := flag.Bool("execution-control", false, "Mount the output plane on this daemon's listener: exact execution control, and with --output-bucket the capture extension. Requires --hangar-key.")
+	hangarKeyFile := flag.String("hangar-key", "", "Path to the raw 32-byte Hangar key. It signs every warrant the web presents: read and control. Required with, and only with, --execution-control.")
 	var planeConfig outputplane.Config
 	outputplane.BindFlags(flag.CommandLine, &planeConfig)
 
@@ -114,9 +100,9 @@ func main() {
 		os.Exit(1)
 	}
 	// The Hangar key, for the same reason and at the same moment. One key
-	// signs every warrant the web presents, so the strict-input service and
-	// the output plane both verify against these bytes.
-	hangarKey, err := loadHangarKey(*hangarKeyFile, *hangarEnabled || *executionControl)
+	// signs every warrant the web presents, and the output plane verifies
+	// every one of them against these bytes.
+	hangarKey, err := loadHangarKey(*hangarKeyFile, *executionControl)
 	if err != nil {
 		logger.Error("failed-to-load-hangar-key", err)
 		os.Exit(1)
@@ -134,7 +120,6 @@ func main() {
 	// the daemon with namespace-local read access only, which cannot patch a
 	// node.
 	var labeler *NodeLabeler
-	var hangarLabeler *NodeLabeler
 	var k8sClient kubernetes.Interface
 	if daemonClientNeeded(*nodeName, *peerDiscovery) {
 		var err error
@@ -146,12 +131,11 @@ func main() {
 	}
 	if *nodeName != "" {
 		labeler = NewNodeLabeler(logger, k8sClient, *nodeName, *labelKey)
-		hangarLabeler = NewNodeLabeler(logger, k8sClient, *nodeName, HangarReadyLabel)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := prepareDaemonLabels(ctx, *labelKey, hangarLabeler, labeler); err != nil {
+		if err := labeler.AddLabel(ctx); err != nil {
 			cancel()
-			logger.Error("failed-to-prepare-node-labels", err)
+			logger.Error("failed-to-label-node", err)
 			os.Exit(1)
 		}
 		cancel()
@@ -168,7 +152,7 @@ func main() {
 	if err := os.MkdirAll(*storagePath, 0755); err != nil {
 		logger.Error("failed-to-create-storage-path", err, lager.Data{"path": *storagePath})
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, func() error { return nil })
+		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, func() error { return nil })
 		cleanupCancel()
 		os.Exit(1)
 	}
@@ -177,11 +161,11 @@ func main() {
 	if err != nil {
 		logger.Error("failed-to-open-storage-root", err, lager.Data{"path": *storagePath})
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, func() error { return nil })
+		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, func() error { return nil })
 		cleanupCancel()
 		os.Exit(1)
 	}
-	closeHangar := func() error { return nil }
+	closePlane := func() error { return nil }
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
@@ -201,7 +185,7 @@ func main() {
 			// must take the label down with it.
 			logger.Error("failed-to-configure-resolve-capability", err)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 			cleanupCancel()
 			os.Exit(1)
 		}
@@ -237,18 +221,17 @@ func main() {
 		logger.Error("durable-timeout-exceeds-ttl", fmt.Errorf(
 			"--durable-timeout (%s) must be less than --ttl (%s)", *durableTimeout, *ttl))
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 		cleanupCancel()
 		os.Exit(1)
 	}
 
-	// The cache, the strict-input store and the output plane's store are three
-	// namespaces, and no two may be one, refused before any is dialled.
-	if err := validateStorageNamespaces(*durableBucket, hangarInputNamespace(*hangarEnabled, *hangarBucket),
-		outputNamespace(*executionControl, planeConfig)); err != nil {
+	// The cache and the output plane's store are two namespaces, never one,
+	// refused before either is dialled.
+	if err := validateStorageNamespaces(*durableBucket, outputNamespace(*executionControl, planeConfig)); err != nil {
 		logger.Error("storage-namespaces-invalid", err)
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 		cleanupCancel()
 		os.Exit(1)
 	}
@@ -273,7 +256,7 @@ func main() {
 		// mysteriously cold cache months later.
 		logger.Error("durable-store-config-invalid", err)
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 		cleanupCancel()
 		os.Exit(1)
 	} else if tier != nil {
@@ -301,28 +284,10 @@ func main() {
 		if err != nil {
 			logger.Error("failed-to-build-tls-config", err)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 			cleanupCancel()
 			os.Exit(1)
 		}
-	}
-
-	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
-		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, Key: hangarKey,
-		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries,
-		Store: *hangarStore, StoreID: *hangarStoreID, TokenFile: *hangarTokenFile, CACert: *hangarCACert, Bucket: *hangarBucket, Prefix: *hangarPrefix, Endpoint: *hangarEndpoint, Timeout: *durableTimeout,
-		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
-	})
-	if err != nil {
-		logger.Error("hangar-config-invalid", err)
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
-		cleanupCancel()
-		os.Exit(1)
-	}
-	if hangarService != nil {
-		server.SetHangarService(hangarService)
-		closeHangar = hangarClose
 	}
 
 	var plane *outputplane.Plane
@@ -330,17 +295,17 @@ func main() {
 		planeConfig.NodeName = *nodeName
 		planeConfig.ControlDir = *storagePath
 		planeConfig.StepsDir = filepath.Join(*storagePath, "steps")
-		if err := validateOutputScratch(planeConfig.ScratchDir, *storagePath, *hangarScratchDir, *hangarEnabled); err != nil {
+		if err := validateOutputScratch(planeConfig.ScratchDir, *storagePath); err != nil {
 			logger.Error("output-scratch-invalid", err)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 			cleanupCancel()
 			os.Exit(1)
 		}
 		if err := os.MkdirAll(planeConfig.StepsDir, 0755); err != nil {
 			logger.Error("failed-to-create-steps-path", err, lager.Data{"path": planeConfig.StepsDir})
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 			cleanupCancel()
 			os.Exit(1)
 		}
@@ -356,13 +321,12 @@ func main() {
 		if err != nil {
 			logger.Error("output-plane-config-invalid", err)
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 			cleanupCancel()
 			os.Exit(1)
 		}
 		server.SetOutputPlane(plane.Handler())
-		closeStrict := closeHangar
-		closeHangar = func() error { return errors.Join(closeStrict(), plane.Close()) }
+		closePlane = plane.Close
 	}
 
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
@@ -464,29 +428,23 @@ func main() {
 		metricsListener, err = net.Listen("tcp", metricsServer.Addr)
 		if err != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			cleanupErr := cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupErr := cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 			cleanupCancel()
 			logger.Error("failed-to-bind-metrics-listener", errors.Join(err, cleanupErr))
 			os.Exit(1)
 		}
 	}
 
-	var readinessLabeler *NodeLabeler
-	if hangarService != nil {
-		readinessLabeler = hangarLabeler
-	}
-	bindCtx, bindCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	listener, err := listenAndAdvertiseHangar(bindCtx, httpServer.Addr, readinessLabeler, net.Listen)
-	bindCancel()
+	// Bound before the output plane advertises, for the same reason as the
+	// metrics listener: a label that goes on first is a pod scheduled onto a
+	// node that cannot yet answer.
+	listener, err := net.Listen("tcp", httpServer.Addr)
 	if err != nil {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cleanupErr := cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		cleanupErr := cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
 		cleanupCancel()
-		logger.Error("failed-to-bind-or-advertise", errors.Join(err, cleanupErr))
+		logger.Error("failed-to-bind-listener", errors.Join(err, cleanupErr))
 		os.Exit(1)
-	}
-	if readinessLabeler != nil {
-		logger.Info("hangar-node-labeled", lager.Data{"node": *nodeName, "label": HangarReadyLabel})
 	}
 	// The bound address, as a plain line: --port=0 asks the kernel for a port,
 	// and a harness that started the daemon that way learns it from here
@@ -501,9 +459,9 @@ func main() {
 		advertiseCancel()
 		if err != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			cleanupErr := cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, func() error {
+			cleanupErr := cleanupDaemonServices(cleanupCtx, labeler, func() error {
 				return errors.Join(plane.Withdraw(cleanupCtx), listener.Close())
-			}, closeHangar)
+			}, closePlane)
 			cleanupCancel()
 			logger.Error("failed-to-advertise-output-plane", errors.Join(err, cleanupErr))
 			os.Exit(1)
@@ -557,7 +515,7 @@ func main() {
 	// where the scheduler sends the next capture.
 	ctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 	defer cancel()
-	cleanupErr := cleanupDaemonServices(ctx, hangarLabeler, labeler, func() error {
+	cleanupErr := cleanupDaemonServices(ctx, labeler, func() error {
 		var err error
 		if plane != nil {
 			err = plane.Withdraw(ctx)
@@ -567,7 +525,7 @@ func main() {
 			err = errors.Join(err, metricsServer.Shutdown(ctx))
 		}
 		return err
-	}, closeHangar)
+	}, closePlane)
 
 	// Drain mirror jobs with what is left of the budget. Best-effort: Stop
 	// blocks until in-flight jobs complete, and an unfinished mirror is a
@@ -669,19 +627,19 @@ func loadResolveCapabilityKey(path string) ([]byte, error) {
 
 // loadHangarKey reads --hangar-key and checks it is exactly the raw key a
 // warrant verifier accepts, before the daemon advertises itself. It is
-// required when anything on this daemon verifies a warrant -- the strict-input
-// service or the output plane -- and refused otherwise: a key mounted into a
-// process that cannot need it is a key an exploit of that process gets for
-// free.
+// required when anything on this daemon verifies a warrant -- the output
+// plane, mounted by --execution-control -- and refused otherwise: a key
+// mounted into a process that cannot need it is a key an exploit of that
+// process gets for free.
 func loadHangarKey(path string, required bool) ([]byte, error) {
 	if path == "" {
 		if required {
-			return nil, errors.New("--hangar-key is required with --hangar-enabled or --execution-control")
+			return nil, errors.New("--hangar-key is required with --execution-control")
 		}
 		return nil, nil
 	}
 	if !required {
-		return nil, errors.New("--hangar-key is set but neither --hangar-enabled nor --execution-control is; nothing on this daemon verifies a warrant")
+		return nil, errors.New("--hangar-key is set but --execution-control is not; nothing on this daemon verifies a warrant")
 	}
 	key, err := os.ReadFile(path)
 	if err != nil {
@@ -691,6 +649,26 @@ func loadHangarKey(path string, required bool) ([]byte, error) {
 		return nil, fmt.Errorf("--hangar-key must contain exactly %d raw bytes, not %d", hangar.WarrantKeyBytes, len(key))
 	}
 	return key, nil
+}
+
+// cleanupDaemonServices takes the daemon down in the order its startup went
+// up, reversed: the readiness label comes off first, so the scheduler stops
+// sending pods to a node that is about to stop answering; then the listeners
+// (shutdown); then the output plane's store client. Every exit path in main
+// goes through it, and each argument may be nil or absent for a daemon that
+// never got that far.
+func cleanupDaemonServices(ctx context.Context, labeler *NodeLabeler, shutdown, closePlane func() error) error {
+	var errs []error
+	if labeler != nil {
+		errs = append(errs, labeler.RemoveLabel(ctx))
+	}
+	if shutdown != nil {
+		errs = append(errs, shutdown())
+	}
+	if closePlane != nil {
+		errs = append(errs, closePlane())
+	}
+	return errors.Join(errs...)
 }
 
 // daemonClientNeeded reports whether the daemon must talk to the Kubernetes

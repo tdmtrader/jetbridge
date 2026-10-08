@@ -21,12 +21,11 @@ var fixedInstant = time.Date(2026, 9, 9, 4, 5, 6, 123456789, time.UTC)
 
 func validNamespaceConfig() NamespaceConfig {
 	return NamespaceConfig{
-		Store:             StoreGCS,
-		Bucket:            "deployment-output",
-		DeploymentPrefix:  "deployments/blue",
-		TenantID:          "tenant-a",
-		CacheBucket:       "deployment-durable-cache",
-		StrictInputBucket: "deployment-strict-input",
+		Store:            StoreGCS,
+		Bucket:           "deployment-output",
+		DeploymentPrefix: "deployments/blue",
+		TenantID:         "tenant-a",
+		CacheBucket:      "deployment-durable-cache",
 	}
 }
 
@@ -51,11 +50,6 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 			mutate:   func(c *NamespaceConfig) { c.Bucket = c.CacheBucket },
 			sentinel: ErrConflict,
 			says:     "durable cache bucket",
-		},
-		"the strict-input bucket": {
-			mutate:   func(c *NamespaceConfig) { c.Bucket = c.StrictInputBucket },
-			sentinel: ErrConflict,
-			says:     "strict-input bucket",
 		},
 		"a store that is not native GCS": {
 			mutate:   func(c *NamespaceConfig) { c.Store = "filesystem" },

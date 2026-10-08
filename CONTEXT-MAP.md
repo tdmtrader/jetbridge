@@ -14,8 +14,9 @@ result plane. Each has its own vocabulary and a checked boundary.
 - [JetBridge runtime](./atc/worker/jetbridge/CONTEXT.md): step pods, the
   synthetic worker, the artifact daemon with its fail-open durable tier, and
   the brine behavioral contract.
-- [Hangar](./hangar/CONTEXT.md): exact immutable trees, strict inputs, and
-  the output plane that captures a task's output into one. Includes the
+- [Hangar](./hangar/CONTEXT.md): exact immutable trees, input publications
+  and managed reads, and the output plane that captures a task's output
+  into one. Includes the
   web's capture coordinator, reclaim pass and orphan sweep in
   `atc/hangaroutput`.
 
@@ -35,9 +36,10 @@ context, under `docs/architecture/`: [core](./docs/architecture/core-model.md),
   outcomes. Core owns "build" and "job"; the runtime owns "pod", "volume"
   and "artifact key".
 - **Runtime → Hangar**: a step pod's control init writes the step marker
-  (a source hold) and carries a materialization warrant; the artifact daemon
-  hosts strict-input materialization and the output plane's capture routes,
-  and consults the source ledger before destroying a held path.
+  (a source hold) and its managed-input init carries a read warrant; the
+  artifact daemon hosts input publication, managed reads and the output
+  plane's capture routes, and consults the source ledger before destroying
+  a held path.
 - **Core → Hangar**: a Run inserts and reads capture rows and claims through
   a caller-owned transaction; the coordinator drives each row with the node
   the row names. Hangar is a leaf: `hangar/` imports nothing from core
@@ -54,8 +56,8 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
 
 ## Collisions to watch
 
-- **Receipt** is always qualified: materialization receipt (Hangar strict
-  input) or invocation receipt (agentic Run client).
+- **Receipt** is always qualified: materialization receipt (Hangar managed
+  read) or invocation receipt (agentic Run client).
 - **Detached** is core's alone: a detached build belongs to a reclaimed run.
   A Run an agent submits is a workload's Run, never a detached Run.
 - **Daemon** is the artifact daemon, one per node. Hangar's output plane is
@@ -69,7 +71,7 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
   authorization is a warrant, never a grant. JetBridge's **step pod grant**
   maps a build's owner to a step pod identity; always qualify it.
 - **Materialization** is a template resolving into a payload in core and
-  the daemon capturing a tree in Hangar. Qualify it when both are near.
+  the daemon copying a published tree into a step volume in Hangar. Qualify it when both are near.
 - **Scope** is a resource config scope in core, an MCP grant's scope in the
   agentic context, and the namespace component of a tree ref in Hangar.
 - **Principal** is a caller's verified claims in core and a storage

@@ -86,8 +86,8 @@ func setup(t *testing.T) fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	tokens := map[string]string{"input": strings.Repeat("i", 32), "publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32)}
-	h, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", InputNamespace: "inputs", OutputNamespace: "outputs", Credentials: tokens, MaxConcurrent: 4})
+	tokens := map[string]string{"publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32)}
+	h, err := diskserver.New(store, diskserver.Config{StoreID: "test-store", OutputNamespace: "outputs", Credentials: tokens, MaxConcurrent: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,8 @@ func TestAuthenticatedExactObjectsAndNamespaceIsolation(t *testing.T) {
 	if _, err := pub.CreateAbsent(ctx, "outputs", "tree", nil, strings.NewReader("wrong")); !errors.Is(err, objectstore.ErrPreconditionFailed) {
 		t.Fatalf("overwrite %v", err)
 	}
-	if _, err := pub.CreateAbsent(ctx, "inputs", "tree", nil, strings.NewReader("wrong")); !errors.Is(err, objectstore.ErrUnauthorized) {
+	// A namespace this store does not serve is unauthorized, not created.
+	if _, err := pub.CreateAbsent(ctx, "elsewhere", "tree", nil, strings.NewReader("wrong")); !errors.Is(err, objectstore.ErrUnauthorized) {
 		t.Fatalf("cross namespace %v", err)
 	}
 	inv := f.client(t, "inventory")
@@ -162,12 +163,23 @@ func TestAuthenticatedExactObjectsAndNamespaceIsolation(t *testing.T) {
 	if _, err := pub.StatExact(ctx, "outputs", "tree", a.Generation); !errors.Is(err, objectstore.ErrNotFound) {
 		t.Fatalf("deleted stat %v", err)
 	}
-	input := f.client(t, "input")
-	if _, err := input.CreateAbsent(ctx, "inputs", "tree", nil, strings.NewReader("input")); err != nil {
+	// A credential the store does not know is refused at the configuration,
+	// not admitted as some role.
+	unknown := map[string]string{"input": strings.Repeat("i", 32)}
+	for role, token := range f.tokens {
+		unknown[role] = token
+	}
+	otherRoot := t.TempDir()
+	if err := disk.Initialize(otherRoot, "other-store"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := input.StatCurrent(ctx, "outputs", "tree"); !errors.Is(err, objectstore.ErrUnauthorized) {
-		t.Fatalf("input output access %v", err)
+	store, err := disk.Open(otherRoot, "other-store", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := diskserver.New(store, diskserver.Config{StoreID: "other-store", OutputNamespace: "outputs", Credentials: unknown, MaxConcurrent: 4}); err == nil {
+		t.Fatal("a credentials file naming an unrecognized role was accepted")
 	}
 	pubDelete, err := disk.NewDeleteClient(f.config(t, "publisher"))
 	if err != nil {
@@ -248,9 +260,9 @@ func TestNoUnconditionalDeleteOrCredentialRedirect(t *testing.T) {
 }
 
 // The cache is a dedicated store: the artifact daemon's fail-open resource
-// cache never shares a process, lock or concurrency slot with the strict input
-// and output namespaces. A cache store holds the one delete a node daemon is
-// given, and only inside its own namespace.
+// cache never shares a process, lock or concurrency slot with the output
+// namespace. A cache store holds the one delete a node daemon is given, and
+// only inside its own namespace.
 func TestACacheStoreIsDedicatedAndConfinedToItsNamespace(t *testing.T) {
 	root := t.TempDir()
 	if err := disk.Initialize(root, "cache-store"); err != nil {
@@ -262,20 +274,18 @@ func TestACacheStoreIsDedicatedAndConfinedToItsNamespace(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	cacheOnly := map[string]string{"cache": strings.Repeat("c", 32)}
-	strict := map[string]string{"input": strings.Repeat("i", 32), "publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32)}
+	outputRoles := map[string]string{"publisher": strings.Repeat("p", 32), "inventory": strings.Repeat("v", 32), "reclaimer": strings.Repeat("r", 32)}
 	all := map[string]string{"cache": cacheOnly["cache"]}
-	for role, token := range strict {
+	for role, token := range outputRoles {
 		all[role] = token
 	}
 
-	// Never beside the strict namespaces, whatever the credentials say.
+	// Never beside the output namespace, whatever the credentials say.
 	for name, config := range map[string]diskserver.Config{
-		"cache with input":         {StoreID: "cache-store", InputNamespace: "inputs", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
 		"cache with output":        {StoreID: "cache-store", OutputNamespace: "outputs", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
-		"cache with both":          {StoreID: "cache-store", InputNamespace: "inputs", OutputNamespace: "outputs", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
-		"cache with strict roles":  {StoreID: "cache-store", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
-		"strict with a cache role": {StoreID: "cache-store", InputNamespace: "inputs", OutputNamespace: "outputs", Credentials: all, MaxConcurrent: 4},
-		"cache with no cache role": {StoreID: "cache-store", CacheNamespace: "caches", Credentials: strict, MaxConcurrent: 4},
+		"cache with output roles":  {StoreID: "cache-store", CacheNamespace: "caches", Credentials: all, MaxConcurrent: 4},
+		"output with a cache role": {StoreID: "cache-store", OutputNamespace: "outputs", Credentials: all, MaxConcurrent: 4},
+		"cache with no cache role": {StoreID: "cache-store", CacheNamespace: "caches", Credentials: outputRoles, MaxConcurrent: 4},
 	} {
 		if _, err := diskserver.New(store, config); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -317,7 +327,7 @@ func TestACacheStoreIsDedicatedAndConfinedToItsNamespace(t *testing.T) {
 	}
 
 	// Nothing outside the cache namespace, including the empty name.
-	for _, bucket := range []string{"inputs", "outputs", ""} {
+	for _, bucket := range []string{"outputs", "elsewhere", ""} {
 		if _, err := cache.CreateAbsent(ctx, bucket, "tree", nil, strings.NewReader("body")); !errors.Is(err, objectstore.ErrUnauthorized) {
 			t.Errorf("cache role wrote %q: %v", bucket, err)
 		}

@@ -44,7 +44,7 @@ func validateRandomKey(key []byte) error {
 }
 
 // storeTokenNames are the disk store's four principals.
-var storeTokenNames = []string{"input", "publisher", "inventory", "reclaimer"}
+var storeTokenNames = []string{"publisher", "inventory", "reclaimer"}
 
 // newStoreTokens returns the four distinct tokens and the server.json mapping
 // them, keyed as the store Secret holds them.

@@ -10,12 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -98,13 +99,26 @@ func TestDaemonSetMode_HardAffinity(t *testing.T) {
 	}
 }
 
-func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
+// runInputRead is the managed read the web admits for a Run input: the
+// output plane's read of exactly the bound tree, into this pod's volume.
+func runInputRead(ref hangar.TreeRef, handle, volume string) *output.ManagedReadRequest {
+	return &output.ManagedReadRequest{Ref: ref, Warrant: "signed-read-warrant",
+		Destination: output.ReadDestination{Handle: handle, Volume: volume}}
+}
+
+func TestDaemonSetMode_RunInputValidationFailsClosed(t *testing.T) {
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Generation: 1,
 	}
+	otherRef := ref
+	otherRef.Generation++
+	invalidRef := ref
+	invalidRef.Digest = "not-a-digest"
 	ordinary := constructionArtifact("ordinary", "test-worker")
+	planeOn := func() Config { cfg := daemonSetConfig(); cfg.OutputPlaneEnabled = true; return cfg }
+	read := runInputRead(ref, "task-handle", "input-0")
 
 	tests := map[string]struct {
 		cfg     Config
@@ -113,27 +127,39 @@ func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
 		want    string
 	}{
 		"missing source": {
-			cfg: daemonSetConfig(), inputs: []runtime.Input{{DestinationPath: "/work/input"}}, want: "exactly one",
+			cfg: planeOn(), inputs: []runtime.Input{{DestinationPath: "/work/input"}}, want: "exactly one",
 		},
 		"two sources": {
-			cfg: daemonSetConfig(), inputs: []runtime.Input{{Artifact: ordinary, HangarTree: &ref, DestinationPath: "/work/input"}}, want: "exactly one",
+			cfg: planeOn(), inputs: []runtime.Input{{Artifact: ordinary, HangarTree: &ref, HangarRead: read, DestinationPath: "/work/input"}}, want: "exactly one",
 		},
-		"disabled": {
-			cfg: daemonSetConfig(), inputs: []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/input"}}, want: "disabled",
+		"a read without its tree": {
+			cfg: planeOn(), inputs: []runtime.Input{{Artifact: ordinary, HangarRead: read, DestinationPath: "/work/input"}}, want: "without its tree",
 		},
-		"strict input output overlap": {
-			cfg:     func() Config { cfg := daemonSetConfig(); cfg.HangarEnabled = true; return cfg }(),
-			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/input"}},
+		"no read": {
+			cfg: planeOn(), inputs: []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/input"}}, want: "carries no managed read",
+		},
+		"a read of another tree": {
+			cfg: planeOn(), inputs: []runtime.Input{{HangarTree: &otherRef, HangarRead: read, DestinationPath: "/work/input"}}, want: "carries no managed read",
+		},
+		"a tree that does not validate": {
+			cfg: planeOn(), inputs: []runtime.Input{{HangarTree: &invalidRef, HangarRead: runInputRead(invalidRef, "task-handle", "input-0"), DestinationPath: "/work/input"}}, want: "carries no managed read",
+		},
+		"output plane disabled": {
+			cfg: daemonSetConfig(), inputs: []runtime.Input{{HangarTree: &ref, HangarRead: read, DestinationPath: "/work/input"}}, want: "output plane is disabled",
+		},
+		"Run input output overlap": {
+			cfg:     planeOn(),
+			inputs:  []runtime.Input{{HangarTree: &ref, HangarRead: read, DestinationPath: "/work/input"}},
 			outputs: runtime.OutputPaths{"result": "/work/input/"}, want: "overlap",
 		},
-		"strict input contains output": {
-			cfg:     func() Config { cfg := daemonSetConfig(); cfg.HangarEnabled = true; return cfg }(),
-			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
+		"Run input contains output": {
+			cfg:     planeOn(),
+			inputs:  []runtime.Input{{HangarTree: &ref, HangarRead: read, DestinationPath: "/work/exact"}},
 			outputs: runtime.OutputPaths{"result": "/work/exact/result"}, want: "overlap",
 		},
-		"output contains strict input": {
-			cfg:     func() Config { cfg := daemonSetConfig(); cfg.HangarEnabled = true; return cfg }(),
-			inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact/input"}},
+		"output contains Run input": {
+			cfg:     planeOn(),
+			inputs:  []runtime.Input{{HangarTree: &ref, HangarRead: read, DestinationPath: "/work/exact/input"}},
 			outputs: runtime.OutputPaths{"result": "/work/exact"}, want: "overlap",
 		},
 	}
@@ -157,37 +183,29 @@ func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
 	}
 }
 
-func TestDaemonSetMode_StrictInputAllowsSiblingOutput(t *testing.T) {
+func TestDaemonSetMode_RunInputAllowsSiblingOutput(t *testing.T) {
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Generation: 1,
 	}
 	cfg := daemonSetConfig()
-	cfg.HangarEnabled = true
+	cfg.OutputPlaneEnabled = true
 	container := &Container{
 		containerSpec: runtime.ContainerSpec{
-			Inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
+			Inputs:  []runtime.Input{{HangarTree: &ref, HangarRead: runInputRead(ref, "task-handle", "input-0"), DestinationPath: "/work/exact"}},
 			Outputs: runtime.OutputPaths{"result": "/work/exact2"},
 		},
 		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 	if err := container.validateInputs(); err != nil {
-		t.Fatalf("sibling output must not overlap strict input: %v", err)
+		t.Fatalf("sibling output must not overlap a Run input: %v", err)
 	}
 }
 
-func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *testing.T) {
-	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewSigner(key, hangar.MaxWarrantTTL, func() time.Time {
-		return time.Unix(1_800_000_000, 0).UTC()
-	})
-	if err != nil {
-		t.Fatalf("new warrant signer: %v", err)
-	}
+func TestDaemonSetMode_RunInputsAreReadOnlyEverywhereAndPodMountsResolve(t *testing.T) {
 	cfg := daemonSetConfig()
-	cfg.HangarEnabled = true
-	cfg.HangarSigner = signer
+	cfg.OutputPlaneEnabled = true
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -199,15 +217,16 @@ func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *t
 		containerSpec: runtime.ContainerSpec{
 			Dir: "/work", Type: db.ContainerTypeTask,
 			ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-			Inputs:    []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
-			Sidecars:  []atc.SidecarConfig{{Name: "observer", Image: "busybox"}},
+			// With Dir set, the step's first input volume is input-1.
+			Inputs:   []runtime.Input{{HangarTree: &ref, HangarRead: runInputRead(ref, "task-handle", "input-1"), DestinationPath: "/work/exact"}},
+			Sidecars: []atc.SidecarConfig{{Name: "observer", Image: "busybox"}},
 		},
 		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	pod, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
 	if err != nil {
-		t.Fatalf("build strict input Pod: %v", err)
+		t.Fatalf("build Run input Pod: %v", err)
 	}
 	if len(pod.Spec.Containers) != 2 {
 		t.Fatalf("expected task plus sidecar, got %d containers", len(pod.Spec.Containers))
@@ -215,39 +234,44 @@ func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *t
 	for _, taskContainer := range pod.Spec.Containers {
 		mount := mountAtPath(t, taskContainer.VolumeMounts, "/work/exact")
 		if !mount.ReadOnly {
-			t.Errorf("container %q strict input mount is writable", taskContainer.Name)
+			t.Errorf("container %q Run input mount is writable", taskContainer.Name)
 		}
 	}
-	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != "materialize-hangar-inputs" {
-		t.Fatalf("unexpected strict init containers: %+v", pod.Spec.InitContainers)
+	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != "materialize-run-input-0" {
+		t.Fatalf("unexpected Run input init containers: %+v", pod.Spec.InitContainers)
 	}
-	strictInitMount := mountAtPath(t, pod.Spec.InitContainers[0].VolumeMounts, "/hangar-inputs/input-0")
-	if !strictInitMount.ReadOnly {
-		t.Fatal("materialization init must verify through a read-only input mount")
+	readInitMount := mountAtPath(t, pod.Spec.InitContainers[0].VolumeMounts, "/hangar-input")
+	if !readInitMount.ReadOnly {
+		t.Fatal("the managed-read init must verify through a read-only input mount")
 	}
 	for _, mount := range pod.Spec.InitContainers[0].VolumeMounts {
 		if mount.MountPath == "/work/exact" {
-			t.Fatal("materialization init must not mount at the user-controlled destination")
+			t.Fatal("the managed-read init must not mount at the user-controlled destination")
 		}
 	}
 	assertPodMountsResolve(t, pod)
 
+	// A managed read is the output plane's route, so the pod lands only where
+	// that plane is ready: the cache label and the plane's two, nothing else.
 	required := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 	if required == nil || len(required.NodeSelectorTerms) != 1 {
 		t.Fatalf("expected one required selector term, got %+v", required)
 	}
-	want := map[string]bool{
-		"concourse.dev/artifact-cache": false,
-		"concourse.dev/hangar-v1":      false,
+	want := map[string]int{
+		"concourse.dev/artifact-cache": 0,
+		executioncontrol.ReadyLabel:    0,
+		output.ReadyLabel:              0,
 	}
 	for _, expression := range required.NodeSelectorTerms[0].MatchExpressions {
-		if _, found := want[expression.Key]; found && expression.Operator == corev1.NodeSelectorOpIn && len(expression.Values) == 1 && expression.Values[0] == "ready" {
-			want[expression.Key] = true
+		if _, found := want[expression.Key]; !found {
+			t.Errorf("the pod requires a label this placement does not call for: %s", expression.Key)
+		} else if expression.Operator == corev1.NodeSelectorOpIn && len(expression.Values) == 1 && expression.Values[0] == "ready" {
+			want[expression.Key]++
 		}
 	}
-	for key, found := range want {
-		if !found {
-			t.Errorf("required selector term is missing %s In [ready]", key)
+	for key, count := range want {
+		if count != 1 {
+			t.Errorf("required selector term names %s In [ready] %d times, want once", key, count)
 		}
 	}
 }

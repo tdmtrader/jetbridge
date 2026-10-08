@@ -101,9 +101,6 @@
 {{- if and $output.cacheBucket (eq $output.bucket $output.cacheBucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.cacheBucket. The output plane needs a DEDICATED bucket: the cache tier is fail-open, name-keyed and re-derivable, and mixing the two puts objects with no ownership marker in the namespace the orphan sweep lists." $output.bucket) -}}
 {{- end -}}
-{{- if and $output.strictInputBucket (eq $output.bucket $output.strictInputBucket) -}}
-{{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published." $output.bucket) -}}
-{{- end -}}
 {{- end }}
 
 {{- define "concourse.hangarOutput.validateDurations" -}}
@@ -128,6 +125,9 @@
 {{- fail "artifactDaemon.outputScratch.sizeLimit is required. The artifact daemon's output plane canonicalizes and spools whole trees into an emptyDir, and an emptyDir with no sizeLimit is bounded only by the node's disk: filling it evicts every Pod on the node rather than only this one. Set it to at least concurrency times maxContentBytes." -}}
 {{- end -}}
 {{- $limit := atoi (include "concourse.quantityBytes" (dict "name" "artifactDaemon.outputScratch.sizeLimit" "value" $scratch.sizeLimit)) -}}
+{{- if or (le (int64 $scratch.maxContentBytes) 0) (le (int64 $scratch.maxEntries) 0) -}}
+{{- fail "artifactDaemon.outputScratch.maxContentBytes and artifactDaemon.outputScratch.maxEntries must be positive: they bound every tree the daemon admits (captures, input publications and managed reads), and the daemon refuses a non-positive limit at startup." -}}
+{{- end -}}
 {{- $concurrency := int $scratch.concurrency -}}
 {{- if lt $concurrency 1 -}}
 {{- fail "artifactDaemon.outputScratch.concurrency must be at least 1; zero would admit no capture at all." -}}
@@ -143,12 +143,6 @@
 {{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") -}}
 {{- if or (eq $path $storage) (hasPrefix (printf "%s/" $storage) $path) (hasPrefix (printf "%s/" $path) $storage) -}}
 {{- fail "artifactDaemon.outputScratch.path and artifactDaemon.hostPath must be disjoint" -}}
-{{- end -}}
-{{- if .Values.artifactDaemon.hangar.enabled -}}
-{{- $strict := clean (toString .Values.artifactDaemon.hangar.scratchPath) -}}
-{{- if or (eq $path $strict) (hasPrefix (printf "%s/" $strict) $path) (hasPrefix (printf "%s/" $path) $strict) -}}
-{{- fail "artifactDaemon.outputScratch.path and artifactDaemon.hangar.scratchPath must be disjoint" -}}
-{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -221,7 +215,7 @@ must be distinct Kubernetes accounts bound to distinct cloud principals.
 {{- range $subject := $subjects -}}
 {{- $name := $subject.name -}}
 {{- if hasKey $accounts $name -}}
-{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher (the artifact daemon) must not be able to list or delete; the web, which reclaims and sweeps, must not be able to create; and task, cache and strict-input identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
+{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher (the artifact daemon) must not be able to list or delete; the web, which reclaims and sweeps, must not be able to create; and task and cache identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
 {{- end -}}
 {{- $_ := set $accounts $name $subject.path -}}
 {{- end -}}

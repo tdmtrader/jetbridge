@@ -243,8 +243,7 @@ type RunCommand struct {
 		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker without capture enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
-		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002); web never reaches the cache."`
-		InputBucket                        string        `long:"kubernetes-hangar-input-bucket"            description:"The strict-input bucket or disk namespace the artifact daemons publish trees into. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002)."`
+		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache and output namespace that are not two different places (ADR-0002); web never reaches the cache."`
 		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
 		OutputStore                        string        `long:"kubernetes-hangar-output-store" default:"gcs" choice:"gcs" choice:"disk" description:"The output namespace's store profile: gcs or disk. The web's reclaim pass and orphan sweep reach it; node daemons publish and never delete."`
 		OutputPrefix                       string        `long:"kubernetes-hangar-output-prefix"           description:"Deployment object-key prefix the output namespace hangs off. The orphan sweep lists under it; no caller chooses one."`
@@ -260,8 +259,7 @@ type RunCommand struct {
 		OutputOrphanSweepInterval          time.Duration `long:"kubernetes-hangar-output-orphan-sweep-interval" default:"1h" description:"How often the orphan sweep lists the output namespace."`
 		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the artifact daemon's output-plane operation timeout; a reader's claim and the transport cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
-		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
-		HangarKey                          string        `long:"kubernetes-hangar-key"                   description:"Path to the raw 32-byte Hangar key the web signs every warrant with: materialization, read and control. Required with --kubernetes-hangar-enabled or --kubernetes-hangar-output-enabled. Never present in a task pod."`
+		HangarKey                          string        `long:"kubernetes-hangar-key"                   description:"Path to the raw 32-byte Hangar key the web signs every warrant with: read and control. Required with --kubernetes-hangar-output-enabled. Never present in a task pod."`
 		HangarWarrantTTL                   time.Duration `long:"kubernetes-hangar-warrant-ttl"           default:"15m" description:"Lifetime of the warrants the web mints (maximum 15m)."`
 		ImageRegistryPrefix                string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret                string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
@@ -379,7 +377,7 @@ type RunCommand struct {
 	// this server admits durable runs is not an anonymous fact.
 	// DisableRedactSecrets is the existing precedent for a process-wide
 	// setting that is deliberately outside the group and outside the map.
-	PipelineRunActivationEpoch int64    `long:"pipeline-run-activation-epoch" description:"The Run contract activation epoch this web node admits pipeline runs under (the v2 create route and the run_pipeline step). Zero admits none. At startup it is written into the durable Run activation marker, which only moves forward. It is independent of the Hangar control-key generation: rotating that leaves running Runs, their finalization and invocation-key replay alone."`
+	PipelineRunActivationEpoch int64    `long:"pipeline-run-activation-epoch" description:"The Run contract activation epoch this web node admits pipeline runs under (the v2 create route and the run_pipeline step). Zero admits none. At startup it is written into the durable Run activation marker, which only moves forward."`
 	RunInputSigningKey         string   `long:"run-input-signing-key" description:"Path to a distinct raw 32-byte web-only key for temporary Run input grants. Never mount this service key in workers or node daemons."`
 	RunResultScratchDir        string   `long:"run-result-scratch-dir" description:"Absolute, existing directory for spooling Run result downloads. Each read holds about twice the archive size until its response is written. A private child is created in it at startup. Empty uses the process temporary directory."`
 	RunResultReadConcurrency   int      `long:"run-result-read-concurrency" default:"2" description:"Run result downloads in flight at once. Readers beyond this are refused with 503 and Retry-After rather than queued."`
@@ -1569,8 +1567,6 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 		cmd.Kubernetes.ArtifactDaemonTLSKey,
 		cmd.Kubernetes.ArtifactDaemonTLSCACert,
 	)
-	k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
-	k8sCfg.HangarSigner = cmd.hangarSigner
 	k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 	k8sCfg.OutputOperationTimeout = cmd.Kubernetes.OutputOperationTimeout
 	if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
@@ -2312,15 +2308,11 @@ func (cmd *RunCommand) validateMCPDisabledOperations() error {
 // See track
 // route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
 func (cmd *RunCommand) validateK8sRuntime() error {
-	if cmd.Kubernetes.HangarEnabled && cmd.Kubernetes.Namespace == "" {
-		return errors.New("--kubernetes-namespace is required when --kubernetes-hangar-enabled is set")
-	}
 	if err := (objectstore.Namespaces{
 		Cache:  cmd.Kubernetes.CacheBucket,
-		Input:  cmd.Kubernetes.InputBucket,
 		Output: cmd.Kubernetes.OutputBucket,
 	}).Validate(); err != nil {
-		return fmt.Errorf("--kubernetes-artifact-daemon-cache-bucket, --kubernetes-hangar-input-bucket and --kubernetes-hangar-output-bucket: %w", err)
+		return fmt.Errorf("--kubernetes-artifact-daemon-cache-bucket and --kubernetes-hangar-output-bucket: %w", err)
 	}
 	if cmd.Kubernetes.Namespace == "" {
 		return nil
@@ -2340,28 +2332,18 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 	if err := cmd.validateHangarKey(); err != nil {
 		return err
 	}
-	if err := cmd.validateHangarOutputPlane(); err != nil {
-		return err
-	}
-	if !cmd.Kubernetes.HangarEnabled {
-		return nil
-	}
-	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" || cmd.Kubernetes.ArtifactDaemonTLSKey == "" || cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
-		return errors.New("--kubernetes-hangar-enabled requires complete artifact daemon TLS: " +
-			"--kubernetes-artifact-daemon-tls-cert, --kubernetes-artifact-daemon-tls-key, and --kubernetes-artifact-daemon-tls-ca-cert")
-	}
-	return nil
+	return cmd.validateHangarOutputPlane()
 }
 
 // validateHangarKey loads the one Hangar key and builds the one signer every
-// warrant the web mints comes from. It is required the moment either Hangar
-// tier is on: strict inputs need a materialization warrant and the output
-// plane needs a control warrant for every call it makes.
+// warrant the web mints comes from. It is required the moment the output
+// plane is on: every managed read and every control call it makes carries a
+// warrant signed with it.
 //
 // Idempotent: a test may set cmd.hangarSigner before validation, and a signer
 // already built is kept.
 func (cmd *RunCommand) validateHangarKey() error {
-	if !cmd.Kubernetes.HangarEnabled && !cmd.Kubernetes.OutputPlaneEnabled {
+	if !cmd.Kubernetes.OutputPlaneEnabled {
 		return nil
 	}
 	if cmd.Kubernetes.HangarWarrantTTL <= 0 || cmd.Kubernetes.HangarWarrantTTL > hangar.MaxWarrantTTL {
@@ -2371,8 +2353,8 @@ func (cmd *RunCommand) validateHangarKey() error {
 		return nil
 	}
 	if cmd.Kubernetes.HangarKey == "" {
-		return errors.New("--kubernetes-hangar-key is required when --kubernetes-hangar-enabled or " +
-			"--kubernetes-hangar-output-enabled is set: every warrant the web mints is signed with it")
+		return errors.New("--kubernetes-hangar-key is required when --kubernetes-hangar-output-enabled " +
+			"is set: every warrant the web mints is signed with it")
 	}
 	key, err := os.ReadFile(cmd.Kubernetes.HangarKey)
 	if err != nil {

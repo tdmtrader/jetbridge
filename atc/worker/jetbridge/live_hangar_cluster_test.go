@@ -110,9 +110,11 @@ const (
 //  3. every consumer completes its first use of the generated Secrets: web
 //     starts with capture on; the
 //     artifact daemon's output plane accepts web's control-plane client
-//     certificate over mTLS on a route that requires one; the artifact daemon publishes into the
-//     disk store as `input` and verifies a materialization warrant signed with
-//     the generated Hangar key; the disk store serves `publisher` a create
+//     certificate over mTLS on a route that requires one; the artifact daemon
+//     publishes a Run input publication into the disk store's output
+//     namespace as `publisher` and materializes it for a generated step pod
+//     under a read warrant signed with the generated Hangar key, which the
+//     daemon verifies; the disk store serves `publisher` a create
 //     and a read; web puts the plane in service, its orphan sweep lists the
 //     output namespace with the `inventory` token and counts -- and leaves --
 //     the foreign-marked object that create left; and `reclaimer` stats and
@@ -162,12 +164,12 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 	}
 
 	resync("S3 store up", cluster.through("S1", "S2", "S3"))
-	resync("S4-S6 strict inputs, base workloads", cluster.through("S1", "S2", "S3", "S4", "S5", "S6"))
+	resync("S6 base workloads", cluster.through("S1", "S2", "S3", "S6"))
 
 	// Before the output plane is on, so the web's FIRST sweep is what finds it.
 	probe := cluster.storePublisherRoundTrip()
 
-	everything := cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S10", "S13")
+	everything := cluster.through("S1", "S2", "S3", "S6", "S10", "S13")
 	resync("S10+S13 every consumer on", everything)
 
 	cluster.assertWebRunsWithCapture()
@@ -356,7 +358,7 @@ func (cluster *liveCluster) clearNodeLabels() {
 		cluster.t.Fatalf("get node %s: %v", cluster.node, err)
 	}
 	changed := false
-	for _, key := range []string{"concourse.dev/artifact-cache", "concourse.dev/hangar-v1", executioncontrol.ReadyLabel, output.ReadyLabel} {
+	for _, key := range []string{"concourse.dev/artifact-cache", executioncontrol.ReadyLabel, output.ReadyLabel} {
 		if _, found := current.Labels[key]; found {
 			delete(current.Labels, key)
 			changed = true
@@ -413,10 +415,6 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 			"hangarStorage.disk.storageClass=local-path", "hangarStorage.disk.size=1Gi", "hangarStorage.disk.initialize=true"}
 	case "S3":
 		return []string{"hangarStorage.disk.initialize=false"}
-	case "S4":
-		return []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=disk", "artifactDaemon.hangar.bucket=inputs"}
-	case "S5":
-		return []string{"artifactDaemon.hangar.webEnabled=true"}
 	case "S6":
 		return []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi"}
 	case "S10":
@@ -1205,15 +1203,23 @@ func liveGet(t *testing.T, ctx context.Context, client *http.Client, address str
 	return body, response.StatusCode
 }
 
-// assertArtifactDaemonUsesWarrantKey publishes a tree through the artifact
-// daemon -- which writes it into the disk store's input namespace as `input`
-// -- and has a generated step pod materialize it under a warrant signed with
-// the generated Hangar key, which the daemon verifies.
+// assertArtifactDaemonUsesWarrantKey publishes a Run input publication
+// through the artifact daemon's input routes -- which writes it into the disk
+// store's output namespace as `publisher` -- and has a generated step pod
+// materialize it as a managed read under a read warrant signed with the
+// generated Hangar key, which the daemon verifies. The read warrant is bound
+// to the node, by the UID the daemon resolves for itself.
 func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	t := cluster.t
 	t.Helper()
 	names := cluster.names
-	liveDiskWaitNodeLabel(t, cluster.ctx, cluster.client, cluster.node, "concourse.dev/hangar-v1", "ready")
+	for _, key := range []string{"concourse.dev/artifact-cache", executioncontrol.ReadyLabel, output.ReadyLabel} {
+		liveDiskWaitNodeLabel(t, cluster.ctx, cluster.client, cluster.node, key, "ready")
+	}
+	node, err := cluster.client.CoreV1().Nodes().Get(cluster.ctx, cluster.node, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", cluster.node, err)
+	}
 	dir := t.TempDir()
 	certPath, keyPath, caPath := filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key"), filepath.Join(dir, "ca.crt")
 	for path, data := range map[string][]byte{certPath: cluster.daemonClientCert, keyPath: cluster.daemonClientKey, caPath: cluster.ca.certPEM} {
@@ -1224,7 +1230,7 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	service := names.release + "-artifact-daemon"
 	daemon := newLiveDiskDaemon(t, fmt.Sprintf("https://%s:%d", cluster.nodeIP, liveDiskPort), daemonServerName(service, names.namespace), certPath, keyPath, cluster.ca.certPool())
 	tree := liveDiskTree(t, map[string]string{"literal [x]": "payload", "nested/run.sh": "run"}, []string{"empty", "nested"}, map[string]string{"latest": "nested/run.sh"})
-	published := daemon.publish(t, cluster.ctx, tree, http.StatusCreated)
+	published := daemon.publishInput(t, cluster.ctx, tree)
 
 	signer, err := hangar.NewSigner(cluster.secret(names.hangarKey).Data["hangar.key"], 5*time.Minute, nil)
 	if err != nil {
@@ -1238,9 +1244,8 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	cfg.ArtifactDaemonTLSEnabled = true
 	cfg.ArtifactDaemonTLSCert, cfg.ArtifactDaemonTLSKey, cfg.ArtifactDaemonTLSCACert = certPath, keyPath, caPath
 	cfg.ArtifactHelperImage = "alpine:latest"
-	cfg.HangarEnabled = true
-	cfg.HangarSigner = signer
-	liveDiskMaterialize(t, cluster.ctx, cluster.client, cfg, "bootstrap-warrant-"+liveDiskRandomHex(t, 3), published.Ref)
+	cfg.OutputPlaneEnabled = true
+	liveDiskMaterialize(t, cluster.ctx, cluster.client, cfg, signer, executioncontrol.NodeUID(node.UID), "bootstrap-warrant-"+liveDiskRandomHex(t, 3), published.Ref)
 }
 
 // liveStoreProbe is the object the publisher round trip leaves in the output
@@ -1279,7 +1284,7 @@ func (cluster *liveCluster) store() *liveStore {
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: names.storeDNS()}
 	credentials := cluster.secret(names.storeCredentials)
 	tokens := map[string]string{}
-	for _, role := range []string{"input", "publisher", "inventory", "reclaimer"} {
+	for _, role := range []string{"publisher", "inventory", "reclaimer"} {
 		tokens[role] = strings.TrimSpace(string(credentials.Data[role]))
 	}
 	return &liveStore{t: t, ctx: cluster.ctx, base: fmt.Sprintf("https://127.0.0.1:%d", port),

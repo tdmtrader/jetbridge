@@ -147,13 +147,6 @@ type CaptureDraft struct {
 	// it because the hold is the first message sent from inside the Pod, and
 	// that is where the daemon binds it.
 	PodUID executioncontrol.PodUID
-
-	// StrictInput is the destination of a strict-input Hangar tree this step
-	// also takes, empty when it takes none. It is the strict-input regression twin's
-	// whole subject: a capture-selected step that ALSO consumes an exact
-	// immutable input must still get the ordinary strict-input materialization,
-	// unchanged, beside its capture control init.
-	StrictInput string
 }
 
 // freshUUID mints an identity no feature file chose.
@@ -321,7 +314,7 @@ type CaptureOutcome struct {
 	Err error
 }
 
-// PublishedTree is the tree reference, its strict attributes, and A READ OF
+// PublishedTree is the tree reference, its attributes, and A READ OF
 // THE OUTPUT BUCKET.
 //
 // BucketKeys and Markers are read back from the store at assertion time
@@ -353,22 +346,6 @@ type PublishedTree struct {
 	UnregisteredRef bool
 
 	Err error
-}
-
-// ConsumerDraft is a later step described as taking a published output. It is
-// the consumer's counterpart to CaptureDraft and, like it, is refinement-only.
-type ConsumerDraft struct {
-	Tree PublishedTree
-
-	// Cluster is the worker the consuming step runs on. It is here rather than
-	// carried down from the capture chain because a capture chain has no
-	// cluster in it: the daemon fixture is a process and a bucket, and a
-	// consumer needs a worker to build a pod on.
-	Cluster WorkerReady
-
-	StepName    string
-	Output      hangaroutput.OutputName
-	Destination string
 }
 
 // BoundOutput is the consumer's binding AS PRODUCTION READS IT BACK, plus the

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -255,14 +254,6 @@ type Config struct {
 	// OutputOperationTimeout matches the output plane's budget; managed-read
 	// leases and their callers must cover that same operation.
 	OutputOperationTimeout time.Duration
-
-	// HangarEnabled permits exact immutable Hangar tree inputs.
-	HangarEnabled bool
-
-	// HangarSigner mints the materialization warrant bound to an exact tree,
-	// handle and volume, and the control warrants the output plane presents.
-	// It holds the one Hangar key, which is never passed to task pods.
-	HangarSigner *hangar.Signer
 }
 
 // ImageRegistryConfig holds configuration for a container image registry

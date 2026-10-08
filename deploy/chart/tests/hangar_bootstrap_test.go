@@ -20,7 +20,7 @@ import (
 )
 
 // bootstrapSets turn on the bootstrap and every consumer of its inventory:
-// strict inputs and the output plane on the disk store.
+// the output plane on the disk store.
 var bootstrapSets = []string{
 	"hangarBootstrap.enabled=true",
 	"postgresql.existingSecret=op-db-password",
@@ -35,10 +35,6 @@ var bootstrapSets = []string{
 	"hangarStorage.disk.tls.existingSecret=storage-tls",
 	"hangarStorage.disk.credentials.existingSecret=storage-credentials",
 	"hangarOutput.store=disk",
-	"artifactDaemon.hangar.enabled=true",
-	"artifactDaemon.hangar.webEnabled=true",
-	"artifactDaemon.hangar.store=disk",
-	"artifactDaemon.hangar.bucket=inputs",
 	"artifactDaemon.hangar.keySecret=op-hangar-key",
 	"web.runInputSigningKeySecret=jb-concourse-jetbridge-run-input-signing-key",
 }

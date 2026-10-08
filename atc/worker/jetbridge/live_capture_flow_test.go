@@ -63,8 +63,8 @@ package jetbridge
 // reason; nothing in this file claims them.
 //
 // THE DAEMON HERE IS A STAND-IN, and the file says so where it matters. It is
-// BusyBox `nc` answering one route, exactly as the strict-tree contract beside
-// it uses BusyBox to answer the materialization route. What is under test is
+// BusyBox `nc` answering one route, as the managed-read contract beside it
+// stands in for the materialization route. What is under test is
 // the POD and the KUBELET -- ordering, identity, placement, the host path --
 // and none of those become more true with a real daemon behind them. What the
 // stand-in cannot say is anything about the daemon's own answer, and this test
@@ -351,7 +351,7 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 				Name:    "output-daemon-fixture",
 				Image:   "busybox:latest",
 				Command: []string{"sh", "-c", fmt.Sprintf("printf '%%s' \"$HANDLER\" >/tmp/handler; chmod 700 /tmp/handler; exec nc -ll -p %d -e /tmp/handler", liveCapturePort)},
-				// PullIfNotPresent for the reason the strict-tree fixture
+				// PullIfNotPresent for the reason the managed-read fixture
 				// gives: a `:latest` tag defaults to Always, so scaffolding
 				// that proves nothing on its own would fail the contract on a
 				// registry timeout inside a nested CI cluster.

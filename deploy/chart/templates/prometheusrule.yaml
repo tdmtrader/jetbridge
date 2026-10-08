@@ -91,20 +91,23 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
             summary: "An artifact daemon is not answering its metrics scrape"
             description: "The daemon on {{ `{{ $labels.node }}` }} ({{ `{{ $labels.pod }}` }}) has failed every scrape for ten minutes: the listener is configured but not answering, so look for a NetworkPolicy dropping the scrape or a daemon that keeps restarting."
 {{- end }}
-        - alert: ArtifactDaemonRefusingForLoad
-          # `overloaded` is the one refusal reason that is the daemon's own
-          # state rather than a caller's mistake. Only Hangar materialization
-          # records it today (hangar_handlers.go, when every hangarSem slot is
-          # taken), so where Hangar is off this rule loads but cannot fire.
-          # Every other reason names what the caller did wrong and is
-          # answered by fixing the caller.
-          expr: sum by (namespace, pod, node) (increase(artifact_daemon_refusals_total{reason="overloaded"}[10m])) > 0
+        - alert: ArtifactDaemonRefusingSignedRequests
+          # `capability` and `client_cert` are the two refusal reasons that
+          # name the daemon's own configuration rather than a caller's
+          # mistake: the web signs resolve capabilities with resolve.key and
+          # presents the client certificate, and the daemon verifies both
+          # against what IT mounts. Ten minutes of refusals means the two
+          # sides hold different material (a Secret rotated on one side), and
+          # every step on that node fails until they agree. Every other
+          # reason names what the caller did wrong and is answered by fixing
+          # the caller.
+          expr: sum by (namespace, pod, node) (increase(artifact_daemon_refusals_total{reason=~"capability|client_cert"}[10m])) > 0
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: "An artifact daemon is refusing work for load"
-            description: "The daemon on {{ `{{ $labels.node }}` }} has refused {{ `{{ $value }}` }} Hangar materialization(s) as overloaded in the last ten minutes, for ten minutes running. Each is a step whose strict inputs could not be materialized on that node."
+            summary: "An artifact daemon is refusing signed requests"
+            description: "The daemon on {{ `{{ $labels.node }}` }} has refused {{ `{{ $value }}` }} signed request(s) in the last ten minutes, for ten minutes running: a resolve capability it could not verify or a client certificate its CA did not sign. Compare the resolve.key and TLS Secrets the web and this daemon mount."
 {{- end }}
 {{- if .Values.hangarOutput.enabled }}
         # The Hangar output plane. Requirement 52 asks the plane to ALERT when

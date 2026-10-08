@@ -6,9 +6,14 @@ behind this shape are [ADR-0009](../adr/0009-one-node-daemon-one-capture-row.md)
 ## Two halves
 
 ```
-Strict input:  task ──materialization warrant──▶ artifact daemon ──materializes──▶ tree ref
-Output plane:  task output ──capture row + step marker──▶ publish ──▶ tree ref ──claim──▶ Run
+Input publication:  Run upload ──▶ stage on a node ──▶ publish ──▶ tree ref ──claim──▶ Run
+Managed read:       task ──read warrant──▶ artifact daemon ──materializes──▶ step volume
+Output plane:       task output ──capture row + step marker──▶ publish ──▶ tree ref ──claim──▶ Run
 ```
+
+One tree path: a Run input goes in as an input publication and comes out as
+a managed read; both use the output namespace, and the capture half is the
+other way a tree ref gets into it.
 
 Both halves live in two processes: the artifact daemon on each node, and the
 web. `hangar-store` serves the disk store, and a bootstrap Job creates the
@@ -21,8 +26,9 @@ through a caller-owned transaction and opaque identities.
 A tree ref is scope, digest and generation, all three. Scope is derived by
 the control plane as H(domain, tenant, store), and that is the only
 derivation; it is never accepted from a caller. Hangar never substitutes a
-newer generation or different content. A strict input names a complete tree ref and fails closed on
-absence, corruption, conflict, authorization, limits or infrastructure.
+newer generation or different content. A managed read names a complete tree
+ref and fails closed on absence, corruption, conflict, authorization, limits
+or infrastructure.
 
 ## Storage
 
@@ -31,8 +37,8 @@ list) with two backends, GCS and the disk store. Exact delete is a separate
 interface constructed only by the web's reclaim pass and orphan sweep, and by
 the durable cache tier over its own namespace.
 
-Three namespaces: **cache** (the runtime's fail-open tier), **input** (strict
-inputs) and **output** (captures). No two may be the same bucket or disk
+Two namespaces: **cache** (the runtime's fail-open tier) and **output**
+(input publications and captures). They may not be the same bucket or disk
 namespace; the daemon and the web refuse to start otherwise. Retention class
 is a key prefix.
 
@@ -179,6 +185,6 @@ own purpose; no callable accepts a bare string or a caller-chosen scope (`hangar
 is inside the trusted computing base, reached over mTLS from the web only:
 an acknowledgement is the node's answer on that channel, not a signed
 statement, and the node holds no control key. The daemon holds no database
-credential and no delete credential over the input or output namespace,
+credential and no delete credential over the output namespace,
 and never calls the web; every off-node route needs an mTLS client
 certificate. The reader verifies a tree against the digest in the row.

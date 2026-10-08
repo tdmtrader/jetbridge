@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/artifactwire"
@@ -22,6 +22,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -285,24 +286,16 @@ func TestDaemonSetBackend_BuildFetchInitContainers_NoInputs(t *testing.T) {
 	}
 }
 
-func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *testing.T) {
-	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewSigner(key, hangar.MaxWarrantTTL, func() time.Time {
-		return time.Unix(1_800_000_000, 0).UTC()
-	})
-	if err != nil {
-		t.Fatalf("new warrant signer: %v", err)
-	}
-	verifier, err := hangar.NewVerifier(key, hangar.MaxWarrantTTL, func() time.Time {
-		return time.Unix(1_800_000_001, 0).UTC()
-	})
-	if err != nil {
-		t.Fatalf("new warrant verifier: %v", err)
-	}
+// runInputFixture is one Run input bound to the "task-handle" step's
+// input volume, with the managed read the web admitted for it.
+func runInputFixture(ref hangar.TreeRef, volume, destination string) runtime.Input {
+	return runtime.Input{HangarTree: &ref, DestinationPath: destination,
+		HangarRead: runInputRead(ref, "task-handle", volume)}
+}
 
+func TestDaemonSetBackend_BuildFetchInitContainers_AppendsManagedReadInit(t *testing.T) {
 	cfg := testDaemonConfig()
-	cfg.HangarEnabled = true
-	cfg.HangarSigner = signer
+	cfg.OutputPlaneEnabled = true
 	b := NewDaemonSetBackend(cfg, nil, nil, nil)
 	ref := hangar.TreeRef{
 		Scope:      "builds",
@@ -311,7 +304,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 	}
 	inputs := []runtime.Input{
 		{Artifact: constructionArtifact("ordinary", "worker-1"), DestinationPath: "/work/ordinary"},
-		{HangarTree: &ref, DestinationPath: "/work/exact"},
+		runInputFixture(ref, "input-1", "/work/exact"),
 	}
 	mounts := []corev1.VolumeMount{
 		{Name: "input-0", MountPath: "/work/ordinary"},
@@ -328,9 +321,9 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 		t.Fatalf("build fetch init containers: %v", err)
 	}
 	if len(inits) != 2 {
-		t.Fatalf("expected ordered ordinary and Hangar init containers, got %d", len(inits))
+		t.Fatalf("expected the ordinary fetch then the managed-read init, got %d", len(inits))
 	}
-	if inits[0].Name != "fetch-inputs" || inits[1].Name != "materialize-hangar-inputs" {
+	if inits[0].Name != "fetch-inputs" || inits[1].Name != "materialize-run-input-0" {
 		t.Fatalf("unexpected init order: %q then %q", inits[0].Name, inits[1].Name)
 	}
 
@@ -338,69 +331,39 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 	const prefix = "REQUEST_B64='"
 	start := strings.Index(command, prefix)
 	if start < 0 {
-		t.Fatalf("Hangar command has no base64 request marker")
+		t.Fatalf("the managed-read command has no base64 request marker")
 	}
 	start += len(prefix)
 	end := strings.Index(command[start:], "'")
 	if end < 0 {
-		t.Fatalf("Hangar command has an unterminated base64 request")
+		t.Fatalf("the managed-read command has an unterminated base64 request")
 	}
 	payload, err := base64.StdEncoding.DecodeString(command[start : start+end])
 	if err != nil {
-		t.Fatalf("decode Hangar request: %v", err)
+		t.Fatalf("decode the managed-read request: %v", err)
 	}
-	var request struct {
-		Items []struct {
-			Ref     hangar.TreeRef `json:"ref"`
-			Handle  string         `json:"handle"`
-			Volume  string         `json:"volume"`
-			Warrant string         `json:"warrant"`
-		} `json:"items"`
-	}
+	var request output.ManagedReadRequest
 	if err := json.Unmarshal(payload, &request); err != nil {
-		t.Fatalf("decode Hangar request JSON: %v", err)
+		t.Fatalf("decode the managed-read request JSON: %v", err)
 	}
-	if len(request.Items) != 1 {
-		t.Fatalf("expected one Hangar request item, got %d", len(request.Items))
-	}
-	item := request.Items[0]
-	if item.Ref != ref || item.Handle != "task-handle" || item.Volume != "input-1" {
-		t.Fatalf("unexpected exact request binding: %+v", item)
-	}
-	token := strings.TrimPrefix(item.Warrant, "Bearer ")
-	if _, err := verifier.Verify(token, hangar.Warrant{
-		Purpose: hangar.PurposeMaterializeInput, Ref: ref, Handle: "task-handle", Volume: "input-1",
-	}); token == item.Warrant || err != nil {
-		t.Fatal("Hangar item did not carry a valid exact bearer warrant")
-	}
-	if strings.Contains(command, string(key)) {
-		t.Fatal("capability signing key entered the init command")
-	}
-	for _, env := range inits[1].Env {
-		if strings.Contains(env.Value, string(key)) {
-			t.Fatal("capability signing key entered the init environment")
-		}
-	}
-	encodedPodSurface, err := json.Marshal(struct {
-		Init    corev1.Container `json:"init"`
-		Volumes []corev1.Volume  `json:"volumes"`
-	}{Init: inits[1], Volumes: volumes})
-	if err != nil {
-		t.Fatalf("marshal strict init Pod surface: %v", err)
-	}
-	if strings.Contains(string(encodedPodSurface), string(key)) || strings.Contains(string(encodedPodSurface), base64.StdEncoding.EncodeToString(key)) {
-		t.Fatal("long-lived capability key entered the strict init Pod spec")
+	if request != *inputs[1].HangarRead {
+		t.Fatalf("the init asks for a read other than the one the web admitted: %+v", request)
 	}
 	if len(inits[1].VolumeMounts) != 1 || inits[1].VolumeMounts[0].Name != "input-1" {
-		t.Fatalf("strict init must reuse its input volume, got %+v", inits[1].VolumeMounts)
+		t.Fatalf("the managed-read init must reuse its input volume, got %+v", inits[1].VolumeMounts)
 	}
-	if inits[1].VolumeMounts[0].MountPath != "/hangar-inputs/input-0" || !inits[1].VolumeMounts[0].ReadOnly {
-		t.Fatalf("strict init must use a fixed read-only verification mount, got %+v", inits[1].VolumeMounts[0])
+	if inits[1].VolumeMounts[0].MountPath != "/hangar-input" || !inits[1].VolumeMounts[0].ReadOnly {
+		t.Fatalf("the managed-read init must use a fixed read-only verification mount, got %+v", inits[1].VolumeMounts[0])
 	}
 	assertContainerMountsResolve(t, inits, volumes)
 }
 
-func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T) {
+// The managed-read init runs the generated shell with a fake wget on PATH;
+// script text is not spec. These rows are about retry bounds, symlinked
+// receipts, file modes and false successes -- behaviour brine cannot express
+// and nothing else covers. The sealed receipt is the success authority: a
+// transport answer, of any status or body, proves nothing on its own.
+func TestDaemonSetBackend_ManagedReadInitRequiresTheExactReceipt(t *testing.T) {
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -415,19 +378,21 @@ func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T
 	wrongGenerationReceipt, _ := json.Marshal(wrongGeneration)
 
 	tests := []struct {
-		name         string
-		sequence     string
-		body         string
-		wgetExit     string
-		receipt      []byte
-		receiptKind  string
-		rootKind     string
-		rootMode     os.FileMode
-		receiptMode  os.FileMode
-		wantSuccess  bool
-		wantAttempts int
+		name          string
+		sequence      string
+		body          string
+		wgetExit      string
+		receipt       []byte
+		receiptKind   string
+		receiptBefore bool
+		rootKind      string
+		rootMode      os.FileMode
+		receiptMode   os.FileMode
+		wantSuccess   bool
+		wantAttempts  int
 	}{
 		{name: "exact 204 and exact receipt", sequence: "204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 1},
+		{name: "a receipt already sealed needs no request", sequence: "204", receipt: exactReceipt, receiptBefore: true, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 0},
 		{name: "false 204 missing receipt", sequence: "204", receiptKind: "missing", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
 		{name: "false 204 wrong ref", sequence: "204", receipt: wrongRefReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
 		{name: "false 204 wrong generation", sequence: "204", receipt: wrongGenerationReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
@@ -437,12 +402,10 @@ func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T
 		{name: "false 204 symlink root", sequence: "204", receipt: exactReceipt, rootKind: "symlink", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
 		{name: "false 204 wrong receipt mode", sequence: "204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0644, wantAttempts: 1},
 		{name: "false 204 wrong root mode", sequence: "204", receipt: exactReceipt, rootMode: 0755, receiptMode: 0444, wantAttempts: 1},
-		{name: "status 200", sequence: "200", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
-		{name: "status 201", sequence: "201", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
-		{name: "204 whitespace body", sequence: "204", body: " ", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
-		{name: "204 truncated body", sequence: "204", body: "{", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
-		{name: "204 HTML body", sequence: "204", body: "<html></html>", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
-		{name: "wget failure with 204", sequence: "204", wgetExit: "1", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "status 200 with the exact receipt is the receipt's success", sequence: "200", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 1},
+		{name: "status 200 without a receipt is terminal", sequence: "200", receiptKind: "missing", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "a body does not stand in for the receipt", sequence: "204", body: "<html></html>", receiptKind: "missing", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "a lost response with a sealed receipt succeeds", sequence: "204", wgetExit: "1", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 1},
 		{name: "retry no status only", sequence: "none,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 2},
 		{name: "retry exact 503 only", sequence: "503,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 2},
 		{name: "no status retry is bounded", sequence: "none", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 5},
@@ -452,10 +415,10 @@ func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := runHangarInitShell(t, ref, hangarShellFixture{
+			result := runManagedReadInitShell(t, ref, managedReadShellFixture{
 				sequence: test.sequence, body: test.body, wgetExit: test.wgetExit,
-				receipt: test.receipt, receiptKind: test.receiptKind, rootKind: test.rootKind,
-				rootMode: test.rootMode, receiptMode: test.receiptMode,
+				receipt: test.receipt, receiptKind: test.receiptKind, receiptBefore: test.receiptBefore,
+				rootKind: test.rootKind, rootMode: test.rootMode, receiptMode: test.receiptMode,
 			})
 			if (result.err == nil) != test.wantSuccess {
 				t.Fatalf("exit error = %v, want success %t; output=%q", result.err, test.wantSuccess, result.output)
@@ -467,24 +430,7 @@ func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T
 	}
 }
 
-// TestDaemonSetBackend_HangarInitUsesOneFixedReadOnlyVerificationMountPerTree
-// moved to brine.
-//
-// Its three assertions -- one fixed read-only verification mount per tree, the
-// exact expected receipt in the command, and no user-controlled destination in
-// it -- are what a consumer's Pod SAYS, which is the learning's own brine-shaped
-// row. They live in features/hangar-consumer-pod.feature now, over a pod built
-// from a tree a real capture really published rather than from a ref this file
-// wrote down. See atc/worker/jetbridge/brine/steps/hangar_consumer_pod.go.
-//
-// Its sibling at TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt
-// did NOT move, and the plan's own reason for keeping
-// TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail is why: it runs the
-// generated shell with a fake wget on PATH, and script text is not spec. Its
-// twenty-one rows are about retry bounds, symlinked receipts, file modes and
-// false 204s -- behaviour brine cannot express and nothing else covers.
-
-func TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail(t *testing.T) {
+func TestDaemonSetBackend_ManagedReadInitSignalsCleanUpAndFail(t *testing.T) {
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -494,12 +440,12 @@ func TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail(t *testing.T) {
 	for _, signal := range []string{"HUP", "INT", "TERM"} {
 		for _, phase := range []string{"wget", "retry"} {
 			t.Run(signal+" during "+phase, func(t *testing.T) {
-				fixture := hangarShellFixture{sequence: "signal", signal: signal, receipt: receipt, rootMode: 0555, receiptMode: 0444}
+				fixture := managedReadShellFixture{sequence: "signal", signal: signal, receipt: receipt, rootMode: 0555, receiptMode: 0444}
 				if phase == "retry" {
 					fixture.sequence = "none,204"
 					fixture.signalSleep = true
 				}
-				result := runHangarInitShell(t, ref, fixture)
+				result := runManagedReadInitShell(t, ref, fixture)
 				if result.err == nil {
 					t.Fatal("signal must terminate the init script nonzero")
 				}
@@ -511,86 +457,83 @@ func TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail(t *testing.T) {
 	}
 }
 
-type hangarShellFixture struct {
+type managedReadShellFixture struct {
 	sequence    string
 	body        string
 	wgetExit    string
 	receipt     []byte
 	receiptKind string
-	rootKind    string
-	rootMode    os.FileMode
-	receiptMode os.FileMode
-	signalSleep bool
-	signal      string
+	// receiptBefore seals the receipt before the script runs, as a daemon
+	// that committed before a retried init does.
+	receiptBefore bool
+	rootKind      string
+	rootMode      os.FileMode
+	receiptMode   os.FileMode
+	signalSleep   bool
+	signal        string
 }
 
-type hangarShellResult struct {
+type managedReadShellResult struct {
 	err       error
 	output    string
 	attempts  int
 	leftovers []string
 }
 
-func runHangarInitShell(t *testing.T, ref hangar.TreeRef, fixture hangarShellFixture) hangarShellResult {
+// runManagedReadInitShell runs the generated managed-read init against a fake
+// wget. The fake answers each attempt from the fixture's sequence; on a
+// 2xx status it also plays the daemon, sealing the fixture's receipt into
+// the input root the way a real read would.
+func runManagedReadInitShell(t *testing.T, ref hangar.TreeRef, fixture managedReadShellFixture) managedReadShellResult {
 	t.Helper()
-	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewSigner(key, hangar.MaxWarrantTTL, func() time.Time {
-		return time.Unix(1_800_000_000, 0).UTC()
-	})
-	if err != nil {
-		t.Fatalf("new warrant signer: %v", err)
-	}
 	cfg := testDaemonConfig()
-	cfg.HangarEnabled = true
-	cfg.HangarSigner = signer
+	cfg.OutputPlaneEnabled = true
 	b := NewDaemonSetBackend(cfg, nil, nil, nil)
-	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
+	inputs := []runtime.Input{runInputFixture(ref, "input-0", "/work/exact")}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}
 	volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
 	inits, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts)
 	if err != nil || len(inits) != 1 {
-		t.Fatalf("build strict init: containers=%d err=%v", len(inits), err)
+		t.Fatalf("build the managed-read init: containers=%d err=%v", len(inits), err)
 	}
 
-	mountBase := filepath.Join(t.TempDir(), "hangar-inputs")
-	root := filepath.Join(mountBase, "input-0")
+	mountBase := t.TempDir()
+	root := filepath.Join(mountBase, "hangar-input")
 	rootTarget := root
 	if fixture.rootKind == "symlink" {
 		rootTarget = t.TempDir()
-		if err := os.MkdirAll(mountBase, 0755); err != nil {
-			t.Fatalf("make receipt mount base: %v", err)
-		}
 		if err := os.Symlink(rootTarget, root); err != nil {
 			t.Fatalf("symlink receipt root: %v", err)
 		}
 	} else if err := os.MkdirAll(root, 0755); err != nil {
 		t.Fatalf("make receipt root: %v", err)
 	}
-	receiptPath := filepath.Join(root, ".hangar-materialized")
-	switch fixture.receiptKind {
-	case "missing":
-	case "symlink":
-		target := filepath.Join(t.TempDir(), "receipt-target")
-		if err := os.WriteFile(target, fixture.receipt, 0444); err != nil {
-			t.Fatalf("write receipt target: %v", err)
-		}
-		if err := os.Symlink(target, receiptPath); err != nil {
-			t.Fatalf("symlink receipt: %v", err)
-		}
-	default:
-		if err := os.WriteFile(receiptPath, fixture.receipt, fixture.receiptMode); err != nil {
-			t.Fatalf("write receipt: %v", err)
-		}
-		if err := os.Chmod(receiptPath, fixture.receiptMode); err != nil {
-			t.Fatalf("chmod receipt: %v", err)
-		}
-	}
-	if err := os.Chmod(rootTarget, fixture.rootMode); err != nil {
-		t.Fatalf("chmod receipt root: %v", err)
-	}
 	t.Cleanup(func() { _ = os.Chmod(rootTarget, 0755) })
 
 	stateDir := t.TempDir()
+	receiptSource := filepath.Join(stateDir, "receipt")
+	if err := os.WriteFile(receiptSource, fixture.receipt, 0444); err != nil {
+		t.Fatalf("write receipt source: %v", err)
+	}
+	// seal.sh is what the daemon's side of a successful read leaves behind.
+	var seal strings.Builder
+	seal.WriteString("#!/bin/sh\nset -e\n")
+	switch fixture.receiptKind {
+	case "missing":
+	case "symlink":
+		fmt.Fprintf(&seal, "ln -s %q %q\n", receiptSource, filepath.Join(rootTarget, ".hangar-materialized"))
+	default:
+		fmt.Fprintf(&seal, "cp %q %q\nchmod %o %q\n", receiptSource, filepath.Join(rootTarget, ".hangar-materialized"),
+			fixture.receiptMode, filepath.Join(rootTarget, ".hangar-materialized"))
+	}
+	fmt.Fprintf(&seal, "chmod %o %q\n", fixture.rootMode, rootTarget)
+	writeExecutable(t, filepath.Join(stateDir, "seal.sh"), seal.String())
+	if fixture.receiptBefore {
+		if out, err := exec.Command("/bin/sh", filepath.Join(stateDir, "seal.sh")).CombinedOutput(); err != nil {
+			t.Fatalf("seal the receipt before the script: %v: %s", err, out)
+		}
+	}
+
 	binDir := t.TempDir()
 	writeExecutable(t, filepath.Join(binDir, "wget"), `#!/bin/sh
 OUTPUT=
@@ -610,6 +553,7 @@ case "$OUTCOME" in
   none) : >"$OUTPUT"; exit 1 ;;
   signal) kill -"$TEST_SIGNAL" "$PPID"; /bin/sleep 0.1; exit 1 ;;
   503) printf '  HTTP/1.1 503 Service Unavailable\n' >&2; : >"$OUTPUT"; exit 1 ;;
+  2??) /bin/sh "$TEST_STATE/seal.sh"; printf '  HTTP/1.1 %s Result\n' "$OUTCOME" >&2; printf '%s' "$TEST_BODY" >"$OUTPUT"; exit "${TEST_WGET_EXIT:-0}" ;;
   *) printf '  HTTP/1.1 %s Result\n' "$OUTCOME" >&2; printf '%s' "$TEST_BODY" >"$OUTPUT"; exit "${TEST_WGET_EXIT:-0}" ;;
 esac
 `)
@@ -619,12 +563,15 @@ exit 0
 `)
 
 	scriptTmp := t.TempDir()
-	script := strings.ReplaceAll(inits[0].Command[2], "/hangar-inputs", mountBase)
+	script := strings.Replace(inits[0].Command[2], "ROOT=/hangar-input\n", "ROOT="+root+"\n", 1)
+	if script == inits[0].Command[2] {
+		t.Fatal("the managed-read script no longer names its root where this harness redirects it")
+	}
 	// A non-interactive POSIX shell cannot trap a signal that was ignored when
 	// it started, and the CI task tree starts with SIGHUP ignored (reproducible
 	// locally with `trap '' HUP` around go test). Catching it here for the
 	// duration means the child is exec'd with the default disposition, so the
-	// script's `trap on_signal 1` is honoured the way it is in a real pod.
+	// script's `trap ... 1` is honoured the way it is in a real pod.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
@@ -647,8 +594,8 @@ exit 0
 	output, runErr := cmd.CombinedOutput()
 	attemptBytes, _ := os.ReadFile(filepath.Join(stateDir, "attempts"))
 	attempts, _ := strconv.Atoi(string(attemptBytes))
-	leftovers, _ := filepath.Glob(filepath.Join(scriptTmp, "hangar-materialize.*"))
-	return hangarShellResult{err: runErr, output: string(output), attempts: attempts, leftovers: leftovers}
+	leftovers, _ := filepath.Glob(filepath.Join(scriptTmp, "hangar-input.*"))
+	return managedReadShellResult{err: runErr, output: string(output), attempts: attempts, leftovers: leftovers}
 }
 
 func writeExecutable(t *testing.T, path, contents string) {
@@ -658,24 +605,31 @@ func writeExecutable(t *testing.T, path, contents string) {
 	}
 }
 
-func TestDaemonSetBackend_BuildFetchInitContainers_RejectsDisabledOrUnsignableHangar(t *testing.T) {
+func TestDaemonSetBackend_BuildFetchInitContainers_RejectsARunInputWithoutItsRead(t *testing.T) {
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Generation: 1,
 	}
-	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}
+	planeOn := testDaemonConfig()
+	planeOn.OutputPlaneEnabled = true
 
-	for name, cfg := range map[string]Config{
-		"disabled":       testDaemonConfig(),
-		"missing signer": func() Config { c := testDaemonConfig(); c.HangarEnabled = true; return c }(),
+	for name, tc := range map[string]struct {
+		cfg    Config
+		inputs []runtime.Input
+		want   string
+	}{
+		"no read":                  {planeOn, []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}, "carries no managed read"},
+		"output plane disabled":    {testDaemonConfig(), []runtime.Input{runInputFixture(ref, "input-0", "/work/exact")}, "requires the output plane"},
+		"a read of another volume": {planeOn, []runtime.Input{runInputFixture(ref, "input-9", "/work/exact")}, "node-local volume"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			b := NewDaemonSetBackend(cfg, nil, nil, nil)
+			b := NewDaemonSetBackend(tc.cfg, nil, nil, nil)
 			volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
-			if _, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts); err == nil {
-				t.Fatal("expected strict input construction to fail closed")
+			_, err := b.BuildFetchInitContainers("task-handle", tc.inputs, volumes, mounts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected a refusal containing %q, got %v", tc.want, err)
 			}
 		})
 	}

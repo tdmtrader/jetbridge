@@ -53,7 +53,7 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 		return in, nil, fmt.Errorf("cluster is not marked %s=owned-ci on its single disposable node", owner)
 	}
 	node := nodes.Items[0].DeepCopy()
-	for _, key := range []string{"concourse.dev/artifact-cache", "concourse.dev/hangar-v1", executioncontrol.ReadyLabel, output.ReadyLabel} {
+	for _, key := range []string{"concourse.dev/artifact-cache", executioncontrol.ReadyLabel, output.ReadyLabel} {
 		node.Labels[key] = "ready"
 	}
 	node, err = client.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})

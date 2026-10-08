@@ -590,11 +590,8 @@ const hangarGCSPackage = "hangar/gcs"
 // they depend on hangar/objectstore, which names no cloud SDK type, and that
 // is what keeps the cloud client out of anything that links a role.
 var hangarGCSImporters = map[string]string{
-	"cmd/artifact-daemon": "the artifact daemon composes the shared GCS object adapter with " +
-		"provider-neutral tree verification for its strict-input store",
-	"cmd/artifact-daemon/durable": "the fail-open cache tier is a thin wrapper over the same " +
+	"cmd/artifact-daemon/durable": "the fail-open cache tier is a thin wrapper over the shared " +
 		"object adapter, against its own dedicated cache bucket and its own client",
-	"hangar/treestore": "TEST-ONLY: regression fixtures verify strict tree behavior against the real GCS adapter; production imports only objectstore",
 
 	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher: it " +
 		"opens the output bucket's object client through hangar/gcs, which hands back an " +
@@ -617,7 +614,6 @@ var hangarGCSImporters = map[string]string{
 // testOnlyGCSImporters are the exemptions above whose reason says TEST-ONLY, and
 // the check that follows is what makes the words true.
 var testOnlyGCSImporters = map[string]bool{
-	"hangar/treestore":          true,
 	"hangar/output/conformance": true,
 	"atc/hangaroutput":          true,
 }
@@ -626,9 +622,9 @@ var testOnlyGCSImporters = map[string]bool{
 //
 // Each is a separate binary with a separate Kubernetes service account, and the
 // isolation only means something while no other process links one. The
-// existing artifact daemon is the case that matters: its identity holds the
-// cache and strict-input roles, and a service account is Pod-wide, so an
-// import here would give that identity an output role no code in that process
+// artifact daemon is the case that matters: its identity holds the cache and
+// publisher roles, and a service account is Pod-wide, so an import of the
+// reclaimer here would give that identity a delete no code in that process
 // could give back.
 var outputRolePackages = []string{
 	"hangar/output/publisher",
@@ -639,8 +635,8 @@ var outputRolePackages = []string{
 var outputRoleImporters = map[string]string{
 	"hangar/diskserver": "TEST-ONLY: real TLS integration tests exercise publication through the disk adapter; production server code links no output role",
 	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher " +
-		"principal: one node daemon, whose identity holds the publisher role beside the cache " +
-		"and strict-input ones, and never inventory or reclaim",
+		"principal: one node daemon, whose identity holds the publisher role beside the cache's, " +
+		"and never inventory or reclaim",
 	"atc/hangaroutput/reclaim": "the web's reclaim pass and orphan sweep: the web is the " +
 		"reclaimer principal, and the node daemon -- the publisher -- holds no delete",
 	"hangar/output/conformance": "the shared conformance suite drives both roles against " +
@@ -750,9 +746,9 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 	for _, role := range outputRolePackages {
 		for _, imported := range graph.all["cmd/artifact-daemon"] {
 			if imported == role {
-				t.Errorf("cmd/artifact-daemon links %s. Its service account holds the cache and "+
-					"strict-input roles; adding an output role to that Pod is the one thing the "+
-					"second binary exists to prevent.", role)
+				t.Errorf("cmd/artifact-daemon links %s directly. Its output plane links the "+
+					"publisher through cmd/artifact-daemon/outputplane and nothing else; a role "+
+					"named by package main is a role the daemon's identity cannot give back.", role)
 			}
 		}
 	}
@@ -868,8 +864,8 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 				continue
 			}
 			t.Errorf("%s imports %s. The GCS client is a daemon-side detail: depend on the "+
-				"hangar.Store interface instead, or add %s above with the reason it must link a "+
-				"cloud client.", pkg, hangarGCSPackage, pkg)
+				"hangar/objectstore interface instead, or add %s above with the reason it must "+
+				"link a cloud client.", pkg, hangarGCSPackage, pkg)
 		}
 	}
 }
@@ -887,18 +883,17 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 // for an exact tree, whose whole promise is that losing it is not recoverable
 // by re-running anything.
 //
-// The tier is now a thin wrapper over the SAME object interface the strict
-// planes use (hangar/objectstore, with the hangar/gcs and hangar/disk
+// The tier is now a thin wrapper over the SAME object interface the output
+// plane uses (hangar/objectstore, with the hangar/gcs and hangar/disk
 // backends), so "the tier imports nothing from hangar/" is no longer the rule.
 // What keeps the two apart is:
 //
 //   - configuration: the cache is its own bucket or disk namespace, and the
-//     daemon and web refuse to start with it equal to the input or output one
-//     (objectstore.Namespaces; TestTheCacheNamespaceMustDifferFromInputAndOutput
-//     in cmd/artifact-daemon);
+//     daemon and web refuse to start with it equal to the output one
+//     (objectstore.Namespaces, checked at both process starts);
 //   - imports, below: the tier reaches storage through those three packages
-//     and nothing else under hangar/ -- never hangar/output, never the strict
-//     tree store -- and nothing under hangar/ reaches the tier.
+//     and nothing else under hangar/ -- never hangar/output -- and nothing
+//     under hangar/ reaches the tier.
 const durableCacheTier = "cmd/artifact-daemon/durable"
 
 // durableTierFile is the file declaring DurableTier. It is checked separately
@@ -1152,16 +1147,6 @@ func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
 		}), trees)
 		if len(problems) != 1 || !strings.Contains(problems[0], durableCacheTier+" imports hangar/output") {
 			t.Fatalf("expected exactly the tier's hangar/output edge to be reported, got %v", problems)
-		}
-	})
-
-	t.Run("catches the tier reaching for the strict tree store", func(t *testing.T) {
-		problems := durableTierSeparation(both(map[string][]string{
-			durableCacheTier: {"hangar/treestore"},
-			"hangar":         {},
-		}), trees)
-		if len(problems) != 1 || !strings.Contains(problems[0], "hangar/treestore") {
-			t.Fatalf("expected the tier's hangar/treestore edge to be reported, got %v", problems)
 		}
 	})
 
@@ -1655,7 +1640,6 @@ var cloudStorageSDKImporters = map[string]string{
 	"hangar/gcs": "the one GCS object adapter every plane shares. Each capability it hands " +
 		"back is an interface carrying only the operations its role may issue; the delete " +
 		"client is a separate constructor whose callers hangar/architecture_test.go fixes",
-	"hangar/treestore": "TEST-ONLY: existing strict-tree fixtures drive GCS conditions and error translations; production remains SDK-free",
 	"hangar/output/conformance": "TEST-ONLY: the tier-2 conformance suite drives the real " +
 		"adapter against fake-gcs-server, because a conformance claim proved through a " +
 		"hand-written fake is a claim about the fake",
@@ -1722,10 +1706,6 @@ func TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK(t *testing.T
 			}
 			named++
 			if reason, ok := cloudStorageSDKImporters[pkg]; ok {
-				if pkg == "hangar/treestore" && !strings.HasSuffix(relative, "_test.go") {
-					t.Errorf("%s imports a cloud SDK in provider-neutral production code", relative)
-				}
-
 				exercised[pkg] = true
 				t.Logf("allowed: %s names %s — %s", relative, imported, reason)
 

@@ -46,7 +46,7 @@ says is signed.
 
 {{- with .Values.hangarStorage.disk.credentials.existingSecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "store-tokens"
-  "purposes" (dict "input" "strict-input principal token" "publisher" "output publisher token" "inventory" "list-and-stat token the web's orphan sweep lists with" "reclaimer" "stat-and-delete token the web's reclaim pass and orphan sweep delete with" "server.json" "the store's principal-to-token map")
+  "purposes" (dict "publisher" "output publisher token" "inventory" "list-and-stat token the web's orphan sweep lists with" "reclaimer" "stat-and-delete token the web's reclaim pass and orphan sweep delete with" "server.json" "the store's principal-to-token map")
   "consumers" (list "hangar-store" "artifact-daemon" "web")) -}}
 {{- end -}}
 

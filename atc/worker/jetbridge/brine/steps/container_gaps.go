@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -88,21 +86,9 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 			"a jetbridge worker with an artifact store and the output plane on",
 			[]string{"jetbridge-db", "real-cluster"},
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (WorkerReady, error) {
-				signer, err := hangar.NewSigner(brineHangarKey, hangar.MaxWarrantTTL, time.Now)
-				if err != nil {
-					return WorkerReady{}, err
-				}
-
 				return newWorkerReady(res, rec, "k8s-worker-1", "", func(cfg *jetbridge.Config) {
 					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 					cfg.OutputPlaneEnabled = true
-					// Strict inputs, the foundation tier. Inert for every
-					// scenario that declares no tree input -- the strict-input
-					// branch of BuildFetchInitContainers only runs for an input
-					// that has one -- and required by the strict-input regression
-					// twin, which is about a step that takes both.
-					cfg.HangarEnabled = true
-					cfg.HangarSigner = signer
 				})
 			},
 		),

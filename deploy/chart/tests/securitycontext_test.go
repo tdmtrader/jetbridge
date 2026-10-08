@@ -162,10 +162,9 @@ func TestPostgresContainerSecurityContext(t *testing.T) {
 
 func TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext(t *testing.T) {
 	daemon := findDaemonSet(t, renderChart(t,
-		"artifactDaemon.hangar.enabled=true",
+		"hangarOutput.executionControl.enabled=true",
 		"artifactDaemon.tls.existingSecret=operator-daemon-tls",
-		"artifactDaemon.hangar.store=gcs",
-		"artifactDaemon.hangar.bucket=b",
+		"artifactDaemon.outputScratch.sizeLimit=32Gi",
 	), "-artifact-daemon")
 	if boolVal(daemon.Spec.Template.Spec.SecurityContext.RunAsNonRoot) {
 		t.Fatal("artifact-daemon must remain root for arbitrary-UID hostPath content")

@@ -570,55 +570,23 @@ artifactDaemon:
     # listener, no Service port, no scrape.
     port: ""
 
-  # -- Strict, exact immutable tree storage for task inputs. Hangar is
-  # fail-closed and therefore remains opt-in. It names its own store and
-  # shares nothing with the resource-cache store.
+  # -- The Hangar key. Every Run input reaches a task as a managed read of
+  # the output namespace, and every warrant the web signs for that plane --
+  # read and control -- is signed with this one key. It is needed with
+  # hangarOutput.executionControl.enabled.
   hangar:
-    # -- gcs or disk. Required when enabled.
-    store: ""
-    # -- The GCS bucket, or the disk store's namespace. Required when enabled.
-    bucket: ""
-    # -- GCS endpoint override, for an emulator. Empty means real GCS; the
-    # disk store's endpoint comes from hangarStorage.
-    endpoint: ""
-    # -- Object prefix inside the bucket.
-    prefix: ""
-    # -- Enable strict inputs. Requires daemon TLS and configured object storage.
-    enabled: false
-    # -- Enable web emission/signing of strict inputs after every eligible
-    # daemon node has advertised Hangar readiness. Requires enabled: true.
-    webEnabled: false
     # -- Permit the chart to generate hangar.key in its managed TLS Secret.
     # Use only with live Helm install/upgrade, where lookup can preserve the
     # Secret. Offline/GitOps rendering must leave this false and provide
     # tls.existingSecret with all TLS keys plus an exact raw-32-byte hangar.key.
     allowGeneratedKey: false
     # -- Secret holding hangar.key, the raw 32-byte Hangar key the web signs
-    # every warrant with -- materialization, read and control -- and every
-    # artifact daemon verifies against. It is the one key for strict inputs
-    # (hangar.enabled) and the output plane (hangarOutput.executionControl)
-    # alike. When set, web and the artifact daemon mount it from here instead
-    # of from artifactDaemon.tls.existingSecret, and the Hangar bootstrap
-    # creates it if it is absent.
+    # every read and control warrant with and every artifact daemon verifies
+    # against. Needed with hangarOutput.executionControl.enabled. When set,
+    # web and the artifact daemon mount it from here instead of from
+    # artifactDaemon.tls.existingSecret, and the Hangar bootstrap creates it
+    # if it is absent.
     keySecret: ""
-    # -- Private transient canonicalization scratch. This must be an absolute
-    # path disjoint from artifactDaemon.hostPath; the chart mounts a dedicated
-    # emptyDir here only in the artifact-daemon Pod.
-    scratchPath: /var/concourse/hangar-scratch
-    # -- Size limit for the scratch emptyDir above. Kubernetes quantity syntax,
-    # e.g. "32Gi"; empty leaves it unbounded.
-    #
-    # Unbounded means bounded by the NODE'S DISK: canonicalization spools a
-    # whole tree here, and an emptyDir that fills the disk evicts every Pod on
-    # the node rather than only this one. It defaults to empty because setting
-    # a limit on an existing install is a behaviour change for trees that were
-    # already fitting; the output plane's equivalent value is REQUIRED, which
-    # is the shape a new volume can afford.
-    scratchSizeLimit: ""
-    # -- Maximum regular-file content admitted in one immutable tree.
-    maxContentBytes: 10737418240
-    # -- Maximum filesystem entries admitted in one immutable tree.
-    maxEntries: 100000
     # -- Lifetime of every warrant the web signs with the Hangar key, expressed
     # as positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).
     capabilityTTL: "900s"
@@ -634,7 +602,11 @@ artifactDaemon:
     # Disk uses projected role credentials and needs no GCP identity.
     annotations: {}
   # -- The output plane's canonicalization scratch, mounted when
-  # hangarOutput.executionControl.enabled is true.
+  # hangarOutput.executionControl.enabled is true. It is the ONE scratch and
+  # the one set of tree limits: input publications, captures and managed
+  # reads are all canonicalized here, and maxContentBytes/maxEntries bound
+  # every tree the daemon admits (rendered as --output-max-content-bytes and
+  # --output-max-entries).
   outputScratch:
     # -- Absolute canonicalization scratch directory, disjoint from the
     # storage root.
@@ -645,9 +617,10 @@ artifactDaemon:
     # filling it evicts every Pod on the node, not only this one.
     # Use Kubernetes quantity syntax, e.g. "32Gi".
     sizeLimit: ""
-    # -- Largest regular-file content admitted in one captured tree.
+    # -- Largest regular-file content admitted in one tree (capture, input
+    # publication or managed read).
     maxContentBytes: 10737418240
-    # -- Largest number of filesystem entries admitted in one captured tree.
+    # -- Largest number of filesystem entries admitted in one tree.
     maxEntries: 100000
     # -- How many trees may be spooled to scratch at once. concurrency times
     # maxContentBytes must fit inside sizeLimit; the chart refuses a product
@@ -693,8 +666,9 @@ artifactDaemon:
     source: existingSecret
     # -- Secret containing ca.crt, tls.crt, tls.key, client.crt, client.key.
     # Required for source: existingSecret; must be empty for source: generated.
-    # Hangar (strict inputs or the output plane) additionally requires
-    # hangar.key, the Hangar key, unless artifactDaemon.hangar.keySecret names it.
+    # The output plane (hangarOutput.executionControl.enabled) additionally
+    # requires hangar.key, the Hangar key, unless artifactDaemon.hangar.keySecret
+    # names it.
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
   resolveCapability:
@@ -814,10 +788,8 @@ hangarOutput:
   # BOTH, and neither alone admits it. Neither is authority -- the warrant
   # the daemon verifies and the web's hangar_enabled row are -- so a label buys
   # only that the pod does not land somewhere its hold could never be
-  # acknowledged.
-  #
-  # `concourse.dev/hangar-v1` is a THIRD label and is not this plane's: it
-  # advertises strict INPUTS.
+  # acknowledged. Every Run input is a managed read of this plane, so a pod
+  # with a tree input requires both labels too; there is no other label.
   #
   # The daemon verifies every warrant with the one Hangar key
   # (artifactDaemon.hangar.keySecret, or hangar.key in the daemon TLS Secret),
@@ -839,8 +811,8 @@ hangarOutput:
   webEnabled: false
 
   # -- The dedicated output bucket. Externally provisioned, contains only
-  # Hangar output-plane objects, and is never the durable cache bucket or the
-  # caller-published strict-input bucket. Required when enabled.
+  # Hangar output-plane objects (captures and Run input publications), and is
+  # never the durable cache bucket. Required when enabled.
   bucket: ""
   # -- Authenticated deployment key prefix inside that bucket. Server
   # configuration; no task, consumer, path parameter or request can select or
@@ -850,10 +822,9 @@ hangarOutput:
   # from. It is never rendered into an object key. Required when enabled.
   tenant: ""
 
-  # -- The two buckets this plane may not be, named so the daemon can refuse to
-  # be pointed at them. Empty means this deployment has no such bucket.
+  # -- The bucket this plane may not be, named so the daemon can refuse to
+  # be pointed at it. Empty means this deployment has no such bucket.
   cacheBucket: ""
-  strictInputBucket: ""
 
   # -- Endpoint override for the OUTPUT bucket's store. Empty means real GCS;
   # set it for an emulator. It is the output plane's own: requirement 20

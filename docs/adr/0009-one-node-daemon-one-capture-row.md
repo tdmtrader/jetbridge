@@ -17,16 +17,19 @@ operator path to rotate it: the design carried a live bug.
 We collapsed it:
 
 - **One daemon.** The artifact daemon on each node serves the resource
-  cache, strict-input materialization, input publication, result reads,
-  the base execution-control protocol and the capture routes (seal,
-  publish, release, stat). Nothing else listens on a node. The output
+  cache, strict-input materialization (amended by ADR-0010: gone; a Run
+  input is an input publication read back as a managed read), input
+  publication, result reads, the base execution-control protocol and the
+  capture routes (seal, publish, release, stat). Nothing else listens on a node. The output
   daemon, the activation command, the inventory and the reclaimer binaries
   are gone.
-- **One storage interface, two backends, three namespaces.** GCS and the
-  disk store behind one object interface; exact delete is a separate
-  interface constructed only in the web (and by the cache tier over its own
-  namespace). Cache, input and output are three buckets or disk
-  namespaces, and a process refuses to start with any two equal.
+- **One storage interface, two backends, three namespaces** (amended by
+  ADR-0010: two, cache and output). GCS and the disk store behind one
+  object interface; exact delete is a separate interface constructed only
+  in the web (and by the cache tier over its own namespace). Cache, input
+  and output are three buckets or disk namespaces, and a process refuses
+  to start with any two equal (amended by ADR-0010: the input namespace is
+  gone; the inequality is cache ≠ output).
 - **A capture is one row and one marker.** `hangar_captures` moves pending →
   publishing → published (or discarded, failed) by compare-and-set, driven
   by the web in six steps; the node keeps one step marker file per step

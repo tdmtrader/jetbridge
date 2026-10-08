@@ -27,6 +27,15 @@ const (
 
 const tarBlockBytes int64 = 512
 
+// TreeAttributes describe one stored tree: its complete ref, its stored and
+// logical sizes, and when the object was created.
+type TreeAttributes struct {
+	Ref          TreeRef   `json:"ref"`
+	StoredBytes  int64     `json:"stored_bytes"`
+	LogicalBytes int64     `json:"logical_bytes"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // TreeLimits are the logical admission limits for a tree archive.
 // They are intentionally distinct from the derived physical tar byte bound:
 // lowering MaxContentBytes to one byte must reject a two-byte file even though

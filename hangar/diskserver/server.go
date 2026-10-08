@@ -22,13 +22,12 @@ import (
 
 type Config struct {
 	StoreID         string
-	InputNamespace  string
 	OutputNamespace string
 	// CacheNamespace makes this a CACHE-ONLY store: the artifact daemon's
 	// fail-open resource cache, on a dedicated store instance with its own
 	// disk, process, lock and concurrency slots. It is exclusive with the
-	// input and output namespaces -- the cache's churn must never queue behind,
-	// or hold the mutex of, the strict stores -- and it takes exactly one
+	// output namespace -- the cache's churn must never queue behind, or hold
+	// the mutex of, the result plane's store -- and it takes exactly one
 	// credential, "cache", which may create, stat, read, list and delete
 	// inside the cache namespace and nothing else.
 	CacheNamespace string
@@ -54,12 +53,12 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 	if store.ID() != config.StoreID {
 		return nil, fmt.Errorf("%w: disk server identity differs from its index", hangar.ErrConflict)
 	}
-	names := []string{config.StoreID, config.InputNamespace, config.OutputNamespace}
-	roles := []string{"input", "publisher", "inventory", "reclaimer"}
+	names := []string{config.StoreID, config.OutputNamespace}
+	roles := []string{"publisher", "inventory", "reclaimer"}
 	if config.CacheNamespace != "" {
-		if config.InputNamespace != "" || config.OutputNamespace != "" {
+		if config.OutputNamespace != "" {
 			return nil, errors.New("a cache store serves the cache namespace only: run the " +
-				"resource cache on its own store instance, never beside the input or output namespaces")
+				"resource cache on its own store instance, never beside the output namespace")
 		}
 		names = []string{config.StoreID, config.CacheNamespace}
 		roles = []string{"cache"}
@@ -69,7 +68,7 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 			return nil, err
 		}
 	}
-	if err := (objectstore.Namespaces{Cache: config.CacheNamespace, Input: config.InputNamespace, Output: config.OutputNamespace}).Validate(); err != nil {
+	if err := (objectstore.Namespaces{Cache: config.CacheNamespace, Output: config.OutputNamespace}).Validate(); err != nil {
 		return nil, err
 	}
 	s := &server{store: store, config: config, slots: make(chan struct{}, config.MaxConcurrent)}
@@ -121,9 +120,6 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := query.Get("key")
 	operation := strings.TrimPrefix(r.URL.Path, "/v1/")
 	allowed := false
-	if role == "input" && bucket != "" && bucket == s.config.InputNamespace {
-		allowed = operation == "create" || operation == "stat" || operation == "read"
-	}
 	if role == "cache" && s.config.CacheNamespace != "" && bucket == s.config.CacheNamespace {
 		allowed = operation == "create" || operation == "stat" || operation == "read" || operation == "list" || operation == "delete"
 	}

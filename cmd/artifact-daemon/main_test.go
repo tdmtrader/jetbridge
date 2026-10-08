@@ -1,8 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
+
+	"code.cloudfoundry.org/lager/v3/lagertest"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // --peer-discovery exists so a daemon under a namespace-scoped
@@ -70,5 +80,60 @@ func TestDaemonTLSMode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The Hangar key is the output plane's and nobody else's: required exactly
+// when --execution-control mounts the plane, refused when nothing on the
+// daemon verifies a warrant, and the refusal names the flag that decides it.
+func TestLoadHangarKeyIsRequiredWithAndOnlyWithExecutionControl(t *testing.T) {
+	if key, err := loadHangarKey("", false); err != nil || key != nil {
+		t.Errorf("no key and no plane = (%v, %v), want (nil, nil)", key, err)
+	}
+	if _, err := loadHangarKey("", true); err == nil || !strings.Contains(err.Error(), "--execution-control") {
+		t.Errorf("a plane with no key was accepted, or the refusal does not name the flag: %v", err)
+	}
+	if _, err := loadHangarKey("/nonexistent/key", false); err == nil || !strings.Contains(err.Error(), "--execution-control") {
+		t.Errorf("a key with no plane was accepted, or the refusal does not name the flag: %v", err)
+	}
+}
+
+// Shutdown runs in the reverse of startup: the readiness label comes off
+// before the listener closes, so the scheduler stops sending pods to a node
+// that is about to stop answering, and the output plane's store client closes
+// last, after the requests that were using it have drained.
+func TestCleanupRemovesTheLabelThenShutsDownThenClosesThePlane(t *testing.T) {
+	const labelKey = "concourse.dev/artifact-cache"
+	client := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: map[string]string{labelKey: "ready"}}})
+	var order []string
+	client.PrependReactor("patch", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		var patch struct {
+			Metadata struct {
+				Labels map[string]any `json:"labels"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(action.(k8stesting.PatchAction).GetPatch(), &patch); err != nil {
+			t.Fatal(err)
+		}
+		for key := range patch.Metadata.Labels {
+			order = append(order, key)
+		}
+		return false, nil, nil
+	})
+	labeler := NewNodeLabeler(lagertest.NewTestLogger("legacy-label"), client, "node", labelKey)
+	if err := cleanupDaemonServices(context.Background(), labeler,
+		func() error { order = append(order, "shutdown"); return nil },
+		func() error { order = append(order, "close"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	node, _ := client.CoreV1().Nodes().Get(context.Background(), "node", metav1.GetOptions{})
+	wantOrder := []string{labelKey, "shutdown", "close"}
+	if len(node.Labels) != 0 || !slices.Equal(order, wantOrder) {
+		t.Fatalf("cleanup left labels=%v order=%v, want %v", node.Labels, order, wantOrder)
+	}
+
+	// A daemon that never got that far passes nothing, and cleanup still runs.
+	if err := cleanupDaemonServices(context.Background(), nil, nil, nil); err != nil {
+		t.Fatalf("cleanup with nothing to clean up: %v", err)
 	}
 }

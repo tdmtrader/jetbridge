@@ -61,8 +61,14 @@ import (
 // Signing every warrant (materialization, read and control) with the one
 // Hangar key, artifactDaemon.hangar.keySecret, took the output plane's own
 // three: hangarOutput.capabilityKeySecret, materializationKeySecret and
-// materializationKeyID, leaving 205.
-const maxValues = 205
+// materializationKeyID, leaving 205. Deleting the separate input plane (every
+// Run input is an input publication in the output namespace, read back by a
+// managed read; artifactDaemon.outputScratch is the one scratch and the one
+// set of tree limits) took 11 leaves: artifactDaemon.hangar's store, bucket,
+// endpoint, prefix, enabled, webEnabled, scratchPath, scratchSizeLimit,
+// maxContentBytes and maxEntries, and hangarOutput.strictInputBucket, leaving
+// 194.
+const maxValues = 194
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -157,6 +163,16 @@ var grandfathered = []string{
 var removedKeys = []string{
 	"artifactDaemon.durable",
 	"artifactDaemon.enabled",
+	"artifactDaemon.hangar.bucket",
+	"artifactDaemon.hangar.enabled",
+	"artifactDaemon.hangar.endpoint",
+	"artifactDaemon.hangar.maxContentBytes",
+	"artifactDaemon.hangar.maxEntries",
+	"artifactDaemon.hangar.prefix",
+	"artifactDaemon.hangar.scratchPath",
+	"artifactDaemon.hangar.scratchSizeLimit",
+	"artifactDaemon.hangar.store",
+	"artifactDaemon.hangar.webEnabled",
 	"artifactDaemon.preemption",
 	"artifactDaemon.tls.enabled",
 	"hangarBootstrap.database",
@@ -180,6 +196,7 @@ var removedKeys = []string{
 	"hangarOutput.receipt",
 	"hangarOutput.reclaimer",
 	"hangarOutput.sealDeadline",
+	"hangarOutput.strictInputBucket",
 	"rbac.brineLive",
 	"rbac.brineLiveServiceAccount",
 	"secrets.create",

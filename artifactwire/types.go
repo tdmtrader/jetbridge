@@ -130,27 +130,3 @@ type CaptureClassResponse struct {
 	Handle string `json:"handle"`
 	Reason string `json:"reason,omitempty"`
 }
-
-// TreeRef names an exact immutable Hangar tree. It is the wire shape of
-// hangar.TreeRef, field for field and tag for tag, and deliberately not that
-// type: this package is linked by the daemon's durable handlers, which must
-// not import hangar. Each end converts at its own edge.
-type TreeRef struct {
-	Scope      string `json:"scope"`
-	Digest     string `json:"digest"`
-	Generation int64  `json:"generation"`
-}
-
-// MaterializationItem is one tree to materialize into one volume, with the
-// warrant that authorizes exactly that.
-type MaterializationItem struct {
-	Ref     TreeRef `json:"ref"`
-	Handle  string  `json:"handle"`
-	Volume  string  `json:"volume"`
-	Warrant string  `json:"warrant"`
-}
-
-// MaterializationRequest is the body of POST /hangar/v1/materializations.
-type MaterializationRequest struct {
-	Items []MaterializationItem `json:"items"`
-}

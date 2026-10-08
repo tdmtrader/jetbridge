@@ -83,7 +83,7 @@ const (
 // hangar/output already has.
 //
 // The sentinels are the leaf's, not new ones, so a caller's errors.Is keeps
-// working across the boundary between strict input and durable output. The
+// working across the boundary between the web's rows and the output plane. The
 // schema's own refusals arrive classified by the RAISE that made them, and
 // anything unrecognised stays infrastructure -- which is the honest answer and,
 // importantly, never a cache miss.

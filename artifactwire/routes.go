@@ -44,8 +44,10 @@ func (r Route) Pattern() string {
 	return r.Method + " " + r.Path
 }
 
-// The route table. Seventeen routes, the same seventeen the daemon's mux
-// registers, because it registers them from here.
+// The route table. Fifteen routes, the same fifteen the daemon's mux
+// registers, because it registers them from here. The output plane's routes
+// (the input publication in, the managed read out) are outputplane.Patterns,
+// mounted beside these.
 var (
 	Healthz      = Route{Method: http.MethodGet, Path: "/healthz", MTLSExempt: true}
 	Resolve      = Route{Method: http.MethodPost, Path: "/resolve", MTLSExempt: true}
@@ -64,11 +66,6 @@ var (
 
 	HeadResourceCache = Route{Method: http.MethodHead, Path: ResourceCachesPrefix}
 	GetResourceCache  = Route{Method: http.MethodGet, Path: ResourceCachesPrefix}
-
-	HangarPublish = Route{Method: http.MethodPost, Path: "/hangar/v1/scopes/{scope}/trees"}
-	// HangarMaterializations is exempt because its caller is an init
-	// container; each item carries its own signed warrant instead.
-	HangarMaterializations = Route{Method: http.MethodPost, Path: "/hangar/v1/materializations", MTLSExempt: true}
 )
 
 // Routes is every route, in the order the daemon registers them.
@@ -78,6 +75,5 @@ func Routes() []Route {
 		GetArtifact, PutArtifact, DeleteArtifact, HeadArtifact,
 		Register, Mirror, StreamIn, DurableRestore,
 		HeadResourceCache, GetResourceCache,
-		HangarPublish, HangarMaterializations,
 	}
 }

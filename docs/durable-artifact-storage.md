@@ -29,7 +29,7 @@ behaves exactly as it did before.
 ## Relationship to core Hangar
 
 This resource-cache tier is one consumer policy, not the future boundary for
-all durable artifacts. Core Hangar now provides a separate opt-in strict path
+all durable artifacts. Core Hangar is the separate opt-in, fail-closed plane
 for exact immutable tree references; see [Hangar exact tree
 storage](hangar.md). Its store is GCS or disk.
 
@@ -37,15 +37,15 @@ The two share **one storage interface** and nothing else. This tier is a thin
 wrapper over the same `hangar/objectstore.Client` (create-if-absent, stat,
 exact open, list) with the same two backends, `hangar/gcs` and `hangar/disk`,
 but always against its **own** bucket or disk namespace and its own client
-instance. The cache, the strict inputs and the outputs are three namespaces,
-and the daemon and web refuse to start when any two are equal (ADR-0002).
+instance. The cache and the output namespace are two namespaces, and the
+daemon and web refuse to start when they are equal (ADR-0002).
 
 Every resource-cache artifact described here is re-derivable by re-running the
-step that produced it. Applying Hangar's strictness to these derivable bytes
-would convert a free cache miss into a broken build. This tier therefore
-remains fail-**open** in every path and name-keyed, while exact Hangar inputs
-fail closed on absence, corruption, conflict, authorization, limits, or
-infrastructure failure.
+step that produced it. Applying Hangar's fail-closed rule to these derivable
+bytes would convert a free cache miss into a broken build. This tier
+therefore remains fail-**open** in every path and name-keyed, while a Hangar
+managed read fails closed on absence, corruption, conflict, authorization,
+limits, or infrastructure failure.
 
 **Fail-open is the property to preserve through any future change.** A
 durable-store miss, timeout, expired credential or corrupt object must all
@@ -338,11 +338,11 @@ and is empty in production.
 
 **disk** — a **dedicated** persistent-disk store (`cmd/hangar-store`, its own
 PVC and store ID) through `hangar/disk`, as its `cache` role. That instance is
-started with `--cache-namespace` and nothing else: it refuses the input and
-output namespaces beside the cache, and its credentials file names only a
-`cache` credential, which may create, stat, read, list and delete inside the
-cache namespace. The cache never shares the strict store's process, index lock
-or concurrency slots.
+started with `--cache-namespace` and nothing else: it refuses the output
+namespace beside the cache, and its credentials file names only a `cache`
+credential, which may create, stat, read, list and delete inside the cache
+namespace. The cache never shares the output store's process, index lock or
+concurrency slots.
 
 At startup the disk identity probe is bounded to seconds
 (`durable.DefaultProbeTimeout`), not the transfer timeout.
@@ -356,8 +356,8 @@ durable on shared storage and was unsafe on GCS Fuse. Neither had a deployment.
 This tier is the only place on a node that constructs a delete client
 (`gcs.NewDeleteClient` / `disk.NewDeleteClient`), and only for the cache
 namespace: the cache is fail-open and the daemon expires its own objects by
-retention class. It never holds delete over the input or output namespaces —
-the startup check refuses a cache namespace equal to either, and the disk store
+retention class. It never holds delete over the output namespace — the
+startup check refuses a cache namespace equal to it, and the disk store
 confines the cache role to its namespace. `hangar/architecture_test.go` fixes
 the only callers of the delete constructors: this package and the output
 reclaimer.
@@ -381,11 +381,10 @@ deployment that wants the tier runs the daemon with its own flags:
 --durable-retention=CLASS=DURATION     # repeatable
 ```
 
-`--durable-bucket` must differ from `--hangar-bucket` when strict inputs are
-enabled, and from the output bucket; the daemon exits at startup otherwise.
-Web takes the same three names (`--kubernetes-artifact-daemon-cache-bucket`,
-`--kubernetes-hangar-input-bucket`, `--kubernetes-hangar-output-bucket`) and
-refuses the same way.
+`--durable-bucket` must differ from the output bucket (`--output-bucket`);
+the daemon exits at startup otherwise. Web takes the same two names
+(`--kubernetes-artifact-daemon-cache-bucket`,
+`--kubernetes-hangar-output-bucket`) and refuses the same way.
 
 An incomplete config fails at daemon startup, which exits rather than serving:
 a daemon that starts, reports healthy and quietly caches nothing is a much

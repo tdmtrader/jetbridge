@@ -122,8 +122,8 @@ func TestAReadDestinationSegmentIsTheFoundationsPathSegmentRule(t *testing.T) {
 		if got != valid {
 			t.Errorf("validDestinationSegment(%q) = %v, want %v", segment, got, valid)
 		}
-		foundation := hangar.Warrant{Purpose: hangar.PurposeMaterializeInput, Ref: ref, Handle: segment, Volume: "v",
-			Version: 1, IssuedAt: 1, ExpiresAt: 2, Nonce: "AAAAAAAAAAAAAAAAAAAAAA"}
+		foundation := hangar.Warrant{Purpose: hangar.PurposeReadResult, Ref: ref, Handle: segment, Volume: "v",
+			ClaimID: "5f3d2a19-8c47-4e60-b1a2-0d9e8f7c6b5a", NodeUID: "node-a", Version: 1, IssuedAt: 1, ExpiresAt: 2}
 		if foundationValid := foundation.Validate() == nil; foundationValid != valid {
 			t.Errorf("hangar accepts handle %q = %v, this package = %v", segment, foundationValid, valid)
 		}

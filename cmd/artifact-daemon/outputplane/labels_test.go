@@ -61,10 +61,11 @@ func TestTheDaemonAdvertisesTheBaseLabelAloneWhenThatIsAllItHas(t *testing.T) {
 		t.Error("a base-control-only daemon advertised the output label; a capture pod " +
 			"scheduled onto it would find no publisher")
 	}
-	// And it never claims the strict-input label, which advertises strict
-	// inputs, a different service of the artifact daemon.
-	if _, found := labels["concourse.dev/hangar-v1"]; found {
-		t.Error("the output plane advertised the strict-input label")
+	// And it claims nothing else: the base and output ready labels are the
+	// whole of what the plane advertises, and a managed read is scheduled on
+	// them alone.
+	if len(labels) != 1 {
+		t.Errorf("a base-control-only daemon advertised %v; the base ready label is the whole of it", labels)
 	}
 }
 

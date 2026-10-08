@@ -660,30 +660,37 @@
           "additionalProperties": false,
           "properties": {
             "store": {
-              "type": "string",
-              "enum": [
-                "",
-                "gcs",
-                "disk"
-              ]
+              "$ref": "#/definitions/removed"
             },
             "bucket": {
-              "type": "string"
+              "$ref": "#/definitions/removed"
             },
             "endpoint": {
-              "type": "string"
+              "$ref": "#/definitions/removed"
             },
             "prefix": {
-              "type": "string"
+              "$ref": "#/definitions/removed"
             },
-            "enabled": {},
-            "webEnabled": {},
+            "enabled": {
+              "$ref": "#/definitions/removed"
+            },
+            "webEnabled": {
+              "$ref": "#/definitions/removed"
+            },
             "allowGeneratedKey": {},
             "keySecret": {},
-            "scratchPath": {},
-            "scratchSizeLimit": {},
-            "maxContentBytes": {},
-            "maxEntries": {},
+            "scratchPath": {
+              "$ref": "#/definitions/removed"
+            },
+            "scratchSizeLimit": {
+              "$ref": "#/definitions/removed"
+            },
+            "maxContentBytes": {
+              "$ref": "#/definitions/removed"
+            },
+            "maxEntries": {
+              "$ref": "#/definitions/removed"
+            },
             "capabilityTTL": {}
           }
         },
@@ -807,7 +814,9 @@
           "$ref": "#/definitions/removed"
         },
         "cacheBucket": {},
-        "strictInputBucket": {},
+        "strictInputBucket": {
+          "$ref": "#/definitions/removed"
+        },
         "endpoint": {},
         "captureDeadline": {},
         "sealDeadline": {

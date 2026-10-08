@@ -29,12 +29,12 @@
 // # One storage interface
 //
 // The tier has no backend of its own. It is a thin wrapper over the same
-// hangar/objectstore.Client the strict input and output planes use, with the
-// same two backends (hangar/gcs and hangar/disk), against its OWN bucket or
-// disk namespace and its OWN client instance. Fail-open versus fail-closed is
-// decided here, in how answers are read, and the two never share a read path:
-// the daemon refuses to start with the cache namespace equal to the input or
-// output one (ADR-0002).
+// hangar/objectstore.Client the output plane uses, with the same two backends
+// (hangar/gcs and hangar/disk), against its OWN bucket or disk namespace and
+// its OWN client instance. Fail-open versus fail-closed is decided here, in
+// how answers are read, and the two never share a read path: the daemon
+// refuses to start with the cache namespace equal to the output one
+// (ADR-0002).
 //
 // The wrapper is also the only node-side holder of a delete, and only over the
 // cache namespace: the daemon expires its own cache objects by retention class.

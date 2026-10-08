@@ -36,9 +36,8 @@ func run(args []string) error {
 	listen := flags.String("listen", ":7783", "HTTPS listener.")
 	cert := flags.String("tls-cert", "", "Server certificate PEM.")
 	key := flags.String("tls-key", "", "Server private key PEM.")
-	credentials := flags.String("credentials-file", "", "JSON mapping input, publisher, inventory and reclaimer (or, for a cache-only store, cache alone) to distinct bearer credentials.")
-	input := flags.String("input-namespace", "inputs", "Dedicated strict-input namespace.")
-	cache := flags.String("cache-namespace", "", "Run as a CACHE-ONLY store for the artifact daemons' fail-open resource cache, on its own disk. Exclusive with --input-namespace and --output-namespace; the credentials file then names only a cache role.")
+	credentials := flags.String("credentials-file", "", "JSON mapping publisher, inventory and reclaimer (or, for a cache-only store, cache alone) to distinct bearer credentials.")
+	cache := flags.String("cache-namespace", "", "Run as a CACHE-ONLY store for the artifact daemons' fail-open resource cache, on its own disk. Exclusive with --output-namespace; the credentials file then names only a cache role.")
 	output := flags.String("output-namespace", "outputs", "Dedicated output namespace.")
 	maxBytes := flags.Int64("max-object-bytes", 16<<30, "Maximum stored bytes per object.")
 	concurrency := flags.Int("max-concurrent", 4, "Maximum simultaneous object operations; excess requests fail for retry.")
@@ -52,10 +51,10 @@ func run(args []string) error {
 	if *cache != "" {
 		explicit := map[string]bool{}
 		flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
-		if explicit["input-namespace"] || explicit["output-namespace"] {
-			return errors.New("--cache-namespace runs a cache-only store; it cannot be combined with --input-namespace or --output-namespace")
+		if explicit["output-namespace"] {
+			return errors.New("--cache-namespace runs a cache-only store; it cannot be combined with --output-namespace")
 		}
-		*input, *output = "", ""
+		*output = ""
 	}
 	if *initialize {
 		return disk.Initialize(*root, *id)
@@ -84,7 +83,7 @@ func run(args []string) error {
 		return err
 	}
 	defer store.Close()
-	handler, err := diskserver.New(store, diskserver.Config{StoreID: *id, InputNamespace: *input, OutputNamespace: *output, CacheNamespace: *cache, Credentials: tokens, MaxConcurrent: *concurrency})
+	handler, err := diskserver.New(store, diskserver.Config{StoreID: *id, OutputNamespace: *output, CacheNamespace: *cache, Credentials: tokens, MaxConcurrent: *concurrency})
 	if err != nil {
 		return err
 	}

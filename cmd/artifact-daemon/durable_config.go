@@ -38,14 +38,13 @@ func (opts durableOptions) config() durable.Config {
 }
 
 // validateStorageNamespaces is the startup half of ADR-0002: the fail-open
-// cache and the fail-closed strict-input store are two different buckets (GCS)
-// or namespaces (disk), never one. It replaces the old rule that kept them apart
+// cache and the fail-closed output plane are two different buckets (GCS) or
+// namespaces (disk), never one. It replaces the old rule that kept them apart
 // by the depth of an object key.
 //
-// An empty name is a store this daemon does not use. The output namespace is
-// checked here too once this daemon is handed one.
-func validateStorageNamespaces(cache, input, output string) error {
-	return objectstore.Namespaces{Cache: cache, Input: input, Output: output}.Validate()
+// An empty name is a store this daemon does not use.
+func validateStorageNamespaces(cache, output string) error {
+	return objectstore.Namespaces{Cache: cache, Output: output}.Validate()
 }
 
 // openDurableStore is durable.Open, replaceable in tests.
@@ -144,14 +143,12 @@ func buildDurableTier(ctx context.Context, logger lager.Logger, m *metrics, opts
 	return tier, closer, nil
 }
 
-// hangarInputNamespace is the strict-input namespace this daemon will use, or
-// empty when strict inputs are off and the flag is inert.
 // validateOutputScratch refuses an output-plane scratch directory that
-// overlaps the storage root or, with strict inputs on, the strict-input
-// scratch. The plane sweeps its scratch of hangar-tree-* entries at startup,
-// and the storage root's sweeper and registry own everything beneath it; two
-// owners of one directory are two sets of rules deleting each other's files.
-func validateOutputScratch(scratch, storage, hangarScratch string, hangarEnabled bool) error {
+// overlaps the storage root. The plane sweeps its scratch of hangar-tree-*
+// entries at startup, and the storage root's sweeper and registry own
+// everything beneath it; two owners of one directory are two sets of rules
+// deleting each other's files.
+func validateOutputScratch(scratch, storage string) error {
 	if scratch == "" {
 		return nil
 	}
@@ -162,9 +159,6 @@ func validateOutputScratch(scratch, storage, hangarScratch string, hangarEnabled
 	}
 	if overlaps(scratch, storage) {
 		return fmt.Errorf("--output-scratch-dir %q and --storage-path %q must be disjoint", scratch, storage)
-	}
-	if hangarEnabled && overlaps(scratch, hangarScratch) {
-		return fmt.Errorf("--output-scratch-dir %q and --hangar-scratch-dir %q must be disjoint", scratch, hangarScratch)
 	}
 	return nil
 }
@@ -177,11 +171,4 @@ func outputNamespace(executionControl bool, config outputplane.Config) string {
 		return ""
 	}
 	return config.OutputBucket
-}
-
-func hangarInputNamespace(enabled bool, bucket string) string {
-	if !enabled {
-		return ""
-	}
-	return bucket
 }

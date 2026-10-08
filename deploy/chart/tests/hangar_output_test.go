@@ -78,7 +78,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.prefix=cluster-a",
 	"hangarOutput.tenant=tenant-a",
 	"hangarOutput.cacheBucket=jb-cache",
-	"hangarOutput.strictInputBucket=jb-strict-input",
 	// The two Workload Identity annotations: the publisher's on the artifact
 	// daemon, and the reclaim principal's on the web. Not required (see
 	// hangar_output_principals_test.go), but declared, so the rules over
@@ -279,7 +278,6 @@ func TestTheOutputBucketIsExplicitAndIsNeitherOtherBucket(t *testing.T) {
 
 	for _, collision := range []string{
 		"hangarOutput.bucket=jb-cache",
-		"hangarOutput.bucket=jb-strict-input",
 	} {
 		message := renderOutputError(t, collision)
 		if !strings.Contains(strings.ToLower(message), "dedicated") {
@@ -527,8 +525,8 @@ func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 				}
 			}
 			if !permitted {
-				t.Errorf("%s %s references %q, and only %v may. Web, task, cache and "+
-					"strict-input identities have no role on the output bucket.",
+				t.Errorf("%s %s references %q, and only %v may. Web, task and cache "+
+					"identities have no role on the output bucket.",
 					subject.kind, subject.name, secret, carriers)
 			}
 		}
@@ -716,19 +714,6 @@ func TestTheOutputScratchVolumeIsBoundedInBaseControlOnlyModeToo(t *testing.T) {
 	if strings.Contains(daemon.body, "sizeLimit:\n") {
 		t.Errorf("the scratch volume renders an explicit null sizeLimit, which is "+
 			"unbounded:\n%s", daemon.body)
-	}
-}
-
-// The same exposure was already carried by the existing artifact daemon's
-// hangar-scratch emptyDir, and leaving one daemon guarded and one not is not a
-// decision anybody made.
-func TestTheArtifactDaemonScratchVolumeIsBoundedToo(t *testing.T) {
-	out := render(t, append(append([]string{}, daemonHangarSets...),
-		"artifactDaemon.hangar.scratchSizeLimit=24Gi")...)
-
-	daemon := objectNamed(t, out, "DaemonSet", "-artifact-daemon")
-	if !strings.Contains(daemon.body, "sizeLimit: 24Gi") {
-		t.Errorf("the artifact daemon's hangar-scratch volume has no sizeLimit:\n%s", daemon.body)
 	}
 }
 
@@ -1520,12 +1505,11 @@ func TestTheHangarKeyIsRequiredWithExecutionControl(t *testing.T) {
 	}
 }
 
-// One Hangar key, one flag. With strict inputs and the output plane both on,
-// the daemon and the web are each handed the key exactly once, from the one
-// mount, and the daemon is told to mount the output plane. Nothing of the old
-// per-kind keys renders.
-func TestOneHangarKeyFlagUnderBothSwitches(t *testing.T) {
-	out := render(t, append(append([]string{}, enabledHangarSets...), baseControlSets...)...)
+// One Hangar key, one flag. With the output plane on, the daemon and the web
+// are each handed the key exactly once, from the one mount, and the daemon is
+// told to mount the output plane. Nothing of the old per-kind keys renders.
+func TestOneHangarKeyFlag(t *testing.T) {
+	out := renderBaseControl(t)
 	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
 	web := objectNamed(t, out, "Deployment", "-"+webComponent)
 
@@ -1771,14 +1755,11 @@ func TestTheWebHasSomewhereToWrite(t *testing.T) {
 }
 
 // The output scratch is the plane's own directory: never the storage root the
-// artifact daemon's sweeper and registry own, nor the strict-input scratch.
-func TestTheOutputScratchIsDisjointFromTheStorageRootAndTheStrictInputScratch(t *testing.T) {
+// artifact daemon's sweeper and registry own.
+func TestTheOutputScratchIsDisjointFromTheStorageRoot(t *testing.T) {
 	for name, sets := range map[string][]string{
 		"inside the storage root":  {"artifactDaemon.outputScratch.path=/var/concourse/artifacts/scratch"},
 		"holding the storage root": {"artifactDaemon.outputScratch.path=/var/concourse"},
-		"the strict-input scratch": {"artifactDaemon.hangar.enabled=true", "artifactDaemon.hangar.store=gcs",
-			"artifactDaemon.hangar.bucket=jb-strict-input", "artifactDaemon.hangar.allowGeneratedKey=true",
-			"artifactDaemon.outputScratch.path=/var/concourse/hangar-scratch"},
 	} {
 		message := renderHangarError(t, append(append([]string{}, baseControlSets...), sets...)...)
 		if !strings.Contains(message, "must be disjoint") {

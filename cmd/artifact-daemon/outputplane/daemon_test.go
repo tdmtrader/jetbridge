@@ -45,18 +45,19 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 	t.Helper()
 
 	return Config{
-		OutputStore:       output.StoreGCS,
-		OutputEndpoint:    endpoint,
-		OutputBucket:      bucket,
-		OutputPrefix:      "deployments/blue",
-		OutputTenant:      "tenant-a",
-		CacheBucket:       "deployment-durable-cache",
-		StrictInputBucket: "deployment-strict-input",
+		OutputStore:    output.StoreGCS,
+		OutputEndpoint: endpoint,
+		OutputBucket:   bucket,
+		OutputPrefix:   "deployments/blue",
+		OutputTenant:   "tenant-a",
+		CacheBucket:    "deployment-durable-cache",
 
 		Key:                hangarKey(),
 		NodeUID:            "node-1",
 		ScratchDir:         t.TempDir(),
 		PublishConcurrency: 1,
+		MaxContentBytes:    1 << 20,
+		MaxEntries:         1000,
 		OperationTimeout:   10 * time.Second,
 	}
 }
@@ -71,7 +72,6 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 
 	for name, mutate := range map[string]func(*Config){
 		"the durable cache bucket": func(c *Config) { c.OutputBucket = c.CacheBucket },
-		"the strict-input bucket":  func(c *Config) { c.OutputBucket = c.StrictInputBucket },
 		"a filesystem store":       func(c *Config) { c.OutputStore = "filesystem" },
 		"an S3-compatible store":   func(c *Config) { c.OutputStore = "s3" },
 		"no bucket":                func(c *Config) { c.OutputBucket = "" },
@@ -79,6 +79,8 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"no Hangar key":            func(c *Config) { c.Key = nil },
 		"a short Hangar key":       func(c *Config) { c.Key = []byte("short") },
 		"a non-positive timeout":   func(c *Config) { c.OperationTimeout = 0 },
+		"no content limit":         func(c *Config) { c.MaxContentBytes = 0 },
+		"a negative entry limit":   func(c *Config) { c.MaxEntries = -1 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -135,8 +137,9 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 
 	for _, name := range []string{
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
-		"cache-bucket", "strict-input-bucket",
+		"cache-bucket",
 		"output-timeout", "node-uid", "output-scratch-dir",
+		"output-max-content-bytes", "output-max-entries",
 	} {
 		if flags.Lookup(name) == nil {
 			t.Errorf("the daemon has no --%s flag", name)
@@ -149,12 +152,11 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 	// and a second spelling of either here would be a second key path.
 	for _, forbidden := range []string{
 		"durable-store", "durable-bucket", "durable-endpoint", "durable-path",
-		"storage-path", "hangar-enabled", "hangar-key", "execution-control",
+		"storage-path", "hangar-key", "execution-control",
 	} {
 		if flags.Lookup(forbidden) != nil {
-			t.Errorf("the output plane declares --%s. It has no cache client and no "+
-				"strict-input client; a flag that lets an operator give it one is the isolation "+
-				"undone by configuration", forbidden)
+			t.Errorf("the output plane declares --%s. It has no cache client; a flag that "+
+				"lets an operator give it one is the isolation undone by configuration", forbidden)
 		}
 	}
 
@@ -166,6 +168,12 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 	}
 	if config.OutputStore != output.StoreGCS {
 		t.Errorf("the default store is %q, expected %q", config.OutputStore, output.StoreGCS)
+	}
+	// The defaults are the limits the chart's scratch arithmetic assumed
+	// before the plane enforced any; a default of zero would be refused.
+	if config.MaxContentBytes != 10<<30 || config.MaxEntries != 100000 {
+		t.Errorf("the default tree limits are %d bytes and %d entries, expected 10 GiB and 100000",
+			config.MaxContentBytes, config.MaxEntries)
 	}
 }
 

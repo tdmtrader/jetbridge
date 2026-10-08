@@ -1,70 +1,70 @@
 package diskserver_test
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"io"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/disk"
+	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/publisher"
-	"github.com/concourse/concourse/hangar/treestore"
 )
 
-func TestStrictTreePublicationAndVerifiedExtractionThroughTLS(t *testing.T) {
+// The publisher role is the input publication's and the capture's one
+// writer: it creates absent-only, reads and stats exactly, and a generation
+// the store once issued is never issued again, even for the same key after
+// its object is reclaimed.
+func TestPublisherRoleIsAbsentOnlyExactAndAGenerationIsNeverReissued(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	var archive bytes.Buffer
-	w := tar.NewWriter(&archive)
-	if err := w.WriteHeader(&tar.Header{Name: "result", Mode: 0644, Size: 5}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write([]byte("hello")); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	canonicalizer := hangar.Canonicalizer{TempDir: t.TempDir(), MaxContentBytes: 1 << 20, MaxEntries: 100}
-	captured, err := canonicalizer.Capture(ctx, bytes.NewReader(archive.Bytes()))
+	pub := f.client(t, "publisher")
+	first, err := pub.CreateAbsent(ctx, "outputs", "tree", nil, strings.NewReader("first"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer captured.Close()
-	store, err := treestore.New(f.client(t, "input"), treestore.Config{Bucket: "inputs", ScratchDir: t.TempDir(), ReadTimeout: time.Minute, WriteTimeout: time.Minute})
+	if _, err := pub.CreateAbsent(ctx, "outputs", "tree", nil, strings.NewReader("second")); !errors.Is(err, objectstore.ErrPreconditionFailed) {
+		t.Fatalf("a second create at an occupied key: %v", err)
+	}
+	if stat, err := pub.StatExact(ctx, "outputs", "tree", first.Generation); err != nil || stat.Generation != first.Generation {
+		t.Fatalf("exact stat: %+v %v", stat, err)
+	}
+	if _, err := pub.StatExact(ctx, "outputs", "tree", first.Generation+1); !errors.Is(err, objectstore.ErrNotFound) {
+		t.Fatalf("stat at another generation: %v", err)
+	}
+	if _, err := pub.OpenExact(ctx, "outputs", "tree", first.Generation+1); !errors.Is(err, objectstore.ErrNotFound) {
+		t.Fatalf("open at another generation: %v", err)
+	}
+	body, err := pub.OpenExact(ctx, "outputs", "tree", first.Generation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := os.Open(captured.ArchivePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	attrs, created, err := store.EnsureTree(ctx, "strict-scope", captured.Digest, canonical, 1<<20)
-	_ = canonical.Close()
-	if err != nil || !created {
-		t.Fatalf("publish: %v, created=%v", err, created)
-	}
-	body, opened, err := store.OpenTree(ctx, attrs.Ref, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	extracted, err := canonicalizer.Capture(ctx, body)
+	content, err := io.ReadAll(body)
 	_ = body.Close()
+	if err != nil || string(content) != "first" {
+		t.Fatalf("exact open %q %v", content, err)
+	}
+	deleter, err := disk.NewDeleteClient(f.config(t, "reclaimer"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer extracted.Close()
-	if opened.Ref != attrs.Ref || extracted.Digest != captured.Digest {
-		t.Fatal("tree identity changed")
+	if err := deleter.DeleteExact(ctx, "outputs", "tree", first.Generation); err != nil {
+		t.Fatal(err)
 	}
-	content, err := os.ReadFile(filepath.Join(extracted.Root, "result"))
-	if err != nil || string(content) != "hello" {
-		t.Fatalf("extracted %q: %v", content, err)
+	second, err := pub.CreateAbsent(ctx, "outputs", "tree", nil, strings.NewReader("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Generation <= first.Generation {
+		t.Fatalf("generation %d reissued after %d", second.Generation, first.Generation)
+	}
+	if _, err := pub.OpenExact(ctx, "outputs", "tree", first.Generation); !errors.Is(err, objectstore.ErrNotFound) {
+		t.Fatalf("the reclaimed generation answered: %v", err)
 	}
 }
 

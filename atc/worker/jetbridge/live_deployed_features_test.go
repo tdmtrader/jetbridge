@@ -98,14 +98,12 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 	},
 	"web.tracing":             func(d *liveDeployment) string { return onOff(d.webFlag("tracing-otlp-address")) },
 	"web.tls":                 func(d *liveDeployment) string { return onOff(d.webFlag("tls-bind-port")) },
-	"web.hangar":              func(d *liveDeployment) string { return onOff(d.webFlag("kubernetes-hangar-enabled")) },
 	"web.hangarOutput":        func(d *liveDeployment) string { return onOff(d.webFlag("kubernetes-hangar-output-enabled")) },
 	"web.hangarOutputCapture": func(d *liveDeployment) string { return onOff(d.webFlag("kubernetes-hangar-output-capture-enabled")) },
 	"web.runResults":          func(d *liveDeployment) string { return onOff(d.webFlag("run-result-scratch-dir")) },
 
 	"daemon.mtls":              func(d *liveDeployment) string { return onOff(d.daemonFlag("tls-cert")) },
 	"daemon.resolveCapability": func(d *liveDeployment) string { return onOff(d.daemonFlag("resolve-capability-key")) },
-	"daemon.hangar":            func(d *liveDeployment) string { return onOff(d.daemonFlag("hangar-enabled")) },
 	// The output plane is mounted in the artifact daemon when it is told to
 	// serve execution control. The disk store behind both namespaces is a
 	// workload, not a flag, so it is read by presence.
@@ -207,9 +205,7 @@ func TestLiveManifestNamesRealCoverage(t *testing.T) {
 // none may be on with a reason instead of a test, and each must name the
 // tests that exercise it.
 var liveBehaviouralFeatures = map[string][]string{
-	"web.hangar":              {"TestLiveHangarStrictInputFromTheInputNamespace"},
-	"daemon.hangar":           {"TestLiveHangarStrictInputFromTheInputNamespace"},
-	"store.disk":              append([]string{"TestLiveHangarStrictInputFromTheInputNamespace"}, liveRunResultTests...),
+	"store.disk":              liveRunResultTests,
 	"web.hangarOutput":        liveRunResultTests,
 	"web.hangarOutputCapture": liveRunResultTests,
 	"web.runResults":          liveRunResultTests,

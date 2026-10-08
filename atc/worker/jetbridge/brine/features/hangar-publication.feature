@@ -1,9 +1,9 @@
 Feature: What a sealed source becomes, and what the bucket then holds
 
   The store is the emulated OUTPUT bucket the fixture created — never the
-  cache's or the strict input's: the one artifact daemon serves all three
-  namespaces and refuses to start if any two coincide — read back through the
-  same client the daemon uses. There is no request log on the fixture, so "holds exactly one
+  cache's: the one artifact daemon serves both namespaces and refuses to start
+  if the two coincide — read back through the same client the daemon uses.
+  There is no request log on the fixture, so "holds exactly one
   object" is an outcome; dedup is told from overwrite by seeding the key with a
   DIFFERENT variant and naming which bytes are there afterwards, which is the
   device ../daemon-durable.feature:100-109 uses.

@@ -370,12 +370,14 @@ type Input struct {
 	// Artifact is the artifact to mount. This artifact may need to be
 	// streamed (if it is not a Volume on the target worker).
 	Artifact Artifact
-	// HangarTree is an exact immutable tree to materialize into this input.
-	// Exactly one of Artifact and HangarTree must be set.
+	// HangarTree is the exact tree a Run input binds. Exactly one of Artifact
+	// and HangarTree is set.
 	HangarTree *hangar.TreeRef
-	// HangarRead carries a transient live lease for a managed output input.
-	// Nil selects the unchanged strict-input protocol. It never contains a
-	// provider credential and is not retained with the Run definition.
+	// HangarRead is the managed read the web admitted for this pod: the
+	// transient lease under which the output plane materializes HangarTree.
+	// A HangarTree input always carries it, and its Ref equals *HangarTree.
+	// It never contains a provider credential and is not retained with the
+	// Run definition.
 	HangarRead *output.ManagedReadRequest
 	// DestinationPath is the path in the container to mount the input.
 	//

@@ -30,7 +30,7 @@ func TestStepPodAdmissionContainment(t *testing.T) {
 			InitContainers: []corev1.Container{
 				{Name: cleanupInitContainerName, VolumeMounts: []corev1.VolumeMount{mount(rootVolume.Name, false)}},
 				{Name: fetchInitContainerName, VolumeMounts: []corev1.VolumeMount{mount(rootVolume.Name, true), mount(stepVolume.Name, false)}},
-				{Name: "materialize-hangar-inputs", VolumeMounts: []corev1.VolumeMount{mount(stepVolume.Name, true)}},
+				{Name: "materialize-run-input-0", VolumeMounts: []corev1.VolumeMount{mount(stepVolume.Name, true)}},
 				{Name: "capture-control"},
 			},
 			Containers: []corev1.Container{
@@ -62,7 +62,7 @@ func TestStepPodAdmissionContainment(t *testing.T) {
 		}, "fetch init container mounts the artifact daemon root writable"},
 		"a materialize init mounts a cache": {func(p *corev1.Pod) {
 			p.Spec.InitContainers[2].VolumeMounts = append(p.Spec.InitContainers[2].VolumeMounts, mount("cache-1", true))
-		}, `"materialize-hangar-inputs" mounts a cache directory`},
+		}, `"materialize-run-input-0" mounts a cache directory`},
 		"a step key resolving into another step": {func(p *corev1.Pod) {
 			p.Spec.Volumes[1].HostPath.Path = "/var/lib/artifacts/steps/handle-1/../other-handle/out"
 		}, "outside the step's own directories"},

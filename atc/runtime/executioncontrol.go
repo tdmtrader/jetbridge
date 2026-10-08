@@ -173,7 +173,7 @@ func (control *ExecutionControl) HasDurableOutputCapture() bool {
 //
 // It takes the spec because half of what makes a capture valid is a fact about
 // the step: the selected output must be one the task DECLARED, and it must not
-// overlap a strict Hangar input. Neither is knowable from the envelope alone,
+// overlap a Run input's tree. Neither is knowable from the envelope alone,
 // and a validation that could not see the spec would be a validation of the
 // wire form rather than of the request.
 func (control *ExecutionControl) Validate(spec ContainerSpec) error {
@@ -288,8 +288,8 @@ func ValidateCaptureOutput(spec ContainerSpec, name string) error {
 			continue
 		}
 		if outputOverlapsInput(selectedPath, input.DestinationPath) {
-			return fmt.Errorf("%w: the captured output %q at %q overlaps the strict Hangar input "+
-				"at %q. A strict input is an exact immutable tree; an output written over it "+
+			return fmt.Errorf("%w: the captured output %q at %q overlaps the Run input "+
+				"at %q. A Run input is an exact immutable tree; an output written over it "+
 				"would be a capture of somebody else's bytes", ErrInvalidExecutionControl,
 				name, selectedPath, input.DestinationPath)
 		}

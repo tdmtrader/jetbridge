@@ -13,6 +13,13 @@
 > `hangar-capture-row.feature`, and phrases such as `the daemon holds the
 > source` are now `the daemon writes the held marker`. The mutations are not
 > re-measured against the new names.
+>
+> **One tree path (2026-10-08).** The strict-input namespace, its daemon
+> service, its routes, its warrant purpose, its init container and its web and
+> daemon flags were deleted: every Run input is an input publication into the
+> output namespace and a managed read out of it. Rows whose scenario's only
+> subject was the strict-input path are marked **DELETED** below with the
+> reason; `hangar-fixture.feature` held nothing else and is gone with it.
 
 The legend and the columns are `DISPOSITION-jetbridge.md`'s (`:11-27`), turned
 around. That file records what evidence killed a DELETED Go test. This one
@@ -120,8 +127,8 @@ this table:
 - **`A capture-selected step's strict input is untouched by the output plane`
   was unbounded.** `strictInputMaterializationIsUnchanged` asserted "at least
   one request names the ref"; a plane that ADDED a bogus request beside the
-  right one passed. It now requires exactly one, which is what the scenario
-  declares.
+  right one passed. It was tightened to exactly one. (Since DELETED with the
+  strict-input path; see its row.)
 
 ---
 
@@ -199,6 +206,7 @@ this table:
   - **MEASURED M15** — `buildPod drops the activation-epoch arm` — RED at `the pod build is refused saying "speaks for epoch"`
 
 **A capture-selected step's strict input is untouched by the output plane**  `@HOP-19 @HOP-59`  (:216)
+  - **DELETED** with the strict-input path: there is no strict-input init for the output plane to leave alone. A tree input is a managed read of the output namespace, and the pod that carries it is `hangar-managed-input-init.feature`'s subject. No product caller produced a `HangarTree` input without its `HangarRead`.
   - **Reddened by (as the file states it):** BuildFetchInitContainers skipping its HangarTree branch when the output plane is enabled -- the strict-input init disappears and the capture scenarios above stay green.
   - **MEASURED M16** — `BuildFetchInitContainers skips the HangarTree branch when the plane is on` — RED at `the pod's strict-input materialization is unchanged by the output plane`
 
@@ -206,18 +214,22 @@ this table:
 ### `hangar-consumer-pod.feature`
 
 **The consumer's Hangar init verifies exactly the receipt for its TreeRef**  `@HOP-26 @HOP-35`  (:17)
+  - **DELETED** with the strict-input init (`materialize-hangar-inputs`): the init it read was the strict-input one, which no product caller builds any more. The managed-read init's receipt check is `The actual input initialization obeys its read warrant and materialization receipt` in `hangar-managed-input-init.feature`.
   - **Reddened by (as the file states it):** BuildFetchInitContainers base64-encoding a receipt whose Generation has been zeroed before it reaches the init command — the exact receipt line reddens and the mount scenarios stay green.
   - **MEASURED M17** — `the expected receipt's Generation is zeroed before it reaches the init` — RED at `the consumer's Hangar init verifies exactly the receipt for its tree`
 
 **Each verified tree gets one fixed read-only verification mount**  `@HOP-26 @HOP-37`  (:30)
+  - **DELETED** with the strict-input init: its mounts were the strict-input init's. The managed-read init's one read-only mount is asserted by `exerciseManagedInputInit` under `hangar-managed-input-init.feature`.
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
 **A user-controlled destination never enters the verification command**  `@HOP-7 @HOP-26`  (:44)
+  - **DELETED** with the strict-input init: the command it read no longer exists. The managed read's destination is the daemon-derived handle and volume in its read warrant, which `hangar-managed-materialization.feature` refuses under `wrong destination`.
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
 **A consumer pod asks for exactly the receipt's tree**  `@HOP-35 @HOP-37`  (:57)
+  - **DELETED** with the strict-input init: the materialization request it decoded was the strict-input batch. The managed read names exactly the ref the warrant binds (`exerciseManagedInputInit`, `hangar-managed-input-init.feature`).
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
@@ -343,7 +355,13 @@ this table:
 
 ### `hangar-fixture.feature`
 
+The file is DELETED: its one scenario was the strict publication route, which no
+product caller uses. The fixture is proved by every scenario that starts from
+`a real artifact daemon publishing to a Hangar output bucket`; a daemon that
+cannot reach its emulator still exits at startup and reddens that Given.
+
 **The real daemon stores a strict tree in the emulated Hangar bucket and names it itself**  `@HOP-19`  (:50)
+  - **DELETED** with the strict publication route (`/hangar/v1/scopes/{scope}/trees`) and the daemon's `--hangar-enabled`/`--hangar-store`/`--hangar-bucket` flags.
   - **Reddened by (as the file states it):** dropping option.WithEndpoint from hangar/gcs.NewStorageClient (hangar/gcs/gcs.go:58) — the daemon then validates its bucket against real GCS, exits at boot, and the GIVEN reddens, which is the fixture failing loudly rather than a scenario failing later. Second mutation, for the rest of the chain: bu
   - **MEASURED M48** — `the storage client drops its endpoint override` — RED at the GIVEN, `a real artifact daemon publishing to a Hangar output bucket`, which is what the comment predicts: "the Given reddens, which is the fixture failing loudly rather than a scenario failing later". **0 scenarios passed** in that feature. Note the comment cites `hangar/gcs.NewStorageClient` at `hangar/gcs/gcs.go:58`; that function and that file no longer exist — the capability moved behind `hangar/internal/gcsclient` — so the mutation was applied there instead
 

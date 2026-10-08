@@ -78,13 +78,12 @@ func (source hangarStatusSource) Resolve(ctx context.Context, id int64) error {
 // from.
 func (cmd *RunCommand) hangarOutputNamespace() (output.OutputNamespace, error) {
 	return output.DeriveNamespace(output.NamespaceConfig{
-		Store:             cmd.Kubernetes.OutputStore,
-		StoreID:           cmd.Kubernetes.OutputStoreID,
-		Bucket:            cmd.Kubernetes.OutputBucket,
-		DeploymentPrefix:  cmd.Kubernetes.OutputPrefix,
-		TenantID:          cmd.Kubernetes.OutputTenant,
-		CacheBucket:       cmd.Kubernetes.CacheBucket,
-		StrictInputBucket: cmd.Kubernetes.InputBucket,
+		Store:            cmd.Kubernetes.OutputStore,
+		StoreID:          cmd.Kubernetes.OutputStoreID,
+		Bucket:           cmd.Kubernetes.OutputBucket,
+		DeploymentPrefix: cmd.Kubernetes.OutputPrefix,
+		TenantID:         cmd.Kubernetes.OutputTenant,
+		CacheBucket:      cmd.Kubernetes.CacheBucket,
 	})
 }
 

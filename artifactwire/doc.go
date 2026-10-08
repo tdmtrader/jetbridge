@@ -7,8 +7,7 @@
 // name these types, so a field renamed on one side fails to compile on the
 // other instead of drifting into a body the handler silently ignores. The
 // daemon's durable tier must never link hangar (ADR-0002), and this package is
-// imported by the handlers of both tiers, which is why TreeRef here is a
-// shape and not the hangar type.
+// imported by its handlers, which is why nothing here is a hangar type.
 //
 // Words used the way atc/worker/jetbridge/CONTEXT.md uses them: an artifact
 // key names bytes a daemon holds; stream in and stream out move a tar over a

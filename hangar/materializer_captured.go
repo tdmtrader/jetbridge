@@ -8,10 +8,14 @@ import (
 )
 
 // Materialize installs an already verified private copy beneath an anchored
-// steps directory. Managed readers acquire and release their object lease while
-// producing this copy; installation needs no further object-store authority.
-// Strict-input reads and managed reads share the same sealed, atomic publication.
-func (tree *CapturedTree) Materialize(ctx context.Context, steps *os.Root, ref TreeRef, handle, volume string) (err error) {
+// steps directory, sealed read-only and published atomically with its
+// receipt. The reader holds its claim while producing this copy; installation
+// needs no further object-store authority.
+func (tree *CapturedTree) Materialize(ctx context.Context, steps *os.Root, ref TreeRef, handle, volume string) error {
+	return tree.materialize(ctx, steps, ref, handle, volume, materializerHooks{})
+}
+
+func (tree *CapturedTree) materialize(ctx context.Context, steps *os.Root, ref TreeRef, handle, volume string, hooks materializerHooks) (err error) {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
@@ -29,5 +33,5 @@ func (tree *CapturedTree) Materialize(ctx context.Context, steps *os.Root, ref T
 		return err
 	}
 	defer func() { err = errors.Join(err, source.Close()) }()
-	return materializeCapturedTreeRoot(ctx, steps, handle, volume, ref, source)
+	return materializeCapturedTreeRoot(ctx, steps, handle, volume, ref, source, hooks)
 }

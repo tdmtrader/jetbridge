@@ -5,18 +5,16 @@ import (
 	"testing"
 )
 
-func TestNamespacesRefuseAnyTwoEqual(t *testing.T) {
+func TestNamespacesRefuseCacheAndOutputEqual(t *testing.T) {
 	for _, row := range []struct {
 		namespaces Namespaces
 		ok         bool
 	}{
-		{Namespaces{Cache: "c", Input: "i", Output: "o"}, true},
+		{Namespaces{Cache: "c", Output: "o"}, true},
 		{Namespaces{Cache: "c"}, true},
+		{Namespaces{Output: "o"}, true},
 		{Namespaces{}, true},
-		{Namespaces{Cache: "", Input: "", Output: "o"}, true},
-		{Namespaces{Cache: "x", Input: "x", Output: "o"}, false},
-		{Namespaces{Cache: "x", Input: "i", Output: "x"}, false},
-		{Namespaces{Cache: "c", Input: "x", Output: "x"}, false},
+		{Namespaces{Cache: "", Output: "o"}, true},
 		{Namespaces{Cache: "x", Output: "x"}, false},
 	} {
 		err := row.namespaces.Validate()

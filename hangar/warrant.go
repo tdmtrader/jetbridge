@@ -11,11 +11,8 @@ package hangar
 // and nothing more specific: a verifier that said which field failed would
 // tell a caller holding a forged token which byte to change next.
 //
-// Four purposes:
+// Three purposes:
 //
-//   - materialize-input: one exact tree into one step's volume. Single-use by
-//     nonce in the sense that no two mints are alike; the daemon's strict-input
-//     materialization is idempotent and does not keep a spent set.
 //   - read-result: one staged read of one published generation, bound to the
 //     reader's committed claim. Its window is the CLAIM's window and it carries
 //     no nonce: two mints of one committed claim are byte-identical, so a mint
@@ -68,15 +65,14 @@ const (
 type Purpose string
 
 const (
-	PurposeMaterializeInput Purpose = "materialize-input"
-	PurposeReadResult       Purpose = "read-result"
-	PurposeControlBase      Purpose = "execution-control"
-	PurposeControlCapture   Purpose = "output-capture"
+	PurposeReadResult     Purpose = "read-result"
+	PurposeControlBase    Purpose = "execution-control"
+	PurposeControlCapture Purpose = "output-capture"
 )
 
 func (purpose Purpose) Validate() error {
 	switch purpose {
-	case PurposeMaterializeInput, PurposeReadResult, PurposeControlBase, PurposeControlCapture:
+	case PurposeReadResult, PurposeControlBase, PurposeControlCapture:
 		return nil
 	}
 	return fmt.Errorf("hangar: %q is not a warrant purpose", string(purpose))
@@ -88,10 +84,9 @@ func (purpose Purpose) singleUse() bool { return purpose != PurposeReadResult }
 
 // Warrant is everything a warrant binds. Every field is covered by the MAC.
 //
-// The bound fields are the purpose's: a tree ref and a destination handle and
-// volume for materialize-input and read-result; the reader's claim id and the
-// node for read-result; an operation, an execution id and a fence for the two
-// control purposes. A field another purpose owns must be zero. The window and
+// The bound fields are the purpose's: a tree ref, a destination handle and
+// volume, the reader's claim id and the node for read-result; an operation,
+// an execution id and a fence for the two control purposes. A field another purpose owns must be zero. The window and
 // the nonce are the signer's for every purpose but read-result, whose window
 // the caller supplies from the committed claim.
 type Warrant struct {
@@ -126,8 +121,8 @@ func (warrant Warrant) Validate() error {
 	if warrant.Version != warrantVersion {
 		return fmt.Errorf("hangar: warrant version %d is not %d", warrant.Version, warrantVersion)
 	}
-	tree := warrant.Purpose == PurposeMaterializeInput || warrant.Purpose == PurposeReadResult
 	read := warrant.Purpose == PurposeReadResult
+	tree := read
 	control := warrant.Purpose == PurposeControlBase || warrant.Purpose == PurposeControlCapture
 	if tree {
 		if err := warrant.Ref.Validate(); err != nil {

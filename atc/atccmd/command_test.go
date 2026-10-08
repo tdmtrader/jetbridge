@@ -198,29 +198,24 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
 	s.NoError(err, "expected validation to pass when DaemonSet host path is set")
 }
 
-// ADR-0002 as configuration: the fail-open cache, the strict inputs and the
-// outputs are three different buckets or disk namespaces, and web refuses to
-// start when any two coincide.
+// ADR-0002 as configuration: the fail-open cache and the outputs are two
+// different buckets or disk namespaces, and web refuses to start when they
+// coincide.
 func (s *CommandSuite) TestK8sRuntimeRefusesSharedStorageNamespaces() {
-	for _, buckets := range [][3]string{
-		{"shared", "shared", ""},
-		{"shared", "", "shared"},
-		{"", "shared", "shared"},
-	} {
-		cmd := &atccmd.RunCommand{}
-		cmd.Kubernetes.Namespace = "concourse"
-		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-		cmd.Kubernetes.CacheBucket, cmd.Kubernetes.InputBucket, cmd.Kubernetes.OutputBucket = buckets[0], buckets[1], buckets[2]
-
-		err := atccmd.ValidateK8sRuntimeForTest(cmd)
-		s.Error(err, "expected startup to refuse buckets %v", buckets)
-		s.Contains(err.Error(), `"shared"`)
-	}
-
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-	cmd.Kubernetes.CacheBucket, cmd.Kubernetes.InputBucket, cmd.Kubernetes.OutputBucket = "cache", "inputs", "outputs"
+	cmd.Kubernetes.CacheBucket, cmd.Kubernetes.OutputBucket = "shared", "shared"
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.Error(err, "expected startup to refuse a shared cache and output bucket")
+	s.Contains(err.Error(), `"shared"`)
+	s.Contains(err.Error(), "--kubernetes-artifact-daemon-cache-bucket and --kubernetes-hangar-output-bucket")
+
+	cmd = &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.CacheBucket, cmd.Kubernetes.OutputBucket = "cache", "outputs"
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(cmd))
 }
 
@@ -393,9 +388,9 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonHostPath = "" },
 			want:      "kubernetes-artifact-daemon-host-path",
 		},
-		// A partial triple is refused before Hangar's own check runs, by the
-		// one daemon-TLS predicate every site shares; Hangar's "complete TLS"
-		// refusal is reached only when no TLS is configured at all.
+		// A partial triple is refused before the output plane's own check
+		// runs, by the one daemon-TLS predicate every site shares; the plane's
+		// TLS-only refusal is reached only when no TLS is configured at all.
 		"TLS certificate": {
 			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSCert = "" },
 			want:      "partially configured",
@@ -414,7 +409,7 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 				cmd.Kubernetes.ArtifactDaemonTLSKey = ""
 				cmd.Kubernetes.ArtifactDaemonTLSCACert = ""
 			},
-			want: "complete artifact daemon TLS",
+			want: "artifact daemon's TLS is not configured",
 		},
 		"Hangar key path": {
 			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarKey = "" },
@@ -438,7 +433,9 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
 			cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
-			cmd.Kubernetes.HangarEnabled = true
+			cmd.Kubernetes.OutputPlaneEnabled = true
+			cmd.Kubernetes.OutputOperationTimeout = time.Minute
+			cmd.Kubernetes.OutputCaptureDeadline = 24 * time.Hour
 			cmd.Kubernetes.HangarKey = validKey
 			cmd.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 			test.configure(cmd)
@@ -460,7 +457,9 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	enabled.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
 	enabled.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
-	enabled.Kubernetes.HangarEnabled = true
+	enabled.Kubernetes.OutputPlaneEnabled = true
+	enabled.Kubernetes.OutputOperationTimeout = time.Minute
+	enabled.Kubernetes.OutputCaptureDeadline = 24 * time.Hour
 	enabled.Kubernetes.HangarKey = validKey
 	enabled.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(enabled))
@@ -469,7 +468,7 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	disabled.Kubernetes.Namespace = "concourse"
 	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 	disabled.Kubernetes.HangarKey = "/does/not/exist"
-	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "disabled Hangar must not load or require its key")
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "a disabled output plane must not load or require the Hangar key")
 }
 
 func (s *CommandSuite) TestHangarRuntimeRejectsWarrantTTLOutsideCoreBound() {
@@ -482,7 +481,9 @@ func (s *CommandSuite) TestHangarRuntimeRejectsWarrantTTLOutsideCoreBound() {
 		cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
 		cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
-		cmd.Kubernetes.HangarEnabled = true
+		cmd.Kubernetes.OutputPlaneEnabled = true
+		cmd.Kubernetes.OutputOperationTimeout = time.Minute
+		cmd.Kubernetes.OutputCaptureDeadline = 24 * time.Hour
 		cmd.Kubernetes.HangarKey = validKey
 		cmd.Kubernetes.HangarWarrantTTL = ttl
 		err := atccmd.ValidateK8sRuntimeForTest(cmd)

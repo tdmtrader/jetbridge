@@ -30,7 +30,6 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		return err
 	}
 	source.SetExecutor(executor)
-	config.HangarEnabled = true
 	config.ArtifactDaemonHostPath = in.Start.Daemon.Output.Root
 	team, found, err := jdb.TeamFactory.FindTeam("output-start")
 	if err != nil || !found {

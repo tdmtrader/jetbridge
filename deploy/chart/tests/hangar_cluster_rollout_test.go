@@ -25,9 +25,8 @@ var rolloutSteps = []struct {
 	{"S2 disk init", []string{"hangarStorage.disk.enabled=true", "hangarStorage.disk.storeID=concourse-home-1",
 		"hangarStorage.disk.storageClass=local-path", "hangarStorage.disk.initialize=true"}},
 	{"S3 store up", []string{"hangarStorage.disk.initialize=false"}},
-	{"S4 strict inputs on the daemon", []string{"artifactDaemon.hangar.enabled=true",
-		"artifactDaemon.hangar.store=disk", "artifactDaemon.hangar.bucket=inputs"}},
-	{"S5 strict inputs on web", []string{"artifactDaemon.hangar.webEnabled=true"}},
+	// S4 and S5 turned on the separate input plane; it is gone (Run inputs
+	// are input publications in the output namespace), and the numbering stays.
 	{"S6 base workloads", []string{"hangarOutput.executionControl.enabled=true", "artifactDaemon.outputScratch.sizeLimit=32Gi"}},
 	{"S10 output workloads", []string{
 		"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=concourse-home"}},

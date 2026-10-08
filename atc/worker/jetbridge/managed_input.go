@@ -37,7 +37,7 @@ func (p *execProcess) podReadyTimeout() time.Duration {
 func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, volumes []corev1.Volume, mounts []corev1.VolumeMount, index int) (corev1.Container, error) {
 	var empty corev1.Container
 	read := input.HangarRead
-	if !b.config.HangarEnabled || !b.config.OutputPlaneEnabled || read == nil || read.Validate() != nil || input.HangarTree == nil || input.Artifact != nil || read.Ref != *input.HangarTree {
+	if !b.config.OutputPlaneEnabled || read == nil || read.Validate() != nil || input.HangarTree == nil || input.Artifact != nil || read.Ref != *input.HangarTree {
 		return empty, errors.New("managed input requires the output plane and exact read authority")
 	}
 	name := volumeNameForMountPath(mounts, input.DestinationPath)
@@ -48,7 +48,7 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 	if err != nil {
 		return empty, err
 	}
-	if len(payload) > maxHangarMaterializationBytes {
+	if len(payload) > maxManagedInputBytes {
 		return empty, errors.New("managed input materialization exceeds its request bound")
 	}
 	receipt, err := json.Marshal(read.Ref)

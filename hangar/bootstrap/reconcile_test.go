@@ -146,7 +146,7 @@ func TestAMalformedSecretRefusesTheRunAndChangesNothing(t *testing.T) {
 		names  []string // replaces the entry's DNS names, when set
 	}{
 		"a short random key": {"hangar-key", func(_ *testing.T, d map[string][]byte) { d["hangar.key"] = d["hangar.key"][:16] }, "holds 16 bytes", nil},
-		"a repeated token":   {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["publisher"] = d["input"] }, "repeats another principal's token", nil},
+		"a repeated token":   {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["publisher"] = d["inventory"] }, "repeats another principal's token", nil},
 		"a short token":      {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["inventory"] = []byte("short") }, "at least 32", nil},
 		"server.json out of step": {"store-tokens", func(_ *testing.T, d map[string][]byte) {
 			d["server.json"] = bytes.Replace(d["server.json"], d["reclaimer"], []byte(strings.Repeat("x", 64)), 1)

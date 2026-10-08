@@ -30,14 +30,10 @@
       "expect": "off",
       "note": "TLS terminates at the Traefik ingress."
     },
-    "web.hangar": {
-      "expect": "off",
-      "note": "Strict Hangar inputs are off here. Turning them on is a deployment change, not a test one: artifactDaemon.hangar.enabled/webEnabled, a store (artifactDaemon.hangar.store gcs with artifactDaemon.hangar.bucket and endpoint pointed at the fake-gcs emulator, or disk via hangarStorage.disk), and a hangar.key in the pinned daemon TLS Secret. home-infra sets no artifactDaemon.hangar value since 5db877d. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
-    },
     "web.hangarOutput": {
       "expect": "off",
       "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
-      "note": "The Hangar output plane (the artifact daemon's publisher and execution control, and web's reclaim and orphan sweep) is not deployed here; see web.hangar."
+      "note": "The Hangar output plane (the artifact daemon's publisher, execution control and managed reads, and web's reclaim and orphan sweep) is not deployed here. Turning it on is a deployment change, not a test one: the hangar_stores_enabled_in_cluster rollout (hangarOutput.executionControl.enabled, hangarOutput.enabled with a store, hangarOutput.webEnabled) and a hangar.key the daemon verifies warrants with. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
     },
     "web.hangarOutputCapture": {
       "expect": "off",
@@ -52,12 +48,12 @@
     "daemon.hangarOutput": {
       "expect": "off",
       "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
-      "note": "The output plane is mounted in the artifact daemon (its --execution-control, verifying every warrant with the Hangar key) from rollout step S6 of hangar_stores_enabled_in_cluster; see web.hangarOutput."
+      "note": "The output plane is mounted in the artifact daemon (its --execution-control, verifying every warrant with the Hangar key) from rollout step S6 of hangar_stores_enabled_in_cluster; see web.hangarOutput. Every Run input reaches a task through it, as a managed read of an input publication."
     },
     "store.disk": {
       "expect": "off",
-      "coveredBy": ["TestLiveHangarStrictInputFromTheInputNamespace", "TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
-      "note": "The Hangar disk store (hangarStorage.disk) is initialized at rollout step S2 and runs from S3; see web.hangar."
+      "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
+      "note": "The Hangar disk store (hangarStorage.disk, cmd/hangar-store) is initialized at rollout step S2 and runs from S3; see web.hangarOutput. It is off here by decision: its live coverage is the hangar_live contract TestLiveHangarDiskStoreRoundTripSurvivesRestart (live_hangar_disk_test.go), run by the hangar-disk-store-contract job in deploy/k8s-e2e-pipeline.yml on a throwaway K3s cluster, not a flag flipped on this cluster. It deploys the chart-rendered hangar-store on a PVC and the artifact daemon with its output plane on that store, and proves the one tree path through it: an input publication staged and published at the daemon's input routes, a managed read of it materialized in a generated step pod under a read warrant, and a hangar-store pod restart that keeps the tree ref and never reissues a generation."
     },
     "daemon.mtls": {
       "expect": "on",
@@ -70,10 +66,6 @@
     "daemon.metrics": {
       "expect": "9392",
       "coveredBy": ["TestLiveDaemonMetricsAreScraped"]
-    },
-    "daemon.hangar": {
-      "expect": "off",
-      "note": "See web.hangar. The persistent-disk Hangar store (hangarStorage.disk, cmd/hangar-store) is off here too, by decision: its live coverage is the hangar_live contract TestLiveHangarDiskStoreRoundTripSurvivesRestart (live_hangar_disk_test.go), run by the hangar-disk-store-contract job in deploy/k8s-e2e-pipeline.yml on a throwaway K3s cluster, not a flag flipped on this cluster. It deploys the chart-rendered hangar-store on a PVC and the artifact daemon with strict inputs on disk, and proves publish, materialization by a generated step pod, and a hangar-store pod restart that keeps the tree ref and never reissues a generation."
     },
     "daemon.durableStore": {
       "expect": "off",

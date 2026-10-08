@@ -44,11 +44,11 @@ const (
 // NamespaceConfig is the authenticated configuration an output namespace is
 // derived from.
 //
-// CacheBucket and StrictInputBucket are named here rather than assumed absent:
-// the output bucket may not *be* either of them, and a deployment that has
-// both cannot state that rule unless it can name them. An
-// empty value means "this deployment has no such bucket", which is why they are
-// compared only when set.
+// CacheBucket is named here rather than assumed absent: the output bucket may
+// not *be* the cache bucket, and a deployment that has both cannot state that
+// rule unless it can name them. An empty value means "this deployment has no
+// such bucket", which is why it is compared only when set. The deployment has
+// two namespaces, cache and output; there is no third.
 type NamespaceConfig struct {
 	// Store is the store profile the output plane runs against.
 	Store   string
@@ -66,10 +66,8 @@ type NamespaceConfig struct {
 	// scope is derived from. It is never rendered into a key.
 	TenantID string
 
-	// CacheBucket and StrictInputBucket are the two buckets this one may not
-	// be.
-	CacheBucket       string
-	StrictInputBucket string
+	// CacheBucket is the one other bucket this one may not be.
+	CacheBucket string
 }
 
 // OutputNamespace is the derived identity. Its fields are unexported and it is
@@ -103,12 +101,6 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the durable cache bucket "+
 			"%q. The cache is fail-open and re-derivable by re-running a step; a durable result "+
 			"is neither, and one bucket cannot have both lifetimes", ErrConflict, config.Bucket)
-	}
-	if config.StrictInputBucket != "" && config.Bucket == config.StrictInputBucket {
-		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the caller-published "+
-			"strict-input bucket %q. Strict inputs are published by callers; output objects are "+
-			"published only by the artifact daemon's output plane, and sharing the bucket gives one principal "+
-			"both roles", ErrConflict, config.Bucket)
 	}
 	if err := hangar.ValidateDeploymentPrefix(config.DeploymentPrefix); err != nil {
 		return OutputNamespace{}, fmt.Errorf("%w: output key prefix: %v", ErrIncomplete, err)
@@ -216,8 +208,7 @@ func (namespace OutputNamespace) IsZero() bool { return namespace.bucket == "" }
 // ObjectKey is where the canonical bytes of one digest live.
 //
 // It is the foundation's own TreeKey over the derived scope and prefix, so an
-// output object and a strict-input object have the same key shape in different
-// buckets. Nothing about the key is caller-reachable: the prefix and scope come
+// output object has the one key shape every Hangar tree has. Nothing about the key is caller-reachable: the prefix and scope come
 // off this value and the digest is computed from the sealed bytes.
 func (namespace OutputNamespace) ObjectKey(digest hangar.Digest) (string, error) {
 	if namespace.IsZero() {

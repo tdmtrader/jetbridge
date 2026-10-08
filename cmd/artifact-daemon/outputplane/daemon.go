@@ -20,8 +20,8 @@ import (
 //
 // What it holds is the whole statement of its role: one namespace and one
 // publisher restricted to create and read. What it does not hold is the point
-// -- there is no cache client, no strict-input client, no list or delete
-// capability, and no database handle. The durable half of a capture is the
+// -- there is no cache client, no list or delete capability, and no database
+// handle. The durable half of a capture is the
 // control plane's row; this process answers a digest and a generation.
 type Daemon struct {
 	// namespace and publisher are the capture extension, and both are
@@ -95,7 +95,7 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		if err := config.PrepareScratch(); err != nil {
 			return nil, err
 		}
-		canonicalizer = hangar.Canonicalizer{TempDir: config.ScratchDir}
+		canonicalizer = hangar.Canonicalizer{TempDir: config.ScratchDir, MaxContentBytes: config.MaxContentBytes, MaxEntries: config.MaxEntries}
 	}
 
 	return &Daemon{

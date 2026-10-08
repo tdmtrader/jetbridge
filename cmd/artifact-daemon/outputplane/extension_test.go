@@ -33,7 +33,6 @@ func baseOnlyConfig(t *testing.T) Config {
 	config.OutputTenant = ""
 	config.OutputEndpoint = ""
 	config.CacheBucket = ""
-	config.StrictInputBucket = ""
 
 	return config
 }

@@ -17,46 +17,31 @@ import (
 )
 
 // ADR-0002, as configuration: the fail-open cache is constructed against a
-// namespace different from the strict input and output ones, and the daemon
-// refuses to start otherwise. This replaces the old guarantee that the cache
-// could not compose an output object's key because of its depth.
-func TestTheCacheNamespaceMustDifferFromInputAndOutput(t *testing.T) {
+// namespace different from the output one, and the daemon refuses to start
+// otherwise. This replaces the old guarantee that the cache could not compose
+// an output object's key because of its depth.
+func TestTheCacheNamespaceMustDifferFromOutput(t *testing.T) {
 	for name, row := range map[string]struct {
-		cache, input, output string
-		ok                   bool
+		cache, output string
+		ok            bool
 	}{
-		"three different":         {"cache", "inputs", "outputs", true},
-		"cache only":              {"cache", "", "", true},
-		"no cache":                {"", "inputs", "outputs", true},
-		"cache is the input":      {"shared", "shared", "", false},
-		"cache is the output":     {"shared", "", "shared", false},
-		"input is the output":     {"cache", "shared", "shared", false},
-		"all three are one place": {"shared", "shared", "shared", false},
+		"two different":       {"cache", "outputs", true},
+		"cache only":          {"cache", "", true},
+		"output only":         {"", "outputs", true},
+		"cache is the output": {"shared", "shared", false},
 	} {
-		err := validateStorageNamespaces(row.cache, row.input, row.output)
+		err := validateStorageNamespaces(row.cache, row.output)
 		if (err == nil) != row.ok {
 			t.Errorf("%s: %v", name, err)
 		}
-	}
-
-	// Strict inputs switched off leave the input flag inert, so an operator
-	// who left it pointing at the cache bucket is not refused for it.
-	if err := validateStorageNamespaces("shared", hangarInputNamespace(false, "shared"), ""); err != nil {
-		t.Errorf("an inert input namespace was compared: %v", err)
-	}
-	if err := validateStorageNamespaces("shared", hangarInputNamespace(true, "shared"), ""); err == nil {
-		t.Error("an enabled input namespace equal to the cache was accepted")
 	}
 
 	// The output plane's namespace joins the comparison only when the daemon
 	// mounts the plane (--execution-control) with its capture extension: a
 	// base-control-only plane, or no plane, has no output bucket.
 	capture := outputplane.Config{OutputBucket: "shared"}
-	if err := validateStorageNamespaces("shared", "", outputNamespace(true, capture)); err == nil {
+	if err := validateStorageNamespaces("shared", outputNamespace(true, capture)); err == nil {
 		t.Error("an output plane publishing into the cache bucket was accepted")
-	}
-	if err := validateStorageNamespaces("cache", "shared", outputNamespace(true, capture)); err == nil {
-		t.Error("an output plane publishing into the strict-input bucket was accepted")
 	}
 	if got := outputNamespace(false, capture); got != "" {
 		t.Errorf("a daemon with no output plane compared output namespace %q", got)
@@ -159,21 +144,19 @@ func withOpen(t *testing.T, open func(context.Context, durable.Config) (durable.
 	t.Cleanup(func() { openDurableStore = previous })
 }
 
-func TestTheOutputScratchIsDisjointFromTheStorageRootAndTheStrictInputScratch(t *testing.T) {
+func TestTheOutputScratchIsDisjointFromTheStorageRoot(t *testing.T) {
 	for name, row := range map[string]struct {
-		scratch, storage, hangar string
-		hangarEnabled, ok        bool
+		scratch, storage string
+		ok               bool
 	}{
-		"disjoint":                          {"/var/output-scratch", "/var/artifacts", "/var/hangar-scratch", true, true},
-		"unset":                             {"", "/var/artifacts", "/var/hangar-scratch", true, true},
-		"the storage root":                  {"/var/artifacts", "/var/artifacts", "/var/hangar-scratch", false, false},
-		"inside the storage root":           {"/var/artifacts/scratch", "/var/artifacts", "/var/hangar-scratch", false, false},
-		"holding the storage root":          {"/var", "/var/artifacts", "/var/hangar-scratch", false, false},
-		"the strict-input scratch":          {"/var/hangar-scratch", "/var/artifacts", "/var/hangar-scratch", true, false},
-		"the strict-input scratch, unused":  {"/var/hangar-scratch", "/var/artifacts", "/var/hangar-scratch", false, true},
-		"a sibling sharing a string prefix": {"/var/artifacts-scratch", "/var/artifacts", "/var/hangar-scratch", true, true},
+		"disjoint":                          {"/var/output-scratch", "/var/artifacts", true},
+		"unset":                             {"", "/var/artifacts", true},
+		"the storage root":                  {"/var/artifacts", "/var/artifacts", false},
+		"inside the storage root":           {"/var/artifacts/scratch", "/var/artifacts", false},
+		"holding the storage root":          {"/var", "/var/artifacts", false},
+		"a sibling sharing a string prefix": {"/var/artifacts-scratch", "/var/artifacts", true},
 	} {
-		err := validateOutputScratch(row.scratch, row.storage, row.hangar, row.hangarEnabled)
+		err := validateOutputScratch(row.scratch, row.storage)
 		if (err == nil) != row.ok {
 			t.Errorf("%s: %v", name, err)
 		}

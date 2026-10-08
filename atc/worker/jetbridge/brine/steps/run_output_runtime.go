@@ -242,7 +242,7 @@ func newRunOutputRuntime(rec *brine.Recorder, res brine.Resources, checks bool) 
 	}
 	in := RunOutputRuntime{Client: cluster.Clientset, Spec: runtime.ContainerSpec{Outputs: runtime.OutputPaths{"result": "/workspace/result"}}}
 	node, err := in.Client.CoreV1().Nodes().Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{GenerateName: "run-output-", Labels: map[string]string{
-		"concourse.dev/artifact-cache": "ready", "concourse.dev/hangar-v1": "ready", executioncontrol.ReadyLabel: "ready", output.ReadyLabel: "ready",
+		"concourse.dev/artifact-cache": "ready", executioncontrol.ReadyLabel: "ready", output.ReadyLabel: "ready",
 	}}}, metav1.CreateOptions{})
 	if err != nil {
 		return in, err

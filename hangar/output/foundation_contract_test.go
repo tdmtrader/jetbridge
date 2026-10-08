@@ -15,11 +15,12 @@ import (
 	"testing"
 )
 
-// This file is the dependency manifest for the reviewed Hangar strict-input
-// foundation that this track extends.
+// This file is the dependency manifest for the reviewed Hangar foundation
+// (package hangar: tree refs, the canonicalizer, the warrant signer and the
+// captured tree's materialization) that this track extends.
 //
-// None of TreeRef, Store, Canonicalizer, Signer or Materializer carries a
-// version field, so there is no number to compare and "the accepted foundation"
+// None of TreeRef, Canonicalizer, Signer or CapturedTree carries a version
+// field, so there is no number to compare and "the accepted foundation"
 // cannot be asserted by asking the code what version it is. It is asserted by
 // three concrete checks instead:
 //
@@ -29,8 +30,8 @@ import (
 //	    happens to use it first;
 //	(b) the integration commit pinned in the track's verification report,
 //	    asserted as an ancestor of HEAD; and
-//	(c) the presence of the daemon composition, the runtime input seam and the
-//	    strict-input chart capability.
+//	(c) the presence of the daemon's managed-read composition, the runtime
+//	    input seam and the chart's output-plane capability.
 //
 // A failure here is a diagnosis, not an invitation to copy the missing piece
 // into this track. The foundation is a prerequisite; this package extends it.
@@ -204,11 +205,10 @@ func TestFoundationExportedSurfaceMatchesTheGolden(t *testing.T) {
 	// quietly bless their removal.
 	for _, required := range []string{
 		"type TreeRef ",
-		"type Store ",
 		"type Canonicalizer ",
+		"type CapturedTree ",
 		"type Signer ",
 		"type Warrant ",
-		"type Materializer ",
 		"type TreeAttributes ",
 		"type Scope ",
 		"type Digest ",
@@ -222,7 +222,7 @@ func TestFoundationExportedSurfaceMatchesTheGolden(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("package hangar no longer declares %q. This track extends the reviewed "+
-				"strict-input foundation; it does not recreate it. Diagnose the mixed or missing "+
+				"Hangar foundation; it does not recreate it. Diagnose the mixed or missing "+
 				"prerequisite rather than copying it here.", strings.TrimSpace(required))
 		}
 	}
@@ -283,8 +283,8 @@ func TestIntegrationCommitIsAnAncestorOfHEAD(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the pinned integration commit %s is not an ancestor of HEAD: %v\n%s\n\n"+
-			"This track pins the commit that carries the reviewed Hangar strict-input "+
-			"foundation. Work built on a tree without it is built on a different foundation.",
+			"This track pins the commit that carries the reviewed Hangar foundation. "+
+			"Work built on a tree without it is built on a different foundation.",
 			integrationCommit, err, out)
 	}
 }
@@ -303,28 +303,28 @@ func TestFoundationCompositionIsPresent(t *testing.T) {
 
 	prerequisites := []foundationPrerequisite{
 		{
-			name:     "daemon composition",
-			path:     "cmd/artifact-daemon/hangar.go",
-			contains: []string{"HangarReadyLabel", "concourse.dev/hangar-v1"},
-			why:      "the strict-input daemon composition and the capability label it advertises",
+			name:     "managed read composition",
+			path:     "cmd/artifact-daemon/outputplane/read_materialize.go",
+			contains: []string{".Materialize("},
+			why:      "the output plane's managed read, the one path by which a tree reaches a task",
 		},
 		{
-			name:     "daemon handlers",
-			path:     "cmd/artifact-daemon/hangar_handlers.go",
-			contains: []string{"hangar."},
-			why:      "the daemon HTTP surface this track's output plane is modelled on and must not reuse",
+			name:     "daemon routes",
+			path:     "cmd/artifact-daemon/outputplane/routes.go",
+			contains: []string{"POST /read/v1/materialize", "hangar.PurposeControlBase"},
+			why:      "the daemon HTTP surface that serves the managed read and the control warrants",
 		},
 		{
 			name:     "runtime input seam",
 			path:     "atc/runtime/types.go",
-			contains: []string{"HangarTree *hangar.TreeRef"},
-			why:      "the read-only task-input seam; the output plane is its counterpart, not a second copy",
+			contains: []string{"HangarTree *hangar.TreeRef", "HangarRead"},
+			why:      "the task-input seam: a tree input always carries the managed read that installs it",
 		},
 		{
 			name:     "chart capability",
 			path:     "deploy/chart/templates/artifact-daemon-daemonset.yaml",
-			contains: []string{"concourse.dev/hangar-v1"},
-			why:      "the strict-input capability label, which the output capability must never reuse",
+			contains: []string{"--execution-control", "--hangar-key"},
+			why:      "the output plane the chart turns on, and the key every warrant is verified with",
 		},
 	}
 

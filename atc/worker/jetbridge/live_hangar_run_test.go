@@ -7,8 +7,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,16 +15,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/concourse/concourse/hangar"
 	"golang.org/x/oauth2"
@@ -37,8 +31,8 @@ import (
 )
 
 // The Hangar checks of hangar_stores_enabled_in_cluster (B2): the disk store's
-// input namespace behind a strict input, and its output namespace behind a v2
-// Run's managed input and captured result.
+// output namespace behind a v2 Run's managed input (an input publication read
+// back by a managed read) and its captured result.
 //
 // Each check reads the deployment manifest first. While every feature it
 // covers expects off it skips, so the tier stays green until the rollout turns
@@ -51,7 +45,6 @@ const (
 	liveHangarRunPipeline = "live-hangar-run"
 	liveHangarRunTaskID   = "6f1d3c2a-8b4e-4c5d-9a7f-2e1b0c3d4e5f"
 	liveHangarRunUser     = "live-tests"
-	liveHangarScope       = "live"
 )
 
 // liveHangarRequire skips the check while every feature it covers expects
@@ -66,77 +59,6 @@ func liveHangarRequire(t *testing.T, features ...string) {
 		}
 	}
 	t.Skipf("%s all expect off in the live deployment manifest", strings.Join(features, ", "))
-}
-
-// TestLiveHangarStrictInputFromTheInputNamespace publishes a tree through the
-// deployed artifact daemon into the disk store's input namespace, then runs a
-// task whose only input is that tree as a strict input. The task's pod is the
-// runtime's own, built by an in-process worker from the deployed
-// configuration: the ATC hands a job build no Hangar tree, so this is the path
-// a strict input takes on a deployed cluster.
-func TestLiveHangarStrictInputFromTheInputNamespace(t *testing.T) {
-	liveHangarRequire(t, "daemon.hangar", "web.hangar", "store.disk")
-	if _, on := deployed.daemonFlag("hangar-enabled"); !on {
-		t.Fatal("the manifest expects strict inputs on, but the artifact daemon runs without --hangar-enabled")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	clientset, cfg := kubeClient(t)
-	signer := liveHangarSigner(t, ctx, clientset)
-
-	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	payload := "strict input " + suffix
-	tree := liveHangarTar(t, map[string]string{"payload": payload, "nested/second": "second"})
-	daemon := liveHangarDaemonClient(t, ctx, clientset)
-	published := daemon.publish(t, ctx, tree, http.StatusCreated)
-	if published.Ref.Scope != liveHangarScope || published.Ref.Generation <= 0 {
-		t.Fatalf("publication attributes = %+v", published)
-	}
-	if again := daemon.publish(t, ctx, tree, http.StatusOK); again.Ref != published.Ref {
-		t.Fatalf("republishing the same tree returned %+v, want %+v", again.Ref, published.Ref)
-	}
-
-	worker, delegate, _, _ := newLiveWorker(t, nil, nil, func(c *jetbridge.Config) {
-		c.HangarEnabled = true
-		c.HangarSigner = signer
-	})
-	handle := "live-hangar-strict-" + suffix
-	cleanupPod(t, clientset, cfg.Namespace, handle)
-	ref := published.Ref
-	container, _, err := worker.FindOrCreateContainer(ctx,
-		db.NewFixedHandleContainerOwner(handle),
-		db.ContainerMetadata{Type: db.ContainerTypeTask},
-		runtime.ContainerSpec{
-			TeamID:    1,
-			Dir:       "/work",
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-			Inputs:    []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
-		},
-		delegate,
-	)
-	if err != nil {
-		t.Fatalf("create the strict-input task: %v", err)
-	}
-	script := fmt.Sprintf(`set -eu
-test "$(cat /work/exact/payload)" = '%s'
-test "$(cat /work/exact/nested/second)" = 'second'
-test -f /work/exact/.hangar-materialized
-if touch /work/exact/must-not-write 2>/dev/null; then exit 91; fi
-`, payload)
-	var stderr bytes.Buffer
-	process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", script}},
-		runtime.ProcessIO{Stderr: &stderr})
-	if err != nil {
-		t.Fatalf("run the strict-input task: %v", err)
-	}
-	result, err := process.Wait(ctx)
-	if err != nil {
-		t.Fatalf("wait for the strict-input task: %v", err)
-	}
-	if result.ExitStatus != 0 {
-		t.Fatalf("the strict-input task exited %d: %s", result.ExitStatus, stderr.String())
-	}
 }
 
 // TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult logs in as the
@@ -230,110 +152,6 @@ func liveHangarTar(t *testing.T, files map[string]string) []byte {
 		t.Fatal(err)
 	}
 	return raw.Bytes()
-}
-
-// liveHangarSigner signs warrants with the Hangar key the deployed daemon
-// verifies them against, read from the Secret it mounts.
-func liveHangarSigner(t *testing.T, ctx context.Context, clientset kubernetes.Interface) *hangar.Signer {
-	t.Helper()
-	secretName := deployed.daemonSecretVolume("hangar-key")
-	if secretName == "" {
-		secretName = deployed.daemonSecretVolume("daemon-tls")
-	}
-	secret, err := clientset.CoreV1().Secrets(deployed.namespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("read the daemon's Hangar key Secret %s/%s: %v", deployed.namespace, secretName, err)
-	}
-	key := secret.Data["hangar.key"]
-	signer, err := hangar.NewSigner(key, 5*time.Minute, nil)
-	if err != nil {
-		t.Fatalf("the Hangar key in %s/%s: %v", deployed.namespace, secretName, err)
-	}
-	return signer
-}
-
-type liveHangarDaemon struct {
-	url    string
-	client *http.Client
-}
-
-// liveHangarDaemonClient dials one running artifact daemon pod with the
-// client certificate the deployment issues, verifying the server as
-// <service>.<namespace>.svc the way web does.
-func liveHangarDaemonClient(t *testing.T, ctx context.Context, clientset kubernetes.Interface) liveHangarDaemon {
-	t.Helper()
-	pods, err := clientset.CoreV1().Pods(deployed.namespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/component=artifact-daemon"})
-	if err != nil {
-		t.Fatalf("list artifact daemon pods: %v", err)
-	}
-	var address string
-	for _, pod := range pods.Items {
-		if pod.Status.Phase == corev1.PodRunning && pod.DeletionTimestamp == nil && pod.Status.PodIP != "" {
-			address = net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(deployed.port))
-			break
-		}
-	}
-	if address == "" {
-		t.Fatalf("no running artifact daemon pod in %s", deployed.namespace)
-	}
-	certificate, err := tls.LoadX509KeyPair(filepath.Join(deployed.tlsDir, "client.crt"), filepath.Join(deployed.tlsDir, "client.key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	caPEM, err := os.ReadFile(filepath.Join(deployed.tlsDir, "ca.crt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		t.Fatal("the daemon TLS Secret's ca.crt holds no certificate")
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		RootCAs:      roots,
-		ServerName:   deployed.service + "." + deployed.namespace + ".svc",
-		Certificates: []tls.Certificate{certificate},
-	}
-	return liveHangarDaemon{url: "https://" + address, client: &http.Client{Transport: transport, Timeout: time.Minute}}
-}
-
-// publish posts a raw tar to the strict publication route. A 503 is the
-// daemon's answer to every infrastructure refusal and is retried for a
-// bounded minute; any other status is final.
-func (daemon liveHangarDaemon) publish(t *testing.T, ctx context.Context, archive []byte, want int) hangar.TreeAttributes {
-	t.Helper()
-	target := daemon.url + "/hangar/v1/scopes/" + liveHangarScope + "/trees"
-	deadline := time.Now().Add(time.Minute)
-	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(archive))
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.Header.Set("Content-Type", "application/octet-stream")
-		response, err := daemon.client.Do(request)
-		if err != nil {
-			t.Fatalf("publish to the artifact daemon at %s: %v", target, err)
-		}
-		body, readErr := io.ReadAll(response.Body)
-		response.Body.Close()
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if response.StatusCode == http.StatusServiceUnavailable && time.Now().Before(deadline) {
-			t.Logf("publication refused 503, retrying: %s", strings.TrimSpace(string(body)))
-			liveHangarPause(t, ctx, 5*time.Second)
-			continue
-		}
-		if response.StatusCode != want {
-			t.Fatalf("publication returned %d, want %d: %s", response.StatusCode, want, strings.TrimSpace(string(body)))
-		}
-		var attributes hangar.TreeAttributes
-		if err := json.Unmarshal(body, &attributes); err != nil {
-			t.Fatalf("decode publication attributes %q: %v", body, err)
-		}
-		return attributes
-	}
 }
 
 type liveHangarAPI struct {

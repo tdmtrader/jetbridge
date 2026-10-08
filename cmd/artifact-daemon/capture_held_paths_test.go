@@ -723,3 +723,97 @@ func TestATornMarkerRefusesTheSweeperDeleteStreamInAndRemap(t *testing.T) {
 		t.Errorf("the capture's alias now points at %q", rel)
 	}
 }
+
+// The output plane's hold, seen from THIS daemon.
+//
+// Two authorities over one node's disk, in one daemon: the output plane owns
+// which sources a capture holds, and the rest of the daemon owns everything
+// else. What is
+// under test is that the second respects the first -- and that it fails closed
+// when it cannot read what the first said, because a delete on a guess is how a
+// build's declared output disappears with no record it existed.
+func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *testing.T) {
+	storage := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(storage, "steps", "ordinary-handle"), 0o755); err != nil {
+		t.Fatalf("creating an ordinary step: %v", err)
+	}
+	control := filepath.Join(storage, ledger.ControlDirName)
+	if err := os.MkdirAll(control, 0o700); err != nil {
+		t.Fatalf("creating the control directory: %v", err)
+	}
+
+	const incarnation = "33333333-3333-4333-8333-333333333333.capture/result"
+	if err := os.MkdirAll(filepath.Join(storage, "steps", incarnation), 0o700); err != nil {
+		t.Fatalf("creating the held source: %v", err)
+	}
+
+	server, err := NewServer(lagertest.NewTestLogger("capture-held"), storage, "node-1")
+	if err != nil {
+		t.Fatalf("building the server: %v", err)
+	}
+	handler := server.Handler()
+
+	remove := func(key string) int {
+		request := httptest.NewRequest(http.MethodDelete, "/artifacts/"+key, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+
+		return recorder.Code
+	}
+
+	// The control FIRST: with no hold recorded, an ordinary delete proceeds and
+	// so does a delete of the incarnation path. "Everything is refused" is what
+	// a broken guard looks like.
+	if code := remove("steps/ordinary-handle"); code != http.StatusNoContent {
+		t.Fatalf("an ordinary delete answered %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(storage, "steps", "ordinary-handle")); err == nil {
+		t.Error("the ordinary delete removed nothing")
+	}
+
+	// Now the hold.
+	record, err := json.Marshal(map[string]any{
+		"state": "held", "execution": "33333333-3333-4333-8333-333333333333", "output": "result",
+		"node": "node-1", "pod_uid": "pod-1",
+	})
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(control, "capture-33333333-3333-4333-8333-333333333333.result.json"),
+		record, 0o600); err != nil {
+		t.Fatalf("writing the hold: %v", err)
+	}
+
+	if code := remove("steps/" + incarnation); code != http.StatusConflict {
+		t.Errorf("a delete of a capture-held source answered %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(storage, "steps", incarnation)); err != nil {
+		t.Errorf("the held source was removed anyway: %v", err)
+	}
+
+	// An unrelated step still deletes, so the refusal is about the hold and not
+	// about the daemon having given up.
+	if err := os.MkdirAll(filepath.Join(storage, "steps", "another-handle"), 0o755); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+	if code := remove("steps/another-handle"); code != http.StatusNoContent {
+		t.Errorf("an unrelated delete answered %d while a hold existed", code)
+	}
+
+	// And the fail-closed half: a ledger this daemon cannot read refuses
+	// EVERY delete, because the ledger is the only thing that could have said
+	// which paths are held.
+	if err := os.WriteFile(filepath.Join(control, "capture-33333333-3333-4333-8333-333333333333.result.json"),
+		[]byte("{not json"), 0o600); err != nil {
+		t.Fatalf("corrupting: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(storage, "steps", "third-handle"), 0o755); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+	if code := remove("steps/third-handle"); code != http.StatusConflict {
+		t.Errorf("an unreadable ledger admitted a delete with %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(storage, "steps", "third-handle")); err != nil {
+		t.Errorf("a delete proceeded on a guess: %v", err)
+	}
+}

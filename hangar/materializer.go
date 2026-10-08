@@ -1,24 +1,20 @@
 package hangar
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 )
 
+// materializationReceiptName is the read-only file a materialization leaves
+// at the destination's root, holding the exact tree ref it installed. The
+// managed-input init checks it before the task starts.
 const materializationReceiptName = ".hangar-materialized"
 
-type Materializer struct {
-	Store         Store
-	Canonicalizer Canonicalizer
-	StoragePath   string
-	MaxTreeBytes  int64
-	hooks         materializerHooks
-}
+// materializerHooks are test seams into the materialization sequence; the
+// product path passes none.
 
 type materializerHooks struct {
-	afterCapture         func(*CapturedTree) error
 	beforeLock           func() error
 	afterStage           func(string) error
 	beforePublish        func() error
@@ -48,72 +44,4 @@ func (tree *CapturedTree) OpenRoot() (*os.Root, error) {
 		return nil, fmt.Errorf("hangar: duplicate captured tree root: %w", err)
 	}
 	return root, nil
-}
-
-func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error) {
-	if materializer == nil || materializer.Store == nil {
-		return errors.New("hangar: materializer store is required")
-	}
-	if err := ref.Validate(); err != nil {
-		return err
-	}
-	if !validWarrantSegment(handle) || !validWarrantSegment(volume) {
-		return errors.New("hangar: materialization handle and volume must be canonical path segments")
-	}
-	if materializer.StoragePath == "" {
-		return errors.New("hangar: materialization storage path is required")
-	}
-	if materializer.MaxTreeBytes <= 0 {
-		return errors.New("hangar: maximum materialized tree bytes must be positive")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	archive, attributes, err := materializer.Store.OpenTree(ctx, ref, materializer.MaxTreeBytes)
-	if err != nil {
-		return fmt.Errorf("hangar: open exact tree for materialization: %w", err)
-	}
-	if archive == nil {
-		return fmt.Errorf("hangar: open exact tree for materialization: %w", ErrCorrupt)
-	}
-	archiveNeedsClose := true
-	defer func() {
-		if archiveNeedsClose {
-			err = errors.Join(err, archive.Close())
-		}
-	}()
-	if attributes.Ref != ref {
-		return fmt.Errorf("hangar: opened tree identity differs from request: %w", ErrCorrupt)
-	}
-	captured, captureErr := materializer.Canonicalizer.Capture(ctx, archive)
-	closeErr := archive.Close()
-	archiveNeedsClose = false
-	if captured != nil {
-		defer func() {
-			err = errors.Join(err, captured.Close())
-		}()
-	}
-	if captureErr != nil || closeErr != nil {
-		return errors.Join(captureErr, closeErr)
-	}
-	if captured == nil {
-		return fmt.Errorf("hangar: canonical capture returned no tree: %w", ErrCorrupt)
-	}
-	if captured.Digest != ref.Digest {
-		return fmt.Errorf("hangar: captured tree digest differs from tree ref: %w", ErrCorrupt)
-	}
-	if materializer.hooks.afterCapture != nil {
-		if err := materializer.hooks.afterCapture(captured); err != nil {
-			return fmt.Errorf("hangar: after capturing materialization tree: %w", err)
-		}
-	}
-	source, err := captured.OpenRoot()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = errors.Join(err, source.Close())
-	}()
-	return materializeCapturedTree(ctx, materializer.StoragePath, handle, volume, ref, source, materializer.hooks)
 }

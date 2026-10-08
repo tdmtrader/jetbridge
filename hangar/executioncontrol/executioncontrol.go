@@ -41,8 +41,7 @@ const ProtocolVersion = "hangar-execution-control-v1"
 // ReadyLabel says a node's daemon serves this protocol. It is a scheduling
 // hint and never an authority: the warrant the daemon verifies is.
 //
-// It is deliberately distinct from concourse.dev/hangar-v1, which advertises
-// strict inputs only, and from concourse.dev/hangar-output-v1, which
+// It is deliberately distinct from concourse.dev/hangar-output-v1, which
 // advertises the durable capture extension on top of this one.
 const ReadyLabel = "concourse.dev/hangar-execution-control-v1"
 

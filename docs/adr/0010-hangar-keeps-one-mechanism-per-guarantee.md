@@ -49,13 +49,24 @@ We cut it to one mechanism per guarantee:
   A result binds as a Run input while its Run succeeded and its claim is live.
   The Run contract's own activation epoch is untouched.
 - **One warrant key.** `hangar.key` signs every warrant the daemon verifies —
-  strict-input materialization, result read, base execution control, capture
-  control — under one canonical encoding whose first field is the purpose; a
-  route admits only its own purpose. The run-input signing key stays web-only:
+  result read, base execution control, capture control — under one canonical
+  encoding whose first field is the purpose; a route admits only its own
+  purpose. The run-input signing key stays web-only:
   a node holding it could forge an input grant for any team's Run.
 - **No vocabulary without a live path.** Deferred exports, numbered citations
   to a requirements list not in the tree, and comments describing removed
   mechanisms are gone; the glossary names only what runs.
+- **One tree path.** The strict-input namespace, its daemon service and
+  routes, the `materialize-input` warrant purpose, the
+  `concourse.dev/hangar-v1` label, the disk store's input role and the
+  chart's `artifactDaemon.hangar.{store,bucket,endpoint,prefix,enabled,
+  webEnabled,scratchPath,scratchSizeLimit,maxContentBytes,maxEntries}`
+  values are gone. A Run input is an input publication in the output
+  namespace and reaches a task as a managed read, under a read warrant
+  bound to the reader's claim; the `.hangar-materialized` receipt file
+  stays, written by the managed read and checked by the managed-input init.
+  The strict path had no product caller: every bound input already read
+  through the output plane.
 
 ## Consequences
 
@@ -70,10 +81,14 @@ We cut it to one mechanism per guarantee:
   the daemon no longer withholds readiness for it.
 - A key change invalidates in-flight warrants and nothing else; earlier
   results stay bindable.
+- Two namespaces, cache and output, checked unequal at startup; three
+  warrant purposes, read, execution control and output capture; the
+  daemon's `--hangar-key` goes with `--execution-control` alone, and the
+  web's `--kubernetes-hangar-key` with `--kubernetes-hangar-output-enabled`.
 - ADR-0002 stands (the cache fails open, Hangar fails closed, separate
   namespaces). ADR-0005's storage contract stands; its delete precondition is
   the generation alone. ADR-0009 stands except as amended above.
 - Accepted losses: no confirmed-versus-inferred distinction on a reclamation;
-  no replay refusal for a materialization warrant beyond its window (the init
+  no replay refusal for a read warrant beyond its window (the init
   container retries after a 503 with the same token); no node-side readiness
   gate for a corrupt ledger.

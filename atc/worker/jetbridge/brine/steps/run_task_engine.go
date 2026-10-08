@@ -67,7 +67,6 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 		return err
 	}
 	config.OutputPlaneEnabled = true
-	config.HangarEnabled = true
 	config.ArtifactDaemonHostPath = in.Source.Start.Daemon.Output.Root
 	client := in.Source.Candidate.Runtime.Client
 	source := jetbridge.NewOutputSource(client, config, in.Source.Start.Daemon.Minter)

@@ -512,7 +512,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		return nil, err
 	}
 	// The envelope is validated against the SPEC, before any container is
-	// composed: an undeclared output, an output overlapping a strict input or
+	// composed: an undeclared output, an output overlapping a Run input or
 	// a capture riding the base capability must be a refusal rather than a pod
 	// that comes back and then cannot be held.
 	if err := c.containerSpec.ExecutionControl.Validate(c.containerSpec); err != nil {
@@ -685,32 +685,32 @@ func strictlyWithin(parent, child string) bool {
 
 func (c *Container) validateInputs() error {
 	for _, input := range c.containerSpec.Inputs {
-		if input.RunInput != "" && input.HangarRead == nil {
-			return fmt.Errorf("Run input has no admitted read")
-		}
-		if input.HangarRead != nil && (input.HangarTree == nil || input.HangarRead.Validate() != nil || input.HangarRead.Ref != *input.HangarTree) {
-			return fmt.Errorf("managed input lacks its exact read authority")
-		}
 		hasArtifact := input.Artifact != nil
 		hasHangarTree := input.HangarTree != nil
 		if hasArtifact == hasHangarTree {
 			return fmt.Errorf("input %q must set exactly one of Artifact or HangarTree", input.DestinationPath)
 		}
 		if !hasHangarTree {
+			if input.HangarRead != nil {
+				return fmt.Errorf("input %q carries a managed read without its tree", input.DestinationPath)
+			}
 			continue
 		}
-		if !c.config.HangarEnabled {
-			return fmt.Errorf("Hangar tree input %q was presented while Hangar is disabled", input.DestinationPath)
+		// A Run input carries its managed read: the read the web admitted
+		// for this pod, for exactly the tree the input binds.
+		read := input.HangarRead
+		if read == nil || read.Validate() != nil || read.Ref != *input.HangarTree {
+			return fmt.Errorf("Run input %q carries no managed read for its tree", input.DestinationPath)
+		}
+		if !c.config.OutputPlaneEnabled {
+			return fmt.Errorf("Run input %q presented while the output plane is disabled", input.DestinationPath)
 		}
 		if c.storageBackend == nil {
-			return fmt.Errorf("Hangar tree input %q requires node-local storage", input.DestinationPath)
-		}
-		if err := input.HangarTree.Validate(); err != nil {
-			return fmt.Errorf("invalid Hangar tree input %q: %w", input.DestinationPath, err)
+			return fmt.Errorf("Run input %q requires node-local storage", input.DestinationPath)
 		}
 		for outputName, outputPath := range c.containerSpec.Outputs {
 			if containerPathsOverlap(outputPath, input.DestinationPath) {
-				return fmt.Errorf("Hangar tree input %q must not overlap output %q", input.DestinationPath, outputName)
+				return fmt.Errorf("Run input %q must not overlap output %q", input.DestinationPath, outputName)
 			}
 		}
 	}

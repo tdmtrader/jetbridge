@@ -7,15 +7,9 @@
 {{- define "concourse.hangarStorage.claim" -}}
 {{- default (include "concourse.hangarStorage.name" .) .Values.hangarStorage.disk.existingClaim -}}
 {{- end }}
-{{- define "concourse.hangarStorage.clientMount" -}}
-- name: hangar-disk-client
-  mountPath: /etc/concourse/hangar-disk
-  readOnly: true
-{{- end }}
 {{/*
-The output plane's publisher credential, in the artifact daemon Pod beside the
-strict-input one: its own volume at its own path, so the two roles' tokens are
-never one file.
+The output plane's publisher credential in the artifact daemon Pod: the one
+disk-store role the daemon holds, at its own path.
 */}}
 {{- define "concourse.hangarStorage.outputClientMount" -}}
 - name: hangar-output-disk-client

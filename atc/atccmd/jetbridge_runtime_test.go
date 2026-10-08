@@ -175,7 +175,6 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-artifact-daemon-tls-cert", "/tls/artifact/cert.pem",
 		"--kubernetes-artifact-daemon-tls-key", "/tls/artifact/key.pem",
 		"--kubernetes-artifact-daemon-tls-ca-cert", "/tls/artifact/ca.pem",
-		"--kubernetes-hangar-enabled",
 		"--kubernetes-hangar-output-enabled",
 		"--kubernetes-hangar-output-operation-timeout", "2m",
 		"--kubernetes-image-registry-prefix", "registry.example/types",
@@ -240,8 +239,6 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		ArtifactDaemonTLSEnabled:           true,
 		OutputPlaneEnabled:                 true,
 		OutputOperationTimeout:             2 * time.Minute,
-		HangarEnabled:                      true,
-		HangarSigner:                       signer,
 		StepPodGrants: []jetbridge.StepPodGrant{
 			{Name: "brine-live", Owner: jetbridge.StepPodOwner{Team: "main", OneOff: true}, ServiceAccount: "concourse-brine-live"},
 			{Name: "release", Owner: jetbridge.StepPodOwner{Team: "main", Pipeline: "jetbridge", Job: "release"}, ServiceAccount: "jetbridge-releaser"},

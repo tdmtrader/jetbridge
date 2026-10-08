@@ -402,53 +402,9 @@ func refusalWord(err error) (string, bool) {
 	return "", false
 }
 
-// HangarBindingDefinitions is the binding and consumer-pod family.
+// HangarBindingDefinitions is the binding family.
 func HangarBindingDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		brine.DefineMapUsing[PublishedTree, ConsumerDraft](
-			"a later step {string} takes the published output {string} at {string}",
-			[]string{"jetbridge-db", "real-cluster"},
-			func(in PublishedTree, p brine.Params, rec *brine.Recorder, res brine.Resources) (ConsumerDraft, error) {
-				const pattern = "a later step {string} takes the published output {string} at {string}"
-				name, err := paramAt(pattern, p, 0)
-				if err != nil {
-					return ConsumerDraft{}, err
-				}
-				output, err := paramAt(pattern, p, 1)
-				if err != nil {
-					return ConsumerDraft{}, err
-				}
-				destination, err := paramAt(pattern, p, 2)
-				if err != nil {
-					return ConsumerDraft{}, err
-				}
-
-				// The consuming step runs on a worker with the output plane on
-				// and a materialization signer, because a Hangar tree input is
-				// refused outright without both -- which is itself a rule the
-				// pod-shape family already covers.
-				cluster, err := newHangarConsumerWorker(res, rec)
-				if err != nil {
-					return ConsumerDraft{}, err
-				}
-
-				return ConsumerDraft{
-					Tree:        in,
-					Cluster:     cluster,
-					StepName:    name,
-					Output:      hangaroutputleaf.OutputName(output),
-					Destination: destination,
-				}, nil
-			},
-		),
-
-		brine.DefineMap[ConsumerDraft, PodCreated](
-			"the consumer's pod is built",
-			func(in ConsumerDraft, _ brine.Params, _ *brine.Recorder) (PodCreated, error) {
-				return buildConsumerPod(in)
-			},
-		),
 
 		brine.DefineMap[PublishedTree, BoundOutput](
 			"the consumer binds the output inside its own transaction",
@@ -843,21 +799,6 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 
 				return nil
 			}),
-
-		// Checks over the consuming Pod. PodCreated is reused deliberately: a
-		// consumer's pod is a pod, and every existing mount and volume check
-		// already reads it.
-		CheckThat[PodCreated]("the consumer's Hangar init verifies exactly the materialization receipt for its tree",
-			verifiesExactlyTheReceipt),
-
-		check[PodCreated]("the consumer's pod declares exactly {int} read-only verification mount per tree",
-			declaresOneReadOnlyVerificationMountPerTree),
-
-		CheckThat[PodCreated]("no user-controlled destination enters the verification command",
-			noUserDestinationInTheVerificationCommand),
-
-		CheckThat[PodCreated]("the consumer's pod asks for exactly the materialization receipt's tree",
-			asksForExactlyTheReceiptsTree),
 	}
 }
 
