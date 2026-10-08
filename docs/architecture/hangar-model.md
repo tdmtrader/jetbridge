@@ -1,7 +1,7 @@
 # Hangar: relationships and invariants
 
-Vocabulary: [`hangar/CONTEXT.md`](../../hangar/CONTEXT.md). The decision
-behind this shape is [ADR-0009](../adr/0009-one-node-daemon-one-capture-row.md).
+Vocabulary: [`hangar/CONTEXT.md`](../../hangar/CONTEXT.md). The decisions
+behind this shape are [ADR-0009](../adr/0009-one-node-daemon-one-capture-row.md) and [ADR-0010](../adr/0010-hangar-keeps-one-mechanism-per-guarantee.md).
 
 ## Two halves
 
