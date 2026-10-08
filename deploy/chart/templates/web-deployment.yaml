@@ -214,8 +214,8 @@ spec:
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node mints control
-            # capabilities and verifies node execution statements; it holds no
-            # daemon private key. A capture is one database row: the daemon's
+            # capabilities; it verifies nothing the daemon says and holds no
+            # public key for it. A capture is one database row: the daemon's
             # word reaches web over mTLS and nothing signs it. With the capture
             # facet on (below) the web is also the plane's reclaimer, the one
             # principal that may list and delete in the output namespace.
@@ -226,14 +226,7 @@ spec:
             - --kubernetes-hangar-output-warrant-key=/etc/concourse/hangar-output/capability/capability.key
             - --kubernetes-hangar-output-operation-timeout={{ .Values.hangarOutput.operationTimeout }}
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
-            # THE GENERATION BELONGS TO THE BASE FACET. The activation epoch is
-            # the control-key generation: every capability this node mints -- base or capture
-            # -- is minted under it, and a capability claiming generation zero
-            # is refused before it is signed, so a base-only deployment needs
-            # it as much as a capturing one.
-            - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             {{- if .Values.hangarOutput.enabled }}
-            - --kubernetes-hangar-output-control-keys=/etc/concourse/hangar-output/control-keys/control-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
             # The output namespace. Server configuration and never a request
             # field: no task, consumer, path parameter or request can select or
@@ -400,9 +393,6 @@ spec:
               mountPath: /etc/concourse/hangar-output/capability
               readOnly: true
             {{- if .Values.hangarOutput.enabled }}
-            - name: hangar-output-control-keys
-              mountPath: /etc/concourse/hangar-output/control-keys
-              readOnly: true
             - name: hangar-output-materialize
               mountPath: /etc/concourse/hangar-output/materialize
               readOnly: true
@@ -482,26 +472,11 @@ spec:
           secret:
             secretName: {{ .Values.hangarOutput.capabilityKeySecret }}
         {{- if .Values.hangarOutput.enabled }}
-        - name: hangar-output-control-keys
-          {{- if include "concourse.hangarBootstrap.ringEnabled" . }}
-          secret:
-            # The bootstrap's ring Secret: PUBLIC verification material it
-            # composed from the keys' public halves. A Secret only because the
-            # bootstrap may create nothing else; nothing in it can sign.
-            secretName: {{ include "concourse.hangarBootstrap.ringName" . }}
-          {{- else }}
-          configMap:
-            # PUBLIC verification material only. The private half is mounted in
-            # the artifact daemon Pod and nowhere else; a public key cannot sign,
-            # which is what makes this a ConfigMap rather than a Secret.
-            name: {{ include "concourse.hangarOutput.controlKeysName" . }}
-          {{- end }}
         - name: hangar-output-materialize
           secret:
             # The read-warrant key. The control plane MINTS warrants, so it holds
             # this one -- and it is a different key and a different domain from
-            # the node control key, so holding it does not let web sign a node
-            # statement.
+            # the control capability key, so the two are rotated apart.
             secretName: {{ .Values.hangarOutput.materializationKeySecret }}
         {{- if eq .Values.hangarOutput.store "disk" }}
         {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "inventory" "name" "hangar-output-list") | nindent 8 }}

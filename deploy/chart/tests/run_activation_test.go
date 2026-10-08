@@ -8,7 +8,8 @@ import (
 // The Run contract has its own activation marker, and the chart turns it on at
 // every deploy: each web node writes web.pipelineRunActivationEpoch into that
 // marker at startup. The epoch is the Run contract's own, so it must reach the
-// binary on its own flag, without the Hangar output plane.
+// binary on its own flag, without the Hangar output plane -- which has no
+// epoch of its own.
 //
 // These use render_test.go's render, which fails when helm is missing
 // rather than skipping. A skip is not a pass, and this is the only test that
@@ -55,22 +56,27 @@ func TestRunActivationIsOnAtEveryDeploy(t *testing.T) {
 		t.Errorf("the default render must activate the Run contract at epoch 1 exactly once, got %v", got)
 	}
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--kubernetes-hangar-output-activation-epoch") {
-			t.Errorf("the default render activated the Run contract through the Hangar epoch: %s", arg)
+		if strings.Contains(arg, "activation-epoch") && !strings.HasPrefix(arg, runActivationFlag) {
+			t.Errorf("the default render carries an activation epoch other than the Run contract's: %s", arg)
 		}
 	}
 }
 
-// The Run epoch and the Hangar epoch are rendered from their own values: an
-// operator rotating one does not move the other.
-func TestRunActivationEpochIsIndependentOfTheHangarEpoch(t *testing.T) {
+// The Run epoch is the Run contract's own: the output plane has no epoch of
+// its own (there is no control-key generation), and turning the plane on
+// renders the Run epoch from its own value and nothing else named an epoch.
+func TestRunActivationEpochIsTheOnlyEpochWithTheOutputPlaneOn(t *testing.T) {
 	web := strictWebDeployment(t, renderOutput(t, "hangarOutput.webEnabled=true", "web.pipelineRunActivationEpoch=3"))
 	args := web.Spec.Template.Spec.Containers[0].Args
+	for _, arg := range args {
+		if strings.Contains(arg, "epoch") && !strings.HasPrefix(arg, runActivationFlag) {
+			t.Errorf("the output plane rendered an epoch of its own: %s", arg)
+		}
+	}
 	for _, want := range []string{
 		runActivationFlag + "=3",
 		"--kubernetes-hangar-output-enabled",
 		"--kubernetes-hangar-output-capture-enabled",
-		"--kubernetes-hangar-output-activation-epoch=7",
 	} {
 		found := false
 		for _, arg := range args {

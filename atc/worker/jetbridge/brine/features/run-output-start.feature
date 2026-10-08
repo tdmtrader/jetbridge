@@ -53,13 +53,9 @@ Feature: A Run owns admission of its exact output producer
     When its producer admission transaction is rolled back
     Then neither a capture link nor a capture row remains
 
-  # The control-key generation is not a fact of the Run: a capture is admitted
-  # under the generation this control plane speaks for now, and the database
-  # holds no generation to compare a different one against. A step admitted
-  # under another nonzero generation is refused where the capabilities would be
-  # used -- the pod build ("A ready label without a matching control epoch
-  # admits nothing"). What start admission does refuse is no generation at all:
-  # a control plane with no output plane configured.
+  # Start admission binds the producer to the facts the Run was born with: its
+  # task, its declared result and output, its job and its build. A producer
+  # that presents any other fact is refused before a capture row exists.
   @core-review
   Scenario Outline: Unadmitted producer facts cannot select an output
     Given an internally admitted v2 result Run
@@ -70,7 +66,6 @@ Feature: A Run owns admission of its exact output producer
       | task          |
       | result        |
       | output        |
-      | no generation |
       | job           |
       | completed Run |
       | aborted build |

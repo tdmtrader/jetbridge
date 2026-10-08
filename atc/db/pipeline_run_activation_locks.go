@@ -7,10 +7,9 @@ import (
 )
 
 // The Run contract has its own activation marker, independent of the Hangar
-// output epoch (durable Run contract, amendment M-2 decision 3). Every Run
-// transaction locks it first, before any Run-domain lock; a transaction that
-// also needs a Hangar epoch locks that epoch's row next, still inside the
-// activation prefix.
+// output plane. Every Run transaction locks it first, before any Run-domain
+// lock; a transaction that also needs the output plane locks its in-service
+// row next, still inside the activation prefix.
 
 // runActivationMarker is the Run activation marker as a transaction locked it.
 type runActivationMarker struct {
@@ -30,7 +29,7 @@ func (m runActivationMarker) admits(epoch int64) error {
 // continues is the test for work on a Run that already exists: the marker
 // must not have been downgraded below the Run's birth epoch. It need not
 // admit -- turning admission off stops new Runs, not running ones -- and it is
-// indifferent to any Hangar epoch rotation.
+// indifferent to the output plane.
 func (m runActivationMarker) continues(runEpoch int64) error {
 	if runEpoch <= 0 || m.epoch < runEpoch {
 		return atc.ErrRunResultsUnavailable
@@ -53,12 +52,9 @@ func lockRunActivationMarker(ctx context.Context, tx Tx) (runActivationMarker, e
 	return marker, err
 }
 
-// lockEnabledHangarEpoch requires an output plane to be configured (a nonzero
-// control-key epoch) and in service: hangar_enabled, taken FOR SHARE.
-func lockEnabledHangarEpoch(ctx context.Context, tx Tx, epoch int64) error {
-	if epoch <= 0 {
-		return atc.ErrRunResultsUnavailable
-	}
+// lockEnabledHangarOutput requires the output plane to be in service:
+// hangar_enabled, taken FOR SHARE. A caller with no plane never reaches it.
+func lockEnabledHangarOutput(ctx context.Context, tx Tx) error {
 	ready, err := hangarLockEnabled(ctx, tx)
 	if err != nil {
 		return err

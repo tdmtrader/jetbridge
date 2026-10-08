@@ -775,7 +775,9 @@
       "properties": {
         "enabled": {},
         "secretNames": {},
-        "referencedKeys": {},
+        "referencedKeys": {
+          "$ref": "#/definitions/removed"
+        },
         "database": {
           "$ref": "#/definitions/removed"
         }
@@ -799,7 +801,9 @@
         "bucket": {},
         "prefix": {},
         "tenant": {},
-        "activationEpoch": {},
+        "activationEpoch": {
+          "$ref": "#/definitions/removed"
+        },
         "cacheBucket": {},
         "strictInputBucket": {},
         "endpoint": {},

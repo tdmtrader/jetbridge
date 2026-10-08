@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -33,7 +32,7 @@ func RunCancellationFinalityDefinitions() []brine.StepDefinition {
 			}
 			factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
 			worker := jetbridge.NewWorker(row, in.Client, in.Config, jetbridge.WorkerDeps{
-				ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: closureControlKeys(in)},
+				ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source()},
 			})
 			build := in.Start.Creation.EntryBuilds[0]
 			spec := in.Spec

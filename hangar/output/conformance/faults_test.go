@@ -40,7 +40,7 @@ func publishedForDeletion(t *testing.T, tier substrate, fill string) (
 	t.Helper()
 
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	object, err := role.EnsurePublication(ctx,
@@ -238,7 +238,7 @@ func declaredReclaimerOutcomes(t *testing.T) []reclaimer.Outcome {
 func TestARetryAfterAnAmbiguousCreateConvergesOnOneGeneration(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 	reservation := testsupport.Reservation(t, namespace, testReservation, testsupport.Digest("a4"))
 

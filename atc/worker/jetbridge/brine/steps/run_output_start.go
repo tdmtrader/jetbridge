@@ -52,7 +52,7 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 				go func(i int) {
 					defer group.Done()
 					<-start
-					records[i], errs[i] = in.start(in.Plan, int64(hangarEpoch), brineCaptureNode, hangarNodeUID, false)
+					records[i], errs[i] = in.start(in.Plan, brineCaptureNode, hangarNodeUID, false)
 				}(i)
 			}
 			close(start)
@@ -139,15 +139,15 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 			return nil
 		}),
 		brine.DefineMap[RunOutputStart, RunOutputStart]("its result producer requests start admission", func(in RunOutputStart, _ brine.Params, _ *brine.Recorder) (RunOutputStart, error) {
-			in.Record, in.Err = in.start(in.Plan, int64(hangarEpoch), brineCaptureNode, hangarNodeUID, false)
+			in.Record, in.Err = in.start(in.Plan, brineCaptureNode, hangarNodeUID, false)
 			return in, in.Err
 		}),
 		brine.DefineMap[RunOutputStart, RunOutputStart]("a new controller repeats the producer admission", func(in RunOutputStart, _ brine.Params, _ *brine.Recorder) (RunOutputStart, error) {
-			in.Replay, in.Err = in.start(in.Plan, int64(hangarEpoch), brineCaptureNode, hangarNodeUID, false)
+			in.Replay, in.Err = in.start(in.Plan, brineCaptureNode, hangarNodeUID, false)
 			return in, in.Err
 		}),
 		brine.DefineMap[RunOutputStart, RunOutputStart]("its producer admission transaction is rolled back", func(in RunOutputStart, _ brine.Params, _ *brine.Recorder) (RunOutputStart, error) {
-			in.Record, in.Err = in.start(in.Plan, int64(hangarEpoch), brineCaptureNode, hangarNodeUID, true)
+			in.Record, in.Err = in.start(in.Plan, brineCaptureNode, hangarNodeUID, true)
 			return in, in.Err
 		}),
 		brine.DefineMap[RunOutputStart, RunOutputStart]("its producer asks to start with a different {string}", func(in RunOutputStart, p brine.Params, _ *brine.Recorder) (RunOutputStart, error) {
@@ -155,7 +155,6 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 			plan := in.Plan
 			selected := *plan.RunResult
 			plan.RunResult = &selected
-			epoch := int64(hangarEpoch)
 			var err error
 			switch fact {
 			case "task":
@@ -164,8 +163,6 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 				plan.RunResult.Name = "other"
 			case "output":
 				plan.RunResult.Output = "other"
-			case "no generation":
-				epoch = 0
 			case "job":
 				in.Creation.EntryBuilds = []db.Build{in.Creation.EntryBuilds[1]}
 			case "completed Run":
@@ -192,11 +189,11 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			_, in.Err = in.start(plan, epoch, "brine-node", hangarNodeUID, false)
+			_, in.Err = in.start(plan, "brine-node", hangarNodeUID, false)
 			return in, nil
 		}),
 		brine.DefineMap[RunOutputStart, RunOutputStart]("another node is offered for that producer", func(in RunOutputStart, _ brine.Params, _ *brine.Recorder) (RunOutputStart, error) {
-			_, in.Err = in.start(in.Plan, int64(hangarEpoch), "replacement-node", "replacement-uid", false)
+			_, in.Err = in.start(in.Plan, "replacement-node", "replacement-uid", false)
 			return in, nil
 		}),
 		CheckThat[RunOutputStart]("one pending capture belongs to that exact Run and build", checkRunOutputStart),
@@ -250,12 +247,12 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 		return in, err
 	}
 	opts := db.RunCreationOpts{}
-	opts.ActivationEpoch = int64(hangarEpoch)
-	opts.HangarEpoch = int64(hangarEpoch)
+	opts.ActivationEpoch = int64(runActivationEpoch)
+	opts.HangarOutput = true
 	if err := putOutputPlaneInService(jdb); err != nil {
 		return in, err
 	}
-	epoch := int64(hangarEpoch)
+	epoch := int64(runActivationEpoch)
 	if activation == "stale" {
 		epoch++
 	}
@@ -283,7 +280,7 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 	return in, err
 }
 
-func (in RunOutputStart) start(plan atc.TaskPlan, epoch int64, node, uid string, rollback bool) (runCaptureRecord, error) {
+func (in RunOutputStart) start(plan atc.TaskPlan, node, uid string, rollback bool) (runCaptureRecord, error) {
 	factory := db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -292,7 +289,7 @@ func (in RunOutputStart) start(plan atc.TaskPlan, epoch int64, node, uid string,
 		return runCaptureRecord{}, err
 	}
 	defer db.Rollback(tx)
-	started, err := factory.StartRunCapture(ctx, tx, in.Creation.EntryBuilds[0].ID(), plan, epoch, time.Hour, node, uid)
+	started, err := factory.StartRunCapture(ctx, tx, in.Creation.EntryBuilds[0].ID(), plan, time.Hour, node, uid)
 	if err != nil || rollback {
 		return runCaptureRecordOf(started.Capture), err
 	}

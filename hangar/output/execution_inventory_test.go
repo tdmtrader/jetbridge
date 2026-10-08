@@ -16,8 +16,7 @@ import (
 
 // There is one exact-execution state machine in this repository and it is
 // hangar/executioncontrol. DurableOutputCapture is an optional extension that
-// references the same base identity; it does not fork it, restate it, or carry
-// an activation epoch of its own.
+// references the same base identity; it does not fork it or restate it.
 //
 // The guards here inventory the contract rather than the wiring, and they are
 // written so that widening the population is a change of what the walk finds,
@@ -304,7 +303,7 @@ func contractFields(t *testing.T, dirs []string) []declaredField {
 }
 
 // TestCaptureExtensionDoesNotForkTheBaseIdentity is the other direction: the
-// extension must reference the base identity and epoch, never redeclare them.
+// extension must reference the base identity, never redeclare it.
 func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
 	fields := contractFields(t, []string{outputPackageDir})
 	if len(fields) == 0 {
@@ -337,20 +336,13 @@ func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
 				t.Errorf("hangar/output: %s.ExecutionID is a %s, not an "+
 					"executioncontrol.ExecutionID.", field.Owner, field.Type)
 			}
-		case "ActivationEpoch":
-			carriers++
-			if field.Type != "executioncontrol.ActivationEpoch" {
-				t.Errorf("hangar/output: %s.ActivationEpoch is a %s, not an "+
-					"executioncontrol.ActivationEpoch. One control-key generation covers both facets; "+
-					"a second type is a second epoch.", field.Owner, field.Type)
-			}
 		}
 	}
 
 	if carriers == 0 {
-		t.Fatal("no exported struct in hangar/output carries an execution identity or activation " +
-			"epoch. This guard exists because the capture extension references the base identity; " +
-			"an extension that references none satisfies it for the wrong reason.")
+		t.Fatal("no exported struct in hangar/output carries an execution identity. This guard " +
+			"exists because the capture extension references the base identity; an extension " +
+			"that references none satisfies it for the wrong reason.")
 	}
-	t.Logf("checked %d identity/epoch carriers across %d exported fields", carriers, len(fields))
+	t.Logf("checked %d identity carriers across %d exported fields", carriers, len(fields))
 }

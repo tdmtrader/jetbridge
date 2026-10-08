@@ -95,7 +95,7 @@ var _ = Describe("DefaultFactory", func() {
 			executor := jetbridge.NewSPDYExecutor(clientset, &rest.Config{Host: "https://kube.invalid"})
 			locator := jetbridge.NewArtifactLocator()
 			daemonClient := jetbridge.NewDaemonClient(logger, clientset, cfg.Namespace, "artifact-daemon", 7780, nil)
-			controls := jetbridge.NewOutputControls(cfg, jetbridge.NewNodeIPResolver(clientset), minter, 7)
+			controls := jetbridge.NewOutputControls(cfg, jetbridge.NewNodeIPResolver(clientset), minter)
 			preparer := &recordingPreparer{}
 
 			factory := worker.DefaultFactory{

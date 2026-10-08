@@ -48,14 +48,6 @@ func TestABaseControlDaemonBuildsWithNoOutputFacetAtAll(t *testing.T) {
 	if daemon.OutputEnabled() {
 		t.Error("a daemon with no output bucket reports the output facet enabled")
 	}
-	if daemon.ActivationEpoch() != 7 {
-		t.Errorf("the base facet's activation epoch is %d, not the configured 7",
-			daemon.ActivationEpoch())
-	}
-	if daemon.ControlKeyID() == "" {
-		t.Error("a base-control daemon has no control key id; an unsigned acknowledgement " +
-			"is not proof")
-	}
 
 	// The control, so the row above is not "a daemon that builds from anything":
 	// the output facet still builds when it is configured.
@@ -187,10 +179,6 @@ func TestTheExtensionHandshakeIsServedOnlyWithTheOutputFacet(t *testing.T) {
 	if err := handshake.Validate(); err != nil {
 		t.Errorf("the daemon's own extension handshake does not validate: %v", err)
 	}
-	if handshake.Base.ActivationEpoch != full.epoch {
-		t.Errorf("the handshake reports epoch %d, the daemon publishes under %d",
-			handshake.Base.ActivationEpoch, full.epoch)
-	}
 	if handshake.BucketFingerprint == full.bucket {
 		t.Error("the handshake reports the bucket NAME as its fingerprint; a fingerprint is " +
 			"what lets a control plane compare two daemons without the name being the secret")
@@ -230,7 +218,6 @@ func newBaseOnlyRoutes(t *testing.T) *routeFixture {
 	source := &captureFixture{ledgerFixture: *newLedger(t)}
 
 	config := baseOnlyConfig(t)
-	config.ControlKeyFile = writePrivateKey(t, source.private)
 	daemon, err := Build(t.Context(), config)
 	if err != nil {
 		t.Fatalf("building a base-control-only daemon: %v", err)
@@ -245,7 +232,6 @@ func newBaseOnlyRoutes(t *testing.T) *routeFixture {
 		captureFixture: source,
 		daemon:         daemon,
 		minter:         minter,
-		epoch:          daemon.ActivationEpoch(),
 		config:         config,
 	}
 	fixture.serveBaseOnly(t)

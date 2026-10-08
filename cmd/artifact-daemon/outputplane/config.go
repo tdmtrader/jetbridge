@@ -1,9 +1,7 @@
 package outputplane
 
 import (
-	"crypto/ed25519"
 	"crypto/subtle"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
@@ -42,18 +40,11 @@ type Config struct {
 	CacheBucket       string
 	StrictInputBucket string
 
-	// The output read-warrant key: a THIRD key, an exact 32-byte HMAC secret
+	// The output read-warrant key: a SECOND key, an exact 32-byte HMAC secret
 	// under the hangar-output-materialize-v1 domain. It is neither the control
 	// capability key nor the foundation's strict-input materialization key.
 	MaterializationKeyID   string
 	MaterializationKeyFile string
-
-	// The node's control key: a SECOND Ed25519 key, for the statements the
-	// execution ledger makes: a process on this node did something. It is
-	// separate from the symmetric keys so that rotating one does not rotate
-	// the other.
-	ControlKeyID   string
-	ControlKeyFile string
 
 	// PublishConcurrency bounds how many trees may be spooled to scratch at
 	// once.
@@ -67,7 +58,9 @@ type Config struct {
 	PublishConcurrency int
 
 	// The node-local surfaces. NodeName, ControlDir and StepsDir are set by
-	// the artifact daemon from its own configuration.
+	// the artifact daemon from its own configuration. CapabilityKeyFile is the
+	// one key every facet needs: the base facet cannot verify a capability
+	// without it, which is why giving it is what mounts the output plane.
 	NodeName          string
 	NodeUID           string
 	ControlDir        string
@@ -76,7 +69,6 @@ type Config struct {
 	CapabilityKeyFile string
 	CapabilityTTL     time.Duration
 
-	ActivationEpoch  uint64
 	OperationTimeout time.Duration
 
 	// SealWait bounds one background capture job: a seal (the wait for the
@@ -101,7 +93,7 @@ type Config struct {
 // BindFlags declares the output plane's flags on the artifact daemon's set.
 //
 // Every flag names an output-plane fact. The output plane is mounted when
-// --control-key-file is given.
+// --capability-key is given.
 func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.OutputStore, "output-store", output.StoreGCS,
 		"Store profile for the output plane. Supported profiles: gcs and disk.")
@@ -124,10 +116,6 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which key can check it.")
 	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
 		"Path to the raw 32-byte key output read warrants are signed with, under the hangar-output-materialize-v1 domain. It is never the control capability key and never the foundation's strict-input materialization key.")
-	flags.StringVar(&config.ControlKeyID, "control-key-id", "",
-		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. The web pins its public half per control-key generation.")
-	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
-		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from every symmetric key: rotating one must not rotate the other.")
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
 		"How long one background capture job may run: a seal (the wait for every container of the producing Pod to terminate, and the canonicalization after it) or a publish (the upload). Both are asynchronous -- the control plane polls them -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
 	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
@@ -141,11 +129,9 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.ScratchDir, "output-scratch-dir", "",
 		"Absolute scratch directory for canonicalization, outside the storage root.")
 	flags.StringVar(&config.CapabilityKeyFile, "capability-key", "",
-		"Path to the raw 32-byte key control capabilities are minted and verified with. It is shared with the control plane and with nothing else.")
+		"Path to the raw 32-byte key control capabilities are minted and verified with. It is shared with the control plane and with nothing else. Giving it mounts the output plane on this daemon's listener.")
 	flags.DurationVar(&config.CapabilityTTL, "capability-ttl", 15*time.Minute,
 		"Maximum accepted lifetime of a control capability. A capability is presented once, within one operation; an hour-long one is a credential.")
-	flags.Uint64Var(&config.ActivationEpoch, "activation-epoch", 0,
-		"The control-key generation this daemon verifies capabilities and signs statements under. Rotation creates a new generation rather than replacing a key in place. It does not put the plane in service; the web's hangar_enabled row does.")
 	flags.DurationVar(&config.OperationTimeout, "output-timeout", output.DefaultOperationTimeout,
 		"Per-operation timeout against the output bucket.")
 }
@@ -172,23 +158,14 @@ func (config Config) Validate() error {
 	if config.OperationTimeout <= 0 {
 		return fmt.Errorf("%w: --output-timeout must be positive", output.ErrIncomplete)
 	}
-	if strings.TrimSpace(config.ControlKeyID) == "" {
-		return fmt.Errorf("%w: --control-key-id is required; a ledger statement names the key "+
-			"that can check it", output.ErrIncomplete)
-	}
-	if strings.TrimSpace(config.ControlKeyFile) == "" {
-		return fmt.Errorf("%w: --control-key-file is required; an unsigned acknowledgement is "+
-			"not proof", output.ErrIncomplete)
+	if strings.TrimSpace(config.CapabilityKeyFile) == "" {
+		return fmt.Errorf("%w: --capability-key is required; the base facet cannot verify "+
+			"a capability without it", output.ErrIncomplete)
 	}
 	if config.PublishConcurrency < 1 {
 		return fmt.Errorf("%w: --publish-concurrency must be at least 1; zero would admit no "+
 			"capture at all", output.ErrIncomplete)
 	}
-	if config.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: --activation-epoch is required; every capability names its "+
-			"control-key generation, and zero is the absence of one", output.ErrIncomplete)
-	}
-
 	if err := config.validateOutputFacet(); err != nil {
 		return err
 	}
@@ -243,25 +220,21 @@ func (config Config) validateOutputFacet() error {
 		}
 	}
 
-	// Three key roles, three files. They say different things, and one file
-	// for two of them means rotating either rotates both.
-	for _, pair := range []struct{ left, right, leftFlag, rightFlag string }{
-		{config.ControlKeyFile, config.MaterializationKeyFile, "--control-key-file", "--materialization-key-file"},
-		{config.MaterializationKeyFile, config.CapabilityKeyFile, "--materialization-key-file", "--capability-key"},
-	} {
-		if pair.left != "" && pair.left == pair.right {
-			return fmt.Errorf("%w: %s and %s name the same key. They say different things, "+
-				"so one key would mean rotating either rotates both", output.ErrIncomplete, pair.leftFlag, pair.rightFlag)
-		}
+	// Two key roles, two files. They say different things, and one file for
+	// both means rotating either rotates both.
+	if config.MaterializationKeyFile != "" && config.MaterializationKeyFile == config.CapabilityKeyFile {
+		return fmt.Errorf("%w: --materialization-key-file and --capability-key name the same "+
+			"key. They say different things, so one key would mean rotating either rotates both",
+			output.ErrIncomplete)
 	}
 	return nil
 }
 
 // RefuseCollidingKeyMaterial compares the key BYTES, not the paths.
 //
-// Validate above refuses five path pairs and two equal key ids, and every one
-// of those comparisons is over NAMES: two flags pointing at symlinks to one
-// file pass all of them, and so do two Secrets holding identical material. The
+// Validate above refuses the path pair, and that comparison is over NAMES:
+// two flags pointing at symlinks to one file pass it, and so do two Secrets
+// holding identical material. The
 // separation the plan promises is a separation of authority -- a read warrant
 // must not be signable by anything that can mint a control capability -- and
 // authority follows the bytes.
@@ -272,7 +245,6 @@ func (config Config) validateOutputFacet() error {
 func (config Config) RefuseCollidingKeyMaterial() error {
 	loaded := map[string][]byte{}
 	for _, key := range []struct{ flag, file string }{
-		{"--control-key-file", config.ControlKeyFile},
 		{"--materialization-key-file", config.MaterializationKeyFile},
 		{"--capability-key", config.CapabilityKeyFile},
 	} {
@@ -315,7 +287,6 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 		TenantID:          config.OutputTenant,
 		CacheBucket:       config.CacheBucket,
 		StrictInputBucket: config.StrictInputBucket,
-		ActivationEpoch:   activationEpoch(config.ActivationEpoch),
 	})
 }
 
@@ -373,23 +344,4 @@ func (config Config) PrepareScratch() error {
 	}
 
 	return nil
-}
-
-// LoadControlKey reads the node's control signing key off disk.
-func (config Config) LoadControlKey() (ed25519.PrivateKey, error) {
-	return loadEd25519(config.ControlKeyFile, "control")
-}
-
-func loadEd25519(file, what string) (ed25519.PrivateKey, error) {
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		return nil, fmt.Errorf("%w: reading the %s signing key: %v", output.ErrIncomplete, what, err)
-	}
-
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, fmt.Errorf("%w: %s is not PEM", output.ErrCorrupt, file)
-	}
-
-	return parsePKCS8Ed25519(block.Bytes)
 }

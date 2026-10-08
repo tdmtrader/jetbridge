@@ -172,7 +172,7 @@ func validateOutputScratch(scratch, storage, hangarScratch string, hangarEnabled
 // outputNamespace is the output plane's bucket or disk namespace, or "" when
 // this daemon mounts no output plane or the plane carries base control only.
 func outputNamespace(config outputplane.Config) string {
-	if config.ControlKeyFile == "" || !config.OutputFacetEnabled() {
+	if config.CapabilityKeyFile == "" || !config.OutputFacetEnabled() {
 		return ""
 	}
 	return config.OutputBucket

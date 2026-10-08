@@ -12,12 +12,12 @@ import (
 )
 
 type CancellationExecutionSource interface {
-	ExecutionStart(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (executioncontrol.Acknowledgement, error)
+	ExecutionStart(context.Context, string, string, executioncontrol.Identity) (executioncontrol.Acknowledgement, error)
 	InterruptExecution(context.Context, string, executioncontrol.Acknowledgement) error
 	RecoverExecutionOutcome(context.Context, string, executioncontrol.Acknowledgement) (executioncontrol.ClassifyResult, error)
-	ClassifyExecution(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (executioncontrol.ClassifyResult, error)
-	StopExecution(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error)
-	BaseRuntimeControl(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (*runtime.ExecutionControl, error)
+	ClassifyExecution(context.Context, string, string, executioncontrol.Identity) (executioncontrol.ClassifyResult, error)
+	StopExecution(context.Context, string, string, executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error)
+	BaseRuntimeControl(context.Context, string, string, executioncontrol.Identity) (*runtime.ExecutionControl, error)
 }
 
 type CancellationSourcePlane interface {
@@ -28,17 +28,16 @@ type CancellationSourcePlane interface {
 // CancellationExecutions reconciles commands without selected outputs through
 // the same exact node protocol. An issued stop is never reported as completion.
 type CancellationExecutions struct {
-	Conn     db.DbConn
-	Factory  db.PipelineRunFactory
-	Source   CancellationExecutionSource
-	Verifier db.RunExecutionVerifier
+	Conn    db.DbConn
+	Factory db.PipelineRunFactory
+	Source  CancellationExecutionSource
 }
 
 func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Context, lease db.RunCancellationLease, op db.RunCancellationOperation) (db.RunCancellationDebt, error) {
 	if op.Kind != db.CancelExecution {
 		return db.CancellationUnavailable, db.ErrRunCancellationExternalWork
 	}
-	if s.Conn == nil || s.Factory == nil || s.Source == nil || s.Verifier == nil {
+	if s.Conn == nil || s.Factory == nil || s.Source == nil {
 		return db.CancellationUnavailable, errors.New("incomplete cancellation execution handler")
 	}
 	var in db.RunCancellationExecution
@@ -59,7 +58,7 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 		// database was unavailable when the answer came back, or cancellation
 		// closed admission before a replay could retain it. Without the start
 		// nothing can interrupt the command or close the execution, so it is
-		// read from the node that signed it and retained under the Run's
+		// read from the node that answered it and retained under the Run's
 		// publication lock -- a node fact, never new start authority.
 		start, err := s.retainNodeStart(ctx, a)
 		if err != nil {
@@ -68,7 +67,7 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 		in.Start = start
 	}
 	observe := func() (db.RunOutputCancellationEvidence, error) {
-		c, err := s.Source.ClassifyExecution(ctx, a.NodeName, a.NodeUID, executioncontrol.ActivationEpoch(a.Epoch), a.Identity)
+		c, err := s.Source.ClassifyExecution(ctx, a.NodeName, a.NodeUID, a.Identity)
 		if err != nil {
 			return db.RunOutputCancellationEvidence{}, err
 		}
@@ -78,7 +77,7 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 		if c.Identity != a.Identity {
 			return db.RunOutputCancellationEvidence{}, output.ErrInvalidIdentity
 		}
-		c, err = recoverCancellationOutcome(ctx, s.Source, s.Verifier, a.NodeName, in.Start, c)
+		c, err = recoverCancellationOutcome(ctx, s.Source, a.NodeName, in.Start, c)
 		if err != nil {
 			return db.RunOutputCancellationEvidence{}, err
 		}
@@ -91,13 +90,13 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 	if evidence.Execution.Classification == executioncontrol.ClassificationNeverStarted {
 		// Admission could have committed in PostgreSQL before its first daemon
 		// call. Reconcile that same identity before installing its stop fence.
-		if _, err = s.Source.BaseRuntimeControl(ctx, a.NodeName, a.NodeUID, executioncontrol.ActivationEpoch(a.Epoch), a.Identity); err != nil {
+		if _, err = s.Source.BaseRuntimeControl(ctx, a.NodeName, a.NodeUID, a.Identity); err != nil {
 			return cancellationSourceDebt(err), err
 		}
 	}
 	switch evidence.Execution.Classification {
 	case executioncontrol.ClassificationNeverStarted, executioncontrol.ClassificationExecuting:
-		closure, err := s.Source.StopExecution(ctx, a.NodeName, a.NodeUID, executioncontrol.ActivationEpoch(a.Epoch), a.Identity)
+		closure, err := s.Source.StopExecution(ctx, a.NodeName, a.NodeUID, a.Identity)
 		if err != nil {
 			return cancellationSourceDebt(err), err
 		}
@@ -124,7 +123,7 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 		}
 	}
 	err = s.transaction(ctx, func(tx db.Tx) error {
-		return s.Factory.RecordCancelledRunExecution(ctx, tx, lease, op, evidence, s.Verifier)
+		return s.Factory.RecordCancelledRunExecution(ctx, tx, lease, op, evidence)
 	})
 	if errors.Is(err, atc.ErrRunOutputPending) {
 		return db.CancellationPending, nil
@@ -132,22 +131,19 @@ func (s *CancellationExecutions) ExecuteCancellationOperation(ctx context.Contex
 	return cancellationSourceDebt(err), err
 }
 
-// retainNodeStart reads the node's signed start for the admitted execution and
+// retainNodeStart reads the node's start for the admitted execution and
 // retains it in the Run. A node that recorded no start answers not found, and
 // the execution is then never-started as far as this node knows.
 func (s *CancellationExecutions) retainNodeStart(ctx context.Context, a db.RunExecutionAdmission) (*executioncontrol.Acknowledgement, error) {
-	start, err := s.Source.ExecutionStart(ctx, a.NodeName, a.NodeUID, executioncontrol.ActivationEpoch(a.Epoch), a.Identity)
+	start, err := s.Source.ExecutionStart(ctx, a.NodeName, a.NodeUID, a.Identity)
 	if errors.Is(err, output.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err = s.Verifier.VerifyExecution(start); err != nil {
-		return nil, err
-	}
 	if err = s.transaction(ctx, func(tx db.Tx) error {
-		return s.Factory.RecordRunExecutionWitness(ctx, tx, a.BuildID, a.PlanID, start, s.Verifier)
+		return s.Factory.RecordRunExecutionWitness(ctx, tx, a.BuildID, a.PlanID, start)
 	}); err != nil {
 		return nil, err
 	}
@@ -158,14 +154,11 @@ type executionOutcomeRecovery interface {
 	RecoverExecutionOutcome(context.Context, string, executioncontrol.Acknowledgement) (executioncontrol.ClassifyResult, error)
 }
 
-func recoverCancellationOutcome(ctx context.Context, source executionOutcomeRecovery, verifier db.RunExecutionVerifier, node string, start *executioncontrol.Acknowledgement, current executioncontrol.ClassifyResult) (executioncontrol.ClassifyResult, error) {
+func recoverCancellationOutcome(ctx context.Context, source executionOutcomeRecovery, node string, start *executioncontrol.Acknowledgement, current executioncontrol.ClassifyResult) (executioncontrol.ClassifyResult, error) {
 	if current.Classification != executioncontrol.ClassificationExecuting || start == nil {
 		return current, nil
 	}
-	if verifier == nil {
-		return current, output.ErrIncomplete
-	}
-	if err := verifier.VerifyExecution(*start); err != nil {
+	if err := start.Validate(); err != nil {
 		return current, err
 	}
 	if start.Identity != current.Identity || start.Kind != executioncontrol.AcknowledgementStart {

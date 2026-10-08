@@ -38,7 +38,7 @@ func (s *Server) credentialSession(pipeline db.Pipeline, deliver bool) http.Hand
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if s.services.Admitter == nil || s.services.Epoch <= 0 {
+		if s.services.Admitter == nil || !s.services.HangarOutput {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -76,9 +76,9 @@ func (s *Server) credentialSession(pipeline db.Pipeline, deliver bool) http.Hand
 			}
 			defer controller.SetReadDeadline(time.Time{})
 			body := http.MaxBytesReader(w, r.Body, 65537)
-			state, err = s.services.Admitter.HandoffCredentials(ctx, ref, principal, number, result, s.services.Epoch, body)
+			state, err = s.services.Admitter.HandoffCredentials(ctx, ref, principal, number, result, body)
 		} else {
-			state, err = s.services.Admitter.InspectCredentialHandoff(ctx, ref, principal, number, result, s.services.Epoch)
+			state, err = s.services.Admitter.InspectCredentialHandoff(ctx, ref, principal, number, result)
 		}
 		if err != nil {
 			switch {

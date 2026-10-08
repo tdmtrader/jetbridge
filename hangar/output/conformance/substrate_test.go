@@ -426,7 +426,6 @@ func eachSubstrate(t *testing.T, run func(*testing.T, substrate)) {
 
 const (
 	testTenant       = "tenant-conformance"
-	testEpoch        = 7
 	testReservation  = output.ReservationID("44444444-4444-4444-8444-444444444444")
 	otherReservation = output.ReservationID("55555555-5555-4555-8555-555555555555")
 )

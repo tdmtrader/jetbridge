@@ -20,19 +20,15 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
-const (
-	testExecutionID = executioncontrol.ExecutionID("11111111-1111-4111-8111-111111111111")
-	testEpoch       = executioncontrol.ActivationEpoch(7)
-)
+const testExecutionID = executioncontrol.ExecutionID("11111111-1111-4111-8111-111111111111")
 
 func baseEnvelope() runtime.ExecutionControl {
 	return runtime.ExecutionControl{
-		Version:         runtime.ExecutionControlVersion,
-		Phase:           runtime.ControlPhaseAdmitted,
-		Identity:        executioncontrol.Identity{ExecutionID: testExecutionID, Fence: 1},
-		ActivationEpoch: testEpoch,
-		Endpoint:        "http://127.0.0.1:7781",
-		Capability:      "base-capability",
+		Version:    runtime.ExecutionControlVersion,
+		Phase:      runtime.ControlPhaseAdmitted,
+		Identity:   executioncontrol.Identity{ExecutionID: testExecutionID, Fence: 1},
+		Endpoint:   "http://127.0.0.1:7781",
+		Capability: "base-capability",
 	}
 }
 
@@ -40,7 +36,6 @@ func captureExtension() runtime.DurableOutputCapture {
 	return runtime.DurableOutputCapture{
 		Version:            runtime.DurableOutputCaptureVersion,
 		Identity:           executioncontrol.Identity{ExecutionID: testExecutionID, Fence: 1},
-		ActivationEpoch:    testEpoch,
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Now().Add(time.Hour),
@@ -154,10 +149,6 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 			},
 			says: "execution id is empty",
 		},
-		"no activation epoch": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) { c.ActivationEpoch = 0 },
-			says:   "activation epoch is zero",
-		},
 		"no endpoint": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) { c.Endpoint = "  " },
 			says:   "no control endpoint",
@@ -177,12 +168,6 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 				c.Capture.Identity.Fence = 2
 			},
 			says: "at fence",
-		},
-		"a capture under another epoch": {
-			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.ActivationEpoch = testEpoch + 1
-			},
-			says: "one generation covers both facets",
 		},
 		// A capture that cannot say which node holds its step directory. The
 		// Pod is pinned to that node because the directory is on its disk.

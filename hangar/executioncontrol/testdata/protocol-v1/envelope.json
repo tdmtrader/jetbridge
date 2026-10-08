@@ -2,7 +2,6 @@
   "protocol_version": "hangar-execution-control-v1",
   "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
   "fence": 7,
-  "activation_epoch": 3,
   "node_uid": "node-9f2b1d4c",
   "capability": "control-capability-opaque-token"
 }

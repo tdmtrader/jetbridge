@@ -194,24 +194,19 @@ admission the marker must admit the epoch. A template that declares results,
 or a run given inputs, additionally needs the Hangar output plane in service (its
 `hangar_enabled` row, which the web writes from `hangarOutput.webEnabled`). Admission checks nothing more, but executing any run -- with or
 without results -- needs the Hangar output plane's execution control
-(`hangarOutput.executionControl`) with the node's output capability key
-configured and the output plane in service, because every step of a run
+with the node's output capability key configured and the output plane in
+service, because every step of a run
 build starts through the exact-execution check. On a deploy missing any of
 these, a run of a
 template without results is admitted and every step then fails with "Run
 result execution is not activated"; such a deploy sets
 `web.pipelineRunActivationEpoch: 0` to keep admission closed.
 
-A run is born under the Run epoch; its captures, credential deliveries and
-bound inputs carry the Hangar epoch they were admitted under. Continuing a
-running run -- starting its builds and producers, finalizing it, replaying its
-invocation key -- needs the marker at or past the run's epoch, not the Hangar
-epoch it was admitted under, so a Hangar rotation strands nothing. New Hangar
-work (a capture, a credential delivery, an input upload) still needs its own
-Hangar epoch enabled, and a new credential delivery also needs the marker
-admitting: an admission hold stops new Runs and new credential grants, not
-running Runs. Two limits are accepted and deferred: outputs published
-under a Hangar epoch that is later disabled may become unreadable, and a
-prior-run input bound across a rotation may be refused, because a prior
-run's result is admitted as an input only under the Hangar epoch its claim
-carries.
+A run is born under the Run epoch. Continuing a running run -- starting
+its builds and producers, finalizing it, replaying its invocation key --
+needs the marker at or past the run's epoch. New Hangar work (a capture, a
+credential delivery, an input upload) needs the output plane in service,
+and a new credential delivery also needs the marker admitting: an
+admission hold stops new Runs and new credential grants, not running Runs.
+Hangar carries no epoch of its own: a prior run's result is admitted as an
+input while its Run is succeeded and its claim is live, nothing more.

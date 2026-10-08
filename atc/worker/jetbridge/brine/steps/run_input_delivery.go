@@ -38,8 +38,7 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	}
 	conn := in.Source.Start.DB.Conn
 	factory := db.NewPipelineRunFactory(conn, in.Source.Start.DB.LockFactory)
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Source.Start.Daemon.ControlPublic)}}}
-	starter := &runs.ExecutionStarter{Conn: conn, Factory: factory, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys}
+	starter := &runs.ExecutionStarter{Conn: conn, Factory: factory}
 	configured, ok := any(starter).(interface {
 		SetInputReadMinter(hangaroutput.WarrantMinter)
 	})
@@ -53,10 +52,9 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	configured.SetInputReadMinter(signer)
 	config.OutputPlaneEnabled = true
 	config.HangarEnabled = true
-	config.OutputActivationEpoch = int64(hangarEpoch)
 	config.ArtifactDaemonHostPath = in.Source.Start.Daemon.Output.Root
 	client := in.Source.Candidate.Runtime.Client
-	source := jetbridge.NewOutputSource(client, config, in.Source.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	source := jetbridge.NewOutputSource(client, config, in.Source.Start.Daemon.Minter)
 	starter.Source = source
 	definition, found, err := factory.Definition(in.Run.ID)
 	if err != nil || !found {
@@ -103,7 +101,7 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	}
 	worker := jetbridge.NewWorker(row, client, config, jetbridge.WorkerDeps{
 		Executor:          jetbridge.NewSPDYExecutor(client, cluster.env.Config),
-		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), in.Source.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), in.Source.Start.Daemon.Minter),
 		ExecutionPreparer: starter,
 	})
 	owner := db.NewBuildStepContainerOwner(buildID, "consume-input", spec.TeamID)
@@ -166,8 +164,7 @@ func observeRunTaskStart(ctx context.Context, in RunInputAdmission, starter *run
 		return fmt.Errorf("the task has no admitted Run execution: %v", err)
 	}
 	daemon := in.Source.Start.Daemon
-	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter,
-		executioncontrol.ActivationEpoch(hangarEpoch))
+	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter)
 	start, err := node.RecordStart(ctx, admission.Identity, executioncontrol.PodUID(pod.UID),
 		executioncontrol.ProcessIdentity("run-input-task-"+freshUUID()))
 	if err != nil {

@@ -161,7 +161,6 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	cfg.ArtifactDaemonPort = liveCapturePort
 	cfg.ArtifactHelperImage = "busybox:latest"
 	cfg.OutputPlaneEnabled = true
-	cfg.OutputActivationEpoch = 9
 
 	// The capture's step directory. Nothing here composes a path: the
 	// capture key's own Directory() is the one derivation the ATC and the
@@ -195,17 +194,15 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	}
 
 	control := &atcruntime.ExecutionControl{
-		Version:         atcruntime.ExecutionControlVersion,
-		Phase:           atcruntime.ControlPhaseAdmitted,
-		Identity:        executioncontrol.Identity{ExecutionID: liveCaptureExecution, Fence: 3},
-		ActivationEpoch: 9,
-		Endpoint:        fmt.Sprintf("http://%s:%d", nodeAddress, liveCapturePort),
-		Capability:      "live-base-capability",
+		Version:    atcruntime.ExecutionControlVersion,
+		Phase:      atcruntime.ControlPhaseAdmitted,
+		Identity:   executioncontrol.Identity{ExecutionID: liveCaptureExecution, Fence: 3},
+		Endpoint:   fmt.Sprintf("http://%s:%d", nodeAddress, liveCapturePort),
+		Capability: "live-base-capability",
 	}
 	if err := control.SelectCapture(atcruntime.DurableOutputCapture{
 		Version:            atcruntime.DurableOutputCaptureVersion,
 		Identity:           control.Identity,
-		ActivationEpoch:    control.ActivationEpoch,
 		Output:             liveCaptureOutput,
 		SourceControlGrant: liveCaptureWarrant,
 		CaptureDeadline:    time.Now().Add(time.Hour).UTC(),

@@ -2,11 +2,7 @@ package outputplane
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"os"
@@ -30,26 +26,6 @@ import (
 // talks to a bucket, and a construction test against a double would prove the
 // double was constructible.
 
-func writeSigningKey(t *testing.T) (string, ed25519.PublicKey) {
-	t.Helper()
-
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generating a key pair: %v", err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		t.Fatalf("encoding the private key: %v", err)
-	}
-
-	path := filepath.Join(t.TempDir(), "signing.pem")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		t.Fatalf("writing the private key: %v", err)
-	}
-
-	return path, public
-}
-
 func emulator(t *testing.T) (*fakestorage.Server, string) {
 	t.Helper()
 
@@ -70,7 +46,6 @@ func emulator(t *testing.T) (*fakestorage.Server, string) {
 func validConfig(t *testing.T, endpoint, bucket string) Config {
 	t.Helper()
 
-	controlKeyFile, _ := writeSigningKey(t)
 	materializeKeyFile := writeMaterializationKey(t)
 
 	return Config{
@@ -84,12 +59,10 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 
 		MaterializationKeyID:   "materialize-key-1",
 		MaterializationKeyFile: materializeKeyFile,
-		ControlKeyID:           "control-key-1",
-		ControlKeyFile:         controlKeyFile,
+		CapabilityKeyFile:      writeCapabilityKey(t),
 		NodeUID:                "node-1",
 		ScratchDir:             t.TempDir(),
 		CapabilityTTL:          time.Minute,
-		ActivationEpoch:        7,
 		PublishConcurrency:     1,
 		OperationTimeout:       10 * time.Second,
 	}
@@ -110,12 +83,10 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"an S3-compatible store":   func(c *Config) { c.OutputStore = "s3" },
 		"no bucket":                func(c *Config) { c.OutputBucket = "" },
 		"no tenant":                func(c *Config) { c.OutputTenant = "" },
-		"no epoch":                 func(c *Config) { c.ActivationEpoch = 0 },
-		"no control key id":        func(c *Config) { c.ControlKeyID = "" },
-		"no control key file":      func(c *Config) { c.ControlKeyFile = "" },
+		"no capability key file":   func(c *Config) { c.CapabilityKeyFile = "" },
 		// One key for both would mean rotating either rotates both.
-		"one key for read warrants and control": func(c *Config) { c.ControlKeyFile = c.MaterializationKeyFile },
-		"a non-positive timeout":                func(c *Config) { c.OperationTimeout = 0 },
+		"one key for read warrants and capabilities": func(c *Config) { c.MaterializationKeyFile = c.CapabilityKeyFile },
+		"a non-positive timeout":                     func(c *Config) { c.OperationTimeout = 0 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -123,42 +94,6 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		if _, err := Build(context.Background(), config); err == nil {
 			t.Errorf("the daemon was built with %s", name)
 		}
-	}
-}
-
-func TestTheDaemonSignsWithAnEd25519KeyAndNothingElse(t *testing.T) {
-	server, bucket := emulator(t)
-
-	// An RSA key is the interesting refusal: it parses as a PKCS#8 private key
-	// and would sign perfectly well, producing statements no verifier in this
-	// deployment can check.
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generating an RSA key: %v", err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(rsaKey)
-	if err != nil {
-		t.Fatalf("encoding the RSA key: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "rsa.pem")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		t.Fatalf("writing the RSA key: %v", err)
-	}
-
-	config := validConfig(t, server.URL(), bucket)
-	config.ControlKeyFile = path
-	if _, err := Build(context.Background(), config); !errors.Is(err, output.ErrUnsupportedProtocol) {
-		t.Errorf("the daemon accepted an RSA control key: %v", err)
-	}
-
-	// And a file that is not PEM at all.
-	notPEM := filepath.Join(t.TempDir(), "garbage.pem")
-	if err := os.WriteFile(notPEM, []byte("this is not a key"), 0o600); err != nil {
-		t.Fatalf("writing the garbage key: %v", err)
-	}
-	config.ControlKeyFile = notPEM
-	if _, err := Build(context.Background(), config); !errors.Is(err, output.ErrCorrupt) {
-		t.Errorf("the daemon accepted a key file that is not PEM: %v", err)
 	}
 }
 
@@ -209,8 +144,7 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 	for _, name := range []string{
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
 		"cache-bucket", "strict-input-bucket",
-		"activation-epoch", "output-timeout",
-		"control-key-id", "control-key-file", "node-uid", "output-scratch-dir",
+		"output-timeout", "node-uid", "output-scratch-dir",
 		"capability-key", "capability-ttl",
 	} {
 		if flags.Lookup(name) == nil {
@@ -306,25 +240,23 @@ func hangarDigest(fill string) hangar.Digest {
 	return hangar.Digest("sha256:" + strings.Repeat(fill, 32))
 }
 
-// writePrivateKey puts an existing key on disk in the form the daemon reads.
-func writePrivateKey(t *testing.T, private ed25519.PrivateKey) string {
+// writeCapabilityKey puts the route fixtures' capability secret on disk in the
+// form the daemon reads, so a daemon built from validConfig verifies what
+// capabilitySecret mints.
+func writeCapabilityKey(t *testing.T) string {
 	t.Helper()
 
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		t.Fatalf("encoding: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "control.pem")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
+	path := filepath.Join(t.TempDir(), "capability.key")
+	if err := os.WriteFile(path, capabilitySecret(), 0o600); err != nil {
+		t.Fatalf("writing the capability key: %v", err)
 	}
 
 	return path
 }
 
 // writeMaterializationKey writes the exact 32 raw bytes an output read warrant is
-// signed with. It is a third key on purpose: a warrant must not be signable by
-// anything that can mint a publication receipt.
+// signed with. It is a second key on purpose: a warrant must not be signable by
+// anything that can mint a control capability.
 func writeMaterializationKey(t *testing.T) string {
 	t.Helper()
 

@@ -19,7 +19,7 @@ import (
 func TestAListedObjectCarriesItsMarkerAndItsStore(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("7a")

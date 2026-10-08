@@ -87,8 +87,9 @@ func main() {
 
 	// The output plane: exact execution control, and with --output-bucket the
 	// durable-capture extension. Mounted on this daemon's listener when
-	// --control-key-file is given; its control and steps directories are this
-	// daemon's storage root and its steps/ beneath it.
+	// --capability-key is given (the base facet cannot verify a capability
+	// without it); its control and steps directories are this daemon's storage
+	// root and its steps/ beneath it.
 	var planeConfig outputplane.Config
 	outputplane.BindFlags(flag.CommandLine, &planeConfig)
 
@@ -319,7 +320,7 @@ func main() {
 	}
 
 	var plane *outputplane.Plane
-	if planeConfig.ControlKeyFile != "" {
+	if planeConfig.CapabilityKeyFile != "" {
 		planeConfig.NodeName = *nodeName
 		planeConfig.ControlDir = *storagePath
 		planeConfig.StepsDir = filepath.Join(*storagePath, "steps")

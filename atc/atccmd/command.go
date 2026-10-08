@@ -154,9 +154,8 @@ type RunCommand struct {
 	// carried by the assembled JetBridge Config.
 	k8sHangarWarrantSigner *hangar.WarrantSigner
 
-	hangarOutputControlKeys hangaroutput.ControlKeyRing
-	hangarOutputSource      *jetbridge.OutputSource
-	hangarOutputStoreClose  func() error
+	hangarOutputSource     *jetbridge.OutputSource
+	hangarOutputStoreClose func() error
 
 	// hangarOutputCapabilityMinter mints the capability every control call on
 	// the artifact daemon's output plane presents. Built once during startup validation, from
@@ -245,9 +244,7 @@ type RunCommand struct {
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker without capture enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputWarrantKey                   string        `long:"kubernetes-hangar-output-warrant-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The artifact daemon's output plane verifies with the same key; nothing else holds it."`
 		OutputWarrantKeyLegacy             string        `long:"kubernetes-hangar-output-capability-key" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-output-warrant-key."`
-		OutputControlKeys                  string        `long:"kubernetes-hangar-output-control-keys" description:"Path to the node CONTROL public keys, one per control-key generation, used to verify a node's signed execution start. Retain an old generation while an execution it signed may still be recovered."`
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the control capability key and never the foundation's strict-input materialization key."`
-		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The control-key generation this control plane mints capabilities under and expects node acknowledgements to name. It does not put the plane in service: hangar_enabled does."`
 		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
 		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002); web never reaches the cache."`
 		InputBucket                        string        `long:"kubernetes-hangar-input-bucket"            description:"The strict-input bucket or disk namespace the artifact daemons publish trees into. Named here only so startup can refuse a cache, input and output namespace that are not three different places (ADR-0002)."`
@@ -1580,7 +1577,6 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
 	k8sCfg.HangarWarrantSigner = cmd.k8sHangarWarrantSigner
 	k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
-	k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 	k8sCfg.OutputOperationTimeout = cmd.Kubernetes.OutputOperationTimeout
 	if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 		k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
@@ -1647,7 +1643,7 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 		DB:       db,
 		Streamer: cmd.streamer(),
 	}
-	executionStarter := &runs.ExecutionStarter{Conn: dbConn, Factory: runFactory, Verifier: cmd.hangarOutputControlKeys}
+	executionStarter := &runs.ExecutionStarter{Conn: dbConn, Factory: runFactory}
 	factory.K8sExecutionPreparer = executionStarter
 
 	if cmd.Kubernetes.Namespace != "" {
@@ -1663,12 +1659,11 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sArtifactLocator = cmd.artifactLocator()
 		factory.K8sStepPodBuilds = stepPodBuilds
 		if k8sCfg.OutputPlaneEnabled && cmd.hangarOutputCapabilityMinter != nil {
-			// Both dispatch and recovery use the same node plane and epoch.
+			// Both dispatch and recovery use the same node plane.
 			factory.K8sOutputControls = jetbridge.NewOutputControls(k8sCfg,
 				jetbridge.NewNodeIPResolver(k8sClientset),
-				cmd.hangarOutputCapabilityMinter,
-				executioncontrol.ActivationEpoch(k8sCfg.OutputActivationEpoch))
-			source := jetbridge.NewOutputSource(k8sClientset, k8sCfg, cmd.hangarOutputCapabilityMinter, executioncontrol.ActivationEpoch(k8sCfg.OutputActivationEpoch))
+				cmd.hangarOutputCapabilityMinter)
+			source := jetbridge.NewOutputSource(k8sClientset, k8sCfg, cmd.hangarOutputCapabilityMinter)
 			source.SetExecutor(factory.K8sExecutor)
 			cmd.runCancellationSource = source
 			if err := cmd.configureOutputReads(dbConn, source); err != nil {
@@ -1678,9 +1673,7 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 				return worker.DefaultFactory{}, worker.DB{}, err
 			}
 			executionStarter.Source = source
-			executionStarter.Epoch = executioncontrol.ActivationEpoch(k8sCfg.OutputActivationEpoch)
-			cmd.runOutputStarter = runs.NewOutputStarter(dbConn, runFactory, source,
-				int64(k8sCfg.OutputActivationEpoch), cmd.Kubernetes.OutputCaptureDeadline)
+			cmd.runOutputStarter = runs.NewOutputStarter(dbConn, runFactory, source, cmd.Kubernetes.OutputCaptureDeadline)
 			executionStarter.Output = cmd.runOutputStarter
 			executionStarter.SetInputReadMinter(cmd.outputReadSigner)
 			cmd.runTaskStarter = executionStarter
@@ -1773,10 +1766,10 @@ func (cmd *RunCommand) gcComponents(
 //
 // The status component keeps its own additional condition, and it is a
 // different question: the flag says this deployment HAS an output plane, and
-// a nonzero control-key generation says it is configured enough to describe.
-// A status surface reporting "0 live generations, not at risk" about a plane
-// nobody has configured is an alert rule that will never fire looking exactly
-// like coverage.
+// a configured bucket says it is configured enough to describe. A status
+// surface reporting "0 live generations, not at risk" about a plane nobody
+// has configured is an alert rule that will never fire looking exactly like
+// coverage.
 func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableComponent {
 	if !cmd.Kubernetes.OutputPlaneEnabled {
 		return nil
@@ -1796,9 +1789,8 @@ func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableCompon
 // PostgreSQL and the node daemons the rows name.
 func (cmd *RunCommand) hangarOutputCoordinator(dbConn db.DbConn) *hangaroutput.Coordinator {
 	coordinator := &hangaroutput.Coordinator{
-		Transactor:      hangarOutputTransactor{conn: dbConn},
-		Rows:            db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
-		ActivationEpoch: executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
+		Transactor: hangarOutputTransactor{conn: dbConn},
+		Rows:       db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
 	}
 	// With no runtime source the coordinator's Dial stays nil, and it refuses
 	// every node-side step with a typed error.
@@ -1880,7 +1872,7 @@ func (cmd *RunCommand) runCancellationComponent(dbConn db.DbConn) RunnableCompon
 	if cmd.runResultFinalizer != nil {
 		factory = cmd.runResultFinalizer.Factory
 	}
-	executions := &runs.CancellationExecutions{Conn: dbConn, Factory: factory, Source: cmd.runCancellationSource, Verifier: cmd.hangarOutputControlKeys}
+	executions := &runs.CancellationExecutions{Conn: dbConn, Factory: factory, Source: cmd.runCancellationSource}
 	return RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentRunCancellation},
 		Interval:  runs.CancellationPollInterval,
@@ -2927,10 +2919,9 @@ func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
 //
 // Two switches, checked in the order they depend on each other. The BASE
 // switch wires this node's exact-execution control calls and needs the
-// capability key the daemon verifies with and a control-key generation; the
-// CAPTURE switch needs the node control keys it verifies signed starts with
-// and the read-warrant key it mints warrants with, and it can never be on
-// while the base switch is off.
+// capability key the daemon verifies with; the CAPTURE switch needs the
+// read-warrant key it mints warrants with, and it can never be on while the
+// base switch is off.
 //
 // Every refusal here is one the chart also refuses at render time. Both, and
 // deliberately: the chart is what an operator reviews, and this is what catches
@@ -2954,22 +2945,10 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 			"daemon presents a capability minted with it, and a control plane that cannot mint " +
 			"one can make no call at all")
 	}
-	// THE GENERATION BELONGS TO THE BASE SWITCH TOO, and this gate asked for it
-	// only under capture. Every capability -- base or capture -- carries the
-	// control-key generation in its claims and CapabilityClaims.Validate refuses a
-	// zero, so a base-only deployment with no epoch is one whose every control
-	// call fails at mint time. The chart has always refused it in the same
-	// block that requires the capability key; this is the half that catches a
-	// deployment that did not come from the chart.
-	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
-		return errors.New("--kubernetes-hangar-output-activation-epoch is required when " +
-			"--kubernetes-hangar-output-enabled is set: every capability this control plane " +
-			"mints names the epoch it was minted under, and zero is the absence of one")
-	}
-	// READ HERE rather than at the first call, for the reason the control key
-	// ring is read here: a control plane that cannot mint is one that will make no
-	// call at all, and "minted nothing" and "minted successfully" are the same
-	// observable outcome on any path that discovers the problem late. Until
+	// READ HERE rather than at the first call: a control plane that cannot
+	// mint is one that will make no call at all, and "minted nothing" and
+	// "minted successfully" are the same observable outcome on any path that
+	// discovers the problem late. Until
 	// this, the flag was required, compared with two other flags for
 	// distinctness, and never opened -- a validated secret whose validation
 	// was a statement about a file nobody had looked at.
@@ -3007,21 +2986,8 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	if err := output.ValidateCaptureDeadline(cmd.Kubernetes.OutputCaptureDeadline); err != nil {
 		return fmt.Errorf("--kubernetes-hangar-output-capture-deadline: %w", err)
 	}
-	if cmd.Kubernetes.OutputControlKeys != "" {
-		ring, err := hangaroutput.LoadControlKeyRing(cmd.Kubernetes.OutputControlKeys)
-		if err != nil {
-			return fmt.Errorf("--kubernetes-hangar-output-control-keys: %w", err)
-		}
-		if int64(ring.ActivationEpoch) != cmd.Kubernetes.OutputActivationEpoch {
-			return errors.New("--kubernetes-hangar-output-control-keys names a different control-key generation")
-		}
-		cmd.hangarOutputControlKeys = ring
-	}
 	if !cmd.Kubernetes.OutputCaptureEnabled {
 		return nil
-	}
-	if cmd.Kubernetes.OutputControlKeys == "" {
-		return errors.New("--kubernetes-hangar-output-control-keys is required when capture is enabled: a node's signed execution start is verified with its public key")
 	}
 	if cmd.Kubernetes.OutputMaterializationKey == "" {
 		return errors.New("--kubernetes-hangar-output-materialization-key is required when " +

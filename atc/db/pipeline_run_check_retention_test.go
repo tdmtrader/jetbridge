@@ -2,16 +2,12 @@ package db_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"strconv"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	. "github.com/onsi/ginkgo/v2"
@@ -28,8 +24,6 @@ type runCheckFixture struct {
 	entryBuild    db.Build
 	resource      db.Resource
 	resourceTypes db.ResourceTypes
-	signer        *executioncontrol.AcknowledgementSigner
-	verifier      hangaroutput.ControlKeyRing
 }
 
 func newRunCheckFixture(name string) runCheckFixture {
@@ -58,7 +52,7 @@ func newRunCheckFixtureWithRetention(name string, retention *atc.RunRetentionCon
 	tx, err := dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
+	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	payload, found, err := factory.InstancePipeline(creation.Run)
@@ -71,13 +65,8 @@ func newRunCheckFixtureWithRetention(name string, retention *atc.RunRetentionCon
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resourceTypes).To(HaveLen(1))
 
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	signer, err := executioncontrol.NewAcknowledgementSigner(private)
-	Expect(err).NotTo(HaveOccurred())
 	return runCheckFixture{
-		ctx: ctx, factory: factory, template: template, run: creation.Run, entryBuild: creation.EntryBuilds[0], resource: resource, resourceTypes: resourceTypes, signer: signer,
-		verifier: hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}},
+		ctx: ctx, factory: factory, template: template, run: creation.Run, entryBuild: creation.EntryBuilds[0], resource: resource, resourceTypes: resourceTypes,
 	}
 }
 
@@ -123,26 +112,23 @@ func (f runCheckFixture) execute(build db.Build, planID atc.PlanID, kind db.Cont
 	defer db.Rollback(tx)
 	admission, owned, err := f.factory.AdmitRunExecution(f.ctx, tx, db.RunExecutionRequest{
 		BuildID: build.ID(), PlanID: planID, Kind: kind,
-		Epoch: 1, NodeName: "node", NodeUID: "node-uid",
+		NodeName: "node", NodeUID: "node-uid",
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(owned).To(BeTrue())
-	start, err := f.signer.Sign(executioncontrol.Acknowledgement{
+	start := executioncontrol.Acknowledgement{
 		ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementStart,
-		Identity: admission.Identity, ActivationEpoch: 1, LedgerSequence: 1,
+		Identity: admission.Identity, LedgerSequence: 1,
 		NodeUID: "node-uid", PodUID: "pod-uid", ProcessIdentity: executioncontrol.ProcessIdentity(string(kind) + "-process"),
 		ObservedAt: output.NewTimestamp(time.Now()),
-	})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(f.factory.RecordRunExecutionWitness(f.ctx, tx, build.ID(), admission.PlanID, start, f.verifier)).To(Succeed())
+	}
+	Expect(f.factory.RecordRunExecutionWitness(f.ctx, tx, build.ID(), admission.PlanID, start)).To(Succeed())
 	if closed {
 		finish := start
 		finish.Kind = executioncontrol.AcknowledgementFinish
 		finish.LedgerSequence++
 		finish.Outcome = &executioncontrol.ExitOutcome{ExitCode: 0}
-		finish, err = f.signer.Sign(finish)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(f.factory.RecordRunExecutionWitness(f.ctx, tx, build.ID(), admission.PlanID, finish, f.verifier)).To(Succeed())
+		Expect(f.factory.RecordRunExecutionWitness(f.ctx, tx, build.ID(), admission.PlanID, finish)).To(Succeed())
 	}
 	Expect(tx.Commit()).To(Succeed())
 	return admission

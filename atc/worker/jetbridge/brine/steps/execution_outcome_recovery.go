@@ -103,7 +103,6 @@ func exerciseExecutionOutcomeRecovery(in RunOutputRuntime, workspace string, rec
 	defer cancel()
 	config := in.Config
 	config.OutputPlaneEnabled = true
-	config.OutputActivationEpoch = int64(hangarEpoch)
 	config.PodSchedulingTimeout = 3 * time.Second
 	config.PodStartupTimeout = 3 * time.Second
 	row, err := in.Start.DB.PersistNamedWorker("exact-recovery")
@@ -112,15 +111,15 @@ func exerciseExecutionOutcomeRecovery(in RunOutputRuntime, workspace string, rec
 	}
 	worker := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
 		Executor:       lostOutcomeExecutor{localExecutor: localExecutor{client: in.Client, supervisorRoot: workspace}, fault: fault},
-		OutputControls: jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		OutputControls: jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter),
 	})
 	identity := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(freshUUID()), Fence: 1}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	grant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", identity)
 	if err != nil {
 		return err
 	}
-	control := runtime.ExecutionControl{Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted, Identity: identity, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Endpoint: in.Start.Daemon.Output.URL, Capability: grant}
+	control := runtime.ExecutionControl{Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted, Identity: identity, Endpoint: in.Start.Daemon.Output.URL, Capability: grant}
 	handle := "outcome-" + freshUUID()
 	metadata := db.ContainerMetadata{Type: db.ContainerTypeTask}
 	spec := runtime.ContainerSpec{TeamID: in.Start.Creation.EntryBuilds[0].TeamID(), Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}, ExecutionControl: &control}
@@ -158,7 +157,7 @@ func exerciseExecutionOutcomeRecovery(in RunOutputRuntime, workspace string, rec
 				// Interrupt at the production boundary: the original controller
 				// committed its start record, then lost command delivery. A later
 				// controller cannot infer from the absent journal that no command ran.
-				if _, err = client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: identity, ActivationEpoch: control.ActivationEpoch, NodeUID: executioncontrol.NodeUID(in.Node.UID), Capability: grant}); err != nil {
+				if _, err = client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: identity, NodeUID: executioncontrol.NodeUID(in.Node.UID), Capability: grant}); err != nil {
 					return err
 				}
 				if _, err = client.RecordStart(ctx, identity, executioncontrol.PodUID(pod.UID), executioncontrol.ProcessIdentity(command.ID)); err != nil {

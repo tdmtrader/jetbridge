@@ -2,7 +2,9 @@
 
 > **Historical record (Phase 9).** The rows below describe the Hangar output
 > family as it stood when they were measured: handoffs, reservations, source
-> incarnations, receipts and activation epochs. None of those exist any more.
+> incarnations, receipts, activation epochs, the control-key generation and
+> signed acknowledgements. None of those exist any more: the node daemon is
+> trusted over mTLS, and an acknowledgement is its answer on that channel.
 > A capture is now one `hangar_captures` row (pending, publishing, published,
 > discarded, failed) and one marker file per step directory (held, sealed,
 > released); the web runs the reclaim pass and the orphan sweep. The files
@@ -192,6 +194,7 @@ this table:
   - **MEASURED M14** — `buildPod drops the OutputPlaneEnabled arm` — RED at `the pod build is refused saying "output facet is not enabled"`
 
 **A ready label without a matching handshake admits nothing, while the handshaken cohort admits**  `@HOP-58`  (:184)
+  - **DELETED** with the control-key generation: the arm it reddened no longer exists, and the pod build has no generation to compare.
   - **Reddened by (as the file states it):** Container.buildPod dropping the activation-epoch arm — the refusal line reddens and the matching-epoch control stays green.
   - **MEASURED M15** — `buildPod drops the activation-epoch arm` — RED at `the pod build is refused saying "speaks for epoch"`
 

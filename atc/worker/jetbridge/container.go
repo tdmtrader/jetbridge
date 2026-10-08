@@ -536,20 +536,6 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 				"captured nothing would leave its capture row pending until its "+
 				"capture deadline", runtime.ErrInvalidExecutionControl)
 		}
-		// And the control-key generation, which a ready label cannot carry.
-		//
-		// A label says a node's daemon is up; it does not say which control
-		// keys it verifies. A step admitted under another generation carries
-		// capabilities this worker's daemons would not verify, so it is
-		// refused here rather than at its first control call.
-		if epoch := c.config.OutputActivationEpoch; epoch != 0 &&
-			int64(c.containerSpec.ExecutionControl.ActivationEpoch) != epoch {
-			return nil, fmt.Errorf("%w: this step was admitted under control-key generation %d and "+
-				"this worker mints under generation %d, so no capture pod is built. A ready "+
-				"label is a scheduling hint and never authority",
-				runtime.ErrInvalidExecutionControl,
-				c.containerSpec.ExecutionControl.ActivationEpoch, epoch)
-		}
 	}
 
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)

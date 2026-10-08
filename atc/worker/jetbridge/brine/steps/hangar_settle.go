@@ -97,10 +97,9 @@ func newSettlementPlane(daemon HangarDaemon, res brine.Resources) (settlementPla
 		DB:         jdb,
 		Repository: repository,
 		Coordinator: &hangaroutput.Coordinator{
-			Transactor:      brineTransactor{conn: jdb.Conn},
-			Rows:            repository,
-			Dial:            oneDaemonDialer(daemon),
-			ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+			Transactor: brineTransactor{conn: jdb.Conn},
+			Rows:       repository,
+			Dial:       oneDaemonDialer(daemon),
 		},
 	}, nil
 }
@@ -222,6 +221,5 @@ func putOutputPlaneInService(jdb JetbridgeDB) error {
 // encoding rather than the ATC's.
 func jetbridgeClientFor(daemon HangarDaemon) hangaroutput.SourceControl {
 	return jetbridge.NewOutputControlClient(daemon.Output.URL,
-		daemon.HTTP, daemon.Minter,
-		executioncontrol.ActivationEpoch(hangarEpoch))
+		daemon.HTTP, daemon.Minter)
 }

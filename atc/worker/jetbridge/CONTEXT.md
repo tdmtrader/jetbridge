@@ -76,14 +76,14 @@ The start and exit records an exact execution's in-pod wrapper writes: the
 supervisor's for a task, the resource session's for a check, get or put. A
 resource session also journals the command's stdout and stderr, so a closed
 exec stream never reaches the command and a recovered outcome keeps the
-resource's answer. The signed start names where it is, so cancellation can interrupt and recover the
+resource's answer. The node's start names where it is, so cancellation can interrupt and recover the
 command after the web is gone. Its start is claimed with one atomic creation,
 so of any racing claimants exactly one owns it. Only in-pod scripts write it;
 recovery reads it and never runs the command again.
 _Avoid_: outcome file
 
 **Undelivered start**:
-A signed start whose command never claimed its exit journal: the exec dial
+A node-acknowledged start whose command never claimed its exit journal: the exec dial
 failed, or the node's answer was lost and nothing was sent. Whoever finds one
 closes it in the Pod by claiming the start and journaling the stopped exit
 (143 for a task, 130 for a resource command). A delivery that claimed first

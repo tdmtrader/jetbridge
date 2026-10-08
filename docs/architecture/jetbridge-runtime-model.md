@@ -35,7 +35,7 @@ to take it over or read its recorded exit
 ([ADR-0006](../adr/0006-supervised-commands-leave-the-exec-session.md)). Under
 exact execution
 control the supervisor, and for a check, get or put the resource session,
-keeps an exit journal the Run's signed start names, so a lost web can be
+keeps an exit journal the Run's node-acknowledged start names, so a lost web can be
 recovered from and a Run can interrupt the command. The journal's start is
 claimed atomically (an `O_EXCL` create), so of a delivery and a late second
 one -- or a delivery and the closing of an undelivered start -- exactly one
@@ -88,10 +88,11 @@ Hangar's execution control; the runtime applies it. An unresolved outcome
 is not a failure and not terminal; a lost one is both. A stall of the
 ledger or the Run's witness is unresolved, never the step's own timeout.
 
-A Run retains the node's signed start before any outcome is recorded. When
-it could not -- its database was down, or cancellation closed admission
-first -- Run cancellation reads the start from the node that signed it,
-retains it, and interrupts and closes the execution from the Pod's journal.
+A Run retains the node's start acknowledgement, answered over mTLS, before
+any outcome is recorded. When it could not -- its database was down, or
+cancellation closed admission first -- Run cancellation reads the start
+from the node that acknowledged it, retains it, and interrupts and closes
+the execution from the Pod's journal.
 Aborting a Run build is scoped to that build and never cancels its Run. An
 aborted build that cannot finish over an open execution or an unsettled
 capture records a build closure. The cancellation worker converges it

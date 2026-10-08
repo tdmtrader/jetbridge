@@ -20,7 +20,6 @@ package jetbridge
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
@@ -43,7 +42,6 @@ import (
 
 const (
 	harnessNodeUID = "harness-node-1"
-	harnessEpoch   = executioncontrol.ActivationEpoch(7)
 )
 
 type outputDaemonHarness struct {
@@ -146,10 +144,6 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 			return nil, err
 		}
 	}
-	controlKey, err := writeHarnessEd25519(dir, "control.pem")
-	if err != nil {
-		return nil, err
-	}
 	secret := make([]byte, executioncontrol.CapabilityKeyBytes)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
@@ -188,13 +182,10 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--output-bucket", "jetbridge-harness-output",
 		"--output-prefix", "harness/one",
 		"--output-tenant", "harness",
-		"--control-key-id", "harness-control-1",
-		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
 		"--materialization-key-id", "harness-materialize-1",
 		"--materialization-key-file", materializeKey,
 		"--node-uid", harnessNodeUID,
-		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
 		"--storage-path", filepath.Join(dir, "storage"),
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
 		// Standalone: no Kubernetes API to read Pods from, so a capture seal
@@ -239,7 +230,7 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		TerminationsDir: filepath.Join(dir, "terminations"),
 		Minter:          minter,
 		PKI:             pki,
-		Client:          NewOutputControlClient(endpoint, transport, minter, harnessEpoch),
+		Client:          NewOutputControlClient(endpoint, transport, minter),
 		cmd:             daemon,
 	}, nil
 }
@@ -390,24 +381,6 @@ func waitForReady(client *http.Client, endpoint string) error {
 	}
 
 	return fmt.Errorf("the output plane never became ready: %w", last)
-}
-
-func writeHarnessEd25519(dir, name string) (string, error) {
-	_, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path,
-		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		return "", err
-	}
-
-	return path, nil
 }
 
 // freeLocalPort picks a port the daemon can bind. --listen 127.0.0.1:0 would

@@ -28,9 +28,9 @@ import (
 // FixedInstant is the one clock reading every fixture is stamped with.
 var FixedInstant = time.Date(2026, 3, 4, 5, 6, 7, 890123456, time.UTC)
 
-// Namespace derives an output namespace for one bucket, tenant and epoch, under
-// the deployment prefix every fixture shares.
-func Namespace(t *testing.T, bucket, tenant string, epoch executioncontrol.ActivationEpoch) output.OutputNamespace {
+// Namespace derives an output namespace for one bucket and tenant, under the
+// deployment prefix every fixture shares.
+func Namespace(t *testing.T, bucket, tenant string) output.OutputNamespace {
 	t.Helper()
 
 	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
@@ -38,7 +38,6 @@ func Namespace(t *testing.T, bucket, tenant string, epoch executioncontrol.Activ
 		Bucket:           bucket,
 		DeploymentPrefix: "deployments/blue",
 		TenantID:         tenant,
-		ActivationEpoch:  epoch,
 	})
 	if err != nil {
 		t.Fatalf("deriving the namespace: %v", err)
@@ -75,7 +74,7 @@ func Reservation(t *testing.T, namespace output.OutputNamespace, id output.Reser
 }
 
 // ReadClaim is a valid, unexpired reader's claim over one tree ref.
-func ReadClaim(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ClaimRecord {
+func ReadClaim(t *testing.T, ref hangar.TreeRef) output.ClaimRecord {
 	t.Helper()
 
 	expires := output.NewTimestamp(FixedInstant.Add(20 * time.Minute))
@@ -83,7 +82,6 @@ func ReadClaim(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.Activati
 		ClaimID:           "66666666-6666-4666-8666-666666666666",
 		Ref:               ref,
 		ConsumerBindingID: "fixture-read",
-		ActivationEpoch:   epoch,
 		AcquiredAt:        output.NewTimestamp(FixedInstant),
 		ExpiresAt:         &expires,
 	}
@@ -95,10 +93,10 @@ func ReadClaim(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.Activati
 }
 
 // Warrant is a fixture read warrant's claims over ReadClaim's claim.
-func Warrant(t *testing.T, ref hangar.TreeRef, epoch executioncontrol.ActivationEpoch) output.ReadWarrantClaims {
+func Warrant(t *testing.T, ref hangar.TreeRef) output.ReadWarrantClaims {
 	t.Helper()
 
-	claims := output.WarrantClaimsFor(ReadClaim(t, ref, epoch),
+	claims := output.WarrantClaimsFor(ReadClaim(t, ref),
 		output.ReadDestination{Handle: "fixture-handle", Volume: "fixture-volume"},
 		"fixture-node")
 	if err := claims.Validate(); err != nil {

@@ -71,7 +71,7 @@ func TestStrictTreePublicationAndVerifiedExtractionThroughTLS(t *testing.T) {
 func TestOutputPublisherUsesDiskNamespaceOverTLS(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{Store: output.StoreDisk, StoreID: "test-store", Bucket: "outputs", TenantID: "tenant", ActivationEpoch: 1})
+	namespace, err := output.DeriveNamespace(output.NamespaceConfig{Store: output.StoreDisk, StoreID: "test-store", Bucket: "outputs", TenantID: "tenant"})
 	if err != nil {
 		t.Fatal(err)
 	}

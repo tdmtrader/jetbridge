@@ -4,9 +4,9 @@ package runtime
 // optional durable-output-capture extension that hangs off it.
 //
 // These are ATC-side VALUE types. The wire contract they are assembled against
-// is hangar/executioncontrol's, and they reference its Identity and
-// ActivationEpoch rather than restating them, so an execution has one exact
-// truth however many optional gates hang off it.
+// is hangar/executioncontrol's, and they reference its Identity rather than
+// restating it, so an execution has one exact truth however many optional
+// gates hang off it.
 //
 // Two shapes matter here and the type system carries both:
 //
@@ -68,16 +68,14 @@ var ErrInvalidExecutionControl = fmt.Errorf("runtime: invalid execution control"
 
 // ExecutionControl is the base envelope.
 //
-// It contains an opaque exact identity, its fence, the control-key generation
-// (activation epoch) it was admitted under, the node-local control endpoint and an attenuated control
-// capability. It contains no output, no capture, no source hold, no bucket and
+// It contains an opaque exact identity, its fence, the node-local control
+// endpoint and an attenuated control capability. It contains no output, no capture, no source hold, no bucket and
 // no product-domain field of any kind -- there is a test that walks this
 // struct's fields and fails if one appears.
 type ExecutionControl struct {
-	Version         string
-	Phase           ControlPhase
-	Identity        executioncontrol.Identity
-	ActivationEpoch executioncontrol.ActivationEpoch
+	Version  string
+	Phase    ControlPhase
+	Identity executioncontrol.Identity
 
 	// Endpoint is the node-local control API this execution's truth lives on.
 	Endpoint string
@@ -104,13 +102,12 @@ type ExecutionNode struct {
 
 // DurableOutputCapture is the optional extension.
 //
-// It REFERENCES the base identity and epoch rather than declaring its own, so
-// the two cannot disagree about which execution they are for; Validate refuses
-// them when they do.
+// It REFERENCES the base identity rather than declaring its own, so the two
+// cannot disagree about which execution they are for; Validate refuses them
+// when they do.
 type DurableOutputCapture struct {
-	Version         string
-	Identity        executioncontrol.Identity
-	ActivationEpoch executioncontrol.ActivationEpoch
+	Version  string
+	Identity executioncontrol.Identity
 
 	// Output is the NAME of the one declared task output selected for capture.
 	// It is a name into ContainerSpec.Outputs, never a path: a path here would
@@ -192,10 +189,6 @@ func (control *ExecutionControl) Validate(spec ContainerSpec) error {
 	if err := control.Identity.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidExecutionControl, err)
 	}
-	if control.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero; an execution is admitted under a "+
-			"control-key generation or not at all", ErrInvalidExecutionControl)
-	}
 	if strings.TrimSpace(control.Endpoint) == "" {
 		return fmt.Errorf("%w: no control endpoint; an envelope nobody can ask about is not "+
 			"control", ErrInvalidExecutionControl)
@@ -236,11 +229,6 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 			"envelope it extends names %s at fence %d", ErrInvalidExecutionControl,
 			capture.Identity.ExecutionID, capture.Identity.Fence,
 			control.Identity.ExecutionID, control.Identity.Fence)
-	}
-	if capture.ActivationEpoch != control.ActivationEpoch {
-		return fmt.Errorf("%w: the capture extension was admitted under epoch %d and the envelope "+
-			"under %d; one generation covers both facets", ErrInvalidExecutionControl,
-			capture.ActivationEpoch, control.ActivationEpoch)
 	}
 	if capture.CaptureDeadline.IsZero() {
 		return fmt.Errorf("%w: the capture names no deadline", ErrInvalidExecutionControl)

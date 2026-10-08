@@ -87,7 +87,7 @@ func TestVersionedCreateSignalsReplay(t *testing.T) {
 	} {
 		t.Run(string(tc.outcome), func(t *testing.T) {
 			server := NewServer(lagertest.NewTestLogger("test"), admittedRunFactory{}, "")
-			server.SetServices(Services{Admitter: replayAdmitter{replayed: tc.replayed}, Epoch: 1})
+			server.SetServices(Services{Admitter: replayAdmitter{replayed: tc.replayed}, HangarOutput: true})
 			request := httptest.NewRequest(http.MethodPost,
 				"/api/v2/teams/t/pipelines/review/runs?:team_name=t&:pipeline_name=review",
 				strings.NewReader(`{"invocation_key":"replay-signal"}`))
@@ -140,7 +140,7 @@ func TestVersionedRefusalsCarryTheirReasonOnlyAfterAuthorization(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := NewServer(lagertest.NewTestLogger("test"), admittedRunFactory{}, "")
-			server.SetServices(Services{Admitter: refusingAdmitter{err: tc.err}, Epoch: 1})
+			server.SetServices(Services{Admitter: refusingAdmitter{err: tc.err}, HangarOutput: true})
 			request := httptest.NewRequest(http.MethodPost,
 				"/api/v2/teams/t/pipelines/review/runs?:team_name=t&:pipeline_name=review",
 				strings.NewReader(`{"invocation_key":"refused"}`))

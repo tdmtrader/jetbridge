@@ -11,10 +11,6 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-type RunExecutionVerifier interface {
-	VerifyExecution(executioncontrol.Acknowledgement) error
-}
-
 func retainedRunExecutionStart(ctx context.Context, tx Tx, identity executioncontrol.Identity) (*executioncontrol.Acknowledgement, error) {
 	var body []byte
 	err := tx.QueryRowContext(ctx, `SELECT witness FROM pipeline_run_execution_starts WHERE execution_id=$1 AND execution_fence=$2`, string(identity.ExecutionID), int64(identity.Fence)).Scan(&body)
@@ -40,7 +36,7 @@ func retainedRunExecutionStart(ctx context.Context, tx Tx, identity executioncon
 // RecordRunExecutionWitness retains a node fact, never new start authority.
 // A cancellation can race the network reply; the fact remains recordable under
 // the Run boundary so recovery can reconcile that exact execution.
-func (f *pipelineRunFactory) RecordRunExecutionWitness(ctx context.Context, tx Tx, buildID int, planID atc.PlanID, witness executioncontrol.Acknowledgement, verifier RunExecutionVerifier) error {
+func (f *pipelineRunFactory) RecordRunExecutionWitness(ctx context.Context, tx Tx, buildID int, planID atc.PlanID, witness executioncontrol.Acknowledgement) error {
 	a, found, err := f.RunExecution(ctx, tx, buildID, planID)
 	if err != nil {
 		return err
@@ -51,16 +47,10 @@ func (f *pipelineRunFactory) RecordRunExecutionWitness(ctx context.Context, tx T
 	if _, err = lockRunResultPublication(ctx, tx, a.RunID); err != nil {
 		return err
 	}
-	if verifier == nil {
-		return fmt.Errorf("%w: no Run execution verifier", output.ErrIncomplete)
-	}
 	if err = witness.Validate(); err != nil {
 		return err
 	}
-	if err = verifier.VerifyExecution(witness); err != nil {
-		return err
-	}
-	if witness.Identity != a.Identity || witness.ActivationEpoch != executioncontrol.ActivationEpoch(a.Epoch) || string(witness.NodeUID) != a.NodeUID || witness.PodUID == "" {
+	if witness.Identity != a.Identity || string(witness.NodeUID) != a.NodeUID || witness.PodUID == "" {
 		return fmt.Errorf("%w: witness does not match the admitted Run execution", output.ErrInvalidIdentity)
 	}
 	body, err := json.Marshal(witness)
@@ -95,10 +85,7 @@ func (f *pipelineRunFactory) RecordRunExecutionWitness(ctx context.Context, tx T
 	if err = json.Unmarshal(startBody, &start); err != nil {
 		return err
 	}
-	if err = verifier.VerifyExecution(start); err != nil {
-		return err
-	}
-	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != witness.Identity || start.PodUID != witness.PodUID || start.ProcessIdentity != witness.ProcessIdentity || start.NodeUID != witness.NodeUID || start.ActivationEpoch != witness.ActivationEpoch || start.LedgerSequence >= witness.LedgerSequence {
+	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != witness.Identity || start.PodUID != witness.PodUID || start.ProcessIdentity != witness.ProcessIdentity || start.NodeUID != witness.NodeUID || start.LedgerSequence >= witness.LedgerSequence {
 		return fmt.Errorf("%w: outcome does not close the retained exact start", output.ErrInvalidIdentity)
 	}
 	observation := RunOutputCancellationEvidence{NodeUID: a.NodeUID, Execution: executioncontrol.ClassifyResult{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: a.Identity, Classification: witness.Kind.Classification(), Acknowledgement: &witness}}

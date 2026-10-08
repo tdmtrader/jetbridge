@@ -32,7 +32,7 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMap[RunResultPublication, RunInputAdmission]("its result is admitted as a named input with {string}", func(source RunResultPublication, p brine.Params, rec *brine.Recorder) (RunInputAdmission, error) {
 			previousGate := atc.PipelineRunActivationEpoch
-			atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+			atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 			TrackDisposer(rec, "the input creation gate", func() error { atc.PipelineRunActivationEpoch = previousGate; return nil })
 			in := RunInputAdmission{Source: source}
 			in.Case, _ = p.GetString(0)
@@ -108,7 +108,7 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 				return in, err
 			}
 			in.Port = runs.NewAdmitter(source.Start.DB.Conn, db.NewPipelineRunFactory(source.Start.DB.Conn, source.Start.DB.LockFactory), source.Start.DB.TeamFactory, display, nil)
-			in.Port.SetOutputEpoch(int64(hangarEpoch))
+			in.Port.SetOutputPlane(true)
 			in.Admission = runs.Admission{Template: runs.TemplateRef{Team: team.Name(), Pipeline: in.Template.PipelineRef()}, Principal: invocationPrincipal("owner"), ContractKey: "named-input"}
 			in.Inputs = map[string]map[string]any{"change": {"run_id": source.Start.Creation.Run.ID(), "result": source.Start.Plan.RunResult.Name}}
 			if in.Case == "one source under two names" {
@@ -329,7 +329,7 @@ func (in RunInputAdmission) admitInput(rollback bool) (runs.Run, bool, error) {
 		return runs.Run{}, false, err
 	}
 	defer tx.Rollback()
-	run, replay, err := in.Port.AdmitVersionedRun(ctx, tx, admission, int64(hangarEpoch))
+	run, replay, err := in.Port.AdmitVersionedRun(ctx, tx, admission, int64(runActivationEpoch))
 	if err != nil {
 		return run, replay, err
 	}

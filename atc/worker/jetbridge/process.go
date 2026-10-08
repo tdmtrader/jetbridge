@@ -988,7 +988,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	if p.resourceCommand() {
 		var state string
 		if p.control != nil {
-			// An exact resource command journals its exit where its signed
+			// An exact resource command journals its exit where its recorded
 			// start says, so the node's ledger has an outcome writer that
 			// outlives this ATC (resource_process.go).
 			state = exactResourceStateDir(p.control.Identity)

@@ -11,10 +11,6 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-func hangarEpoch(value int64) executioncontrol.ActivationEpoch {
-	return executioncontrol.ActivationEpoch(value)
-}
-
 func hangarExecutionID(value string) executioncontrol.ExecutionID {
 	return executioncontrol.ExecutionID(value)
 }
@@ -27,16 +23,12 @@ func hangarExecutionID(value string) executioncontrol.ExecutionID {
 // caller holds the tree lock (LockHangarSuffix's logical class), so a reclaim
 // pass deciding about this generation waits for the registration or precedes
 // it, and never lands between the insert and the check.
-func (repository *HangarOutputRepository) registerLifecycle(ctx context.Context, tx output.Tx, ref hangar.TreeRef, epoch int64) (int64, error) {
-	if epoch <= 0 {
-		return 0, fmt.Errorf("%w: %s/%s/%d is registered under no control-key generation",
-			output.ErrIncomplete, ref.Scope, ref.Digest, ref.Generation)
-	}
+func (repository *HangarOutputRepository) registerLifecycle(ctx context.Context, tx output.Tx, ref hangar.TreeRef) (int64, error) {
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hangar_exact_lifecycles (scope, digest, generation, activation_epoch)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO hangar_exact_lifecycles (scope, digest, generation)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (scope, digest, generation) DO NOTHING`,
-		string(ref.Scope), string(ref.Digest), ref.Generation, epoch); err != nil {
+		string(ref.Scope), string(ref.Digest), ref.Generation); err != nil {
 		return 0, hangarConflict(err)
 	}
 
@@ -99,10 +91,9 @@ func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx o
 	}
 
 	var reclaimed sql.NullTime
-	var epoch int64
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT reclaimed_at, activation_epoch FROM hangar_exact_lifecycles WHERE id = $1`,
-		[]any{lifecycle}, &reclaimed, &epoch); err != nil {
+		SELECT reclaimed_at FROM hangar_exact_lifecycles WHERE id = $1`,
+		[]any{lifecycle}, &reclaimed); err != nil {
 		return output.ClaimRecord{}, err
 	}
 	if reclaimed.Valid {
@@ -116,24 +107,24 @@ func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx o
 		expiry = hangarInterval(acquisition.Term)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hangar_claims (claim_id, lifecycle_id, activation_epoch, consumer_binding_id, expires_at)
-		VALUES ($1, $2, $3, $4, now() + $5::interval)
+		INSERT INTO hangar_claims (claim_id, lifecycle_id, consumer_binding_id, expires_at)
+		VALUES ($1, $2, $3, now() + $4::interval)
 		ON CONFLICT (claim_id) DO NOTHING`,
-		string(acquisition.ClaimID), lifecycle, epoch, string(acquisition.ConsumerBindingID), expiry); err != nil {
+		string(acquisition.ClaimID), lifecycle, string(acquisition.ConsumerBindingID), expiry); err != nil {
 		return output.ClaimRecord{}, hangarConflict(err)
 	}
 
 	var (
-		existing, recordedEpoch int64
-		binding                 string
-		acquired                time.Time
-		expires, released       sql.NullTime
+		existing          int64
+		binding           string
+		acquired          time.Time
+		expires, released sql.NullTime
 	)
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT lifecycle_id, activation_epoch, consumer_binding_id, acquired_at, expires_at, released_at
+		SELECT lifecycle_id, consumer_binding_id, acquired_at, expires_at, released_at
 		FROM hangar_claims WHERE claim_id = $1`,
 		[]any{string(acquisition.ClaimID)},
-		&existing, &recordedEpoch, &binding, &acquired, &expires, &released); err != nil {
+		&existing, &binding, &acquired, &expires, &released); err != nil {
 		return output.ClaimRecord{}, err
 	}
 	if existing != lifecycle {
@@ -150,7 +141,6 @@ func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx o
 		ClaimID:           acquisition.ClaimID,
 		Ref:               acquisition.Ref,
 		ConsumerBindingID: output.OpaqueID(binding),
-		ActivationEpoch:   hangarEpoch(recordedEpoch),
 		AcquiredAt:        output.NewTimestamp(acquired.UTC()),
 	}
 	if expires.Valid {
@@ -217,7 +207,7 @@ func (repository *HangarOutputRepository) ReadClaims(ctx context.Context, tx out
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT c.claim_id, c.consumer_binding_id, c.activation_epoch, c.acquired_at, c.expires_at, c.released_at
+		SELECT c.claim_id, c.consumer_binding_id, c.acquired_at, c.expires_at, c.released_at
 		FROM hangar_claims c
 		JOIN hangar_exact_lifecycles l ON l.id = c.lifecycle_id
 		WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3
@@ -232,18 +222,16 @@ func (repository *HangarOutputRepository) ReadClaims(ctx context.Context, tx out
 	for rows.Next() {
 		var (
 			id, binding       string
-			epoch             int64
 			acquired          time.Time
 			expires, released sql.NullTime
 		)
-		if err := rows.Scan(&id, &binding, &epoch, &acquired, &expires, &released); err != nil {
+		if err := rows.Scan(&id, &binding, &acquired, &expires, &released); err != nil {
 			return nil, err
 		}
 		record := output.ClaimRecord{
 			ClaimID:           output.ClaimID(id),
 			Ref:               ref,
 			ConsumerBindingID: output.OpaqueID(binding),
-			ActivationEpoch:   hangarEpoch(epoch),
 			AcquiredAt:        output.NewTimestamp(acquired),
 		}
 		if expires.Valid {

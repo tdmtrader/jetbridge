@@ -24,12 +24,11 @@ type OutputStarter struct {
 	conn    db.DbConn
 	factory db.PipelineRunFactory
 	source  OutputSource
-	epoch   int64
 	term    time.Duration
 }
 
-func NewOutputStarter(conn db.DbConn, factory db.PipelineRunFactory, source OutputSource, epoch int64, term time.Duration) *OutputStarter {
-	return &OutputStarter{conn: conn, factory: factory, source: source, epoch: epoch, term: term}
+func NewOutputStarter(conn db.DbConn, factory db.PipelineRunFactory, source OutputSource, term time.Duration) *OutputStarter {
+	return &OutputStarter{conn: conn, factory: factory, source: source, term: term}
 }
 
 func (s *OutputStarter) Prepare(ctx context.Context, buildID int, plan atc.TaskPlan, spec runtime.ContainerSpec) (*runtime.ExecutionControl, error) {
@@ -59,7 +58,7 @@ func (s *OutputStarter) Prepare(ctx context.Context, buildID int, plan atc.TaskP
 	// raced this start refuses it here, under the Run lock.
 	var started db.RunCapture
 	err = s.transaction(ctx, func(tx db.Tx) (err error) {
-		started, err = s.factory.StartRunCapture(ctx, tx, buildID, plan, s.epoch, s.term, node, uid)
+		started, err = s.factory.StartRunCapture(ctx, tx, buildID, plan, s.term, node, uid)
 		return err
 	})
 	if err != nil {

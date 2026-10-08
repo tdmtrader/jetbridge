@@ -89,7 +89,7 @@ func (f *pipelineRunFactory) cancellationRunExecution(ctx context.Context, tx Tx
 
 // RecordCancelledRunExecution persists a verified outcome or the original node's
 // durable first-start fence. No RPC occurs while these Run/build locks are held.
-func (f *pipelineRunFactory) RecordCancelledRunExecution(ctx context.Context, tx Tx, lease RunCancellationLease, op RunCancellationOperation, evidence RunOutputCancellationEvidence, verifier RunExecutionVerifier) error {
+func (f *pipelineRunFactory) RecordCancelledRunExecution(ctx context.Context, tx Tx, lease RunCancellationLease, op RunCancellationOperation, evidence RunOutputCancellationEvidence) error {
 	in, err := f.cancellationRunExecution(ctx, tx, op)
 	if err != nil {
 		return err
@@ -110,7 +110,7 @@ func (f *pipelineRunFactory) RecordCancelledRunExecution(ctx context.Context, tx
 		if evidence.StartClosure != nil {
 			return output.ErrInvalidIdentity
 		}
-		if err = f.RecordRunExecutionWitness(ctx, tx, a.BuildID, a.PlanID, *evidence.Execution.Acknowledgement, verifier); err != nil {
+		if err = f.RecordRunExecutionWitness(ctx, tx, a.BuildID, a.PlanID, *evidence.Execution.Acknowledgement); err != nil {
 			return err
 		}
 	case executioncontrol.ClassificationNeverStarted:

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 // ClaimAcquisition asks Hangar to protect one exact generation.
@@ -92,11 +91,10 @@ func (release ClaimRelease) Validate() error {
 // expiring claim still holds is the database clock's question, asked where it
 // matters (reclaim's live-claim check), never a node's.
 type ClaimRecord struct {
-	ClaimID           ClaimID                          `json:"claim_id"`
-	Ref               hangar.TreeRef                   `json:"ref"`
-	ConsumerBindingID OpaqueID                         `json:"consumer_binding_id"`
-	ActivationEpoch   executioncontrol.ActivationEpoch `json:"activation_epoch"`
-	AcquiredAt        Timestamp                        `json:"acquired_at"`
+	ClaimID           ClaimID        `json:"claim_id"`
+	Ref               hangar.TreeRef `json:"ref"`
+	ConsumerBindingID OpaqueID       `json:"consumer_binding_id"`
+	AcquiredAt        Timestamp      `json:"acquired_at"`
 
 	// ExpiresAt is nil for a consumer's hold, and the instant a reader's hold
 	// lapses on the database clock.
@@ -121,9 +119,6 @@ func (record ClaimRecord) Validate() error {
 	}
 	if err := record.ConsumerBindingID.Validate(); err != nil {
 		return err
-	}
-	if record.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: claim %s names no control-key generation", ErrIncomplete, record.ClaimID)
 	}
 	if err := record.AcquiredAt.Validate(); err != nil {
 		return err

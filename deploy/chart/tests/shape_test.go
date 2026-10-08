@@ -54,7 +54,11 @@ import (
 // .reclaimer's 8, .activation's 5, .database's 1, hangarBootstrap.database's
 // 1) and moved reclaim and the orphan sweep into web under 4
 // (hangarOutput.reclaim's 3, .orphanSweep's 1): 17 fewer, leaving 213.
-const maxValues = 213
+// Removing the control-key generation and signed acknowledgements (the daemon
+// is trusted over mTLS; nothing it says is signed) took 5 leaves:
+// hangarOutput.activationEpoch, hangarOutput.executionControl's keySecret,
+// keyID and publicKeys, and hangarBootstrap.referencedKeys, leaving 208.
+const maxValues = 208
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -152,10 +156,15 @@ var removedKeys = []string{
 	"artifactDaemon.preemption",
 	"artifactDaemon.tls.enabled",
 	"hangarBootstrap.database",
+	"hangarBootstrap.referencedKeys",
 	"hangarBootstrap.secretNames.outputCA",
 	"hangarOutput.activation",
+	"hangarOutput.activationEpoch",
 	"hangarOutput.daemon",
 	"hangarOutput.database",
+	"hangarOutput.executionControl.keyID",
+	"hangarOutput.executionControl.keySecret",
+	"hangarOutput.executionControl.publicKeys",
 	"hangarOutput.inventory",
 	"hangarOutput.leaseRenewInterval",
 	"hangarOutput.leaseTerm",

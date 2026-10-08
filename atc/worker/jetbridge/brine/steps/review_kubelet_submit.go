@@ -3,7 +3,6 @@ package steps
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,12 +15,10 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 )
@@ -76,28 +73,28 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 		return err
 	}
 	admitter := runs.NewAdmitter(jdb.Conn, factory, jdb.TeamFactory, display, nil)
-	admitter.SetOutputEpoch(int64(hangarEpoch))
+	admitter.SetOutputPlane(true)
 	authority, err := runinput.NewAuthority(bytes.Repeat([]byte{0x56}, 32), time.Now)
 	if err != nil {
 		return err
 	}
 	admitter.SetSealedInputAuthority(authority)
-	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
-		publisher, uid, err := source.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
+	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context) (runs.InputUploadNode, error) {
+		publisher, uid, err := source.ForInputUpload(ctx)
 		return runs.InputUploadNode{UID: uid, Publisher: publisher}, err
 	}})
 	admitter.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{Source: source, Helper: "/usr/local/bin/jb-review-worker", Socket: "/dev/shm/jb-review/auth.sock", Lifetime: 3 * time.Minute, WorkerImages: []string{image}})
 	oldEnabled := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = oldEnabled; return nil })
 	auth, err := authServer(res)
 	if err != nil {
 		return err
 	}
 	auth.mu.Lock()
-	auth.RunServices = pipelinerunserver.Services{Admitter: admitter, Epoch: int64(hangarEpoch)}
-	auth.ResultReader = &runs.ResultReader{Conn: jdb.Conn, Minter: signer, Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
-		return source.ForResultRead(ctx, epoch)
+	auth.RunServices = pipelinerunserver.Services{Admitter: admitter, HangarOutput: true}
+	auth.ResultReader = &runs.ResultReader{Conn: jdb.Conn, Minter: signer, Source: func(ctx context.Context) (runs.ResultSource, error) {
+		return source.ForResultRead(ctx)
 	}}
 	auth.API, err = auth.apiHandler(auth.Verifier)
 	auth.mu.Unlock()
@@ -185,8 +182,7 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 	}
 	in.Start.Creation = db.RunCreation{Run: run, Config: definition.Materialized, EntryBuilds: []db.Build{build}}
 	in.Start.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-	starter := &runs.ExecutionStarter{Conn: jdb.Conn, Factory: factory, Source: source, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys, Output: runs.NewOutputStarter(jdb.Conn, factory, source, int64(hangarEpoch), time.Hour)}
+	starter := &runs.ExecutionStarter{Conn: jdb.Conn, Factory: factory, Source: source, Output: runs.NewOutputStarter(jdb.Conn, factory, source, time.Hour)}
 	starter.SetInputReadMinter(signer)
 	spec := runtime.ContainerSpec{TeamID: team.ID(), Type: db.ContainerTypeTask, Dir: "/workspace", ImageSpec: runtime.ImageSpec{ImageURL: strings.TrimPrefix(task.Config.RootfsURI, "docker:///")}, Inputs: []runtime.Input{{RunInput: "change", DestinationPath: "/workspace/source"}}, Outputs: map[string]string{"result": "/workspace/result"}}
 	spec, err = starter.PrepareTask(ctx, buildID, in.Start.Plan, spec)
@@ -197,7 +193,7 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 	if err != nil {
 		return err
 	}
-	controls := jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	controls := jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter)
 	worker := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
 		Executor:          executor,
 		OutputControls:    controls,

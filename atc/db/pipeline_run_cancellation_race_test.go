@@ -272,7 +272,7 @@ func cancellationBoundaries() []TableEntry {
 			inTx: func(f *cancellationRace, tx db.Tx) error {
 				_, _, err := f.factory.AdmitRunExecution(f.ctx, tx, db.RunExecutionRequest{
 					BuildID: f.review.ID(), PlanID: "race-task", Kind: db.ContainerTypeTask,
-					Epoch: 1, NodeName: "node", NodeUID: "node-uid",
+					NodeName: "node", NodeUID: "node-uid",
 				})
 				return err
 			},
@@ -283,7 +283,7 @@ func cancellationBoundaries() []TableEntry {
 		}),
 		Entry("a capture start", cancellationBoundary{
 			inTx: func(f *cancellationRace, tx db.Tx) error {
-				_, err := f.factory.StartRunCapture(f.ctx, tx, f.review.ID(), f.plan, 1, time.Hour, "node", "node-uid")
+				_, err := f.factory.StartRunCapture(f.ctx, tx, f.review.ID(), f.plan, time.Hour, "node", "node-uid")
 				return err
 			},
 			refused: refusedAs(db.ErrPipelineRunCancelling),
@@ -365,7 +365,7 @@ func newCancellationRace() *cancellationRace {
 	tx, err := dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
+	f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	f.runID = f.creation.Run.ID()

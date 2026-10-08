@@ -112,7 +112,7 @@ func (a *admitter) admitVersionedRun(ctx context.Context, tx Tx, adm Admission, 
 	// The cause is authorized with the template: it must be a Run of the same
 	// team, which the principal was just authorized on. The factory resolves it
 	// under the creation prefix and refuses anything else without saying why.
-	opts := db.RunCreationOpts{ActivationEpoch: epoch, HangarEpoch: a.outputEpoch, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, CausedByRun: adm.CausedByRun, Correlation: adm.Correlation, Invocation: &db.RunInvocationIdentity{
+	opts := db.RunCreationOpts{ActivationEpoch: epoch, HangarOutput: a.outputPlane, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, CausedByRun: adm.CausedByRun, Correlation: adm.Correlation, Invocation: &db.RunInvocationIdentity{
 		PrincipalDigest: principalDigest(adm.Principal, auth),
 		KeyDigest:       invocationDigest("key", adm.ContractKey),
 	}}

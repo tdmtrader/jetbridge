@@ -161,17 +161,15 @@ func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {
 		return nil, fmt.Errorf("this chain holds no capture: the daemon never acknowledged a hold")
 	}
 	control := &runtime.ExecutionControl{
-		Version:         runtime.ExecutionControlVersion,
-		Phase:           runtime.ControlPhaseAdmitted,
-		Identity:        in.Execution,
-		ActivationEpoch: in.Admission.ActivationEpoch,
-		Endpoint:        in.DaemonURL,
-		Capability:      "brine-base-capability",
+		Version:    runtime.ExecutionControlVersion,
+		Phase:      runtime.ControlPhaseAdmitted,
+		Identity:   in.Execution,
+		Endpoint:   in.DaemonURL,
+		Capability: "brine-base-capability",
 	}
 	if err := control.SelectCapture(runtime.DurableOutputCapture{
 		Version:            runtime.DurableOutputCaptureVersion,
 		Identity:           in.Execution,
-		ActivationEpoch:    in.Admission.ActivationEpoch,
 		Output:             string(in.Admission.Output),
 		SourceControlGrant: captureGrantForScenario,
 		CaptureDeadline:    in.Admission.CaptureDeadline,

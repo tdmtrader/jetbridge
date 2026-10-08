@@ -2,9 +2,6 @@ package steps
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +16,6 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -48,7 +44,7 @@ func RunExecutionRuntimeDefinitions() []brine.StepDefinition {
 			return CancellationLeaseResult{Err: exerciseRunExecutionRuntime(in, operation, false, rec, res.Get("task-workspace").(TaskWorkspace).Dir)}, nil
 		}),
 		CheckThat[CancellationLeaseResult]("that worker refuses an unadmitted command", func(in CancellationLeaseResult) error { return in.Err }),
-		CheckThat[CancellationLeaseResult]("that worker retains its signed execution witnesses", func(in CancellationLeaseResult) error { return in.Err }),
+		CheckThat[CancellationLeaseResult]("that worker retains its durable execution witnesses", func(in CancellationLeaseResult) error { return in.Err }),
 		CheckThat[CancellationLeaseResult]("cancellation closes only its exact execution", func(in CancellationLeaseResult) error { return in.Err }),
 		CheckThat[CancellationLeaseResult]("cancellation preserves an unresolved execution", func(in CancellationLeaseResult) error { return in.Err }),
 	}
@@ -59,7 +55,7 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 	daemonLoss := strings.HasPrefix(operation, "cancel daemon loss")
 	daemonFault := strings.TrimPrefix(strings.TrimPrefix(operation, "cancel daemon loss"), " with ")
 	kind = strings.TrimPrefix(kind, "witness ")
-	if kind == "finish commit failure" || kind == "untrusted signer" {
+	if kind == "finish commit failure" {
 		kind = "task"
 	}
 	if strings.HasPrefix(kind, "cancel ") {
@@ -80,7 +76,6 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 	}
 	config := in.Config
 	config.OutputPlaneEnabled = true
-	config.OutputActivationEpoch = int64(hangarEpoch)
 	executor := runWitnessExecutor{localExecutor: localExecutor{client: in.Client, supervisorRoot: workspace}, conn: in.Start.DB.Conn}
 	if daemonLoss {
 		executor.afterCommand = func(ctx context.Context, namespace, pod string) error {
@@ -92,18 +87,10 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		in.OutcomeReader = executor.localExecutor
 	}
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-	if operation == "untrusted signer" {
-		public, _, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			return err
-		}
-		keys.Keys[0].PublicKey = base64.StdEncoding.EncodeToString(public)
-	}
 	w := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
 		Executor:          executor,
-		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
-		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: jetbridge.NewOutputSource(in.Client, config, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys},
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter),
+		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: jetbridge.NewOutputSource(in.Client, config, in.Start.Daemon.Minter)},
 	})
 	build := in.Start.Creation.EntryBuilds[0]
 	if kind == "check" {
@@ -220,7 +207,7 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 	if _, err = in.Client.CoreV1().Pods(config.Namespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
 		return err
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	if operation == "cancel unretained start" || operation == "cancel aborted unretained start" {
 		in.OutcomeReader = executor.localExecutor
 		return exerciseUnretainedStart(ctx, in, a, operation == "cancel aborted unretained start", process, client, marker, build)
@@ -335,22 +322,6 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		}
 		return nil
 	}
-	if operation == "untrusted signer" {
-		if err == nil {
-			return fmt.Errorf("an untrusted node signed the command start")
-		}
-		if _, err = os.Stat(marker); !os.IsNotExist(err) {
-			return fmt.Errorf("unverified start reached command execution")
-		}
-		var facts int
-		if err = in.Start.DB.Conn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_execution_starts)+(SELECT count(*) FROM pipeline_run_execution_closures)`).Scan(&facts); err != nil {
-			return err
-		}
-		if facts != 0 {
-			return fmt.Errorf("unverified node evidence was retained")
-		}
-		return nil
-	}
 	if failedFinish {
 		if err == nil {
 			return fmt.Errorf("runtime exposed an outcome after its witness commit failed")
@@ -430,7 +401,7 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		}
 		// Discover the journal written by the real supervisor or resource
 		// session, independently of production's naming, and check that the
-		// signed locator names it: cancellation interrupts and recovers
+		// witnessed locator names it: cancellation interrupts and recovers
 		// through that locator alone.
 		journals, err := filepath.Glob(filepath.Join(workspace, supervisorStateDirectory, "*", "exit"))
 		if err != nil || len(journals) != 1 {
@@ -438,7 +409,7 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		}
 		state := filepath.Dir(journals[0])
 		if _, err = os.Stat(filepath.Join(state, "start")); err != nil {
-			return fmt.Errorf("signed %s has no start journal: %w", kind, err)
+			return fmt.Errorf("witnessed %s has no start journal: %w", kind, err)
 		}
 		locator := "resource-v1:/tmp/"
 		if kind == "task" {
@@ -447,7 +418,7 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		if string(start.ProcessIdentity) != locator+filepath.Base(state) {
 			return fmt.Errorf("retained start does not name the actual %s journal", kind)
 		}
-		if finish.Execution.Acknowledgement == nil || finish.Execution.Acknowledgement.Signature != classified.Acknowledgement.Signature || finish.Execution.Acknowledgement.LedgerSequence <= start.LedgerSequence || finish.Execution.Acknowledgement.ProcessIdentity != start.ProcessIdentity || finish.Execution.Acknowledgement.PodUID != start.PodUID || finish.Execution.Acknowledgement.NodeUID != start.NodeUID || finish.Execution.Acknowledgement.ActivationEpoch != start.ActivationEpoch {
+		if finish.Execution.Acknowledgement == nil || finish.Execution.Acknowledgement.LedgerSequence <= start.LedgerSequence || finish.Execution.Acknowledgement.ProcessIdentity != start.ProcessIdentity || finish.Execution.Acknowledgement.PodUID != start.PodUID || finish.Execution.Acknowledgement.NodeUID != start.NodeUID {
 			return fmt.Errorf("Run finish is not the node's matching durable witness")
 		}
 	}
@@ -534,7 +505,7 @@ func exerciseBaseExecutionCancellation(in RunOutputRuntime, a db.RunExecutionAdm
 			return err
 		}
 		if closed && done {
-			client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+			client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 			if want == executioncontrol.ClassificationNeverStarted {
 				if _, err := client.RecordStart(ctx, a.Identity, "late-pod", "late-process"); err == nil {
 					return fmt.Errorf("closed execution admitted a delayed first start")

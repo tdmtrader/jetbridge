@@ -18,7 +18,7 @@ func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan at
 	var selected db.RunTaskBinding
 	err := s.transaction(ctx, func(tx db.Tx) error {
 		var err error
-		selected, err = db.LoadRunTask(ctx, tx, buildID, plan.TaskID, int64(s.Epoch))
+		selected, err = db.LoadRunTask(ctx, tx, buildID, plan.TaskID)
 		return err
 	})
 	if err != nil {

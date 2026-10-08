@@ -15,8 +15,8 @@ import (
 type CancellationSource interface {
 	InterruptExecution(context.Context, string, executioncontrol.Acknowledgement) error
 	RecoverExecutionOutcome(context.Context, string, executioncontrol.Acknowledgement) (executioncontrol.ClassifyResult, error)
-	ClassifyExecution(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (executioncontrol.ClassifyResult, error)
-	StopExecution(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error)
+	ClassifyExecution(context.Context, string, string, executioncontrol.Identity) (executioncontrol.ClassifyResult, error)
+	StopExecution(context.Context, string, string, executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error)
 }
 
 // CancellationActionSet composes owners without silently completing a kind that

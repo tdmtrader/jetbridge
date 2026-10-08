@@ -99,7 +99,6 @@ func sweepFor(t *testing.T, h *harness, captureDeadline time.Duration) (*reclaim
 		Bucket:           h.Bucket,
 		DeploymentPrefix: "harness/one",
 		TenantID:         "harness",
-		ActivationEpoch:  harnessEpoch,
 	})
 	if err != nil {
 		t.Fatalf("deriving the namespace: %v", err)
@@ -155,12 +154,11 @@ func plant(t *testing.T, h *harness, key string, metadata map[string]string, cre
 
 func markerFor(store string, scope hangar.Scope, digest hangar.Digest, created time.Time) map[string]string {
 	return output.ObjectMarker{
-		Scope:           scope,
-		Digest:          digest,
-		ReservationID:   output.ReservationID(uuid.NewString()),
-		ActivationEpoch: harnessEpoch,
-		Store:           store,
-		CreatedAt:       output.NewTimestamp(created),
+		Scope:         scope,
+		Digest:        digest,
+		ReservationID: output.ReservationID(uuid.NewString()),
+		Store:         store,
+		CreatedAt:     output.NewTimestamp(created),
 	}.Metadata()
 }
 
@@ -209,7 +207,7 @@ func TestA7TheOrphanSweepDeletesOnlyOldOrphansMarkedForThisStore(t *testing.T) {
 	// tenant: its own marker names its own store and scope, and it is foreign.
 	neighbour, err := output.DeriveNamespace(output.NamespaceConfig{
 		Store: output.StoreGCS, Bucket: h.Bucket, DeploymentPrefix: "harness/one",
-		TenantID: "another-tenant", ActivationEpoch: harnessEpoch,
+		TenantID: "another-tenant",
 	})
 	if err != nil {
 		t.Fatal(err)

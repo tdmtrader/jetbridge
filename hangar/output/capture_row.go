@@ -171,7 +171,4 @@ func (pending PendingCapture) Key() CaptureKey {
 type PublishedCapture struct {
 	Key        CaptureKey
 	Generation int64
-	// ActivationEpoch is the epoch the lifecycle and claim rows are recorded
-	// under while epochs exist.
-	ActivationEpoch executioncontrol.ActivationEpoch
 }

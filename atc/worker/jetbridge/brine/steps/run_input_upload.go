@@ -184,7 +184,7 @@ func exerciseInputUpload(in HangarDaemon, mode string) error {
 		return fmt.Errorf("published exact object differs from canonical upload")
 	}
 	if mode == "deduplicate" {
-		node := jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+		node := jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter)
 		again, err := node.StageInput(in.Ctx, executioncontrol.NodeUID(in.NodeUID), bytes.NewReader(archive))
 		if err != nil {
 			return fmt.Errorf("stage through production client: %w", err)

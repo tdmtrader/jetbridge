@@ -1,10 +1,8 @@
 package bootstrap
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -43,37 +41,6 @@ func validateRandomKey(key []byte) error {
 		return fmt.Errorf("holds %d bytes, want exactly %d", len(key), randomKeySize)
 	}
 	return nil
-}
-
-// newEd25519Key returns a PKCS#8 PEM private key and its raw public half.
-func newEd25519Key() ([]byte, ed25519.PublicKey, error) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		return nil, nil, err
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), public, nil
-}
-
-// ed25519PublicHalf validates a PKCS#8 PEM Ed25519 private key and returns its
-// public half.
-func ed25519PublicHalf(keyPEM []byte) (ed25519.PublicKey, error) {
-	block, rest := pem.Decode(keyPEM)
-	if block == nil || block.Type != "PRIVATE KEY" || len(bytes.TrimSpace(rest)) != 0 {
-		return nil, errors.New("is not one PKCS#8 PEM block")
-	}
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("is not a PKCS#8 key: %w", err)
-	}
-	private, ok := key.(ed25519.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("is a %T, not an Ed25519 key", key)
-	}
-	return private.Public().(ed25519.PublicKey), nil
 }
 
 // storeTokenNames are the disk store's four principals.

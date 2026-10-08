@@ -72,13 +72,8 @@ func (publisher *Publisher) EnsurePublication(ctx context.Context, reservation o
 	if reservation.Scope != publisher.namespace.Scope() {
 		return output.PublishedObject{}, fmt.Errorf("%w: the reservation is resolved to scope %q "+
 			"and this publisher's derived namespace is %q. A capture publishes into the namespace "+
-			"its epoch derived and no other", output.ErrUnauthorized,
+			"its tenant and store derived and no other", output.ErrUnauthorized,
 			reservation.Scope, publisher.namespace.Scope())
-	}
-	if reservation.ActivationEpoch != publisher.namespace.ActivationEpoch() {
-		return output.PublishedObject{}, fmt.Errorf("%w: the reservation's marker names epoch %d "+
-			"and this namespace was derived under %d", output.ErrConflict,
-			reservation.ActivationEpoch, publisher.namespace.ActivationEpoch())
 	}
 
 	key, err := publisher.namespace.ObjectKey(reservation.Digest)

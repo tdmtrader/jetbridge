@@ -17,13 +17,7 @@ Feature: Run ownership is enforced at the real worker boundary
   Scenario: A rejected finish commit is recovered without repeating the command
     Given a Run with resource checks and a ready output node
     When its real worker admits a "finish commit failure" execution
-    Then that worker retains its signed execution witnesses
-
-  @core-review
-  Scenario: A node signature outside the configured trust set cannot start a command
-    Given a Run with resource checks and a ready output node
-    When its real worker admits a "untrusted signer" execution
-    Then that worker refuses an unadmitted command
+    Then that worker retains its durable execution witnesses
 
   @core-review
   Scenario Outline: Cancellation reconciles an execution without an output capture
@@ -62,7 +56,7 @@ Feature: Run ownership is enforced at the real worker boundary
   Scenario Outline: The Run retains the node's exact start and finish evidence
     Given a Run with resource checks and a ready output node
     When its real worker admits a "witness <kind>" execution
-    Then that worker retains its signed execution witnesses
+    Then that worker retains its durable execution witnesses
 
     Examples:
       | kind |

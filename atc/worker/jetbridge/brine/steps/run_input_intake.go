@@ -23,7 +23,7 @@ import (
 
 type runInputIntakePort interface {
 	SetInputUploadConfig(runs.InputUploadConfig)
-	UploadInput(context.Context, runs.TemplateRef, runs.Principal, string, int64, io.Reader) (atc.RunInputSource, error)
+	UploadInput(context.Context, runs.TemplateRef, runs.Principal, string, io.Reader) (atc.RunInputSource, error)
 }
 
 func RunInputIntakeDefinitions() []brine.StepDefinition {
@@ -39,7 +39,7 @@ func RunInputIntakeDefinitions() []brine.StepDefinition {
 
 func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error {
 	previousGate := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 	defer func() { atc.PipelineRunActivationEpoch = previousGate }()
 	display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
 	if err != nil {
@@ -51,7 +51,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		customRoles = map[string]string{atc.UploadPipelineRunInput: "owner"}
 	}
 	admitter := runs.NewAdmitter(jdb.Conn, factory, jdb.TeamFactory, display, customRoles)
-	admitter.SetOutputEpoch(int64(hangarEpoch))
+	admitter.SetOutputPlane(true)
 	intake, ok := any(admitter).(runInputIntakePort)
 	if !ok {
 		return fmt.Errorf("Run admission has no authenticated input intake")
@@ -59,7 +59,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	if err := putOutputPlaneInService(jdb); err != nil {
 		return err
 	}
-	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(hangarEpoch)); err != nil {
+	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(runActivationEpoch)); err != nil {
 		return err
 	}
 	team, err := jdb.TeamFactory.CreateTeam(atc.Team{Name: "input-intake"})
@@ -83,12 +83,12 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		return err
 	}
 	admitter.SetSealedInputAuthority(authority)
-	uploadConfig := runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
+	uploadConfig := runs.InputUploadConfig{Source: func(ctx context.Context) (runs.InputUploadNode, error) {
 		uid := executioncontrol.NodeUID(in.NodeUID)
 		if mode == "wrong node" {
 			uid = executioncontrol.NodeUID(freshUUID())
 		}
-		return runs.InputUploadNode{UID: uid, Publisher: jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter, executioncontrol.ActivationEpoch(epoch))}, nil
+		return runs.InputUploadNode{UID: uid, Publisher: jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter)}, nil
 	}}
 	expires := mode == "unused upload expires" || mode == "Run claim survives expiry" || mode == "expired grant" || mode == "replay after expiry" || mode == "expiry while held"
 	if expires {
@@ -97,7 +97,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	intake.SetInputUploadConfig(uploadConfig)
 	ref := runs.TemplateRef{Team: team.Name(), Pipeline: template.PipelineRef()}
 	principal := invocationPrincipal("owner")
-	name, epoch := "change", int64(hangarEpoch)
+	name := "change"
 	archive, err := durableTarOfOneFile("manifest.json", "local input review")
 	if err != nil {
 		return err
@@ -118,8 +118,6 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, 0); err != nil {
 			return err
 		}
-	case "wrong epoch":
-		epoch++
 	case "missing authority":
 		admitter.SetSealedInputAuthority(nil)
 	case "unconfigured upload":
@@ -137,7 +135,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		defer reader.Close()
 		defer writer.Close()
 		finished := make(chan error, 1)
-		go func() { _, err := intake.UploadInput(ctx, ref, principal, name, epoch, reader); finished <- err }()
+		go func() { _, err := intake.UploadInput(ctx, ref, principal, name, reader); finished <- err }()
 		// The real HTTP transport has started reading only after initial
 		// authorization. Keep the actual tar incomplete while revoking access.
 		if _, err := writer.Write(archive[:512]); err != nil {
@@ -167,7 +165,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		return assertInputObjectCount(in, 0)
 	}
 	body := bytes.NewReader(archive)
-	source, uploadErr := intake.UploadInput(in.Ctx, ref, principal, name, epoch, body)
+	source, uploadErr := intake.UploadInput(in.Ctx, ref, principal, name, body)
 	if refuseBeforeRead || mode == "malformed archive" || mode == "wrong node" {
 		if uploadErr == nil {
 			return fmt.Errorf("input intake accepted %s", mode)
@@ -180,7 +178,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	if uploadErr != nil || source.SourceID == "" || source.Bearer == "" || source.Validate() != nil {
 		return fmt.Errorf("input intake did not return a sealed source: %v", uploadErr)
 	}
-	audience := runinput.Audience{TeamID: team.ID(), TemplateID: template.ID(), PrincipalDigest: runinput.PrincipalDigest(principal.Claims["sub"].(string)), Input: name, Epoch: epoch}
+	audience := runinput.Audience{TeamID: team.ID(), TemplateID: template.ID(), PrincipalDigest: runinput.PrincipalDigest(principal.Claims["sub"].(string)), Input: name}
 	tree, err := authority.Verify(source.SourceID, source.Bearer, audience)
 	if err != nil {
 		return fmt.Errorf("upload did not authorize the exact input audience: %w", err)
@@ -202,12 +200,13 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		return fmt.Errorf("input grant outlives its temporary claim")
 	}
 	if mode == "stable source" {
-		again, err := intake.UploadInput(in.Ctx, ref, principal, name, epoch, bytes.NewReader(archive))
+		again, err := intake.UploadInput(in.Ctx, ref, principal, name, bytes.NewReader(archive))
 		if err != nil || again.SourceID != source.SourceID {
 			return fmt.Errorf("identical upload changed source identity: %v", err)
 		}
 		return assertInputObjectCount(in, 1)
 	}
+	epoch := int64(runActivationEpoch)
 	admission := runs.Admission{Template: ref, Principal: principal, ContractKey: "uploaded-change", Inputs: map[string]atc.RunInputSource{name: source}}
 	admit := func() (runs.Run, bool, error) {
 		tx, err := admitter.Begin(in.Ctx)

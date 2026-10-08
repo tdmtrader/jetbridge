@@ -238,8 +238,8 @@ func (repository *HangarOutputRepository) MarkFailed(ctx context.Context, tx out
 // scope and digest, this one included), then the exact lifecycle, then the
 // claim.
 func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.Context, tx output.Tx, published output.PublishedCapture) (output.Capture, error) {
-	if published.Generation <= 0 || published.ActivationEpoch == 0 {
-		return output.Capture{}, fmt.Errorf("%w: a publication names no generation or epoch",
+	if published.Generation <= 0 {
+		return output.Capture{}, fmt.Errorf("%w: a publication names no generation",
 			output.ErrIncomplete)
 	}
 	current, err := repository.GetCapture(ctx, tx, published.Key)
@@ -270,7 +270,7 @@ func (repository *HangarOutputRepository) CASPublishingToPublished(ctx context.C
 	if err != nil {
 		return output.Capture{}, err
 	}
-	if _, err := repository.registerLifecycle(ctx, tx, ref, int64(published.ActivationEpoch)); err != nil {
+	if _, err := repository.registerLifecycle(ctx, tx, ref); err != nil {
 		return output.Capture{}, err
 	}
 	var now time.Time

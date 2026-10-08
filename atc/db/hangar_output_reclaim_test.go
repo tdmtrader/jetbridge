@@ -279,15 +279,14 @@ var _ = Describe("reclaiming an exact generation", func() {
 			now := time.Now().UTC()
 			in(func(tx db.HangarOutputTx) {
 				Expect(repository.ReserveInputPublication(ctx, tx, output.InputStage{
-					Version:         output.InputPublicationVersion,
-					ReservationID:   output.ReservationID(uuid.NewString()),
-					NodeUID:         executioncontrol.NodeUID("node-uid"),
-					ActivationEpoch: 1,
-					Scope:           ref.Scope,
-					Digest:          digest,
-					Bytes:           1024,
-					CreatedAt:       output.NewTimestamp(now),
-					ExpiresAt:       output.NewTimestamp(now.Add(90 * time.Second)),
+					Version:       output.InputPublicationVersion,
+					ReservationID: output.ReservationID(uuid.NewString()),
+					NodeUID:       executioncontrol.NodeUID("node-uid"),
+					Scope:         ref.Scope,
+					Digest:        digest,
+					Bytes:         1024,
+					CreatedAt:     output.NewTimestamp(now),
+					ExpiresAt:     output.NewTimestamp(now.Add(90 * time.Second)),
 				}, uuid.NewString())).To(Succeed())
 			})
 
@@ -407,7 +406,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			tx = begin()
 			defer db.Rollback(tx)
 			_, err = repository.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
-				Key: again.Key, Generation: ref.Generation, ActivationEpoch: 1,
+				Key: again.Key, Generation: ref.Generation,
 			})
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("never resurrects"))

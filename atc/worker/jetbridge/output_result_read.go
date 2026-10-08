@@ -21,20 +21,17 @@ func (s *OutputSource) ManagedInputTimeout(count int) time.Duration {
 
 // ForResultRead needs an output reader, independent of the original producer
 // or whether new workloads can be scheduled on this node.
-func (s *OutputSource) ForResultRead(ctx context.Context, epoch executioncontrol.ActivationEpoch) (*OutputControlClient, error) {
-	client, _, err := s.outputNode(ctx, epoch)
+func (s *OutputSource) ForResultRead(ctx context.Context) (*OutputControlClient, error) {
+	client, _, err := s.outputNode(ctx)
 	return client, err
 }
 
 // ForInputUpload pins staging and publication to one currently ready node.
-func (s *OutputSource) ForInputUpload(ctx context.Context, epoch executioncontrol.ActivationEpoch) (*OutputControlClient, executioncontrol.NodeUID, error) {
-	return s.outputNode(ctx, epoch)
+func (s *OutputSource) ForInputUpload(ctx context.Context) (*OutputControlClient, executioncontrol.NodeUID, error) {
+	return s.outputNode(ctx)
 }
 
-func (s *OutputSource) outputNode(ctx context.Context, epoch executioncontrol.ActivationEpoch) (*OutputControlClient, executioncontrol.NodeUID, error) {
-	if epoch != s.controls.epoch {
-		return nil, "", fmt.Errorf("%w: no output node for the retained epoch", output.ErrInfrastructure)
-	}
+func (s *OutputSource) outputNode(ctx context.Context) (*OutputControlClient, executioncontrol.NodeUID, error) {
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: labels.Set{executioncontrol.ReadyLabel: "ready", output.ReadyLabel: "ready"}.String()})
 	if err != nil {
 		return nil, "", err

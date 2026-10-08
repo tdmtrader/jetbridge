@@ -18,7 +18,6 @@ Feature: Authenticated local input intake
       | "unknown input"             |
       | "paused template"           |
       | "held activation"           |
-      | "wrong epoch"               |
       | "missing authority"         |
       | "unconfigured upload"       |
       | "malformed archive"         |

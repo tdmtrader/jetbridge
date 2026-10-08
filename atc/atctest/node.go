@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -37,11 +35,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// The node's identities. The control and read-warrant keys are two keys, as
-// the daemon requires.
+// The node's identities.
 const (
 	nodeName       = "atctest-node"
-	controlKeyID   = "atctest-control-1"
 	materializeKey = "atctest-materialize-1"
 	serverName     = "artifact-daemon"
 )
@@ -78,7 +74,6 @@ type node struct {
 	http          *http.Client
 	minter        *executioncontrol.CapabilityMinter
 	warrants      *output.ReadWarrantSigner
-	control       hangaroutput.ControlKeyRing
 	steps         string
 	terminations  string
 	endpoint      string
@@ -128,10 +123,6 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	n.http = &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{pki.client}, RootCAs: pki.roots, ServerName: serverName, MinVersion: tls.VersionTLS12}}}
 
-	controlFile, controlPublic, err := writeEd25519(tlsDir, "control.pem")
-	if err != nil {
-		return n, err
-	}
 	capability := make([]byte, executioncontrol.CapabilityKeyBytes)
 	warrant := make([]byte, output.ReadWarrantKeyBytes)
 	for _, key := range [][]byte{capability, warrant} {
@@ -150,7 +141,6 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	if n.warrants, err = output.NewReadWarrantSigner(warrant); err != nil {
 		return n, err
 	}
-	n.control = hangaroutput.ControlKeyRing{ActivationEpoch: Epoch, Keys: []hangaroutput.ControlKeyEntry{{Epoch: Epoch, PublicKey: base64.StdEncoding.EncodeToString(controlPublic)}}}
 
 	bucket := "atctest-output"
 	n.emulator, err = fakestorage.NewServerWithOptions(fakestorage.Options{Scheme: "http", Host: "127.0.0.1"})
@@ -162,10 +152,9 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	n.process = exec.Command(binary,
 		"--output-endpoint", n.emulator.URL(), "--output-bucket", bucket, "--output-prefix", "atctest/one", "--output-tenant", "atctest",
 		"--pod-terminations-dir", n.terminations,
-		"--control-key-id", controlKeyID, "--control-key-file", controlFile,
 		"--capability-key", filepath.Join(tlsDir, "capability.key"),
 		"--materialization-key-id", materializeKey, "--materialization-key-file", filepath.Join(tlsDir, "materialize.key"),
-		"--node-uid", string(n.uid), "--activation-epoch", strconv.Itoa(Epoch),
+		"--node-uid", string(n.uid),
 		"--storage-path", filepath.Join(dir, "storage"), "--output-scratch-dir", filepath.Join(dir, "scratch"),
 		// The daemon binds a port of its own choosing and reports it, so no
 		// other process can take it between a probe and the bind.
@@ -181,7 +170,7 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	if err = n.awaitReady(logged); err != nil {
 		return n, fmt.Errorf("%w\n%s", err, logged.String())
 	}
-	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.minter, Epoch).OnNode(n.uid)
+	n.client = jetbridge.NewOutputControlClient(n.endpoint, n.http, n.minter).OnNode(n.uid)
 	if err = n.activate(conn); err != nil {
 		return n, err
 	}
@@ -389,19 +378,6 @@ func repositoryRoot() (string, error) {
 		}
 		dir = parent
 	}
-}
-
-func writeEd25519(dir, name string) (string, ed25519.PublicKey, error) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", nil, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		return "", nil, err
-	}
-	path := filepath.Join(dir, name)
-	return path, public, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600)
 }
 
 type pki struct {

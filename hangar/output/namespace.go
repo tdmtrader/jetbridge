@@ -2,13 +2,11 @@ package output
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 // The output plane's storage identity, derived and never chosen.
@@ -28,11 +26,10 @@ const (
 	// in this system. Without it, two derivations over the same tenant string
 	// would agree by accident.
 	//
-	// v2: the scope is H(domain, tenant, store). There is no epoch in it, so
+	// The scope is H(domain, tenant, store), and v2 is the only derivation:
 	// nothing a deployment does to its configuration moves published objects
 	// into a scope nothing reads.
-	scopeDomain       = "hangar-output-scope-v2"
-	legacyScopeDomain = "hangar-output-scope-v1"
+	scopeDomain = "hangar-output-scope-v2"
 
 	StoreGCS  = "gcs"
 	StoreDisk = "disk"
@@ -73,12 +70,6 @@ type NamespaceConfig struct {
 	// be.
 	CacheBucket       string
 	StrictInputBucket string
-
-	// ActivationEpoch is the control-key generation the deployment's
-	// capabilities are minted under. It is recorded in each object's marker
-	// and does NOT participate in the scope: the scope is a function of the
-	// tenant and the store alone.
-	ActivationEpoch executioncontrol.ActivationEpoch
 }
 
 // OutputNamespace is the derived identity. Its fields are unexported and it is
@@ -89,13 +80,6 @@ type OutputNamespace struct {
 	storeID string
 	prefix  string
 	scope   hangar.Scope
-	epoch   executioncontrol.ActivationEpoch
-
-	// legacyScope is the scope-v1 derivation for the same tenant, store and
-	// epoch: H(v1 domain, tenant, epoch). Results published before scope v2
-	// live under it, and a registered ref naming it stays readable here. It
-	// is never published into.
-	legacyScope hangar.Scope
 }
 
 // DeriveNamespace is the only constructor.
@@ -134,10 +118,6 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 			"scope has nothing to be derived from, and a constant scope is a shared namespace",
 			ErrIncomplete)
 	}
-	if config.ActivationEpoch == 0 {
-		return OutputNamespace{}, fmt.Errorf("%w: no active activation epoch", ErrIncomplete)
-	}
-
 	storeID := ""
 	if config.Store == StoreDisk {
 		storeID = config.StoreID
@@ -146,30 +126,9 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 		storeID: storeID,
 		bucket:  config.Bucket,
 		prefix:  config.DeploymentPrefix,
-		epoch:   config.ActivationEpoch,
 	}
 	namespace.scope = deriveScope(config.TenantID, namespace.BucketFingerprint())
-	legacyTenant := config.TenantID
-	if config.Store == StoreDisk {
-		legacyTenant = "disk\x00" + storeID + "\x00" + config.Bucket + "\x00" + legacyTenant
-	}
-	namespace.legacyScope = deriveLegacyScope(legacyTenant, config.ActivationEpoch)
 	return namespace, nil
-}
-
-// deriveLegacyScope is scope v1, H(v1 domain, tenant, epoch), kept only so a
-// ref published before v2 can still be read. Nothing publishes under it.
-func deriveLegacyScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.Scope {
-	digest := sha256.New()
-	digest.Write([]byte(legacyScopeDomain))
-	digest.Write([]byte{0})
-	digest.Write([]byte(tenant))
-	digest.Write([]byte{0})
-	var encoded [8]byte
-	binary.BigEndian.PutUint64(encoded[:], uint64(epoch))
-	digest.Write(encoded[:])
-
-	return hangar.Scope("o" + hex.EncodeToString(digest.Sum(nil)[:scopeHexBytes]))
 }
 
 // deriveScope is the opaque half.
@@ -225,12 +184,11 @@ func (namespace OutputNamespace) StoreIdentity() string {
 	return namespace.BucketFingerprint() + "/" + namespace.prefix + "/" + string(namespace.scope)
 }
 
-// OwnsRef reports whether a registered ref names this namespace: its derived
-// scope, or the scope-v1 derivation results published before v2 live under.
-// The lifecycle row and the read warrant remain the authority for the read;
-// this only says the key derives here.
+// OwnsRef reports whether a registered ref names this namespace's derived
+// scope. The lifecycle row and the read warrant remain the authority for the
+// read; this only says the key derives here.
 func (namespace OutputNamespace) OwnsRef(ref hangar.TreeRef) bool {
-	return ref.Scope == namespace.scope || (namespace.legacyScope != "" && ref.Scope == namespace.legacyScope)
+	return ref.Scope == namespace.scope
 }
 
 // RefKey is the object key of a ref this namespace owns (OwnsRef).
@@ -250,12 +208,6 @@ func (namespace OutputNamespace) Prefix() string { return namespace.prefix }
 
 // Scope is the derived opaque scope.
 func (namespace OutputNamespace) Scope() hangar.Scope { return namespace.scope }
-
-// ActivationEpoch is the control-key generation this namespace records in
-// its markers.
-func (namespace OutputNamespace) ActivationEpoch() executioncontrol.ActivationEpoch {
-	return namespace.epoch
-}
 
 // IsZero reports an underived namespace, so a caller that forgot to derive one
 // fails a check rather than publishing to "".
@@ -346,11 +298,10 @@ func (request CallerNamespaceRequest) Validate() error {
 // building both from the same value is how that stays impossible.
 func (namespace OutputNamespace) MarkerFor(reservation ReservationID, digest hangar.Digest, createdAt Timestamp) ObjectMarker {
 	return ObjectMarker{
-		Scope:           namespace.scope,
-		Digest:          digest,
-		ReservationID:   reservation,
-		ActivationEpoch: namespace.epoch,
-		Store:           namespace.StoreIdentity(),
-		CreatedAt:       createdAt,
+		Scope:         namespace.scope,
+		Digest:        digest,
+		ReservationID: reservation,
+		Store:         namespace.StoreIdentity(),
+		CreatedAt:     createdAt,
 	}
 }

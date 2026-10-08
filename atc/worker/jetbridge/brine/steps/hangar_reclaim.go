@@ -25,7 +25,6 @@ import (
 	"github.com/concourse/concourse/atc/hangaroutput/reclaim"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/objectstore"
 	hangaroutputleaf "github.com/concourse/concourse/hangar/output"
@@ -209,7 +208,7 @@ func HangarReclaimDefinitions() []brine.StepDefinition {
 				}
 
 				node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP,
-					daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+					daemon.Minter)
 				archive, _, readErr := node.OpenManagedOutput(ctx, managedReadOf(in.Bound, in.Warrants[1]),
 					16<<20)
 				if archive != nil {
@@ -558,8 +557,7 @@ func liveReadersClaims(bound BoundOutput) (int, error) {
 // node sent rather than the header it claimed.
 func readArchiveDigest(bound BoundOutput, warrant mintedRead) (hangar.Digest, error) {
 	daemon := bound.Tree.Outcome.Source.Draft.Daemon
-	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter,
-		executioncontrol.ActivationEpoch(hangarEpoch))
+	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	archive, attributes, err := node.OpenManagedOutput(ctx, managedReadOf(bound, warrant), 16<<20)

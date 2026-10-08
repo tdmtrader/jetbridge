@@ -4,7 +4,7 @@
 // It used to be its own binary and its own DaemonSet. It is now a part of
 // cmd/artifact-daemon, served on that daemon's one listener under that
 // daemon's one TLS configuration, and mounted only when the daemon is given a
-// control key. The wire is unchanged: /execution/v1/*, /capture/v1/*,
+// capability key. The wire is unchanged: /execution/v1/*, /capture/v1/*,
 // /input/v1/* and /read/v1/* keep their paths and their bodies.
 //
 // What it still holds no handle to is the point: no database handle, no list
@@ -96,8 +96,7 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 		}
 	}()
 
-	base, err := OpenExecutionLedger(store, executioncontrol.NodeUID(config.NodeUID),
-		daemon.ActivationEpoch(), daemon.ControlSigner(), nowUTC)
+	base, err := OpenExecutionLedger(store, executioncontrol.NodeUID(config.NodeUID), nowUTC)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +141,8 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 	plane.server.RefuseDaemonCertificate(daemonCertificate)
 
 	fmt.Fprintf(out, "output plane mounted\n")
-	fmt.Fprintf(out, "  control-key gen:  %d\n", daemon.ActivationEpoch())
 	fmt.Fprintf(out, "  node uid:         %s\n", config.NodeUID)
 	fmt.Fprintf(out, "  control ledger:   %s\n", store.Path())
-	fmt.Fprintf(out, "  control key:      %s (public key %x)\n",
-		config.ControlKeyID, daemon.ControlPublicKey()[:8])
 	if daemon.OutputEnabled() {
 		namespace := daemon.Namespace()
 		fmt.Fprintf(out, "  bucket:           %s\n", namespace.Bucket())

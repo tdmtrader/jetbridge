@@ -49,7 +49,7 @@ func NewFacetLabeler(client kubernetes.Interface, node string) *FacetLabeler {
 // Advertise puts the base facet on, then the output facet if there is one.
 //
 // TWO patches and not one. They are two claims made at two different moments:
-// the base facet is ready when the execution ledger, the control key, the
+// the base facet is ready when the execution ledger, the capability key, the
 // protocol and the runtime handshake pass, and the output facet only once the
 // source ledger, the publisher and the read-warrant key pass as well. One patch would make the second claim true at the instant the
 // first one became true, which is the thing the two labels exist to keep apart.

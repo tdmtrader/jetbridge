@@ -12,7 +12,6 @@ type RunExecutionRequest struct {
 	BuildID           int
 	PlanID            atc.PlanID
 	Kind              ContainerType
-	Epoch             int64
 	NodeName, NodeUID string
 	// Capture is the capture this execution produces, for a task with a Run
 	// result; zero for every other execution.
@@ -27,7 +26,7 @@ type RunExecutionAdmission struct {
 
 // RunOutputCancellationEvidence is supplied only by the trusted cleanup worker
 // after contacting the exact node outside its transaction. It is not API input.
-// An actual finish/stop must carry the node's verified signature. Never-started
+// An actual finish/stop is the node's own acknowledgement. Never-started
 // closure instead retains the node's accepted durable stop fence and a subsequent
 // never-started classification; it must never fabricate a process outcome.
 type RunOutputCancellationEvidence struct {

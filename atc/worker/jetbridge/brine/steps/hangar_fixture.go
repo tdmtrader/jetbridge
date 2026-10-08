@@ -46,20 +46,18 @@ package steps
 // THE OUTPUT PLANE IS MOUNTED IN THE SAME DAEMON. One artifact daemon process
 // serves the STRICT-INPUT surface, which is what the proving sentences at the
 // bottom of this file exercise end to end against the emulator, and -- given
-// a control key -- the output plane: the capture control API and the publish
-// route, against ITS OWN bucket, under its own control key.
+// a capability key -- the output plane: the capture control API and the publish
+// route, against ITS OWN bucket, reached over the same mTLS channel.
 // hangarOutputDaemonFlags below is where the bucket separation is stated, and
 // a fixture that pointed both at one bucket would be testing a deployment the
 // daemon refuses to be.
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -141,12 +139,7 @@ type HangarDaemon struct {
 	// operation the route they are about to call declares.
 	Minter *executioncontrol.CapabilityMinter
 
-	// ControlPublic is the activation-pinned public key a scenario verifies a
-	// ledger statement under. It is the fixture's, read back from the same file
-	// the daemon was given, so an assertion is against production verification
-	// rather than against a string a step wrote.
-	ControlPublic ed25519.PublicKey
-	NodeUID       string
+	NodeUID string
 
 	// OutputScratch is the output plane's --output-scratch-dir: where the
 	// daemon canonicalizes, and where a staged input waits for its publish.
@@ -182,34 +175,33 @@ func (s HangarDaemon) stepRoot(key hangaroutput.CaptureKey) string {
 //
 // It names a DIFFERENT bucket from the artifact daemon's, which is the point:
 // the two buckets are the trust boundary between the planes.
-func hangarOutputDaemonFlags(endpoint, bucket, controlKey, capabilityKey,
+func hangarOutputDaemonFlags(endpoint, bucket, capabilityKey,
 	materializeKey, nodeUID, terminations string) []string {
 	return []string{
 		"--output-endpoint", endpoint,
 		"--output-bucket", bucket,
 		"--output-prefix", "brine/deployments/one",
 		"--output-tenant", "brine-tenant",
-		"--control-key-id", hangarControlKeyID,
-		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
 		"--materialization-key-id", hangarMaterializationKeyID,
 		"--materialization-key-file", materializeKey,
 		"--node-uid", nodeUID,
-		"--activation-epoch", fmt.Sprint(hangarEpoch),
 		"--pod-terminations-dir", terminations,
 	}
 }
 
 // The identities the fixture mints. They are constants rather than parameters
-// because no scenario may choose one: a control epoch a feature file could set
-// would be a feature file choosing which control plane admitted it.
+// because no scenario may choose one: a Run activation epoch a feature file
+// could set would be a feature file choosing which contract admitted it.
 const (
-	// The read-warrant key's id. A key of its own: a warrant must not be
-	// signable by anything that signs a control statement.
+	// The read-warrant key's id: the one key per warrant kind the daemon
+	// verifies a consumer's read under.
 	hangarMaterializationKeyID = "brine-materialize-key-1"
-	hangarControlKeyID         = "brine-control-key-1"
 	hangarNodeUID              = "brine-node-1"
-	hangarEpoch                = uint64(7)
+	// runActivationEpoch is the Run contract's activation epoch every Run
+	// this fixture admits is born under. It is the Run's, not Hangar's: the
+	// output plane has no generation of its own.
+	runActivationEpoch = uint64(7)
 )
 
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
@@ -360,8 +352,8 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 }
 
 // prepareOutputPlane creates the output plane's own bucket and mints its
-// Ed25519 control key and its capability secret, and returns the flags that
-// mount it.
+// capability secret, and returns the flags that mount it: the daemon mounts
+// the plane when it is given a capability key.
 //
 // The bucket is created here and named by the fixture, never by a feature file
 // -- convention 3 applied to the fixture itself -- and it is a different bucket
@@ -375,12 +367,6 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string
 		}); err != nil {
 		return nil, err
 	}
-
-	controlKey, controlPublic, err := writeEd25519Key(certDir, "control.pem")
-	if err != nil {
-		return nil, err
-	}
-	state.ControlPublic = controlPublic
 
 	capabilitySecret := make([]byte, executioncontrol.CapabilityKeyBytes)
 	if _, err := rand.Read(capabilitySecret); err != nil {
@@ -427,29 +413,9 @@ func prepareOutputPlane(rec *brine.Recorder, state *HangarDaemon, certDir string
 	state.Terminations = terminations
 
 	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
-		controlKey, capabilityFile, materializeFile, state.NodeUID, terminations)
+		capabilityFile, materializeFile, state.NodeUID, terminations)
 
 	return append(flags, "--output-scratch-dir", scratch), nil
-}
-
-// writeEd25519Key mints one key pair and writes the private half where the
-// daemon expects it, returning the public half so a scenario can verify against
-// the same key the daemon signed with.
-func writeEd25519Key(dir, name string) (string, ed25519.PublicKey, error) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", nil, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		return "", nil, err
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
-		return "", nil, err
-	}
-
-	return path, public, nil
 }
 
 // hangarEmulatorEndpoint adopts CI's shared fake-gcs-server when one is named,

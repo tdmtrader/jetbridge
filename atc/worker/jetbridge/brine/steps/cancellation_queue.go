@@ -96,7 +96,7 @@ func exerciseCancellationQueue(in RunOutputStart, mode string) error {
 		factory := db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory)
 		for i := 0; i < 51; i++ {
 			if err := transaction(false, func(tx db.Tx) error {
-				creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "queue-fixture", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch), HangarEpoch: int64(hangarEpoch)})
+				creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "queue-fixture", db.RunCreationOpts{ActivationEpoch: int64(runActivationEpoch), HangarOutput: true})
 				if err != nil {
 					return err
 				}
@@ -144,7 +144,7 @@ func exerciseCancellationQueue(in RunOutputStart, mode string) error {
 			}
 		}
 	}
-	if _, err := in.start(in.Plan, int64(hangarEpoch), "brine-node", hangarNodeUID, false); err != nil {
+	if _, err := in.start(in.Plan, "brine-node", hangarNodeUID, false); err != nil {
 		return err
 	}
 	if _, err := acceptRunCancellation(in, "owner", nil, false); err != nil {

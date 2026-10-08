@@ -14,14 +14,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -62,7 +60,6 @@ import (
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -80,8 +77,6 @@ const (
 	liveClusterSyncWait     = 12 * time.Minute
 	liveClusterStoreID      = "contract-store-1"
 	liveClusterTenant       = "contract-tenant"
-	liveClusterEpoch        = 1
-	liveClusterControlKeyID = "control-1"
 	liveClusterBootstrapTag = "concourse-hangar-bootstrap"
 )
 
@@ -112,10 +107,8 @@ const (
 //  2. across six syncs, each recreating the bootstrap Job, every inventory
 //     Secret keeps its UID and is byte-identical, and the policy and its
 //     binding keep their UIDs;
-//  3. the control ring holds exactly the public half of the control key, through
-//     web's own ring loader, and no ring holds a symmetric key;
-//  4. every consumer completes its first use of the generated Secrets: web
-//     starts with capture on (its startup refuses a ring it cannot load); the
+//  3. every consumer completes its first use of the generated Secrets: web
+//     starts with capture on; the
 //     artifact daemon's output plane accepts web's control-plane client
 //     certificate over mTLS on a route that requires one; the artifact daemon publishes into the
 //     disk store as `input` and verifies a materialization warrant signed with
@@ -177,8 +170,7 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 	everything := cluster.through("S1", "S2", "S3", "S4", "S5", "S6", "S10", "S13")
 	resync("S10+S13 every consumer on", everything)
 
-	cluster.assertRingsArePublicHalves(inventory)
-	cluster.assertWebLoadedRings(inventory)
+	cluster.assertWebRunsWithCapture()
 	cluster.assertOutputPlaneAcceptsWebClient()
 	cluster.assertArtifactDaemonUsesWarrantKey()
 	cluster.assertControllersSwept(probe)
@@ -194,8 +186,8 @@ func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T)
 type liveClusterNames struct {
 	release, namespace string
 
-	warrant, storeTLS, storeCredentials, control, capability string
-	materialize, runInput                                    string
+	warrant, storeTLS, storeCredentials, capability string
+	materialize, runInput                           string
 
 	daemonTLS, resolve, postgres, signingKey string
 }
@@ -206,7 +198,6 @@ func newLiveClusterNames(release, namespace string) liveClusterNames {
 		warrant:          release + "-hangar-warrant-key",
 		storeTLS:         release + "-hangar-store-tls",
 		storeCredentials: release + "-hangar-store-credentials",
-		control:          release + "-hangar-control-key-e1",
 		capability:       release + "-hangar-capability-key",
 		materialize:      release + "-hangar-materialize-key",
 		runInput:         release + "-run-input-signing-key",
@@ -416,9 +407,6 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 	case "S1":
 		return []string{
 			"hangarBootstrap.enabled=true",
-			fmt.Sprintf("hangarOutput.activationEpoch=%d", liveClusterEpoch),
-			"hangarOutput.executionControl.keySecret=" + names.control,
-			"hangarOutput.executionControl.keyID=" + liveClusterControlKeyID,
 			"hangarOutput.capabilityKeySecret=" + names.capability,
 			"hangarOutput.materializationKeySecret=" + names.materialize,
 			"hangarStorage.disk.tls.existingSecret=" + names.storeTLS,
@@ -948,12 +936,9 @@ func liveClusterFromUnstructured(t *testing.T, object *unstructured.Unstructured
 // liveInventoryEntry is the slice of a bootstrap inventory entry this
 // contract reads back from the chart's inventory ConfigMap.
 type liveInventoryEntry struct {
-	Name  string `json:"name"`
-	Kind  string `json:"kind"`
-	Key   string `json:"key"`
-	Ring  string `json:"ring"`
-	Epoch int64  `json:"epoch"`
-	KeyID string `json:"keyID"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Key  string `json:"key"`
 }
 
 func (cluster *liveCluster) inventory() []liveInventoryEntry {
@@ -974,7 +959,7 @@ func (cluster *liveCluster) inventory() []liveInventoryEntry {
 		kinds[entry.Kind]++
 	}
 	// Every kind the inventory can declare, with every consumer on.
-	for kind, want := range map[string]int{"random32": 4, "ed25519": 2, "store-tokens": 1, "ca": 1, "tls-server": 1, "tls-client": 1, "tls-bundle": 1, "ring": 1, "dsn": 1} {
+	for kind, want := range map[string]int{"random32": 4, "store-tokens": 1, "ca": 1, "tls-server": 1, "tls-client": 1, "tls-bundle": 1, "dsn": 1} {
 		if kinds[kind] != want {
 			t.Fatalf("the bootstrap inventory declares %d %s entries, want %d (all: %v)", kinds[kind], kind, want, kinds)
 		}
@@ -1135,102 +1120,10 @@ func (cluster *liveCluster) assertPolicyRefusesTokenSecret(name string) {
 	}
 }
 
-func liveEd25519Private(t *testing.T, name string, raw []byte) ed25519.PrivateKey {
-	t.Helper()
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		t.Fatalf("Secret %s holds no PEM key", name)
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		t.Fatalf("Secret %s's key is not PKCS#8: %v", name, err)
-	}
-	private, ok := parsed.(ed25519.PrivateKey)
-	if !ok {
-		t.Fatalf("Secret %s's key is a %T, not Ed25519", name, parsed)
-	}
-	return private
-}
-
-// ringFiles writes the ring Secret web mounts to disk, the way the kubelet
-// projects it, and returns the directory and the keys it held. The control
-// ring is the only ring there is.
-func (cluster *liveCluster) ringFiles(inventory []liveInventoryEntry) (string, []string) {
-	t := cluster.t
-	t.Helper()
-	ring := cluster.secret(liveInventoryNamed(t, inventory, "ring").Name)
-	if _, found := ring.Data["control-keys.json"]; !found {
-		keys := make([]string, 0, len(ring.Data))
-		for key := range ring.Data {
-			keys = append(keys, key)
-		}
-		t.Fatalf("the ring Secret holds %v and no control-keys.json", keys)
-	}
-	dir := t.TempDir()
-	keys := make([]string, 0, len(ring.Data))
-	for key, value := range ring.Data {
-		if err := os.WriteFile(filepath.Join(dir, key), value, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		keys = append(keys, key)
-	}
-	return dir, keys
-}
-
-// assertRingsArePublicHalves: each ring holds exactly the public half of its
-// purpose's key for this activation epoch, and no symmetric key appears in
-// either ring in any encoding.
-func (cluster *liveCluster) assertRingsArePublicHalves(inventory []liveInventoryEntry) {
-	t := cluster.t
-	t.Helper()
-	dir, ringKeys := cluster.ringFiles(inventory)
-	controls, err := hangaroutput.LoadControlKeyRing(filepath.Join(dir, "control-keys.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range inventory {
-		if entry.Kind != "ed25519" {
-			continue
-		}
-		public := base64.StdEncoding.EncodeToString(liveEd25519Private(t, entry.Name, cluster.secret(entry.Name).Data[entry.Key]).Public().(ed25519.PublicKey))
-		switch entry.Ring {
-		case "control":
-			if len(controls.Keys) != 1 || int64(controls.Keys[0].Epoch) != entry.Epoch || controls.Keys[0].PublicKey != public {
-				t.Errorf("the control ring %+v is not exactly the public half of %s (epoch %d)", controls, entry.Name, entry.Epoch)
-			}
-		default:
-			t.Errorf("Ed25519 entry %s names ring %q", entry.Name, entry.Ring)
-		}
-	}
-	var rings []byte
-	for _, key := range ringKeys {
-		ring, err := os.ReadFile(filepath.Join(dir, key))
-		if err != nil {
-			t.Fatal(err)
-		}
-		rings = append(rings, ring...)
-	}
-	for _, entry := range inventory {
-		if entry.Kind != "random32" {
-			continue
-		}
-		key := cluster.secret(entry.Name).Data[entry.Key]
-		if len(key) != 32 {
-			t.Fatalf("symmetric key %s is %d bytes", entry.Name, len(key))
-		}
-		for _, encoded := range [][]byte{key, []byte(base64.StdEncoding.EncodeToString(key)), []byte(base64.RawStdEncoding.EncodeToString(key)), []byte(hex.EncodeToString(key))} {
-			if bytes.Contains(rings, encoded) {
-				t.Errorf("symmetric key %s appears in a ring", entry.Name)
-			}
-		}
-	}
-}
-
-// assertWebLoadedRings: web's startup reads both rings and refuses to run on
-// one it cannot load or that names another activation epoch, so a Ready web
-// whose live spec mounts the ring Secret and turns capture on is a web that
-// loaded both.
-func (cluster *liveCluster) assertWebLoadedRings(inventory []liveInventoryEntry) {
+// assertWebRunsWithCapture: web's startup refuses capture without the keys
+// it mints with, so a Ready web whose live spec turns capture on is a web that
+// loaded them.
+func (cluster *liveCluster) assertWebRunsWithCapture() {
 	t := cluster.t
 	t.Helper()
 	name := cluster.names.release + "-web"
@@ -1239,20 +1132,10 @@ func (cluster *liveCluster) assertWebLoadedRings(inventory []liveInventoryEntry)
 		t.Fatal(err)
 	}
 	args := strings.Join(deployment.Spec.Template.Spec.Containers[0].Args, " ")
-	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-output-control-keys=", "--kubernetes-hangar-warrant-key=", "--run-input-signing-key="} {
+	for _, flag := range []string{"--kubernetes-hangar-output-capture-enabled", "--kubernetes-hangar-warrant-key=", "--run-input-signing-key="} {
 		if !strings.Contains(args, flag) {
 			t.Fatalf("web runs without %s", flag)
 		}
-	}
-	ring := liveInventoryNamed(t, inventory, "ring").Name
-	mounted := false
-	for _, volume := range deployment.Spec.Template.Spec.Volumes {
-		if volume.Secret != nil && volume.Secret.SecretName == ring {
-			mounted = true
-		}
-	}
-	if !mounted {
-		t.Fatalf("web does not mount the ring Secret %s", ring)
 	}
 	if deployment.Status.AvailableReplicas < 1 || deployment.Status.UpdatedReplicas != deployment.Status.Replicas {
 		t.Fatalf("web is not available on its current spec: %+v", deployment.Status)
@@ -1303,9 +1186,6 @@ func (cluster *liveCluster) assertOutputPlaneAcceptsWebClient() {
 	}
 	if err := handshake.Validate(); err != nil {
 		t.Fatalf("the capture handshake does not validate: %v", err)
-	}
-	if handshake.Base.ControlKeyID != liveClusterControlKeyID || handshake.Base.ActivationEpoch != liveClusterEpoch {
-		t.Fatalf("the artifact daemon's output plane reports %+v, want control key %s, epoch %d", handshake, liveClusterControlKeyID, liveClusterEpoch)
 	}
 	if body, status := liveGet(t, cluster.ctx, cluster.outputPlaneClient(false), handshakeURL); status != http.StatusUnauthorized {
 		t.Fatalf("without a client certificate the capture handshake answered %d %s; it requires one, so the 200 above proves nothing about web's", status, body)
@@ -1482,7 +1362,7 @@ func (cluster *liveCluster) outputNamespace() output.OutputNamespace {
 	cluster.t.Helper()
 	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
 		Store: output.StoreDisk, StoreID: liveClusterStoreID, Bucket: "outputs",
-		TenantID: liveClusterTenant, ActivationEpoch: liveClusterEpoch,
+		TenantID: liveClusterTenant,
 	})
 	if err != nil {
 		cluster.t.Fatal(err)

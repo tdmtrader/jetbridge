@@ -28,14 +28,14 @@ type bodyAdmitter struct {
 	handoffs  int
 }
 
-func (a *bodyAdmitter) UploadInput(_ context.Context, _ runs.TemplateRef, _ runs.Principal, name string, _ int64, body io.Reader) (atc.RunInputSource, error) {
+func (a *bodyAdmitter) UploadInput(_ context.Context, _ runs.TemplateRef, _ runs.Principal, name string, body io.Reader) (atc.RunInputSource, error) {
 	a.inputName = name
 	data, _ := io.ReadAll(body)
 	a.uploaded = string(data)
 	return atc.RunInputSource{SourceID: "source"}, nil
 }
 
-func (a *bodyAdmitter) HandoffCredentials(_ context.Context, _ runs.TemplateRef, _ runs.Principal, number int, result string, _ int64, body io.ReadCloser) (atc.RunCredentialSession, error) {
+func (a *bodyAdmitter) HandoffCredentials(_ context.Context, _ runs.TemplateRef, _ runs.Principal, number int, result string, body io.ReadCloser) (atc.RunCredentialSession, error) {
 	a.handoffs++
 	_, _ = io.Copy(io.Discard, body)
 	return atc.RunCredentialSession{RunID: 1, Result: result, Status: "ready"}, nil
@@ -103,7 +103,7 @@ func TestUploadReadsItsInputNameFromTheRoute(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			admitter := &bodyAdmitter{}
 			server := NewServer(lagertest.NewTestLogger("test"), nil, "")
-			server.SetServices(Services{Admitter: admitter, Epoch: 1})
+			server.SetServices(Services{Admitter: admitter, HangarOutput: true})
 			request := httptest.NewRequest(http.MethodPost,
 				"/api/v1/teams/t/pipelines/review/run-inputs/change?:team_name=t&:pipeline_name=review&:input_name=change",
 				strings.NewReader(tc.body))
@@ -139,7 +139,7 @@ func TestCredentialHandoffRequiresJSON(t *testing.T) {
 		t.Run(tc.contentType, func(t *testing.T) {
 			admitter := &bodyAdmitter{}
 			server := NewServer(lagertest.NewTestLogger("test"), nil, "")
-			server.SetServices(Services{Admitter: admitter, Epoch: 1})
+			server.SetServices(Services{Admitter: admitter, HangarOutput: true})
 			request := httptest.NewRequest(http.MethodPost,
 				"/api/v2/teams/t/pipelines/review/runs/1/credentials/findings?:team_name=t&:pipeline_name=review&:number=1&:result_name=findings",
 				strings.NewReader(`{"tokens":{"refresh_token":"synthetic"}}`))

@@ -56,7 +56,7 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 			return err
 		}
 	}
-	node := jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	node := jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter)
 	archive, err := durableTarOfOneFile("manifest.json", "registered review bundle")
 	if err != nil {
 		return err

@@ -51,7 +51,7 @@ var _ = Describe("Run credential target worker image", func() {
 			defer db.Rollback(tx)
 			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{
 				ActivationEpoch: 1,
-				HangarEpoch:     1,
+				HangarOutput:    true,
 				Invocation:      &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat(key, 64)},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -63,7 +63,7 @@ var _ = Describe("Run credential target worker image", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			target, err := db.LoadRunCredentialTarget(ctx, tx, template.ID(), number, owner, "findings", 1, false)
+			target, err := db.LoadRunCredentialTarget(ctx, tx, template.ID(), number, owner, "findings", false)
 			Expect(err).NotTo(HaveOccurred())
 			return target
 		}
@@ -103,7 +103,7 @@ var _ = Describe("Run credential target worker image", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{
-			ActivationEpoch: 1, HangarEpoch: 1,
+			ActivationEpoch: 1, HangarOutput: true,
 			Invocation: &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat("d", 64)},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -113,7 +113,7 @@ var _ = Describe("Run credential target worker image", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			_, err = db.LoadRunCredentialTarget(ctx, tx, template.ID(), creation.Run.Number(), owner, "findings", 1, false)
+			_, err = db.LoadRunCredentialTarget(ctx, tx, template.ID(), creation.Run.Number(), owner, "findings", false)
 			return err
 		}
 

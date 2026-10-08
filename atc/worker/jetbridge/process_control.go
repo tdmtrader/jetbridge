@@ -68,7 +68,7 @@ type exactExecution struct {
 	podUID   executioncontrol.PodUID
 	nodeName string
 
-	// unretainedStart is the node's signed start while the Run has not
+	// unretainedStart is the node's recorded start while the Run has not
 	// retained it. The node answers for a start only until an outcome exists,
 	// so no outcome is recorded while this is set: a Run that lost its start
 	// could never close the execution it admitted.
@@ -184,7 +184,6 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 	envelope := executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        p.control.Identity,
-		ActivationEpoch: p.control.ActivationEpoch,
 		NodeUID:         executioncontrol.NodeUID(node.UID),
 		Capability:      p.control.Capability,
 	}
@@ -308,7 +307,7 @@ func (p *execProcess) retainStartWitness(ctx context.Context) error {
 // its transport is abandoned. A variable only so specs need not wait it out.
 var exactStopGrace = 30 * time.Second
 
-// A signed start commits us to delivering this command once. Cancellation must
+// A recorded start commits us to delivering this command once. Cancellation must
 // reach its interruption protocol, even before the exec transport opens;
 // abandoning delivery would leave an executing ledger with no outcome writer.
 // Give the original command a bounded grace period to report its stopped exit,

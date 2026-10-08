@@ -37,7 +37,7 @@ func (c *OutputControlClient) StageInput(ctx context.Context, node executioncont
 	if err := decodeInputResponse(response.Body, &stage); err != nil {
 		return stage, err
 	}
-	if stage.Validate() != nil || stage.NodeUID != node || stage.ActivationEpoch != c.epoch {
+	if stage.Validate() != nil || stage.NodeUID != node {
 		return output.InputStage{}, output.ErrCorrupt
 	}
 	return stage, nil
@@ -49,7 +49,7 @@ func (c *OutputControlClient) StageInput(ctx context.Context, node executioncont
 func (c *OutputControlClient) PublishInput(ctx context.Context, stage output.InputStage, nonce string) (output.InputPublication, error) {
 	var publication output.InputPublication
 	request := output.InputPublishRequest{Version: output.InputPublicationVersion, ReservationID: stage.ReservationID, Nonce: nonce}
-	if stage.Validate() != nil || stage.ActivationEpoch != c.epoch || request.Validate() != nil {
+	if stage.Validate() != nil || request.Validate() != nil {
 		return publication, output.ErrIncomplete
 	}
 	response, err := c.postRead(ctx, "/input/v1/publish", request)

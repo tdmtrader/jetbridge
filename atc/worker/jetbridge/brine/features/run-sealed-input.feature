@@ -17,7 +17,6 @@ Feature: Sealed input grants authorize first admission without becoming retained
       | valid grant |
       | task delivery |
       | missing authority |
-      | wrong epoch |
       | wrong team |
       | wrong template |
       | wrong principal |

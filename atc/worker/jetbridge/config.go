@@ -256,16 +256,6 @@ type Config struct {
 	// leases and their callers must cover that same operation.
 	OutputOperationTimeout time.Duration
 
-	// OutputActivationEpoch is the control-key generation this control plane
-	// mints capabilities under. A spec admitted under another generation was
-	// admitted by a control plane whose capabilities this worker's daemons
-	// would not verify, so no capture pod is built for it. It does not put the
-	// plane in service; hangar_enabled does.
-	//
-	// Zero means unconfigured, and an unconfigured generation checks nothing:
-	// the conformance tier and this package's own specs run without one.
-	OutputActivationEpoch int64
-
 	// HangarEnabled permits exact immutable Hangar tree inputs.
 	HangarEnabled bool
 

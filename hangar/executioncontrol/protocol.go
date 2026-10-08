@@ -31,8 +31,11 @@ func (outcome ExitOutcome) Successful() bool {
 	return outcome.ExitCode == 0 && !outcome.Signalled
 }
 
-// Acknowledgement is an immutable, signed statement from the node's control
-// ledger. It is the only thing in this protocol that constitutes proof.
+// Acknowledgement is an immutable statement from the node's control ledger,
+// answered to the web over the mTLS channel. It is the only thing in this
+// protocol that constitutes proof, and the channel -- not a signature -- is
+// what makes it the node's: the daemon is inside the trusted computing base
+// and is the only party that can answer on it.
 //
 // A base acknowledgement carries no capture identity, source hold, handle
 // generation or output name. Those belong to the optional extension's own
@@ -42,14 +45,12 @@ type Acknowledgement struct {
 	ProtocolVersion string              `json:"protocol_version"`
 	Kind            AcknowledgementKind `json:"kind"`
 	Identity
-	ActivationEpoch ActivationEpoch `json:"activation_epoch"`
 	LedgerSequence  LedgerSequence  `json:"ledger_sequence"`
 	NodeUID         NodeUID         `json:"node_uid"`
 	PodUID          PodUID          `json:"pod_uid"`
 	ProcessIdentity ProcessIdentity `json:"process_identity"`
 	ObservedAt      Timestamp       `json:"observed_at"`
 	Outcome         *ExitOutcome    `json:"outcome,omitempty"`
-	Signature       string          `json:"signature"`
 }
 
 func (ack Acknowledgement) Validate() error {
@@ -61,9 +62,6 @@ func (ack Acknowledgement) Validate() error {
 	}
 	if err := ack.Identity.Validate(); err != nil {
 		return err
-	}
-	if ack.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero", ErrIncomplete)
 	}
 	if ack.LedgerSequence == 0 {
 		return fmt.Errorf("%w: ledger sequence is zero", ErrIncomplete)
@@ -77,10 +75,6 @@ func (ack Acknowledgement) Validate() error {
 	if err := ack.ObservedAt.Validate(); err != nil {
 		return err
 	}
-	if ack.Signature == "" {
-		return fmt.Errorf("%w: acknowledgement is unsigned", ErrIncomplete)
-	}
-
 	// A start acknowledgement with an outcome, or a finish without one, is the
 	// shape a re-used record takes.
 	switch ack.Kind {
@@ -340,10 +334,8 @@ func (result DestructiveCleanupEligibleResult) Validate() error {
 // hangar/output, embeds this one and adds its own facts, so a base-only
 // daemon answers for exact control without an output bucket existing at all.
 type Handshake struct {
-	ProtocolVersion string          `json:"protocol_version"`
-	LedgerVersion   string          `json:"ledger_version"`
-	ControlKeyID    string          `json:"control_key_id"`
-	ActivationEpoch ActivationEpoch `json:"activation_epoch"`
+	ProtocolVersion string `json:"protocol_version"`
+	LedgerVersion   string `json:"ledger_version"`
 }
 
 func (handshake Handshake) Validate() error {
@@ -352,12 +344,6 @@ func (handshake Handshake) Validate() error {
 	}
 	if handshake.LedgerVersion == "" {
 		return fmt.Errorf("%w: no ledger version reported", ErrIncomplete)
-	}
-	if handshake.ControlKeyID == "" {
-		return fmt.Errorf("%w: no control key id reported", ErrIncomplete)
-	}
-	if handshake.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero", ErrIncomplete)
 	}
 
 	return nil

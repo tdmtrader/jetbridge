@@ -70,7 +70,7 @@ web-only Secret with `input.key` containing exactly 32 random raw bytes. This
 service key signs input grants; it is unrelated to Codex credentials and must
 not be shared with node keys. Both Hangar facets and `hangarOutput.webEnabled`
 must be configured: a review template declares results, so its Runs are
-admitted only while the web node's Hangar output epoch is enabled. Run
+admitted only while the Hangar output plane is in service. Run
 admission itself is on at every deploy (`web.pipelineRunActivationEpoch`). Do
 not activate this feature until the remaining acceptance checks pass.
 
@@ -132,10 +132,10 @@ failed, unauthorized or missing results are explicit errors.
 
 Operators enable downloads by setting `hangarOutput.readControlURL` to an HTTPS
 web API address reachable from output daemons. The server certificate must be
-trusted by the system or output-daemon TLS CA. The node uses signed read-lease
-callbacks; it holds bucket access, while the web API serves only verified copies.
-Current readers serve their configured activation epoch; reading older epochs
-after an epoch rotation is not yet wired.
+trusted by the system or output-daemon TLS CA. The node verifies the read
+warrant the web minted over the reader's claim; it holds bucket access, while
+the web API serves only verified copies. A result stays readable while its claim
+is live; there is no key generation to rotate past.
 
 Build the local command:
 
@@ -292,7 +292,7 @@ accepted. Wrong Run identity or an interrupted handoff consumes the attempt;
 there is no reseeding. `--handoff-timeout` defaults to two minutes and the worker's
 overall timeout still bounds the session. The transport does not authorize a
 remote caller: the platform endpoint verifies the original invocation owner,
-current roles, Run and signed execution/Pod before claiming a single handoff.
+current roles, Run and the node-acknowledged execution/Pod before claiming a single handoff.
 
 ## Inspection and findings
 

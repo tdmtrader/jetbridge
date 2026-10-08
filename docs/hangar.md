@@ -164,8 +164,9 @@ through two components of its own -- `hangar_reclaim` (an unclaimed
 generation is deleted and stamped reclaimed) and `hangar_orphan_sweep` --
 which share one PostgreSQL advisory lock across web replicas. It remains opt-in: `hangarOutput.executionControl.enabled` turns on the
 daemon's base execution-control protocol; `hangarOutput.enabled` mounts the
-output plane in the artifact daemon; and `hangarOutput.webEnabled` puts the
-plane **in service**. Configure keys and
+output plane in the artifact daemon, which mounts it once its capability key
+is configured (the base facet cannot verify a capability without it); and
+`hangarOutput.webEnabled` puts the plane **in service**. Configure keys and
 mutual TLS as described in `deploy/chart/values.yaml`. Changing the storage
 selector does not bypass these gates.
 
@@ -176,10 +177,10 @@ startup from `hangarOutput.webEnabled`, and every admission that needs the
 output plane -- a new capture, a Run that declares results or takes inputs, an
 input upload -- reads it `FOR SHARE` in its own transaction and is refused
 while it says false. Nothing else is walked or attested (see
-[ADR-0009](adr/0009-one-node-daemon-one-capture-row.md)):
-`hangarOutput.activationEpoch` is only the control-key
-generation that capabilities and the control-key ring are minted under, and the
-output scope does not derive from it.
+[ADR-0009](adr/0009-one-node-daemon-one-capture-row.md)): there is no
+control-key generation, no node control key and nothing signed by the
+node; the daemon is trusted over the mTLS channel the web reaches it on,
+and an acknowledgement is its answer on that channel.
 
 To remove the output plane (or replace its daemons):
 

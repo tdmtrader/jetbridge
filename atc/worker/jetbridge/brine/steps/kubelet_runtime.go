@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -97,7 +95,6 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 	in.Config = jetbridge.NewConfig(ns.Name, "")
 	in.Config.OutputPlaneEnabled = true
 	in.Config.ArtifactHelperImage = "busybox:1.37"
-	in.Config.OutputActivationEpoch = int64(hangarEpoch)
 	if err = outputPlaneConfig(&in.Config, d.URL, in.Start.Daemon.CertDir); err != nil {
 		return in, nil, err
 	}
@@ -114,11 +111,10 @@ func kubeletWorker(in RunOutputRuntime, executor jetbridge.PodExecutor, name str
 		return nil, nil, err
 	}
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
 	return jetbridge.NewWorker(row, in.Client, in.Config, jetbridge.WorkerDeps{
 		Executor:          executor,
-		OutputControls:    jetbridge.NewOutputControls(in.Config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
-		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys},
+		OutputControls:    jetbridge.NewOutputControls(in.Config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter),
+		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source()},
 	}), factory, nil
 }
 

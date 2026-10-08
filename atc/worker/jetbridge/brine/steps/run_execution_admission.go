@@ -54,7 +54,7 @@ func exerciseRunExecutionAdmission(in RunOutputStart, mode string) error {
 	if mode == "check ownership" {
 		kind = db.ContainerTypeCheck
 	}
-	req := db.RunExecutionRequest{BuildID: build.ID(), PlanID: "step-1", Kind: kind, Epoch: int64(hangarEpoch), NodeName: "brine-node", NodeUID: hangarNodeUID}
+	req := db.RunExecutionRequest{BuildID: build.ID(), PlanID: "step-1", Kind: kind, NodeName: "brine-node", NodeUID: hangarNodeUID}
 	transaction := func(rollback bool, f func(db.Tx) error) error {
 		tx, err := in.DB.Conn.BeginTx(ctx, nil)
 		if err != nil {
@@ -83,7 +83,7 @@ func exerciseRunExecutionAdmission(in RunOutputStart, mode string) error {
 		return result, err
 	}
 	if mode == "capture identity" {
-		record, err := in.start(in.Plan, req.Epoch, req.NodeName, req.NodeUID, false)
+		record, err := in.start(in.Plan, req.NodeName, req.NodeUID, false)
 		if err != nil {
 			return err
 		}

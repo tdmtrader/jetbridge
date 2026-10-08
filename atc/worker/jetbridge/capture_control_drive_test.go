@@ -100,7 +100,6 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	if _, err := harness.Client.Admit(t.Context(), executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        identity,
-		ActivationEpoch: harnessEpoch,
 		NodeUID:         harnessNodeUID,
 		Capability:      "base-capability",
 	}); err != nil {
@@ -120,17 +119,15 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	// an empty one (`container.go` validates the envelope), so a control plane
 	// always supplies it and the fallback is the belt to that brace.
 	control := &runtime.ExecutionControl{
-		Version:         runtime.ExecutionControlVersion,
-		Phase:           runtime.ControlPhaseAdmitted,
-		Identity:        identity,
-		ActivationEpoch: harnessEpoch,
-		Capability:      "base-capability",
-		Endpoint:        endpoint,
+		Version:    runtime.ExecutionControlVersion,
+		Phase:      runtime.ControlPhaseAdmitted,
+		Identity:   identity,
+		Capability: "base-capability",
+		Endpoint:   endpoint,
 	}
 	if err := control.SelectCapture(runtime.DurableOutputCapture{
 		Version:            runtime.DurableOutputCaptureVersion,
 		Identity:           identity,
-		ActivationEpoch:    harnessEpoch,
 		Output:             string(key.Output),
 		SourceControlGrant: executioncontrol.ControlCapability(grant),
 		CaptureDeadline:    time.Now().UTC().Add(time.Hour),

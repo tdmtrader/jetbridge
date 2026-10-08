@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaim"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -86,7 +85,6 @@ func (cmd *RunCommand) hangarOutputNamespace() (output.OutputNamespace, error) {
 		TenantID:          cmd.Kubernetes.OutputTenant,
 		CacheBucket:       cmd.Kubernetes.CacheBucket,
 		StrictInputBucket: cmd.Kubernetes.InputBucket,
-		ActivationEpoch:   executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
 	})
 }
 

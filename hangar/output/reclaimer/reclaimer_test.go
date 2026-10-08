@@ -12,20 +12,16 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
-const (
-	bucket = "reclaimer-spec"
-	epoch  = executioncontrol.ActivationEpoch(7)
-)
+const bucket = "reclaimer-spec"
 
 func namespaceFor(t *testing.T) output.OutputNamespace {
-	return testsupport.Namespace(t, bucket, "tenant-a", epoch)
+	return testsupport.Namespace(t, bucket, "tenant-a")
 }
 
 // role builds a reclaimer over a recorded tier-1 store. The memory comes back

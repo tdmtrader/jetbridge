@@ -174,7 +174,7 @@ var _ = Describe("Run reclamation lock order", func() {
 		tx, err = dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		_, err = f.factory.CreateRunInTx(f.ctx, tx, f.template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
+		_, err = f.factory.CreateRunInTx(f.ctx, tx, f.template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 

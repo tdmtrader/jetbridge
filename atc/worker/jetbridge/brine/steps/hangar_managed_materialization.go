@@ -25,7 +25,7 @@ func exerciseManagedMaterialization(ctx context.Context, in BoundOutput, mode st
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 		transport.TLSClientConfig.Certificates = nil
 		defer transport.CloseIdleConnections()
-		node = jetbridge.NewOutputControlClient(daemon.Output.URL, &http.Client{Transport: transport, Timeout: 10 * time.Second}, daemon.Minter, warrant.Claim.ActivationEpoch)
+		node = jetbridge.NewOutputControlClient(daemon.Output.URL, &http.Client{Transport: transport, Timeout: 10 * time.Second}, daemon.Minter)
 	}
 	materializer, ok := any(node).(interface {
 		MaterializeManagedOutput(context.Context, output.ManagedReadRequest) error

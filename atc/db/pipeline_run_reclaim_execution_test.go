@@ -2,15 +2,11 @@ package db_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	. "github.com/onsi/ginkgo/v2"
@@ -41,7 +37,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
+			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tx.Commit()).To(Succeed())
 			return creation
@@ -57,11 +53,6 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resourceTypes).To(HaveLen(1))
 
-		public, private, err := ed25519.GenerateKey(rand.Reader)
-		Expect(err).NotTo(HaveOccurred())
-		signer, err := executioncontrol.NewAcknowledgementSigner(private)
-		Expect(err).NotTo(HaveOccurred())
-		verifier := hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}}
 		var admissions []db.RunExecutionAdmission
 		var executed, collected []db.Build
 		var newestTypeCheck db.Build
@@ -77,26 +68,23 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 			defer db.Rollback(tx)
 			admission, owned, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{
 				BuildID: check.ID(), PlanID: check.PrivatePlan().ID, Kind: db.ContainerTypeCheck,
-				Epoch: 1, NodeName: "node", NodeUID: "node-uid",
+				NodeName: "node", NodeUID: "node-uid",
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(owned).To(BeTrue())
 			Expect(admission.RunID).To(Equal(victim.Run.ID()))
-			start, err := signer.Sign(executioncontrol.Acknowledgement{
+			start := executioncontrol.Acknowledgement{
 				ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementStart,
-				Identity: admission.Identity, ActivationEpoch: 1, LedgerSequence: 1,
+				Identity: admission.Identity, LedgerSequence: 1,
 				NodeUID: "node-uid", PodUID: "pod-uid", ProcessIdentity: "check-process",
 				ObservedAt: output.NewTimestamp(time.Now()),
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(factory.RecordRunExecutionWitness(ctx, tx, check.ID(), admission.PlanID, start, verifier)).To(Succeed())
+			}
+			Expect(factory.RecordRunExecutionWitness(ctx, tx, check.ID(), admission.PlanID, start)).To(Succeed())
 			finish := start
 			finish.Kind = executioncontrol.AcknowledgementFinish
 			finish.LedgerSequence++
 			finish.Outcome = &executioncontrol.ExitOutcome{ExitCode: 0}
-			finish, err = signer.Sign(finish)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(factory.RecordRunExecutionWitness(ctx, tx, check.ID(), admission.PlanID, finish, verifier)).To(Succeed())
+			Expect(factory.RecordRunExecutionWitness(ctx, tx, check.ID(), admission.PlanID, finish)).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 			Expect(check.SaveEvent(event.Log{Payload: "executed check output"})).To(Succeed())
 			Expect(check.Finish(db.BuildStatusSucceeded)).To(Succeed())
@@ -108,7 +96,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 				if _, isType := checkable.(db.ResourceType); isType && i == 1 {
 					// The newest type check fetched its custom image with a
 					// get inside the check build; reclamation takes both.
-					f := runCheckFixture{ctx: ctx, factory: factory, run: victim.Run, resourceTypes: resourceTypes, signer: signer, verifier: verifier}
+					f := runCheckFixture{ctx: ctx, factory: factory, run: victim.Run, resourceTypes: resourceTypes}
 					newestTypeCheck, _ = f.check(checkable, executedClosedWithImageGet)
 					continue
 				}

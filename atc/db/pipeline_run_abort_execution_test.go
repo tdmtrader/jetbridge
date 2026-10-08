@@ -2,9 +2,7 @@ package db_test
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -35,8 +32,6 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		creation db.RunCreation
 		build    db.Build
 		other    db.Build
-		signer   *executioncontrol.AcknowledgementSigner
-		verifier hangaroutput.ControlKeyRing
 	)
 
 	cancellationRequested := func() (bool, string) {
@@ -56,18 +51,17 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		defer db.Rollback(tx)
 		admission, owned, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{
 			BuildID: build.ID(), PlanID: "task-step", Kind: db.ContainerTypeTask,
-			Epoch: 1, NodeName: "node", NodeUID: "node-uid",
+			NodeName: "node", NodeUID: "node-uid",
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(owned).To(BeTrue())
-		start, err := signer.Sign(executioncontrol.Acknowledgement{
+		start := executioncontrol.Acknowledgement{
 			ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementStart,
-			Identity: admission.Identity, ActivationEpoch: 1, LedgerSequence: 1,
+			Identity: admission.Identity, LedgerSequence: 1,
 			NodeUID: "node-uid", PodUID: "pod-uid", ProcessIdentity: "task-process",
 			ObservedAt: output.NewTimestamp(time.Now()),
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.RecordRunExecutionWitness(ctx, tx, build.ID(), admission.PlanID, start, verifier)).To(Succeed())
+		}
+		Expect(factory.RecordRunExecutionWitness(ctx, tx, build.ID(), admission.PlanID, start)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 		return admission
 	}
@@ -122,14 +116,13 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		finish, err := signer.Sign(executioncontrol.Acknowledgement{
+		finish := executioncontrol.Acknowledgement{
 			ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementFinish,
-			Identity: admission.Identity, ActivationEpoch: 1, LedgerSequence: 2,
+			Identity: admission.Identity, LedgerSequence: 2,
 			NodeUID: "node-uid", PodUID: "pod-uid", ProcessIdentity: "task-process",
 			ObservedAt: output.NewTimestamp(time.Now()), Outcome: &executioncontrol.ExitOutcome{ExitCode: 143},
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.RecordRunExecutionWitness(ctx, tx, b.ID(), admission.PlanID, finish, verifier)).To(Succeed())
+		}
+		Expect(factory.RecordRunExecutionWitness(ctx, tx, b.ID(), admission.PlanID, finish)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 	}
 
@@ -285,17 +278,12 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
+		creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		Expect(creation.EntryBuilds).To(HaveLen(2))
 		build, other = creation.EntryBuilds[0], creation.EntryBuilds[1]
 
-		public, private, err := ed25519.GenerateKey(rand.Reader)
-		Expect(err).NotTo(HaveOccurred())
-		signer, err = executioncontrol.NewAcknowledgementSigner(private)
-		Expect(err).NotTo(HaveOccurred())
-		verifier = hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}}
 	})
 
 	It("stays unfinished and leaves its Run running and uncancelled", func() {
@@ -639,8 +627,6 @@ type closureCaptures struct {
 	creation                db.RunCreation
 	review, sibling         db.Build
 	reviewPlan, siblingPlan atc.TaskPlan
-	control                 *executioncontrol.AcknowledgementSigner
-	controlKeys             hangaroutput.ControlKeyRing
 	node                    closureNode
 }
 
@@ -713,7 +699,7 @@ func newClosureCaptures() *closureCaptures {
 	f.factory = db.NewPipelineRunFactory(dbConn, lockFactory)
 	Expect(f.inTx(func(tx db.Tx) error {
 		var err error
-		f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
+		f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
 		return err
 	})).To(Succeed())
 	for _, build := range f.creation.EntryBuilds {
@@ -737,11 +723,6 @@ func newClosureCaptures() *closureCaptures {
 		}
 	}
 
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	f.control, err = executioncontrol.NewAcknowledgementSigner(private)
-	Expect(err).NotTo(HaveOccurred())
-	f.controlKeys = hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}}
 	return f
 }
 
@@ -764,14 +745,14 @@ func (f *closureCaptures) start(build db.Build, plan atc.TaskPlan) db.RunExecuti
 	GinkgoHelper()
 	var admission db.RunExecutionAdmission
 	Expect(f.inTx(func(tx db.Tx) error {
-		capture, err := f.factory.StartRunCapture(f.ctx, tx, build.ID(), plan, 1, time.Hour, "node", "node-uid")
+		capture, err := f.factory.StartRunCapture(f.ctx, tx, build.ID(), plan, time.Hour, "node", "node-uid")
 		if err != nil {
 			return err
 		}
 		var owned bool
 		admission, owned, err = f.factory.AdmitRunExecution(f.ctx, tx, db.RunExecutionRequest{
 			BuildID: build.ID(), PlanID: atc.PlanID("produce-" + plan.TaskID), Kind: db.ContainerTypeTask,
-			Epoch: 1, NodeName: "node", NodeUID: "node-uid", Capture: capture.Key(),
+			NodeName: "node", NodeUID: "node-uid", Capture: capture.Key(),
 		})
 		Expect(owned).To(BeTrue())
 		return err
@@ -787,12 +768,11 @@ func (f *closureCaptures) sign(a db.RunExecutionAdmission, kind executioncontrol
 	if kind == executioncontrol.AcknowledgementFinish {
 		sequence = 2
 	}
-	ack, err := f.control.Sign(executioncontrol.Acknowledgement{
+	ack := executioncontrol.Acknowledgement{
 		ProtocolVersion: executioncontrol.ProtocolVersion, Kind: kind,
-		Identity: a.Identity, ActivationEpoch: 1, LedgerSequence: sequence, NodeUID: "node-uid", PodUID: "pod-uid",
+		Identity: a.Identity, LedgerSequence: sequence, NodeUID: "node-uid", PodUID: "pod-uid",
 		ProcessIdentity: "producer-process", ObservedAt: output.NewTimestamp(time.Now()), Outcome: outcome,
-	})
-	Expect(err).NotTo(HaveOccurred())
+	}
 	return ack
 }
 
@@ -801,7 +781,7 @@ func (f *closureCaptures) witness(a db.RunExecutionAdmission, kind executioncont
 	GinkgoHelper()
 	ack := f.sign(a, kind, outcome)
 	Expect(f.inTx(func(tx db.Tx) error {
-		return f.factory.RecordRunExecutionWitness(f.ctx, tx, a.BuildID, a.PlanID, ack, f.controlKeys)
+		return f.factory.RecordRunExecutionWitness(f.ctx, tx, a.BuildID, a.PlanID, ack)
 	})).To(Succeed())
 }
 
@@ -820,7 +800,7 @@ func (f *closureCaptures) publishSibling() {
 			return err
 		}
 		_, err := repository.CASPublishingToPublished(f.ctx, tx, output.PublishedCapture{
-			Key: a.Capture, Generation: 1, ActivationEpoch: 1,
+			Key: a.Capture, Generation: 1,
 		})
 		return err
 	})).To(Succeed())
@@ -956,7 +936,7 @@ func (f *closureCaptures) execution(lease db.RunCancellationLease, op db.RunCanc
 		}
 	}
 	err := f.inTx(func(tx db.Tx) error {
-		return f.factory.RecordCancelledRunExecution(f.ctx, tx, lease, op, evidence, f.controlKeys)
+		return f.factory.RecordCancelledRunExecution(f.ctx, tx, lease, op, evidence)
 	})
 	if errors.Is(err, atc.ErrRunOutputPending) {
 		return db.CancellationPending

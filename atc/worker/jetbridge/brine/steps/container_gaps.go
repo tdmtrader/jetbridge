@@ -97,11 +97,6 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				return newWorkerReady(res, rec, "k8s-worker-1", "", func(cfg *jetbridge.Config) {
 					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 					cfg.OutputPlaneEnabled = true
-					// And the control-key generation the worker admits under. Without one the
-					// worker's stale-epoch refusal is unconfigured and checks
-					// nothing, so every capture scenario in this family would
-					// be exercising a plane with that arm switched off.
-					cfg.OutputActivationEpoch = int64(hangarEpoch)
 					// Strict inputs, the foundation tier. Inert for every
 					// scenario that declares no tree input -- the strict-input
 					// branch of BuildFetchInitContainers only runs for an input

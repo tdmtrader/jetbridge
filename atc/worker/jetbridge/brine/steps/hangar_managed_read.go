@@ -24,7 +24,7 @@ func HangarManagedReadDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		CheckThat[BoundOutput]("the consumer can inspect only the exact output through an authenticated daemon", func(in BoundOutput) error {
 			daemon := in.Tree.Outcome.Source.Draft.Daemon
-			control := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+			control := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter)
 			stat, ok := any(control).(interface {
 				StatExactObject(context.Context, hangar.TreeRef) (output.PublishedObject, error)
 			})
@@ -103,7 +103,7 @@ func exerciseManagedRead(in BoundOutput, mode string, materialize bool, rec *bri
 	// it was not already spent on this node -- and asks the web nothing.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	node := jetbridge.NewOutputControlClient(daemon.Output.URL, daemon.HTTP, daemon.Minter)
 	stat, ok := any(node).(hangaroutput.ExactStat)
 	if !ok {
 		return in, fmt.Errorf("managed-read stat is unavailable")

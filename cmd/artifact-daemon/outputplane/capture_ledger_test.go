@@ -69,8 +69,6 @@ func newCaptureLedger(t *testing.T) *captureFixture {
 	server, bucket := emulator(t)
 	fixture.objects, fixture.bucket = server, bucket
 	fixture.config = validConfig(t, server.URL(), bucket)
-	fixture.config.ControlKeyFile = writePrivateKey(t, fixture.private)
-	fixture.config.ActivationEpoch = uint64(testEpoch)
 	daemon, err := Build(t.Context(), fixture.config)
 	if err != nil {
 		t.Fatalf("building the daemon: %v", err)

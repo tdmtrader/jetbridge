@@ -24,8 +24,13 @@ template first, so these rules run before anything else in the chart.
   (list "artifactDaemon.preemption" "the GCP spot preemption watcher is gone; on SIGTERM the daemon drains in-flight mirror jobs before it exits. Remove the value.")
   (list "artifactDaemon.tls.enabled" "mTLS is always required. Set tls.source and remove the old value.")
   (list "hangarBootstrap.database" "the activation database role is gone with the activation command and its epoch table: the web writes the plane's hangar_enabled row itself, as web's own database user. Remove the value, and the role and its Secret once nothing runs as them.")
+  (list "hangarBootstrap.referencedKeys" "there is no control-key generation and no verification ring to keep earlier generations in: the daemon is trusted over mTLS, nothing it says is signed, and nothing is keyed by generation. Remove the value, and the earlier control-key Secrets once nothing mounts them.")
   (list "hangarBootstrap.secretNames.outputCA" "the output plane has no TLS of its own: it is served by the artifact daemon under artifactDaemon.tls. Remove the value.")
-  (list "hangarOutput.activation" "the activation walk Job is gone. Whether the output plane is in service is hangarOutput.webEnabled, which the web writes into its hangar_enabled row at startup; draining is webEnabled=false until fly hangar-status shows no residue. hangarOutput.activationEpoch stays, as the control-key generation capabilities are minted under, and nothing rotates it. Remove the value.")
+  (list "hangarOutput.activation" "the activation walk Job is gone. Whether the output plane is in service is hangarOutput.webEnabled, which the web writes into its hangar_enabled row at startup; draining is webEnabled=false until fly hangar-status shows no residue. Remove the value.")
+  (list "hangarOutput.activationEpoch" "there is no control-key generation: the daemon is trusted over mTLS, nothing it says is signed, and no capability or claim is keyed by generation. A result binds as a Run input while its Run succeeded and its claim is live. Remove the value. (web.pipelineRunActivationEpoch, the Run contract's own epoch, is unrelated and stays.)")
+  (list "hangarOutput.executionControl.keyID" "the node reports no key id: it signs nothing. The daemon is trusted over mTLS, and its acknowledgement is its answer on that channel. Remove the value.")
+  (list "hangarOutput.executionControl.keySecret" "there is no node control key: the daemon is trusted over mTLS, and its acknowledgement is its answer on that channel, not a signed statement. The output plane is mounted when hangarOutput.capabilityKeySecret is named. Remove the value and its Secret once nothing mounts it.")
+  (list "hangarOutput.executionControl.publicKeys" "there is no verification ring: nothing the daemon says is signed, so the web verifies no node statement and holds no public key. Remove the value.")
   (list "hangarOutput.daemon" "the output plane is served by the artifact daemon: its scratch moved to artifactDaemon.outputScratch, its publisher identity's annotations to artifactDaemon.serviceAccount.annotations, its port and TLS are the artifact daemon's, and its control and steps directories are the artifact daemon's hostPath and its steps/. Remove the value.")
   (list "hangarOutput.database" "the activation database role is gone with the activation walk; only the web touches the output plane's tables, as web's own database user. Remove the value.")
   (list "hangarOutput.inventory" "the inventory controller is gone: the web runs the orphan sweep itself, every hangarOutput.orphanSweep.interval. Its GCS list grant moves to the web's service account (serviceAccount.annotations); on the disk store the web mounts the inventory token. Remove the value.")
@@ -33,7 +38,7 @@ template first, so these rules run before anything else in the chart.
   (list "hangarOutput.leaseTerm" "there are no leases: a reader's claim lasts hangarOutput.operationTimeout plus five minutes and expires on its own, and the reclaim pass holds nothing between passes. Remove the value.")
   (list "hangarOutput.readControlCA" "the daemon no longer calls the web; a reader's claim is given back by the web. Remove the value.")
   (list "hangarOutput.readControlURL" "the daemon no longer calls the web; a reader's claim is given back by the web. Remove the value.")
-  (list "hangarOutput.receipt" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key, ring or referenced epoch to declare. Remove the value and its Secret.")
+  (list "hangarOutput.receipt" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key to declare. Remove the value and its Secret.")
   (list "hangarOutput.sealDeadline" "a capture seal is asynchronous on the node and bounded by the capture deadline (hangarOutput.captureDeadline); there is no separate seal deadline. Remove the value.")
   (list "hangarOutput.reclaimer" "the reclaimer controller is gone: the web runs the reclaim pass itself; set hangarOutput.reclaim.interval, .deleteTimeout and .batch. Its GCS get and delete grant moves to the web's service account (serviceAccount.annotations); on the disk store the web mounts the reclaimer token. Remove the value.")
   (list "rbac.brineLive" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
@@ -54,16 +59,6 @@ template first, so these rules run before anything else in the chart.
 {{- end -}}
 {{- if $present -}}
 {{- fail (printf "%s has been removed; %s" $key (index $removed 1)) -}}
-{{- end -}}
-{{- end -}}
-{{- /*
-  Removed fields of list entries, which the table above cannot address.
-*/ -}}
-{{- range $index, $earlier := .Values.hangarBootstrap.referencedKeys -}}
-{{- range $field := list "receiptSecret" "receiptKeyID" -}}
-{{- if and (kindIs "map" $earlier) (hasKey $earlier $field) -}}
-{{- fail (printf "hangarBootstrap.referencedKeys[%d].%s has been removed; publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so an earlier epoch keeps only its controlSecret. Remove the field." $index $field) -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if eq .Values.artifactDaemon.tls.source "existingSecret" -}}

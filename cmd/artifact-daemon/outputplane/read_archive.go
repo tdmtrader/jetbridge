@@ -68,9 +68,8 @@ func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) 
 		return
 	}
 	claims, err := server.reads.verifier.Verify(input.Warrant, input.Ref, input.Destination)
-	// The warrant names its epoch and its node; on any other it opens nothing.
-	if err != nil || claims.ActivationEpoch != server.daemon.ActivationEpoch() ||
-		claims.NodeUID == "" || claims.NodeUID != server.daemon.nodeUID {
+	// The warrant names its node; on any other it opens nothing.
+	if err != nil || claims.NodeUID == "" || claims.NodeUID != server.daemon.nodeUID {
 		readRefusal(w, output.ErrUnauthorized)
 		return
 	}

@@ -51,7 +51,7 @@ func TestTheCacheNamespaceMustDifferFromInputAndOutput(t *testing.T) {
 	// The output plane's namespace joins the comparison only when the daemon
 	// mounts the plane with its output facet: a base-control-only plane, or no
 	// plane, has no output bucket.
-	capture := outputplane.Config{ControlKeyFile: "/control.key", OutputBucket: "shared"}
+	capture := outputplane.Config{CapabilityKeyFile: "/capability.key", OutputBucket: "shared"}
 	if err := validateStorageNamespaces("shared", "", outputNamespace(capture)); err == nil {
 		t.Error("an output plane publishing into the cache bucket was accepted")
 	}
@@ -62,7 +62,7 @@ func TestTheCacheNamespaceMustDifferFromInputAndOutput(t *testing.T) {
 	if got := outputNamespace(unmounted); got != "" {
 		t.Errorf("a daemon with no output plane compared output namespace %q", got)
 	}
-	if got := outputNamespace(outputplane.Config{ControlKeyFile: "/control.key"}); got != "" {
+	if got := outputNamespace(outputplane.Config{CapabilityKeyFile: "/capability.key"}); got != "" {
 		t.Errorf("a base-control-only plane compared output namespace %q", got)
 	}
 }

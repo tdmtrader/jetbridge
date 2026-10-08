@@ -25,7 +25,7 @@ func (a *admitter) SetCredentialHandoffConfig(config CredentialHandoffConfig) {
 	a.credentialHandoff = config
 }
 
-func (a *admitter) credentialTarget(ctx context.Context, ref TemplateRef, principal Principal, number int, result string, epoch int64, action string, claim bool) (db.RunCredentialTarget, error) {
+func (a *admitter) credentialTarget(ctx context.Context, ref TemplateRef, principal Principal, number int, result string, action string, claim bool) (db.RunCredentialTarget, error) {
 	var target db.RunCredentialTarget
 	subject, ok := principal.Claims["sub"].(string)
 	if !ok || subject == "" {
@@ -49,7 +49,7 @@ func (a *admitter) credentialTarget(ctx context.Context, ref TemplateRef, princi
 	if err != nil {
 		return target, err
 	}
-	target, err = db.LoadRunCredentialTarget(ctx, tx, pipeline.ID(), number, runinput.PrincipalDigest(subject), result, epoch, claim)
+	target, err = db.LoadRunCredentialTarget(ctx, tx, pipeline.ID(), number, runinput.PrincipalDigest(subject), result, claim)
 	if errors.Is(err, db.ErrRunCredentialOwner) {
 		return target, ErrUnauthorized
 	}
@@ -66,15 +66,15 @@ func (a *admitter) credentialTarget(ctx context.Context, ref TemplateRef, princi
 	return target, db.HangarCommitError(tx.Commit())
 }
 
-func (a *admitter) InspectCredentialHandoff(ctx context.Context, ref TemplateRef, principal Principal, number int, result string, epoch int64) (atc.RunCredentialSession, error) {
-	target, err := a.credentialTarget(ctx, ref, principal, number, result, epoch, atc.GetPipelineRunCredentialSession, false)
+func (a *admitter) InspectCredentialHandoff(ctx context.Context, ref TemplateRef, principal Principal, number int, result string) (atc.RunCredentialSession, error) {
+	target, err := a.credentialTarget(ctx, ref, principal, number, result, atc.GetPipelineRunCredentialSession, false)
 	return target.RunCredentialSession, err
 }
 
 // HandoffCredentials owns and closes input. No database transaction remains
 // open while reading or forwarding it. The second authorization and the claim
 // commit together, after reading, so a revoked owner cannot use an open upload.
-func (a *admitter) HandoffCredentials(ctx context.Context, ref TemplateRef, principal Principal, number int, result string, epoch int64, input io.ReadCloser) (atc.RunCredentialSession, error) {
+func (a *admitter) HandoffCredentials(ctx context.Context, ref TemplateRef, principal Principal, number int, result string, input io.ReadCloser) (atc.RunCredentialSession, error) {
 	if input == nil {
 		return atc.RunCredentialSession{}, ErrCredentialInput
 	}
@@ -83,7 +83,7 @@ func (a *admitter) HandoffCredentials(ctx context.Context, ref TemplateRef, prin
 	defer cancel()
 	stop := context.AfterFunc(ctx, func() { _ = input.Close() })
 	defer stop()
-	target, err := a.credentialTarget(ctx, ref, principal, number, result, epoch, atc.HandoffPipelineRunCredentials, false)
+	target, err := a.credentialTarget(ctx, ref, principal, number, result, atc.HandoffPipelineRunCredentials, false)
 	if err != nil || target.Status != "available" {
 		return target.RunCredentialSession, err
 	}
@@ -96,7 +96,7 @@ func (a *admitter) HandoffCredentials(ctx context.Context, ref TemplateRef, prin
 	if err != nil || len(data) > 65536 || !json.Valid(data) {
 		return target.RunCredentialSession, ErrCredentialInput
 	}
-	target, err = a.credentialTarget(ctx, ref, principal, number, result, epoch, atc.HandoffPipelineRunCredentials, true)
+	target, err = a.credentialTarget(ctx, ref, principal, number, result, atc.HandoffPipelineRunCredentials, true)
 	if err != nil || !target.ClaimedNow {
 		return target.RunCredentialSession, err
 	}

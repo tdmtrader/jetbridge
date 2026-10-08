@@ -19,11 +19,9 @@ through a caller-owned transaction and opaque identities.
 ## Tree refs
 
 A tree ref is scope, digest and generation, all three. Scope is derived by
-the control plane from the deployment, tenant and store, and never accepted
-from a caller. A ref under the previous scope derivation (v1, which also
-hashed the control-key generation) stays readable: the read path keys a ref
-by its own scope and accepts v1 for the same tenant and store. Hangar never substitutes a newer generation or different
-content. A strict input names a complete tree ref and fails closed on
+the control plane as H(domain, tenant, store), and that is the only
+derivation; it is never accepted from a caller. Hangar never substitutes a
+newer generation or different content. A strict input names a complete tree ref and fails closed on
 absence, corruption, conflict, authorization, limits or infrastructure.
 
 ## Storage
@@ -167,15 +165,19 @@ generation missing records one, and the read fails closed.
 Drain: turn the plane out of service; in-flight captures finish; `fly
 hangar-status` reports the residue (pending and publishing captures,
 terminal captures not yet released, open claims) and, beside it, releases
-no node acknowledged.
+no node acknowledged. A node's acknowledgement is its answer on the mTLS
+channel the web reached it on; nothing is signed, and there is no key
+generation to put in or take out of service.
 Remove the plane when every residue count is zero at once.
 
 ## Trust
 
 Step pods are untrusted. Every pod-originated daemon call carries a warrant;
 warrant keys never enter a task pod; no callable accepts a bare string or a
-caller-chosen scope (`hangar/output/architecture_test.go`). The daemon holds
-no database credential and no delete credential over the input or output
-namespace, and never calls the web; every off-node route needs an mTLS
-client certificate. The reader verifies a tree against the digest in the
-row.
+caller-chosen scope (`hangar/output/architecture_test.go`). The node daemon
+is inside the trusted computing base, reached over mTLS from the web only:
+an acknowledgement is the node's answer on that channel, not a signed
+statement, and the node holds no control key. The daemon holds no database
+credential and no delete credential over the input or output namespace,
+and never calls the web; every off-node route needs an mTLS client
+certificate. The reader verifies a tree against the digest in the row.

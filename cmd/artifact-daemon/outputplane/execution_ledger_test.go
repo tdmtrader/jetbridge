@@ -1,8 +1,6 @@
 package outputplane
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -30,23 +28,19 @@ const (
 	testExecution = executioncontrol.ExecutionID("33333333-3333-4333-8333-333333333333")
 	testNode      = executioncontrol.NodeUID("node-1")
 	testPod       = executioncontrol.PodUID("pod-1")
-	testEpoch     = executioncontrol.ActivationEpoch(7)
 )
 
 type ledgerFixture struct {
-	ledger  *ExecutionLedger
-	store   *controlStore
-	dir     string
-	public  ed25519.PublicKey
-	private ed25519.PrivateKey
-	signer  *executioncontrol.AcknowledgementSigner
-	now     time.Time
+	ledger *ExecutionLedger
+	store  *controlStore
+	dir    string
+	now    time.Time
 }
 
 func (fixture *ledgerFixture) clock() time.Time { return fixture.now }
 
 // fixedNow is the one instant these tests run at. A ledger's timestamps are
-// what a signature covers, so a clock that moved would make two statements over
+// part of the statement, so a clock that moved would make two statements over
 // the same facts differ for a reason no assertion is about.
 func fixedNow() time.Time { return time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC) }
 
@@ -69,47 +63,26 @@ func (fixture *ledgerFixture) reopen(t *testing.T) {
 	if fixture.store != nil {
 		_ = fixture.store.Close()
 	}
-	if fixture.public == nil {
-		public, private, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("generating the control key: %v", err)
-		}
-		signer, err := executioncontrol.NewAcknowledgementSigner(private)
-		if err != nil {
-			t.Fatalf("building the signer: %v", err)
-		}
-		fixture.public, fixture.private = public, private
-		fixture.signer = signer
-	}
-
 	store, err := openControlStore(fixture.dir)
 	if err != nil {
 		t.Fatalf("opening the control store: %v", err)
 	}
 
-	ledger, err := OpenExecutionLedger(store, testNode, testEpoch, fixture.signer, fixture.clock)
+	ledger, err := OpenExecutionLedger(store, testNode, fixture.clock)
 	if err != nil {
 		t.Fatalf("opening the execution ledger: %v", err)
 	}
 	fixture.store, fixture.ledger = store, ledger
 }
 
-// sameStatement compares two acknowledgements by the bytes their signature
-// covers plus the signature itself.
+// sameStatement compares two acknowledgements by their wire form.
 //
 // Not `==`: Acknowledgement carries *ExitOutcome, so the operator compares
-// pointers and two identical statements read as different. Comparing the signed
-// bytes is also the stronger claim -- it is exactly what a verifier compares,
-// so "the same statement" means the same thing here as it does to a control
-// plane.
+// pointers and two identical statements read as different. Comparing the wire
+// bytes is also the stronger claim -- it is exactly what a control plane
+// receives, so "the same statement" means the same thing here as it does there.
 func sameStatement(left, right executioncontrol.Acknowledgement) bool {
-	unsigned := func(ack executioncontrol.Acknowledgement) string {
-		ack.Signature = ""
-
-		return string(executioncontrol.CanonicalAcknowledgementBytes(ack))
-	}
-
-	return left.Signature == right.Signature && unsigned(left) == unsigned(right)
+	return describeStatement(left) == describeStatement(right)
 }
 
 func describeStatement(ack executioncontrol.Acknowledgement) string {
@@ -126,7 +99,6 @@ func envelope(fence executioncontrol.Fence) executioncontrol.Envelope {
 	return executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        identity(fence),
-		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
 		Capability:      "opaque-capability",
 	}
@@ -182,8 +154,8 @@ func TestTheLedgerWalksOneExecutionFromAdmissionToAnAuthoritativeFinish(t *testi
 	if start.Kind != executioncontrol.AcknowledgementStart {
 		t.Errorf("the start acknowledgement is a %s", start.Kind)
 	}
-	if err := executioncontrol.VerifyAcknowledgement(start, fixture.public); err != nil {
-		t.Errorf("the start acknowledgement does not verify: %v", err)
+	if err := start.Validate(); err != nil {
+		t.Errorf("the start acknowledgement does not validate: %v", err)
 	}
 
 	if result, err = fixture.ledger.Classify(identity(1)); err != nil {
@@ -208,8 +180,8 @@ func TestTheLedgerWalksOneExecutionFromAdmissionToAnAuthoritativeFinish(t *testi
 	if err != nil {
 		t.Fatalf("recording the finish: %v", err)
 	}
-	if err := executioncontrol.VerifyAcknowledgement(finish, fixture.public); err != nil {
-		t.Errorf("the finish acknowledgement does not verify: %v", err)
+	if err := finish.Validate(); err != nil {
+		t.Errorf("the finish acknowledgement does not validate: %v", err)
 	}
 	if finish.LedgerSequence <= start.LedgerSequence {
 		t.Errorf("the finish is sequence %d and the start was %d; the ledger sequence is monotonic",
@@ -506,8 +478,8 @@ func TestARestartReturnsTheSameSignedStatementWithoutRelaunchingAnything(t *test
 		t.Errorf("a restarted daemon returned a different statement:\nbefore: %s\n after: %s",
 			describeStatement(finish), describeStatement(*observed.Acknowledgement))
 	}
-	if err := executioncontrol.VerifyAcknowledgement(*observed.Acknowledgement, fixture.public); err != nil {
-		t.Errorf("the recovered statement does not verify: %v", err)
+	if err := observed.Acknowledgement.Validate(); err != nil {
+		t.Errorf("the recovered statement does not validate: %v", err)
 	}
 
 	// A start after a restart of an already-finished execution is refused. This
@@ -522,7 +494,6 @@ func TestARestartReturnsTheSameSignedStatementWithoutRelaunchingAnything(t *test
 	if err := fixture.ledger.Admit(executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        executioncontrol.Identity{ExecutionID: "44444444-4444-4444-8444-444444444444", Fence: 1},
-		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
 		Capability:      "opaque-capability",
 	}); err != nil {
@@ -641,7 +612,6 @@ func TestDestructiveCleanupWaitsForTheOutcomeAndForEveryOpenGate(t *testing.T) {
 	if err := fixture.ledger.Admit(executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        second,
-		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
 		Capability:      "opaque-capability",
 	}); err != nil {
@@ -676,10 +646,10 @@ func TestABaseExecutionNeedsNoExtensionToBeComplete(t *testing.T) {
 		t.Fatalf("finishing: %v", err)
 	}
 
-	// Complete on its own: authoritative, verifiable, and cleanup-eligible with
+	// Complete on its own: authoritative, well-formed, and cleanup-eligible with
 	// no extension having been involved at any point.
-	if err := executioncontrol.VerifyAcknowledgement(finish, fixture.public); err != nil {
-		t.Fatalf("the base acknowledgement does not verify: %v", err)
+	if err := finish.Validate(); err != nil {
+		t.Fatalf("the base acknowledgement does not validate: %v", err)
 	}
 	eligible, err := fixture.ledger.CleanupEligible(identity(1))
 	if err != nil {
@@ -724,7 +694,7 @@ func TestABaseExecutionNeedsNoExtensionToBeComplete(t *testing.T) {
 	}
 }
 
-// The node's signed start is readable by itself, as it was stored.
+// The node's recorded start is readable by itself, as it was stored.
 //
 // Classify carries no acknowledgement for an executing record, and RecordStart
 // is a write that needs the Pod and process the caller may not know. A Run
@@ -756,7 +726,7 @@ func TestTheSignedStartIsReadableAsStoredAndNothingElse(t *testing.T) {
 			describeStatement(read), describeStatement(started))
 	}
 	if fixture.ledger.Sequence() != sequence {
-		t.Fatal("reading a start signed a new statement")
+		t.Fatal("reading a start minted a new statement")
 	}
 	classified, err := fixture.ledger.Classify(identity(1))
 	if err != nil || classified.Classification != executioncontrol.ClassificationExecuting {

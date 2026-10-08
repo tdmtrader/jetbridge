@@ -396,7 +396,7 @@ func runValidateTask(ctx context.Context, run submittedRun, client *implementcli
 	runtime := run.Runtime
 	runtime.Start.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
 	runtime.Spec.Outputs = map[string]string{task.RunResult.Output: "/workspace/" + task.RunResult.Output}
-	_, err = driveSubmittedProducer(ctx, runtime, run.Factory, run.BuildID, "submitted-validate", run.Keys, rec, func(directory string) error {
+	_, err = driveSubmittedProducer(ctx, runtime, run.Factory, run.BuildID, "submitted-validate", rec, func(directory string) error {
 		if err := refuseValidationHandoff(ctx, run, client, pending); err != nil {
 			return err
 		}

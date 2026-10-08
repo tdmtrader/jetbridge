@@ -113,7 +113,7 @@ func hangarPublishAt(ctx context.Context, repository *db.HangarOutputRepository,
 	capture.Ref.Generation = generation
 	hangarCaptureTx(func(tx db.Tx) {
 		_, err := repository.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
-			Key: capture.Key, Generation: generation, ActivationEpoch: 1,
+			Key: capture.Key, Generation: generation,
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})

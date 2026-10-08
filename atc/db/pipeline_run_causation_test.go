@@ -45,7 +45,7 @@ var _ = Describe("Run causation and correlation", func() {
 		defer db.Rollback(tx)
 		creation, err := factory.CreateRunInTx(ctx, tx, on, db.RunParams{}, "owner", db.RunCreationOpts{
 			ActivationEpoch: 1,
-			HangarEpoch:     1,
+			HangarOutput:    true,
 			Invocation:      &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat(key, 64)},
 			CausedByRun:     cause,
 			Correlation:     correlation,

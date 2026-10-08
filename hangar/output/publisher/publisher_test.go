@@ -9,15 +9,11 @@ package publisher_test
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/publisher"
@@ -26,13 +22,12 @@ import (
 
 const (
 	bucket      = "publisher-spec"
-	epoch       = executioncontrol.ActivationEpoch(7)
 	reservation = output.ReservationID("44444444-4444-4444-8444-444444444444")
 	timeout     = 10 * time.Second
 )
 
 func namespaceFor(t *testing.T, tenant string) output.OutputNamespace {
-	return testsupport.Namespace(t, bucket, tenant, epoch)
+	return testsupport.Namespace(t, bucket, tenant)
 }
 
 // role builds a publisher over a recorded tier-1 store.
@@ -119,7 +114,7 @@ func TestEnsurePublicationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		testsupport.ExpectNoRPC(t, recorder)
 	})
 
-	// A capture publishes into the namespace its epoch derived and no other.
+	// A capture publishes into the namespace its tenant and store derived and no other.
 	// The reservation is resolved by the control plane, so a scope that is
 	// not this publisher's is not a caller's mistake to be corrected: it is a
 	// publisher being asked to write into somebody else's namespace.
@@ -129,23 +124,6 @@ func TestEnsurePublicationRefusesBeforeTheStoreIsReached(t *testing.T) {
 			bytes.NewReader([]byte("abc")), 3)
 		if !errors.Is(err, output.ErrUnauthorized) {
 			t.Errorf("expected ErrUnauthorized, got %v", err)
-		}
-		testsupport.ExpectNoRPC(t, recorder)
-	})
-
-	// The marker is the ownership evidence written once at creation. A
-	// marker naming another epoch under this namespace's scope would be
-	// evidence about an epoch this publisher was not derived under.
-	t.Run("a marker naming another activation epoch", func(t *testing.T) {
-		built, recorder := role(t, namespace)
-		stale := resolved(t, namespace)
-		stale.ActivationEpoch = epoch + 1
-		if err := stale.Validate(); err != nil {
-			t.Fatalf("the fixture must be a valid reservation for the case to be about the epoch: %v", err)
-		}
-		_, err := built.EnsurePublication(ctx, stale, bytes.NewReader([]byte("abc")), 3)
-		if !errors.Is(err, output.ErrConflict) {
-			t.Errorf("expected ErrConflict, got %v", err)
 		}
 		testsupport.ExpectNoRPC(t, recorder)
 	})
@@ -181,7 +159,7 @@ func TestOpenExactObjectRefusesAWarrantForAnotherRefBeforeTheStoreIsReached(t *t
 	built, recorder := role(t, namespace)
 
 	ref := namespace.Ref(testsupport.Digest("ef"), 1)
-	warrant := testsupport.Warrant(t, ref, epoch)
+	warrant := testsupport.Warrant(t, ref)
 
 	another := ref
 	another.Generation++
@@ -196,45 +174,4 @@ func TestOpenExactObjectRefusesAWarrantForAnotherRefBeforeTheStoreIsReached(t *t
 		t.Error("a warrant that does not validate authorized a read")
 	}
 	testsupport.ExpectNoRPC(t, recorder)
-}
-
-// A result published under scope v1 -- H(v1 domain, tenant, epoch) -- before
-// the scope dropped the epoch is still readable by exact generation: the
-// stat and the open derive its key from its own scope.
-func TestARefPublishedUnderScopeV1IsStillReadable(t *testing.T) {
-	ctx := context.Background()
-	namespace := namespaceFor(t, "tenant-a")
-	memory, recorder := testsupport.RecordedMemory(bucket)
-	built, err := publisher.New(namespace, publisher.Restrict(recorder), timeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sum := sha256.New()
-	sum.Write([]byte("hangar-output-scope-v1"))
-	sum.Write([]byte{0})
-	sum.Write([]byte("tenant-a"))
-	sum.Write([]byte{0})
-	var encoded [8]byte
-	binary.BigEndian.PutUint64(encoded[:], uint64(epoch))
-	sum.Write(encoded[:])
-	legacy := hangar.Scope("o" + hex.EncodeToString(sum.Sum(nil)[:20]))
-
-	digest := testsupport.Digest("ab")
-	key, err := hangar.TreeKey(namespace.Prefix(), legacy, digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	marker := output.ObjectMarker{Scope: legacy, Digest: digest,
-		ReservationID: reservation, ActivationEpoch: epoch, CreatedAt: output.NewTimestamp(testsupport.FixedInstant)}
-	attrs := memory.Seed(bucket, key, []byte("published before scope v2"), marker.Metadata())
-
-	ref := hangar.TreeRef{Scope: legacy, Digest: digest, Generation: attrs.Generation}
-	object, err := built.StatExactObject(ctx, ref)
-	if err != nil {
-		t.Fatalf("a scope-v1 ref of this tenant was refused: %v", err)
-	}
-	if object.Attributes.Ref != ref {
-		t.Errorf("the stat answered %v, want %v", object.Attributes.Ref, ref)
-	}
 }

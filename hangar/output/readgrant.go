@@ -125,12 +125,11 @@ func validDestinationSegment(segment string) bool {
 // makes "a valid HMAC bound to a released claim authorizes nothing" a statement
 // about the CLAIM rather than about the token.
 type ReadWarrantClaims struct {
-	Domain          string                           `json:"domain"`
-	Version         string                           `json:"version"`
-	ClaimID         ClaimID                          `json:"claim_id"`
-	Ref             hangar.TreeRef                   `json:"ref"`
-	Destination     ReadDestination                  `json:"destination"`
-	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
+	Domain      string          `json:"domain"`
+	Version     string          `json:"version"`
+	ClaimID     ClaimID         `json:"claim_id"`
+	Ref         hangar.TreeRef  `json:"ref"`
+	Destination ReadDestination `json:"destination"`
 	// NodeUID is the one node whose daemon may honour the warrant. The node
 	// keeps a warrant single-use on itself; binding the node is what makes it
 	// one read in the whole cluster rather than one per node.
@@ -156,9 +155,6 @@ func (claims ReadWarrantClaims) Validate() error {
 	}
 	if err := claims.Destination.Validate(); err != nil {
 		return err
-	}
-	if claims.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: read warrant names no activation epoch", ErrIncomplete)
 	}
 	if claims.NodeUID == "" {
 		return fmt.Errorf("%w: read warrant names no node", ErrIncomplete)
@@ -201,7 +197,6 @@ func CanonicalReadWarrantBytes(claims ReadWarrantClaims) ([]byte, error) {
 	number(claims.Ref.Generation)
 	field(claims.Destination.Handle)
 	field(claims.Destination.Volume)
-	number(int64(claims.ActivationEpoch))
 	field(string(claims.NodeUID))
 	field(claims.IssuedAt.UTC().Format(time.RFC3339Nano))
 	field(claims.ExpiresAt.UTC().Format(time.RFC3339Nano))
@@ -260,14 +255,13 @@ func NewReadWarrantVerifier(material []byte, clock Clock) (*ReadWarrantVerifier,
 // binds: every dated value comes from the claim row itself.
 func WarrantClaimsFor(claim ClaimRecord, destination ReadDestination, node executioncontrol.NodeUID) ReadWarrantClaims {
 	claims := ReadWarrantClaims{
-		Domain:          MaterializeDomain,
-		Version:         readWarrantVersion,
-		ClaimID:         claim.ClaimID,
-		Ref:             claim.Ref,
-		Destination:     destination,
-		ActivationEpoch: claim.ActivationEpoch,
-		NodeUID:         node,
-		IssuedAt:        claim.AcquiredAt,
+		Domain:      MaterializeDomain,
+		Version:     readWarrantVersion,
+		ClaimID:     claim.ClaimID,
+		Ref:         claim.Ref,
+		Destination: destination,
+		NodeUID:     node,
+		IssuedAt:    claim.AcquiredAt,
 	}
 	if claim.ExpiresAt != nil {
 		claims.ExpiresAt = *claim.ExpiresAt
@@ -344,8 +338,8 @@ func (verifier *ReadWarrantVerifier) Verify(token string, ref hangar.TreeRef, de
 }
 
 // VerifyBinding checks everything the MAC covers EXCEPT the token's window:
-// what a warrant binds -- the claim, the ref, the destination, the epoch, the
-// node -- is settled by the MAC and is true forever. Whether the claim is still
+// what a warrant binds -- the claim, the ref, the destination, the node -- is
+// settled by the MAC and is true forever. Whether the claim is still
 // a live hold is the database's question, on its own clock.
 func (verifier *ReadWarrantVerifier) VerifyBinding(token string, ref hangar.TreeRef, destination ReadDestination) (ReadWarrantClaims, error) {
 	unauthorized := func() (ReadWarrantClaims, error) {

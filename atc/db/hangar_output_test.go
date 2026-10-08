@@ -244,7 +244,6 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(record.ClaimID).To(Equal(id))
 			Expect(record.Ref).To(Equal(ref))
 			Expect(record.ConsumerBindingID).To(BeEquivalentTo("binding-consumer"))
-			Expect(record.ActivationEpoch).To(BeEquivalentTo(1))
 			Expect(record.ExpiresAt).To(BeNil(), "a consumer's hold was given a term")
 			Expect(record.ReleasedAt).To(BeNil())
 			Expect(record.Active()).To(BeTrue())

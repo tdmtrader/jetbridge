@@ -20,7 +20,7 @@ const (
 	resourceIdentityPrefix   = "resource-v1:"
 )
 
-// A Run's signed start retains the journal locator -- the task supervisor's,
+// A Run's retained start retains the journal locator -- the task supervisor's,
 // or an exact resource command's -- so cancellation can interrupt the command
 // and recover its journal without reconstructing a command or reading secrets
 // from the build plan. Other exact executions retain their existing opaque
@@ -54,7 +54,7 @@ func (p *execProcess) exactJournal() (string, bool, bool) {
 
 // executionJournalFromIdentity parses a retained journal locator. It accepts
 // only a clean, single path segment under /tmp with the prefix its kind uses,
-// so a signed start can never direct a stop or a read anywhere else.
+// so a retained start can never direct a stop or a read anywhere else.
 func executionJournalFromIdentity(identity executioncontrol.ProcessIdentity) (string, bool, error) {
 	state, resource, prefix := "", false, ""
 	if located, ok := strings.CutPrefix(string(identity), supervisorIdentityPrefix); ok {
@@ -93,7 +93,7 @@ func (p *execProcess) recoverJournaledOutcome(ctx context.Context) (executioncon
 	if err = start.Validate(); err != nil {
 		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, err
 	}
-	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != p.control.Identity || start.ActivationEpoch != p.control.ActivationEpoch || start.PodUID != p.exact.podUID || start.ProcessIdentity != p.exactProcessIdentity() {
+	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != p.control.Identity || start.PodUID != p.exact.podUID || start.ProcessIdentity != p.exactProcessIdentity() {
 		return executioncontrol.ExitOutcome{}, executioncontrol.Acknowledgement{}, errors.New("retained start does not match the exact process")
 	}
 	// A start the Run never retained is retained now, while the node still
@@ -165,7 +165,7 @@ case "$E" in ''|*[!0-9]*) exit __UNRESOLVED_CODE__;; esac
 [ "${#E}" -le 3 ] || exit __UNRESOLVED_CODE__
 printf '%s\n' "$E"`
 
-// An undelivered start is a signed start whose command never claimed the
+// An undelivered start is a recorded start whose command never claimed the
 // journal: the exec dial failed after the node recorded it, or the node's
 // answer was lost and the command was never sent. Nothing in the Pod would
 // ever write its exit, the read above stays unresolved for good, and a Run
@@ -342,7 +342,7 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 // Only a successful command's answer is read: that is the only one the
 // resource protocol parses.
 //
-// witness is any signed node fact about this execution -- its start or its
+// witness is any node fact about this execution -- its start or its
 // outcome -- and names the Pod and node the journal must be read from.
 func (p *execProcess) exposeJournaledAnswer(ctx context.Context, witness executioncontrol.Acknowledgement, exitCode int) error {
 	state, resource, journaled := p.exactJournal()

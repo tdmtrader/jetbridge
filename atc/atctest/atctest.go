@@ -58,7 +58,6 @@ import (
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/wrappa"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 	skystorage "github.com/concourse/concourse/skymarshal/storage"
@@ -70,8 +69,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Epoch is both the Run activation epoch and the Hangar control-key generation
-// the platform speaks for.
+// Epoch is the Run activation epoch the platform speaks for.
 const Epoch = 7
 
 // Pin is the one credential worker image the platform delivers credentials
@@ -307,20 +305,20 @@ func (p *Platform) runServices(displayUserID atc.DisplayUserIdGenerator) (pipeli
 		return pipelinerunserver.Services{}, err
 	}
 	admitter := runs.NewAdmitter(p.conn, p.runs, p.teams, displayUserID, nil)
-	admitter.SetOutputEpoch(Epoch)
+	admitter.SetOutputPlane(true)
 	admitter.SetSealedInputAuthority(authority)
 	admitter.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{
 		Source: p.node, Helper: "/usr/local/bin/jb-review-worker", Socket: "/dev/shm/jb-review/auth.sock",
 		Lifetime: 32 * time.Minute, WorkerImages: []string{Pin},
 	})
-	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(context.Context, int64) (runs.InputUploadNode, error) {
+	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(context.Context) (runs.InputUploadNode, error) {
 		return runs.InputUploadNode{UID: p.node.uid, Publisher: p.node.client}, nil
 	}})
 	reader := &runs.ResultReader{Conn: p.conn, Minter: p.node.warrants, Scratch: p.node.resultScratch,
-		Source: func(context.Context, executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
+		Source: func(context.Context) (runs.ResultSource, error) {
 			return p.node.client, nil
 		}}
-	return pipelinerunserver.Services{Admitter: admitter, Results: reader, Epoch: Epoch}, nil
+	return pipelinerunserver.Services{Admitter: admitter, Results: reader, HangarOutput: true}, nil
 }
 
 // NewTeam creates a team the user owns, so a test's templates and Runs are its

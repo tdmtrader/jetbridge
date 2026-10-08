@@ -58,12 +58,12 @@ func TestPrepareScratchSweepsWhatAKilledCanonicalizationLeft(t *testing.T) {
 // those comparisons is over names: two flags pointing at symlinks to one file
 // pass all of them, and so do two Secrets holding identical material. The
 // separation the plan promises is a separation of AUTHORITY -- a read warrant
-// must not be signable by anything that signs a node's statements -- and
+// must not be signable by anything that can mint a control capability -- and
 // authority follows the material.
 func TestTwoKeyFilesHoldingOneKeyAreRefused(t *testing.T) {
 	dir := t.TempDir()
 	same := []byte("-----BEGIN PRIVATE KEY-----\nthe same thirty-two bytes, twice\n")
-	first := filepath.Join(dir, "control.pem")
+	first := filepath.Join(dir, "capability.key")
 	second := filepath.Join(dir, "materialize.key")
 	for _, file := range []string{first, second} {
 		if err := os.WriteFile(file, same, 0o600); err != nil {
@@ -71,14 +71,14 @@ func TestTwoKeyFilesHoldingOneKeyAreRefused(t *testing.T) {
 		}
 	}
 
-	config := Config{ControlKeyFile: first, MaterializationKeyFile: second}
+	config := Config{CapabilityKeyFile: first, MaterializationKeyFile: second}
 	err := config.RefuseCollidingKeyMaterial()
 	if err == nil {
 		t.Fatal("two different files holding the SAME key material were accepted. The path " +
 			"check passes -- they are different paths -- and the two domains are then signable " +
 			"by one key.")
 	}
-	for _, fragment := range []string{"--control-key-file", "--materialization-key-file"} {
+	for _, fragment := range []string{"--capability-key", "--materialization-key-file"} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Errorf("the refusal %q does not name %s", err, fragment)
 		}
@@ -90,7 +90,7 @@ func TestTwoKeyFilesHoldingOneKeyAreRefused(t *testing.T) {
 	if err := os.Symlink(first, linked); err != nil {
 		t.Fatalf("linking: %v", err)
 	}
-	if err := (Config{ControlKeyFile: first, MaterializationKeyFile: linked}).
+	if err := (Config{CapabilityKeyFile: first, MaterializationKeyFile: linked}).
 		RefuseCollidingKeyMaterial(); err == nil {
 		t.Error("two flags pointing at one file through a symlink were accepted")
 	}

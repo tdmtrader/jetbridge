@@ -39,11 +39,9 @@ func exerciseRunSealedInput(in RunInputAdmission, mode string, rec *brine.Record
 		configured.SetSealedInputAuthority(nil)
 	}
 	subject := in.Admission.Principal.Claims["sub"].(string)
-	audience := runinput.Audience{TeamID: in.Template.TeamID(), TemplateID: in.Template.ID(), PrincipalDigest: runinput.PrincipalDigest(subject), Input: "change", Epoch: int64(hangarEpoch)}
+	audience := runinput.Audience{TeamID: in.Template.TeamID(), TemplateID: in.Template.ID(), PrincipalDigest: runinput.PrincipalDigest(subject), Input: "change"}
 	ref := in.Source.Candidate.Record.Ref
 	switch mode {
-	case "wrong epoch":
-		audience.Epoch++
 	case "wrong team":
 		audience.TeamID++
 	case "wrong template":
@@ -78,7 +76,7 @@ func exerciseRunSealedInput(in RunInputAdmission, mode string, rec *brine.Record
 	run, replayed, admitErr := in.admitInput(mode == "rollback then expired")
 	invalid := false
 	switch mode {
-	case "missing authority", "wrong epoch", "wrong team", "wrong template", "wrong principal", "wrong input", "unpublished generation", "expired grant", "tampered grant", "wrong source identity":
+	case "missing authority", "wrong team", "wrong template", "wrong principal", "wrong input", "unpublished generation", "expired grant", "tampered grant", "wrong source identity":
 		invalid = true
 	}
 	expectedCount := before

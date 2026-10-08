@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -16,12 +15,10 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	atcexec "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runs"
 	atcworker "github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/vars"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,14 +68,12 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 	}
 	config.OutputPlaneEnabled = true
 	config.HangarEnabled = true
-	config.OutputActivationEpoch = int64(hangarEpoch)
 	config.ArtifactDaemonHostPath = in.Source.Start.Daemon.Output.Root
 	client := in.Source.Candidate.Runtime.Client
-	source := jetbridge.NewOutputSource(client, config, in.Source.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Source.Start.Daemon.ControlPublic)}}}
-	starter := &runs.ExecutionStarter{Conn: jdb.Conn, Factory: factory, Source: source, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys}
+	source := jetbridge.NewOutputSource(client, config, in.Source.Start.Daemon.Minter)
+	starter := &runs.ExecutionStarter{Conn: jdb.Conn, Factory: factory, Source: source}
 	starter.SetInputReadMinter(signer)
-	starter.Output = runs.NewOutputStarter(jdb.Conn, factory, source, int64(hangarEpoch), time.Hour)
+	starter.Output = runs.NewOutputStarter(jdb.Conn, factory, source, time.Hour)
 	if _, err = jdb.PersistNamedWorker("task-engine-input"); err != nil {
 		return err
 	}
@@ -87,7 +82,7 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 	if err != nil {
 		return err
 	}
-	runtimeFactory := atcworker.DefaultFactory{DB: workerDB, K8sClientset: client, K8sConfig: &config, K8sExecutor: jetbridge.NewSPDYExecutor(client, cluster.env.Config), K8sExecutionPreparer: starter, K8sOutputControls: jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), in.Source.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))}
+	runtimeFactory := atcworker.DefaultFactory{DB: workerDB, K8sClientset: client, K8sConfig: &config, K8sExecutor: jetbridge.NewSPDYExecutor(client, cluster.env.Config), K8sExecutionPreparer: starter, K8sOutputControls: jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), in.Source.Start.Daemon.Minter)}
 	pool := atcworker.NewPool(runtimeFactory, workerDB)
 	var options []engine.CoreStepFactoryOption
 	if mode != "missing admission port" {

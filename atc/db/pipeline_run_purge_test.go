@@ -2,16 +2,12 @@ package db_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/google/uuid"
@@ -83,28 +79,22 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	defer db.Rollback(tx)
 	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{
 		ActivationEpoch: 1,
-		HangarEpoch:     1,
+		HangarOutput:    true,
 		Invocation:      &db.RunInvocationIdentity{PrincipalDigest: principal, KeyDigest: runEvidenceDigest("key")},
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	run := creation.Run
 
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	signer, err := executioncontrol.NewAcknowledgementSigner(private)
-	Expect(err).NotTo(HaveOccurred())
-	verifier := hangaroutput.ControlKeyRing{ActivationEpoch: 1, Keys: []hangaroutput.ControlKeyEntry{{Epoch: 1, PublicKey: base64.StdEncoding.EncodeToString(public)}}}
 	witness := func(tx db.Tx, admission db.RunExecutionAdmission, finish bool) {
 		GinkgoHelper()
-		start, err := signer.Sign(executioncontrol.Acknowledgement{
+		start := executioncontrol.Acknowledgement{
 			ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementStart,
-			Identity: admission.Identity, ActivationEpoch: 1, LedgerSequence: 1,
+			Identity: admission.Identity, LedgerSequence: 1,
 			NodeUID: "node-uid", PodUID: "pod-uid", ProcessIdentity: "process",
 			ObservedAt: output.NewTimestamp(time.Now()),
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.RecordRunExecutionWitness(ctx, tx, admission.BuildID, admission.PlanID, start, verifier)).To(Succeed())
+		}
+		Expect(factory.RecordRunExecutionWitness(ctx, tx, admission.BuildID, admission.PlanID, start)).To(Succeed())
 		if !finish {
 			return
 		}
@@ -112,9 +102,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 		done.Kind = executioncontrol.AcknowledgementFinish
 		done.LedgerSequence++
 		done.Outcome = &executioncontrol.ExitOutcome{ExitCode: 0}
-		done, err = signer.Sign(done)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.RecordRunExecutionWitness(ctx, tx, admission.BuildID, admission.PlanID, done, verifier)).To(Succeed())
+		Expect(factory.RecordRunExecutionWitness(ctx, tx, admission.BuildID, admission.PlanID, done)).To(Succeed())
 	}
 
 	// An executed, closed and finished check.
@@ -132,7 +120,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	defer db.Rollback(tx)
 	admission, owned, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{
 		BuildID: check.ID(), PlanID: check.PrivatePlan().ID, Kind: db.ContainerTypeCheck,
-		Epoch: 1, NodeName: "node", NodeUID: "node-uid",
+		NodeName: "node", NodeUID: "node-uid",
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(owned).To(BeTrue())
@@ -145,11 +133,11 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	tx, err = dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	record, err := factory.StartRunCapture(ctx, tx, build.ID(), atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunResult: task.RunResult, Config: task.Config}, 1, output.DefaultCaptureDeadline, "node", "node-uid")
+	record, err := factory.StartRunCapture(ctx, tx, build.ID(), atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunResult: task.RunResult, Config: task.Config}, output.DefaultCaptureDeadline, "node", "node-uid")
 	Expect(err).NotTo(HaveOccurred())
 	admission, owned, err = factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{
 		BuildID: build.ID(), PlanID: "task-plan", Kind: db.ContainerTypeTask,
-		Epoch: 1, NodeName: "node", NodeUID: "node-uid", Capture: record.Key(),
+		NodeName: "node", NodeUID: "node-uid", Capture: record.Key(),
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(owned).To(BeTrue())
@@ -158,7 +146,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	tx, err = dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	target, err := db.LoadRunCredentialTarget(ctx, tx, template.ID(), run.Number(), principal, "result", 1, true)
+	target, err := db.LoadRunCredentialTarget(ctx, tx, template.ID(), run.Number(), principal, "result", true)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(target.ClaimedNow).To(BeTrue())
 	Expect(tx.Commit()).To(Succeed())
@@ -170,8 +158,8 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
 	Expect(hangarAcquireClaim(ctx, repository, tx, claim, ref, string(claim))).To(Succeed())
-	_, err = tx.Exec(`INSERT INTO pipeline_run_inputs(run_id,name,source_id,scope,digest,generation,claim_id,activation_epoch)
-		VALUES ($1,'input',$2,$3,$4,$5,$6,1)`, run.ID(), "input-v1-"+runEvidenceDigest("input"), string(ref.Scope), string(ref.Digest), ref.Generation, string(claim))
+	_, err = tx.Exec(`INSERT INTO pipeline_run_inputs(run_id,name,source_id,scope,digest,generation,claim_id)
+		VALUES ($1,'input',$2,$3,$4,$5,$6)`, run.ID(), "input-v1-"+runEvidenceDigest("input"), string(ref.Scope), string(ref.Digest), ref.Generation, string(claim))
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 
@@ -297,7 +285,7 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 			inTx(func(tx db.Tx) error {
 				var err error
 				creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{
-					ActivationEpoch: 1, HangarEpoch: 1,
+					ActivationEpoch: 1, HangarOutput: true,
 					Invocation:  &db.RunInvocationIdentity{PrincipalDigest: runEvidenceDigest("principal"), KeyDigest: runEvidenceDigest(key)},
 					CausedByRun: cause, Correlation: correlation,
 				})
@@ -323,8 +311,8 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 			}); err != nil {
 				return err
 			}
-			_, err := tx.Exec(`INSERT INTO pipeline_run_inputs(run_id,name,source_id,scope,digest,generation,claim_id,activation_epoch)
-				VALUES ($1,'input',$2,$3,$4,$5,$6,1)`, run.ID(), "input-v1-"+runEvidenceDigest("cancelled-input"), string(ref.Scope), string(ref.Digest), ref.Generation, string(claim))
+			_, err := tx.Exec(`INSERT INTO pipeline_run_inputs(run_id,name,source_id,scope,digest,generation,claim_id)
+				VALUES ($1,'input',$2,$3,$4,$5,$6)`, run.ID(), "input-v1-"+runEvidenceDigest("cancelled-input"), string(ref.Scope), string(ref.Digest), ref.Generation, string(claim))
 			return err
 		})
 		inputClaimHeld := func() bool {

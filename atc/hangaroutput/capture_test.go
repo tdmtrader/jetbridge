@@ -70,7 +70,6 @@ func (h *harness) admitWithTerm(t *testing.T, term time.Duration) *capture {
 	if _, err := h.Daemon.Client.Admit(ctx, executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        admitted.Execution,
-		ActivationEpoch: harnessEpoch,
 		NodeUID:         harnessNode,
 		Capability:      "opaque-capability",
 	}); err != nil {
@@ -742,7 +741,7 @@ func TestA5RecoveryAfterALostPublishCompletesWithoutASecondObject(t *testing.T) 
 	// A fresh coordinator: nothing survives the crash but the row.
 	recovered := &hangaroutput.Coordinator{
 		Transactor: h.Coordinator.Transactor, Rows: h.Repository,
-		Dial: h.Dialer.ForNode, ActivationEpoch: harnessEpoch,
+		Dial: h.Dialer.ForNode,
 	}
 	if err := recovered.Run(context.Background()); err != nil {
 		t.Fatalf("the recovery pass: %v", err)

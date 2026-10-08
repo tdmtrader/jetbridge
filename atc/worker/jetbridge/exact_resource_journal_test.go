@@ -1,7 +1,7 @@
 package jetbridge
 
 // A Run-owned check, get or put journals its own exit in the Pod, under the
-// state directory its signed start names.
+// state directory its node-acknowledged start names.
 //
 // Without that journal a resource command had no outcome writer that outlives
 // the ATC: a web restart mid-command, a lost answer, or an in-band stop that
@@ -219,12 +219,11 @@ var _ = Describe("A Run-owned resource command's exit journal", func() {
 			containerSpec: runtime.ContainerSpec{
 				Type: db.ContainerTypeGet,
 				ExecutionControl: &runtime.ExecutionControl{
-					Version:         runtime.ExecutionControlVersion,
-					Phase:           runtime.ControlPhaseAdmitted,
-					Identity:        identity,
-					ActivationEpoch: harnessEpoch,
-					Endpoint:        harness.Endpoint,
-					Capability:      "base-capability",
+					Version:    runtime.ExecutionControlVersion,
+					Phase:      runtime.ControlPhaseAdmitted,
+					Identity:   identity,
+					Endpoint:   harness.Endpoint,
+					Capability: "base-capability",
 				},
 			},
 			clientset:      clientset,
@@ -240,7 +239,7 @@ var _ = Describe("A Run-owned resource command's exit journal", func() {
 		}
 	})
 
-	DescribeTable("names its journal in the node's signed start",
+	DescribeTable("names its journal in the node's start acknowledgement",
 		func(containerType db.ContainerType) {
 			container.metadata.Type = containerType
 			container.containerSpec.Type = containerType
@@ -397,7 +396,7 @@ var _ = Describe("A Run-owned resource command's exit journal", func() {
 		}
 		Eventually(func() error { _, err := os.Stat(marker); return err }).Should(Succeed())
 
-		source := NewOutputSource(clientset, config, harness.Minter, harnessEpoch)
+		source := NewOutputSource(clientset, config, harness.Minter)
 		source.SetExecutor(executor)
 		_, err = source.RecoverExecutionOutcome(ctx, "node-1", starts[0])
 		Expect(err).To(MatchError(hangaroutput.ErrUnresolved),
@@ -433,7 +432,7 @@ func (lossy *lostStartAnswer) RecordStart(ctx context.Context, id executioncontr
 	return ack, err
 }
 
-// A signed start whose command never reached the Pod has no outcome writer:
+// A node-acknowledged start whose command never reached the Pod has no outcome writer:
 // the journal has no start, the read of it is unresolved, and nothing else
 // would ever write one. Whoever finds it closes it -- in the Pod, by the one
 // atomic creation of the start journal the wrapper also uses -- as a command
@@ -523,12 +522,11 @@ var _ = Describe("An exact command whose start was never delivered", func() {
 			containerSpec: runtime.ContainerSpec{
 				Type: db.ContainerTypeTask,
 				ExecutionControl: &runtime.ExecutionControl{
-					Version:         runtime.ExecutionControlVersion,
-					Phase:           runtime.ControlPhaseAdmitted,
-					Identity:        identity,
-					ActivationEpoch: harnessEpoch,
-					Endpoint:        harness.Endpoint,
-					Capability:      "base-capability",
+					Version:    runtime.ExecutionControlVersion,
+					Phase:      runtime.ControlPhaseAdmitted,
+					Identity:   identity,
+					Endpoint:   harness.Endpoint,
+					Capability: "base-capability",
 				},
 			},
 			clientset:      clientset,
@@ -610,7 +608,7 @@ var _ = Describe("An exact command whose start was never delivered", func() {
 			start, err := harness.Client.RecordStart(ctx, identity, executioncontrol.PodUID(podUID), process.exactProcessIdentity())
 			Expect(err).NotTo(HaveOccurred())
 
-			source := NewOutputSource(clientset, config, harness.Minter, harnessEpoch)
+			source := NewOutputSource(clientset, config, harness.Minter)
 			source.SetExecutor(executor)
 			_, err = source.RecoverExecutionOutcome(ctx, "node-1", start)
 			Expect(err).To(MatchError(hangaroutput.ErrUnresolved), "an undelivered start was closed by a read")
@@ -642,27 +640,27 @@ var _ = Describe("An exact command whose start was never delivered", func() {
 	)
 
 	// A Run whose database was down when the node answered never retained
-	// the start. Cancellation reads it from the node that signed it -- and
+	// the start. Cancellation reads it from the node that acknowledged it -- and
 	// only from that node, for that identity.
-	It("reads the node's signed start for a Run that never retained it", func() {
-		source := NewOutputSource(clientset, config, harness.Minter, harnessEpoch)
-		_, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, harnessEpoch, identity)
+	It("reads the node's start acknowledgement for a Run that never retained it", func() {
+		source := NewOutputSource(clientset, config, harness.Minter)
+		_, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, identity)
 		Expect(err).To(MatchError(hangaroutput.ErrNotFound), "an unadmitted execution answered for a start")
 
 		process := newCommand(&hostPodExecutor{})
 		Expect(process.admitWhenScheduled(ctx)()).To(Succeed())
-		_, err = source.ExecutionStart(ctx, "node-1", harnessNodeUID, harnessEpoch, identity)
+		_, err = source.ExecutionStart(ctx, "node-1", harnessNodeUID, identity)
 		Expect(err).To(MatchError(hangaroutput.ErrNotFound), "an unstarted execution answered for a start")
 
 		start, err := harness.Client.RecordStart(ctx, identity, executioncontrol.PodUID(podUID), process.exactProcessIdentity())
 		Expect(err).NotTo(HaveOccurred())
-		read, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, harnessEpoch, identity)
+		read, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, identity)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(read).To(Equal(start))
 
-		_, err = source.ExecutionStart(ctx, "node-1", "another-node-uid", harnessEpoch, identity)
+		_, err = source.ExecutionStart(ctx, "node-1", "another-node-uid", identity)
 		Expect(err).To(HaveOccurred(), "a replaced node answered for the original node's start")
-		_, err = source.ExecutionStart(ctx, "node-1", harnessNodeUID, harnessEpoch,
+		_, err = source.ExecutionStart(ctx, "node-1", harnessNodeUID,
 			executioncontrol.Identity{ExecutionID: identity.ExecutionID, Fence: 2})
 		Expect(err).To(HaveOccurred(), "a start was returned for a different fence")
 	})
@@ -703,7 +701,7 @@ var _ = DescribeTable("A retained journal locator",
 	func(identity string, wantState string, wantResource bool) {
 		state, resource, err := executionJournalFromIdentity(executioncontrol.ProcessIdentity(identity))
 		if wantState == "" {
-			Expect(err).To(HaveOccurred(), "a signed start could direct a stop or a read to %q", state)
+			Expect(err).To(HaveOccurred(), "a node-acknowledged start could direct a stop or a read to %q", state)
 			return
 		}
 		Expect(err).NotTo(HaveOccurred())

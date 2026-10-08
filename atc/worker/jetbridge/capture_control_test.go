@@ -86,17 +86,15 @@ func testCaptureKey() hangaroutput.CaptureKey {
 
 func admittedCapture() *runtime.ExecutionControl {
 	control := &runtime.ExecutionControl{
-		Version:         runtime.ExecutionControlVersion,
-		Phase:           runtime.ControlPhaseAdmitted,
-		Identity:        executioncontrol.Identity{ExecutionID: "11111111-1111-4111-8111-111111111111", Fence: 3},
-		ActivationEpoch: 9,
-		Endpoint:        "",
-		Capability:      "base-capability",
+		Version:    runtime.ExecutionControlVersion,
+		Phase:      runtime.ControlPhaseAdmitted,
+		Identity:   executioncontrol.Identity{ExecutionID: "11111111-1111-4111-8111-111111111111", Fence: 3},
+		Endpoint:   "",
+		Capability: "base-capability",
 	}
 	_ = control.SelectCapture(runtime.DurableOutputCapture{
 		Version:            runtime.DurableOutputCaptureVersion,
 		Identity:           control.Identity,
-		ActivationEpoch:    control.ActivationEpoch,
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),

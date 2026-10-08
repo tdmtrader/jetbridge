@@ -271,9 +271,7 @@ The Run contract's own durable marker (`pipeline_run_activation`): the epoch
 runs are born under and whether admission is on. Each web node writes it at
 startup from `--pipeline-run-activation-epoch` (chart
 `web.pipelineRunActivationEpoch`); it only moves forward. It is independent of
-Hangar: a run's bound inputs carry the Hangar control-key generation they
-were admitted under, and rotating that leaves running runs, their
-finalization and invocation-key replay alone. Admitting a template that
+Hangar's in-service row, and Hangar has no epoch of its own. Admitting a template that
 declares results, or a run given inputs, still needs the Hangar output plane
 in service (`hangar_enabled`). Executing any run needs the output plane's
 execution control, with the node's output capability key configured;

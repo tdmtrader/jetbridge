@@ -18,7 +18,7 @@ type RunTaskBinding struct {
 
 // LoadRunTask rechecks the Run/build start fence under the owning domain's lock
 // prefix before returning any input authority. The caller owns the transaction.
-func LoadRunTask(ctx context.Context, tx Tx, buildID int, taskID string, epoch int64) (RunTaskBinding, error) {
+func LoadRunTask(ctx context.Context, tx Tx, buildID int, taskID string) (RunTaskBinding, error) {
 	var result RunTaskBinding
 	var job string
 	err := tx.QueryRowContext(ctx, `SELECT r.id,p.team_id,coalesce(b.run_job_name,'')
@@ -31,7 +31,7 @@ func LoadRunTask(ctx context.Context, tx Tx, buildID int, taskID string, epoch i
 	if err != nil {
 		return result, err
 	}
-	if err := lockRunExecutionBuild(ctx, tx, result.RunID, buildID, epoch); err != nil {
+	if err := lockRunExecutionBuild(ctx, tx, result.RunID, buildID); err != nil {
 		return result, err
 	}
 	definition, found, err := readRunDefinition(tx, result.RunID)
@@ -66,7 +66,7 @@ func LoadRunTask(ctx context.Context, tx Tx, buildID int, taskID string, epoch i
 	result.Inputs = map[string]atc.RunInputBinding{}
 	for _, route := range result.Task.RunInputs {
 		binding, found := bindings[route.Name]
-		if !found || binding.Epoch != epoch || binding.Ref.Validate() != nil || binding.ClaimID.Validate() != nil {
+		if !found || binding.Ref.Validate() != nil || binding.ClaimID.Validate() != nil {
 			return result, atc.ErrRunInputUnavailable
 		}
 		result.Inputs[route.Name] = binding

@@ -102,10 +102,6 @@ type Coordinator struct {
 	// plane in service, and every node-side step is refused.
 	Dial func(ctx context.Context, node string, uid executioncontrol.NodeUID) (SourceControl, error)
 
-	// ActivationEpoch is the control-key generation a published generation's
-	// lifecycle and claim are recorded under.
-	ActivationEpoch executioncontrol.ActivationEpoch
-
 	BatchSize int
 
 	// Concurrency bounds the pending captures one pass advances at once.
@@ -449,9 +445,8 @@ func (coordinator *Coordinator) publish(ctx context.Context, capture output.Capt
 
 	err = coordinator.write(func(tx Transaction) error {
 		_, err := coordinator.Rows.CASPublishingToPublished(ctx, tx, output.PublishedCapture{
-			Key:             capture.Key,
-			Generation:      result.Ref.Generation,
-			ActivationEpoch: coordinator.ActivationEpoch,
+			Key:        capture.Key,
+			Generation: result.Ref.Generation,
 		})
 		return err
 	})

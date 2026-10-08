@@ -28,7 +28,7 @@ type InputUploadNode struct {
 // InputUploadConfig is startup wiring. ClaimTTL defaults to the maximum grant
 // lifetime and may be shortened; an uploading caller cannot extend it.
 type InputUploadConfig struct {
-	Source   func(context.Context, int64) (InputUploadNode, error)
+	Source   func(context.Context) (InputUploadNode, error)
 	ClaimTTL time.Duration
 }
 
@@ -37,7 +37,7 @@ func (a *admitter) SetInputUploadConfig(config InputUploadConfig) { a.inputUploa
 // UploadInput authenticates an input audience before reading bytes and again
 // around each publication boundary. No transaction remains open during node
 // work; only a committed exact publication and temporary claim yield a grant.
-func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal Principal, name string, epoch int64, archive io.Reader) (atc.RunInputSource, error) {
+func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal Principal, name string, archive io.Reader) (atc.RunInputSource, error) {
 	var source atc.RunInputSource
 	config := a.inputUploads
 	if config.ClaimTTL == 0 {
@@ -47,10 +47,10 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 		return source, atc.ErrRunInputUnavailable
 	}
 	var audience runinput.Audience
-	if err := a.withInputUpload(ctx, ref, principal, name, epoch, func(_ db.Tx, current runinput.Audience) error { audience = current; return nil }); err != nil {
+	if err := a.withInputUpload(ctx, ref, principal, name, func(_ db.Tx, current runinput.Audience) error { audience = current; return nil }); err != nil {
 		return source, err
 	}
-	node, err := config.Source(ctx, epoch)
+	node, err := config.Source(ctx)
 	if err != nil {
 		return source, err
 	}
@@ -61,11 +61,11 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 	if err != nil {
 		return source, err
 	}
-	if stage.NodeUID != node.UID || int64(stage.ActivationEpoch) != epoch {
+	if stage.NodeUID != node.UID {
 		return source, atc.ErrRunInputUnavailable
 	}
 	nonce := uuid.NewString()
-	if err := a.withInputUpload(ctx, ref, principal, name, epoch, func(tx db.Tx, current runinput.Audience) error {
+	if err := a.withInputUpload(ctx, ref, principal, name, func(tx db.Tx, current runinput.Audience) error {
 		if current != audience {
 			return atc.ErrRunInputUnavailable
 		}
@@ -78,7 +78,7 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 		return source, err
 	}
 	var claim db.RunInputUploadClaim
-	if err := a.withInputUpload(ctx, ref, principal, name, epoch, func(tx db.Tx, current runinput.Audience) error {
+	if err := a.withInputUpload(ctx, ref, principal, name, func(tx db.Tx, current runinput.Audience) error {
 		if current != audience {
 			return atc.ErrRunInputUnavailable
 		}
@@ -92,7 +92,7 @@ func (a *admitter) UploadInput(ctx context.Context, ref TemplateRef, principal P
 	return source, err
 }
 
-func (a *admitter) withInputUpload(ctx context.Context, ref TemplateRef, principal Principal, name string, epoch int64, operation func(db.Tx, runinput.Audience) error) error {
+func (a *admitter) withInputUpload(ctx context.Context, ref TemplateRef, principal Principal, name string, operation func(db.Tx, runinput.Audience) error) error {
 	subject, ok := principal.Claims["sub"].(string)
 	if !ok || subject == "" {
 		return ErrUnauthorized
@@ -110,14 +110,13 @@ func (a *admitter) withInputUpload(ctx context.Context, ref TemplateRef, princip
 	if err != nil {
 		return err
 	}
-	audience, err := a.runFactory.InputUploadAudience(ctx, tx, pipeline, name, epoch, runinput.PrincipalDigest(subject))
+	audience, err := a.runFactory.InputUploadAudience(ctx, tx, pipeline, name, runinput.PrincipalDigest(subject))
 	if err != nil {
 		return refusal(err)
 	}
-	// The generation is this control plane's own, and is checked here, before
-	// the first byte is read: the node's stage answer would say the same, but
-	// only after the whole archive had been streamed to it.
-	if a.outputEpoch <= 0 || epoch != a.outputEpoch {
+	// A web with no output plane has no node to stage on; refused here,
+	// before the first byte is read.
+	if !a.outputPlane {
 		return atc.ErrRunResultsUnavailable
 	}
 	if err := operation(tx, audience); err != nil {

@@ -38,16 +38,16 @@ func validateRunnableTemplate(locked *pipeline) error {
 // InputUploadAudience follows the shared authorization/team prefix. It retains
 // activation and template locks through the caller's transaction and reads the
 // effective declarations on that same connection.
-func (f *pipelineRunFactory) InputUploadAudience(ctx context.Context, tx Tx, template Pipeline, input string, epoch int64, principal string) (runinput.Audience, error) {
+func (f *pipelineRunFactory) InputUploadAudience(ctx context.Context, tx Tx, template Pipeline, input string, principal string) (runinput.Audience, error) {
 	var audience runinput.Audience
-	// An upload is published under the Hangar epoch (epoch), while Run
-	// admission is open under its own marker; both are the activation prefix.
+	// An upload needs the output plane in service, while Run admission is
+	// open under its own marker; both are the activation prefix.
 	if marker, err := lockRunActivationMarker(ctx, tx); err != nil {
 		return audience, err
 	} else if !marker.enabled {
 		return audience, atc.ErrRunResultsUnavailable
 	}
-	if err := lockEnabledHangarEpoch(ctx, tx, epoch); err != nil {
+	if err := lockEnabledHangarOutput(ctx, tx); err != nil {
 		return audience, err
 	}
 	locked := newPipeline(f.conn, f.lockFactory)
@@ -74,7 +74,7 @@ func (f *pipelineRunFactory) InputUploadAudience(ctx context.Context, tx Tx, tem
 	for _, task := range declarations {
 		for _, declaration := range task.Inputs {
 			if declaration.Name == input {
-				return runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: principal, Input: input, Epoch: epoch}, nil
+				return runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: principal, Input: input}, nil
 			}
 		}
 	}
@@ -89,14 +89,14 @@ func inputUploadRepository() *HangarOutputRepository {
 // ReserveRunInputUpload owns only the temporary upload claim. Its row precedes
 // the Hangar suffix; its deferred FK and logical reservation commit together.
 func (f *pipelineRunFactory) ReserveRunInputUpload(ctx context.Context, tx Tx, audience runinput.Audience, stage output.InputStage, nonce string, ttl time.Duration) error {
-	if int64(stage.ActivationEpoch) != audience.Epoch || ttl < time.Second || ttl > runinput.MaxGrantTTL {
+	if ttl < time.Second || ttl > runinput.MaxGrantTTL {
 		return atc.ErrRunInputUnavailable
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO pipeline_run_input_uploads
-		(reservation_id, template_pipeline_id, team_id, principal_digest, input_name, activation_epoch, claim_id, expires_at)
-		SELECT $1,$2,$3,$4,$5,$6,$7,date_trunc('second', clock_timestamp()+$8::interval)
+		(reservation_id, template_pipeline_id, team_id, principal_digest, input_name, claim_id, expires_at)
+		SELECT $1,$2,$3,$4,$5,$6,date_trunc('second', clock_timestamp()+$7::interval)
 		WHERE NOT EXISTS (SELECT 1 FROM hangar_input_publications WHERE reservation_id=$1)
-		ON CONFLICT (reservation_id) DO NOTHING`, string(stage.ReservationID), audience.TemplateID, audience.TeamID, audience.PrincipalDigest, audience.Input, audience.Epoch, uuid.NewString(), hangarInterval(ttl.Truncate(time.Second))); err != nil {
+		ON CONFLICT (reservation_id) DO NOTHING`, string(stage.ReservationID), audience.TemplateID, audience.TeamID, audience.PrincipalDigest, audience.Input, uuid.NewString(), hangarInterval(ttl.Truncate(time.Second))); err != nil {
 		return HangarCommitError(err)
 	}
 	if _, _, err := lockRunInputUpload(ctx, tx, audience, stage.ReservationID); err != nil {
@@ -109,8 +109,8 @@ func lockRunInputUpload(ctx context.Context, tx Tx, a runinput.Audience, id outp
 	var claim output.ClaimID
 	var expires time.Time
 	err := tx.QueryRowContext(ctx, `SELECT claim_id, expires_at FROM pipeline_run_input_uploads
-		WHERE reservation_id=$1 AND template_pipeline_id=$2 AND team_id=$3 AND principal_digest=$4 AND input_name=$5 AND activation_epoch=$6 AND expires_at > clock_timestamp()
-		FOR UPDATE`, string(id), a.TemplateID, a.TeamID, a.PrincipalDigest, a.Input, a.Epoch).Scan(&claim, &expires)
+		WHERE reservation_id=$1 AND template_pipeline_id=$2 AND team_id=$3 AND principal_digest=$4 AND input_name=$5 AND expires_at > clock_timestamp()
+		FOR UPDATE`, string(id), a.TemplateID, a.TeamID, a.PrincipalDigest, a.Input).Scan(&claim, &expires)
 	if err == sql.ErrNoRows {
 		err = atc.ErrRunInputUnavailable
 	}

@@ -63,8 +63,8 @@ func (cmd *RunCommand) constructChildRunAdmitter(
 	)
 
 	// Runs are admitted under the Run activation epoch; zero refuses every
-	// admission. The Hangar output epoch is only for templates that need it.
-	admitter.SetOutputEpoch(cmd.outputEpoch())
+	// admission. The Hangar output plane is only for templates that need it.
+	admitter.SetOutputPlane(cmd.outputPlane())
 	return childRunAdmitter{service: composition.NewService(admitter, cmd.PipelineRunActivationEpoch)}, nil
 }
 

@@ -126,7 +126,7 @@ func RunCancellationDefinitions() []brine.StepDefinition {
 			case "build start":
 				_, in.Err = start.Creation.EntryBuilds[0].Start(atc.Plan{ID: "cancel-test", Task: &start.Plan})
 			case "output start":
-				_, in.Err = start.start(start.Plan, int64(hangarEpoch), "brine-node", hangarNodeUID, false)
+				_, in.Err = start.start(start.Plan, "brine-node", hangarNodeUID, false)
 			case "scheduler debt":
 				in.Err = job.RequestSchedule()
 			case "unpause":

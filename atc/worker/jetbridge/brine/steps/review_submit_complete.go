@@ -3,7 +3,6 @@ package steps
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -152,7 +151,6 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	runtime.Start.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
 	// The producer's container declares the output its template selects.
 	runtime.Spec.Outputs = map[string]string{task.RunResult.Output: "/workspace/" + task.RunResult.Output}
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(runtime.Start.Daemon.ControlPublic)}}}
 	source, signer, _, err := configureRunReadPlane(in.Source, rec, res)
 	if err != nil {
 		return err
@@ -178,7 +176,7 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	source.SetExecutor(localExecutor{client: runtime.Client})
 	in.Port.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{Source: source, Helper: change.Binaries.Worker, Socket: socket, Lifetime: time.Minute, WorkerImages: []string{brineCredentialWorkerImage}})
 
-	candidate, err := driveSubmittedProducer(ctx, runtime, factory, buildID, "submitted-review", keys, rec, func(directory string) error {
+	candidate, err := driveSubmittedProducer(ctx, runtime, factory, buildID, "submitted-review", rec, func(directory string) error {
 		change.Output = filepath.Join(directory, "report")
 		args := append(append([]string{}, workload.Mode...), "--input", change.Input, "--output", change.Output, "--runtime-dir", change.Workspace.Runtime, "--codex", change.Binaries.Provider, "--model", workload.Model, "--timeout", "45s", "--auth-socket", socket, "--handoff-timeout", "30s", "--run-id", strconv.Itoa(run.ID()))
 		worker := exec.CommandContext(ctx, change.Binaries.Worker, args...)
@@ -236,7 +234,7 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 		return err
 	}
 	if workload.Then != nil {
-		if err = workload.Then(ctx, submittedRun{Runtime: runtime, Factory: factory, BuildID: buildID, RunID: run.ID(), Definition: definition.Materialized, Keys: keys, Input: input}); err != nil {
+		if err = workload.Then(ctx, submittedRun{Runtime: runtime, Factory: factory, BuildID: buildID, RunID: run.ID(), Definition: definition.Materialized, Input: input}); err != nil {
 			return err
 		}
 	}
@@ -276,7 +274,6 @@ type submittedRun struct {
 	BuildID    int
 	RunID      int
 	Definition atc.Config
-	Keys       hangaroutput.ControlKeyRing
 	// Input is the Run input as the node materialized it.
 	Input string
 }
@@ -287,7 +284,7 @@ type submittedRun struct {
 // directory, then the actual finish witnessed, the capture published and its
 // node marker released. Envtest
 // supplies Pod identity; the live tier supplies kubelet enforcement.
-func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, factory db.PipelineRunFactory, buildID int, planID atc.PlanID, keys hangaroutput.ControlKeyRing, rec *brine.Recorder, work func(directory string) error) (RunOutputCandidate, error) {
+func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, factory db.PipelineRunFactory, buildID int, planID atc.PlanID, rec *brine.Recorder, work func(directory string) error) (RunOutputCandidate, error) {
 	jdb := runtime.Start.DB
 	candidate, err := publishRunCandidateStarted(runtime, rec, func(directory string, start executioncontrol.Acknowledgement) error {
 		record, err := runtime.readSource()
@@ -299,14 +296,14 @@ func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, facto
 			return err
 		}
 		defer db.Rollback(tx)
-		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), Capture: record.Key})
+		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: db.ContainerTypeTask, NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), Capture: record.Key})
 		if err != nil {
 			return err
 		}
 		if a.Identity != start.Identity {
 			return fmt.Errorf("submission started a different execution")
 		}
-		if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, a.PlanID, start, keys); err != nil {
+		if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, a.PlanID, start); err != nil {
 			return err
 		}
 		if err = tx.Commit(); err != nil {
@@ -337,7 +334,7 @@ func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, facto
 	if err != nil {
 		return candidate, err
 	}
-	control := jetbridge.NewOutputControlClient(runtime.Start.Daemon.Output.URL, runtime.Start.Daemon.HTTP, runtime.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	control := jetbridge.NewOutputControlClient(runtime.Start.Daemon.Output.URL, runtime.Start.Daemon.HTTP, runtime.Start.Daemon.Minter)
 	finished, err := control.Classify(ctx, candidate.Record.Execution)
 	if err != nil || finished.Acknowledgement == nil {
 		return candidate, fmt.Errorf("worker left no actual finish: %v", err)
@@ -347,7 +344,7 @@ func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, facto
 		return candidate, err
 	}
 	defer db.Rollback(tx)
-	if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, *finished.Acknowledgement, keys); err != nil {
+	if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, *finished.Acknowledgement); err != nil {
 		return candidate, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -361,7 +358,7 @@ func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbri
 	if err != nil {
 		return "", err
 	}
-	selected, err := db.LoadRunTask(ctx, tx, start.Creation.EntryBuilds[0].ID(), start.Plan.TaskID, int64(hangarEpoch))
+	selected, err := db.LoadRunTask(ctx, tx, start.Creation.EntryBuilds[0].ID(), start.Plan.TaskID)
 	db.Rollback(tx)
 	if err != nil {
 		return "", err
@@ -370,7 +367,7 @@ func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbri
 	if !ok {
 		return "", fmt.Errorf("submitted Run has no %s input", name)
 	}
-	node, err := source.ForResultRead(ctx, executioncontrol.ActivationEpoch(hangarEpoch))
+	node, err := source.ForResultRead(ctx)
 	if err != nil {
 		return "", err
 	}

@@ -30,7 +30,7 @@ type RunCredentialTarget struct {
 // LoadRunCredentialTarget rechecks the invocation owner, then follows the
 // existing named-result producer to its execution. It never invents an executor
 // from a mutable build plan and never retains credential contents.
-func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int, principal, result string, epoch int64, claim bool) (RunCredentialTarget, error) {
+func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int, principal, result string, claim bool) (RunCredentialTarget, error) {
 	target := RunCredentialTarget{RunCredentialSession: atc.RunCredentialSession{Result: result, Status: "waiting"}}
 	var owner string
 	err := tx.QueryRowContext(ctx, `SELECT r.id,i.principal_digest FROM pipeline_runs r JOIN pipeline_run_invocations i ON i.run_id=r.id
@@ -41,7 +41,7 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	if owner != principal || principal == "" {
 		return target, ErrRunCredentialOwner
 	}
-	run, hangarEnabled, err := lockRunResultPublicationUnder(ctx, tx, target.RunID, epoch)
+	run, hangarEnabled, err := lockRunResultPublicationUnder(ctx, tx, target.RunID, true)
 	if err != nil {
 		return target, err
 	}
@@ -67,9 +67,9 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	// The activation rows are already held by lockRunResultPublicationUnder.
 	// New delivery grants the owner's credentials to a producer, so it needs
 	// the Run contract admitting -- an operator's admission hold stops it, as
-	// the HTTP route does -- and the Hangar epoch this control plane speaks for
-	// enabled. Replay above retains facts even under a hold, while an epoch
-	// drains, or after the Run has completed.
+	// the HTTP route does -- and the output plane in service. Replay above
+	// retains facts even under a hold, while the plane drains, or after the
+	// Run has completed.
 	marker, err := lockRunActivationMarker(ctx, tx)
 	if err != nil {
 		return target, err
@@ -107,7 +107,7 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	target.WorkerImage = atc.RunTaskImage(definition.Materialized, taskID)
 	// Refuse ambiguity instead of choosing a different attempt to receive the
 	// owner's credential. The initial review template has one result producer.
-	rows, err := tx.QueryContext(ctx, `SELECT e.capture_output,e.node_name,e.node_uid,e.execution_id,e.execution_fence,e.activation_epoch,
+	rows, err := tx.QueryContext(ctx, `SELECT e.capture_output,e.node_name,e.node_uid,e.execution_id,e.execution_fence,
  b.aborted,b.completed,b.status,EXISTS(SELECT 1 FROM pipeline_run_execution_closures c WHERE c.execution_id=e.execution_id AND c.execution_fence=e.execution_fence)
  FROM pipeline_run_captures s JOIN pipeline_run_executions e ON e.execution_id=s.execution_id AND e.capture_output=s.output_name AND e.run_id=s.run_id AND e.build_id=s.build_id
  JOIN builds b ON b.id=e.build_id AND b.pipeline_run_id=e.run_id
@@ -117,13 +117,12 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	}
 	var identity executioncontrol.Identity
 	var uid, status string
-	var actualEpoch int64
 	var aborted, completed, closed bool
 	count := 0
 	for rows.Next() {
 		count++
 		var captured string
-		if err = rows.Scan(&captured, &target.NodeName, &uid, &identity.ExecutionID, &identity.Fence, &actualEpoch, &aborted, &completed, &status, &closed); err != nil {
+		if err = rows.Scan(&captured, &target.NodeName, &uid, &identity.ExecutionID, &identity.Fence, &aborted, &completed, &status, &closed); err != nil {
 			rows.Close()
 			return target, err
 		}
@@ -137,7 +136,7 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	if count == 0 {
 		return target, nil
 	}
-	if count != 1 || actualEpoch != epoch || aborted || completed || closed || (status != "pending" && status != "started") {
+	if count != 1 || aborted || completed || closed || (status != "pending" && status != "started") {
 		return target, output.ErrConflict
 	}
 	target.Start, err = retainedRunExecutionStart(ctx, tx, identity)
@@ -147,7 +146,7 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	if target.Start == nil {
 		return target, nil
 	}
-	if string(target.Start.NodeUID) != uid || int64(target.Start.ActivationEpoch) != epoch {
+	if string(target.Start.NodeUID) != uid {
 		return target, output.ErrInvalidIdentity
 	}
 	target.Status = "available"

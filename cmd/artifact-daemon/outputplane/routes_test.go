@@ -36,7 +36,6 @@ type routeFixture struct {
 	client *http.Client
 	daemon *Daemon
 	minter *executioncontrol.CapabilityMinter
-	epoch  executioncontrol.ActivationEpoch
 	nonce  int
 
 	// The store this daemon was pointed at, and the configuration it was built
@@ -67,7 +66,6 @@ func newRoutes(t *testing.T) *routeFixture {
 		captureFixture: capture,
 		daemon:         capture.daemon,
 		minter:         minter,
-		epoch:          capture.daemon.ActivationEpoch(),
 		store:          capture.objects,
 		bucket:         capture.bucket,
 		config:         capture.config,
@@ -167,10 +165,9 @@ func (fixture *routeFixture) callAs(t *testing.T, as executioncontrol.Identity, 
 
 	fixture.nonce++
 	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:           facet,
-		Operation:       operation,
-		Identity:        as,
-		ActivationEpoch: fixture.epoch,
+		Facet:     facet,
+		Operation: operation,
+		Identity:  as,
 	}, "nonce-"+strings.ReplaceAll(path, "/", "-")+"-"+operation+"-"+strconv.Itoa(fixture.nonce))
 	if err != nil {
 		t.Fatalf("minting: %v", err)
@@ -244,7 +241,6 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 		executioncontrol.BaseFacet, "admit", executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        identity(1),
-			ActivationEpoch: flattened.epoch,
 			NodeUID:         testNode,
 			Capability:      "opaque-capability",
 		}); status != http.StatusOK {
@@ -282,10 +278,9 @@ func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
 	admitted(t, &fixture.ledgerFixture)
 
 	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:           executioncontrol.BaseFacet,
-		Operation:       "classify",
-		Identity:        identity(1),
-		ActivationEpoch: fixture.epoch,
+		Facet:     executioncontrol.BaseFacet,
+		Operation: "classify",
+		Identity:  identity(1),
 	}, "nonce-replayed")
 	if err != nil {
 		t.Fatalf("minting: %v", err)
@@ -409,7 +404,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 
 // The handshake is the authority on what this daemon speaks. Node labels are
 // hints; this is the thing a control plane reads before trusting a statement.
-func TestTheHandshakeNamesTheProtocolLedgerKeyAndEpoch(t *testing.T) {
+func TestTheHandshakeNamesTheProtocolAndLedger(t *testing.T) {
 	fixture := newRoutes(t)
 
 	response, err := http.Get(fixture.server.URL + "/handshake")
@@ -428,12 +423,6 @@ func TestTheHandshakeNamesTheProtocolLedgerKeyAndEpoch(t *testing.T) {
 	}
 	if err := handshake.Validate(); err != nil {
 		t.Errorf("the handshake does not validate: %v", err)
-	}
-	if handshake.ActivationEpoch != fixture.epoch {
-		t.Errorf("the handshake reports epoch %d", handshake.ActivationEpoch)
-	}
-	if handshake.ControlKeyID != "control-key-1" {
-		t.Errorf("the handshake reports control key %q", handshake.ControlKeyID)
 	}
 	// It says nothing about any execution, which is why it needs no
 	// capability: a handshake that leaked one would be an unauthenticated read
@@ -473,7 +462,7 @@ func TestACapabilityForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 	// B is a real, admitted execution on this node. It holds nothing.
 	b := executioncontrol.Identity{ExecutionID: "55555555-5555-4555-8555-555555555555", Fence: 1}
 	if err := fixture.ledger.Admit(executioncontrol.Envelope{
-		ProtocolVersion: executioncontrol.ProtocolVersion, Identity: b, ActivationEpoch: testEpoch,
+		ProtocolVersion: executioncontrol.ProtocolVersion, Identity: b,
 		NodeUID: testNode, Capability: "opaque-capability",
 	}); err != nil {
 		t.Fatalf("admitting B: %v", err)
@@ -516,10 +505,9 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 	admitted(t, &fixture.ledgerFixture)
 
 	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:           executioncontrol.BaseFacet,
-		Operation:       "classify",
-		Identity:        identity(1),
-		ActivationEpoch: fixture.epoch,
+		Facet:     executioncontrol.BaseFacet,
+		Operation: "classify",
+		Identity:  identity(1),
 	}, "nonce-spent-across-a-restart")
 	if err != nil {
 		t.Fatalf("minting: %v", err)
@@ -569,7 +557,7 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 	}
 }
 
-// The signed start is read over the base surface, under its own operation: a
+// The recorded start is read over the base surface, under its own operation: a
 // capability minted for classify does not read it, and the answer is the
 // stored statement.
 func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {

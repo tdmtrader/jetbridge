@@ -27,11 +27,10 @@ type RunCreationOpts struct {
 	// its key already admitted, and is refused with
 	// ErrRunActivationEpochRequired otherwise.
 	ActivationEpoch int64
-	// HangarEpoch is the Hangar output epoch this control plane speaks for, or
-	// zero without an output plane. It is independent of ActivationEpoch: a Run
-	// that declares results or binds inputs needs it enabled at admission, and
-	// its captures carry whichever Hangar epoch they are started under.
-	HangarEpoch          int64
+	// HangarOutput says this control plane has an output plane configured. It
+	// is independent of ActivationEpoch: a Run that declares results or binds
+	// inputs needs the plane in service at admission.
+	HangarOutput         bool
 	Invocation           *RunInvocationIdentity
 	Inputs               map[string]atc.RunInputSource
 	SealedInputAuthority *runinput.Authority
@@ -54,14 +53,14 @@ type RunCreation struct {
 }
 
 type PipelineRunFactory interface {
-	InputUploadAudience(context.Context, Tx, Pipeline, string, int64, string) (runinput.Audience, error)
+	InputUploadAudience(context.Context, Tx, Pipeline, string, string) (runinput.Audience, error)
 	ReserveRunInputUpload(context.Context, Tx, runinput.Audience, output.InputStage, string, time.Duration) error
 	RegisterRunInputUpload(context.Context, Tx, runinput.Audience, output.InputPublication) (RunInputUploadClaim, error)
 	CaptureProgress(context.Context, int) ([]atc.RunCaptureProgress, error)
 	ExecuteCancellationFinality(context.Context, RunCancellationLease, RunCancellationOperation) (RunCancellationDebt, error)
 	CancellationRunExecution(context.Context, Tx, RunCancellationLease, RunCancellationOperation) (RunCancellationExecution, error)
-	RecordCancelledRunExecution(context.Context, Tx, RunCancellationLease, RunCancellationOperation, RunOutputCancellationEvidence, RunExecutionVerifier) error
-	RecordRunExecutionWitness(context.Context, Tx, int, atc.PlanID, executioncontrol.Acknowledgement, RunExecutionVerifier) error
+	RecordCancelledRunExecution(context.Context, Tx, RunCancellationLease, RunCancellationOperation, RunOutputCancellationEvidence) error
+	RecordRunExecutionWitness(context.Context, Tx, int, atc.PlanID, executioncontrol.Acknowledgement) error
 	RunExecutionContainer(context.Context, Tx, string) (bool, error)
 	RunExecutionOwner(context.Context, Tx, int) (int, bool, error)
 	RunExecution(context.Context, Tx, int, atc.PlanID) (RunExecutionAdmission, bool, error)
@@ -81,7 +80,7 @@ type PipelineRunFactory interface {
 	AfterRunCompleted()
 
 	RunCaptureTask(context.Context, Tx, int, string) (RunCapture, bool, error)
-	StartRunCapture(context.Context, Tx, int, atc.TaskPlan, int64, time.Duration, string, string) (RunCapture, error)
+	StartRunCapture(context.Context, Tx, int, atc.TaskPlan, time.Duration, string, string) (RunCapture, error)
 	Definition(int) (atc.RunDefinition, bool, error)
 	CreateRunInTx(context.Context, Tx, Pipeline, RunParams, string, RunCreationOpts) (RunCreation, error)
 	AfterRunCreated(context.Context, RunCreation) error
@@ -133,7 +132,7 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	// Hangar's in-service row is taken inside the activation prefix whenever an
 	// output plane is configured, and required below only when this Run needs one.
 	hangarReady := false
-	if opts.HangarEpoch > 0 {
+	if opts.HangarOutput {
 		var err error
 		if hangarReady, err = hangarLockEnabled(ctx, tx); err != nil {
 			return RunCreation{}, err
@@ -181,8 +180,7 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		return RunCreation{}, ErrPipelineTemplateInvalid{Err: err}
 	}
 	// A Run that declares results or binds exact inputs needs the output plane
-	// serving an enabled Hangar epoch to be admitted; any other Run is admitted
-	// without one. Executing any Run's steps still needs the output plane's
+	// in service to be admitted; any other Run is admitted without one. Executing any Run's steps still needs the output plane's
 	// execution control (runs.ExecutionStarter), which is not checked here.
 	if (len(declarations) > 0 || len(opts.Inputs) > 0) && !hangarReady {
 		return RunCreation{}, atc.ErrRunResultsUnavailable
@@ -201,7 +199,7 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		if err = resolveRunCause(ctx, tx, locked.TeamID(), opts.CausedByRun); err != nil {
 			return RunCreation{}, err
 		}
-		inputs, err = resolveRunInputs(ctx, tx, runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: opts.Invocation.PrincipalDigest, Epoch: opts.HangarEpoch}, declarations, opts.Inputs, opts.SealedInputAuthority)
+		inputs, err = resolveRunInputs(ctx, tx, runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: opts.Invocation.PrincipalDigest}, declarations, opts.Inputs, opts.SealedInputAuthority)
 		if err != nil {
 			return RunCreation{}, err
 		}

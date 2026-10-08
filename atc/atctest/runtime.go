@@ -123,7 +123,7 @@ func (p *Platform) start(ctx context.Context, team, template string, number int,
 	// The output starter's admission: the pending capture row and its Run
 	// link, then the exact execution admitted on the node.
 	if err := p.inTx(ctx, func(tx db.Tx) (err error) {
-		started, err := p.runs.StartRunCapture(ctx, tx, producer.buildID, producer.plan, Epoch, time.Hour, nodeName, string(n.uid))
+		started, err := p.runs.StartRunCapture(ctx, tx, producer.buildID, producer.plan, time.Hour, nodeName, string(n.uid))
 		producer.capture = started.Capture
 		return err
 	}); err != nil {
@@ -135,7 +135,7 @@ func (p *Platform) start(ctx context.Context, team, template string, number int,
 		return nil, err
 	}
 	if _, err := n.client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: c.Execution,
-		ActivationEpoch: Epoch, NodeUID: n.uid, Capability: observe}); err != nil {
+		NodeUID: n.uid, Capability: observe}); err != nil {
 		return nil, err
 	}
 
@@ -151,14 +151,14 @@ func (p *Platform) start(ctx context.Context, team, template string, number int,
 	}
 	if err := p.inTx(ctx, func(tx db.Tx) error {
 		admitted, _, err := p.runs.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: producer.buildID, PlanID: producer.planID,
-			Kind: db.ContainerTypeTask, Epoch: Epoch, NodeName: nodeName, NodeUID: string(n.uid), Capture: c.Key})
+			Kind: db.ContainerTypeTask, NodeName: nodeName, NodeUID: string(n.uid), Capture: c.Key})
 		if err != nil {
 			return err
 		}
 		if admitted.Identity != started.Identity {
 			return errors.New("the node started a different execution")
 		}
-		return p.runs.RecordRunExecutionWitness(ctx, tx, producer.buildID, producer.planID, started, n.control)
+		return p.runs.RecordRunExecutionWitness(ctx, tx, producer.buildID, producer.planID, started)
 	}); err != nil {
 		return nil, err
 	}
@@ -205,7 +205,6 @@ func (producer *Producer) publish(files map[string][]byte) error {
 		Dial: func(context.Context, string, executioncontrol.NodeUID) (hangaroutput.SourceControl, error) {
 			return n.client, nil
 		},
-		ActivationEpoch: Epoch,
 	}
 	// The node's seal is asynchronous: successive passes ask again until it
 	// answers, so this asks again until the row has settled.
@@ -228,7 +227,7 @@ func (producer *Producer) publish(files map[string][]byte) error {
 		return fmt.Errorf("the node has no finish: %v", err)
 	}
 	if err := p.inTx(ctx, func(tx db.Tx) error {
-		return p.runs.RecordRunExecutionWitness(ctx, tx, producer.buildID, producer.planID, *finished.Acknowledgement, n.control)
+		return p.runs.RecordRunExecutionWitness(ctx, tx, producer.buildID, producer.planID, *finished.Acknowledgement)
 	}); err != nil {
 		return err
 	}
@@ -361,7 +360,7 @@ func (p *Platform) Input(t testing.TB, team, template string, number int, name s
 	}
 	var binding atc.RunInputBinding
 	if err := p.inTx(ctx, func(tx db.Tx) error {
-		task, err := db.LoadRunTask(ctx, tx, buildID, taskID, Epoch)
+		task, err := db.LoadRunTask(ctx, tx, buildID, taskID)
 		binding = task.Inputs[name]
 		return err
 	}); err != nil {

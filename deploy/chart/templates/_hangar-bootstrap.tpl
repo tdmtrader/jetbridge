@@ -21,25 +21,13 @@ concourse-hangar-bootstrap
 {{- end -}}
 
 {{/*
-The ring Secret is named by its composition: the active control-key epoch
-(hangarOutput.activationEpoch) and a
-digest of the earlier epochs' keys it retains. A change to those yields a new
-Secret rather than a refusal to replace the old one.
+The inventory holds CAs, leaves, bundles, symmetric keys and tokens. There is
+no signing key and no verification ring: the daemon is trusted over mTLS and
+nothing it says is signed.
 */}}
-{{- define "concourse.hangarBootstrap.ringName" -}}
-{{- $digest := toJson .Values.hangarBootstrap.referencedKeys | sha256sum | trunc 8 -}}
-{{- printf "%s-hangar-rings-e%d-%s" (include "concourse.fullname" .) (int .Values.hangarOutput.activationEpoch) $digest | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{/* Whether the ring exists: it needs an active control key. */}}
-{{- define "concourse.hangarBootstrap.ringEnabled" -}}
-{{- if and .Values.hangarBootstrap.enabled .Values.hangarOutput.executionControl.keySecret -}}true{{- end -}}
-{{- end -}}
-
 {{- define "concourse.hangarBootstrap.inventory" -}}
 {{- $ := . -}}
 {{- $out := .Values.hangarOutput -}}
-{{- $epoch := int $out.activationEpoch -}}
 {{- $entries := list -}}
 
 {{- with .Values.artifactDaemon.hangar.keySecret -}}
@@ -61,12 +49,6 @@ Secret rather than a refusal to replace the old one.
   "consumers" (list "hangar-store" "artifact-daemon" "web")) -}}
 {{- end -}}
 
-{{- with $out.executionControl.keySecret -}}
-{{- $entries = append $entries (dict "name" . "kind" "ed25519" "key" "control.key" "ring" "control" "epoch" $epoch
-  "purposes" (dict "control.key" "node-control signing key for this control-key epoch")
-  "consumers" (list "artifact-daemon")) -}}
-{{- end -}}
-
 {{- with $out.capabilityKeySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "random32" "key" "capability.key"
   "purposes" (dict "capability.key" "output control warrant key")
@@ -82,18 +64,6 @@ Secret rather than a refusal to replace the old one.
 {{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.runInputKeyName" $) "kind" "random32" "key" "input.key"
   "purposes" (dict "input.key" "Run input signing key")
   "consumers" (list "web")) -}}
-
-{{- range $earlier := .Values.hangarBootstrap.referencedKeys -}}
-{{- $entries = append $entries (dict "name" $earlier.controlSecret "kind" "ed25519" "key" "control.key" "ring" "control" "epoch" (int $earlier.epoch) "required" true
-  "purposes" (dict "control.key" "an earlier control-key epoch's node-control key, read for its public half")
-  "consumers" (list)) -}}
-{{- end -}}
-
-{{- if include "concourse.hangarBootstrap.ringEnabled" $ -}}
-{{- $entries = append $entries (dict "name" (include "concourse.hangarBootstrap.ringName" $) "kind" "ring" "activeEpoch" $epoch
-  "purposes" (dict "control-keys.json" "public node-control verification ring")
-  "consumers" (list "web")) -}}
-{{- end -}}
 
 {{- toJson (dict "labels" (dict "app.kubernetes.io/managed-by" (include "concourse.hangarBootstrap.labelValue" $)) "entries" $entries) -}}
 {{- end -}}

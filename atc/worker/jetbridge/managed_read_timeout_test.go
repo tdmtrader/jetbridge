@@ -31,8 +31,8 @@ func TestManagedReadClientsCoverTheConfiguredOperation(t *testing.T) {
 			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
 		},
 	}
-	source := NewOutputSource(fake.NewSimpleClientset(node), config, nil, 7)
-	reader, err := source.ForResultRead(context.Background(), 7)
+	source := NewOutputSource(fake.NewSimpleClientset(node), config, nil)
+	reader, err := source.ForResultRead(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

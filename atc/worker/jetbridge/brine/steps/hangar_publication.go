@@ -142,7 +142,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 					admission.Execution, executioncontrol.Envelope{
 						ProtocolVersion: executioncontrol.ProtocolVersion,
 						Identity:        admission.Execution,
-						ActivationEpoch: admission.ActivationEpoch,
 						NodeUID:         hangarNodeUID,
 						Capability:      "opaque-capability",
 					})
@@ -476,7 +475,6 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 		executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        draft.Admission.Execution,
-			ActivationEpoch: draft.Admission.ActivationEpoch,
 			NodeUID:         hangarNodeUID,
 			Capability:      "opaque-admission-capability",
 		})

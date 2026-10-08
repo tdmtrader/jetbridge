@@ -8,10 +8,10 @@
 // caller-owned database transaction and an opaque identity.
 //
 // Durable capture is an *extension* of the base exact-execution protocol in
-// hangar/executioncontrol. It references that package's Identity and
-// ActivationEpoch rather than declaring its own, so an execution has one truth
-// however many optional gates hang off it. The architecture guard in
-// architecture_test.go fails the test suite if a type here redeclares either.
+// hangar/executioncontrol. It references that package's Identity rather than
+// declaring its own, so an execution has one truth however many optional gates
+// hang off it. The architecture guard in architecture_test.go fails the test
+// suite if a type here redeclares it.
 //
 // The wire contract is frozen, language-neutrally, in testdata/protocol-v1.
 // Every enum is closed: an unknown or newly added member is refused at decode.

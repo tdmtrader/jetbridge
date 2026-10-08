@@ -36,7 +36,6 @@ func baseClaims() CapabilityClaims {
 			ExecutionID: "33333333-3333-4333-8333-333333333333",
 			Fence:       4,
 		},
-		ActivationEpoch: 7,
 	}
 }
 
@@ -58,11 +57,10 @@ func TestACapabilityAuthorizesTheOperationItWasMintedForAndNoOther(t *testing.T)
 	for name, differ := range map[string]func(*CapabilityClaims){
 		// The facet row is the one the route table stands on: a base control
 		// capability cannot hold, seal or publish, however valid it is.
-		"another facet":            func(c *CapabilityClaims) { c.Facet = captureFacetForTest },
-		"another operation":        func(c *CapabilityClaims) { c.Operation = "stop" },
-		"another execution":        func(c *CapabilityClaims) { c.Identity.ExecutionID = "44444444-4444-4444-8444-444444444444" },
-		"another fence":            func(c *CapabilityClaims) { c.Identity.Fence++ },
-		"another activation epoch": func(c *CapabilityClaims) { c.ActivationEpoch++ },
+		"another facet":     func(c *CapabilityClaims) { c.Facet = captureFacetForTest },
+		"another operation": func(c *CapabilityClaims) { c.Operation = "stop" },
+		"another execution": func(c *CapabilityClaims) { c.Identity.ExecutionID = "44444444-4444-4444-8444-444444444444" },
+		"another fence":     func(c *CapabilityClaims) { c.Identity.Fence++ },
 	} {
 		expected := baseClaims()
 		differ(&expected)

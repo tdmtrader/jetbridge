@@ -29,7 +29,7 @@ func (s *OutputSource) ExecBoundSession(ctx context.Context, node string, start 
 	if start.Kind != executioncontrol.AcknowledgementStart {
 		return output.ErrInvalidIdentity
 	}
-	client, err := s.recoveryClient(ctx, node, string(start.NodeUID), start.ActivationEpoch)
+	client, err := s.recoveryClient(ctx, node, string(start.NodeUID))
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (s *OutputSource) checkBoundSession(ctx context.Context, name, node string,
 		pod.Status.StartTime.Add(time.Duration(*pod.Spec.ActiveDeadlineSeconds)*time.Second).After(deadline) {
 		return fmt.Errorf("%w: session container or deadline changed", output.ErrConflict)
 	}
-	_, err = s.recoveryClient(ctx, node, string(start.NodeUID), start.ActivationEpoch)
+	_, err = s.recoveryClient(ctx, node, string(start.NodeUID))
 	return err
 }
 

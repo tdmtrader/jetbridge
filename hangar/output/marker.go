@@ -2,12 +2,10 @@ package output
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 // The custom-metadata keys carrying ownership evidence on a published object.
@@ -25,7 +23,6 @@ const (
 	MarkerKeyScope         = "hangar-output-scope"
 	MarkerKeyDigest        = "hangar-output-digest"
 	MarkerKeyReservationID = "hangar-output-reservation-id"
-	MarkerKeyActivation    = "hangar-output-activation-epoch"
 	MarkerKeyStore         = "hangar-output-store"
 	MarkerKeyCreatedAt     = "hangar-output-created-at"
 )
@@ -52,10 +49,9 @@ const markerCreatedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // the wire, and Metadata/ParseObjectMarker are that encoding; the struct's JSON
 // form is never sent anywhere, so it does not claim to be frozen.
 type ObjectMarker struct {
-	Scope           hangar.Scope
-	Digest          hangar.Digest
-	ReservationID   ReservationID
-	ActivationEpoch executioncontrol.ActivationEpoch
+	Scope         hangar.Scope
+	Digest        hangar.Digest
+	ReservationID ReservationID
 
 	// Store names exactly where the object was created: the output
 	// namespace's StoreIdentity, which is the bucket fingerprint, deployment
@@ -73,7 +69,6 @@ func (marker ObjectMarker) Metadata() map[string]string {
 		MarkerKeyScope:         string(marker.Scope),
 		MarkerKeyDigest:        string(marker.Digest),
 		MarkerKeyReservationID: string(marker.ReservationID),
-		MarkerKeyActivation:    strconv.FormatUint(uint64(marker.ActivationEpoch), 10),
 		MarkerKeyCreatedAt:     marker.CreatedAt.UTC().Format(markerCreatedAtLayout),
 	}
 	if marker.Store != "" {
@@ -102,13 +97,6 @@ func ParseObjectMarker(metadata map[string]string) (ObjectMarker, error) {
 		ReservationID: ReservationID(metadata[MarkerKeyReservationID]),
 		Store:         metadata[MarkerKeyStore],
 	}
-
-	epoch, err := strconv.ParseUint(metadata[MarkerKeyActivation], 10, 64)
-	if err != nil {
-		return ObjectMarker{}, fmt.Errorf("%w: %s is not a number: %v",
-			ErrCorrupt, MarkerKeyActivation, err)
-	}
-	marker.ActivationEpoch = executioncontrol.ActivationEpoch(epoch)
 
 	createdAt, err := time.Parse(time.RFC3339Nano, metadata[MarkerKeyCreatedAt])
 	if err != nil {
@@ -146,9 +134,6 @@ func (marker ObjectMarker) Validate() error {
 	}
 	if err := marker.ReservationID.Validate(); err != nil {
 		return fmt.Errorf("%w: marker reservation id: %v", ErrCorrupt, err)
-	}
-	if marker.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: marker activation epoch is zero", ErrCorrupt)
 	}
 	if marker.CreatedAt.IsZero() {
 		return fmt.Errorf("%w: marker creation time is zero", ErrCorrupt)

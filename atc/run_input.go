@@ -61,7 +61,6 @@ type RunInputBinding struct {
 	Source  RunInputSource `json:"source"`
 	Ref     hangar.TreeRef `json:"ref"`
 	ClaimID output.ClaimID `json:"claim_id"`
-	Epoch   int64          `json:"activation_epoch"`
 }
 
 // RunInput routes one named durable binding to an inline task's declared input.

@@ -27,7 +27,6 @@ func validNamespaceConfig() NamespaceConfig {
 		TenantID:          "tenant-a",
 		CacheBucket:       "deployment-durable-cache",
 		StrictInputBucket: "deployment-strict-input",
-		ActivationEpoch:   7,
 	}
 }
 
@@ -98,11 +97,6 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 			sentinel: ErrIncomplete,
 			says:     "opaque scope has nothing to be derived from",
 		},
-		"no active epoch": {
-			mutate:   func(c *NamespaceConfig) { c.ActivationEpoch = 0 },
-			sentinel: ErrIncomplete,
-			says:     "activation epoch",
-		},
 	} {
 		config := validNamespaceConfig()
 		testCase.mutate(&config)
@@ -126,7 +120,7 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 	}
 }
 
-func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantNotPerEpoch(t *testing.T) {
+func TestTheDerivedNamespaceIsStableOpaqueAndPerTenant(t *testing.T) {
 	first, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("deriving: %v", err)
@@ -152,20 +146,6 @@ func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantNotPerEpoch(t *testing.T) 
 	if other.Scope() == first.Scope() {
 		t.Error("two tenants derived one scope, so one tenant's capture would deduplicate " +
 			"against another tenant's object")
-	}
-
-	// There is no rotation: the epoch is recorded in markers and never enters
-	// the scope, so a deployment that moves its control-key generation still
-	// publishes into, and reads from, the namespace it always had.
-	nextEpoch := validNamespaceConfig()
-	nextEpoch.ActivationEpoch = 8
-	same, err := DeriveNamespace(nextEpoch)
-	if err != nil {
-		t.Fatalf("deriving under another epoch: %v", err)
-	}
-	if same.Scope() != first.Scope() {
-		t.Error("another epoch derived another scope; the scope is H(tenant, store) and " +
-			"nothing else, so published objects never strand in a scope nothing reads")
 	}
 
 	// Opaque means the tenant is not readable out of it. This is the property
@@ -204,9 +184,9 @@ func TestTheObjectKeyComesOnlyFromTheDerivedNamespace(t *testing.T) {
 			"find it", key, namespace.ListPrefix())
 	}
 
-	// The list prefix stops above the scope on purpose: a rotation derives a
-	// new one, and a sweep under the current scope would call every previous
-	// epoch's object an unmanaged stranger.
+	// The list prefix stops above the scope on purpose: a sweep under the
+	// current scope alone would never see, or count, an object some other
+	// scope or store left under the deployment prefix.
 	if strings.Contains(namespace.ListPrefix(), string(namespace.Scope())) {
 		t.Errorf("the list prefix %q descends into the scope", namespace.ListPrefix())
 	}
@@ -265,10 +245,6 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 			"disagrees with its key is the corruption ParseObjectMarker exists to notice",
 			marker.Scope, namespace.Scope())
 	}
-	if marker.ActivationEpoch != namespace.ActivationEpoch() {
-		t.Errorf("the marker says epoch %d, the namespace was derived under %d",
-			marker.ActivationEpoch, namespace.ActivationEpoch())
-	}
 
 	// Round-tripping through the wire form is what the publisher actually
 	// writes, and a marker that parses back to a different value would be a
@@ -286,7 +262,7 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 
 	// A marker that is present but malformed is corrupt, never a cache miss.
 	malformed := marker.Metadata()
-	malformed[MarkerKeyActivation] = "not a number"
+	malformed[MarkerKeyCreatedAt] = "not a timestamp"
 	if _, err := ParseObjectMarker(malformed); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("a malformed marker parsed as %v, expected ErrCorrupt", err)
 	}

@@ -25,7 +25,7 @@ type ResultSource interface {
 	NodeUID() executioncontrol.NodeUID
 	OpenManagedOutput(context.Context, output.ManagedReadRequest, int64) (io.ReadCloser, hangar.TreeAttributes, error)
 }
-type ResultSourceFunc func(context.Context, executioncontrol.ActivationEpoch) (ResultSource, error)
+type ResultSourceFunc func(context.Context) (ResultSource, error)
 
 type ResultReader struct {
 	Conn    db.DbConn
@@ -45,7 +45,7 @@ func (r *ResultReader) Read(ctx context.Context, runID int, name string) (*hanga
 	if err != nil {
 		return nil, err
 	}
-	source, err := r.Source(ctx, selected.Epoch)
+	source, err := r.Source(ctx)
 	if err != nil {
 		return nil, err
 	}

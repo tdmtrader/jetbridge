@@ -17,9 +17,9 @@ import (
 func (f *pipelineRunFactory) RunExecution(ctx context.Context, tx Tx, buildID int, planID atc.PlanID) (RunExecutionAdmission, bool, error) {
 	var a RunExecutionAdmission
 	var captured string
-	err := tx.QueryRowContext(ctx, `SELECT run_id,build_id,plan_id,kind,activation_epoch,node_name,node_uid,execution_id,execution_fence,coalesce(capture_output,'')
+	err := tx.QueryRowContext(ctx, `SELECT run_id,build_id,plan_id,kind,node_name,node_uid,execution_id,execution_fence,coalesce(capture_output,'')
  FROM pipeline_run_executions WHERE build_id=$1 AND plan_id=$2`, buildID, planID).
-		Scan(&a.RunID, &a.BuildID, &a.PlanID, &a.Kind, &a.Epoch, &a.NodeName, &a.NodeUID, &a.Identity.ExecutionID, &a.Identity.Fence, &captured)
+		Scan(&a.RunID, &a.BuildID, &a.PlanID, &a.Kind, &a.NodeName, &a.NodeUID, &a.Identity.ExecutionID, &a.Identity.Fence, &captured)
 	if err == sql.ErrNoRows {
 		return a, false, nil
 	}
@@ -64,7 +64,7 @@ func (f *pipelineRunFactory) AdmitRunExecution(ctx context.Context, tx Tx, req R
 	default:
 		return a, true, output.ErrInvalidIdentity
 	}
-	if err = lockRunExecutionBuild(ctx, tx, runID, req.BuildID, req.Epoch); err != nil {
+	if err = lockRunExecutionBuild(ctx, tx, runID, req.BuildID); err != nil {
 		return a, true, err
 	}
 	a, found, err := f.RunExecution(ctx, tx, req.BuildID, req.PlanID)
@@ -97,15 +97,15 @@ func (f *pipelineRunFactory) AdmitRunExecution(ctx context.Context, tx Tx, req R
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO pipeline_run_executions
- (run_id,build_id,plan_id,kind,activation_epoch,node_name,node_uid,execution_id,execution_fence,capture_output)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,nullif($10,''))`, a.RunID, a.BuildID, a.PlanID, a.Kind, a.Epoch, a.NodeName, a.NodeUID, string(a.Identity.ExecutionID), int64(a.Identity.Fence), string(a.Capture.Output))
+ (run_id,build_id,plan_id,kind,node_name,node_uid,execution_id,execution_fence,capture_output)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,nullif($9,''))`, a.RunID, a.BuildID, a.PlanID, a.Kind, a.NodeName, a.NodeUID, string(a.Identity.ExecutionID), int64(a.Identity.Fence), string(a.Capture.Output))
 	return a, true, err
 }
 
 // lockRunExecutionBuild admits an exact execution: the Run continues under its
-// own birth epoch, and the execution is controlled under the Hangar epoch this
-// control plane speaks for now, which must be enabled.
-func lockRunExecutionBuild(ctx context.Context, tx Tx, runID, buildID int, epoch int64) error {
+// own birth epoch, and the output plane that controls the execution must be in
+// service.
+func lockRunExecutionBuild(ctx context.Context, tx Tx, runID, buildID int) error {
 	var teamID int
 	var runEpoch int64
 	if err := tx.QueryRowContext(ctx, `SELECT p.team_id, r.activation_epoch FROM pipeline_runs r JOIN pipelines p ON p.id=r.template_pipeline_id WHERE r.id=$1`, runID).Scan(&teamID, &runEpoch); err != nil {
@@ -117,7 +117,7 @@ func lockRunExecutionBuild(ctx context.Context, tx Tx, runID, buildID int, epoch
 	if err := lockRunContinuation(ctx, tx, runEpoch); err != nil {
 		return err
 	}
-	if err := lockEnabledHangarEpoch(ctx, tx, epoch); err != nil {
+	if err := lockEnabledHangarOutput(ctx, tx); err != nil {
 		return err
 	}
 	run := &pipelineRun{}

@@ -3,21 +3,14 @@ package bootstrap_test
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/hangar/bootstrap"
 )
 
@@ -63,13 +56,11 @@ func inventory() bootstrap.Inventory {
 			{Name: "hangar-key", Kind: bootstrap.KindRandomKey, Key: "hangar.key"},
 			{Name: "store-tls", Kind: bootstrap.KindTLSBundle, CommonName: "store", DNSNames: []string{"concourse-hangar-store.cicd.svc"}},
 			{Name: "store-tokens", Kind: bootstrap.KindStoreTokens},
-			{Name: "control-1", Kind: bootstrap.KindEd25519, Key: "control.key", Ring: bootstrap.ControlRing, Epoch: 1},
 			{Name: "warrant-key", Kind: bootstrap.KindRandomKey, Key: "capability.key"},
 			{Name: "output-server", Kind: bootstrap.KindTLSServer, CA: "output-ca", CommonName: "output", DNSNames: []string{"output-daemon.cicd"}},
 			{Name: "output-client", Kind: bootstrap.KindTLSClient, CA: "output-ca", CommonName: "web"},
 			{Name: "output-ca", Kind: bootstrap.KindCA, CommonName: "output plane"},
 			{Name: "materialize-key", Kind: bootstrap.KindRandomKey, Key: "materialize.key"},
-			{Name: "rings", Kind: bootstrap.KindRing, ActiveEpoch: 1},
 		},
 	}
 }
@@ -96,9 +87,6 @@ func TestAFreshInventoryIsCreatedOnceInDependencyOrder(t *testing.T) {
 	}
 	if position["output-ca"] > position["output-server"] || position["output-ca"] > position["output-client"] {
 		t.Errorf("a leaf was created before its CA: %v", store.created)
-	}
-	if position["rings"] != len(store.created)-1 {
-		t.Errorf("the ring was not created last: %v", store.created)
 	}
 	for name, secret := range store.secrets {
 		if secret.Labels["app.kubernetes.io/managed-by"] != "concourse-hangar-bootstrap" {
@@ -158,11 +146,8 @@ func TestAMalformedSecretRefusesTheRunAndChangesNothing(t *testing.T) {
 		names  []string // replaces the entry's DNS names, when set
 	}{
 		"a short random key": {"hangar-key", func(_ *testing.T, d map[string][]byte) { d["hangar.key"] = d["hangar.key"][:16] }, "holds 16 bytes", nil},
-		"a non-Ed25519 key": {"control-1", func(_ *testing.T, d map[string][]byte) {
-			d["control.key"] = newKeyPEM()
-		}, "not an Ed25519 key", nil},
-		"a repeated token": {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["publisher"] = d["input"] }, "repeats another principal's token", nil},
-		"a short token":    {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["inventory"] = []byte("short") }, "at least 32", nil},
+		"a repeated token":   {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["publisher"] = d["input"] }, "repeats another principal's token", nil},
+		"a short token":      {"store-tokens", func(_ *testing.T, d map[string][]byte) { d["inventory"] = []byte("short") }, "at least 32", nil},
 		"server.json out of step": {"store-tokens", func(_ *testing.T, d map[string][]byte) {
 			d["server.json"] = bytes.Replace(d["server.json"], d["reclaimer"], []byte(strings.Repeat("x", 64)), 1)
 		}, "server.json's \"reclaimer\" token", nil},
@@ -216,80 +201,7 @@ func TestALeafWithoutItsCAIsRefused(t *testing.T) {
 	}
 }
 
-func TestAnEarlierEpochsKeyIsReadAndNeverCreated(t *testing.T) {
-	inv := inventory()
-	inv.Entries = append(inv.Entries, bootstrap.Entry{Name: "control-0", Kind: bootstrap.KindEd25519, Key: "control.key",
-		Ring: bootstrap.ControlRing, Epoch: 1, Required: true})
-	for i := range inv.Entries {
-		if inv.Entries[i].Name == "control-1" {
-			inv.Entries[i].Epoch = 2
-		}
-		if inv.Entries[i].Kind == bootstrap.KindRing {
-			inv.Entries[i].ActiveEpoch = 2
-		}
-	}
-	store := newMemoryStore()
-	_, err := reconcile(t, inv, store)
-	if !errors.Is(err, bootstrap.ErrRefused) || !strings.Contains(err.Error(), `"control-0": is absent`) {
-		t.Fatalf("got %v, want a refusal naming the absent earlier key", err)
-	}
-	if len(store.secrets) != 0 {
-		t.Errorf("a refused run created %v", store.created)
-	}
-}
-
-// The ring holds the control ring and nothing else: web mounts one file from it.
-func TestTheRingComposesOnlyTheControlRing(t *testing.T) {
-	store := newMemoryStore()
-	if _, err := reconcile(t, inventory(), store); err != nil {
-		t.Fatal(err)
-	}
-	files := slices.Sorted(maps.Keys(store.secrets["rings"].Data))
-	if !slices.Equal(files, []string{"control-keys.json"}) {
-		t.Errorf("the ring holds %v, want only control-keys.json", files)
-	}
-}
-
-// A ring created before its composition shrank keeps the file it no longer
-// composes. The bootstrap never changes a Secret, so the next run checks the
-// files it composes and leaves the extra one alone rather than refusing.
-func TestAnExistingRingWithAFileItNoLongerComposesIsKept(t *testing.T) {
-	store := newMemoryStore()
-	if _, err := reconcile(t, inventory(), store); err != nil {
-		t.Fatal(err)
-	}
-	store.secrets["rings"].Data["retired-keys.json"] = []byte(`{"keys":[]}`)
-	before := store.snapshot()
-	store.created = nil
-	if _, err := reconcile(t, inventory(), store); err != nil {
-		t.Fatalf("an existing ring with an extra file was refused: %v", err)
-	}
-	if len(store.created) != 0 || !equalSnapshots(before, store.snapshot()) {
-		t.Errorf("the run changed the existing ring: created %v", store.created)
-	}
-}
-
-// The control ring is what web verifies node statements with; it must load
-// through web's own loader after a second run.
-func TestTheControlRingLoadsThroughWebsLoaderAfterASecondRun(t *testing.T) {
-	store := newMemoryStore()
-	if _, err := reconcile(t, inventory(), store); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reconcile(t, inventory(), store); err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	controlPath := filepath.Join(dir, "control-keys.json")
-	if err := os.WriteFile(controlPath, store.secrets["rings"].Data["control-keys.json"], 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := hangaroutput.LoadControlKeyRing(controlPath); err != nil {
-		t.Errorf("web's loader refused the control ring: %v", err)
-	}
-}
-
-func TestNoPrivateValueReachesARingOrTheLog(t *testing.T) {
+func TestNoPrivateValueReachesTheLog(t *testing.T) {
 	store := newMemoryStore()
 	logged, err := reconcile(t, inventory(), store)
 	if err != nil {
@@ -307,11 +219,7 @@ func TestNoPrivateValueReachesARingOrTheLog(t *testing.T) {
 			fmt.Fprintf(&log, "%s=%s\n", key, value)
 		}
 	}
-	rings := string(store.secrets["rings"].Data["control-keys.json"])
 	for name, secret := range store.secrets {
-		if name == "rings" {
-			continue
-		}
 		for key, value := range secret.Data {
 			if key == "ca.crt" || key == "tls.crt" {
 				continue // public certificates may be logged
@@ -320,25 +228,13 @@ func TestNoPrivateValueReachesARingOrTheLog(t *testing.T) {
 				if len(form) >= 16 && strings.Contains(log.String(), form) {
 					t.Errorf("the log holds %s/%s", name, key)
 				}
-				if len(form) >= 16 && strings.Contains(rings, form) {
-					t.Errorf("a ring holds %s/%s", name, key)
-				}
 			}
 		}
 	}
 }
 
-func parseEd25519(t *testing.T, keyPEM []byte) ed25519.PrivateKey {
-	t.Helper()
-	block, _ := pem.Decode(keyPEM)
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key.(ed25519.PrivateKey)
-}
-
-// newKeyPEM returns a PKCS#8 key that is not Ed25519: a generated CA's key.
+// newKeyPEM returns a PKCS#8 key that belongs to nothing in the inventory: a
+// generated CA's key.
 func newKeyPEM() []byte {
 	store := newMemoryStore()
 	_ = bootstrap.Reconcile(context.Background(), bootstrap.Inventory{Entries: []bootstrap.Entry{{Name: "ca", Kind: bootstrap.KindCA, CommonName: "x"}}}, store, nil)

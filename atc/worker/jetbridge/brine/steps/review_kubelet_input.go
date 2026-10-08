@@ -3,19 +3,16 @@ package steps
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 )
 
@@ -24,7 +21,7 @@ import (
 // change the mounted tree; a Pod spec's readOnly bit alone is not this proof.
 func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor jetbridge.PodExecutor, rec *brine.Recorder) error {
 	previousGate := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 	defer func() { atc.PipelineRunActivationEpoch = previousGate }()
 	jdb := in.Start.DB
 	factory := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory)
@@ -52,14 +49,14 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		return err
 	}
 	admitter := runs.NewAdmitter(jdb.Conn, factory, jdb.TeamFactory, display, nil)
-	admitter.SetOutputEpoch(int64(hangarEpoch))
+	admitter.SetOutputPlane(true)
 	authority, err := runinput.NewAuthority(bytes.Repeat([]byte{0x61}, 32), time.Now)
 	if err != nil {
 		return err
 	}
 	admitter.SetSealedInputAuthority(authority)
-	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
-		publisher, uid, err := source.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
+	admitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context) (runs.InputUploadNode, error) {
+		publisher, uid, err := source.ForInputUpload(ctx)
 		return runs.InputUploadNode{UID: uid, Publisher: publisher}, err
 	}})
 	archive, err := durableTarOfOneFile("manifest.json", "sealed review input")
@@ -68,7 +65,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 	}
 	ref := runs.TemplateRef{Team: team.Name(), Pipeline: template.PipelineRef()}
 	principal := invocationPrincipal("owner")
-	input, err := admitter.UploadInput(ctx, ref, principal, "change", int64(hangarEpoch), bytes.NewReader(archive))
+	input, err := admitter.UploadInput(ctx, ref, principal, "change", bytes.NewReader(archive))
 	if err != nil {
 		return err
 	}
@@ -77,7 +74,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		return err
 	}
 	defer tx.Rollback()
-	run, _, err := admitter.AdmitVersionedRun(ctx, tx, runs.Admission{Template: ref, Principal: principal, ContractKey: "live-read-only", Inputs: map[string]atc.RunInputSource{"change": input}}, int64(hangarEpoch))
+	run, _, err := admitter.AdmitVersionedRun(ctx, tx, runs.Admission{Template: ref, Principal: principal, ContractKey: "live-read-only", Inputs: map[string]atc.RunInputSource{"change": input}}, int64(runActivationEpoch))
 	if err != nil {
 		return err
 	}
@@ -88,8 +85,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 	if err = jdb.Conn.QueryRow(`SELECT id,pipeline_id FROM builds WHERE pipeline_run_id=$1 AND run_job_name='read'`, run.ID).Scan(&buildID, &pipelineID); err != nil {
 		return err
 	}
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-	starter := &runs.ExecutionStarter{Conn: jdb.Conn, Factory: factory, Source: source, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys}
+	starter := &runs.ExecutionStarter{Conn: jdb.Conn, Factory: factory, Source: source}
 	starter.SetInputReadMinter(signer)
 	plan := atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, Config: task.Config}
 	spec := runtime.ContainerSpec{TeamID: team.ID(), Type: db.ContainerTypeTask, Dir: "/workspace", ImageSpec: runtime.ImageSpec{ImageURL: "busybox:1.37"}, Inputs: []runtime.Input{{RunInput: "change", DestinationPath: "/workspace/source"}}}
@@ -103,7 +99,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 	}
 	worker := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
 		Executor:          executor,
-		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter),
 		ExecutionPreparer: starter,
 	})
 	metadata := db.ContainerMetadata{BuildID: buildID, PipelineID: pipelineID, Type: db.ContainerTypeTask}

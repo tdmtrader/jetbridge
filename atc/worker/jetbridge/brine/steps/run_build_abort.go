@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -158,7 +156,7 @@ func exerciseAbortBesideLiveExecution(ctx context.Context, in RunOutputRuntime, 
 	if after != before {
 		return fmt.Errorf("closing another build changed the live execution's durable facts:\n before %s\n after  %s", before, after)
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	classified, err := client.Classify(ctx, live.admission.Identity)
 	if err != nil {
 		return err
@@ -432,15 +430,13 @@ func newAbortHarness(in RunOutputRuntime, name, workspace string) (*abortHarness
 	}
 	h := &abortHarness{in: in, config: in.Config, factory: db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory), workspace: workspace}
 	h.config.OutputPlaneEnabled = true
-	h.config.OutputActivationEpoch = int64(hangarEpoch)
 	executor := runWitnessExecutor{localExecutor: localExecutor{client: in.Client, supervisorRoot: workspace}, conn: in.Start.DB.Conn}
 	// Recovery reads the interrupted command's exit from its Pod's journal.
 	h.in.OutcomeReader = executor.localExecutor
-	keys := closureControlKeys(in)
 	h.worker = jetbridge.NewWorker(row, in.Client, h.config, jetbridge.WorkerDeps{
 		Executor:          executor,
-		OutputControls:    jetbridge.NewOutputControls(h.config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
-		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: h.factory, Source: jetbridge.NewOutputSource(in.Client, h.config, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys},
+		OutputControls:    jetbridge.NewOutputControls(h.config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter),
+		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: h.factory, Source: jetbridge.NewOutputSource(in.Client, h.config, in.Start.Daemon.Minter)},
 	})
 	return h, nil
 }
@@ -633,14 +629,14 @@ func buildOutcome(ctx context.Context, in RunOutputRuntime, build db.Build) (boo
 }
 
 // checkExecutionClosedByNode proves the execution was closed on the node's
-// signed outcome for the exact command, never invented.
+// witnessed outcome for the exact command, never invented.
 func checkExecutionClosedByNode(ctx context.Context, in RunOutputRuntime, a db.RunExecutionAdmission) error {
 	var classification string
 	if err := in.Start.DB.Conn.QueryRowContext(ctx, `SELECT classification FROM pipeline_run_execution_closures WHERE execution_id=$1 AND execution_fence=$2`,
 		string(a.Identity.ExecutionID), int64(a.Identity.Fence)).Scan(&classification); err != nil {
 		return fmt.Errorf("the execution was not closed: %w", err)
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	classified, err := client.Classify(ctx, a.Identity)
 	if err != nil {
 		return err
@@ -712,10 +708,6 @@ func executionSubject(id executioncontrol.Identity) string {
 	return fmt.Sprintf("%s/%d", id.ExecutionID, id.Fence)
 }
 
-func closureControlKeys(in RunOutputRuntime) hangaroutput.ControlKeyRing {
-	return hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-}
-
 // buildClosureWorker is the production cancellation worker over the given
 // node source.
 func buildClosureWorker(in RunOutputRuntime, source runs.CancellationSourcePlane, owner string) runs.CancellationWorker {
@@ -727,7 +719,7 @@ func buildClosureWorker(in RunOutputRuntime, source runs.CancellationSourcePlane
 // Capture cancellation is the finality's, and makes no node call.
 func cancellationWorkerOver(in RunOutputRuntime, source runs.CancellationSourcePlane, owner string) runs.CancellationWorker {
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
-	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: source, Verifier: closureControlKeys(in)}
+	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: source}
 	return runs.CancellationWorker{Conn: in.Start.DB.Conn, Factory: factory, OwnerID: owner,
 		Actions: runs.CancellationActionSet{factory, executions, runs.CancellationActionFunc(factory.ExecuteCancellationFinality)}}
 }
@@ -738,7 +730,7 @@ func cancellationWorkerOver(in RunOutputRuntime, source runs.CancellationSourceP
 // and terminal operations are left to a worker that carries the finality.
 func cancellationSourceWorker(in RunOutputRuntime) runs.CancellationWorker {
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
-	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Verifier: closureControlKeys(in)}
+	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source()}
 	captures := runs.CancellationActionFunc(func(ctx context.Context, lease db.RunCancellationLease, op db.RunCancellationOperation) (db.RunCancellationDebt, error) {
 		switch op.Kind {
 		case db.CancelCapture:
@@ -789,19 +781,19 @@ func (s recordingSource) called(execution executioncontrol.ExecutionID, call str
 	return slices.Contains(s.callsFor(execution), call)
 }
 
-func (s recordingSource) ClassifyExecution(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (executioncontrol.ClassifyResult, error) {
+func (s recordingSource) ClassifyExecution(ctx context.Context, name, uid string, id executioncontrol.Identity) (executioncontrol.ClassifyResult, error) {
 	s.note(id.ExecutionID, "classify")
-	return s.OutputSource.ClassifyExecution(ctx, name, uid, epoch, id)
+	return s.OutputSource.ClassifyExecution(ctx, name, uid, id)
 }
 
-func (s recordingSource) ExecutionStart(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
+func (s recordingSource) ExecutionStart(ctx context.Context, name, uid string, id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
 	s.note(id.ExecutionID, "start")
-	return s.OutputSource.ExecutionStart(ctx, name, uid, epoch, id)
+	return s.OutputSource.ExecutionStart(ctx, name, uid, id)
 }
 
-func (s recordingSource) StopExecution(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
+func (s recordingSource) StopExecution(ctx context.Context, name, uid string, id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
 	s.note(id.ExecutionID, "stop")
-	return s.OutputSource.StopExecution(ctx, name, uid, epoch, id)
+	return s.OutputSource.StopExecution(ctx, name, uid, id)
 }
 
 func (s recordingSource) InterruptExecution(ctx context.Context, node string, start executioncontrol.Acknowledgement) error {
@@ -814,7 +806,7 @@ func (s recordingSource) RecoverExecutionOutcome(ctx context.Context, node strin
 	return s.OutputSource.RecoverExecutionOutcome(ctx, node, start)
 }
 
-func (s recordingSource) BaseRuntimeControl(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (*runtime.ExecutionControl, error) {
+func (s recordingSource) BaseRuntimeControl(ctx context.Context, name, uid string, id executioncontrol.Identity) (*runtime.ExecutionControl, error) {
 	s.note(id.ExecutionID, "reconcile")
-	return s.OutputSource.BaseRuntimeControl(ctx, name, uid, epoch, id)
+	return s.OutputSource.BaseRuntimeControl(ctx, name, uid, id)
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaim"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
@@ -52,11 +51,10 @@ var _ = Describe("the web's reclaim pass", func() {
 		Expect(err).NotTo(HaveOccurred())
 		attrs := store.Seed(namespace.Bucket(), key, []byte("published tree"),
 			output.ObjectMarker{
-				Scope:           "team-a",
-				Digest:          digest,
-				ReservationID:   output.ReservationID(uuid.NewString()),
-				ActivationEpoch: 1,
-				CreatedAt:       output.NewTimestamp(time.Now().UTC()),
+				Scope:         "team-a",
+				Digest:        digest,
+				ReservationID: output.ReservationID(uuid.NewString()),
+				CreatedAt:     output.NewTimestamp(time.Now().UTC()),
 			}.Metadata())
 
 		capture := hangarPublishAt(ctx, repository, digest, attrs.Generation,
@@ -156,7 +154,6 @@ var _ = Describe("the web's reclaim pass", func() {
 			Bucket:           "output-bucket",
 			DeploymentPrefix: "deployments/blue",
 			TenantID:         "tenant-a",
-			ActivationEpoch:  executioncontrol.ActivationEpoch(1),
 		})
 		Expect(err).NotTo(HaveOccurred())
 

@@ -19,14 +19,13 @@ import (
 // still replays it.
 var _ = Describe("a Hangar output plane drain", func() {
 	const (
-		runEpoch    int64 = 5
-		hangarEpoch       = 1
+		runEpoch int64 = 5
 	)
 
 	var (
 		ctx        context.Context
 		resultsRef runs.TemplateRef
-		portAt     func(hangarEpoch int64) runs.Admitter
+		portAt     func(outputPlane bool) runs.Admitter
 	)
 
 	BeforeEach(func() {
@@ -49,9 +48,9 @@ var _ = Describe("a Hangar output plane drain", func() {
 		displayUserIds, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
 		Expect(err).NotTo(HaveOccurred())
 		// A web node with an output plane configured.
-		portAt = func(hangarEpoch int64) runs.Admitter {
+		portAt = func(outputPlane bool) runs.Admitter {
 			port := runs.NewAdmitter(dbConn, runFactory, teamFactory, displayUserIds, nil)
-			port.SetOutputEpoch(hangarEpoch)
+			port.SetOutputPlane(outputPlane)
 			return port
 		}
 	})
@@ -87,22 +86,22 @@ var _ = Describe("a Hangar output plane drain", func() {
 
 	It("refuses new admission, and still finalizes a running Run and replays its invocation key, once the plane is out of service", func() {
 		inService(true)
-		first, replayed, err := admit(portAt(hangarEpoch), "drain-key")
+		first, replayed, err := admit(portAt(true), "drain-key")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed).To(BeFalse())
 		var born int64
 		Expect(dbConn.QueryRow(`SELECT activation_epoch FROM pipeline_runs WHERE id=$1`, first.ID).Scan(&born)).To(Succeed())
-		Expect(born).To(Equal(runEpoch), "a Run is born under the Run contract's epoch, not the Hangar epoch")
+		Expect(born).To(Equal(runEpoch), "a Run is born under the Run contract's epoch")
 
 		inService(false)
 
 		// Admission of a result template needs the output plane in service:
 		// out of service it is refused.
-		_, _, err = admit(portAt(hangarEpoch), "fresh-while-draining")
+		_, _, err = admit(portAt(true), "fresh-while-draining")
 		Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
 
 		// The key still replays the running Run.
-		again, replayed, err := admit(portAt(hangarEpoch), "drain-key")
+		again, replayed, err := admit(portAt(true), "drain-key")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed).To(BeTrue())
 		Expect(again.ID).To(Equal(first.ID))
@@ -120,14 +119,14 @@ var _ = Describe("a Hangar output plane drain", func() {
 		Expect(completed).To(BeTrue())
 
 		// And the key still replays the finished Run.
-		again, replayed, err = admit(portAt(hangarEpoch), "drain-key")
+		again, replayed, err = admit(portAt(true), "drain-key")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed).To(BeTrue())
 		Expect(again.ID).To(Equal(first.ID))
 
 		// Back in service, a fresh Run is admitted.
 		inService(true)
-		fresh, replayed, err := admit(portAt(hangarEpoch), "fresh-in-service")
+		fresh, replayed, err := admit(portAt(true), "fresh-in-service")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed).To(BeFalse())
 		Expect(fresh.ID).NotTo(Equal(first.ID))

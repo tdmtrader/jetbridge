@@ -9,9 +9,9 @@
 //	DestructiveCleanupEligible   may its remains be deleted yet
 //
 // It has one consumer, the pipeline Run. Durable output capture extends it in
-// hangar/output: the extension references the same Identity and
-// ActivationEpoch rather than declaring its own, so an execution has one
-// truth however many gates hang off it. A base acknowledgement carries no
+// hangar/output: the extension references the same Identity rather than
+// declaring its own, so an execution has one truth however many gates hang
+// off it. A base acknowledgement carries no
 // capture, source-hold, handle-generation or output field; those live only on
 // the extension's own acknowledgement.
 //
@@ -94,13 +94,6 @@ func (id ExecutionID) Validate() error { return validateUUID("execution id", str
 // advances it; a holder of an older fence may observe but never act.
 type Fence uint64
 
-// ActivationEpoch is the control-key generation an execution was admitted
-// under: which capability key and node control key speak for it. One
-// generation covers both the base facet and, when enabled, the capture facet;
-// there is never a second one for the same execution. It does not decide
-// whether the output plane is in service; the web's hangar_enabled row does.
-type ActivationEpoch uint64
-
 // LedgerSequence orders the records on one node's control ledger. It is
 // meaningful only alongside the NodeUID that produced it.
 type LedgerSequence uint64
@@ -153,9 +146,8 @@ func (identity Identity) Validate() error {
 type Envelope struct {
 	ProtocolVersion string `json:"protocol_version"`
 	Identity
-	ActivationEpoch ActivationEpoch   `json:"activation_epoch"`
-	NodeUID         NodeUID           `json:"node_uid"`
-	Capability      ControlCapability `json:"capability"`
+	NodeUID    NodeUID           `json:"node_uid"`
+	Capability ControlCapability `json:"capability"`
 }
 
 func (envelope Envelope) Validate() error {
@@ -164,9 +156,6 @@ func (envelope Envelope) Validate() error {
 	}
 	if err := envelope.Identity.Validate(); err != nil {
 		return err
-	}
-	if envelope.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: activation epoch is zero", ErrIncomplete)
 	}
 	if envelope.NodeUID == "" {
 		return fmt.Errorf("%w: node uid is empty", ErrIncomplete)

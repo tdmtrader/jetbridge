@@ -70,13 +70,12 @@ func pending(phrase, phase, needs string) error {
 }
 
 // captureAdmission is what the control plane knows about a capture before its
-// producing Pod exists: the exact execution being extended, the activation
-// epoch it is admitted under, the one declared output, and the deadline. It
+// producing Pod exists: the exact execution being extended, the one declared
+// output, and the deadline. It
 // is the fixture's spelling of what a pending capture row carries; nothing
 // about success, scope or digest is knowable here, and the type says so.
 type captureAdmission struct {
 	Execution       executioncontrol.Identity
-	ActivationEpoch executioncontrol.ActivationEpoch
 	Output          hangaroutput.OutputName
 	CaptureDeadline time.Time
 }
@@ -90,7 +89,6 @@ func newCaptureAdmission(output hangaroutput.OutputName) captureAdmission {
 			ExecutionID: executioncontrol.ExecutionID(freshUUID()),
 			Fence:       1,
 		},
-		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
 		Output:          output,
 		CaptureDeadline: time.Now().UTC().Add(24 * time.Hour),
 	}
@@ -136,11 +134,9 @@ type CaptureDraft struct {
 	// start.
 	Admission captureAdmission
 
-	// ReadyFacets and ControlEpochMatches are the scheduling refinements. A
-	// label is not authority — the matching control epoch is — so they are two
-	// fields and not one.
-	ReadyFacets         []string
-	ControlEpochMatches bool
+	// ReadyFacets are the scheduling refinements: the labels the rebuilt
+	// worker's nodes carry. A label is a hint and never authority.
+	ReadyFacets []string
 
 	// PausePodTerminal is the regression the ordinary path must keep: a
 	// terminal pause pod is recreated for an ordinary source and refused for a

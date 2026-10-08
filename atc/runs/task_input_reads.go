@@ -14,14 +14,13 @@ import (
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/google/uuid"
 )
 
 type taskInputSource interface {
 	ManagedInputTimeout(int) time.Duration
-	StatTaskInput(context.Context, string, string, executioncontrol.ActivationEpoch, hangar.TreeRef) (output.PublishedObject, error)
+	StatTaskInput(context.Context, string, string, hangar.TreeRef) (output.PublishedObject, error)
 }
 
 // SetInputReadMinter supplies the control plane's managed-read signing authority
@@ -53,7 +52,7 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 	var bindings map[int]atc.RunInputBinding
 	err := s.transaction(ctx, func(tx db.Tx) error {
 		var err error
-		selected, err = db.LoadRunTask(ctx, tx, buildID, spec.RunTaskID, int64(s.Epoch))
+		selected, err = db.LoadRunTask(ctx, tx, buildID, spec.RunTaskID)
 		if err != nil {
 			return err
 		}
@@ -86,9 +85,9 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 			continue
 		}
 		admission := hangaroutput.ReadAdmission{
-			Transactor: taskInputReadTransaction{ctx: ctx, conn: s.Conn, buildID: buildID, planID: planID, handle: handle, spec: spec, index: i, binding: binding, epoch: int64(s.Epoch)},
+			Transactor: taskInputReadTransaction{ctx: ctx, conn: s.Conn, buildID: buildID, planID: planID, handle: handle, spec: spec, index: i, binding: binding},
 			Claims:     db.NewHangarOutputRepository(prefix),
-			Stat:       taskInputStat{source: source, name: node.Name, uid: string(node.UID), epoch: s.Epoch},
+			Stat:       taskInputStat{source: source, name: node.Name, uid: string(node.UID)},
 			Minter:     s.inputReadMinter, Clock: output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 			Absences: &db.HangarAbsences{Conn: s.Conn},
 		}
@@ -197,11 +196,10 @@ func releaseInputRead(ctx context.Context, conn db.DbConn, claims *db.HangarOutp
 type taskInputStat struct {
 	source    taskInputSource
 	name, uid string
-	epoch     executioncontrol.ActivationEpoch
 }
 
 func (s taskInputStat) StatExactObject(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error) {
-	return s.source.StatTaskInput(ctx, s.name, s.uid, s.epoch, ref)
+	return s.source.StatTaskInput(ctx, s.name, s.uid, ref)
 }
 
 type taskInputReadTransaction struct {
@@ -213,7 +211,6 @@ type taskInputReadTransaction struct {
 	spec    runtime.ContainerSpec
 	index   int
 	binding atc.RunInputBinding
-	epoch   int64
 }
 
 func (t taskInputReadTransaction) Begin() (hangaroutput.Transaction, error) {
@@ -221,7 +218,7 @@ func (t taskInputReadTransaction) Begin() (hangaroutput.Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	selected, err := db.LoadRunTask(t.ctx, tx, t.buildID, t.spec.RunTaskID, t.epoch)
+	selected, err := db.LoadRunTask(t.ctx, tx, t.buildID, t.spec.RunTaskID)
 	if err == nil {
 		err = lockInputContainer(t.ctx, tx, t.handle, t.buildID, t.planID)
 	}

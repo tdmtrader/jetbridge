@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"k8s.io/client-go/kubernetes"
 )
@@ -131,8 +130,8 @@ func configureRunDownload(in RunResultPublication, auth *AuthFixture, rec *brine
 // serveRunResults has the authenticated API read Run results through an
 // already configured read plane.
 func serveRunResults(auth *AuthFixture, conn db.DbConn, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner) error {
-	reader := &runs.ResultReader{Conn: conn, Minter: signer, Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
-		return source.ForResultRead(ctx, epoch)
+	reader := &runs.ResultReader{Conn: conn, Minter: signer, Source: func(ctx context.Context) (runs.ResultSource, error) {
+		return source.ForResultRead(ctx)
 	}}
 	auth.mu.Lock()
 	defer auth.mu.Unlock()
@@ -171,7 +170,7 @@ func configureRunReadPlaneForClient(in RunResultPublication, rec *brine.Recorder
 	if err = outputPlaneConfig(&config, daemon.Output.URL, daemon.CertDir); err != nil {
 		return nil, nil, jetbridge.Config{}, err
 	}
-	source := jetbridge.NewOutputSource(client, config, daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	source := jetbridge.NewOutputSource(client, config, daemon.Minter)
 
 	return source, signer, config, nil
 }

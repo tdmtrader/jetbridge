@@ -19,16 +19,16 @@ import (
 // through that same transaction boundary.
 type Admitter interface {
 	SetCredentialHandoffConfig(CredentialHandoffConfig)
-	InspectCredentialHandoff(context.Context, TemplateRef, Principal, int, string, int64) (atc.RunCredentialSession, error)
-	HandoffCredentials(context.Context, TemplateRef, Principal, int, string, int64, io.ReadCloser) (atc.RunCredentialSession, error)
+	InspectCredentialHandoff(context.Context, TemplateRef, Principal, int, string) (atc.RunCredentialSession, error)
+	HandoffCredentials(context.Context, TemplateRef, Principal, int, string, io.ReadCloser) (atc.RunCredentialSession, error)
 	SetInputUploadConfig(InputUploadConfig)
-	UploadInput(context.Context, TemplateRef, Principal, string, int64, io.Reader) (atc.RunInputSource, error)
+	UploadInput(context.Context, TemplateRef, Principal, string, io.Reader) (atc.RunInputSource, error)
 	// SetSealedInputAuthority is startup wiring; it supplies no public mint route.
 	SetSealedInputAuthority(*runinput.Authority)
-	// SetOutputEpoch is startup wiring: the Hangar output epoch this control
-	// plane speaks for, or zero without an output plane. A Run that declares
-	// results or binds inputs is admitted only while it is enabled.
-	SetOutputEpoch(int64)
+	// SetOutputPlane is startup wiring: whether this control plane has a
+	// Hangar output plane. A Run that declares results or binds inputs is
+	// admitted only while it is enabled.
+	SetOutputPlane(bool)
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
 
@@ -49,7 +49,7 @@ type admitter struct {
 	displayUserIds    atc.DisplayUserIdGenerator
 	customRoles       map[string]string
 	sealedInputs      *runinput.Authority
-	outputEpoch       int64
+	outputPlane       bool
 	inputUploads      InputUploadConfig
 	credentialHandoff CredentialHandoffConfig
 }
@@ -83,7 +83,7 @@ func NewAdmitter(
 
 func (a *admitter) SetSealedInputAuthority(authority *runinput.Authority) { a.sealedInputs = authority }
 
-func (a *admitter) SetOutputEpoch(epoch int64) { a.outputEpoch = epoch }
+func (a *admitter) SetOutputPlane(enabled bool) { a.outputPlane = enabled }
 
 // Begin opens the transaction admission runs in.
 //
@@ -283,7 +283,7 @@ func refusal(err error) error {
 	case errors.Is(err, db.ErrRunCauseUnavailable):
 		return ErrRunCauseUnavailable
 	case errors.Is(err, atc.ErrRunResultsUnavailable):
-		// The durable activation marker or the Hangar epoch does not admit.
+		// The durable activation marker or the Hangar output plane does not admit.
 		return ErrVersionedAdmissionUnavailable
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):
 		return ErrNotATemplate

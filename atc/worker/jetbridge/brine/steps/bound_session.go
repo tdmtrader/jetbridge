@@ -26,7 +26,7 @@ func BoundSessionDefinitions() []brine.StepDefinition {
 func exerciseBoundSession(in RunOutputRuntime, mode string, rec *brine.Recorder) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	source := jetbridge.NewOutputSource(in.Client, in.Config, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	source := jetbridge.NewOutputSource(in.Client, in.Config, in.Start.Daemon.Minter)
 	source.SetExecutor(localExecutor{client: in.Client})
 	transport, ok := any(source).(interface {
 		ExecBoundSession(context.Context, string, executioncontrol.Acknowledgement, time.Duration, []string, io.Reader, io.Writer) error
@@ -82,10 +82,10 @@ func exerciseBoundSession(in RunOutputRuntime, mode string, rec *brine.Recorder)
 		return err
 	}
 	id := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(freshUUID()), Fence: 1}
-	if _, err := source.BaseRuntimeControl(ctx, in.Node.Name, string(in.Node.UID), executioncontrol.ActivationEpoch(hangarEpoch), id); err != nil {
+	if _, err := source.BaseRuntimeControl(ctx, in.Node.Name, string(in.Node.UID), id); err != nil {
 		return err
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	start, err := client.RecordStart(ctx, id, executioncontrol.PodUID(pod.UID), "bound-session-process")
 	if err != nil {
 		return err

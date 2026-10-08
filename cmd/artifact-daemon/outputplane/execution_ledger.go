@@ -26,10 +26,12 @@ package outputplane
 //	Outcome  written and made durable BEFORE the result is exposed to a caller,
 //	         so that a lost response is recovered rather than re-executed
 //
-// Every acknowledgement is signed on the way out and stored as signed. Replay
-// returns the stored bytes rather than signing again: a second signature over
-// the same facts is a second statement, and a caller that received two could
-// not tell which one the control plane's records agree with.
+// Every acknowledgement is stored exactly as it was answered, and it is the
+// node's because it was answered over the mTLS channel, not because anything
+// signed it. Replay returns the stored bytes rather than minting again: a
+// second statement over the same facts is a second statement, and a caller
+// that received two could not tell which one the control plane's records agree
+// with.
 
 import (
 	"errors"
@@ -52,13 +54,12 @@ import (
 // monotonic sequence that a log would give for free is carried explicitly
 // instead, and recovered at open as the maximum over every record.
 type executionRecord struct {
-	Identity        executioncontrol.Identity        `json:"identity"`
-	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
-	NodeUID         executioncontrol.NodeUID         `json:"node_uid"`
-	AdmittedAt      executioncontrol.Timestamp       `json:"admitted_at"`
+	Identity   executioncontrol.Identity  `json:"identity"`
+	NodeUID    executioncontrol.NodeUID   `json:"node_uid"`
+	AdmittedAt executioncontrol.Timestamp `json:"admitted_at"`
 
-	// Start and Outcome are the signed statements themselves, stored exactly as
-	// they were returned. A replay hands back these bytes.
+	// Start and Outcome are the statements themselves, stored exactly as they
+	// were answered. A replay hands back these bytes.
 	Start   *executioncontrol.Acknowledgement `json:"start,omitempty"`
 	Outcome *executioncontrol.Acknowledgement `json:"outcome,omitempty"`
 
@@ -86,11 +87,9 @@ type executionRecord struct {
 // thing: these operations are per-execution and rare, and a lock per identity
 // would buy contention nobody has and a lock order nobody needs.
 type ExecutionLedger struct {
-	store  *controlStore
-	node   executioncontrol.NodeUID
-	epoch  executioncontrol.ActivationEpoch
-	signer *executioncontrol.AcknowledgementSigner
-	clock  func() time.Time
+	store *controlStore
+	node  executioncontrol.NodeUID
+	clock func() time.Time
 
 	mu       sync.Mutex
 	sequence executioncontrol.LedgerSequence
@@ -101,26 +100,18 @@ type ExecutionLedger struct {
 const executionRecordPrefix = "execution-"
 
 func OpenExecutionLedger(store *controlStore, node executioncontrol.NodeUID,
-	epoch executioncontrol.ActivationEpoch, signer *executioncontrol.AcknowledgementSigner,
 	clock func() time.Time) (*ExecutionLedger, error) {
 	if store == nil {
 		return nil, fmt.Errorf("%w: the execution ledger has no control store", output.ErrIncomplete)
 	}
-	if signer == nil {
-		return nil, fmt.Errorf("%w: the execution ledger has no signing key; an unsigned "+
-			"acknowledgement is not proof", output.ErrIncomplete)
-	}
 	if node == "" {
 		return nil, fmt.Errorf("%w: the execution ledger names no node", output.ErrIncomplete)
-	}
-	if epoch == 0 {
-		return nil, fmt.Errorf("%w: the execution ledger names no activation epoch", output.ErrIncomplete)
 	}
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 
-	ledger := &ExecutionLedger{store: store, node: node, epoch: epoch, signer: signer, clock: clock}
+	ledger := &ExecutionLedger{store: store, node: node, clock: clock}
 
 	// The sequence resumes above every sequence this node ever issued. Two
 	// statements from one node must always be orderable, and a sequence that
@@ -184,7 +175,7 @@ func (ledger *ExecutionLedger) save(record executionRecord) error {
 }
 
 // admittedRecord is the precondition every acting operation shares: the
-// execution is known here, at this fence, under this epoch.
+// execution is known here, at this fence.
 //
 // The fence rule is the one worth stating. A holder of an older fence may
 // OBSERVE -- Classify and Observe take no fence check, because reading the
@@ -225,10 +216,6 @@ func (ledger *ExecutionLedger) Admit(envelope executioncontrol.Envelope) error {
 	if err := envelope.Validate(); err != nil {
 		return err
 	}
-	if envelope.ActivationEpoch != ledger.epoch {
-		return fmt.Errorf("%w: the envelope names control-key generation %d and this node is configured for %d",
-			output.ErrConflict, envelope.ActivationEpoch, ledger.epoch)
-	}
 	if envelope.NodeUID != ledger.node {
 		return fmt.Errorf("%w: the envelope names node %s and this is %s",
 			output.ErrUnauthorized, envelope.NodeUID, ledger.node)
@@ -263,35 +250,40 @@ func (ledger *ExecutionLedger) Admit(envelope executioncontrol.Envelope) error {
 	ledger.sequence++
 
 	return ledger.save(executionRecord{
-		Identity:        envelope.Identity,
-		ActivationEpoch: envelope.ActivationEpoch,
-		NodeUID:         envelope.NodeUID,
-		AdmittedAt:      executioncontrol.NewTimestamp(ledger.clock()),
-		HighWater:       ledger.sequence,
+		Identity:   envelope.Identity,
+		NodeUID:    envelope.NodeUID,
+		AdmittedAt: executioncontrol.NewTimestamp(ledger.clock()),
+		HighWater:  ledger.sequence,
 	})
 }
 
-// sign mints one statement. The sequence is taken under the ledger's lock and
-// is never reused.
-func (ledger *ExecutionLedger) sign(record *executionRecord,
+// acknowledge mints one statement. The sequence is taken under the ledger's
+// lock and is never reused. The statement is validated before it is recorded:
+// one that contradicts itself must not become a durable statement, and the
+// mTLS channel it is answered over is what makes it the node's.
+func (ledger *ExecutionLedger) acknowledge(record *executionRecord,
 	kind executioncontrol.AcknowledgementKind, pod executioncontrol.PodUID,
 	process executioncontrol.ProcessIdentity,
 	outcome *executioncontrol.ExitOutcome) (executioncontrol.Acknowledgement, error) {
 	ledger.sequence++
 	record.HighWater = ledger.sequence
 
-	return ledger.signer.Sign(executioncontrol.Acknowledgement{
+	ack := executioncontrol.Acknowledgement{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Kind:            kind,
 		Identity:        record.Identity,
-		ActivationEpoch: record.ActivationEpoch,
 		LedgerSequence:  ledger.sequence,
 		NodeUID:         record.NodeUID,
 		PodUID:          pod,
 		ProcessIdentity: process,
 		ObservedAt:      executioncontrol.NewTimestamp(ledger.clock()),
 		Outcome:         outcome,
-	})
+	}
+	if err := ack.Validate(); err != nil {
+		return executioncontrol.Acknowledgement{}, err
+	}
+
+	return ack, nil
 }
 
 // RecordStart is written and made durable before the child process is launched.
@@ -340,7 +332,7 @@ func (ledger *ExecutionLedger) RecordStart(identity executioncontrol.Identity,
 			"%w: execution %s was stopped before its first start", output.ErrConflict, identity.ExecutionID)
 	}
 
-	ack, err := ledger.sign(&record, executioncontrol.AcknowledgementStart, pod, process, nil)
+	ack, err := ledger.acknowledge(&record, executioncontrol.AcknowledgementStart, pod, process, nil)
 	if err != nil {
 		return executioncontrol.Acknowledgement{}, err
 	}
@@ -392,7 +384,7 @@ func (ledger *ExecutionLedger) RecordOutcome(identity executioncontrol.Identity,
 			output.ErrConflict, identity.ExecutionID, existing.Kind, *existing.Outcome, kind, outcome)
 	}
 
-	ack, err := ledger.sign(&record, kind, record.Start.PodUID, record.Start.ProcessIdentity, &outcome)
+	ack, err := ledger.acknowledge(&record, kind, record.Start.PodUID, record.Start.ProcessIdentity, &outcome)
 	if err != nil {
 		return executioncontrol.Acknowledgement{}, err
 	}
@@ -463,7 +455,7 @@ func (ledger *ExecutionLedger) Classify(identity executioncontrol.Identity) (exe
 	return result, result.Validate()
 }
 
-// InspectStart returns the node's signed start exactly as it was stored, or
+// InspectStart returns the node's recorded start exactly as it was stored, or
 // ErrNotFound when none was recorded.
 //
 // Classify carries no acknowledgement for an executing record, and RecordStart
@@ -471,7 +463,7 @@ func (ledger *ExecutionLedger) Classify(identity executioncontrol.Identity) (exe
 // retained a start the node committed -- its database was down when the answer
 // came back -- needs the fact itself to interrupt the command and close the
 // execution, and this node is the only one that has it. It is a read like
-// Classify: no fence check, no admission, nothing signed. It answers after an
+// Classify: no fence check, no admission, nothing minted. It answers after an
 // outcome too; a start is a fact about the process whatever happened next.
 func (ledger *ExecutionLedger) InspectStart(identity executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
 	if err := identity.Validate(); err != nil {

@@ -40,9 +40,10 @@ We collapsed it:
 - **No activation epochs, cohort or attestation.** In service is one row
   the web writes from its configuration and every admission reads FOR
   SHARE, plus node readiness labels; there is no cohort to attest and so no
-  frozen cohort. A control-key generation is still recorded on every
-  lifecycle, claim, read lease, reclaim job, input publication and Run
-  input; its frozen spelling is `activation_epoch`.
+  frozen cohort. This decision originally kept a control-key generation,
+  recorded on every lifecycle, claim, input publication and Run input
+  under the spelling `activation_epoch`; ADR-0010 removed it, with the
+  node control key ring and acknowledgement signing it alone justified.
 - **Reclaim and the orphan sweep run in the web**, under one advisory lock,
   admission excluding pending and publishing captures, claims and live
   read leases, and the sweep marker-gated to this store (bucket, prefix and
@@ -55,6 +56,9 @@ We collapsed it:
 
 ## Consequences
 
+- Amended by ADR-0010 (control-key generation removed): the daemon is
+  trusted over mTLS, so an acknowledgement is its answer on that channel;
+  there is no control key, key ring or generation, and no scope v1.
 - Integrity findings remain the one stop on admission, and a managed read
   that finds a registered generation missing records one.
 - Node daemons hold publisher credentials only; the web holds list and
@@ -69,15 +73,17 @@ We collapsed it:
     its current state, reason and timestamps only.
   - Down migrations past this change are lossy: epochs, receipts, handoff
     history and dead cancellation-queue rows are not reconstructed.
-  - Rotating the control-key generation makes earlier Run results
-    unbindable as Run inputs.
+  - (Amended by ADR-0010.) Rotating the control-key generation made
+    earlier Run results unbindable as Run inputs; with the generation
+    gone, a result binds while its Run is succeeded and its claim is live.
   - Nothing audits registered generations against the store: an object
     lost out of band surfaces only when a read records an absence finding
     or a reclaim delete finds it gone.
   - Output history from the handoff era is refused, not migrated:
     migration 1789793153 stops on a database that still holds any.
-    Published refs under the old scope derivation stay readable; nothing
-    new is written under it.
+    (Amended by ADR-0010.) The old scope derivation, which hashed the
+    control-key generation, is removed with it; a scope is H(domain,
+    tenant, store) and nothing else.
 - ADR-0005's storage contract (create-absent, exact operations, the disk
   store's single owner, operators owning infrastructure policy, integrity
   findings blocking admission) stands; its cohort attestation, receipts and

@@ -65,7 +65,7 @@ func (s *Server) stageInput(w http.ResponseWriter, r *http.Request) {
 	now := nowUTC()
 	stage := output.InputStage{Version: output.InputPublicationVersion,
 		ReservationID: output.ReservationID(uuid.NewString()), NodeUID: s.daemon.nodeUID,
-		ActivationEpoch: s.daemon.epoch, Scope: s.daemon.namespace.Scope(),
+		Scope:  s.daemon.namespace.Scope(),
 		Digest: tree.Digest, Bytes: tree.ByteSize, CreatedAt: output.NewTimestamp(now),
 		ExpiresAt: output.NewTimestamp(now.Add(min(s.daemon.operationTimeout, 2*time.Minute)))}
 	if err := stage.Validate(); err != nil {

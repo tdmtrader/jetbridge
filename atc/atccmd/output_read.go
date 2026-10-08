@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 // runResultScratchChild is the private directory result reads spool into,
@@ -76,8 +75,8 @@ func (cmd *RunCommand) configureOutputReads(conn db.DbConn, source *jetbridge.Ou
 		return err
 	}
 	cmd.runResultReader = &runs.ResultReader{Conn: conn, Minter: cmd.outputReadSigner, Scratch: scratch,
-		Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
-			return source.ForResultRead(ctx, epoch)
+		Source: func(ctx context.Context) (runs.ResultSource, error) {
+			return source.ForResultRead(ctx)
 		}}
 	return nil
 }

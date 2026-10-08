@@ -48,7 +48,7 @@ func resolveRunInputs(ctx context.Context, tx Tx, audience runinput.Audience, de
 		if err != nil {
 			return nil, err
 		}
-		inputs = append(inputs, pendingRunInput{name: name, audience: audience, authority: authority, source: source, sourceClaim: binding.ClaimID, binding: atc.RunInputBinding{Source: source.WithoutBearer(), Ref: binding.Ref, ClaimID: output.ClaimID(uuid.NewString()), Epoch: audience.Epoch}})
+		inputs = append(inputs, pendingRunInput{name: name, audience: audience, authority: authority, source: source, sourceClaim: binding.ClaimID, binding: atc.RunInputBinding{Source: source.WithoutBearer(), Ref: binding.Ref, ClaimID: output.ClaimID(uuid.NewString())}})
 	}
 	return inputs, nil
 }
@@ -68,16 +68,14 @@ func resolveRunInputSource(ctx context.Context, tx Tx, audience runinput.Audienc
 		}
 		return atc.RunResultBinding{Ref: ref}, nil
 	}
-	// The result must have been published under the Hangar epoch this admission
-	// binds under. A Run's own activation epoch says nothing about it. After a
-	// Hangar rotation an earlier Run's result is therefore unavailable as an
-	// input -- a limit the owner accepted (M-2 decision 3), not an oversight.
+	// A result binds while its Run succeeded and its claim is live, nothing
+	// more.
 	var body []byte
 	err := tx.QueryRowContext(ctx, `SELECT r.result_manifest->$2 FROM pipeline_runs r
 		JOIN pipelines p ON p.id=r.template_pipeline_id
 		WHERE r.id=$1 AND p.team_id=$3 AND r.status='succeeded'
 		AND EXISTS (SELECT 1 FROM hangar_claims c
-			WHERE c.claim_id::text = r.result_manifest->$2->>'claim_id' AND c.activation_epoch=$4)`, source.RunID, source.Result, audience.TeamID, audience.Epoch).Scan(&body)
+			WHERE c.claim_id::text = r.result_manifest->$2->>'claim_id' AND c.released_at IS NULL)`, source.RunID, source.Result, audience.TeamID).Scan(&body)
 	if err == sql.ErrNoRows {
 		return atc.RunResultBinding{}, atc.ErrRunInputUnavailable
 	}
@@ -155,8 +153,8 @@ func retainRunInputs(ctx context.Context, tx Tx, runID int, inputs []pendingRunI
 			sourceRunID, sourceResult = binding.Source.RunID, binding.Source.Result
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO pipeline_run_inputs
-			(run_id,name,source_run_id,source_result,scope,digest,generation,claim_id,activation_epoch,source_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, runID, input.name, sourceRunID, sourceResult, string(binding.Ref.Scope), string(binding.Ref.Digest), binding.Ref.Generation, string(binding.ClaimID), binding.Epoch, sourceID)
+			(run_id,name,source_run_id,source_result,scope,digest,generation,claim_id,source_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, runID, input.name, sourceRunID, sourceResult, string(binding.Ref.Scope), string(binding.Ref.Digest), binding.Ref.Generation, string(binding.ClaimID), sourceID)
 		if err != nil {
 			return err
 		}
@@ -165,7 +163,7 @@ func retainRunInputs(ctx context.Context, tx Tx, runID int, inputs []pendingRunI
 }
 
 func readRunInputs(ctx context.Context, tx Tx, runID int) (map[string]atc.RunInputBinding, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT name,coalesce(source_run_id,0),coalesce(source_result,''),scope,digest,generation,claim_id,activation_epoch,coalesce(source_id,'') FROM pipeline_run_inputs WHERE run_id=$1 ORDER BY name`, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT name,coalesce(source_run_id,0),coalesce(source_result,''),scope,digest,generation,claim_id,coalesce(source_id,'') FROM pipeline_run_inputs WHERE run_id=$1 ORDER BY name`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +172,7 @@ func readRunInputs(ctx context.Context, tx Tx, runID int) (map[string]atc.RunInp
 	for rows.Next() {
 		var name string
 		var binding atc.RunInputBinding
-		if err = rows.Scan(&name, &binding.Source.RunID, &binding.Source.Result, &binding.Ref.Scope, &binding.Ref.Digest, &binding.Ref.Generation, &binding.ClaimID, &binding.Epoch, &binding.Source.SourceID); err != nil {
+		if err = rows.Scan(&name, &binding.Source.RunID, &binding.Source.Result, &binding.Ref.Scope, &binding.Ref.Digest, &binding.Ref.Generation, &binding.ClaimID, &binding.Source.SourceID); err != nil {
 			return nil, err
 		}
 		inputs[name] = binding

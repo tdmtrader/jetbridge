@@ -543,7 +543,6 @@ func (s *CommandSuite) TestTheWebRunsTheReclaimPassAndTheOrphanSweepWhereAnOutpu
 	configured := func(grace time.Duration) *atccmd.RunCommand {
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.OutputPlaneEnabled = true
-		cmd.Kubernetes.OutputActivationEpoch = 7
 		cmd.Kubernetes.OutputStore = "gcs"
 		cmd.Kubernetes.OutputEndpoint = "http://127.0.0.1:1"
 		cmd.Kubernetes.OutputBucket = "output-bucket"
@@ -582,7 +581,6 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.OutputPlaneEnabled = true
 		cmd.Kubernetes.OutputWarrantKey = key
-		cmd.Kubernetes.OutputActivationEpoch = 7
 		cmd.Kubernetes.ArtifactDaemonTLSCert = filepath.Join(dir, "tls.crt")
 		cmd.Kubernetes.ArtifactDaemonTLSKey = filepath.Join(dir, "tls.key")
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = filepath.Join(dir, "ca.crt")
@@ -615,14 +613,6 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 		s.Require().Error(err)
 		s.Contains(err.Error(), "kubernetes-hangar-output-operation-timeout")
 	}
-
-	// And the epoch, which every minted capability names and which this gate
-	// asked for only under capture. The chart has always refused it here.
-	noEpoch := plane(valid)
-	noEpoch.Kubernetes.OutputActivationEpoch = 0
-	err = atccmd.ValidateHangarOutputPlaneForTest(noEpoch)
-	s.Require().Error(err)
-	s.Contains(err.Error(), "kubernetes-hangar-output-activation-epoch")
 
 	// A deployment with no output plane neither requires nor opens a key.
 	off := &atccmd.RunCommand{}

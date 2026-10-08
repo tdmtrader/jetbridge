@@ -75,8 +75,8 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
 - **Principal** is a caller's verified claims in core and a storage
   identity in Hangar.
 - **Operation** is an exposed application action in the agentic context.
-- **Facet** is a capability signing domain in Hangar's execution control,
-  and nothing else.
+- **Facet** is a capability authorization domain in Hangar's execution
+  control, and nothing else.
 - **Run** is a pipeline run in core. A build is never called a run. The
   prototype `run:` step is a step, and is named as such.
 - **Transition** is a brine step's state change. A capture row moves by

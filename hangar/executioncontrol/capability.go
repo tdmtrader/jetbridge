@@ -10,8 +10,8 @@ package executioncontrol
 //     for base execution control cannot hold, seal or publish, however valid it
 //     is;
 //   - it binds the immutable facts of the operation -- the execution, the
-//     fence, the control-key generation, the operation name -- so a token minted for
-//     one execution cannot act on another; and
+//     fence, the operation name -- so a token minted for one execution cannot
+//     act on another; and
 //   - it carries a nonce and an expiry, so a captured token is refused after
 //     its window and a replayed one is refused inside it.
 //
@@ -74,10 +74,9 @@ var (
 // reading them out of the token: a token that told you what it was for would be
 // a token authorizing itself.
 type CapabilityClaims struct {
-	Facet           Facet
-	Operation       string
-	Identity        Identity
-	ActivationEpoch ActivationEpoch
+	Facet     Facet
+	Operation string
+	Identity  Identity
 }
 
 func (claims CapabilityClaims) Validate() error {
@@ -89,9 +88,6 @@ func (claims CapabilityClaims) Validate() error {
 	}
 	if err := claims.Identity.Validate(); err != nil {
 		return err
-	}
-	if claims.ActivationEpoch == 0 {
-		return fmt.Errorf("%w: capability names no activation epoch", ErrIncomplete)
 	}
 
 	return nil
@@ -110,7 +106,6 @@ func canonicalCapabilityBytes(claims CapabilityClaims, nonce string, expiresAtNa
 	field(claims.Operation)
 	field(string(claims.Identity.ExecutionID))
 	field(strconv.FormatUint(uint64(claims.Identity.Fence), 10))
-	field(strconv.FormatUint(uint64(claims.ActivationEpoch), 10))
 	field(nonce)
 	field(strconv.FormatInt(expiresAtNanos, 10))
 

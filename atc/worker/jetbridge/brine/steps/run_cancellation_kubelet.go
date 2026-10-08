@@ -126,7 +126,7 @@ func kubeletStartAfterFence(in KubeletRun, kind string) error {
 	if _, err = in.Client.CoreV1().Pods(in.Config.Namespace).Get(ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		return fmt.Errorf("the kubelet was given a Pod after the fence: %v", err)
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	classified, err := client.Classify(ctx, a.Identity)
 	if err != nil {
 		return err
@@ -251,7 +251,7 @@ func kubeletProvisionalSourceSurvives(in KubeletRun) error {
 	if err = daemon.restart(ctx, in.Start.Daemon.HTTP); err != nil {
 		return err
 	}
-	client := jetbridge.NewOutputControlClient(daemon.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(daemon.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	classified, err := client.Classify(ctx, a.Identity)
 	if err != nil {
 		return err

@@ -14,7 +14,7 @@ import (
 
 type ExecutionSource interface {
 	SelectNode(context.Context, runtime.ContainerSpec) (string, string, error)
-	BaseRuntimeControl(context.Context, string, string, executioncontrol.ActivationEpoch, executioncontrol.Identity) (*runtime.ExecutionControl, error)
+	BaseRuntimeControl(context.Context, string, string, executioncontrol.Identity) (*runtime.ExecutionControl, error)
 }
 
 // ExecutionStarter supplies the Run gate at the shared worker boundary. Node
@@ -23,8 +23,6 @@ type ExecutionStarter struct {
 	Conn            db.DbConn
 	Factory         db.PipelineRunFactory
 	Source          ExecutionSource
-	Epoch           executioncontrol.ActivationEpoch
-	Verifier        db.RunExecutionVerifier
 	Output          *OutputStarter
 	inputReadMinter hangaroutput.WarrantMinter
 }
@@ -48,10 +46,10 @@ func (s *ExecutionStarter) PrepareContainer(ctx context.Context, owner db.Contai
 	if err != nil || !owned {
 		return spec, err
 	}
-	if !isBuild || teamID != spec.TeamID || (metadata.BuildID != 0 && metadata.BuildID != buildID) || metadata.Type != spec.Type || s.Source == nil || s.Epoch == 0 || s.Verifier == nil {
+	if !isBuild || teamID != spec.TeamID || (metadata.BuildID != 0 && metadata.BuildID != buildID) || metadata.Type != spec.Type || s.Source == nil {
 		return spec, atc.ErrRunResultsUnavailable
 	}
-	req := db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: spec.Type, Epoch: int64(s.Epoch)}
+	req := db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: spec.Type}
 	if found {
 		req.NodeName, req.NodeUID = existing.NodeName, existing.NodeUID
 	}
@@ -79,7 +77,7 @@ func (s *ExecutionStarter) PrepareContainer(ctx context.Context, owner db.Contai
 	if spec.ExecutionControl != nil && spec.ExecutionControl.Identity != admission.Identity {
 		return spec, errors.New("Run execution control does not match its admission")
 	}
-	control, err := s.Source.BaseRuntimeControl(ctx, req.NodeName, req.NodeUID, s.Epoch, admission.Identity)
+	control, err := s.Source.BaseRuntimeControl(ctx, req.NodeName, req.NodeUID, admission.Identity)
 	if err != nil {
 		return spec, err
 	}
@@ -111,7 +109,7 @@ func (s *ExecutionStarter) RecordWitness(ctx context.Context, owner db.Container
 		if err != nil || !owned {
 			return err
 		}
-		if err := s.Factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, witness, s.Verifier); err != nil {
+		if err := s.Factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, witness); err != nil {
 			return err
 		}
 		recorded = true
@@ -139,7 +137,7 @@ func (s *ExecutionStarter) CheckStart(ctx context.Context, owner db.ContainerOwn
 		if control == nil || control.Node == nil || teamID != spec.TeamID {
 			return atc.ErrRunResultsUnavailable
 		}
-		req := db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: spec.Type, Epoch: int64(control.ActivationEpoch), NodeName: control.Node.Name, NodeUID: string(control.Node.UID)}
+		req := db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: spec.Type, NodeName: control.Node.Name, NodeUID: string(control.Node.UID)}
 		if control.HasDurableOutputCapture() {
 			req.Capture = control.Capture.Key()
 		}

@@ -33,7 +33,7 @@ func (s *Server) UploadPipelineRunInput(pipeline db.Pipeline) http.Handler {
 			errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
 			return
 		}
-		if s.services.Admitter == nil || s.services.Epoch <= 0 {
+		if s.services.Admitter == nil || !s.services.HangarOutput {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -52,7 +52,7 @@ func (s *Server) UploadPipelineRunInput(pipeline db.Pipeline) http.Handler {
 		limit, _ := hangar.CanonicalArchiveByteLimit(output.MaxInputContentBytes, hangar.DefaultMaxTreeEntries)
 		body := http.MaxBytesReader(w, r.Body, limit)
 		defer body.Close()
-		source, err := s.services.Admitter.UploadInput(ctx, runs.TemplateRef{Team: pipeline.TeamName(), Pipeline: pipeline.PipelineRef()}, runs.Principal{Claims: claims}, r.URL.Query().Get(":input_name"), s.services.Epoch, body)
+		source, err := s.services.Admitter.UploadInput(ctx, runs.TemplateRef{Team: pipeline.TeamName(), Pipeline: pipeline.PipelineRef()}, runs.Principal{Claims: claims}, r.URL.Query().Get(":input_name"), body)
 		if err != nil {
 			switch {
 			case errors.Is(err, runs.ErrUnauthorized):

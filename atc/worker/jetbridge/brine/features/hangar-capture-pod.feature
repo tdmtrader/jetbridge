@@ -171,32 +171,6 @@ Feature: What a capture-selected task's Pod says
     And no capture pod is built
     And the same worker still builds an ordinary pod for a step that captures nothing
 
-  # A node can carry the output label while the step was admitted by a control
-  # plane configured with a different control epoch
-  # (--kubernetes-hangar-output-activation-epoch) — a rolling upgrade, a node
-  # back from a long drain. The label alone admits nothing.
-  #
-  # Control LAST here rather than first, because brine stops at the first red
-  # step: the refusal's text is what distinguishes "refused for the epoch" from
-  # "refused for anything", and the matching-epoch control is what distinguishes
-  # it from "this worker admits nothing at all".
-  #
-  # Reddened by: Container.buildPod dropping the control-epoch arm — the
-  # refusal line reddens and the matching-epoch control stays green.
-  @HOP-58
-  Scenario: A ready label without a matching control epoch admits nothing, while the matching epoch admits
-    Given a Kubernetes worker "k8s-worker-1" with a database behind it
-    And the worker keeps artifacts under "/var/concourse/artifacts"
-    And the worker prepares task "build" from image "busybox"
-    And it produces an output at "/tmp/build/result"
-    And its output "result" is captured when the step succeeds
-    And the worker's nodes are ready for "concourse.dev/hangar-output-v1"
-    And the step was admitted under another control epoch
-    When the capture pod is built
-    Then the pod build is refused saying "mints under generation"
-    And no capture pod is built
-    And the same worker admits a capture under its own control epoch
-
   # The regression twin that is not a pod shape: turning the output plane on must
   # change nothing about a strict INPUT.
   #

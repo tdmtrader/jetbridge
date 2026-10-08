@@ -118,8 +118,8 @@ web:
   # runs under -- the v2 create route, the web UI and fly run-pipeline, and the
   # run_pipeline step. At startup each web node writes it into the durable Run
   # activation marker, so every deploy turns the Run contract on. It is the Run
-  # contract's own epoch, independent of hangarOutput.activationEpoch (the
-  # Hangar control-key generation): changing that leaves running Runs, their
+  # contract's own epoch and nothing in the Hangar output plane shares it:
+  # changing the plane's configuration leaves running Runs, their
   # finalization and invocation-key replay alone. The marker only moves forward, so raise this value, never
   # lower it; a web node configured below the recorded epoch refuses to start.
   # Zero renders no flag and stops admission on the next web start, keeping the
@@ -127,8 +127,8 @@ web:
   # is still admitted only while hangarOutput.webEnabled puts the output plane
   # in service. Admission checks nothing more, but EXECUTING any Run, with or
   # without results, needs the output plane's execution control
-  # (hangarOutput.executionControl), with the output capability key and a
-  # positive hangarOutput.activationEpoch configured: every step of a Run
+  # (hangarOutput.executionControl.enabled) with the output capability key
+  # (hangarOutput.capabilityKeySecret) configured: every step of a Run
   # build starts through the exact-execution check. Without them, Runs are
   # admitted and every step fails with "Run result execution is not
   # activated" -- set this to 0 on such a deploy to keep admission closed.
@@ -780,7 +780,7 @@ artifactDaemon:
 # -- The Hangar bootstrap: a Job at the start of every Argo sync that creates
 # the absent Secrets of the bootstrap inventory and never changes one.
 # An entry joins the inventory once its values key names a Secret (for
-# example hangarOutput.executionControl.keySecret), so the operator turns each
+# example hangarOutput.capabilityKeySecret), so the operator turns each
 # Secret on by naming it. Off renders nothing.
 #
 # Trusted readers (proposal amendments M-4 and M-5): the inventory's
@@ -795,10 +795,6 @@ hangarBootstrap:
     # Set web.runInputSigningKeySecret to this name once
     # hangarOutput.webEnabled is on.
     runInputSigningKey: ""
-  # -- Earlier control-key generations (hangarOutput.activationEpoch) whose
-  # node-control keys the ring must keep: [{epoch, controlSecret}]. The
-  # bootstrap reads them and never creates one.
-  referencedKeys: []
 
 hangarOutput:
   # -- Object storage profile: gcs or disk.
@@ -817,31 +813,18 @@ hangarOutput:
   #
   # `concourse.dev/hangar-v1` is a THIRD label and is not this plane's: it
   # advertises strict INPUTS.
+  #
+  # The node signs nothing: it is inside the trusted computing base and is
+  # reached over mTLS, so its acknowledgement is its answer on that channel.
+  # There is no node control key, no key id and no verification ring.
   executionControl:
     enabled: false
-    # -- Existing Secret holding control.key: a PKCS#8 PEM Ed25519 private key
-    # the node signs execution and source ledger statements with. Required.
-    # It is NOT the read-warrant key and NOT the capability key; they are
-    # separate Secrets so replacing one does not replace the others.
-    keySecret: ""
-    # -- Key id of the control key above, which every node reports over its
-    # handshake. Required whenever enabled.
-    #
-    # It names KEY MATERIAL and not the Secret: two nodes holding different
-    # private keys under one Secret name must not report one id. Move this
-    # value when you move the key.
-    keyID: ""
-
-    # -- Public node-control verification keys, required for output capture.
-    # One base64 Ed25519 public key per control-key generation. Retain an old
-    # generation while an execution it signed may still be recovered. The
-    # private key stays on the artifact daemon.
-    # Example: [{epoch: 7, key: "<base64-public-key>"}]
-    publicKeys: []
 
   # -- Existing Secret holding capability.key: the raw 32 bytes control
   # capabilities are minted and verified with, shared between the control plane
-  # and this daemon and with nothing else.
+  # and this daemon and with nothing else. Required with
+  # executionControl.enabled: the daemon mounts its output plane when it is
+  # given this key, and cannot verify a capability without it.
   capabilityKeySecret: ""
 
   # -- The OUTPUT facet: durable capture, claims and reclamation.
@@ -865,11 +848,6 @@ hangarOutput:
   # -- Authenticated deployment/tenant identity the opaque scope is derived
   # from. It is never rendered into an object key. Required when enabled.
   tenant: ""
-  # -- The control-key generation: capabilities are minted, and the
-  # control-keys ring is keyed, under it. It is not a lifecycle state -- in
-  # service is webEnabled -- and nothing rotates it. Required (positive) with
-  # executionControl.enabled.
-  activationEpoch: 0
 
   # -- The two buckets this plane may not be, named so the daemon can refuse to
   # be pointed at them. Empty means this deployment has no such bucket.
@@ -895,8 +873,8 @@ hangarOutput:
 
   # -- Existing Secret holding materialize.key: the exact raw 32 bytes output
   # READ WARRANTS are signed with, under the hangar-output-materialize-v1 domain.
-  # Its own key: a read warrant must not be signable by anything that can sign
-  # a node control statement, and it is never the foundation's strict-input
+  # Its own key: a read warrant must not be mintable with the control
+  # capability key, and it is never the foundation's strict-input
   # materialization key either.
   materializationKeySecret: ""
   # -- Key id for the above.

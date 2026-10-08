@@ -73,7 +73,6 @@ func harnessStat(t *testing.T, h *harness) hangaroutput.ExactStat {
 		Bucket:           h.Bucket,
 		DeploymentPrefix: "harness/one",
 		TenantID:         "harness",
-		ActivationEpoch:  harnessEpoch,
 	})
 	if err != nil {
 		t.Fatalf("deriving the harness namespace: %v", err)
@@ -248,10 +247,6 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableWarrant(t *testing.T) {
 	}
 	if claims.ClaimID != request.ClaimID {
 		t.Errorf("the warrant names claim %q, the request asked for %q", claims.ClaimID, request.ClaimID)
-	}
-	if claims.ActivationEpoch != harnessEpoch {
-		t.Errorf("the warrant names epoch %d, the generation was registered under %d",
-			claims.ActivationEpoch, harnessEpoch)
 	}
 	if claims.NodeUID != harnessNode {
 		t.Errorf("the warrant names node %q, the request asked for %q", claims.NodeUID, harnessNode)

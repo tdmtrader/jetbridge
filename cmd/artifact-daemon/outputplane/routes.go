@@ -264,7 +264,7 @@ func (server *Server) routes() map[string]route {
 		"POST /execution/v1/outcome": {executioncontrol.BaseFacet, "outcome", (*Server).outcome, false},
 
 		"POST /execution/v1/classify": {executioncontrol.BaseFacet, "classify", (*Server).classify, false},
-		// A read of the node's stored, signed start: what a control plane
+		// A read of the node's stored start: what a control plane
 		// that never retained it needs to interrupt and close the execution.
 		"POST /execution/v1/start/inspect":    {executioncontrol.BaseFacet, "inspect-start", (*Server).inspectStart, false},
 		"POST /execution/v1/observe":          {executioncontrol.BaseFacet, "observe", (*Server).observe, false},
@@ -341,10 +341,9 @@ func (server *Server) protect(declared route) http.Handler {
 		if err := server.capability.Verify(
 			executioncontrol.ControlCapability(request.Header.Get(CapabilityHeader)),
 			executioncontrol.CapabilityClaims{
-				Facet:           declared.facet,
-				Operation:       declared.operation,
-				Identity:        identity,
-				ActivationEpoch: server.daemon.ActivationEpoch(),
+				Facet:     declared.facet,
+				Operation: declared.operation,
+				Identity:  identity,
 			}); err != nil {
 			writeError(w, fmt.Errorf("%w: %s facet, %s operation: %v",
 				output.ErrUnauthorized, declared.facet, declared.operation, err))

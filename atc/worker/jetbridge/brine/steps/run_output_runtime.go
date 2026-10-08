@@ -140,12 +140,12 @@ func RunOutputRuntimeDefinitions() []brine.StepDefinition {
 }
 
 func (in RunOutputRuntime) source() *jetbridge.OutputSource {
-	source := jetbridge.NewOutputSource(in.Client, in.Config, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	source := jetbridge.NewOutputSource(in.Client, in.Config, in.Start.Daemon.Minter)
 	source.SetExecutor(in.OutcomeReader)
 	return source
 }
 func (in RunOutputRuntime) starter() *runs.OutputStarter {
-	return runs.NewOutputStarter(in.Start.DB.Conn, db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory), in.source(), int64(hangarEpoch), time.Hour)
+	return runs.NewOutputStarter(in.Start.DB.Conn, db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory), in.source(), time.Hour)
 }
 func (in RunOutputRuntime) prepare() (*runtime.ExecutionControl, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -178,7 +178,7 @@ func checkRuntimeSource(in RunOutputRuntime) error {
 		string(r.NodeUID) != string(in.Node.UID) {
 		return fmt.Errorf("runtime control differs from the retained capture")
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	_, err = client.Classify(context.Background(), r.Execution)
 	return err
 }

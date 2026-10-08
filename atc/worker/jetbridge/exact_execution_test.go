@@ -126,7 +126,6 @@ var _ = Describe("An execProcess under exact control", func() {
 		_, err := harness.Client.Admit(ctx, executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        identity,
-			ActivationEpoch: harnessEpoch,
 			NodeUID:         executioncontrol.NodeUID(harnessNodeUID),
 			Capability:      "base-capability",
 		})
@@ -175,17 +174,15 @@ var _ = Describe("An execProcess under exact control", func() {
 		executor = &controlExecutor{run: func(int) error { return nil }}
 
 		control = &runtime.ExecutionControl{
-			Version:         runtime.ExecutionControlVersion,
-			Phase:           runtime.ControlPhaseAdmitted,
-			Identity:        identity,
-			ActivationEpoch: harnessEpoch,
-			Endpoint:        harness.Endpoint,
-			Capability:      "base-capability",
+			Version:    runtime.ExecutionControlVersion,
+			Phase:      runtime.ControlPhaseAdmitted,
+			Identity:   identity,
+			Endpoint:   harness.Endpoint,
+			Capability: "base-capability",
 		}
 		Expect(control.SelectCapture(runtime.DurableOutputCapture{
 			Version:            runtime.DurableOutputCaptureVersion,
 			Identity:           identity,
-			ActivationEpoch:    harnessEpoch,
 			Output:             "result",
 			SourceControlGrant: "source-control-grant",
 			CaptureDeadline:    time.Now().Add(time.Hour),
@@ -634,7 +631,6 @@ var _ = Describe("An execProcess under exact control", func() {
 		_, err := harness.Client.Admit(ctx, executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        identity,
-			ActivationEpoch: harnessEpoch,
 			NodeUID:         executioncontrol.NodeUID(harnessNodeUID),
 			Capability:      "base-capability",
 		})

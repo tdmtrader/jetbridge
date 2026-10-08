@@ -69,11 +69,11 @@ func (f *pipelineRunFactory) RunCaptureTask(ctx context.Context, tx Tx, buildID 
 // Run boundary, a pending capture row and the Run's link to it, in the
 // caller's transaction. A replay returns the original exact execution; the
 // same producer on another node or for another result is a conflict.
-func (f *pipelineRunFactory) StartRunCapture(ctx context.Context, tx Tx, buildID int, plan atc.TaskPlan, epoch int64, term time.Duration, nodeName, nodeUID string) (RunCapture, error) {
+func (f *pipelineRunFactory) StartRunCapture(ctx context.Context, tx Tx, buildID int, plan atc.TaskPlan, term time.Duration, nodeName, nodeUID string) (RunCapture, error) {
 	if nodeName == "" || nodeUID == "" || term <= 0 {
 		return RunCapture{}, fmt.Errorf("%w: missing node identity or invalid capture term", output.ErrIncomplete)
 	}
-	runID, err := f.lockOutputProducer(ctx, tx, buildID, plan, epoch)
+	runID, err := f.lockOutputProducer(ctx, tx, buildID, plan)
 	if err != nil {
 		return RunCapture{}, err
 	}
@@ -117,7 +117,7 @@ func (f *pipelineRunFactory) StartRunCapture(ctx context.Context, tx Tx, buildID
 // lockOutputProducer takes the Run's domain prefix for a producer and checks
 // it is still admitted: team, activation, Run, payload and build, in that
 // order, then the retained definition.
-func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buildID int, plan atc.TaskPlan, epoch int64) (int, error) {
+func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buildID int, plan atc.TaskPlan) (int, error) {
 	id, err := uuid.Parse(plan.TaskID)
 	if err != nil || id == uuid.Nil || id.String() != plan.TaskID || plan.RunResult == nil {
 		return 0, fmt.Errorf("%w: task has no stable result declaration", output.ErrInvalidIdentity)
@@ -135,12 +135,12 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, teamID).Scan(&teamID); err != nil {
 		return 0, err
 	}
-	// The Run continues under its own epoch; the capture is admitted under
-	// the Hangar epoch this control plane speaks for now.
+	// The Run continues under its own epoch; the capture is admitted by an
+	// output plane in service.
 	if err := lockRunContinuation(ctx, tx, runEpoch); err != nil {
 		return 0, err
 	}
-	if err := lockEnabledHangarEpoch(ctx, tx, epoch); err != nil {
+	if err := lockEnabledHangarOutput(ctx, tx); err != nil {
 		return 0, err
 	}
 	run := &pipelineRun{}

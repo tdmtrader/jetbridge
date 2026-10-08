@@ -46,7 +46,7 @@ func publisherFor(t *testing.T, tier substrate, namespace output.OutputNamespace
 func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("ab")
@@ -110,7 +110,6 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 			Bucket:           tier.bucket,
 			DeploymentPrefix: "deployments/blue",
 			TenantID:         "tenant-elsewhere",
-			ActivationEpoch:  testEpoch,
 		})
 		if err != nil {
 			t.Fatalf("deriving another tenant's namespace: %v", err)
@@ -133,7 +132,7 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 		}
 		if _, present := read(t, tier, stranded); present {
 			t.Errorf("the refused publish left bytes at %s. A capture publishes into the "+
-				"namespace its epoch derived and no other, and an object created under this "+
+				"namespace its tenant and store derived and no other, and an object created under this "+
 				"namespace's key with another scope's marker is unmanaged the moment it lands",
 				stranded)
 		}
@@ -150,7 +149,7 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 func TestIdenticalBytesDeduplicateAndADifferentVariantIsATypedCollision(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("cd")
@@ -219,7 +218,7 @@ func TestIdenticalBytesDeduplicateAndADifferentVariantIsATypedCollision(t *testi
 func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		// The positive control, asserted first (convention 5): a marked object
@@ -270,7 +269,7 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 		}
 		malformedMetadata := namespace.MarkerFor(otherReservation, malformedDigest,
 			output.NewTimestamp(testsupport.FixedInstant)).Metadata()
-		malformedMetadata[output.MarkerKeyActivation] = "not a number"
+		malformedMetadata[output.MarkerKeyCreatedAt] = "not a timestamp"
 		seed(t, tier, malformedKey, canonicalBytes("another deployment"), malformedMetadata)
 
 		_, err = role.EnsurePublication(ctx,
@@ -301,7 +300,7 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 func TestAnObjectWhoseBodyDoesNotMatchTheCaptureIsATypedCollision(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("44")
@@ -361,7 +360,7 @@ func TestTheMarkerIsImmutableAtCreationAndThePublisherCannotChangeIt(t *testing.
 	// writes.
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, recorder := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("44")
@@ -399,7 +398,7 @@ func TestTheMarkerIsImmutableAtCreationAndThePublisherCannotChangeIt(t *testing.
 func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		for _, fill := range []string{"55", "66", "77"} {
@@ -457,7 +456,7 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("88")
@@ -541,7 +540,7 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 	// rather than the key. This is the API fact that makes a tree ref exact.
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 		role, _ := publisherFor(t, tier, namespace)
 
 		digest := testsupport.Digest("99")
@@ -583,7 +582,7 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 func TestAnAmbiguousUploadIsReconciledByAnExactStat(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	digest := testsupport.Digest("aa")
@@ -623,7 +622,7 @@ func TestAnAmbiguousUploadIsReconciledByAnExactStat(t *testing.T) {
 func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	digest := testsupport.Digest("cc")
@@ -658,7 +657,7 @@ func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	digest := testsupport.Digest("dd")
@@ -669,7 +668,7 @@ func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 		t.Fatalf("publishing: %v", err)
 	}
 
-	lease := testsupport.Warrant(t, object.Attributes.Ref, testEpoch)
+	lease := testsupport.Warrant(t, object.Attributes.Ref)
 
 	// The control: a whole read returns the whole object.
 	body, _, err := role.OpenExactObject(ctx, object.Attributes.Ref, lease)
@@ -715,7 +714,7 @@ func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 
 func TestACancelledContextIsNeverAnAbsentObject(t *testing.T) {
 	tier := tier1(t)
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -736,7 +735,7 @@ func TestACancelledContextIsNeverAnAbsentObject(t *testing.T) {
 func TestAnUnauthorizedStoreIsNeverACacheMiss(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	tier.memory.Inject(gcstest.Faults{Unauthorized: true})
@@ -759,7 +758,7 @@ func TestAnUnauthorizedStoreIsNeverACacheMiss(t *testing.T) {
 func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 
 		digest := testsupport.Digest("12")
 
@@ -1025,7 +1024,7 @@ func TestTheSubstrateGapsAreNamed(t *testing.T) {
 func TestABenignMetadataChangeDoesNotWedgeReclamationForever(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant)
 	role, _ := publisherFor(t, tier, namespace)
 
 	digest := testsupport.Digest("ef")

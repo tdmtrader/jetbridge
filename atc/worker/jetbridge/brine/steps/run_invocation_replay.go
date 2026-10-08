@@ -40,7 +40,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMapUsing[brine.Empty, InvocationReplay]("a versioned invocation of a parameterized template", []string{"jetbridge-db"}, func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (InvocationReplay, error) {
 			previousGate := atc.PipelineRunActivationEpoch
-			atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+			atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 			TrackDisposer(rec, "the invocation creation gate", func() error { atc.PipelineRunActivationEpoch = previousGate; return nil })
 			jdb, err := jetbridgeDBFrom(res)
 			if err != nil {
@@ -59,7 +59,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 			if err = putOutputPlaneInService(jdb); err != nil {
 				return in, err
 			}
-			if _, err = db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(hangarEpoch)); err != nil {
+			if _, err = db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(runActivationEpoch)); err != nil {
 				return in, err
 			}
 			display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
@@ -67,7 +67,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 				return in, err
 			}
 			in.Port = runs.NewAdmitter(jdb.Conn, db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory), jdb.TeamFactory, display, nil)
-			in.Port.SetOutputEpoch(int64(hangarEpoch))
+			in.Port.SetOutputPlane(true)
 			in.Admission = runs.Admission{Template: runs.TemplateRef{Team: in.Team.Name(), Pipeline: in.Template.PipelineRef()}, Principal: invocationPrincipal("owner"), ContractKey: "review-request.1~a"}
 			return in, nil
 		}),
@@ -95,7 +95,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 						role = accessor.ViewerRole
 					}
 					in.Port = runs.NewAdmitter(in.DB.Conn, db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory), in.DB.TeamFactory, display, map[string]string{atc.CreatePipelineRunV2: role})
-					in.Port.SetOutputEpoch(int64(hangarEpoch))
+					in.Port.SetOutputPlane(true)
 				case "disabled activation":
 					if _, err := db.ReconcilePipelineRunActivation(context.Background(), in.DB.Conn, 0); err != nil {
 						return in, err
@@ -341,7 +341,7 @@ func (in InvocationReplay) admit(rollback bool) (runs.Run, bool, error) {
 		return runs.Run{}, false, err
 	}
 	defer tx.Rollback()
-	run, replay, err := port.AdmitVersionedRun(ctx, tx, in.Admission, int64(hangarEpoch))
+	run, replay, err := port.AdmitVersionedRun(ctx, tx, in.Admission, int64(runActivationEpoch))
 	if err != nil {
 		return run, replay, err
 	}

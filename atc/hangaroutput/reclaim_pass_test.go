@@ -54,7 +54,6 @@ func reclaimPassOver(t *testing.T, h *harness, grace time.Duration, store reclai
 		Bucket:           h.Bucket,
 		DeploymentPrefix: "harness/one",
 		TenantID:         "harness",
-		ActivationEpoch:  harnessEpoch,
 	})
 	if err != nil {
 		t.Fatalf("deriving the namespace: %v", err)

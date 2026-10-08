@@ -243,7 +243,6 @@ func brineOutputNamespace(daemon HangarDaemon) (hangaroutputleaf.OutputNamespace
 		Bucket:           daemon.OutputBucket,
 		DeploymentPrefix: brineOutputPrefix,
 		TenantID:         brineOutputTenant,
-		ActivationEpoch:  executioncontrol.ActivationEpoch(hangarEpoch),
 	})
 }
 

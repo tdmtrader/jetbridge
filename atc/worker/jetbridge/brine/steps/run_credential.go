@@ -16,14 +16,11 @@ import (
 	"sync"
 	"time"
 
-	"encoding/base64"
-
 	"github.com/brine-dev/brine-go/pkg/brine"
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -36,8 +33,8 @@ import (
 
 type credentialAdmitter interface {
 	SetCredentialHandoffConfig(runs.CredentialHandoffConfig)
-	InspectCredentialHandoff(context.Context, runs.TemplateRef, runs.Principal, int, string, int64) (atc.RunCredentialSession, error)
-	HandoffCredentials(context.Context, runs.TemplateRef, runs.Principal, int, string, int64, io.ReadCloser) (atc.RunCredentialSession, error)
+	InspectCredentialHandoff(context.Context, runs.TemplateRef, runs.Principal, int, string) (atc.RunCredentialSession, error)
+	HandoffCredentials(context.Context, runs.TemplateRef, runs.Principal, int, string, io.ReadCloser) (atc.RunCredentialSession, error)
 }
 
 func RunCredentialDefinitions() []brine.StepDefinition {
@@ -56,7 +53,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 		return err
 	}
 	basePort := runs.NewAdmitter(in.Start.DB.Conn, factory, in.Start.DB.TeamFactory, display, nil)
-	basePort.SetOutputEpoch(int64(hangarEpoch))
+	basePort.SetOutputPlane(true)
 	port, ok := any(basePort).(credentialAdmitter)
 	if !ok {
 		return fmt.Errorf("Run admission has no owner-bound, one-use credential handoff")
@@ -107,7 +104,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if err != nil {
 		return err
 	}
-	in.Start.Creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch), HangarEpoch: int64(hangarEpoch), Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest(ownerSubject), KeyDigest: strings.Repeat("a", 64)}})
+	in.Start.Creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{ActivationEpoch: int64(runActivationEpoch), HangarOutput: true, Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest(ownerSubject), KeyDigest: strings.Repeat("a", 64)}})
 	if err != nil {
 		db.Rollback(tx)
 		return err
@@ -133,7 +130,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if err != nil {
 		return err
 	}
-	a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: build.ID(), PlanID: "credential-step", Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: in.Node.Name, NodeUID: string(in.Node.UID), Capture: in.Start.Record.Key})
+	a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: build.ID(), PlanID: "credential-step", Kind: db.ContainerTypeTask, NodeName: in.Node.Name, NodeUID: string(in.Node.UID), Capture: in.Start.Record.Key})
 	if err != nil {
 		db.Rollback(tx)
 		return err
@@ -154,7 +151,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if _, err = in.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
 		return err
 	}
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	if mode != "waiting for start" {
 		start, err := client.RecordStart(ctx, a.Identity, executioncontrol.PodUID(pod.UID), "credential-process")
 		if err != nil {
@@ -164,8 +161,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 		if err != nil {
 			return err
 		}
-		keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-		if err = factory.RecordRunExecutionWitness(ctx, tx, build.ID(), a.PlanID, start, keys); err != nil {
+		if err = factory.RecordRunExecutionWitness(ctx, tx, build.ID(), a.PlanID, start); err != nil {
 			db.Rollback(tx)
 			return err
 		}
@@ -181,7 +177,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 			if err != nil {
 				return err
 			}
-			if err = factory.RecordRunExecutionWitness(ctx, tx, build.ID(), a.PlanID, finish, keys); err != nil {
+			if err = factory.RecordRunExecutionWitness(ctx, tx, build.ID(), a.PlanID, finish); err != nil {
 				db.Rollback(tx)
 				return err
 			}
@@ -286,7 +282,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 		done := make(chan error, 1)
 		go func() {
 			var err error
-			state, err = port.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, int64(hangarEpoch), reader)
+			state, err = port.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, reader)
 			done <- err
 		}()
 		if _, err = writer.Write([]byte(body[:1])); err != nil {
@@ -314,7 +310,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				states[i], errs[i] = port.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, int64(hangarEpoch), io.NopCloser(strings.NewReader(body)))
+				states[i], errs[i] = port.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, io.NopCloser(strings.NewReader(body)))
 			}(index)
 		}
 		wg.Wait()
@@ -334,7 +330,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 		}
 		state.Status = "ready"
 	} else {
-		state, err = port.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, int64(hangarEpoch), io.NopCloser(input))
+		state, err = port.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, io.NopCloser(input))
 	}
 	want := "refused"
 	switch mode {
@@ -374,7 +370,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if mode == "ready replay" {
 		input = bytes.NewReader([]byte("must not read or reseed"))
 		fresh := runs.NewAdmitter(in.Start.DB.Conn, factory, in.Start.DB.TeamFactory, display, nil).(credentialAdmitter)
-		replay, err := fresh.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, int64(hangarEpoch), io.NopCloser(input))
+		replay, err := fresh.HandoffCredentials(ctx, ref, principal, in.Start.Creation.Run.Number(), result, io.NopCloser(input))
 		if err != nil || replay != state || input.Len() != len("must not read or reseed") {
 			return fmt.Errorf("ready replay reseeded or lost identity: %v", err)
 		}
@@ -415,7 +411,7 @@ func exerciseCredentialHTTP(in RunOutputRuntime, auth *AuthFixture, port runs.Ad
 	old := atc.PipelineRunActivationEpoch
 	atc.PipelineRunActivationEpoch = 0
 	if mode != "operator hold" {
-		atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+		atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 	}
 	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = old; return nil })
 	team, _, err := in.Start.DB.TeamFactory.FindTeam("output-start")
@@ -449,12 +445,12 @@ func exerciseCredentialHTTP(in RunOutputRuntime, auth *AuthFixture, port runs.Ad
 			return err
 		}
 		port = runs.NewAdmitter(in.Start.DB.Conn, db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory), in.Start.DB.TeamFactory, display, map[string]string{atc.CreatePipelineRunV2: "owner"})
-		port.SetOutputEpoch(int64(hangarEpoch))
+		port.SetOutputPlane(true)
 	case "operator hold":
 		want = http.StatusConflict
 	}
 	auth.mu.Lock()
-	auth.RunServices = pipelinerunserver.Services{Admitter: port, Epoch: int64(hangarEpoch)}
+	auth.RunServices = pipelinerunserver.Services{Admitter: port, HangarOutput: true}
 	auth.API, err = auth.apiHandler(auth.Verifier)
 	auth.mu.Unlock()
 	if err != nil {

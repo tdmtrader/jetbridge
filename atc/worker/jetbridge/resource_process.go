@@ -102,7 +102,7 @@ wait "$child"`, "resource-session", "sh", "-c", resourceCommandScript, "resource
 // runner subshell of this session that waits for it -- never from inside it:
 // the cancel script kills that whole group, and a journal written from inside
 // it would die with it. The state directory is derived from the execution
-// identity rather than minted, so a restarted ATC -- and the signed start the
+// identity rather than minted, so a restarted ATC -- and the node-acknowledged start the
 // Run retains -- can name it again.
 //
 // The command's stdout and stderr are journaled too, and the command writes

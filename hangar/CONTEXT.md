@@ -28,8 +28,9 @@ _Avoid_: exact ref, exact reference, exact tree
 
 **Scope**:
 The opaque namespace component of a tree ref, filled in by the control
-plane and never accepted from a caller.
-_Avoid_: prefix, bucket path
+plane and never accepted from a caller. It is H(domain, tenant, store),
+and that is the only derivation.
+_Avoid_: prefix, bucket path, legacy scope, scope v1
 
 **Digest**:
 The logical-content digest of a canonical tree.
@@ -77,8 +78,9 @@ _Avoid_: download token
 
 **Warrant key**:
 The secret the web signs one kind of warrant with and the daemon verifies
-against. One key per warrant kind. Never present in a task pod.
-_Avoid_: capability key
+against. One key per warrant kind. Never present in a task pod. The daemon
+holds no signing key of its own: there is no node control key.
+_Avoid_: capability key, control key
 
 **Scratch path**:
 The daemon's private transient space where canonicalization and
@@ -90,7 +92,8 @@ _Avoid_: temp dir, work dir
 **Output plane**:
 The half of Hangar that turns a task's declared output into durable,
 claimable content. A part of the artifact daemon on each node and of the
-web; not a process of its own.
+web; not a process of its own. The daemon mounts it when its capability
+key is configured.
 _Avoid_: durable output publication, output daemon
 
 **Capture**:
@@ -197,7 +200,9 @@ _Avoid_: registration, inventory
 **Claim**:
 A consumer's or a reader's opaque, idempotent hold on a tree ref; the one
 refcount. A consumer's lasts until released; a reader's also expires, on
-the database clock. Hangar never interprets or reacquires one.
+the database clock. Hangar never interprets or reacquires one. A Run's
+result binds as another Run's input while its Run is succeeded and its
+claim is live, nothing more.
 _Avoid_: reference, pin, read lease, lease
 
 **Reclamation**:
@@ -236,26 +241,18 @@ lists and deletes; strict inputs have their own. Delete exists only in the
 web.
 _Avoid_: role, persona
 
-**Control-key generation**:
-The number a node's control keys and the capabilities signed with them are
-minted under, recorded on every lifecycle, claim, input publication and Run
-input. Rotating it makes earlier Run results
-unbindable as inputs. It does not put the plane in service. Its frozen
-spellings -- the `activation_epoch` columns, `--activation-epoch`,
-`hangarOutput.activationEpoch`, the `hangar-output-activation-epoch` marker
-key and the Go type `executioncontrol.ActivationEpoch` -- are kept; the
-avoid-list applies to prose and new names.
-_Avoid_: activation epoch, epoch (alone)
-
-**Facet (signing)**:
-The signing domain of an execution-control capability: base or capture. A
-capability is admitted only by routes of its own facet.
-_Avoid_: facet (alone, for anything else)
+**Facet**:
+The authorization domain of an execution-control capability: base or
+capture. A capability is admitted only by routes of its own facet.
+_Avoid_: facet (alone, for anything else), signing domain
 
 **Execution control**:
 The base protocol by which the web learns and settles one exact
-execution's fate on its node; capture extends it.
-_Avoid_: lease control
+execution's fate on its node; capture extends it. The node answers over
+the mTLS channel the web reached it on; an acknowledgement is that answer,
+and the channel, not a signature, is what makes it the node's. There is no
+node control key and no key generation.
+_Avoid_: lease control, signed acknowledgement, control-key generation
 
 ### Deployment
 
@@ -273,6 +270,8 @@ _Avoid_: shared bucket
 
 **Bootstrap inventory**:
 The one declared list of Secrets a Hangar deployment needs: each entry's
-name, material, the purpose of each key and its consumers. The bootstrap
-creates an absent entry and never replaces, rotates or deletes one.
-_Avoid_: inventory (alone)
+name, material, the purpose of each key and its consumers. It holds CAs,
+leaves, bundles, symmetric keys and tokens; there is no key ring. The
+bootstrap creates an absent entry and never replaces, rotates or deletes
+one.
+_Avoid_: inventory (alone), key ring

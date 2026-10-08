@@ -65,10 +65,9 @@ func (answer controlAnswer) describe() string {
 func (s HangarDaemon) control(facet executioncontrol.Facet, operation, path string,
 	identity executioncontrol.Identity, body any) controlAnswer {
 	token, err := s.Minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:           facet,
-		Operation:       operation,
-		Identity:        identity,
-		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+		Facet:     facet,
+		Operation: operation,
+		Identity:  identity,
 	}, fmt.Sprintf("brine-%s-%d", operation, controlNonces.Add(1)))
 	if err != nil {
 		return controlAnswer{Err: err}

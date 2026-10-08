@@ -28,7 +28,6 @@ type Audience struct {
 	TemplateID      int    `json:"template_id"`
 	PrincipalDigest string `json:"principal_digest"`
 	Input           string `json:"input"`
-	Epoch           int64  `json:"activation_epoch"`
 }
 
 type sourceFacts struct {
@@ -63,7 +62,7 @@ func PrincipalDigest(subject string) string {
 
 func validAudience(a Audience) bool {
 	digest, err := hex.DecodeString(a.PrincipalDigest)
-	return a.TeamID > 0 && a.TemplateID > 0 && err == nil && len(digest) == 32 && strings.ToLower(a.PrincipalDigest) == a.PrincipalDigest && output.OutputName(a.Input).Validate() == nil && a.Epoch > 0
+	return a.TeamID > 0 && a.TemplateID > 0 && err == nil && len(digest) == 32 && strings.ToLower(a.PrincipalDigest) == a.PrincipalDigest && output.OutputName(a.Input).Validate() == nil
 }
 
 func SourceIDValid(id string) bool {

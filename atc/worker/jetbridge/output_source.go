@@ -29,7 +29,7 @@ type OutputSource struct {
 func (s *OutputSource) SetExecutor(executor PodExecutor) { s.executor = executor }
 
 // RecoverExecutionOutcome reads an existing journaled execution: a supervised
-// task or a Run-owned resource command. Its signed start names the original
+// task or a Run-owned resource command. Its retained start names the original
 // Pod and journal; absence never permits launch.
 func (s *OutputSource) RecoverExecutionOutcome(ctx context.Context, name string, start executioncontrol.Acknowledgement) (executioncontrol.ClassifyResult, error) {
 	if err := start.Validate(); err != nil {
@@ -42,7 +42,7 @@ func (s *OutputSource) RecoverExecutionOutcome(ctx context.Context, name string,
 	if err != nil {
 		return executioncontrol.ClassifyResult{}, fmt.Errorf("%w: %v", output.ErrUnresolved, err)
 	}
-	client, err := s.recoveryClient(ctx, name, string(start.NodeUID), start.ActivationEpoch)
+	client, err := s.recoveryClient(ctx, name, string(start.NodeUID))
 	if err != nil {
 		return executioncontrol.ClassifyResult{}, err
 	}
@@ -86,20 +86,20 @@ func (s *OutputSource) RecoverExecutionOutcome(ctx context.Context, name string,
 
 // These recovery calls revalidate the retained node UID for every operation.
 // A replacement with the same Kubernetes name cannot inherit the old source.
-func (s *OutputSource) ClassifyExecution(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (executioncontrol.ClassifyResult, error) {
-	client, err := s.recoveryClient(ctx, name, uid, epoch)
+func (s *OutputSource) ClassifyExecution(ctx context.Context, name, uid string, id executioncontrol.Identity) (executioncontrol.ClassifyResult, error) {
+	client, err := s.recoveryClient(ctx, name, uid)
 	if err != nil {
 		return executioncontrol.ClassifyResult{}, err
 	}
 	return client.Classify(ctx, id)
 }
 
-// ExecutionStart reads the node's signed start for an exact execution, for a
-// Run that admitted it and never retained the start the node committed. The
-// answer must be for that identity, node and epoch; the caller still verifies
-// the node's signature before it retains anything. It starts nothing.
-func (s *OutputSource) ExecutionStart(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
-	client, err := s.recoveryClient(ctx, name, uid, epoch)
+// ExecutionStart reads the node's start for an exact execution, for a Run
+// that admitted it and never retained the start the node committed. The
+// answer must be for that identity and node; it is the node's over the mTLS
+// channel, and the channel is what makes it so. It starts nothing.
+func (s *OutputSource) ExecutionStart(ctx context.Context, name, uid string, id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
+	client, err := s.recoveryClient(ctx, name, uid)
 	if err != nil {
 		return executioncontrol.Acknowledgement{}, err
 	}
@@ -110,15 +110,14 @@ func (s *OutputSource) ExecutionStart(ctx context.Context, name, uid string, epo
 	if err := start.Validate(); err != nil {
 		return executioncontrol.Acknowledgement{}, err
 	}
-	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != id ||
-		start.ActivationEpoch != epoch || string(start.NodeUID) != uid {
+	if start.Kind != executioncontrol.AcknowledgementStart || start.Identity != id || string(start.NodeUID) != uid {
 		return executioncontrol.Acknowledgement{}, fmt.Errorf("%w: the node's start is not this execution's", output.ErrInvalidIdentity)
 	}
 	return start, nil
 }
 
-func (s *OutputSource) StopExecution(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
-	client, err := s.recoveryClient(ctx, name, uid, epoch)
+func (s *OutputSource) StopExecution(ctx context.Context, name, uid string, id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
+	client, err := s.recoveryClient(ctx, name, uid)
 	if err != nil {
 		return executioncontrol.RequestSourcePreservingStopResult{}, err
 	}
@@ -131,16 +130,13 @@ func (s *OutputSource) CaptureControl(ctx context.Context, name string, uid exec
 	return s.exactClient(ctx, name, string(uid))
 }
 
-func (s *OutputSource) recoveryClient(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch) (*OutputControlClient, error) {
-	if epoch != s.controls.epoch {
-		return nil, fmt.Errorf("%w: source epoch differs from runtime", output.ErrConflict)
-	}
+func (s *OutputSource) recoveryClient(ctx context.Context, name, uid string) (*OutputControlClient, error) {
 	return s.exactClient(ctx, name, uid)
 }
 
-func NewOutputSource(client kubernetes.Interface, config Config, minter *executioncontrol.CapabilityMinter, epoch executioncontrol.ActivationEpoch) *OutputSource {
+func NewOutputSource(client kubernetes.Interface, config Config, minter *executioncontrol.CapabilityMinter) *OutputSource {
 	return &OutputSource{client: client, controls: &nodeOutputControls{
-		config: config, resolver: NewNodeIPResolver(client), minter: minter, epoch: epoch,
+		config: config, resolver: NewNodeIPResolver(client), minter: minter,
 	}}
 }
 
@@ -214,7 +210,7 @@ func (s *OutputSource) RuntimeControl(ctx context.Context, capture output.Captur
 	}
 	if _, err := client.Admit(ctx, executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion, Identity: capture.Execution,
-		ActivationEpoch: s.controls.epoch, NodeUID: capture.NodeUID, Capability: baseGrant,
+		NodeUID: capture.NodeUID, Capability: baseGrant,
 	}); err != nil {
 		return nil, err
 	}
@@ -224,12 +220,12 @@ func (s *OutputSource) RuntimeControl(ctx context.Context, capture output.Captur
 	}
 	control := &runtime.ExecutionControl{
 		Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted,
-		Identity: capture.Execution, ActivationEpoch: s.controls.epoch,
+		Identity: capture.Execution,
 		Endpoint: client.endpoint, Capability: baseGrant,
 	}
 	err = control.SelectCapture(runtime.DurableOutputCapture{
 		Version: runtime.DurableOutputCaptureVersion, Identity: capture.Execution,
-		ActivationEpoch: s.controls.epoch, Output: string(capture.Key.Output),
+		Output:             string(capture.Key.Output),
 		SourceControlGrant: holdGrant, CaptureDeadline: capture.CaptureDeadline,
 		Node: capture.Node, NodeUID: capture.NodeUID,
 	})
@@ -238,8 +234,8 @@ func (s *OutputSource) RuntimeControl(ctx context.Context, capture output.Captur
 
 // BaseRuntimeControl admits the original exact identity before Pod creation.
 // Repeating it reconciles an unanswered admission; it starts no process.
-func (s *OutputSource) BaseRuntimeControl(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, id executioncontrol.Identity) (*runtime.ExecutionControl, error) {
-	client, err := s.recoveryClient(ctx, name, uid, epoch)
+func (s *OutputSource) BaseRuntimeControl(ctx context.Context, name, uid string, id executioncontrol.Identity) (*runtime.ExecutionControl, error) {
+	client, err := s.recoveryClient(ctx, name, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -247,16 +243,16 @@ func (s *OutputSource) BaseRuntimeControl(ctx context.Context, name, uid string,
 	if err != nil {
 		return nil, err
 	}
-	if _, err = client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id, ActivationEpoch: epoch, NodeUID: executioncontrol.NodeUID(uid), Capability: grant}); err != nil {
+	if _, err = client.Admit(ctx, executioncontrol.Envelope{ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id, NodeUID: executioncontrol.NodeUID(uid), Capability: grant}); err != nil {
 		return nil, err
 	}
-	return &runtime.ExecutionControl{Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted, Identity: id, ActivationEpoch: epoch, Endpoint: client.endpoint, Capability: grant, Node: &runtime.ExecutionNode{Name: name, UID: executioncontrol.NodeUID(uid)}}, nil
+	return &runtime.ExecutionControl{Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted, Identity: id, Endpoint: client.endpoint, Capability: grant, Node: &runtime.ExecutionNode{Name: name, UID: executioncontrol.NodeUID(uid)}}, nil
 }
 
 // StatTaskInput asks the selected node for exact managed object metadata. The
 // web process neither opens the object store nor materializes repository bytes.
-func (s *OutputSource) StatTaskInput(ctx context.Context, name, uid string, epoch executioncontrol.ActivationEpoch, ref hangar.TreeRef) (output.PublishedObject, error) {
-	client, err := s.recoveryClient(ctx, name, uid, epoch)
+func (s *OutputSource) StatTaskInput(ctx context.Context, name, uid string, ref hangar.TreeRef) (output.PublishedObject, error) {
+	client, err := s.recoveryClient(ctx, name, uid)
 	if err != nil {
 		return output.PublishedObject{}, err
 	}

@@ -33,7 +33,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
@@ -69,7 +68,6 @@ import (
 const (
 	harnessNode     = "harness-node-uid"
 	harnessNodeName = "harness-node"
-	harnessEpoch    = executioncontrol.ActivationEpoch(7)
 )
 
 var (
@@ -152,10 +150,9 @@ func newHarness(t *testing.T) *harness {
 
 	dialer := &injectingDialer{daemon: daemon}
 	coordinator := &hangaroutput.Coordinator{
-		Transactor:      &connTransactor{conn: conn},
-		Rows:            repository,
-		Dial:            dialer.ForNode,
-		ActivationEpoch: harnessEpoch,
+		Transactor: &connTransactor{conn: conn},
+		Rows:       repository,
+		Dial:       dialer.ForNode,
 	}
 
 	return &harness{
@@ -303,8 +300,6 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		}
 	}
 
-	controlKey, _ := writeEd25519(t, dir, "control.pem")
-
 	secret := make([]byte, executioncontrol.CapabilityKeyBytes)
 	if _, err := rand.Read(secret); err != nil {
 		t.Fatalf("secret: %v", err)
@@ -335,13 +330,10 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--output-tenant", "harness",
 		"--pod-terminations-dir", filepath.Join(dir, "terminations"),
 		"--capture-seal-wait", "30s",
-		"--control-key-id", "harness-control-1",
-		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
 		"--materialization-key-id", "harness-materialize-1",
 		"--materialization-key-file", materializeKey,
 		"--node-uid", harnessNode,
-		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
 		"--storage-path", filepath.Join(dir, "storage"),
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
 		"--listen-address", "127.0.0.1",
@@ -366,7 +358,7 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		args:         args,
 	}
 	process.controlHTTP, process.minter = controlClient, minter
-	process.Client = jetbridge.NewOutputControlClient(base, controlClient, minter, harnessEpoch)
+	process.Client = jetbridge.NewOutputControlClient(base, controlClient, minter)
 	process.start(t, binary)
 
 	return process
@@ -403,7 +395,7 @@ func (process *daemonProcess) ClientWithTimeout(timeout time.Duration) *jetbridg
 	httpClient := *process.controlHTTP
 	httpClient.Timeout = timeout
 
-	return jetbridge.NewOutputControlClient(process.Endpoint, &httpClient, process.minter, harnessEpoch)
+	return jetbridge.NewOutputControlClient(process.Endpoint, &httpClient, process.minter)
 }
 
 // Kill is a SIGKILL: the process gets no chance to finish anything it was
@@ -431,26 +423,6 @@ func (process *daemonProcess) Stop() {
 	_ = process.cmd.Process.Kill()
 	_, _ = process.cmd.Process.Wait()
 	process.cmd = nil
-}
-
-func writeEd25519(t *testing.T, dir, name string) (string, []byte) {
-	t.Helper()
-
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("key: %v", err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		t.Fatalf("encoding the key: %v", err)
-	}
-	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
-		t.Fatalf("writing the key: %v", err)
-	}
-
-	return path, public
 }
 
 func freePort(t *testing.T) int {

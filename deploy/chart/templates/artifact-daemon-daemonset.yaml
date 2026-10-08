@@ -38,11 +38,13 @@
   {{- end }}
 {{- end }}
 {{- /*
-The output plane is mounted in this daemon when exact execution control is on:
-its control ledger is this daemon's storage root, its steps are steps/ beneath
-it, and it is served on this daemon's port under this daemon's TLS. The
-validation runs unconditionally, because the refusal an operator most needs is
-the one for a configuration that renders nothing.
+The output plane is mounted in this daemon when exact execution control is on,
+which hands the daemon its capability key (--capability-key; the daemon mounts
+the plane when it is given one): its control ledger is this daemon's storage
+root, its steps are steps/ beneath it, and it is served on this daemon's port
+under this daemon's TLS. The validation runs unconditionally, because the
+refusal an operator most needs is the one for a configuration that renders
+nothing.
 */}}
 {{- include "concourse.hangarOutput.validate" . }}
 {{- $output := .Values.hangarOutput }}
@@ -155,13 +157,10 @@ spec:
             - --mirror-timeout={{ .Values.artifactDaemon.mirror.timeout | default "5m" }}
             {{- if $base }}
             # The output plane: exact execution control, and with the output
-            # facet the durable-capture extension.
-            # The key's id, not its Secret's name. Two nodes holding
-            # different material under one Secret name must not report one id.
-            - --control-key-id={{ $output.executionControl.keyID }}
-            - --control-key-file=/etc/concourse/hangar-output/control/control.key
+            # facet the durable-capture extension. The capability key is what
+            # mounts the plane: the daemon verifies every capability with it,
+            # and signs nothing -- its acknowledgement is its answer over mTLS.
             - --capability-key=/etc/concourse/hangar-output/capability/capability.key
-            - --activation-epoch={{ int $output.activationEpoch }}
             - --output-timeout={{ $output.operationTimeout }}
             - --output-scratch-dir={{ .Values.artifactDaemon.outputScratch.path }}
             - --publish-concurrency={{ int .Values.artifactDaemon.outputScratch.concurrency }}
@@ -255,9 +254,6 @@ spec:
             {{- end }}
             - name: output-scratch
               mountPath: {{ .Values.artifactDaemon.outputScratch.path }}
-            - name: output-control-key
-              mountPath: /etc/concourse/hangar-output/control
-              readOnly: true
             - name: output-capability-key
               mountPath: /etc/concourse/hangar-output/capability
               readOnly: true
@@ -321,9 +317,6 @@ spec:
             # concurrency. An emptyDir with no sizeLimit is bounded by the
             # node's disk: filling it evicts every Pod on the node.
             sizeLimit: {{ .Values.artifactDaemon.outputScratch.sizeLimit }}
-        - name: output-control-key
-          secret:
-            secretName: {{ $output.executionControl.keySecret }}
         - name: output-capability-key
           secret:
             secretName: {{ $output.capabilityKeySecret }}

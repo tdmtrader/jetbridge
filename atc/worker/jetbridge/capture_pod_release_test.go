@@ -120,18 +120,16 @@ func newExactPausePodFixture(t *testing.T, capture bool) *exactPausePodFixture {
 		Fence:       1,
 	}
 	control := &runtime.ExecutionControl{
-		Version:         runtime.ExecutionControlVersion,
-		Phase:           runtime.ControlPhaseAdmitted,
-		Identity:        identity,
-		ActivationEpoch: harnessEpoch,
-		Endpoint:        harness.Endpoint,
-		Capability:      "base-capability",
+		Version:    runtime.ExecutionControlVersion,
+		Phase:      runtime.ControlPhaseAdmitted,
+		Identity:   identity,
+		Endpoint:   harness.Endpoint,
+		Capability: "base-capability",
 	}
 	if capture {
 		if err := control.SelectCapture(runtime.DurableOutputCapture{
 			Version:            runtime.DurableOutputCaptureVersion,
 			Identity:           identity,
-			ActivationEpoch:    harnessEpoch,
 			Output:             "result",
 			SourceControlGrant: "source-control-grant",
 			CaptureDeadline:    time.Now().Add(time.Hour),
@@ -148,7 +146,6 @@ func newExactPausePodFixture(t *testing.T, capture bool) *exactPausePodFixture {
 	executor := &controlExecutor{run: func(int) error { return nil }}
 
 	cfg := capturePodConfig(true)
-	cfg.OutputActivationEpoch = int64(harnessEpoch)
 	container := capturingContainer(t, cfg, false, control)
 	container.clientset = clientset
 	container.executor = executor
@@ -211,7 +208,6 @@ func (fixture *exactPausePodFixture) hold(t *testing.T) {
 	if _, err := fixture.harness.Client.Admit(t.Context(), executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        fixture.identity,
-		ActivationEpoch: harnessEpoch,
 		NodeUID:         executioncontrol.NodeUID(harnessNodeUID),
 		Capability:      "base-capability",
 	}); err != nil {

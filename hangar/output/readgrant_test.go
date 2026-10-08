@@ -11,7 +11,7 @@ package output
 // The two separations that are not tamper rows are the ones that matter most:
 // the foundation's strict-input warrant must not verify here even when both keys
 // hold the same 32 bytes (the domain is inside the signed bytes), and the
-// receipt's Ed25519 key must not be constructible into a read warrant signer at
+// a 64-byte Ed25519 private key must not be constructible into a read warrant signer at
 // all (it is not 32 bytes, and the length check is exact rather than a floor).
 
 import (
@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 var readWarrantKey = []byte("0123456789abcdef0123456789abcdef")
@@ -45,7 +44,6 @@ func readWarrantClaim() ClaimRecord {
 			Generation: 7,
 		},
 		ConsumerBindingID: "result-read:task-handle",
-		ActivationEpoch:   executioncontrol.ActivationEpoch(3),
 		AcquiredAt:        NewTimestamp(acquired),
 		ExpiresAt:         &expires,
 	}
@@ -91,9 +89,6 @@ func TestAnOutputReadWarrantVerifiesForItsOwnClaimRefAndDestination(t *testing.T
 	if claims.ClaimID != claim.ClaimID {
 		t.Errorf("claim id = %q, want %q", claims.ClaimID, claim.ClaimID)
 	}
-	if claims.ActivationEpoch != claim.ActivationEpoch {
-		t.Errorf("activation epoch = %d, want %d", claims.ActivationEpoch, claim.ActivationEpoch)
-	}
 	if claims.NodeUID != "node-1" {
 		t.Errorf("node = %q, want node-1", claims.NodeUID)
 	}
@@ -130,12 +125,6 @@ func TestSignRefusesAClaimThatIsNotALiveReadersHold(t *testing.T) {
 	if _, err := signer.Sign(released, readWarrantDestination(), "node-1"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a released claim was signed into a read warrant: %v", err)
 	}
-
-	invalid := readWarrantClaim()
-	invalid.ActivationEpoch = 0
-	if _, err := signer.Sign(invalid, readWarrantDestination(), "node-1"); err == nil {
-		t.Fatal("a claim naming no activation epoch was signed into a read warrant")
-	}
 }
 
 // Every bound field, one row each.
@@ -159,7 +148,6 @@ func TestAnEditedOutputReadWarrantDoesNotVerify(t *testing.T) {
 		{"ref generation", func(c *ReadWarrantClaims) { c.Ref.Generation++ }},
 		{"destination handle", func(c *ReadWarrantClaims) { c.Destination.Handle = "other-handle" }},
 		{"destination volume", func(c *ReadWarrantClaims) { c.Destination.Volume = "input-9" }},
-		{"activation epoch", func(c *ReadWarrantClaims) { c.ActivationEpoch++ }},
 		{"node", func(c *ReadWarrantClaims) { c.NodeUID = "another-node" }},
 		{"issued at", func(c *ReadWarrantClaims) {
 			c.IssuedAt = NewTimestamp(c.IssuedAt.Add(-time.Hour))
@@ -297,14 +285,15 @@ func TestAStrictInputWarrantDoesNotVerifyAsAnOutputReadWarrant(t *testing.T) {
 	}
 }
 
-// The receipt key cannot become a read warrant signer.
-func TestTheReceiptKeyCannotSignAnOutputReadWarrant(t *testing.T) {
+// An asymmetric key cannot become a read warrant signer: the warrant key is
+// exactly 32 bytes, not whatever happens to be lying around.
+func TestAnEd25519KeyCannotSignAnOutputReadWarrant(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate an Ed25519 key: %v", err)
 	}
 	if _, err := NewReadWarrantSigner(private); !errors.Is(err, ErrIncomplete) {
-		t.Fatalf("an Ed25519 receipt private key was accepted as a read warrant key: %v", err)
+		t.Fatalf("an Ed25519 private key was accepted as a read warrant key: %v", err)
 	}
 	// Exact, not a floor: a key with a stray byte on the end is a different key.
 	if _, err := NewReadWarrantSigner(append(append([]byte{}, readWarrantKey...),
@@ -345,7 +334,6 @@ func TestTheCanonicalReadWarrantBytesCarryNoLeaseIDOrNonce(t *testing.T) {
 		"7",
 		"task-handle",
 		"input-0",
-		"3",
 		"node-1",
 		claim.AcquiredAt.UTC().Format(time.RFC3339Nano),
 		claim.ExpiresAt.UTC().Format(time.RFC3339Nano),

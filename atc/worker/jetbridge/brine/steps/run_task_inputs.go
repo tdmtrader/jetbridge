@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 func RunTaskInputDefinitions() []brine.StepDefinition {
@@ -23,7 +22,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 			return fmt.Errorf("named input admission failed: %v", in.Err)
 		}
 		factory := db.NewPipelineRunFactory(in.Source.Start.DB.Conn, in.Source.Start.DB.LockFactory)
-		starter := &runs.ExecutionStarter{Conn: in.Source.Start.DB.Conn, Factory: factory, Epoch: executioncontrol.ActivationEpoch(hangarEpoch)}
+		starter := &runs.ExecutionStarter{Conn: in.Source.Start.DB.Conn, Factory: factory}
 		port, ok := any(starter).(interface {
 			PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
 		})

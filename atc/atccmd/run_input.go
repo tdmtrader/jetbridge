@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 )
 
@@ -71,11 +70,11 @@ func (cmd *RunCommand) configureRunInputUploads(conn db.DbConn, factory db.Pipel
 		return err
 	}
 	cmd.runAdmitter = runs.NewAdmitter(conn, factory, teams, display, cmd.customRoles)
-	cmd.runAdmitter.SetOutputEpoch(cmd.outputEpoch())
+	cmd.runAdmitter.SetOutputPlane(cmd.outputPlane())
 	cmd.runAdmitter.SetSealedInputAuthority(cmd.runInputAuthority)
 	cmd.runAdmitter.SetCredentialHandoffConfig(cmd.credentialHandoffConfig(source))
-	cmd.runAdmitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
-		client, uid, err := source.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
+	cmd.runAdmitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context) (runs.InputUploadNode, error) {
+		client, uid, err := source.ForInputUpload(ctx)
 		return runs.InputUploadNode{UID: uid, Publisher: client}, err
 	}})
 	return nil
@@ -111,21 +110,18 @@ func (cmd *RunCommand) pipelineRunServices(conn db.DbConn, factory db.PipelineRu
 	if admitter == nil {
 		if display, err := skycmd.NewSkyDisplayUserIdGenerator(cmd.DisplayUserIdPerConnector); err == nil {
 			admitter = runs.NewAdmitter(conn, factory, teams, display, cmd.customRoles)
-			admitter.SetOutputEpoch(cmd.outputEpoch())
+			admitter.SetOutputPlane(cmd.outputPlane())
 		}
 	}
-	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: admitter, Epoch: cmd.Kubernetes.OutputActivationEpoch,
+	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: admitter, HangarOutput: cmd.outputPlane(),
 		ResultReadConcurrency: cmd.RunResultReadConcurrency}
 }
 
-// outputEpoch is the Hangar output epoch Run admission may bind results and
-// inputs under, or zero on a node with no output plane. It is not the Run
-// activation epoch.
-func (cmd *RunCommand) outputEpoch() int64 {
-	if !cmd.Kubernetes.OutputPlaneEnabled {
-		return 0
-	}
-	return cmd.Kubernetes.OutputActivationEpoch
+// outputPlane reports whether this web has a Hangar output plane, which Run
+// admission may bind results and inputs through. It is not the Run activation
+// epoch.
+func (cmd *RunCommand) outputPlane() bool {
+	return cmd.Kubernetes.OutputPlaneEnabled
 }
 
 // reconcilePipelineRunActivation moves the Run contract's own activation

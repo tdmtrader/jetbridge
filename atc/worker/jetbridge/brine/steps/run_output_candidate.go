@@ -164,7 +164,7 @@ func advanceRunCapture(in RunOutputRuntime, rec *brine.Recorder, publish func(st
 		return out, err
 	}
 	out.Start.Record = r
-	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	start, err := client.RecordStart(ctx, r.Execution, out.Hold.Marker.PodUID, executioncontrol.ProcessIdentity(freshUUID()))
 	if err != nil {
 		return out, err
@@ -239,7 +239,6 @@ func runOutputCoordinator(in RunOutputRuntime) *hangaroutput.Coordinator {
 			defer cancel()
 			return source.CaptureControl(dial, node, uid)
 		},
-		ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
 	}
 }
 

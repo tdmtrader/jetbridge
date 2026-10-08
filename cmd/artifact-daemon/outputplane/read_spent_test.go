@@ -146,7 +146,6 @@ func TestAReadWarrantForAnotherNodeIsRefusedAndSpendsNothing(t *testing.T) {
 		ClaimID:           "66666666-6666-4666-8666-666666666666",
 		Ref:               ref,
 		ConsumerBindingID: "result-read:consumer",
-		ActivationEpoch:   fixture.daemon.ActivationEpoch(),
 		AcquiredAt:        output.NewTimestamp(now.Add(-time.Minute)),
 		ExpiresAt:         &expires,
 	}

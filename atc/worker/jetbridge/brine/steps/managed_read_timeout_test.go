@@ -15,12 +15,10 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -93,8 +91,8 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	if err != nil {
 		return err
 	}
-	reader := runs.ResultReader{Conn: publication.Start.DB.Conn, Minter: signer, Source: func(ctx context.Context, epoch executioncontrol.ActivationEpoch) (runs.ResultSource, error) {
-		return source.ForResultRead(ctx, epoch)
+	reader := runs.ResultReader{Conn: publication.Start.DB.Conn, Minter: signer, Source: func(ctx context.Context) (runs.ResultSource, error) {
+		return source.ForResultRead(ctx)
 	}}
 	tree, err := reader.Read(context.Background(), publication.Start.Creation.Run.ID(), publication.Start.Plan.RunResult.Name)
 	if err != nil {
@@ -110,8 +108,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 
 	conn := publication.Start.DB.Conn
 	factory := db.NewPipelineRunFactory(conn, publication.Start.DB.LockFactory)
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(publication.Start.Daemon.ControlPublic)}}}
-	starter := &runs.ExecutionStarter{Conn: conn, Factory: factory, Source: source, Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys}
+	starter := &runs.ExecutionStarter{Conn: conn, Factory: factory, Source: source}
 	starter.SetInputReadMinter(signer)
 	definition, found, err := factory.Definition(in.Run.ID)
 	if err != nil || !found {
@@ -138,7 +135,6 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 		return err
 	}
 	config.OutputPlaneEnabled, config.HangarEnabled = true, true
-	config.OutputActivationEpoch = int64(hangarEpoch)
 	config.ArtifactDaemonHostPath = publication.Start.Daemon.Output.Root
 	client := publication.Candidate.Runtime.Client
 	cluster, err := getRealCluster(res)
@@ -147,7 +143,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	}
 	worker := jetbridge.NewWorker(row, client, config, jetbridge.WorkerDeps{
 		Executor:          jetbridge.NewSPDYExecutor(client, cluster.env.Config),
-		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), publication.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), publication.Start.Daemon.Minter),
 		ExecutionPreparer: starter,
 	})
 	metadata := db.ContainerMetadata{BuildID: buildID, PipelineID: pipelineID, Type: db.ContainerTypeTask}
@@ -175,7 +171,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	}
 	// Exercise the generated initializer's exact requests through the production
 	// client; this host need not have the task image's wget executable.
-	readerClient, err := source.ForResultRead(ctx, executioncontrol.ActivationEpoch(hangarEpoch))
+	readerClient, err := source.ForResultRead(ctx)
 	if err != nil {
 		return err
 	}

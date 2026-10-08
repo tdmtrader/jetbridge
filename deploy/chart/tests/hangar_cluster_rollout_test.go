@@ -18,9 +18,6 @@ var rolloutSteps = []struct {
 	{"S0 pre-flight", nil},
 	{"S1 bootstrap", []string{
 		"hangarBootstrap.enabled=true",
-		"hangarOutput.activationEpoch=1",
-		"hangarOutput.executionControl.keySecret=concourse-hangar-control-key-e1",
-		"hangarOutput.executionControl.keyID=control-1",
 		"hangarOutput.capabilityKeySecret=concourse-hangar-capability-key",
 		"hangarOutput.materializationKeySecret=concourse-hangar-materialize-key",
 		"hangarStorage.disk.tls.existingSecret=concourse-hangar-store-tls",

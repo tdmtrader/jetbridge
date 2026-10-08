@@ -4,7 +4,7 @@ package outputplane
 //
 // The control API first listened on 127.0.0.1 in plaintext and that was the
 // right shape: every caller was a pod on this node and the capability is a
-// signed, facet-scoped, single-use bearer token. Its caller is now the ATC,
+// MAC'd, facet-scoped, single-use bearer token. Its caller is now the ATC,
 // which is on the web pod, and a bearer token over plaintext off-node is
 // interceptable inside its TTL.
 //
@@ -85,10 +85,9 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 
 		nonce++
 		token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
-			Facet:           facet,
-			Operation:       operation,
-			Identity:        identity(1),
-			ActivationEpoch: fixture.epoch,
+			Facet:     facet,
+			Operation: operation,
+			Identity:  identity(1),
 		}, "tls-"+operation+"-"+strconv.Itoa(nonce))
 		if err != nil {
 			t.Fatalf("minting: %v", err)
@@ -145,7 +144,7 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		}
 	}
 
-	// The start inspection reads a signed node fact and is the control
+	// The start inspection reads a recorded node fact and is the control
 	// plane's alone. This execution has no start, so the certificate is
 	// answered with the ledger's 404 and its absence with 401.
 	if code := call(withCert, "/execution/v1/start/inspect", executioncontrol.BaseFacet, "inspect-start",

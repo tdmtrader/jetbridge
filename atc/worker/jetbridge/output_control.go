@@ -75,7 +75,6 @@ type OutputControlClient struct {
 	endpoint    string
 	http        *http.Client
 	minter      *executioncontrol.CapabilityMinter
-	epoch       executioncontrol.ActivationEpoch
 	readTimeout time.Duration
 	// node is the UID of the node this client's daemon runs on, when the
 	// client was chosen for one: a read warrant is bound to it.
@@ -95,9 +94,8 @@ func (client *OutputControlClient) OnNode(node executioncontrol.NodeUID) *Output
 
 // NewOutputControlClient builds the client for one node's daemon.
 func NewOutputControlClient(endpoint string, httpClient *http.Client,
-	minter *executioncontrol.CapabilityMinter,
-	epoch executioncontrol.ActivationEpoch) *OutputControlClient {
-	return &OutputControlClient{endpoint: endpoint, http: httpClient, minter: minter, epoch: epoch, readTimeout: output.DefaultOperationTimeout}
+	minter *executioncontrol.CapabilityMinter) *OutputControlClient {
+	return &OutputControlClient{endpoint: endpoint, http: httpClient, minter: minter, readTimeout: output.DefaultOperationTimeout}
 }
 
 var _ OutputControl = (*OutputControlClient)(nil)
@@ -117,10 +115,9 @@ func (client *OutputControlClient) MintGrant(facet executioncontrol.Facet, opera
 	}
 
 	return client.minter.Mint(executioncontrol.CapabilityClaims{
-		Facet:           facet,
-		Operation:       operation,
-		Identity:        id,
-		ActivationEpoch: client.epoch,
+		Facet:     facet,
+		Operation: operation,
+		Identity:  id,
 	}, nonce)
 }
 
@@ -276,7 +273,7 @@ func (client *OutputControlClient) RecordStart(ctx context.Context, id execution
 	return ack, err
 }
 
-// InspectStart reads the node's stored, signed start, or refuses with
+// InspectStart reads the node's stored start, or refuses with
 // ErrNotFound when the node recorded none. It writes nothing.
 func (client *OutputControlClient) InspectStart(ctx context.Context,
 	id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
@@ -349,14 +346,12 @@ type nodeOutputControls struct {
 	config   Config
 	resolver *NodeIPResolver
 	minter   *executioncontrol.CapabilityMinter
-	epoch    executioncontrol.ActivationEpoch
 }
 
 // NewOutputControls builds the resolver a Worker is given.
 func NewOutputControls(config Config, resolver *NodeIPResolver,
-	minter *executioncontrol.CapabilityMinter,
-	epoch executioncontrol.ActivationEpoch) OutputControlResolver {
-	return &nodeOutputControls{config: config, resolver: resolver, minter: minter, epoch: epoch}
+	minter *executioncontrol.CapabilityMinter) OutputControlResolver {
+	return &nodeOutputControls{config: config, resolver: resolver, minter: minter}
 }
 
 func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string) (OutputControl, error) {
@@ -381,7 +376,7 @@ func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName 
 	client := NewOutputControlClient(
 		fmt.Sprintf("%s://%s:%d", outputPlaneURLScheme(), nodeIP, port),
 		newOutputPlaneHTTPClient(controls.config, 30*time.Second),
-		controls.minter, controls.epoch)
+		controls.minter)
 	client.readTimeout = controls.config.OutputOperationTimeout
 	return client, nil
 }

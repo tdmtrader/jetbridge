@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
 func RunInputAPIDefinitions() []brine.StepDefinition {
@@ -55,18 +54,18 @@ func configureRunInputAPI(in RunInputAdmission, caller string, rec *brine.Record
 	if err != nil {
 		return nil, nil, err
 	}
-	in.Port.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
-		client, uid, err := outputSource.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
+	in.Port.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context) (runs.InputUploadNode, error) {
+		client, uid, err := outputSource.ForInputUpload(ctx)
 		return runs.InputUploadNode{UID: uid, Publisher: client}, err
 	}})
 	oldEnabled := atc.PipelineRunActivationEpoch
 	atc.PipelineRunActivationEpoch = 0
 	if caller != "held" {
-		atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+		atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
 	}
 	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = oldEnabled; return nil })
 	auth.mu.Lock()
-	auth.RunServices = pipelinerunserver.Services{Admitter: in.Port, Epoch: int64(hangarEpoch)}
+	auth.RunServices = pipelinerunserver.Services{Admitter: in.Port}
 	auth.API, err = auth.apiHandler(auth.Verifier)
 	auth.mu.Unlock()
 	if err != nil {
@@ -158,7 +157,7 @@ func exerciseRunInputAPI(in RunInputAdmission, caller string, rec *brine.Recorde
 	if err != nil {
 		return err
 	}
-	_, err = authority.Verify(source.SourceID, source.Bearer, runinput.Audience{TeamID: team.ID(), TemplateID: in.Template.ID(), PrincipalDigest: runinput.PrincipalDigest(claims["sub"].(string)), Input: name, Epoch: int64(hangarEpoch)})
+	_, err = authority.Verify(source.SourceID, source.Bearer, runinput.Audience{TeamID: team.ID(), TemplateID: in.Template.ID(), PrincipalDigest: runinput.PrincipalDigest(claims["sub"].(string)), Input: name})
 	if err != nil {
 		return fmt.Errorf("HTTP grant belongs to another caller: %w", err)
 	}

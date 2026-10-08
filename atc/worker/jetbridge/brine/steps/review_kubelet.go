@@ -109,10 +109,10 @@ func liveReviewCredentialLoss(ctx context.Context, in RunOutputRuntime, executor
 	}
 	source := in.source()
 	id := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(freshUUID()), Fence: 1}
-	if _, err = source.BaseRuntimeControl(ctx, in.Node.Name, string(in.Node.UID), executioncontrol.ActivationEpoch(hangarEpoch), id); err != nil {
+	if _, err = source.BaseRuntimeControl(ctx, in.Node.Name, string(in.Node.UID), id); err != nil {
 		return err
 	}
-	control := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	control := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter)
 	start, err := control.RecordStart(ctx, id, executioncontrol.PodUID(pod.UID), "live-review-credential-session")
 	if err != nil {
 		return err

@@ -5,15 +5,12 @@
 // against what already exists, refuses with a named cause and writes nothing
 // if any is wrong, and otherwise creates only the absent entries. It never
 // updates, rotates or deletes a Secret: a regenerated key would break every
-// node statement and every client already issued against the old one.
+// capability and every client already issued against the old one.
 package bootstrap
 
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -26,9 +23,6 @@ type Kind string
 const (
 	// KindRandomKey is one 32-byte symmetric key under Entry.Key.
 	KindRandomKey Kind = "random32"
-	// KindEd25519 is one PKCS#8 PEM Ed25519 private key under Entry.Key whose
-	// public half joins Entry.Ring of the ring entry.
-	KindEd25519 Kind = "ed25519"
 	// KindStoreTokens is the disk store's four principal tokens and the
 	// server.json mapping them.
 	KindStoreTokens Kind = "store-tokens"
@@ -43,16 +37,6 @@ const (
 	// KindTLSBundle is a self-contained server pair and the CA that issued it,
 	// written in one Secret (tls.crt, tls.key, ca.crt).
 	KindTLSBundle Kind = "tls-bundle"
-	// KindRing is the public node-control verification ring composed from
-	// every KindEd25519 entry: control-keys.json.
-	KindRing Kind = "ring"
-)
-
-// RingName says which ring an Ed25519 key's public half joins.
-type RingName string
-
-const (
-	ControlRing RingName = "control"
 )
 
 // Inventory is the bootstrap inventory the chart declares.
@@ -68,7 +52,7 @@ type Entry struct {
 	Name string `json:"name"`
 	Kind Kind   `json:"kind"`
 
-	// Key is the data key of a KindRandomKey or KindEd25519 entry.
+	// Key is the data key of a KindRandomKey entry.
 	Key string `json:"key,omitempty"`
 
 	// CA names the KindCA entry a leaf is issued from.
@@ -77,17 +61,6 @@ type Entry struct {
 	DNSNames []string `json:"dnsNames,omitempty"`
 	// CommonName of a CA, leaf or bundle certificate.
 	CommonName string `json:"commonName,omitempty"`
-
-	// Ring and Epoch place an Ed25519 key on a ring.
-	Ring  RingName `json:"ring,omitempty"`
-	Epoch int64    `json:"epoch,omitempty"`
-
-	// Required marks an entry the bootstrap reads and never creates: an
-	// earlier activation epoch's key, whose absence is a refusal.
-	Required bool `json:"required,omitempty"`
-
-	// ActiveEpoch is a KindRing entry's active activation epoch.
-	ActiveEpoch int64 `json:"activeEpoch,omitempty"`
 
 	// Purposes says what each data key is for, and Consumers which components
 	// mount the Secret. Reconcile does not act on them; they are the
@@ -125,7 +98,7 @@ type Logger func(event string, fields map[string]string)
 var ErrRefused = errors.New("bootstrap refused")
 
 // Reconcile validates the whole inventory, then creates the absent entries in
-// dependency order: CAs, leaves and bundles, keys and tokens, the ring last.
+// dependency order: CAs first, then leaves and bundles, then keys and tokens.
 // Re-running it after any partial run completes that run without replacing
 // anything.
 func Reconcile(ctx context.Context, inventory Inventory, store SecretStore, log Logger) error {
@@ -174,7 +147,6 @@ func Reconcile(ctx context.Context, inventory Inventory, store SecretStore, log 
 
 func (inventory Inventory) validate() error {
 	names := map[string]Entry{}
-	rings := 0
 	for _, entry := range inventory.Entries {
 		if entry.Name == "" {
 			return errors.New("an entry has no name")
@@ -188,15 +160,6 @@ func (inventory Inventory) validate() error {
 			if entry.Key == "" {
 				return fmt.Errorf("%q names no data key", entry.Name)
 			}
-		case KindEd25519:
-			if entry.Key == "" || entry.Epoch <= 0 || entry.Ring != ControlRing {
-				return fmt.Errorf("%q needs a data key, an activation epoch and the control ring", entry.Name)
-			}
-		case KindRing:
-			rings++
-			if entry.ActiveEpoch <= 0 {
-				return fmt.Errorf("ring %q needs its active activation epoch", entry.Name)
-			}
 		case KindTLSServer, KindTLSClient:
 			if entry.CA == "" {
 				return fmt.Errorf("leaf %q names no CA", entry.Name)
@@ -205,34 +168,25 @@ func (inventory Inventory) validate() error {
 		default:
 			return fmt.Errorf("%q has unknown kind %q", entry.Name, entry.Kind)
 		}
-		if entry.Required && entry.Kind != KindEd25519 {
-			return fmt.Errorf("%q is required but only an earlier activation epoch's key may be", entry.Name)
-		}
 	}
 	for _, entry := range inventory.Entries {
 		if entry.CA != "" && names[entry.CA].Kind != KindCA {
 			return fmt.Errorf("leaf %q names CA %q, which is not a CA entry", entry.Name, entry.CA)
 		}
 	}
-	if rings > 1 {
-		return errors.New("more than one ring entry")
-	}
 	return nil
 }
 
 // createPlan is what a validated run will create, and the material it reads.
 type createPlan struct {
-	order   []Entry
-	cas     map[string]certificateAuthority
-	publics map[string]ed25519.PublicKey
-	ring    *Entry
-	entries []Entry
+	order []Entry
+	cas   map[string]certificateAuthority
 }
 
 // planCreates validates every existing Secret and returns the absent entries
 // in creation order. Any problem refuses the whole run before a write.
 func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, error) {
-	plan := &createPlan{cas: map[string]certificateAuthority{}, publics: map[string]ed25519.PublicKey{}, entries: inventory.Entries}
+	plan := &createPlan{cas: map[string]certificateAuthority{}}
 	var problems []string
 	refuse := func(entry Entry, format string, args ...any) {
 		problems = append(problems, fmt.Sprintf("%s %q: %s", entry.Kind, entry.Name, fmt.Sprintf(format, args...)))
@@ -257,9 +211,6 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 		switch {
 		case entry.Kind == KindCA:
 			continue
-		case !found && entry.Required:
-			refuse(entry, "is absent; an earlier activation epoch's key is never created again, because a new one would verify nothing that epoch signed")
-			continue
 		case !found:
 			// An absent leaf is issued from its CA, which is either valid
 			// above or created first in this run.
@@ -270,13 +221,6 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 			if err := validateRandomKey(secret.Data[entry.Key]); err != nil {
 				refuse(entry, "key %q %v", entry.Key, err)
 			}
-		case KindEd25519:
-			public, err := ed25519PublicHalf(secret.Data[entry.Key])
-			if err != nil {
-				refuse(entry, "key %q %v", entry.Key, err)
-				continue
-			}
-			plan.publics[entry.Name] = public
 		case KindStoreTokens:
 			if err := validateStoreTokens(secret.Data); err != nil {
 				refuse(entry, "%v", err)
@@ -305,36 +249,6 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 			if err := validateLeaf(ca, serverLeaf, secret.Data["tls.crt"], secret.Data["tls.key"], entry.DNSNames); err != nil {
 				refuse(entry, "%v", err)
 			}
-		case KindRing:
-			// Checked once every key's public half is known.
-		}
-	}
-
-	for _, entry := range inventory.Entries {
-		if entry.Kind == KindRing {
-			e := entry
-			plan.ring = &e
-		}
-	}
-	if plan.ring != nil {
-		if secret, found := existing[plan.ring.Name]; found {
-			for _, entry := range inventory.Entries {
-				if entry.Kind == KindEd25519 && plan.publics[entry.Name] == nil {
-					refuse(*plan.ring, "exists while key %q is absent; the ring would no longer match its keys", entry.Name)
-				}
-			}
-			if len(problems) == 0 {
-				want, err := composeRing(*plan.ring, inventory.Entries, plan.publics)
-				if err != nil {
-					refuse(*plan.ring, "%v", err)
-				} else {
-					for key, body := range want {
-						if !bytes.Equal(secret.Data[key], body) {
-							refuse(*plan.ring, "%s does not match the public halves of its keys", key)
-						}
-					}
-				}
-			}
 		}
 	}
 
@@ -343,7 +257,7 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 		return nil, fmt.Errorf("%w: %s", ErrRefused, strings.Join(problems, "; "))
 	}
 
-	rank := map[Kind]int{KindCA: 0, KindTLSBundle: 1, KindTLSServer: 1, KindTLSClient: 1, KindRandomKey: 2, KindEd25519: 2, KindStoreTokens: 2, KindRing: 3}
+	rank := map[Kind]int{KindCA: 0, KindTLSBundle: 1, KindTLSServer: 1, KindTLSClient: 1, KindRandomKey: 2, KindStoreTokens: 2}
 	for _, entry := range inventory.Entries {
 		if _, found := existing[entry.Name]; found {
 			continue
@@ -355,7 +269,7 @@ func planCreates(inventory Inventory, existing map[string]Secret) (*createPlan, 
 }
 
 // generate makes one absent entry's Secret, recording what later entries need
-// from it (a CA's key, a key's public half).
+// from it (a CA's key).
 func (plan *createPlan) generate(entry Entry) (Secret, map[string]string, error) {
 	fields := map[string]string{}
 	secret := Secret{Name: entry.Name, Type: secretTypeOpaque, Data: map[string][]byte{}}
@@ -398,64 +312,14 @@ func (plan *createPlan) generate(entry Entry) (Secret, map[string]string, error)
 			return Secret{}, nil, err
 		}
 		secret.Data[entry.Key] = key
-	case KindEd25519:
-		keyPEM, public, err := newEd25519Key()
-		if err != nil {
-			return Secret{}, nil, err
-		}
-		plan.publics[entry.Name] = public
-		secret.Data[entry.Key] = keyPEM
-		fields["public"] = Fingerprint(public)
 	case KindStoreTokens:
 		data, err := newStoreTokens()
 		if err != nil {
 			return Secret{}, nil, err
 		}
 		secret.Data = data
-	case KindRing:
-		files, err := composeRing(entry, plan.entries, plan.publics)
-		if err != nil {
-			return Secret{}, nil, err
-		}
-		secret.Data = files
 	default:
 		return Secret{}, nil, fmt.Errorf("cannot generate kind %q", entry.Kind)
 	}
 	return secret, fields, nil
-}
-
-type controlRingFile struct {
-	ActivationEpoch int64              `json:"activation_epoch"`
-	Keys            []controlRingEntry `json:"keys"`
-}
-
-type controlRingEntry struct {
-	Epoch     int64  `json:"epoch"`
-	PublicKey string `json:"public_key"`
-}
-
-// composeRing builds control-keys.json from the public halves of the
-// inventory's Ed25519 keys, ordered by activation epoch so the same keys always
-// give the same bytes. Only public halves enter a ring.
-func composeRing(ring Entry, entries []Entry, publics map[string]ed25519.PublicKey) (map[string][]byte, error) {
-	control := controlRingFile{ActivationEpoch: ring.ActiveEpoch, Keys: []controlRingEntry{}}
-	for _, entry := range entries {
-		if entry.Kind != KindEd25519 {
-			continue
-		}
-		public := publics[entry.Name]
-		if public == nil {
-			return nil, fmt.Errorf("key %q has no public half yet", entry.Name)
-		}
-		encoded := base64.StdEncoding.EncodeToString(public)
-		if entry.Ring == ControlRing {
-			control.Keys = append(control.Keys, controlRingEntry{Epoch: entry.Epoch, PublicKey: encoded})
-		}
-	}
-	sort.Slice(control.Keys, func(i, j int) bool { return control.Keys[i].Epoch < control.Keys[j].Epoch })
-	controlBody, err := json.Marshal(control)
-	if err != nil {
-		return nil, err
-	}
-	return map[string][]byte{"control-keys.json": controlBody}, nil
 }

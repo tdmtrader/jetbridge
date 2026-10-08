@@ -168,7 +168,6 @@ func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 					executioncontrol.Envelope{
 						ProtocolVersion: executioncontrol.ProtocolVersion,
 						Identity:        taken,
-						ActivationEpoch: in.Admission.ActivationEpoch,
 						NodeUID:         hangarNodeUID,
 						Capability:      "opaque-takeover-capability",
 					})
@@ -531,8 +530,8 @@ func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("the daemon witnessed %+v and the step reports %+v",
 						*in.Witness.Outcome, *in.Reported.Outcome)
 				}
-				if in.Witness.Signature != in.Reported.Signature {
-					return fmt.Errorf("the step reports an outcome under a different statement " +
+				if in.Witness.LedgerSequence != in.Reported.LedgerSequence {
+					return fmt.Errorf("the step reports an outcome under a different ledger statement " +
 						"than the one the daemon witnessed")
 				}
 
@@ -675,10 +674,8 @@ func (source HeldSource) recordWitness(kind executioncontrol.AcknowledgementKind
 	if err != nil {
 		return witnessed, fmt.Errorf("recording the outcome: %w", err)
 	}
-	if err := executioncontrol.VerifyAcknowledgement(witness,
-		source.Draft.Daemon.ControlPublic); err != nil {
-		return witnessed, fmt.Errorf("the witness does not verify under the daemon's control "+
-			"public key: %w", err)
+	if err := witness.Validate(); err != nil {
+		return witnessed, fmt.Errorf("the witness is not a well-formed ledger statement: %w", err)
 	}
 	witnessed.Witness = witness
 

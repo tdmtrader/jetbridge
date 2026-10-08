@@ -207,18 +207,19 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 // discover the prefix; the immutable epoch/identity are rechecked under Run lock.
 //
 // The Run continues under its own birth epoch whatever happens to the Hangar
-// output epoch: publication needs only that the Run activation marker has not
-// been downgraded below it. A Hangar rotation therefore never strands a running
-// Run's finalization; its captures are settled or refused on their own epochs.
+// output plane: publication needs only that the Run activation marker has not
+// been downgraded below it. A plane drain therefore never strands a running
+// Run's finalization; its captures are settled or refused on their own.
 func lockRunResultPublication(ctx context.Context, tx Tx, runID int) (*pipelineRun, error) {
-	run, _, err := lockRunResultPublicationUnder(ctx, tx, runID, 0)
+	run, _, err := lockRunResultPublicationUnder(ctx, tx, runID, false)
 	return run, err
 }
 
-// lockRunResultPublicationUnder also takes the named Hangar epoch's row inside
-// the activation prefix, and reports whether that epoch is enabled, for work
-// that must deliver something new under it.
-func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangarEpoch int64) (*pipelineRun, bool, error) {
+// lockRunResultPublicationUnder also takes the output plane's in-service row
+// inside the activation prefix when hangarOutput says a plane is configured,
+// and reports whether it is in service, for work that must deliver something
+// new under it.
+func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangarOutput bool) (*pipelineRun, bool, error) {
 	var teamID int
 	var epoch int64
 	if err := tx.QueryRowContext(ctx, `SELECT p.team_id,coalesce(r.activation_epoch,0) FROM pipeline_runs r JOIN pipelines p ON p.id=r.template_pipeline_id WHERE r.id=$1`, runID).Scan(&teamID, &epoch); err != nil {
@@ -232,7 +233,7 @@ func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangar
 		return nil, false, err
 	}
 	hangarEnabled := false
-	if hangarEpoch > 0 {
+	if hangarOutput {
 		var err error
 		if hangarEnabled, err = hangarLockEnabled(ctx, tx); err != nil {
 			return nil, false, err

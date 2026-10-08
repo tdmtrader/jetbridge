@@ -30,7 +30,7 @@ func (s *OutputSource) InterruptExecution(ctx context.Context, node string, star
 	if err != nil {
 		return fmt.Errorf("%w: %v", output.ErrUnresolved, err)
 	}
-	client, err := s.recoveryClient(ctx, node, string(start.NodeUID), start.ActivationEpoch)
+	client, err := s.recoveryClient(ctx, node, string(start.NodeUID))
 	if err != nil {
 		return err
 	}

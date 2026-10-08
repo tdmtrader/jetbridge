@@ -8,10 +8,6 @@
 {{- printf "%s-%s" (include "concourse.fullname" .root | trunc $budget | trimSuffix "-") $suffix -}}
 {{- end }}
 
-{{- define "concourse.hangarOutput.controlKeysName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-control-keys") }}
-{{- end }}
-
 {{- define "concourse.durationSeconds" -}}
 {{- $name := .name -}}
 {{- $value := toString .value -}}
@@ -80,20 +76,8 @@
 {{- end -}}
 
 {{- if $base -}}
-{{- if not $output.executionControl.keySecret -}}
-{{- fail "hangarOutput.executionControl.keySecret is required: the node signs every execution and source ledger statement with it, and an unsigned acknowledgement is not proof." -}}
-{{- end -}}
-{{- if not $output.executionControl.keyID -}}
-{{- fail "hangarOutput.executionControl.keyID is required: it is the id every node reports over its handshake. It names KEY MATERIAL and not the Secret, so two nodes holding different private keys must not report one id." -}}
-{{- end -}}
 {{- if not $output.capabilityKeySecret -}}
-{{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key." -}}
-{{- end -}}
-{{- if kindIs "string" $output.activationEpoch -}}
-{{- fail "hangarOutput.activationEpoch must be an integer, not a string" -}}
-{{- end -}}
-{{- if le (int $output.activationEpoch) 0 -}}
-{{- fail "hangarOutput.activationEpoch is required and must be positive: it is the control-key generation every capability is minted under, and zero is the absence." -}}
+{{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key, and the daemon mounts its output plane only when it is given that key." -}}
 {{- end -}}
 {{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- end -}}
@@ -129,48 +113,8 @@
 {{- fail "hangarOutput.materializationKeySecret is required: output read warrants use their own key and their own domain, never the node control key." -}}
 {{- end -}}
 
-{{- $ids := dict -}}
-{{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "materializationKeyID" $output.materializationKeyID -}}
-{{- if $id -}}
-{{- if hasKey $ids $id -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and the two are pinned separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
-{{- end -}}
-{{- $_ := set $ids $id $role -}}
-{{- end -}}
-{{- end -}}
-
-{{- $secrets := dict -}}
-{{- range $role, $secret := dict "executionControl.keySecret" $output.executionControl.keySecret "capabilityKeySecret" $output.capabilityKeySecret "materializationKeySecret" $output.materializationKeySecret -}}
-{{- if $secret -}}
-{{- if hasKey $secrets $secret -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a control statement says a process on a node did something, a control capability authorizes one operation, a read warrant authorizes one staged read -- and they are pinned separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
-{{- end -}}
-{{- $_ := set $secrets $secret $role -}}
-{{- end -}}
-{{- end -}}
-
-{{- if include "concourse.hangarBootstrap.ringEnabled" . -}}
-{{- /* The bootstrap composes the ring from the keys' public halves; a ring
-       also declared in values would be a second answer to "which key checks
-       this". */ -}}
-{{- if $output.executionControl.publicKeys -}}
-{{- fail "hangarBootstrap composes the verification ring: leave hangarOutput.executionControl.publicKeys empty, and list earlier control-key epochs in hangarBootstrap.referencedKeys" -}}
-{{- end -}}
-{{- if not $output.executionControl.keyID -}}
-{{- fail "hangarOutput.executionControl.keyID is required: every node reports it over its handshake." -}}
-{{- end -}}
-{{- else -}}
-{{- $controlEpochs := dict -}}
-{{- range $entry := $output.executionControl.publicKeys -}}
-{{- $epoch := toString $entry.epoch -}}
-{{- if or (kindIs "string" $entry.epoch) (le (int $entry.epoch) 0) (hasKey $controlEpochs $epoch) (ne (len ($entry.key | default "" | b64dec)) 32) -}}
-{{- fail "hangarOutput.executionControl.publicKeys requires one base64 Ed25519 public key per positive integer epoch" -}}
-{{- end -}}
-{{- $_ := set $controlEpochs $epoch true -}}
-{{- end -}}
-{{- if not (hasKey $controlEpochs (toString $output.activationEpoch)) -}}
-{{- fail "hangarOutput.executionControl.publicKeys has no key for the active epoch; the web cannot verify node execution statements" -}}
-{{- end -}}
+{{- if and $output.capabilityKeySecret (eq $output.capabilityKeySecret $output.materializationKeySecret) -}}
+{{- fail (printf "hangarOutput.capabilityKeySecret and hangarOutput.materializationKeySecret name the same Secret %q. They say different things -- a control capability authorizes one operation, a read warrant authorizes one staged read -- and they are pinned separately, so one Secret for two roles means rotating either rotates both." $output.capabilityKeySecret) -}}
 {{- end -}}
 {{- end }}
 
@@ -312,7 +256,6 @@ must be distinct Kubernetes accounts bound to distinct cloud principals.
 - --output-bucket={{ $root.Values.hangarOutput.bucket }}
 - --output-prefix={{ $root.Values.hangarOutput.prefix }}
 - --output-tenant={{ $root.Values.hangarOutput.tenant }}
-- --activation-epoch={{ int $root.Values.hangarOutput.activationEpoch }}
 {{- if eq $root.Values.hangarOutput.store "disk" }}
 - --output-endpoint={{ include "concourse.hangarStorage.endpoint" $root }}
 - --output-store-id={{ $root.Values.hangarStorage.disk.storeID }}

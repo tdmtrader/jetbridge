@@ -12,7 +12,7 @@ import (
 
 // ReserveInputPublication records the node-derived logical identity BEFORE the
 // consumer asks the node to create an object. The consumer owns authorization,
-// the activation/domain prefix and this transaction. No network work occurs
+// the domain prefix and this transaction. No network work occurs
 // here. A reservation provides correlation, not a claim or a Run binding.
 func (repository *HangarOutputRepository) ReserveInputPublication(ctx context.Context, tx output.Tx, stage output.InputStage, nonce string) error {
 	if err := stage.Validate(); err != nil {
@@ -30,9 +30,9 @@ func (repository *HangarOutputRepository) ReserveInputPublication(ctx context.Co
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_input_publications
-		(reservation_id, scope, digest, activation_epoch, stage, nonce, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, ($5::jsonb->>'expires_at')::timestamptz)
-		ON CONFLICT (reservation_id) DO NOTHING`, string(stage.ReservationID), string(stage.Scope), string(stage.Digest), int64(stage.ActivationEpoch), body, nonce); err != nil {
+		(reservation_id, scope, digest, stage, nonce, expires_at)
+		VALUES ($1, $2, $3, $4, $5, ($4::jsonb->>'expires_at')::timestamptz)
+		ON CONFLICT (reservation_id) DO NOTHING`, string(stage.ReservationID), string(stage.Scope), string(stage.Digest), body, nonce); err != nil {
 		return hangarConflict(err)
 	}
 	var same bool
@@ -83,16 +83,9 @@ func (repository *HangarOutputRepository) RegisterInputPublication(ctx context.C
 	if !fresh {
 		return fmt.Errorf("%w: input publication reservation expired", output.ErrConflict)
 	}
-	lifecycle, err := repository.registerLifecycle(ctx, tx, publication.Attributes.Ref, int64(stage.ActivationEpoch))
+	lifecycle, err := repository.registerLifecycle(ctx, tx, publication.Attributes.Ref)
 	if err != nil {
 		return err
-	}
-	var readable bool
-	if err := hangarQueryRow(ctx, tx, `SELECT activation_epoch=$2 FROM hangar_exact_lifecycles WHERE id=$1`, []any{lifecycle, int64(stage.ActivationEpoch)}, &readable); err != nil {
-		return err
-	}
-	if !readable {
-		return fmt.Errorf("%w: input publication is no longer available for registration", output.ErrConflict)
 	}
 	body, err := json.Marshal(publication)
 	if err != nil {
