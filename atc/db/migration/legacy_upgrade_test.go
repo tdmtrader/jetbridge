@@ -408,21 +408,16 @@ var _ = Describe("Legacy Database Upgrade", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("fires worker notifications on worker insert/update/delete", func() {
-			By("Setting up a LISTEN on worker_events")
-			listenerDB, err := sql.Open("pgx", postgresRunner.DataSourceName())
-			Expect(err).NotTo(HaveOccurred())
-			defer listenerDB.Close()
-
-			// Verify the trigger functions exist
+		It("retains worker notification objects and removes container notification objects", func() {
+			// Verify only the worker trigger function survives
 			var fnExists bool
-			err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_worker_event')`).Scan(&fnExists)
+			err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_worker_event')`).Scan(&fnExists)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fnExists).To(BeTrue(), "notify_worker_event function should exist")
 
 			err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_container_event')`).Scan(&fnExists)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fnExists).To(BeTrue(), "notify_container_event function should exist")
+			Expect(fnExists).To(BeFalse(), "notify_container_event function should be removed")
 
 			By("Verifying old trigger functions are gone")
 			err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'notify_trigger')`).Scan(&fnExists)
@@ -683,18 +678,17 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	var triggerCount int
 	err = db.QueryRow(`
 		SELECT count(*) FROM information_schema.triggers
-		WHERE trigger_name IN ('workers_notify_trigger', 'containers_notify_trigger')
+		WHERE trigger_name = 'workers_notify_trigger'
 	`).Scan(&triggerCount)
 	Expect(err).NotTo(HaveOccurred())
 	// workers_notify_trigger fires on INSERT, UPDATE, DELETE (3 rows)
-	// containers_notify_trigger fires on INSERT, DELETE (2 rows)
-	Expect(triggerCount).To(Equal(5), "expected 5 trigger entries for simplified notify triggers")
+	Expect(triggerCount).To(Equal(3), "expected INSERT, UPDATE and DELETE worker trigger entries")
 
 	// Verify old triggers are gone
 	var oldTriggerCount int
 	err = db.QueryRow(`
 		SELECT count(*) FROM information_schema.triggers
-		WHERE trigger_name IN ('workers_upsert_or_delete_trigger', 'containers_insert_or_delete_trigger')
+		WHERE trigger_name IN ('workers_upsert_or_delete_trigger', 'containers_insert_or_delete_trigger', 'containers_notify_trigger')
 	`).Scan(&oldTriggerCount)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(oldTriggerCount).To(Equal(0), "old notify triggers should have been dropped")

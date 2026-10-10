@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	"github.com/klauspost/compress/gzip"
@@ -164,9 +162,6 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 		"mount-path": v.mountPath,
 		"path":       path,
 	})
-
-	start := time.Now()
-	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "stream_in") }()
 
 	ctx, span := tracing.StartSpan(ctx, "k8s.volume.stream-in", tracing.Attrs{
 		"pod-name": v.podName,
@@ -326,8 +321,6 @@ func (v *Volume) InitializeResourceCache(ctx context.Context, cache db.ResourceC
 	if v.dbVolume == nil {
 		return nil, nil
 	}
-	start := time.Now()
-	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	return v.dbVolume.InitializeResourceCache(cache)
 }
 
@@ -335,8 +328,6 @@ func (v *Volume) InitializeStreamedResourceCache(ctx context.Context, cache db.R
 	if v.dbVolume == nil {
 		return nil, nil
 	}
-	start := time.Now()
-	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	return v.dbVolume.InitializeStreamedResourceCache(cache, sourceWorkerResourceCacheID)
 }
 
@@ -344,8 +335,6 @@ func (v *Volume) InitializeTaskCache(ctx context.Context, identity atc.TaskCache
 	if v.dbVolume == nil {
 		return nil
 	}
-	start := time.Now()
-	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	return v.dbVolume.InitializeTaskCache(identity, stepName, path)
 }
 

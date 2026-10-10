@@ -180,3 +180,11 @@ on payload deletion.
    the file. Duration scales with `builds` row count; every in-flight build's status write and event
    insert blocks for the whole transaction. **Measure on a restored copy before upgrading a busy
    cluster.** No `ANALYZE builds` is run afterwards, unlike `1765921815`.
+
+## 1789793158 — retire container-count notifications (C5)
+
+Drops `containers_notify_trigger` and `notify_container_event()` because the
+worker cache no longer counts build containers. Worker INSERT/UPDATE/DELETE
+notifications, container data and the pod-derived `ActiveContainers` API field
+remain. The down migration restores the container trigger and its bare
+`container_events_channel` notification function without changing data.

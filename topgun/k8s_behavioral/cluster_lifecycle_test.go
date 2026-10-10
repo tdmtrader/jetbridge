@@ -395,14 +395,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	createSigningKeySecret(kubeconfig, namespace)
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
-	extraArgs := ""
-
-	if os.Getenv("COLLECT_OTEL") == "1" {
-		otelAddr := fmt.Sprintf("otel-collector.%s.svc.cluster.local:4317", namespace)
-		extraArgs = "--tracing-otlp-address=" + otelAddr + ",--otel-metrics-otlp-address=" + otelAddr
-		log.Printf("OTel collection enabled, exporting to %s", otelAddr)
-	}
-
 	helmArgs := []string{
 		"upgrade", "--install", "concourse", chartPath,
 		"--namespace", namespace,
@@ -427,9 +419,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--timeout", "5m",
 	}
 
-	if extraArgs != "" {
-		helmArgs = append(helmArgs, "--set", fmt.Sprintf("web.extraArgs={%s}", extraArgs))
-	}
 	cmd := exec.Command("helm", helmArgs...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

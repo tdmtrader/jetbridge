@@ -46,7 +46,6 @@ func reportPodFailure(ctx context.Context, client kubernetes.Interface, pod *cor
 	if state.failureReason == "ImagePullBackOff" || state.failureReason == "ErrImagePull" {
 		metric.Metrics.K8sImagePullFailures.Inc()
 	}
-	metric.RecordK8sPodFailure(ctx, state.failureReason)
 	writePodDiagnostics(pod, stderr)
 	var interruption runtime.InterruptionError
 	if errors.As(state.err, &interruption) {

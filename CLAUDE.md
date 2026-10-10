@@ -64,7 +64,7 @@ Jobs whose task config interpolates `((var))` need the value exported
 ### Key Notes
 
 - Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`).
-- The `atc/db/worker_cache_test.go` uses `Eventually` with 10s timeouts and 500ms refresh intervals. These are timing-sensitive — do not reduce timeouts.
+- The `atc/db/worker_cache_test.go` uses `Eventually` with 10s timeouts and a one-hour fallback refresh interval to prove notifications work. These are timing-sensitive — do not reduce timeouts.
 - K8s behavioral tests have ~3/117 flaky specs due to GC timing. This is expected.
 - `testhelpers/otel` is excluded from `make test-unit` — it requires external Tempo/Loki services.
 - The `agent/session`, `agent/review` and `agent/implement` tests run the real pinned Codex (`agent/session/codextest`) against a scripted model server. The first run downloads the pinned release from github.com into the user cache and verifies it against `agent/session/codex-checksums.txt`; to run offline, put the release tarball in `$JB_CODEX_CACHE`. Without it they fail, never skip.

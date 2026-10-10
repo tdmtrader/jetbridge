@@ -107,3 +107,10 @@ Amended by C4 (daemon small cuts): resolve capability expiry is derived from
 pod timeouts, retries and one margin. `artifactDaemon.resolveCapability.ttl`
 leaves the values budget; its open schema tombstone and actionable rejection
 remain for one release, as above. See `deploy/chart/MIGRATING.md` for rollout.
+
+Amended by C5: ATC OTel metrics instruments and their OTLP/GCP exporters are
+retired. The earlier `otelMetrics.*` guidance no longer applies: remove that
+value group and use `metrics.enabled` for Prometheus metrics. `tracing.*`
+continues to configure traces. The three metrics values leave the budget;
+`otelMetrics` retains only an open schema tombstone and removal error for one
+release. OTel-only measurements are retired, with no promise of emitter parity.

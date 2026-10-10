@@ -3,7 +3,6 @@ package db_test
 import (
 	"time"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 
@@ -21,7 +20,9 @@ var _ = Describe("WorkerCache", func() {
 		_, err := dbConn.Exec("DELETE FROM workers")
 		Expect(err).ToNot(HaveOccurred())
 
-		workerCache, err = db.NewWorkerCache(logger, dbConn, 500*time.Millisecond)
+		// The fallback interval exceeds every assertion window, so only notifications
+		// can make insertion, update and deletion visible after the initial read.
+		workerCache, err = db.NewWorkerCache(logger, dbConn, time.Hour)
 		Expect(err).ToNot(HaveOccurred())
 
 		scenario = dbtest.Setup()
@@ -33,14 +34,6 @@ var _ = Describe("WorkerCache", func() {
 		workers, err := workerCache.Workers()
 		Expect(err).ToNot(HaveOccurred())
 		return workers
-	}
-
-	getContainerCounts := func() map[string]int {
-		defer GinkgoRecover()
-
-		containerCounts, err := workerCache.WorkerContainerCounts()
-		Expect(err).ToNot(HaveOccurred())
-		return containerCounts
 	}
 
 	getWorkerNames := func() []string {
@@ -64,7 +57,6 @@ var _ = Describe("WorkerCache", func() {
 	It("keeps its data up-to-date by listening to triggers", func() {
 		By("ensuring the data starts out as empty")
 		Expect(getWorkers()).To(BeEmpty())
-		Expect(getContainerCounts()).To(BeEmpty())
 
 		By("adding a new worker")
 		atcWorker := dbtest.BaseWorker("some-worker")
@@ -72,59 +64,16 @@ var _ = Describe("WorkerCache", func() {
 
 		By("ensuring the cache eventually adds the new worker")
 		Eventually(getWorkerNames, 10*time.Second).Should(ConsistOf("some-worker"))
-		// Workers with no build containers don't appear in the GROUP BY query
-		Eventually(getContainerCounts, 10*time.Second).Should(BeEmpty())
 
 		By("updating the worker")
 		atcWorker.ActiveVolumes = 50
 		scenario.Run(builder.WithWorker(atcWorker))
 		Eventually(getWorkerActiveVolumes, 10*time.Second).Should(ConsistOf(50))
 
-		By("adding a build container")
-		var build db.Build
-		scenario.Run(
-			builder.WithPipeline(atc.Config{
-				Resources: atc.ResourceConfigs{
-					{
-						Name:   "some-resource",
-						Type:   dbtest.BaseResourceType,
-						Source: atc.Source{"some": "source"},
-					},
-				},
-				Jobs: atc.JobConfigs{
-					{
-						Name: "some-job",
-					},
-				},
-			}),
-			builder.WithJobBuild(&build, "some-job", nil, nil),
-		)
-		_, err := scenario.Workers[0].CreateContainer(db.NewBuildStepContainerOwner(build.ID(), "123", scenario.Team.ID()), db.ContainerMetadata{})
-		Expect(err).ToNot(HaveOccurred())
-		Eventually(getContainerCounts, 10*time.Second).Should(Equal(map[string]int{
-			"some-worker": 1,
-		}))
-
-		By("adding a check container")
-		scenario.Run(
-			builder.WithResourceVersions("some-resource"),
-			builder.WithCheckContainer("some-resource", "some-worker"),
-		)
-		// Only counts build containers
-		Consistently(getContainerCounts, 2*time.Second).Should(Equal(map[string]int{
-			"some-worker": 1,
-		}))
-
-		By("removing the container")
-		_, err = dbConn.Exec("DELETE FROM containers")
-		Expect(err).ToNot(HaveOccurred())
-		Eventually(getContainerCounts, 10*time.Second).Should(BeEmpty())
-
 		By("removing the worker")
-		_, err = dbConn.Exec("DELETE FROM workers")
+		_, err := dbConn.Exec("DELETE FROM workers")
 		Expect(err).ToNot(HaveOccurred())
 
 		Eventually(getWorkers, 10*time.Second).Should(BeEmpty())
-		Eventually(getContainerCounts, 10*time.Second).Should(BeEmpty())
 	})
 })

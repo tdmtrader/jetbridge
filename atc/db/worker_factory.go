@@ -19,7 +19,6 @@ type WorkerFactory interface {
 	VisibleWorkers([]string) ([]Worker, error)
 
 	FindWorkersForContainerByOwner(ContainerOwner) ([]Worker, error)
-	BuildContainersCountPerWorker() (map[string]int, error)
 }
 
 type workerFactory struct {
@@ -244,10 +243,6 @@ func (f *workerFactory) FindWorkersForContainerByOwner(owner ContainerOwner) ([]
 	}
 
 	return workers, nil
-}
-
-func (f *workerFactory) BuildContainersCountPerWorker() (map[string]int, error) {
-	return f.cache.WorkerContainerCounts()
 }
 
 func saveWorker(tx Tx, atcWorker atc.Worker, teamID *int, ttl time.Duration, conn DbConn) (Worker, error) {

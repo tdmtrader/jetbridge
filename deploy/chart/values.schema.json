@@ -500,19 +500,7 @@
       }
     },
     "otelMetrics": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "otlpAddress": {
-          "type": "string"
-        },
-        "otlpHeaders": {
-          "$ref": "#/definitions/openMap"
-        },
-        "otlpUseTLS": {
-          "type": "boolean"
-        }
-      }
+      "$ref": "#/definitions/removed"
     },
     "secrets": {
       "type": "object",

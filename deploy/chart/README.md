@@ -395,14 +395,6 @@ web:
 | `tracing.otlpUseTLS` | `false` | Use TLS for OTLP connection. |
 | `tracing.serviceName` | `""` | Service name in traces (default: `concourse-web`). |
 
-### Metrics (OpenTelemetry)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `otelMetrics.otlpAddress` | `""` | OTLP gRPC endpoint for metrics. |
-| `otelMetrics.otlpHeaders` | `{}` | Additional OTLP headers for metrics. |
-| `otelMetrics.otlpUseTLS` | `false` | Use TLS for metrics OTLP connection. |
-
 ### Secrets
 
 | Parameter | Default | Description |

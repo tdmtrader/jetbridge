@@ -1,7 +1,6 @@
 package metric
 
 import (
-	"context"
 	"os"
 	"runtime"
 	"time"
@@ -37,9 +36,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: dbQueries,
 		},
 	)
-	if dbQueries > 0 {
-		RecordDBQueries(context.Background(), dbQueries)
-	}
 
 	if len(m.Databases) > 0 {
 		for _, database := range m.Databases {
@@ -53,7 +49,6 @@ func tick(logger lager.Logger, m *Monitor) {
 					},
 				},
 			)
-			RecordDBConnections(context.Background(), float64(database.Stats().OpenConnections), database.Name())
 		}
 	}
 
@@ -89,9 +84,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: podStartupMs,
 		},
 	)
-	if podStartupMs > 0 {
-		RecordK8sPodStartupDuration(context.Background(), time.Duration(podStartupMs)*time.Millisecond)
-	}
 
 	m.emit(
 		logger.Session("k8s-image-pull-failures"),
@@ -141,9 +133,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: containersCreated,
 		},
 	)
-	if containersCreated > 0 {
-		RecordContainersCreated(context.Background(), containersCreated)
-	}
 
 	volumesCreated := m.VolumesCreated.Delta()
 	m.emit(
@@ -153,9 +142,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: volumesCreated,
 		},
 	)
-	if volumesCreated > 0 {
-		RecordVolumesCreated(context.Background(), volumesCreated)
-	}
 
 	m.emit(
 		logger.Session("failed-containers"),
@@ -181,9 +167,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: jobsScheduled,
 		},
 	)
-	if jobsScheduled > 0 {
-		RecordJobsScheduled(context.Background(), jobsScheduled)
-	}
 
 	jobsScheduling := m.JobsScheduling.Max()
 	m.emit(
@@ -193,7 +176,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: jobsScheduling,
 		},
 	)
-	RecordJobsScheduling(context.Background(), jobsScheduling)
 
 	buildsStarted := m.BuildsStarted.Delta()
 	m.emit(
@@ -203,9 +185,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: buildsStarted,
 		},
 	)
-	if buildsStarted > 0 {
-		RecordBuildsStarted(context.Background(), buildsStarted)
-	}
 
 	buildsRunning := m.BuildsRunning.Max()
 	m.emit(
@@ -215,7 +194,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: buildsRunning,
 		},
 	)
-	RecordBuildsRunning(context.Background(), buildsRunning)
 
 	checkBuildsStarted := m.CheckBuildsStarted.Delta()
 	m.emit(
@@ -225,9 +203,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: checkBuildsStarted,
 		},
 	)
-	if checkBuildsStarted > 0 {
-		RecordCheckBuildsStarted(context.Background(), checkBuildsStarted)
-	}
 
 	checkBuildsRunning := m.CheckBuildsRunning.Max()
 	m.emit(
@@ -237,7 +212,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: checkBuildsRunning,
 		},
 	)
-	RecordCheckBuildsRunning(context.Background(), checkBuildsRunning)
 
 	for action, gauge := range m.ConcurrentRequests {
 		m.emit(
@@ -279,7 +253,6 @@ func tick(logger lager.Logger, m *Monitor) {
 				},
 			},
 		)
-		RecordStepsWaiting(context.Background(), stepsWaiting, labels.TeamName, labels.Type)
 	}
 
 	checksFinishedWithError := m.ChecksFinishedWithError.Delta()
@@ -293,9 +266,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			},
 		},
 	)
-	if checksFinishedWithError > 0 {
-		RecordChecksFinished(context.Background(), checksFinishedWithError, "error")
-	}
 
 	checksFinishedWithSuccess := m.ChecksFinishedWithSuccess.Delta()
 	m.emit(
@@ -308,9 +278,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			},
 		},
 	)
-	if checksFinishedWithSuccess > 0 {
-		RecordChecksFinished(context.Background(), checksFinishedWithSuccess, "success")
-	}
 
 	checksStarted := m.ChecksStarted.Delta()
 	m.emit(
@@ -320,9 +287,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: checksStarted,
 		},
 	)
-	if checksStarted > 0 {
-		RecordChecksStarted(context.Background(), checksStarted)
-	}
 
 	checksEnqueued := m.ChecksEnqueued.Delta()
 	m.emit(
@@ -332,9 +296,6 @@ func tick(logger lager.Logger, m *Monitor) {
 			Value: checksEnqueued,
 		},
 	)
-	if checksEnqueued > 0 {
-		RecordChecksEnqueued(context.Background(), checksEnqueued)
-	}
 
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)

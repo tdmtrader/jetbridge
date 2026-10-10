@@ -36,10 +36,6 @@ accessor-shaped names — `Delta()` does `cur.Swap(0)`, `Max()` does `max.Swap(-
 asserting the same counter twice sees 0 the second time. The flip side: one call at spec
 start is a free reset.
 
-**There are eight OTel init functions in `atc/metric`, not one, and every `Record*`
-nil-guards and returns silently.** Production calls all eight. Calling only
-`InitOTelMetrics()` leaves seven metric families dark with no panic and no error.
-
 **A test's URL pattern must match what the SUT emits in production.** Contrived artifact
 URLs once masked a real peer-fallback 404 — the test used `/artifacts/{key}` where
 production emits `/artifacts/steps/{key}`.

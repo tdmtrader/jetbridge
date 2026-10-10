@@ -38,9 +38,6 @@ func (f *fakeWorkerFactory) VisibleWorkers([]string) ([]db.Worker, error) { retu
 func (f *fakeWorkerFactory) FindWorkersForContainerByOwner(db.ContainerOwner) ([]db.Worker, error) {
 	return nil, nil
 }
-func (f *fakeWorkerFactory) BuildContainersCountPerWorker() (map[string]int, error) {
-	return nil, nil
-}
 
 func TestHealth(t *testing.T) {
 	logger := lagertest.NewTestLogger("health-test")

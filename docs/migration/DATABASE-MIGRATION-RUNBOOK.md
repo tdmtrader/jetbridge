@@ -271,7 +271,9 @@ FROM information_schema.triggers
 WHERE event_object_table IN ('workers', 'containers')
 ORDER BY event_object_table, trigger_name;
 
--- Expected: workers_notify_trigger, containers_notify_trigger
+-- Expected: workers_notify_trigger (INSERT, UPDATE, DELETE)
+-- containers_notify_trigger and notify_container_event() were retired in 1789793158.
+SELECT to_regprocedure('notify_container_event()'); -- Expected: NULL
 -- Should NOT see: workers_upsert_or_delete_trigger, containers_insert_or_delete_trigger
 ```
 

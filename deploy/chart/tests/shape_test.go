@@ -46,8 +46,8 @@ import (
 // three typed ones concourse.home was passing through it --
 // kubernetes.podSchedulingTimeout, defaultTaskCPURequest and
 // preferredStepNode (web now derives --cookie-secure from an https
-// external URL, and the OTLP flags already had tracing.* and
-// otelMetrics.*), leaving 232. Removing the GCP preemption watcher took
+// external URL, and OTLP already had typed values), leaving 232.
+// Removing the GCP preemption watcher took
 // artifactDaemon.preemption.enabled and .budget, leaving 230. Removing the
 // output plane's activation walk, inventory and reclaimer controllers and the
 // activation database role took 21 leaves (hangarOutput.inventory's 6,
@@ -69,7 +69,8 @@ import (
 // maxContentBytes and maxEntries, and hangarOutput.strictInputBucket, leaving
 // 194.
 // Deriving resolve capability expiry removes its TTL value, leaving 193.
-const maxValues = 193
+// Retiring ATC OTel metrics removes three values, leaving 190.
+const maxValues = 190
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -82,7 +83,6 @@ var allowedSwitches = []string{
 	"kubernetes.stepPodGrants[].privileged",
 	"metrics.enabled",
 	"networkPolicy.enabled",
-	"otelMetrics.otlpUseTLS",
 	"pdb.enabled",
 	"postgresql.enabled",
 	"postgresql.persistence.enabled",
@@ -106,7 +106,6 @@ var openMaps = []string{
 	"ingress.tls",
 	"networkPolicy.ingressFrom",
 	"networkPolicy.taskEgressTo",
-	"otelMetrics.otlpHeaders",
 	"postgresql.containerSecurityContext",
 	"postgresql.podSecurityContext",
 	"postgresql.resources",
@@ -162,6 +161,7 @@ var grandfathered = []string{
 // not written out below its top level, and the open ancestor already accepts
 // the key for the release.
 var removedKeys = []string{
+	"otelMetrics",
 	"artifactDaemon.resolveCapability.ttl",
 	"artifactDaemon.durable",
 	"artifactDaemon.enabled",

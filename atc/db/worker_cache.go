@@ -1,7 +1,6 @@
 package db
 
 import (
-	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,8 +32,7 @@ type WorkerCache struct {
 	refreshInterval time.Duration
 
 	// Cached data
-	workers               map[string]Worker
-	workerContainerCounts map[string]int
+	workers map[string]Worker
 }
 
 func NewWorkerCache(logger lager.Logger, conn DbConn, refreshInterval time.Duration) (*WorkerCache, error) {
@@ -45,26 +43,20 @@ func NewWorkerCache(logger lager.Logger, conn DbConn, refreshInterval time.Durat
 		return nil, err
 	}
 
-	containerSignal, err := conn.Bus().ListenSignal("container_events_channel")
-	if err != nil {
-		return nil, err
-	}
-
-	go cache.listenForChanges(workerSignal, containerSignal)
+	go cache.listenForChanges(workerSignal)
 
 	return cache, nil
 }
 
 // NewStaticWorkerCache returns a WorkerCache that doesn't subscribe to changes
-// to the workers/containers table, so its data is likely to be stale until
+// to the workers table, so its data is likely to be stale until
 // the next refresh.
 func NewStaticWorkerCache(logger lager.Logger, conn DbConn, refreshInterval time.Duration) *WorkerCache {
 	cache := &WorkerCache{
-		logger:                logger,
-		conn:                  conn,
-		refreshInterval:       refreshInterval,
-		workers:               make(map[string]Worker),
-		workerContainerCounts: make(map[string]int),
+		logger:          logger,
+		conn:            conn,
+		refreshInterval: refreshInterval,
+		workers:         make(map[string]Worker),
 	}
 
 	cache.lastRefresh.Store(0)
@@ -83,15 +75,6 @@ func (cache *WorkerCache) copyWorkers() []Worker {
 	return workers
 }
 
-func (cache *WorkerCache) copyWorkerContainerCounts() map[string]int {
-	cache.dataMut.RLock()
-	defer cache.dataMut.RUnlock()
-
-	counts := make(map[string]int, len(cache.workerContainerCounts))
-	maps.Copy(counts, cache.workerContainerCounts)
-	return counts
-}
-
 func (cache *WorkerCache) Workers() ([]Worker, error) {
 	if cache.needsRefresh() {
 		err := cache.refreshWorkerData()
@@ -103,31 +86,13 @@ func (cache *WorkerCache) Workers() ([]Worker, error) {
 	return cache.copyWorkers(), nil
 }
 
-func (cache *WorkerCache) WorkerContainerCounts() (map[string]int, error) {
-	if cache.needsRefresh() {
-		err := cache.refreshWorkerData()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return cache.copyWorkerContainerCounts(), nil
-}
-
-// listenForChanges waits for either worker or container change signals and
-// triggers a full cache refresh. Both signals coalesce — multiple rapid
-// changes produce a single refresh.
-func (cache *WorkerCache) listenForChanges(workerSignal, containerSignal *NotifySignal) {
-	for {
-		select {
-		case <-workerSignal.C():
-		case <-containerSignal.C():
-		}
-
+// listenForChanges refreshes the cache on coalescing worker change signals.
+func (cache *WorkerCache) listenForChanges(workerSignal *NotifySignal) {
+	for range workerSignal.C() {
 		cache.ensureRefresh()
 
 		// Eagerly refresh so the data is ready for the next reader,
-		// rather than waiting for a Workers()/WorkerContainerCounts() call.
+		// rather than waiting for a Workers() call.
 		if err := cache.refreshWorkerData(); err != nil {
 			cache.logger.Error("failed-to-refresh-on-signal", err)
 		}
@@ -155,38 +120,13 @@ func (cache *WorkerCache) refreshWorkerData() error {
 		return err
 	}
 
-	rows, err := psql.Select("worker_name, COUNT(*)").
-		From("containers").
-		Where("build_id IS NOT NULL").
-		GroupBy("worker_name").
-		RunWith(cache.conn).
-		Query()
-	if err != nil {
-		return err
-	}
-	defer Close(rows)
-
 	newWorkers := make(map[string]Worker, len(workers))
 	for _, worker := range workers {
 		newWorkers[worker.Name()] = worker
 	}
 
-	newCountByWorker := make(map[string]int, len(workers))
-	for rows.Next() {
-		var workerName string
-		var containersCount int
-
-		err = rows.Scan(&workerName, &containersCount)
-		if err != nil {
-			return err
-		}
-
-		newCountByWorker[workerName] = containersCount
-	}
-
 	cache.dataMut.Lock()
 	cache.workers = newWorkers
-	cache.workerContainerCounts = newCountByWorker
 	cache.dataMut.Unlock()
 
 	cache.lastRefresh.Store(time.Now().UnixNano())

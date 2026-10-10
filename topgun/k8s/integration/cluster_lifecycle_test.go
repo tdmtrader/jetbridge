@@ -318,10 +318,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 			"--set", "tracing.serviceName=concourse-integration-test",
 		)
 	}
-	if otlpMetrics := os.Getenv("OTEL_METRICS_OTLP_ENDPOINT"); otlpMetrics != "" {
-		log.Printf("Enabling OTel metrics: otelMetrics.otlpAddress=%s", otlpMetrics)
-		telemetry = append(telemetry, "--set", "otelMetrics.otlpAddress="+otlpMetrics)
-	}
 
 	helmArgs := []string{
 		"upgrade", "--install", "concourse", chartPath,

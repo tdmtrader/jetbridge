@@ -9,7 +9,7 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 - **`skip_download`** — get steps can resolve version metadata without downloading artifacts
 - **Configurable base resource types** — override default resource type images via `--kubernetes-base-resource-type name=image`
 - **Health endpoint** — `GET /api/v1/health` with DB + worker checks (used for K8s readiness probes)
-- **OpenTelemetry** — distributed tracing (OTLP, Jaeger, Honeycomb, Stackdriver) and metrics export
+- **OpenTelemetry** — distributed tracing (OTLP, Jaeger, Honeycomb, Stackdriver)
 
 Pipeline YAML, `fly` CLI, web UI, resource types, auth, and the REST API are all unchanged from upstream.
 
@@ -231,7 +231,7 @@ config:
 - Configurable base resource types (`--kubernetes-base-resource-type name=image`)
 - Direct image references for resource types (`image_ref` field)
 - Health endpoint (`GET /api/v1/health`) for K8s probes
-- OpenTelemetry tracing (OTLP, Jaeger, Honeycomb, Stackdriver) and metrics
+- OpenTelemetry tracing (OTLP, Jaeger, Honeycomb, Stackdriver)
 - Deterministic pod naming
 - Transient error retry with K8s error classification
 - Artifact passing via a per-node DaemonSet over HTTP; node-local task caches
@@ -279,13 +279,13 @@ go test ./atc/worker/jetbridge/... -run Live -tags live
 
 See [`JETBRIDGE.md`](JETBRIDGE.md) for the full deployment guide, including:
 
-- Complete configuration reference (all `--kubernetes-*`, `--tracing-*`, `--otel-metrics-*`, `--gc-*` flags)
+- Complete configuration reference (all `--kubernetes-*`, `--tracing-*`, `--gc-*` flags)
 - New pipeline features (`skip_download`, sidecars, configurable base resource types)
 - Health endpoint (`GET /api/v1/health`) response schema
 - Production checklist (external DB, auth, secrets, connection pool sizing)
 - RBAC requirements
 - Troubleshooting (pod startup, image pulls, artifact passing, GC)
-- Monitoring: Prometheus metrics, OpenTelemetry tracing/metrics, ServiceMonitor
+- Monitoring: Prometheus metrics, OpenTelemetry tracing, ServiceMonitor
 - Useful `kubectl` commands
 
 ### RBAC summary

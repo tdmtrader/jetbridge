@@ -382,17 +382,6 @@ Tracing supports four backends. Only one can be active at a time (first configur
 
 Source: `tracing/tracer.go`, `tracing/otlp.go`, `tracing/jaeger.go`, `tracing/honeycomb.go`, `tracing/sampling.go`
 
-### OpenTelemetry Metrics Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--otel-metrics-otlp-address` | (none) | OTLP gRPC endpoint for metrics export. |
-| `--otel-metrics-otlp-header` | (none) | Headers on OTLP metrics requests. Repeatable. |
-| `--otel-metrics-otlp-use-tls` | `false` | Use TLS for metrics OTLP connection. |
-| `--otel-metrics-gcp-project-id` | (none) | GCP project ID for Cloud Monitoring (uses `monitoring.googleapis.com:443`). |
-
-Source: `tracing/meter.go`
-
 ## Deployment
 
 ### Prerequisites
@@ -582,7 +571,7 @@ prometheus-operator CRDs).
 
 ### OpenTelemetry
 
-Configure tracing and metrics export via the flags documented above. Example
+Configure tracing export via the flags documented above. Example
 for Grafana Tempo + OTLP:
 
 ```yaml
@@ -590,8 +579,6 @@ for Grafana Tempo + OTLP:
 tracing:
   otlpAddress: "tempo.monitoring.svc:4317"
   serviceName: "concourse-web"
-otelMetrics:
-  otlpAddress: "tempo.monitoring.svc:4317"
 ```
 
 ### Key things to watch
@@ -646,4 +633,4 @@ kubectl -n concourse exec deploy/concourse-jetbridge-web -- df -h /concourse/cac
 | `atc/sidecar.go` | Sidecar type definitions, parsing, validation |
 | `atc/api/infoserver/health.go` | Health endpoint implementation |
 | `atc/atccmd/command.go` | All CLI flags (lines 108-279) |
-| `tracing/` | OTel tracing and metrics configuration |
+| `tracing/` | OTel tracing configuration |

@@ -19,6 +19,7 @@ template first, so these rules run before anything else in the chart.
   release so this table can say where it went; the release after, both go.
 */ -}}
 {{- range $removed := list
+  (list "otelMetrics" "ATC OTel metrics export has been retired. Remove the value; use metrics.enabled for Prometheus metrics and tracing.* for traces.")
   (list "artifactDaemon.resolveCapability.ttl" "expiry is derived from pod scheduling and startup timeouts plus the fetch retry budget and margin. Remove the value.")
   (list "artifactDaemon.durable" "the durable tier is not configurable from the chart. Remove the value.")
   (list "artifactDaemon.enabled" "the artifact daemon is always deployed. Remove the value.")
@@ -60,7 +61,7 @@ template first, so these rules run before anything else in the chart.
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "secrets.create" "name a Secret holding session_signing_key in secrets.signingKeySecret, which every web pod mounts. Remove the value.")
   (list "web.enablePipelineRunCreation" "Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch.")
-  (list "web.extraArgs" "pass-through flags are gone (ADR-0008). web derives --cookie-secure from an https web.externalUrl; set kubernetes.podSchedulingTimeout, kubernetes.defaultTaskCPURequest or kubernetes.preferredStepNode for those flags, and tracing.* or otelMetrics.* for OTLP. Remove the value.")
+  (list "web.extraArgs" "pass-through flags are gone (ADR-0008). web derives --cookie-secure from an https web.externalUrl; set kubernetes.podSchedulingTimeout, kubernetes.defaultTaskCPURequest or kubernetes.preferredStepNode for those flags, and tracing.* for OTLP traces. Remove the value.")
 -}}
 {{- $key := index $removed 0 -}}
 {{- $node := $.Values -}}
