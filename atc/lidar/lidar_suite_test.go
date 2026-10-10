@@ -68,6 +68,8 @@ type lidarCheckFactory struct {
 
 	mu                    sync.Mutex
 	calls                 []lidarCheckCall
+	resourcesErr          error
+	resourceTypesErr      error
 	panicTryCreate        bool
 	resourceScopeErrs     map[int]error
 	resourceTypeScopeErrs map[int]error
@@ -112,6 +114,13 @@ func (factory *lidarCheckFactory) TryCreateCheck(
 }
 
 func (factory *lidarCheckFactory) Resources() ([]db.Resource, error) {
+	factory.mu.Lock()
+	configuredErr := factory.resourcesErr
+	factory.mu.Unlock()
+	if configuredErr != nil {
+		return nil, configuredErr
+	}
+
 	resources, err := factory.CheckFactory.Resources()
 	if err != nil {
 		return nil, err
@@ -128,6 +137,13 @@ func (factory *lidarCheckFactory) Resources() ([]db.Resource, error) {
 }
 
 func (factory *lidarCheckFactory) ResourceTypesByPipeline() (map[int]db.ResourceTypes, error) {
+	factory.mu.Lock()
+	configuredErr := factory.resourceTypesErr
+	factory.mu.Unlock()
+	if configuredErr != nil {
+		return nil, configuredErr
+	}
+
 	byPipeline, err := factory.CheckFactory.ResourceTypesByPipeline()
 	if err != nil {
 		return nil, err
@@ -151,6 +167,18 @@ func (factory *lidarCheckFactory) Calls() []lidarCheckCall {
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
 	return append([]lidarCheckCall(nil), factory.calls...)
+}
+
+func (factory *lidarCheckFactory) FailResources(err error) {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	factory.resourcesErr = err
+}
+
+func (factory *lidarCheckFactory) FailResourceTypes(err error) {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	factory.resourceTypesErr = err
 }
 
 func (factory *lidarCheckFactory) PanicOnTryCreate() {
@@ -308,19 +336,6 @@ func persistLidarPipeline(
 	return team, pipeline
 }
 
-func updateLidarPipeline(team db.Team, pipeline db.Pipeline, config atc.Config) db.Pipeline {
-	GinkgoHelper()
-
-	updated, _, err := team.SavePipeline(
-		atc.PipelineRef{Name: pipeline.Name(), InstanceVars: pipeline.InstanceVars()},
-		config,
-		pipeline.ConfigVersion(),
-		false,
-	)
-	Expect(err).NotTo(HaveOccurred())
-	return updated
-}
-
 func lidarPipelineResource(pipeline db.Pipeline, name string) db.Resource {
 	GinkgoHelper()
 	resource, found, err := pipeline.Resource(name)
@@ -359,17 +374,6 @@ func attachLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceType
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resourceType.SetResourceConfigScope(scope)).To(Succeed())
 	return scope
-}
-
-func reloadLidarScope(fixture *lidarDB, scope db.ResourceConfigScope) db.ResourceConfigScope {
-	GinkgoHelper()
-	config, found, err := fixture.ResourceConfigFactory.FindResourceConfigByID(scope.ResourceConfig().ID())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	freshScope, err := config.FindOrCreateScope(scope.ResourceID())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(freshScope.ID()).To(Equal(scope.ID()))
-	return freshScope
 }
 
 func resolvedLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceType) db.ResourceConfigScope {
@@ -438,9 +442,7 @@ func lidarConfigWithGets(resources atc.ResourceConfigs, resourceTypes atc.Resour
 	}
 }
 
-// RESTORED 2026-09-05 (rebase onto core for 0.3.2) alongside row GL-064's It in
-// scanner_test.go, which is the only caller. Verbatim from the merge-base
-// aef2244a63; attachLidarNativeResourceScope above is a different helper.
+// attachLidarResourceScope attaches a resource-specific scope for check deduplication.
 func attachLidarResourceScope(fixture *lidarDB, resource db.Resource) db.ResourceConfigScope {
 	GinkgoHelper()
 	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(

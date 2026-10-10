@@ -36,7 +36,7 @@ Feature: What the artifact daemon answers about a capture's marker
 
   # The permitted case is asserted FIRST, and it is a separate scenario written
   # above its absence twin: "not eligible" passes on a daemon that refuses
-  # everything, exactly as job-admission.feature:43-49 records.
+  # everything.
   @HOP-9 @HOP-14
   Scenario: Destructive cleanup is permitted once the witness and the release both exist
     Given a real artifact daemon publishing to a Hangar output bucket

@@ -58,9 +58,6 @@ func LiveGetStepDefinitions() []brine.StepDefinition {
 }
 
 func (in ExecBuild) prepareLiveGit(rec *brine.Recorder, podLimits ...int64) (*execLiveGit, error) {
-	if in.core.cached != nil {
-		return nil, fmt.Errorf("live get must not use runtime substitutes or a preloaded cache")
-	}
 	w, err := newLiveRuntimeWorker(in.core.DB, rec, podLimits...)
 	if err != nil {
 		return nil, err

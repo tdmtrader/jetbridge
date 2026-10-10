@@ -7,3 +7,32 @@ external specification. See [ADR-0010](../../../../../docs/adr/0010-hangar-keeps
 The vocabulary guards require every step definition to be used, every scenario
 step to resolve, and no step line to match two definitions. The active-corpus
 guard also requires runnable features in the local and live tiers.
+
+## Removed families 2026-10-09 and what still covers them
+
+C11 removes nine feature files: GC caches (19 expanded cases), containers (10),
+pipelines (25), reclamation (11), build scheduling (16), resource checking (23),
+job admission (13), pipeline retention (9), and local step execution (11).
+The parser counts 137 removed cases (101 scenario/outline declarations), leaving
+921 local cases from 1058 and all 134 live cases. The local manifest floor is
+recounted to 921; future additions can create headroom above that floor.
+
+Missing Go specs were selectively restored from `4e6a2de5a5` and `e205c4984c`,
+preserving the existing scope-aware fan-out test. Core remains a product
+dependency: `atc/gc`, `atc/lidar`, `atc/scheduler`, `atc/engine`, `atc/exec` and
+`atc/db` retain its coverage, including pipeline run reclamation and run-log
+retention. Two mixed-row PostgreSQL GC tests preserve referenced-config survival
+beside orphan collection, and check-session FK refusal of the entire sweep.
+
+Accepted losses are integrated native resolver private-image authentication and
+recovery after actual scope deletion (unit coverage remains in
+`atc/imageresolver` and `atc/lidar`), the real cached-artifact byte/provenance
+check, and real Kubernetes connection-refusal classification. Shared live
+Git, time-resource, retry/abort, hooks and partial-put vocabulary remains in
+`steps/exec_harness.go`. This is not equivalent coverage restoration: the removed
+scenarios exercised the runtime and could contribute to its package coverage.
+The 50% gate is unchanged; its post-cut result needs the Linux local/live tiers.
+
+`DISPOSITION-gc-lidar.md` was already archived outside this repository; this cut
+does not delete or rewrite the archive. No chart, flags, schema or ADR changes
+are needed for this test-only removal.

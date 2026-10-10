@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/lidar"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 	. "github.com/onsi/ginkgo/v2"
@@ -80,6 +81,15 @@ var _ = Describe("Scanner", func() {
 		return lidar.NewScanner(factory, atc.NewPlanFactory(0), maxConcurrency, nil, nil)
 	}
 
+	It("returns the real-backed enumeration failure", func() {
+		fixture := useLidarDB()
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		factory.FailResources(errors.New("nope"))
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(MatchError("nope"))
+		Expect(factory.Calls()).To(BeEmpty())
+	})
+
 	It("does not schedule a check for an already-cancelled empty enumeration", func() {
 		fixture := useLidarDB()
 		factory := observeLidarCheckFactory(fixture.CheckFactory)
@@ -87,6 +97,37 @@ var _ = Describe("Scanner", func() {
 		cancel()
 
 		Expect(newScanner(factory, 10).Run(ctx)).To(Succeed())
+		Expect(factory.Calls()).To(BeEmpty())
+		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+	})
+
+	It("returns the resource-type enumeration failure after loading real resources", func() {
+		fixture := useLidarDB()
+		_, _ = persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "enumerated-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "enumerated"},
+			}}, nil,
+		))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		factory.FailResourceTypes(errors.New("nope"))
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(MatchError("nope"))
+		Expect(factory.Calls()).To(BeEmpty())
+	})
+
+	It("naturally excludes a persisted check_every never resource", func() {
+		fixture := useLidarDB()
+		_, _ = persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "never-resource", Type: dbtest.BaseResourceType,
+				Source:     atc.Source{"repository": "never"},
+				CheckEvery: &atc.CheckEvery{Never: true},
+			}}, nil,
+		))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
 		Expect(factory.Calls()).To(BeEmpty())
 		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
 	})
@@ -127,6 +168,50 @@ var _ = Describe("Scanner", func() {
 		Expect(plan.Check.Timeout).To(Equal("7m"))
 		Expect(plan.Check.Interval).To(Equal(atc.CheckEvery{Interval: 23 * time.Minute}))
 		Expect(plan.Check.TypeImage.BaseType).To(Equal(dbtest.BaseResourceType))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("creates a real check plan with its persisted custom parent type", func() {
+		fixture := useLidarDB()
+		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "custom-resource", Type: "custom-type",
+				Source: atc.Source{"repository": "custom-resource"},
+			}},
+			atc.ResourceTypes{{
+				Name: "custom-type", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "custom-image"},
+				Tags:   atc.Tags{"type-tag"},
+			}},
+		))
+		resource := lidarPipelineResource(pipeline, "custom-resource")
+		resourceType := lidarPipelineResourceType(pipeline, "custom-type")
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		call := factory.Calls()[0]
+		Expect(call.checkable.Name()).To(Equal(resource.Name()))
+		Expect(call.resourceTypes).To(HaveLen(1))
+		Expect(call.resourceTypes[0].ID()).To(Equal(resourceType.ID()))
+
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(resource.ID()))
+		plan := build.PrivatePlan()
+		Expect(plan.Check).NotTo(BeNil())
+		Expect(plan.Check.Name).To(Equal("custom-resource"))
+		Expect(plan.Check.Resource).To(Equal("custom-resource"))
+		Expect(plan.Check.Type).To(Equal("custom-type"))
+		Expect(plan.Check.Source).To(Equal(atc.Source{"repository": "custom-resource"}))
+		Expect(plan.Check.TypeImage.BaseType).To(Equal(dbtest.BaseResourceType))
+		Expect(plan.Check.TypeImage.CheckPlan).NotTo(BeNil())
+		Expect(plan.Check.TypeImage.CheckPlan.Check.Name).To(Equal("custom-type"))
+		Expect(plan.Check.TypeImage.CheckPlan.Check.Source).To(Equal(atc.Source{"repository": "custom-image"}))
+		Expect(plan.Check.TypeImage.CheckPlan.Check.Tags).To(Equal(atc.Tags{"type-tag"}))
+		Expect(plan.Check.TypeImage.GetPlan).NotTo(BeNil())
+		Expect(plan.Check.TypeImage.GetPlan.Get.Name).To(Equal("custom-type"))
+		Expect(plan.Check.TypeImage.GetPlan.Get.Type).To(Equal(dbtest.BaseResourceType))
+		Expect(plan.Check.TypeImage.GetPlan.Get.Source).To(Equal(atc.Source{"repository": "custom-image"}))
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 	})
 
@@ -179,16 +264,58 @@ var _ = Describe("Scanner", func() {
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 	})
 
-	// RESTORED 2026-09-05 (rebase onto core for 0.3.2). Row GL-064 of
-	// ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-gc-lidar.md was recorded DELETED; the re-verification's
-	// skeptic REFUTED that pairing. The brine scenario
-	// resource-checking.feature "Every resource is checked even when there are
-	// four times as many as there are workers" creates its resources with no
-	// resource_config_scope, so (*checkFactory).TryCreateCheck's in-flight
-	// dedup guard is inert there. This It attaches a scope to all 20 resources
-	// first, so it covers the steady state the scenario structurally cannot
-	// reach: under a dedup keyed on the pipeline instead of the scope, this
-	// goes red and brine stays green.
+	It("forwards a nil pin from an unpinned persisted resource", func() {
+		fixture := useLidarDB()
+		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{
+				Name: "unpinned-resource", Type: dbtest.BaseResourceType,
+				Source: atc.Source{"repository": "unpinned"},
+			}}, nil,
+		))
+		resource := lidarPipelineResource(pipeline, "unpinned-resource")
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(resource.ID()))
+		Expect(factory.Calls()[0].from).To(BeNil())
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("excludes a steady-state put-only resource after a successful scoped check", func() {
+		fixture := useLidarDB()
+		team, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, atc.Config{
+			Resources: atc.ResourceConfigs{
+				{Name: "input-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "input"}},
+				{Name: "put-only-resource", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "put-only"}},
+			},
+			Jobs: atc.JobConfigs{{
+				Name: "scan-job",
+				PlanSequence: []atc.Step{
+					{Config: &atc.GetStep{Name: "input-resource"}},
+					{Config: &atc.PutStep{Name: "put-only-resource"}},
+				},
+			}},
+		})
+		scenario := &dbtest.Scenario{Team: team, Pipeline: pipeline}
+		scenario.Run(fixture.Builder.WithResourceVersions("put-only-resource", atc.Version{"ref": "complete"}))
+		input := scenario.Resource("input-resource")
+		putOnly := scenario.Resource("put-only-resource")
+		Expect(putOnly.ResourceConfigScopeID()).NotTo(BeZero())
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 10).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(input.ID()))
+		Expect(factory.Calls()[0].resource().ID()).NotTo(Equal(putOnly.ID()))
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(input.ID()))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	// Attach a distinct scope before scanning so the in-flight dedup guard
+	// must distinguish resources even when they share a pipeline.
 	It("checks all persisted resources beyond the worker concurrency limit", func() {
 		fixture := useLidarDB()
 		resources := make(atc.ResourceConfigs, 0, 20)
@@ -416,6 +543,34 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
 	})
 
+	It("passes persisted basic-auth credentials to the resolver", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Source = atc.Source{
+			"repository": "private-registry/image",
+			"tag":        "v2",
+			"username":   "user",
+			"password":   "pass",
+		}
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:private", nil)
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		_, repository, tag, auth := resolver.ResolveArgsForCall(0)
+		Expect(repository).To(Equal("private-registry/image"))
+		Expect(tag).To(Equal("v2"))
+		Expect(auth).NotTo(BeNil())
+		Expect(auth.Username).To(Equal("user"))
+		Expect(auth.Password).To(Equal("pass"))
+		scope := resolvedLidarResourceTypeScope(fixture, lidarPipelineResourceType(pipeline, resourceTypeName))
+		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:private"})
+	})
+
 	It("skips a persisted direct image reference", func() {
 		fixture := useLidarDB()
 		config := defaultResourceType()
@@ -469,6 +624,20 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		lastCheck, err := freshScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(lastCheck.EndTime).NotTo(BeZero())
+	})
+
+	It("does not persist a version when the resolver fails", func() {
+		fixture := useLidarDB()
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, defaultResourceType())
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("", errors.New("registry down"))
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
 	})
 
 	It("does not call the resolver when persisted source has no repository", func() {
@@ -674,6 +843,34 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
 	})
 
+	It("passes persisted native basic-auth credentials to the resolver", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.Source = atc.Source{
+			"repository": "private-registry/app",
+			"tag":        "v2",
+			"username":   "myuser",
+			"password":   "mypass",
+		}
+		pipeline, _ := persistResource(fixture, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:private", nil)
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		_, repository, tag, auth := resolver.ResolveArgsForCall(0)
+		Expect(repository).To(Equal("private-registry/app"))
+		Expect(tag).To(Equal("v2"))
+		Expect(auth).NotTo(BeNil())
+		Expect(auth.Username).To(Equal("myuser"))
+		Expect(auth.Password).To(Equal("mypass"))
+		scope := resolvedLidarResourceScope(fixture, lidarPipelineResource(pipeline, resourceName))
+		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:private"})
+	})
+
 	It("skips a persisted native resource with check_every never", func() {
 		fixture := useLidarDB()
 		config := defaultResource()
@@ -730,6 +927,22 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
 	})
 
+	It("does not persist native scope or version when the resolver fails", func() {
+		fixture := useLidarDB()
+		pipeline, _ := persistResource(fixture, defaultResource())
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("", errors.New("registry down"))
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		freshResource := lidarPipelineResource(pipeline, resourceName)
+		Expect(freshResource.ResourceConfigID()).To(BeZero())
+		Expect(freshResource.ResourceConfigScopeID()).To(BeZero())
+	})
+
 	It("does not resolve or attach a persisted native source without a repository", func() {
 		fixture := useLidarDB()
 		config := defaultResource()
@@ -745,6 +958,29 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		freshResource := lidarPipelineResource(pipeline, resourceName)
 		Expect(freshResource.ResourceConfigID()).To(BeZero())
 		Expect(freshResource.ResourceConfigScopeID()).To(BeZero())
+	})
+
+	It("creates a real in-memory check for a persisted non-native resource", func() {
+		fixture := useLidarDB()
+		config := atc.ResourceConfig{
+			Name: "ordinary-resource", Type: dbtest.BaseResourceType,
+			Source: atc.Source{"uri": "https://github.com/foo/bar"},
+		}
+		_, resource := persistResource(fixture, config)
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		resolver := new(imageresolvertesting.FakeResolver)
+
+		Expect(runScanner(
+			fixture, factory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(resource.ID()))
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(resource.ID()))
+		Expect(build.PrivatePlan().Check.Resource).To(Equal(resource.Name()))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 	})
 
 	It("persists a native digest and creates one ordinary check from a mixed pipeline", func() {
@@ -787,5 +1023,67 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(build.ResourceID()).To(Equal(ordinaryResource.ID()))
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+	})
+
+	It("increments ChecksEnqueued when the production factory creates a check", func() {
+		fixture := useLidarDB()
+		config := atc.ResourceConfig{
+			Name: "metric-resource", Type: dbtest.BaseResourceType,
+			Source: atc.Source{"some": "source"},
+		}
+		_, resource := persistResource(fixture, config)
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		resolver := new(imageresolvertesting.FakeResolver)
+		metric.Metrics.ChecksEnqueued.Delta()
+
+		Expect(runScanner(
+			fixture, factory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(resource.ID()))
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(metric.Metrics.ChecksEnqueued.Delta()).To(BeNumerically("==", 1))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("does not increment ChecksEnqueued for a production in-flight duplicate", func() {
+		fixture := useLidarDB()
+		config := atc.ResourceConfig{
+			Name: "metric-resource", Type: dbtest.BaseResourceType,
+			Source: atc.Source{"some": "source"},
+		}
+		pipeline, resource := persistResource(fixture, config)
+		scope := attachLidarResourceScope(fixture, resource)
+		resource = lidarPipelineResource(pipeline, resource.Name())
+		Expect(resource.ResourceConfigScopeID()).To(Equal(scope.ID()))
+
+		_, created, err := fixture.CheckFactory.TryCreateCheck(
+			lagerctx.NewContext(context.Background(), lagertest.NewTestLogger("pre-create")),
+			resource, nil, nil, false, false, false,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		initialBuild := drainLidarCheckBuilds(fixture, 1)[0]
+		finished := false
+		DeferCleanup(func() {
+			if !finished {
+				Expect(initialBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+			}
+		})
+
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		resolver := new(imageresolvertesting.FakeResolver)
+		metric.Metrics.ChecksEnqueued.Delta()
+		Expect(runScanner(
+			fixture, factory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ResourceConfigScopeID()).To(Equal(scope.ID()))
+		Expect(metric.Metrics.ChecksEnqueued.Delta()).To(BeNumerically("==", 0))
+		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+		Expect(initialBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		finished = true
 	})
 })
