@@ -625,7 +625,7 @@ func (s *CommandSuite) TestTheOutputPlaneRequiresTheHangarKey() {
 // With capture enabled the reader's claim term is the operation timeout plus
 // the read claim margin; a term the one warrant bound cannot cover would mint
 // a warrant the daemon refuses on every read.
-func (s *CommandSuite) TestCaptureRefusesAnOperationTimeoutTheWarrantBoundCannotCover() {
+func (s *CommandSuite) TestCaptureAcceptsAnOperationTimeoutLongerThanAControlWarrant() {
 	dir := s.T().TempDir()
 	valid := filepath.Join(dir, "hangar.key")
 	s.Require().NoError(os.WriteFile(valid, []byte("0123456789abcdef0123456789abcdef"), 0600))
@@ -647,12 +647,12 @@ func (s *CommandSuite) TestCaptureRefusesAnOperationTimeoutTheWarrantBoundCannot
 		return cmd
 	}
 
+	// A read warrant's window is its claim's, bounded by MaxReadWarrantTTL,
+	// not by the control warrants' fifteen minutes: a task's input reads are
+	// admitted together and must stay presentable through pod startup and
+	// every transfer queued before them.
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(capture(hangar.MaxWarrantTTL - output.ReadClaimMargin)))
-
-	err := atccmd.ValidateK8sRuntimeForTest(capture(hangar.MaxWarrantTTL - output.ReadClaimMargin + time.Second))
-	s.Require().Error(err, "an operation timeout whose claim term exceeds the warrant bound was accepted")
-	s.Contains(err.Error(), "kubernetes-hangar-output-operation-timeout")
-	s.Contains(err.Error(), "a warrant lives at most 15m")
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(capture(15 * time.Minute)))
 }
 
 // AN ACCEPTED FENCE THAT NOTHING WOULD EVER CONVERGE.

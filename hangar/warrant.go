@@ -56,10 +56,25 @@ const (
 	warrantNonceLen = 16
 	// MaxWarrantBytes bounds the token on the wire and its payload.
 	MaxWarrantBytes = 4096
-	// MaxWarrantTTL bounds how long any warrant may live. A warrant is
-	// presented once, within one operation; an hour-long one is a credential.
+	// MaxWarrantTTL bounds how long a signer-dated warrant may live. A control
+	// warrant is presented once, within one operation; an hour-long one is a
+	// credential.
 	MaxWarrantTTL = 15 * time.Minute
+	// MaxReadWarrantTTL bounds a read warrant's window, which is its claim's:
+	// a task's input reads are admitted together before the pod exists and
+	// each must stay presentable through pod startup and every transfer
+	// queued before it. The claim, not the warrant, is what protects the
+	// generation, and a day is the ceiling a reader may pin one for.
+	MaxReadWarrantTTL = 24 * time.Hour
 )
+
+// maxWindow is the longest window a warrant of this purpose may carry.
+func (purpose Purpose) maxWindow() time.Duration {
+	if purpose == PurposeReadResult {
+		return MaxReadWarrantTTL
+	}
+	return MaxWarrantTTL
+}
 
 // Purpose is what a warrant authorizes. A route admits only its own purpose.
 type Purpose string
@@ -111,9 +126,9 @@ type Warrant struct {
 
 // Validate checks the warrant is a whole, well-formed statement for its
 // purpose: the fields its purpose binds are present and canonical, the
-// fields other purposes own are zero, the window is positive and within
-// MaxWarrantTTL, and the nonce is present exactly when the purpose is
-// single-use.
+// fields other purposes own are zero, the window is positive and within the
+// purpose's bound (MaxWarrantTTL, or MaxReadWarrantTTL for a read warrant),
+// and the nonce is present exactly when the purpose is single-use.
 func (warrant Warrant) Validate() error {
 	if err := warrant.Purpose.Validate(); err != nil {
 		return err
@@ -148,8 +163,8 @@ func (warrant Warrant) Validate() error {
 	} else if warrant.Operation != "" || warrant.ExecutionID != "" || warrant.Fence != 0 {
 		return fmt.Errorf("hangar: a %s warrant binds no operation, execution or fence", warrant.Purpose)
 	}
-	if warrant.IssuedAt <= 0 || warrant.ExpiresAt <= warrant.IssuedAt || warrant.ExpiresAt-warrant.IssuedAt > MaxWarrantTTL.Nanoseconds() {
-		return errors.New("hangar: warrant window must be positive and no longer than MaxWarrantTTL")
+	if warrant.IssuedAt <= 0 || warrant.ExpiresAt <= warrant.IssuedAt || warrant.ExpiresAt-warrant.IssuedAt > warrant.Purpose.maxWindow().Nanoseconds() {
+		return fmt.Errorf("hangar: a %s warrant window must be positive and no longer than %s", warrant.Purpose, warrant.Purpose.maxWindow())
 	}
 	if warrant.Purpose.singleUse() {
 		nonce, err := base64.RawURLEncoding.Strict().DecodeString(warrant.Nonce)
@@ -350,7 +365,9 @@ func (verifier *Verifier) Verify(token string, expected Warrant) (Warrant, error
 		return unauthorized()
 	}
 
-	if warrant.Purpose != expected.Purpose || warrant.ExpiresAt-warrant.IssuedAt > verifier.maxTTL.Nanoseconds() {
+	// A control warrant's window is bounded by this verifier's TTL; a read
+	// warrant's is its claim's, bounded by MaxReadWarrantTTL in Validate.
+	if warrant.Purpose != expected.Purpose || (warrant.Purpose != PurposeReadResult && warrant.ExpiresAt-warrant.IssuedAt > verifier.maxTTL.Nanoseconds()) {
 		return unauthorized()
 	}
 	now, ok := exactUnixNano(verifier.clock().UTC())

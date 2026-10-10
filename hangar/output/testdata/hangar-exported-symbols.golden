@@ -1,6 +1,7 @@
 const CanonicalizerTempPrefix
 const DefaultMaxTreeContentBytes int64
 const DefaultMaxTreeEntries int64
+const MaxReadWarrantTTL
 const MaxWarrantBytes
 const MaxWarrantTTL
 const PurposeControlBase Purpose

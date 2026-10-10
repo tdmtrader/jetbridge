@@ -292,9 +292,9 @@ func TestSignRefusesWhatItsPurposeDoesNotBindAndAnOverlongToken(t *testing.T) {
 		"read with no node":         func() Warrant { w := readWarrant(t, now); w.NodeUID = ""; return w }(),
 		"read with no window":       func() Warrant { w := readWarrant(t, now); w.IssuedAt, w.ExpiresAt = 0, 0; return w }(),
 		"read with a nonce":         func() Warrant { w := readWarrant(t, now); w.Nonce = "x"; return w }(),
-		"read with a 16m window": func() Warrant {
+		"read with a window past a day": func() Warrant {
 			w := readWarrant(t, now)
-			w.ExpiresAt = w.IssuedAt + (16 * time.Minute).Nanoseconds()
+			w.ExpiresAt = w.IssuedAt + MaxReadWarrantTTL.Nanoseconds() + 1
 			return w
 		}(),
 		"read expiring at issue": func() Warrant { w := readWarrant(t, now); w.ExpiresAt = w.IssuedAt; return w }(),
@@ -417,5 +417,40 @@ func TestTheVerifierRefusesAnExpectationThatCarriesTheTokensOwnFields(t *testing
 		if _, err := verifier.Verify(token, expected); !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("%s: %v", name, err)
 		}
+	}
+}
+
+// A read warrant's window is its claim's: a task's input reads are admitted
+// together and the last one is presented after pod startup and every
+// transfer queued before it, well past the fifteen minutes a control warrant
+// may live. The control bound is unchanged.
+func TestAReadWarrantMayOutliveAControlWarrantUpToADay(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	signer, verifier := newWarrantPair(t, now)
+
+	long := readWarrant(t, now)
+	long.ExpiresAt = long.IssuedAt + (42 * time.Minute).Nanoseconds()
+	token, err := signer.Sign(long)
+	if err != nil {
+		t.Fatalf("sign a forty-two minute read warrant: %v", err)
+	}
+	expected := long
+	expected.IssuedAt, expected.ExpiresAt = 0, 0
+	if _, err := verifier.Verify(token, expected); err != nil {
+		t.Fatalf("verify a forty-two minute read warrant: %v", err)
+	}
+
+	tooLong := long
+	tooLong.ExpiresAt = tooLong.IssuedAt + MaxReadWarrantTTL.Nanoseconds() + 1
+	if _, err := signer.Sign(tooLong); err == nil {
+		t.Fatal("a read warrant longer than MaxReadWarrantTTL was signed")
+	}
+
+	control := controlWarrant(PurposeControlBase)
+	control.IssuedAt = now.UnixNano()
+	control.ExpiresAt = now.Add(16 * time.Minute).UnixNano()
+	control.Nonce = "AAAAAAAAAAAAAAAAAAAAAA"
+	if err := control.Validate(); err == nil {
+		t.Fatal("a sixteen minute control warrant validated")
 	}
 }

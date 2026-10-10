@@ -2921,11 +2921,6 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	if !cmd.Kubernetes.OutputCaptureEnabled {
 		return nil
 	}
-	if cmd.Kubernetes.OutputOperationTimeout+output.ReadClaimMargin > hangar.MaxWarrantTTL {
-		return fmt.Errorf("--kubernetes-hangar-output-operation-timeout %s plus the read claim margin %s "+
-			"exceeds %s: a reader's claim term is the read warrant's window, and a warrant lives at most %s",
-			cmd.Kubernetes.OutputOperationTimeout, output.ReadClaimMargin, hangar.MaxWarrantTTL, hangar.MaxWarrantTTL)
-	}
 	cmd.readWarrantMinter = output.ReadWarrantMinter{Signer: cmd.hangarSigner}
 	return nil
 }
