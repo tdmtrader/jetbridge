@@ -49,7 +49,7 @@ const (
 
 // brineHangarKey is this fixture's one Hangar key: the daemon's --hangar-key
 // is a file holding exactly these bytes, and every warrant a step mints --
-// materialization, read or control -- is signed with them. It is exactly 32
+// read or control -- is signed with them. It is exactly 32
 // raw bytes, which is what the signer requires: a key of any other shape is
 // refused at construction.
 var brineHangarKey = []byte("0123456789abcdef0123456789abcdef")
@@ -97,7 +97,7 @@ func (consumer neutralConsumer) prepare() error {
 }
 
 // bind writes the consumer's binding and acquires Hangar's claim in ONE
-// transaction, which is requirement 30's whole shape.
+// transaction.
 func (consumer neutralConsumer) bind(binding string, claimID hangaroutputleaf.ClaimID, ref hangar.TreeRef, commit bool) error {
 	tx, err := consumer.Conn.Begin()
 	if err != nil {
@@ -152,7 +152,7 @@ func (consumer neutralConsumer) acquire(binding string, claimID hangaroutputleaf
 }
 
 // release makes the consumer's binding unusable and gives up protection in one
-// transaction, which is requirement 31's shape.
+// transaction.
 func (consumer neutralConsumer) release(binding string, claimID hangaroutputleaf.ClaimID, ref hangar.TreeRef) error {
 	tx, err := consumer.Conn.Begin()
 	if err != nil {
@@ -270,8 +270,7 @@ func brineOutputNamespace(daemon HangarDaemon) (hangaroutputleaf.OutputNamespace
 //
 // It goes through the same derived namespace the daemon derived, from the same
 // authenticated inputs the fixture started it with. A stand-in would have been
-// asserting the fixture's opinion of the object; requirement 35 is about the
-// object.
+// asserting the fixture's opinion of the object instead of checking the object.
 func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, error) {
 	namespace, err := brineOutputNamespace(daemon)
 	if err != nil {

@@ -114,7 +114,8 @@ web:
 
   # -- Existing web-only Secret containing input.key (exactly 32 raw random
   # bytes) for workload Run input grants. Requires hangarOutput.webEnabled.
-  # Use a separate key and Secret from all node capability/materialization keys.
+  # Use a key distinct from both the Hangar and artifact resolve keys, in a
+  # separate web-only Secret (also separate from the daemon TLS Secret).
   # This is a service key, never a user's Codex auth.json.
   runInputSigningKeySecret: ""
 
@@ -832,10 +833,9 @@ hangarStorage:
       # tls.crt/tls.key for the storage Service DNS name; ca.crt for clients.
       existingSecret: ""
     credentials:
-      # input and publisher (artifact daemon), inventory and reclaimer (the
-      # web's list and delete tokens: orphan-sweep listing, and reclaim
-      # deletes), server.json (role-to-token
-      # JSON, the store's).
+      # publisher (artifact daemon), inventory and reclaimer (the web's
+      # list and delete tokens for orphan sweeping and reclamation), and
+      # server.json (the store's role-to-token JSON mapping).
       existingSecret: ""
     maxObjectBytes: 17179869184
     maxConcurrent: 4

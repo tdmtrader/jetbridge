@@ -66,7 +66,7 @@
 
 
 {{- if and $capture (not $base) -}}
-{{- fail "hangarOutput.enabled requires hangarOutput.executionControl.enabled. Durable output capture is an EXTENSION of exact execution control, never a synonym for it: a capture pod requires both ready labels, and a cohort advertising output without base would be claiming a capture plane with no exact-execution protocol underneath. Output admission can never be true while base admission is false." -}}
+{{- fail "hangarOutput.enabled requires hangarOutput.executionControl.enabled. A node advertising capture must also provide exact execution control; a capture pod requires both ready labels. Output admission can never be true while base admission is false." -}}
 {{- end -}}
 {{- if and $output.webEnabled (not $capture) -}}
 {{- fail "hangarOutput.webEnabled requires hangarOutput.enabled" -}}

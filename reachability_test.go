@@ -17,13 +17,10 @@ import (
 
 // A capability with no production caller is not implemented.
 //
-// This rule exists because the tree produced the same defect five times in two
-// phases. Phase 6 shipped CloseAbandonedReadLeases with no worker. Phase 7
-// shipped AdmitReclaim, RecordOutOfBandAbsence, inventory.RecoverCursor and
-// inventory.Classify the same way: written, specified, covered by tests, and
-// unreachable from any running process. The consequence of the first of those
-// was that no published object in the deployment could ever be reclaimed, and
-// every pass reported `0/ok` while saying so.
+// This rule exists because five earlier Hangar entry points shipped covered
+// by tests but unreachable from any running process. One of those omissions
+// prevented every published object in the deployment from being reclaimed,
+// while every pass reported `0/ok`.
 //
 // A review caught each one by reading. That is the part this replaces: the rule
 // is now enforced by the toolchain, so the sixth instance fails a suite instead
@@ -474,10 +471,9 @@ func repositoryRoot() string {
 // an import of the declaring package.
 //
 // They are the price of resolving references by visibility instead of by a type
-// checker. atc/db's Hangar surface is the implementation behind the port
-// interfaces atc/hangaroutput declares, and a pass that calls
-// Repository.AdmitReclaim imports the port, never atc/db -- so no rule based on
-// what a file can see will find the declaration. The alternative is
+// checker. The component runner calls the reclaim pass through
+// atc/component.Runnable, without importing atc/hangaroutput/reclaim -- so no
+// rule based on what a file can see will find the declaration. The alternative is
 // golang.org/x/tools/go/packages in NeedTypes mode, which would make this exact,
 // and the reason it is not used yet is cost: this file runs in the same package
 // as the architecture guards and loads no type information at all.

@@ -641,8 +641,8 @@ var outputRoleImporters = map[string]string{
 		"both substrate tiers; it is a test-only package that links into no binary",
 	"atc/hangaroutput": "TEST-ONLY: the managed-read specs admit a read against the REAL " +
 		"publisher's exact-generation stat over the same bucket the daemon published into, " +
-		"because requirement 35 is about the object rather than about a fixture's opinion of " +
-		"it. The package's production code declares ExactStat as a port and links nothing",
+		"because read admission checks the object rather than a fixture's opinion of it. " +
+		"The package's production code declares ExactStat as a port and links nothing",
 
 	"atc/db": "TEST-ONLY: the reclaim-pass specs drive the real reclaimer role against real " +
 		"PostgreSQL and the tier-1 store, because the composition -- which " +

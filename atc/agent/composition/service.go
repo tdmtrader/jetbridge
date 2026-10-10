@@ -52,7 +52,7 @@ func NewService(admitter runs.Admitter) *Service {
 // Admit admits a child run for the request's call identity, or re-attaches to
 // the one already admitted for it.
 //
-// There is exactly one dedup path and it is core's (requirement 46): the
+// There is exactly one dedup path and it is core's: the
 // versioned port keys the invocation on ContractKey(build_id, plan_id), scoped
 // to the calling build's team and pipeline, and answers whether it created the
 // Run or replayed it. composition_calls and composition_iterations are a join

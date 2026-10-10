@@ -442,7 +442,7 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		})).To(Succeed())
 		destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(creation.Run.ID())
 		Expect(err).NotTo(HaveOccurred())
-		Expect(destroyed).To(BeTrue(), "a Hangar epoch rotation stranded reclamation")
+		Expect(destroyed).To(BeTrue(), "taking Hangar out of service stranded reclamation")
 	})
 
 	It("lets a rerun finish while the aborted build it reruns is still closing", func() {

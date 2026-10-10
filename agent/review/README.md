@@ -364,7 +364,7 @@ The input API is `POST /api/v1/teams/:team/pipelines/:template/run-inputs/:name`
 with a tar body and the caller's platform login. It returns a typed source grant;
 the bearer is transient and the Run retains only the immutable source identity.
 It requires the Hangar output plane in service and the web-only `--run-input-signing-key` file (exactly 32 raw bytes). This service key
-must differ from all node capability/materialization keys. It is unrelated to
+must differ from both the Hangar key and the artifact resolve key. It is unrelated to
 the user's Codex credentials. Missing setup refuses intake. The route checks
 the upload-specific team role before reading and at each publication boundary.
 

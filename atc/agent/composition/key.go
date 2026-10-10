@@ -22,12 +22,11 @@ import (
 // than a second dedup mechanism. That only works if there is one place the
 // value is spelled.
 //
-// So it is a valid invocation key (requirement 14's alphabet and length,
-// atc.ValidRunInvocationToken). A
-// plan id is usually short hex and is kept verbatim; one the alphabet cannot
-// carry (a derived id such as "5a/image-get" or a sidecar's) or one that would
-// overflow the bound is replaced by its digest under a distinct marker, so the
-// two spellings can never meet.
+// So it is a valid invocation key under atc.ValidRunInvocationToken's alphabet
+// and length limits. A plan id is usually short hex and is kept verbatim; one
+// the alphabet cannot carry (a derived id such as "5a/image-get" or a sidecar's)
+// or one that would overflow the bound is replaced by its digest under a
+// distinct marker, so the two spellings can never meet.
 //
 // Deliberately not the digest of anything the call sends: keying on the
 // sealed-input digest would move the key when a prior step's pod is evicted,

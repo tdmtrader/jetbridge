@@ -53,7 +53,7 @@ const (
 // hangar-recovery. This harness does not prove kubelet termination or exec
 // stdin delivery. The answers:
 //   - which node serves the output plane and under what name (node
-//     resolution for uploads, result reads, captures and read leases):
+//     resolution for uploads, result reads and captures):
 //     always this one;
 //   - that the producing Pod's containers have all terminated before its step
 //     directory is sealed: the harness declares it, through the daemon's
@@ -377,8 +377,8 @@ type pki struct {
 }
 
 // mintPKI writes the node's CA, its server certificate and the web node's
-// client certificate. Every daemon route but the hold is mutually
-// authenticated, and the daemon verifies the read-lease endpoint by this CA.
+// client certificate. The web authenticates the daemon with this CA, and the
+// daemon uses it to verify the web's client certificate on control requests.
 func mintPKI(dir string) (pki, error) {
 	var out pki
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

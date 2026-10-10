@@ -10,8 +10,7 @@ package hangaroutput_test
 //
 // The stat is the REAL publisher's StatExactObject against the same bucket the
 // daemon published into, through the same derived namespace. A stub would have
-// been asserting the fixture's opinion of the object; requirement 35 is about
-// the object.
+// been asserting the fixture's opinion instead of checking the object.
 //
 // What is injected, and only this: the ANSWER to the commit. A lost commit
 // response is the shape the ambiguity rule exists for -- the row is there and
@@ -158,7 +157,7 @@ func claimRows(t *testing.T, h *harness, id output.ClaimID) int {
 // countingMinter is the real signer with a call counter around it.
 //
 // The counter is the assertion. "No usable warrant exists before the commit" is
-// weaker than what requirement 35 asks for: the SIGNER must not have run, so
+// weaker than the required guarantee: the SIGNER must not have run, so
 // that a rolled-back admission cannot have leaked a token into a log, a metric
 // or an error message on its way out.
 type countingMinter struct {
