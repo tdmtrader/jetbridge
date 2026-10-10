@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/objectstore"
 )
 
@@ -160,7 +162,21 @@ func validateOutputScratch(scratch, storage string) error {
 	if overlaps(scratch, storage) {
 		return fmt.Errorf("--output-scratch-dir %q and --storage-path %q must be disjoint", scratch, storage)
 	}
-	return nil
+	if err := os.MkdirAll(scratch, 0700); err != nil {
+		return fmt.Errorf("create the output scratch directory: %w", err)
+	}
+	info, err := os.Lstat(scratch)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("--output-scratch-dir %q must be a real directory", scratch)
+	}
+	// Private before validated: the chart's scratch is an emptyDir, which
+	// kubelet creates 0777 without the sticky bit, and the canonicalizer's
+	// ValidateTempDir rightly refuses that as a temp parent. The directory is
+	// the daemon's own to tighten.
+	if err := os.Chmod(scratch, 0700); err != nil {
+		return fmt.Errorf("set the output scratch directory permissions: %w", err)
+	}
+	return hangar.ValidateTempDir(scratch)
 }
 
 // outputNamespace is the output plane's bucket or disk namespace, or "" when
