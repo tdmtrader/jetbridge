@@ -34,13 +34,6 @@ type controlAnswer struct {
 	Err    error
 }
 
-// says reports whether the daemon's refusal names a fragment. It reads the
-// BODY, because a status alone cannot tell a collision from an unauthorized
-// scope from a source that is sealed, and all three are 409.
-func (answer controlAnswer) says(fragment string) bool {
-	return bytes.Contains(bytes.ToLower(answer.Body), bytes.ToLower([]byte(fragment)))
-}
-
 func (answer controlAnswer) describe() string {
 	if answer.Err != nil {
 		return "no answer at all: " + answer.Err.Error()

@@ -148,7 +148,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   #
   # Reddened by: CASPublishingToPublished registering the logical ref without
   # its generation -- the FIRST Then reddens and brine stops there, which is also
-  # the M55 row in ../../DISPOSITION-hangar.md.
+  # the M55 row in ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-hangar.md.
   @HOP-34 @HOP-45
   Scenario: An exact replacement generation supersedes the old one, and the old ref no longer resolves
     Given a real artifact daemon publishing to a Hangar output bucket

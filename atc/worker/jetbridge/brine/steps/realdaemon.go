@@ -179,8 +179,6 @@ func prebuiltBinary(binary string) (string, error) {
 	return binary, nil
 }
 
-func artifactDaemonBinary() (string, error) { return daemonBinary("artifact-daemon") }
-
 // repoRoot walks up from this package to the module root holding cmd/.
 func repoRoot() string {
 	dir, err := os.Getwd()

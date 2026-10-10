@@ -520,7 +520,7 @@ Feature: Reclaiming what a finished build leaves behind
   # predicate until the sibling build was itself aged past the cutoff, and the
   # `<` -> `<=` mutation reddens two rows rather than one. Both were found by
   # running the mutation, not by reading the code — which is the same lesson
-  # MIGRATION-EVIDENCE records for the earlier suites.
+  # ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/MIGRATION-EVIDENCE.md records for the earlier suites.
   #
   # The three arms of the cache-collector chain mean a mutation low in the
   # chain reddens scenarios high in it: CleanUsesForFinishedBuilds doing

@@ -6,12 +6,12 @@ package jetbridge_test
 //
 // Eighteen of that file's twenty-two Its -- rows JB-volume-000, -002, -003,
 // -004, -005, -006, -007, -009, -010, -011, -013, -014, -015, -016, -017, -019,
-// -020 and -021 of DISPOSITION-jetbridge.md -- were recorded DELETED on
+// -020 and -021 of ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md -- were recorded DELETED on
 // FILE-level evidence only, and the rebase re-verification did not sustain them
 // (eleven REFUTED, seven GAP). Restoring is always acceptable; deleting on
 // inference is not.
 // The six root-path StreamIn/StreamOut cases now share two contract tests;
-// their exact routing, metadata and byte assertions remain (see CONSOLIDATION.md).
+// their exact routing, metadata and byte assertions remain (see ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/CONSOLIDATION.md).
 //
 // The four whose evidence held -- "Source returns the worker name from the db
 // volume", StreamIn's "returns the error", StreamOut's "uses a subdirectory

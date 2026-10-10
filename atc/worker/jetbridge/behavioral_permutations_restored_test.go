@@ -6,7 +6,7 @@ package jetbridge
 //
 // Fourteen of the file's nineteen tests -- rows JB-behavioral_permutations-000,
 // -002, -003, -004, -006, -007, -008, -009, -010, -011, -014, -016, -017 and
-// -018 of DISPOSITION-jetbridge.md -- were recorded DELETED on FILE-level
+// -018 of ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md -- were recorded DELETED on FILE-level
 // evidence only, and the rebase re-verification did not sustain them
 // (twelve REFUTED, two GAP). Restoring is always acceptable; deleting on
 // inference is not.

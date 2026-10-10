@@ -10,12 +10,8 @@ recording doubles, enforced by an AST import guard and vocabulary guards in
 `steps/`. Where kubelet/exec/scheduler fidelity is required, scenarios live
 in a separate **live** tier (`live/.brine`) against a real cluster.
 
-**Why** the fixture model, the no-doubles rule, contract 5, the
-private-network local tier and the live tier exist — and the current known
-gaps, including the seven production fixes that were reverted for the audit
-branch and have since been re-applied (their scenarios, once parked in
-`features/live/pending/`, now run in the live tier) — is in
-[V5-MIGRATION.md](V5-MIGRATION.md). This file is only build/run mechanics.
+The fixture design, migration evidence, and historical coverage gaps are
+recorded in the [campaign archive][campaign]. This file covers build/run mechanics.
 
 ## Prerequisites
 
@@ -61,7 +57,7 @@ in 49152–60999), and `BRINE_LIVE_ARTIFACT_DAEMON_BINARY` (an absolute path to
 a current, stripped, static Linux `artifact-daemon` build — see
 `features/live/artifact-handoff.feature` for the exact build command). CI
 selects `BRINE_KUBE_CONTEXT=in-cluster` and supplies these as pipeline
-variables; the live tier itself has never run in CI (see V5-MIGRATION.md).
+variables. Historical execution evidence is in [V5-MIGRATION.md][migration].
 
 ### Cross-node tier
 
@@ -110,15 +106,7 @@ guards (`steps/vocabulary_test.go`: no dead step definition, no unresolved or
 ambiguous step phrase, every `hangar-*.feature` scenario cites a requirement
 tag), and the adapter's own black-box protocol tests.
 
-```sh
-./wirecheck.sh    # every *Definitions() func in steps/ is registered in registry.go
-./timecheck.sh    # each features/*.feature completes within BRINE_FEATURE_TIMEOUT (default 120s)
-./pendingcheck.sh  # features/pending/ still type-checks statically, even though it never runs
-```
-
-See [features/README.md](features/README.md) for the `features/pending/`
-mechanism (checked, never executed — for the Hangar output family, whose
-production code lands after its steps do) and the feature tag conventions
+See [features/README.md](features/README.md) for feature tag conventions
 (`@HOP-<n>`, family prefixes like `@RF-`, `@PW-`).
 
 ## Full coverage gate
@@ -134,13 +122,13 @@ repository-wide. Restores the normal adapter after measuring.
 
 ## Where to look next
 
-- [V5-MIGRATION.md](V5-MIGRATION.md) — the decision log: why, dated
-  checkpoints, and current known gaps.
-- [DISPOSITION-jetbridge.md](DISPOSITION-jetbridge.md) — per-test disposition
-  of every deleted or trimmed Go suite.
-- [MIGRATION-EVIDENCE.md](MIGRATION-EVIDENCE.md) — mutation-tested evidence
-  for what Go coverage remains necessary, and the measured ceiling for
-  further migration.
-- [features/README.md](features/README.md) — tags and `features/pending/`.
-- `COMPLETION-AUDIT.md`, `DISPOSITION-gc-lidar.md`, `DISPOSITION-hangar.md` —
-  earlier or adjacent campaign records.
+- [Campaign archive][campaign] — migration decisions, per-test dispositions,
+  mutation evidence, and historical coverage gaps. All nine campaign records
+  live in the hearth beside the main checkout, under
+  `../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/`
+  (relative to the checkout root, not an individual worktree).
+- [V5-MIGRATION.md][migration] — the historical fixture and migration decision log.
+- [features/README.md](features/README.md) — feature tags.
+
+[campaign]: ../../../../../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/
+[migration]: ../../../../../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/V5-MIGRATION.md

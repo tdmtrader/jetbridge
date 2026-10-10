@@ -52,7 +52,7 @@ Feature: What the artifact daemon answers about a capture's marker
   #
   # Assertion ORDER is part of the assertion. brine stops at the first red step,
   # so the acknowledgement is asserted BEFORE the survival check rather than
-  # after it (MIGRATION-EVIDENCE.md:218-230) — a survival check written last is
+  # after it (../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/MIGRATION-EVIDENCE.md:218-230) — a survival check written last is
   # never evaluated on a run where the stop went wrong.
   #
   # Reddened by: RequestSourcePreservingStop removing the step directory

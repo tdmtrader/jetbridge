@@ -96,7 +96,7 @@ GOMAXPROCS=1 GOTOOLCHAIN=go1.25.6 ginkgo -r \
   --procs=1 --compilers=2 --keep-going --flake-attempts=1 \
   --seed=20260924 --no-color \
   --output-dir=/path/to/results --json-report=run.json \
-  --skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+  --skip-package=./integration,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 ```
 
 `--compilers=2` only applies to compilation; the test processes execute serially.
@@ -125,7 +125,7 @@ flags as Ginkgo's normal run:
 ```sh
 GOMAXPROCS=1 GOTOOLCHAIN=go1.25.6 ginkgo build -r --compilers=2 \
   --ldflags='-w -s' \
-  --skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+  --skip-package=./integration,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 ```
 
 Discover the precompiled inventory from every `Compiled ...test` line; require

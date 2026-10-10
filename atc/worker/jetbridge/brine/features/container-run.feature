@@ -60,7 +60,7 @@ Feature: Running a step, and what the caller gets back
   # is set" is now covered by container-pod.feature's "A step's working
   # directory is an ephemeral volume". Its volume/mount counts, destination
   # and emptyDir checks are mutation-paired with the original Go test; see
-  # V5-MIGRATION.md. Not duplicated here.
+  # ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/V5-MIGRATION.md. Not duplicated here.
   #
   # The direct-mode scenario above now observes the full pod contract together.
 
@@ -115,7 +115,7 @@ Feature: Running a step, and what the caller gets back
   # artifact-handoff outline: a direct gzip read before collection, followed
   # by the daemon-backed producer-to-consumer transfer after pod deletion.
   # JB-container-041/-042 retain their named Go tests for exact command,
-  # metadata and pod-retention contracts; see DISPOSITION-jetbridge.md.
+  # metadata and pod-retention contracts; see ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md.
 
   # DISPOSITION — "Input streaming is a no-op (handled by init containers)"
   # has no seam-level equivalent and is not migrated. It asserts

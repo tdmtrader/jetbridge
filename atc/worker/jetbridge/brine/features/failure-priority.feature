@@ -12,10 +12,9 @@ Feature: Failure detection and deletion
 
   Live startup, OOM-priority and compatibility-process cases cover actual
   kubelet failures and execution; they retain their own premises. The
-  severed-artifact case does NOT: it is in
-  features/live/pending/severed-artifact.feature and never runs, because
-  without exec_status.go's statusCheckingUpgrader core reports an exec whose
-  socket died as a success, so the scenario is red against core by design.
+  severed-artifact case runs in features/live/severed-artifact.feature and
+  asserts that an exec whose socket dies is reported as a failure rather
+  than a success.
 
   Scenario: A pod deleted while the runtime watches it is reported
     Given a Kubernetes worker "failure-worker" with a database behind it

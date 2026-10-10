@@ -8,7 +8,7 @@ module_root=$(pwd -P)
 
 # Guard tests are fast (no cluster, no build) and catch regressions that would
 # otherwise waste the rest of this run's time. Abort before doing anything else.
-if ! go test ./steps/ -run 'Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement' -count=1; then
+if ! go test ./steps/ -run 'Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine|CitesARequirement' -count=1; then
     echo "Guard tests failed; aborting before build/run" >&2
     exit 1
 fi

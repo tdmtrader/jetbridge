@@ -4,7 +4,7 @@ package jetbridge
 // atc/worker/jetbridge/volume_daemonset_test.go (merge-base aef2244a63, via the
 // compile-adapted copy the port stage produced for this branch).
 //
-// Rows JB-volume_daemonset-011, -012 and -013 of DISPOSITION-jetbridge.md were
+// Rows JB-volume_daemonset-011, -012 and -013 of ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md were
 // recorded DELETED on FILE-level evidence only. Re-verifying them on the rebased
 // head refuted all three: the brine artifact-daemon scenarios reach the peer
 // fallback through a single daemon endpoint, so the producer-dead / peer-alive

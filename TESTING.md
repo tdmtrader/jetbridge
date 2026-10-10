@@ -1,68 +1,10 @@
 # Testing Guide
 
-## Quick Start
+See [CLAUDE.md’s Running Tests section](CLAUDE.md#running-tests) for test tiers, commands, prerequisites, and timing.
 
-```bash
-make test-quick    # Unit + Elm tests (~5 min, needs PostgreSQL and yarn)
-make test-all      # Everything including K8s tests (hours)
-```
+## Disposable K3s and deployed-cluster acceptance
 
-## Test Tiers
-
-### 1. Unit Tests (`make test-unit`)
-
-Runs all Ginkgo test suites excluding integration/e2e. Uses parallel execution across packages.
-
-- **Time:** ~3 minutes
-- **Prerequisites:** PostgreSQL running on localhost (port 5432 or via `initdb`)
-- **What it covers:** 79 test suites across atc/, fly/, skymarshal/, go-concourse/, tracing/
-
-```bash
-# Run a specific package
-ginkgo ./atc/db/
-ginkgo ./atc/exec/
-ginkgo ./fly/commands/
-```
-
-### 2. Elm Tests (`make test-elm`)
-
-Runs the frontend suite. It is the cheapest tier there is, and it had rotted to
-two non-compiling suites while nothing ran it.
-
-- **Time:** ~30 seconds
-- **Prerequisites:** `yarn install`
-
-```bash
-yarn run test
-```
-
-### 3. Fly Integration Tests (`make test-fly-integration`)
-
-Tests the `fly` CLI binary against a mock ATC server.
-
-- **Time:** ~30 seconds (after initial fly binary build)
-- **Prerequisites:** None (builds fly binary, uses mock HTTP)
-- **What it covers:** 576 specs covering all fly commands
-
-```bash
-ginkgo -r ./fly/integration/
-```
-
-### 4. ATC Integration Tests (`make test-integration`)
-
-Starts a real ATC process and tests API behavior.
-
-- **Time:** ~12 seconds
-- **Prerequisites:** PostgreSQL running locally
-- **What it covers:** 21 specs covering full API request/response flows (1 pending: team migration)
-
-```bash
-ginkgo -r -p ./atc/integration/
-```
-
-### 5. K8s Integration Tests (`make test-k8s-integration`)
-
-In CI this tier is the `k8s-e2e` pipeline (`deploy/k8s-e2e-pipeline.yml`): `build-kind-runner`
+In CI the disposable K3s tier is the `k8s-e2e` pipeline (`deploy/k8s-e2e-pipeline.yml`): `build-kind-runner`
 → `k8s-integration-tests` → `k8s-behavioral-tests`, on a 24 h timer and on every `core` commit.
 The jetbridge pipeline's `k8s-live-tests` job is a different thing: the `-tags live` suites in
 `atc/worker/jetbridge`, which run after `self-upgrade` against the cluster's *deployed* artifact
@@ -80,11 +22,7 @@ every `dockerd` started inside a pod (the DinD builders and the in-task daemon h
 `fs.inotify.max_user_instances` must be raised from Ubuntu's 128 (home-infra pins 1024) or the
 kubelet fails every follow-logs stream, which is how testcontainers waits for K3s to be ready.
 
-Creates a K3s cluster from inside the suite via `testcontainers-go/modules/k3s`, then deploys Concourse via Helm.
-
-- **Time:** ~23 minutes (including cluster creation/teardown)
-- **Prerequisites:** Docker, Helm, kubectl
-- **What it covers:** 117 specs (7 pending) — pipeline execution, volume passing, pod lifecycle. ~2 pod cleanup specs are flaky due to GC timing.
+The disposable tier creates a K3s cluster from inside the suite via `testcontainers-go/modules/k3s`, then deploys Concourse via Helm.
 
 ```bash
 # Uses CONCOURSE_IMAGE env var (default: concourse-local:latest)
@@ -95,13 +33,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o concourse-linux-arm64 ./cmd/co
 docker build -f Dockerfile.local -t concourse-local:latest .
 ```
 
-### 6. K8s Behavioral Tests (`make test-k8s-behavioral`)
+### K8s behavioral execution
 
 Full behavioral test suite with parallel K3s containers (one per process).
 
-- **Time:** 2-3 hours (with 2 procs)
-- **Prerequisites:** Docker, Helm, kubectl (needs significant CPU/memory)
-- **What it covers:** 302 specs — resource checking, pipeline behavior, volumes, hijacking
 - **Note:** Default 2 parallel procs. 4 procs may time out during cluster setup on resource-constrained machines. Override with `K8S_PROCS=4 make test-k8s-behavioral`.
 
 ```bash
@@ -136,7 +71,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 
 ### Flaky K8s behavioral tests
 
-~3 out of 117 specs may fail due to GC timing. Built-in retries handle most pod race conditions (container-not-found, pod-terminated-before-exec).
+Pod cleanup specs may fail due to GC timing. Built-in retries handle most pod race conditions (container-not-found, pod-terminated-before-exec).
 
 ### Running a single test
 

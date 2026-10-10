@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -200,24 +199,4 @@ func execExitError(ctx context.Context, err error) error {
 		return &jetbridge.ExecExitError{ExitCode: exitErr.ExitCode()}
 	}
 	return err
-}
-
-// A dead child can remain a zombie until init reaps it. It must not remain
-// alive after the shared executor returns from cancellation.
-func processStopped(pid string) error {
-	if n, err := strconv.Atoi(pid); err != nil || n <= 0 {
-		return fmt.Errorf("invalid child PID %q", pid)
-	}
-	state, err := exec.Command("ps", "-o", "stat=", "-p", pid).Output()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect child %s: %w", pid, err)
-	}
-	if !strings.HasPrefix(strings.TrimSpace(string(state)), "Z") {
-		return fmt.Errorf("child %s still running after cancellation: %s", pid, state)
-	}
-	return nil
 }

@@ -13,7 +13,7 @@ Feature: Moving artifacts through volumes
   handoff outline in live/artifact-handoff.feature exercises production's
   daemon-backed read, input-init and real task execution paths.
   Focused Go tests remain for constructor arguments, execution attributes and
-  cache wiring that these scenarios do not fully cover; see DISPOSITION-jetbridge.md.
+  cache wiring that these scenarios do not fully cover; see ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md.
 
 
   @VT-05

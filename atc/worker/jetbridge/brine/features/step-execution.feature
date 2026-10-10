@@ -20,7 +20,7 @@ Feature: What each kind of step promises
   type is an image name in the Kubernetes worker, not the fabricated "unknown
   resource type" error the previous fixture supplied.
 
-  Mutation evidence and migration history are recorded in V5-MIGRATION.md.
+  Mutation evidence and migration history are recorded in ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/V5-MIGRATION.md.
   Dispositions below retain Go assertions not established by these scenarios.
 
   # ==========================================================================

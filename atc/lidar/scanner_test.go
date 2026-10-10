@@ -180,7 +180,7 @@ var _ = Describe("Scanner", func() {
 	})
 
 	// RESTORED 2026-09-05 (rebase onto core for 0.3.2). Row GL-064 of
-	// DISPOSITION-gc-lidar.md was recorded DELETED; the re-verification's
+	// ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-gc-lidar.md was recorded DELETED; the re-verification's
 	// skeptic REFUTED that pairing. The brine scenario
 	// resource-checking.feature "Every resource is checked even when there are
 	// four times as many as there are workers" creates its resources with no

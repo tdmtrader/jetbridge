@@ -159,7 +159,6 @@ silly air-traffic-themed names.
 | `/tsa`          | A custom-built SSH server responsible for securely authenticating and registering workers. The other half of `concourse web`. |
 | `/worker`       | The `concourse worker` library code for registering with the TSA, periodically reaping containers/volumes, etc. |
 | `/cmd`          | This is mainly glue code to wire the ATC, TSA, and Garden into the single `concourse` CLI. |
-| `/testflight`   | The acceptance test suite, exercising pipeline and `fly` features. Runs against a single Concourse deployment. Can be run locally on a dev machine. |
 | `/topgun`       | Another acceptance suite which covers operator-level features and technical aspects of the Concourse runtime using [Bosh](https://bosh.io/) and [K8s](https://kubernetes.io/). Deploys its own Concourse clusters, runs tests against them, and tears them down. Can only be run in CI. |
 | `/integration`  | Similar to `/topgun`, but spins up Concourse clusters using `docker compose`. Can be run locally on a dev machine. |
 
@@ -392,10 +391,6 @@ There are a few different test suites in Concourse:
 * **unit tests**: Unit tests live throughout the codebase (`foo_test.go`
   alongside `foo.go`), and should probably be written for any contribution.
 
-* `testflight/`: This suite is the "core Concourse" acceptance tests
-  suite, exercising pipeline logic and `fly execute`. A new test should be
-  added to `testflight` for most features that are exposed via pipelines or `fly`.
-
 * `web/elm/tests/`: These test the various Elm functions in the web UI code
   in isolation. For the most part, the tests for `web/elm/src/<module name>.elm`
   will be in `web/elm/tests/<module name>Tests.elm`. We have been finding it
@@ -403,7 +398,7 @@ There are a few different test suites in Concourse:
   leaving the models free to be refactored.
 
 * `web/wats/`: This suite covers specifically the web UI, and run against a
-  real Concourse cluster just like `testflight`. This suite is still in its
+  real Concourse cluster. This suite is still in its
   early stages and we're working out a unit testing strategy as well, so
   expectations are low for PRs, though we may provide guidance and only require
   coverage on a case-by-case basis.
@@ -414,7 +409,7 @@ There are a few different test suites in Concourse:
 
 Concourse uses [Ginkgo](http://github.com/onsi/ginkgo) as its test framework
 and suite runner of choice for Go code. You'll need to install the `ginkgo` CLI
-to run the unit tests and `testflight`:
+to run the Go tests:
 
 ```sh
 $ go get github.com/onsi/ginkgo/ginkgo
@@ -457,7 +452,7 @@ following command, which skips all integration tests and linux-specific tests:
 
 ```sh
 ginkgo -r -p -race -flake-attempts=3 \
-    -skip-package ./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim
+    -skip-package ./integration,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim
 ```
 
 If you're on a non-linux platform you may want to run the tests using Docker
@@ -474,7 +469,7 @@ the following to run all the unit tests, including the linux-specific tests:
 cd /src
 go install github.com/onsi/ginkgo/v2/ginkgo
 ginkgo -r -p -race -flake-attempts=3 \
-    -skip-package ./integration,testflight,topgun
+    -skip-package ./integration,topgun
 ```
 
 #### Running elm tests
@@ -499,28 +494,6 @@ Guide. Powered by [elm-format](https://github.com/avh4/elm-format).
 ### Elm benchmarking
 
 Run `yarn benchmark`.
-
-### Running the acceptance tests (`testflight`)
-
-The `testflight` package contains tests that run against a real live Concourse.
-By default, it will run against `localhost:8080`, i.e. the `docker compose up`'d
-Concourse.
-
-If you've already got Concourse running via `docker compose up`, you should be
-able to just run the acceptance tests by running `ginkgo` the same way you would
-run it for unit tests:
-
-```sh
-$ ginkgo -r -p testflight
-```
-
-Note: because `testflight` actually runs real workloads, you *may* want to limit
-the parallelism if you're on a machine with more than, say, 8 cores. This can be
-done by specifying `--nodes`:
-
-```sh
-$ ginkgo -r --nodes=4 testflight
-```
 
 ### Running the web acceptance tests (`web/wats`)
 
@@ -547,7 +520,8 @@ make test-k8s-integration
 make test-k8s-behavioral
 ```
 
-See [TESTING.md](TESTING.md) for image build steps and timing expectations.
+See [TESTING.md](TESTING.md) for image build steps and deployed-cluster guidance; see
+[CLAUDE.md](CLAUDE.md#running-tests) for test tiers and timing expectations.
 
 [docs]: https://github.com/concourse/docs
 [fav-commit]: https://dhwthompson.com/2019/my-favourite-git-commit

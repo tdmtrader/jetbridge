@@ -3,7 +3,7 @@ package jetbridge_test
 // RESTORED 2026-09-18 by the disposition-ledger resolution pass.
 //
 // The ledger pass restored fourteen specs here: every test retired by a
-// DISPOSITION-jetbridge.md row whose newest entry named no scenario, and whose
+// ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md row whose newest entry named no scenario, and whose
 // replacement — once the paraphrase was resolved to an actual `Scenario:`
 // line — turned out to live under `brine/features/live/`. A `@live-kubernetes`
 // scenario runs only against a real cluster and never under `make test-unit`,

@@ -28,5 +28,5 @@ budgets:
   # De-enrolment guard: the run must resolve to at least this many scenarios
   # (outline rows expanded). Counted out of features/*.feature on 2026-09-19;
   # raise it with every batch that adds scenarios, never lower it without a
-  # disposition row in DISPOSITION-jetbridge.md for each scenario that left.
+  # disposition row in ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/DISPOSITION-jetbridge.md for each scenario that left.
   scenarios_min: 584

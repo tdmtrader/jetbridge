@@ -18,7 +18,7 @@
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+		--skip-package=./integration,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 
 # Elm frontend tests (~30 sec)
 # Requires: yarn install (elm-test comes from node_modules)
@@ -67,7 +67,7 @@ test-k8s-behavioral:
 # root go test never reaches it; run with a cd into it.
 test-brine-guards:
 	@echo "==> Running brine guard tests..."
-	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement' -count=1
+	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine|CitesARequirement' -count=1
 
 .PHONY: check-docker-tools
 check-docker-tools:

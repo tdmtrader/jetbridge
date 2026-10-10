@@ -5,10 +5,6 @@ package steps
 // Every sentence here is readable off the Pod the cluster hands back, which is
 // the half of this track brine is the right runner for. What a real kubelet
 // DOES with that Pod is a K3s flow under a build tag, and stays in Go.
-//
-// The bodies are stubs until Phase 4 Green teaches Container.buildPod about
-// DurableOutputCapture. They fail with a typed error naming that phase; none of
-// them passes.
 
 import (
 	"fmt"
@@ -23,8 +19,6 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
-
-const capturePodPhase = "Phase 4 Green"
 
 // scenarioCaptureNode is the Kubernetes node the scenario's capture row names.
 // A step directory is a directory on ONE node's disk, so the capture pod
@@ -219,13 +213,6 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"the number of required ready labels",
 			capturePodReadyLabelCount),
 
-		// The node pin, declared here in Phase 5 and executed in Phase 8, per
-		// the Phase 4 round-2 ruling 3. It is a stub beside its two affinity
-		// siblings rather than a live step above them, because the scenarios
-		// that exercise ready labels are Phase 8's and splitting the family is
-		// what the ruling declined. The production half exists and is red
-		// under M8 in Go
-		// (TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot).
 		// The node pin. A step directory is a directory on ONE node's disk,
 		// named by the capture row before this Pod existed, so a label-wide
 		// placement lets the scheduler land the producer on a node the row

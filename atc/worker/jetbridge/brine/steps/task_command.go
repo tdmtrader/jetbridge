@@ -346,11 +346,6 @@ func runTask(in TaskCluster, handle, script string, container runtime.Container)
 	return out, nil
 }
 
-// expandWorkspace lets a scenario name a scratch path without hard-coding one.
-func expandWorkspace(script string, w TaskWorkspace) string {
-	return strings.ReplaceAll(script, "$WORKSPACE", w.Dir)
-}
-
 // TaskWorkspaceResourceDefinition gives each scenario its own scratch dir.
 func TaskWorkspaceResourceDefinition() brine.ResourceDefinition {
 	return brine.ResourceDefinition{

@@ -178,7 +178,6 @@ jobs:
           # the same and the guard test agrees.
           PACKAGES=$(go list ./... \
             | grep -v /integration \
-            | grep -v /testflight \
             | grep -v /topgun \
             | grep -v /fly/integration \
             | grep -v /testhelpers/otel \

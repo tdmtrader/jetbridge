@@ -38,7 +38,7 @@ import (
 // live_time.go and live_retry_abort.go; hooks use live_hooks.go. There are no
 // runtimetest workers, containers, processes or pool substitutes here.
 //
-// Old/new controls and mutation evidence live in V5-MIGRATION.md. The original
+// Old/new controls and mutation evidence live in ../jetbridge-hearth/proposals/20261009T0940_codebase_proportionate/brine-campaign-records/V5-MIGRATION.md. The original
 // Go tests retain argument/order/locking assertions not established by these
 // observable outcomes; no retirement is implied by a passing Brine scenario.
 

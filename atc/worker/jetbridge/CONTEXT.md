@@ -283,10 +283,6 @@ extend in any order.
 Static verification that every scenario's state path resolves, without
 running anything.
 
-**Pending feature**:
-A feature held to every guard except execution because its production code
-does not exist yet.
-
 **Adapter**:
 The binary hosting this repo's step registry that speaks the brine protocol.
 

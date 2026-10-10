@@ -2,9 +2,9 @@ package steps
 
 // The named domain states of the Hangar output family.
 //
-// The rules these follow are domain.go's, applied to a plane that does not
-// exist yet: a state carries what its SUCCESSORS need and nothing else, an
-// error is a VALUE so a refusal is assertable rather than fatal, and there is
+// The rules these follow are domain.go's, applied to the output plane: a state
+// carries what its SUCCESSORS need and nothing else, an error is a VALUE so a
+// refusal is assertable rather than fatal, and there is
 // one nominal type per reachable set of assertions — because the chain walk
 // matches on nominal type, and a scenario that never published should not be
 // able to reach a publication assertion.
@@ -32,42 +32,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/brine-dev/brine-go/pkg/brine"
-
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
-
-// pendingPhase is the typed failure every phrase whose production code has not
-// been written yet returns.
-//
-// It is deliberately NOT a skip and NOT a nil return. A step that quietly
-// passed would make its scenario green against nothing at all, which is the
-// exact defect MIGRATION-EVIDENCE.md records as "a test that cannot fail". The
-// error names the phase that closes it, so a red step reads as work outstanding
-// rather than as a broken fixture.
-type pendingPhase struct {
-	phrase string
-	phase  string
-	needs  string
-}
-
-func (e pendingPhase) Error() string {
-	return fmt.Sprintf(
-		"%q is not yet implemented in production: %s adds %s. "+
-			"This step is defined so `brine check` can walk the chain and so the "+
-			"vocabulary guard can see it; it fails rather than passes.",
-		e.phrase, e.phase, e.needs)
-}
-
-// pending returns the typed failure above. Every stubbed body in the Hangar
-// family returns exactly this.
-func pending(phrase, phase, needs string) error {
-	return pendingPhase{phrase: phrase, phase: phase, needs: needs}
-}
 
 // captureAdmission is what the control plane knows about a capture before its
 // producing Pod exists: the exact execution being extended, the one declared
@@ -395,24 +365,4 @@ type BoundOutput struct {
 	Claim hangaroutput.ClaimRecord
 
 	Err error
-}
-
-// stubMap and stubCheck define a phrase whose production code the plan has not
-// reached yet.
-//
-// They exist so the Hangar vocabulary is complete before its first scenario is
-// written — `brine check` can walk every planned chain, and the vocabulary guard
-// can see a definition nobody says. What they do NOT do is pass. Each names the
-// phase that closes it and the production it is waiting for, so a red step in a
-// pending feature reads as outstanding work rather than as a broken fixture,
-// and no scenario can go green against nothing.
-func stubMap[In, Out any](pattern, phase, needs string) brine.StepDefinition {
-	return brine.DefineMap[In, Out](pattern, func(_ In, _ brine.Params, _ *brine.Recorder) (Out, error) {
-		var zero Out
-		return zero, pending(pattern, phase, needs)
-	})
-}
-
-func stubCheck[In any](pattern, phase, needs string) brine.StepDefinition {
-	return CheckThat[In](pattern, func(In) error { return pending(pattern, phase, needs) })
 }
