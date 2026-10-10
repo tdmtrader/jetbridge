@@ -951,8 +951,10 @@ func (cluster *liveCluster) inventory() []liveInventoryEntry {
 	for _, entry := range inventory.Entries {
 		kinds[entry.Kind]++
 	}
-	// Every kind the inventory can declare, with every consumer on.
-	for kind, want := range map[string]int{"random32": 4, "store-tokens": 1, "ca": 1, "tls-server": 1, "tls-client": 1, "tls-bundle": 1, "dsn": 1} {
+	// Every entry the chart's inventory declares with every consumer on: the
+	// one Hangar key and the web-only run-input key (random32), the disk
+	// store's TLS bundle and its role tokens.
+	for kind, want := range map[string]int{"random32": 2, "store-tokens": 1, "tls-bundle": 1} {
 		if kinds[kind] != want {
 			t.Fatalf("the bootstrap inventory declares %d %s entries, want %d (all: %v)", kinds[kind], kind, want, kinds)
 		}
