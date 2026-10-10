@@ -17,16 +17,14 @@ type PipelineRunOptions struct {
 // a child reference itself.
 func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineRunOptions) atc.PipelineRun {
 	atcRun := atc.PipelineRun{
-		ContractVersion: savedRun.ContractVersion(),
-		ActivationEpoch: savedRun.ActivationEpoch(),
-		ID:              savedRun.ID(),
-		TemplateID:      savedRun.TemplateID(),
-		Number:          savedRun.Number(),
-		Status:          savedRun.Status(),
-		CreatedBy:       savedRun.CreatedBy(),
-		CreatedAt:       savedRun.CreatedAt(),
-		CompletedAt:     savedRun.CompletedAt(),
-		Reclaimed:       payload == nil,
+		ID:          savedRun.ID(),
+		TemplateID:  savedRun.TemplateID(),
+		Number:      savedRun.Number(),
+		Status:      savedRun.Status(),
+		CreatedBy:   savedRun.CreatedBy(),
+		CreatedAt:   savedRun.CreatedAt(),
+		CompletedAt: savedRun.CompletedAt(),
+		Reclaimed:   payload == nil,
 	}
 
 	if options.AuthorizedForCancellation {
@@ -49,8 +47,6 @@ func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineR
 		atcRun.ReclaimRetryAfter = savedRun.ReclaimRetryAfter()
 
 		// Caller intent is team history: redacted like params outside it.
-		atcRun.CausedByRun = savedRun.CausedByRun()
-		atcRun.Correlation = savedRun.Correlation()
 	}
 
 	if payload != nil && options.CanEnterPayload {

@@ -100,7 +100,6 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 	"web.tls":                 func(d *liveDeployment) string { return onOff(d.webFlag("tls-bind-port")) },
 	"web.hangarOutput":        func(d *liveDeployment) string { return onOff(d.webFlag("kubernetes-hangar-output-enabled")) },
 	"web.hangarOutputCapture": func(d *liveDeployment) string { return onOff(d.webFlag("kubernetes-hangar-output-capture-enabled")) },
-	"web.runResults":          func(d *liveDeployment) string { return onOff(d.webFlag("run-result-scratch-dir")) },
 
 	"daemon.mtls":              func(d *liveDeployment) string { return onOff(d.daemonFlag("tls-cert")) },
 	"daemon.resolveCapability": func(d *liveDeployment) string { return onOff(d.daemonFlag("resolve-capability-key")) },
@@ -202,7 +201,6 @@ var liveBehaviouralFeatures = map[string][]string{
 	"store.disk":              liveRunResultTests,
 	"web.hangarOutput":        liveRunResultTests,
 	"web.hangarOutputCapture": liveRunResultTests,
-	"web.runResults":          liveRunResultTests,
 	"daemon.hangarOutput":     liveRunResultTests,
 }
 

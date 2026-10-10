@@ -69,29 +69,18 @@ func TestRunResultScratchIsDiskBackedAndSizedForConcurrency(t *testing.T) {
 		sizeLimit   string
 		concurrency string
 	}{
-		{"defaults", nil, "1536Mi", "2"},
-		{"configured", []string{"web.runResults.scratchSizeLimit=3Gi", "web.runResults.readConcurrency=4"}, "3Gi", "4"},
+		{"defaults", nil, "1Gi", "2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			web := strictWebDeployment(t, renderOutput(t, append([]string{"hangarOutput.webEnabled=true"}, tc.sets...)...))
 			container := web.Spec.Template.Spec.Containers[0]
 
-			wantArgs := map[string]bool{
-				"--run-result-scratch-dir=" + runResultScratchPath: false,
-				"--run-result-read-concurrency=" + tc.concurrency:  false,
-			}
 			for _, arg := range container.Args {
-				if _, ok := wantArgs[arg]; ok {
-					wantArgs[arg] = true
+				if strings.HasPrefix(arg, "--run-result-") {
+					t.Errorf("removed setting rendered: %s", arg)
 				}
 			}
-			for arg, found := range wantArgs {
-				if !found {
-					t.Errorf("web args lack %s: %v", arg, container.Args)
-				}
-			}
-
 			var mount *corev1.VolumeMount
 			for i := range container.VolumeMounts {
 				if container.VolumeMounts[i].MountPath == runResultScratchPath {
@@ -121,17 +110,17 @@ func TestRunResultScratchIsDiskBackedAndSizedForConcurrency(t *testing.T) {
 	}
 }
 
-func TestRunResultScratchRefusesALimitBelowItsConcurrency(t *testing.T) {
-	for _, sets := range [][]string{
-		// Two reads, each holding up to 2 x 256Mi.
-		{"web.runResults.scratchSizeLimit=1000Mi"},
-		{"web.runResults.scratchSizeLimit=2Gi", "web.runResults.readConcurrency=5"},
-		{"web.runResults.readConcurrency=0"},
-		{"web.runResults.scratchSizeLimit=lots"},
-	} {
-		got := renderOutputError(t, append([]string{"hangarOutput.webEnabled=true"}, sets...)...)
-		if !strings.Contains(got, "web.runResults") {
-			t.Errorf("%v: refusal does not name web.runResults: %s", sets, got)
-		}
+func webContainerArgs(t *testing.T, manifests string) []string {
+	t.Helper()
+
+	web := findDeployment(t, manifests, "-web")
+	if len(web.Spec.Template.Spec.Containers) == 0 {
+		t.Fatal("the -web Deployment has no containers; this test is watching nothing")
 	}
+
+	args := web.Spec.Template.Spec.Containers[0].Args
+	if len(args) == 0 {
+		t.Fatal("the web container renders no args; this test is watching nothing")
+	}
+	return args
 }

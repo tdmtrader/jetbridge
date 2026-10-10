@@ -12,24 +12,7 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-// Whether this server holds run creation is an operator's business, not an
-// anonymous caller's. This sweep issues every route in the route table with no
-// credentials in each gate state and compares the two answers in full, because
-// the disclosure could be anywhere: a status, a header, a field, a route that
-// changes from 401 to something else.
-
-// The spellings that must never reach an anonymous body, in any key or value.
-var gateSpellings = []string{
-	"pipeline-run-activation-epoch",
-	"PipelineRunActivationEpoch",
-	"pipelineRunActivationEpoch",
-	"enable-pipeline-run-creation",
-	"EnablePipelineRunCreation",
-	"enablePipelineRunCreation",
-	"pipeline_run_creation",
-}
-
-var _ = Describe("the gate is invisible to an anonymous caller", func() {
+var _ = Describe("anonymous Run capabilities", func() {
 	JustBeforeEach(func() {
 		givenARunnableTemplate()
 
@@ -42,10 +25,10 @@ var _ = Describe("the gate is invisible to an anonymous caller", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("answers an anonymous caller identically whether creation is held or admitted", func() {
+	It("preserves anonymous authorization across a restart", func() {
 		waitForSigningKeys()
 
-		held := captureEveryRouteAnonymously()
+		before := captureEveryRouteAnonymously()
 
 		// The classification is used only for the guard below. It is a
 		// superset of the auth wrappa's unauthenticated case -- a public
@@ -55,7 +38,7 @@ var _ = Describe("the gate is invisible to an anonymous caller", func() {
 		// unauthenticated answers non-401 here, so adding a route to that case
 		// can only add it here too.
 		reachable := []string{}
-		for name, response := range held {
+		for name, response := range before {
 			if response.Status != http.StatusUnauthorized {
 				reachable = append(reachable, name)
 			}
@@ -63,35 +46,35 @@ var _ = Describe("the gate is invisible to an anonymous caller", func() {
 		Expect(reachable).NotTo(BeEmpty(), "no route answered an anonymous caller; the sweep is comparing nothing")
 		Expect(reachable).To(ContainElements(atc.GetInfo, atc.ListPipelines, atc.ListAllPipelines))
 
-		restartATCWithGate(true)
-		admitted := captureEveryRouteAnonymously()
+		restartATC()
+		after := captureEveryRouteAnonymously()
 
 		// Compared in full, not only over the reachable set: the one
 		// disclosure shape a route-level gate could plausibly introduce is a
 		// route whose anonymous answer changes from 401 to something else, and
 		// only comparing the 401s catches that. Comparing a 401 with a 401
 		// costs nothing.
-		Expect(admitted).To(HaveLen(len(held)))
-		for name, heldResponse := range held {
-			admittedResponse, found := admitted[name]
+		Expect(after).To(HaveLen(len(before)))
+		for name, beforeResponse := range before {
+			afterResponse, found := after[name]
 			Expect(found).To(BeTrue(), name)
 
-			Expect(admittedResponse.Status).To(Equal(heldResponse.Status), name)
-			Expect(string(admittedResponse.Body)).To(Equal(string(heldResponse.Body)), name)
-			Expect(comparableHeaders(admittedResponse.Header)).To(Equal(comparableHeaders(heldResponse.Header)), name)
+			Expect(afterResponse.Status).To(Equal(beforeResponse.Status), name)
+			Expect(string(afterResponse.Body)).To(Equal(string(beforeResponse.Body)), name)
+			Expect(comparableHeaders(afterResponse.Header)).To(Equal(comparableHeaders(beforeResponse.Header)), name)
 		}
 
 		// (i) The whole info body, not only its feature_flags object.
 		// atc.Info has seven top-level fields, and an eighth is the obvious
 		// way to satisfy a narrow reading of this while violating it.
-		Expect(string(admitted[atc.GetInfo].Body)).To(Equal(string(held[atc.GetInfo].Body)))
-		Expect(held[atc.GetInfo].Status).To(Equal(http.StatusOK))
+		Expect(string(after[atc.GetInfo].Body)).To(Equal(string(before[atc.GetInfo].Body)))
+		Expect(before[atc.GetInfo].Status).To(Equal(http.StatusOK))
 
 		// (ii) The two anonymous pipeline collections carry the fixture, with
 		// can_create_run false in both states. Without the presence assertion
 		// both bodies are [] and this comparison is vacuous.
 		for _, collection := range []string{atc.ListPipelines, atc.ListAllPipelines} {
-			for state, captured := range map[string]map[string]capturedResponse{"held": held, "admitted": admitted} {
+			for state, captured := range map[string]map[string]capturedResponse{"before": before, "after": after} {
 				fixture := findFixturePipeline(captured[collection])
 				Expect(fixture.Template).NotTo(BeNil(), collection+" "+state)
 				Expect(*fixture.Template).To(BeTrue(), collection+" "+state)
@@ -100,14 +83,6 @@ var _ = Describe("the gate is invisible to an anonymous caller", func() {
 			}
 		}
 
-		// (iii) No body from either boot, on any route, names the switch.
-		for state, captured := range map[string]map[string]capturedResponse{"held": held, "admitted": admitted} {
-			for name, response := range captured {
-				for _, spelling := range gateSpellings {
-					Expect(string(response.Body)).NotTo(ContainSubstring(spelling), name+" "+state)
-				}
-			}
-		}
 	})
 })
 
@@ -117,7 +92,7 @@ var _ = Describe("the gate is invisible to an anonymous caller", func() {
 // Some members carry a weak comparison and are still issued and still
 // compared: DownloadCLI, CheckResourceWebHook, the badge routes and the
 // .well-known routes answer about something this fixture does not set up, so
-// their two answers agree for reasons unrelated to the gate. Naming them is
+// their two answers agree for reasons unrelated to authorization. Naming them is
 // the point -- a reader should know which parts of this sweep are load-bearing.
 func captureEveryRouteAnonymously() map[string]capturedResponse {
 	GinkgoHelper()

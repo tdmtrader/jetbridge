@@ -35,7 +35,7 @@ auditing, or optional infrastructure.
 | `hangarOutput.inventory`, `hangarOutput.reclaimer` | Remove them. The render fails naming each. Their Deployments and service accounts are gone: the web runs reclaim (`hangarOutput.reclaim.interval`, `.deleteTimeout`, `.batch`; defaults 1m, 2m, 10) and the orphan sweep (`hangarOutput.orphanSweep.interval`, default 1h). On GCS, move the inventory's list and the reclaimer's get and delete grants on the output bucket to the web's cloud principal (`serviceAccount.annotations`), which must not be the artifact daemon's. On the disk store the web mounts the store's `inventory` and `reclaimer` tokens, and the store's NetworkPolicy admits web. |
 | `hangarOutput.database`, `hangarBootstrap.database` | Remove them. The render fails naming each. The activation database role and its bootstrap Job are gone; only the web touches the output plane's tables, as web's own database user. Drop the role and its Secret once nothing runs as them. |
 | Upgrading past database migration `1789793154` with the output plane in service | Drain the output plane first (`hangarOutput.webEnabled=false`, wait for `fly hangar-status` to report drained). The output scope derives from the tenant and the store (H(tenant, store)), and new objects are published under it. Objects published under the earlier epoch-derived scope are not readable: nothing reads or reclaims them, and they carry no store marker, so the orphan sweep counts them as foreign and never deletes them. Delete them, or expire the prefix with a bucket lifecycle rule. |
-| `hangarOutput.activationEpoch`, `hangarOutput.executionControl.keySecret`, `.keyID`, `.publicKeys`, `hangarBootstrap.referencedKeys` | Remove them. The render fails naming each. The node daemon is inside the trusted computing base and is reached over mTLS, so its acknowledgement is its answer on that channel and nothing it says is signed: there is no node control key, no key id, no verification ring (the `-hangar-output-control-keys` ConfigMap and the bootstrap's `-hangar-rings-*` Secret are gone) and no control-key generation. The daemon is handed no `--control-key-id`, `--control-key-file` or `--activation-epoch`; its output plane is mounted by `--execution-control`, and it verifies every warrant with the one Hangar key (`--hangar-key`, from `artifactDaemon.hangar.keySecret` or the daemon TLS Secret's `hangar.key`). The web is handed no `--kubernetes-hangar-output-activation-epoch` or `--kubernetes-hangar-output-control-keys`. A Run result binds as an input while its Run succeeded and its claim is live, whatever key was in use when it was published. Delete the control-key Secrets once nothing mounts them. `web.pipelineRunActivationEpoch`, the Run contract's own epoch, is unrelated and stays. |
+| `hangarOutput.activationEpoch`, `hangarOutput.executionControl.keySecret`, `.keyID`, `.publicKeys`, `hangarBootstrap.referencedKeys` | Remove them. The render fails naming each. The node daemon is inside the trusted computing base and is reached over mTLS, so its acknowledgement is its answer on that channel and nothing it says is signed: there is no node control key, no key id, no verification ring (the `-hangar-output-control-keys` ConfigMap and the bootstrap's `-hangar-rings-*` Secret are gone) and no control-key generation. The daemon is handed no `--control-key-id`, `--control-key-file` or `--activation-epoch`; its output plane is mounted by `--execution-control`, and it verifies every warrant with the one Hangar key (`--hangar-key`, from `artifactDaemon.hangar.keySecret` or the daemon TLS Secret's `hangar.key`). The web is handed no `--kubernetes-hangar-output-activation-epoch` or `--kubernetes-hangar-output-control-keys`. A Run result binds as an input while its Run succeeded and its claim is live, whatever key was in use when it was published. Delete the control-key Secrets once nothing mounts them. |
 | `hangarOutput.capabilityKeySecret`, `hangarOutput.materializationKeySecret`, `hangarOutput.materializationKeyID` | Remove them. The render fails naming each. One Hangar key, `hangar.key`, now signs every warrant -- materialization, read and control -- and every artifact daemon verifies against it: name its Secret in `artifactDaemon.hangar.keySecret` (the bootstrap creates an absent one), or hold `hangar.key` in `artifactDaemon.tls.existingSecret`. `hangarOutput.executionControl.enabled` requires one of them (or `artifactDaemon.hangar.allowGeneratedKey`). The daemon is handed `--hangar-key=<path>` (renamed from `--hangar-warrant-key`) and `--execution-control` in place of `--capability-key`; `--capability-key`, `--capability-ttl`, `--materialization-key-file`, `--materialization-key-id` and `--hangar-warrant-ttl` are gone, and a daemon given one exits on the unknown flag. The web is handed `--kubernetes-hangar-key=<path>` (renamed from `--kubernetes-hangar-warrant-key`) with `--kubernetes-hangar-warrant-ttl`; `--kubernetes-hangar-output-warrant-key` and `--kubernetes-hangar-output-materialization-key` are gone. Both mount the key at `/etc/concourse/hangar-key/hangar.key` (volume `hangar-key`, renamed from `hangar-warrant-key`) or read `/etc/concourse/daemon-tls/hangar.key`. Warrants signed under the old keys stop verifying at the switch: drain the output plane first (`hangarOutput.webEnabled=false`, wait for `fly hangar-status` to report no residue). Delete the two old Secrets once nothing mounts them. `web.runInputSigningKeySecret` stays web-only and separate from the Hangar key Secret. |
 | Upgrading past database migration `1789793155` | Roll the web with `web.strategy: {type: Recreate}`. The migration renames the Run cancellation queue's capture kind (`handoff_classify` becomes `capture_cancel_or_settle` and two dead kinds go); an old web overlapping the new one would misread the kind. |
 | Alerts | `HangarOutputInventorySweepStalled`, `HangarOutputInventoryDebtGrowing` and `HangarOutputOperationLeaseUnheld` are gone with their metrics. New: `HangarOutputCapturesStuckPublishing`, `HangarOutputCapturesUnreleased`, `HangarOutputOrphanSweepStalled`, `HangarOutputOrphanSweepFailing` and `HangarOutputDrainResidue`. |
@@ -132,3 +132,36 @@ key rollout; do not rotate or generate a new key implicitly during this change.
    pipelines and cross-node artifact transfer, MCP login/consent, allowed
    operations and operation restrictions. Keep generated certificate mode out
    of Argo/GitOps deployments.
+
+## C7: Run contract simplification
+
+Remove `web.pipelineRunActivationEpoch`, `web.runResults.readConcurrency` and
+`web.runResults.scratchSizeLimit`. Each retains a removed-key diagnostic for
+one release. Run admission has no hold; install or pause templates to control
+creation. Credentials and input uploads still require Hangar in service.
+Result reads are bounded to two concurrent requests with a fixed 1Gi disk
+`emptyDir` at `/var/concourse/run-result-scratch`. Private spool preparation
+and crashed-process cleanup remain. The removed binary flags are
+`--pipeline-run-activation-epoch`, `--pipeline-run-reclaim-batch`,
+`--run-result-scratch-dir` and `--run-result-read-concurrency`. Reclamation
+processes at most 20 Runs per pass and still retains detached builds and logs.
+
+Migration `1789793159_simplify_run_contract` requires an empty
+`pipeline_run_invocations` table. Stop all web nodes and check
+`SELECT count(*) FROM pipeline_run_invocations;` before upgrading. If nonzero,
+back up the database and deliberately discard retained invocation evidence
+with `TRUNCATE TABLE pipeline_run_invocations;`, then retry the migration.
+This forfeits replay and credential-owner evidence for those invocations:
+do not resubmit their old keys expecting the same Run or resume credential
+handoff for them. Existing headers, payloads, inputs, results and build logs
+remain. Reconcile uncertain submissions and finish credential handoffs before
+this step. Composition retries likewise must not repeat old calls after the
+truncate. Do not truncate any other table or disable its immutability guards.
+Rollback restores the old schema only when `pipeline_runs` is empty; it cannot
+recover discarded birth fields or invocation evidence. Restore the pre-upgrade
+backup if that history is needed.
+
+Release server and bundled clients together: Run responses no longer expose
+`activation_epoch` or `run_contract_version`; requests/responses no longer
+carry `caused_by_run` or `correlation`; terminal results no longer carry
+`version`. The shared Run client and MCP observations use the same new shape.

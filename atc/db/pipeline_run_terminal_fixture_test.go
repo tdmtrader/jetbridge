@@ -18,7 +18,7 @@ func forgeTerminalRun(runID int, status string) {
 		_, err := dbConn.Exec(`ALTER TABLE pipeline_runs ENABLE TRIGGER run_terminal_result_match`)
 		Expect(err).NotTo(HaveOccurred())
 	}()
-	_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = $2, completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, runID, status)
+	_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = $2, completed_at = now(), result_manifest = '{}' WHERE id = $1`, runID, status)
 	Expect(err).NotTo(HaveOccurred())
 }
 

@@ -21,5 +21,4 @@ type RunTerminalResult struct {
 	Status      RunStatus                   `json:"status"`
 	CompletedAt time.Time                   `json:"completed_at"`
 	Results     map[string]RunResultBinding `json:"results"`
-	Version     string                      `json:"version"`
 }

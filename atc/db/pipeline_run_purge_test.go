@@ -57,8 +57,6 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	Expect(err).NotTo(HaveOccurred())
 	repository := db.NewHangarOutputRepository(consumer)
 	hangarActivateEpoch(ctx, repository)
-	_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-	Expect(err).NotTo(HaveOccurred())
 
 	team, err := teamFactory.CreateTeam(atc.Team{Name: teamName})
 	Expect(err).NotTo(HaveOccurred())
@@ -78,9 +76,8 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
 	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{
-		ActivationEpoch: 1,
-		HangarOutput:    true,
-		Invocation:      &db.RunInvocationIdentity{PrincipalDigest: principal, KeyDigest: runEvidenceDigest("key")},
+		HangarOutput: true,
+		Invocation:   &db.RunInvocationIdentity{PrincipalDigest: principal, KeyDigest: runEvidenceDigest("key")},
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
@@ -256,14 +253,12 @@ var _ = Describe("Run evidence and team purge", func() {
 })
 
 var _ = Describe("A cancelled Run's header after payload reclamation", func() {
-	It("keeps the request, the empty aborted publication, the definition, the input claims and the cause, and cancellation itself deleted nothing", func() {
+	It("keeps the request, the empty aborted publication, the definition, the input claims, and cancellation itself deleted nothing", func() {
 		ctx := context.Background()
 		consumer, err := db.HangarConsumerPrefixHeld("cancelled-header-test")
 		Expect(err).NotTo(HaveOccurred())
 		repository := db.NewHangarOutputRepository(consumer)
 		hangarActivateEpoch(ctx, repository)
-		_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-		Expect(err).NotTo(HaveOccurred())
 
 		keepLast := 1
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "cancelled-header"}, atc.Config{
@@ -279,24 +274,21 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 			Expect(fn(tx)).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 		}
-		create := func(key string, cause *int, correlation string) db.PipelineRun {
+		create := func(key string) db.PipelineRun {
 			GinkgoHelper()
 			var creation db.RunCreation
 			inTx(func(tx db.Tx) error {
 				var err error
 				creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{
-					ActivationEpoch: 1, HangarOutput: true,
-					Invocation:  &db.RunInvocationIdentity{PrincipalDigest: runEvidenceDigest("principal"), KeyDigest: runEvidenceDigest(key)},
-					CausedByRun: cause, Correlation: correlation,
+					HangarOutput: true,
+					Invocation:   &db.RunInvocationIdentity{PrincipalDigest: runEvidenceDigest("principal"), KeyDigest: runEvidenceDigest(key)},
 				})
 				return err
 			})
 			return creation.Run
 		}
 
-		cause := create("cause", nil, "")
-		causeID := cause.ID()
-		run := create("cancelled", &causeID, "change-42")
+		run := create("cancelled")
 		definition, found, err := factory.Definition(run.ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
@@ -378,7 +370,7 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(published.Results).To(Equal(map[string]atc.RunResultBinding{}), "cancellation publishes an explicit empty result map")
-		Expect(published.Version).NotTo(BeEmpty())
+		Expect(published.CompletedAt).NotTo(BeZero())
 
 		// Cancellation itself deleted nothing: the payload and the input claim
 		// outlive the aborted publication.
@@ -390,7 +382,7 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 		Expect(inputClaimHeld()).To(BeTrue(), "cancellation released the Run's input claim")
 
 		// A later Run makes the cancelled one fall outside keep_last.
-		create("successor", nil, "")
+		create("successor")
 		destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(run.ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(destroyed).To(BeTrue())
@@ -405,13 +397,10 @@ var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 		Expect(header.CancellationRequest()).To(Equal(request))
 		Expect(header.CancellationRequest().RequestedBy).To(Equal("operator"))
 		Expect(header.CancellationRequest().Reason).To(Equal(&reason))
-		Expect(header.ContractVersion()).To(Equal(atc.RunContractV2))
 		Expect(header.Status()).To(Equal(atc.RunStatusAborted))
 		Expect(header.CompletedAt()).NotTo(BeNil())
 		Expect(*header.CompletedAt()).To(BeTemporally("==", published.CompletedAt))
 		Expect(header.ConfigHash()).To(Equal(run.ConfigHash()))
-		Expect(header.CausedByRun()).To(Equal(&causeID))
-		Expect(header.Correlation()).To(Equal("change-42"))
 
 		retained, found, err := factory.TerminalResult(ctx, run.ID())
 		Expect(err).NotTo(HaveOccurred())

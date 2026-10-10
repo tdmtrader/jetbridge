@@ -105,7 +105,7 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 				// A v2 terminal header, as the Run result finalizer writes one
 				// for a Run with no declared results, backdated past retention.
 				`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() - interval '2 days',
-					result_manifest = '{}', terminal_observation_version = 'brine-fixture' WHERE id = $1`,
+					result_manifest = '{}' WHERE id = $1`,
 			} {
 				if _, err := in.DB.Conn.Exec(query, in.Creation.Run.ID()); err != nil {
 					return in, err
@@ -265,11 +265,6 @@ func retainedDefinitionFixture(res brine.Resources, rollback bool) (RetainedRunD
 		// failure instead of a hung run.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		// Admission is open, so the only thing refusing this Run is its owner.
-		// Opened before the transaction for the reason above.
-		if _, err := db.ReconcilePipelineRunActivation(ctx, jdb.Conn, dbtest.RunActivationEpoch); err != nil {
-			return in, err
-		}
 		tx, err := jdb.Conn.BeginTx(ctx, nil)
 		if err != nil {
 			return in, err
@@ -277,19 +272,12 @@ func retainedDefinitionFixture(res brine.Resources, rollback bool) (RetainedRunD
 		defer db.Rollback(tx)
 		refused := errors.New("owner rejected admission")
 		_, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "brine", db.RunCreationOpts{
-			ActivationEpoch: dbtest.RunActivationEpoch,
-			BeforeCommit:    func(db.Tx, db.RunCreation) error { return refused },
+			BeforeCommit: func(db.Tx, db.RunCreation) error { return refused },
 		})
 		if !errors.Is(err, refused) {
 			return in, fmt.Errorf("expected owner refusal, got %v", err)
 		}
 		if err := tx.Rollback(); err != nil {
-			return in, err
-		}
-		// Leave admission held, as the fixture found it. That is also what an
-		// operator does before a downgrade: the run activation migration's down
-		// refuses while admission is enabled.
-		if _, err := db.ReconcilePipelineRunActivation(ctx, jdb.Conn, 0); err != nil {
 			return in, err
 		}
 		in.RolledBack = true

@@ -98,7 +98,7 @@ var _ = Describe("PipelineRunReclaimer metrics", func() {
 
 			_, err = dbConn.Exec(`UPDATE builds SET status = 'succeeded', completed = true, end_time = now() WHERE pipeline_run_id = $1`, creation.Run.ID())
 			Expect(err).NotTo(HaveOccurred())
-			_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID())
+			_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now(), result_manifest = '{}' WHERE id = $1`, creation.Run.ID())
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}
@@ -108,36 +108,36 @@ var _ = Describe("PipelineRunReclaimer metrics", func() {
 	})
 
 	It("reports the whole backlog, not just the batch it took", func() {
-		createTerminalRuns(4)
+		createTerminalRuns(22)
 		emitter := captureMetrics()
 
-		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now, 2)
+		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now)
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 
 		Eventually(func() []float64 { return eventValues(emitter, "pipeline run reclaim backlog") }).
-			Should(Equal([]float64{3}), "three of four runs are past the retention window")
+			Should(Equal([]float64{21}), "twenty-one of twenty-two runs are past the retention window")
 
 		Eventually(func() []float64 { return eventValues(emitter, "gc: pipeline run reclaim duration (ms)") }).
 			Should(HaveLen(1))
 	})
 
 	It("drains the backlog across batches", func() {
-		createTerminalRuns(4)
+		createTerminalRuns(22)
 		emitter := captureMetrics()
 
-		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now, 2)
+		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now)
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 
 		Eventually(func() []float64 { return eventValues(emitter, "pipeline run reclaim backlog") }).
-			Should(Equal([]float64{3, 1, 0}), "each pass must measure the backlog it found, and reclaiming must shrink it")
+			Should(Equal([]float64{21, 1, 0}), "each pass must measure the backlog it found, and reclaiming must shrink it")
 	})
 
 	It("reports an empty backlog when there is nothing to reclaim", func() {
 		emitter := captureMetrics()
 
-		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now, 20)
+		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now)
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 
 		Eventually(func() []float64 { return eventValues(emitter, "pipeline run reclaim backlog") }).
@@ -145,7 +145,7 @@ var _ = Describe("PipelineRunReclaimer metrics", func() {
 	})
 
 	It("counts every candidate the bounded batch could not name", func() {
-		createTerminalRuns(4)
+		createTerminalRuns(22)
 
 		ids, err := lifecycle.ReclaimCandidateRunIDs(2)
 		Expect(err).NotTo(HaveOccurred())
@@ -153,6 +153,6 @@ var _ = Describe("PipelineRunReclaimer metrics", func() {
 
 		backlog, err := lifecycle.ReclaimBacklog()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(backlog).To(Equal(3), "the backlog is not capped by the batch size")
+		Expect(backlog).To(Equal(21), "the backlog is not capped by the batch size")
 	})
 })

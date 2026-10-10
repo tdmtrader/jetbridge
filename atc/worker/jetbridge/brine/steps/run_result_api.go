@@ -112,7 +112,7 @@ func RunResultAPIDefinitions() []brine.StepDefinition {
 			if err = json.Unmarshal(body, &result); err != nil {
 				return in, err
 			}
-			if result.Results == nil || result.Version == "" || result.Status != retained.Status || result.Version != retained.Version || !result.CompletedAt.Equal(retained.CompletedAt) || !reflect.DeepEqual(result.Results, retained.Results) {
+			if result.Results == nil || result.Status != retained.Status || !result.CompletedAt.Equal(retained.CompletedAt) || !reflect.DeepEqual(result.Results, retained.Results) {
 				return in, fmt.Errorf("HTTP result differs from the immutable terminal observation")
 			}
 			// The public type consumed by the existing SDK must retain this field.

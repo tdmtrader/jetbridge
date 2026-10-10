@@ -314,9 +314,6 @@
         "reclaimed": {
           "type": "boolean"
         },
-        "run_contract_version": {
-          "type": "string"
-        },
         "status": {
           "type": "string"
         },
@@ -364,16 +361,12 @@
             },
             "status": {
               "type": "string"
-            },
-            "version": {
-              "type": "string"
             }
           },
           "required": [
             "status",
             "completed_at",
-            "results",
-            "version"
+            "results"
           ],
           "type": [
             "null",
@@ -384,7 +377,6 @@
       "required": [
         "id",
         "number",
-        "run_contract_version",
         "status",
         "reclaimed"
       ],

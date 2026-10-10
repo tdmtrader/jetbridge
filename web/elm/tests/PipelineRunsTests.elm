@@ -420,22 +420,22 @@ all =
                     |> Common.queryView
                     |> Query.find [ id "run-param-environment" ]
                     |> Query.hasNot [ attribute <| Attr.disabled True ]
-        , test "shows the server's own words when creation is held" <|
+        , test "shows the server's own words when the template is paused" <|
             \_ ->
                 submitted
-                    |> Application.handleCallback (PipelineRunCreated (Err gateConflict))
+                    |> Application.handleCallback (PipelineRunCreated (Err pausedConflict))
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ id "run-form-error" ]
-                    |> Query.has [ text heldRunCreation ]
+                    |> Query.has [ text pausedRunCreation ]
         , test "renders no creation action for a decoded template the server says cannot run" <|
             \_ ->
                 -- Decoded from JSON rather than record-built: this is the shape
-                -- a gated server actually sends, and the decoder's default for
+                -- a server sends to an unauthorized caller, and the decoder's default for
                 -- a missing field would hide a decoder change.
-                case Json.Decode.decodeString Concourse.decodePipeline gatedTemplateJson of
-                    Ok gatedTemplate ->
-                        pageFor gatedTemplate
+                case Json.Decode.decodeString Concourse.decodePipeline unauthorizedTemplateJson of
+                    Ok unauthorizedTemplate ->
+                        pageFor unauthorizedTemplate
                             |> Expect.all
                                 [ Common.queryView >> Query.hasNot [ text "Start a run" ]
                                 , Common.queryView >> Query.hasNot [ tag "form" ]
@@ -691,8 +691,8 @@ nonWriterTemplate =
     { template | canCreateRun = False }
 
 
-gatedTemplateJson : String
-gatedTemplateJson =
+unauthorizedTemplateJson : String
+unauthorizedTemplateJson =
     """
     { "id": 1
     , "name": "pipeline"
@@ -843,24 +843,24 @@ serverConflict =
         , body = " environment must be approved for this template \n"
         }
 
-gateConflict : Http.Error
-gateConflict =
+pausedConflict : Http.Error
+pausedConflict =
     Http.BadStatus
         { url = "http://example.com"
         , status = { code = 409, message = "Conflict" }
         , headers = Dict.empty
-        , body = "{\"errors\":[\"" ++ heldRunCreation ++ "\"]}"
+        , body = "{\"errors\":[\"" ++ pausedRunCreation ++ "\"]}"
         }
 
 
--- heldRunCreation is atc.ErrPipelineRunCreationDisabled's text, from
--- atc/pipeline_run_creation.go. It is written out rather than generated so
+-- pausedRunCreation is db.ErrPipelineRunPaused's text, from
+-- atc/db/pipeline_run_errors.go. It is written out rather than generated so
 -- that this fixture describes a server's answer; keep the two in step.
 
 
-heldRunCreation : String
-heldRunCreation =
-    "durable run creation is disabled on this server; an operator must enable it before runs can be created"
+pausedRunCreation : String
+pausedRunCreation =
+    "template pipeline is paused"
 
 
 jsonConflict : Http.Error

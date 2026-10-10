@@ -37,9 +37,9 @@ type Admitter interface {
 	// no authorization, and refuses an id that names no row.
 	LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
 
-	// AdmitVersionedRun requires the activation epoch and returns whether the
+	// AdmitVersionedRun returns whether the
 	// invocation already committed. The caller still owns the transaction.
-	AdmitVersionedRun(context.Context, Tx, Admission, int64) (Run, bool, error)
+	AdmitVersionedRun(context.Context, Tx, Admission) (Run, bool, error)
 }
 
 type admitter struct {
@@ -233,11 +233,7 @@ func (a *admitter) resolveTemplate(tx db.Tx, auth authorization, ref TemplateRef
 // This bounds direct recursion only -- one hop, from the facts one admission
 // can see. A cycle through two templates that call each other leaves no trace
 // on either build row, and nothing here can detect it. Detecting it needs the
-// causal chain. Versioned admission now retains that edge
-// (Admission.CausedByRun), but this legacy path does not carry it, so
-// multi-hop detection waits until run_pipeline admits through the versioned
-// port. The one-hop case is not a down payment on
-// that work; it is the case a person writes by accident, and it is refused
+// causal chain. The one-hop case is the case a person writes by accident, and it is refused
 // today rather than left until the track that will generalize it.
 //
 // Only a build principal reaches either check. A person asking over HTTP has
@@ -280,11 +276,8 @@ func refusal(err error) error {
 	switch {
 	case errors.Is(err, db.ErrRunInvocationConflict):
 		return ErrInvocationConflict
-	case errors.Is(err, db.ErrRunCauseUnavailable):
-		return ErrRunCauseUnavailable
 	case errors.Is(err, atc.ErrRunResultsUnavailable):
-		// The durable activation marker or the Hangar output plane does not admit.
-		return ErrVersionedAdmissionUnavailable
+		return atc.ErrRunResultsUnavailable
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):
 		return ErrNotATemplate
 	case errors.Is(err, db.ErrPipelineRunInstanced):

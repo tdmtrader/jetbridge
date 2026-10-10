@@ -19,6 +19,9 @@ template first, so these rules run before anything else in the chart.
   release so this table can say where it went; the release after, both go.
 */ -}}
 {{- range $removed := list
+  (list "web.pipelineRunActivationEpoch" "Run admission has no hold or epoch. Remove the value; templates control which Runs can be created.")
+  (list "web.runResults.readConcurrency" "result downloads have a fixed concurrency of 2. Remove the value.")
+  (list "web.runResults.scratchSizeLimit" "result downloads use a fixed 1Gi disk-backed scratch volume. Remove the value.")
   (list "otelMetrics" "ATC OTel metrics export has been retired. Remove the value; use metrics.enabled for Prometheus metrics and tracing.* for traces.")
   (list "artifactDaemon.resolveCapability.ttl" "expiry is derived from pod scheduling and startup timeouts plus the fetch retry budget and margin. Remove the value.")
   (list "artifactDaemon.durable" "the resource-cache object-store tier has been removed. Remove the value.")
@@ -40,7 +43,7 @@ template first, so these rules run before anything else in the chart.
   (list "hangarBootstrap.referencedKeys" "there is no control-key generation and no verification ring to keep earlier generations in: the daemon is trusted over mTLS, nothing it says is signed, and nothing is keyed by generation. Remove the value, and the earlier control-key Secrets once nothing mounts them.")
   (list "hangarBootstrap.secretNames.outputCA" "the output plane has no TLS of its own: it is served by the artifact daemon under artifactDaemon.tls. Remove the value.")
   (list "hangarOutput.activation" "the activation walk Job is gone. Whether the output plane is in service is hangarOutput.webEnabled, which the web writes into its hangar_enabled row at startup; draining is webEnabled=false until fly hangar-status shows no residue. Remove the value.")
-  (list "hangarOutput.activationEpoch" "there is no control-key generation: the daemon is trusted over mTLS, nothing it says is signed, and no capability or claim is keyed by generation. A result binds as a Run input while its Run succeeded and its claim is live. Remove the value. (web.pipelineRunActivationEpoch, the Run contract's own epoch, is unrelated and stays.)")
+  (list "hangarOutput.activationEpoch" "there is no control-key generation: the daemon is trusted over mTLS, nothing it says is signed, and no capability or claim is keyed by generation. A result binds as a Run input while its Run succeeded and its claim is live. Remove the value.")
   (list "hangarOutput.executionControl.keyID" "the node reports no key id: it signs nothing. The daemon is trusted over mTLS, and its acknowledgement is its answer on that channel. Remove the value.")
   (list "hangarOutput.executionControl.keySecret" "there is no node control key: the daemon is trusted over mTLS, and its acknowledgement is its answer on that channel, not a signed statement. The output plane is mounted by hangarOutput.executionControl.enabled, and the daemon verifies every warrant with the one Hangar key (artifactDaemon.hangar.keySecret, or hangar.key in artifactDaemon.tls.existingSecret). Remove the value and its Secret once nothing mounts it.")
   (list "hangarOutput.executionControl.publicKeys" "there is no verification ring: nothing the daemon says is signed, so the web verifies no node statement and holds no public key. Remove the value.")
@@ -61,7 +64,7 @@ template first, so these rules run before anything else in the chart.
   (list "rbac.brineLive" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "secrets.create" "name a Secret holding session_signing_key in secrets.signingKeySecret, which every web pod mounts. Remove the value.")
-  (list "web.enablePipelineRunCreation" "Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch.")
+  (list "web.enablePipelineRunCreation" "Run admission has no hold or epoch. Remove the value; templates control which Runs can be created.")
   (list "web.extraArgs" "pass-through flags are gone (ADR-0008). web derives --cookie-secure from an https web.externalUrl; set kubernetes.podSchedulingTimeout, kubernetes.defaultTaskCPURequest or kubernetes.preferredStepNode for those flags, and tracing.* for OTLP traces. Remove the value.")
 -}}
 {{- $key := index $removed 0 -}}

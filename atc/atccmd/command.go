@@ -312,8 +312,6 @@ type RunCommand struct {
 
 	JobSchedulingMaxInFlight uint64 `long:"job-scheduling-max-in-flight" default:"32" description:"Maximum number of jobs to be scheduling at the same time"`
 
-	PipelineRunReclaimBatch int `long:"pipeline-run-reclaim-batch" default:"20" description:"Maximum number of reclaimable pipeline runs to destroy per reclaimer pass."`
-
 	DefaultCpuLimit    *int    `long:"default-task-cpu-limit" description:"Default max number of cpu shares per task, 0 means unlimited"`
 	DefaultMemoryLimit *string `long:"default-task-memory-limit" description:"Default maximum memory per task, 0 means unlimited"`
 
@@ -368,17 +366,8 @@ type RunCommand struct {
 
 	DisableRedactSecrets bool `long:"disable-redact-secrets" description:"Disables secret redaction in build logs."`
 
-	// Deliberately not a member of the "Feature Flags" group above: the
-	// three fields in that group are exactly the keys of atc.FeatureFlags(),
-	// which atc/api/infoserver serves anonymously on atc.GetInfo. Whether
-	// this server admits durable runs is not an anonymous fact.
-	// DisableRedactSecrets is the existing precedent for a process-wide
-	// setting that is deliberately outside the group and outside the map.
-	PipelineRunActivationEpoch int64    `long:"pipeline-run-activation-epoch" description:"The Run contract activation epoch this web node admits pipeline runs under (the v2 create route and the run_pipeline step). Zero admits none. At startup it is written into the durable Run activation marker, which only moves forward."`
-	RunInputSigningKey         string   `long:"run-input-signing-key" description:"Path to a distinct raw 32-byte web-only key for temporary Run input grants. Never mount this service key in workers or node daemons."`
-	RunResultScratchDir        string   `long:"run-result-scratch-dir" description:"Absolute, existing directory for spooling Run result downloads. Each read holds about twice the archive size until its response is written. A private child is created in it at startup. Empty uses the process temporary directory."`
-	RunResultReadConcurrency   int      `long:"run-result-read-concurrency" default:"2" description:"Run result downloads in flight at once. Readers beyond this are refused with 503 and Retry-After rather than queued."`
-	RunCredentialWorkerImages  []string `long:"run-credential-worker-image" description:"Digest-qualified image (repository@sha256:...) a Run result producer must run for session credentials to be delivered into it. Repeatable. Unset refuses every credential handoff."`
+	RunInputSigningKey        string   `long:"run-input-signing-key" description:"Path to a distinct raw 32-byte web-only key for temporary Run input grants. Never mount this service key in workers or node daemons."`
+	RunCredentialWorkerImages []string `long:"run-credential-worker-image" description:"Digest-qualified image (repository@sha256:...) a Run result producer must run for session credentials to be delivered into it. Repeatable. Unset refuses every credential handoff."`
 }
 
 type Migration struct {
@@ -653,7 +642,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	atc.DefaultWebhookInterval = cmd.ResourceWithWebhookCheckingInterval
 	atc.DefaultResourceTypeInterval = cmd.ResourceTypeCheckingInterval
 	atc.DisableRedactSecrets = cmd.DisableRedactSecrets
-	atc.PipelineRunActivationEpoch = cmd.PipelineRunActivationEpoch
 
 	if cmd.BaseResourceTypeDefaults.Path() != "" {
 		content, err := os.ReadFile(cmd.BaseResourceTypeDefaults.Path())
@@ -740,13 +728,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	}
 
 	if err := cmd.reconcileHangarEnabled(logger, backendConn); err != nil {
-		for _, conn := range []Closer{apiConn, backendConn, gcConn, workerConn} {
-			_ = conn.Close()
-		}
-		return nil, err
-	}
-
-	if err := cmd.reconcilePipelineRunActivation(logger, backendConn); err != nil {
 		for _, conn := range []Closer{apiConn, backendConn, gcConn, workerConn} {
 			_ = conn.Close()
 		}
@@ -1716,7 +1697,7 @@ func (cmd *RunCommand) gcComponents(
 			Runnable: collector,
 		})
 	}
-	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now, cmd.PipelineRunReclaimBatch))
+	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now))
 
 	return components, nil
 }
@@ -1796,12 +1777,11 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 }
 
 // runComponents is what every web node registers for Runs, with or without an
-// output plane and whatever its Run activation epoch.
+// output plane.
 //
 // The cancellation worker is here and not among the output plane's components
-// because the cancel route answers on every node, and a Run activation epoch
-// of zero stops admission while leaving running Runs running: a fence accepted
-// where the worker is absent would never converge. Its own operations (build
+// because the cancel route answers on every node: a fence accepted where
+// the worker is absent would never converge. Its own operations (build
 // abort, candidate settlement, terminalization) need no output plane. Without
 // one the node admits no exact execution, so no capture is ever discarded.
 //
@@ -1872,10 +1852,10 @@ func (transactor hangarOutputTransactor) Begin() (hangaroutput.Transaction, erro
 	return db.HangarOutputTx{Tx: tx}, nil
 }
 
-func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {
+func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time) RunnableComponent {
 	return RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentReclaimerPipelineRuns},
-		Runnable:  gc.NewPipelineRunReclaimer(lifecycle, now, batchSize),
+		Runnable:  gc.NewPipelineRunReclaimer(lifecycle, now),
 		Interval:  time.Minute,
 	}
 }
@@ -2238,9 +2218,6 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 	if err := cmd.validateRunInputSigningKey(); err != nil {
-		errs = multierror.Append(errs, err)
-	}
-	if err := cmd.validateRunResultReads(); err != nil {
 		errs = multierror.Append(errs, err)
 	}
 	if err := cmd.validateRunCredentialWorkerImages(); err != nil {

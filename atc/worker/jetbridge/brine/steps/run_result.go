@@ -65,7 +65,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "brine-newer", db.RunCreationOpts{ActivationEpoch: int64(runActivationEpoch), HangarOutput: true})
+			_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "brine-newer", db.RunCreationOpts{HangarOutput: true})
 			if err == nil {
 				err = tx.Commit()
 			}
@@ -89,13 +89,13 @@ func RunResultDefinitions() []brine.StepDefinition {
 			}
 			return in, nil
 		}),
-		CheckThat[RunResultPublication]("the header reader returns the retained result and version", func(in RunResultPublication) error {
+		CheckThat[RunResultPublication]("the header reader returns the retained result", func(in RunResultPublication) error {
 			factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
 			result, found, err := factory.TerminalResult(context.Background(), in.Start.Creation.Run.ID())
 			if err != nil {
 				return err
 			}
-			if !found || result.Status != atc.RunStatusSucceeded || result.CompletedAt.IsZero() || result.Version == "" || len(result.Results) != 1 {
+			if !found || result.Status != atc.RunStatusSucceeded || result.CompletedAt.IsZero() || len(result.Results) != 1 {
 				return fmt.Errorf("header result reader lost the terminal observation")
 			}
 			return checkRunResult(in, "succeeded", true)
@@ -247,13 +247,13 @@ func RunResultDefinitions() []brine.StepDefinition {
 			}
 			var status string
 			var body []byte
-			var version *string
+
 			var completed *time.Time
-			err := in.Start.DB.Conn.QueryRow(`SELECT status,completed_at,result_manifest,terminal_observation_version FROM pipeline_runs WHERE id=$1`, in.Start.Creation.Run.ID()).Scan(&status, &completed, &body, &version)
+			err := in.Start.DB.Conn.QueryRow(`SELECT status,completed_at,result_manifest FROM pipeline_runs WHERE id=$1`, in.Start.Creation.Run.ID()).Scan(&status, &completed, &body)
 			if err != nil {
 				return err
 			}
-			if status != "running" || completed != nil || len(body) != 0 || version != nil {
+			if status != "running" || completed != nil || len(body) != 0 {
 				return fmt.Errorf("incomplete Run exposed a terminal observation: %s %s", status, body)
 			}
 			if in.Candidate != nil {
@@ -281,7 +281,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 			return nil
 		}),
 		CheckThat[RunResultPublication]("direct changes to its published result are refused", func(in RunResultPublication) error {
-			for _, q := range []string{`UPDATE pipeline_runs SET result_manifest='{}' WHERE id=$1`, `UPDATE pipeline_runs SET terminal_observation_version='changed' WHERE id=$1`, `UPDATE pipeline_runs SET completed_at=completed_at+interval '1 second' WHERE id=$1`, `UPDATE pipeline_runs SET status='failed' WHERE id=$1`} {
+			for _, q := range []string{`UPDATE pipeline_runs SET result_manifest='{}' WHERE id=$1`, `UPDATE pipeline_runs SET completed_at=completed_at+interval '1 second' WHERE id=$1`, `UPDATE pipeline_runs SET status='failed' WHERE id=$1`} {
 				if _, err := in.Start.DB.Conn.Exec(q, in.Start.Creation.Run.ID()); err == nil {
 					return fmt.Errorf("terminal publication was mutable: %s", q)
 				}
@@ -337,7 +337,7 @@ func finalizeRunResult(in RunResultPublication, rollback bool) RunResultPublicat
 
 func readResultSnapshot(in RunResultPublication) ([]byte, error) {
 	var body []byte
-	err := in.Start.DB.Conn.QueryRow(`SELECT jsonb_build_object('status',status,'completed_at',completed_at,'results',result_manifest,'version',terminal_observation_version) FROM pipeline_runs WHERE id=$1`, in.Start.Creation.Run.ID()).Scan(&body)
+	err := in.Start.DB.Conn.QueryRow(`SELECT jsonb_build_object('status',status,'completed_at',completed_at,'results',result_manifest) FROM pipeline_runs WHERE id=$1`, in.Start.Creation.Run.ID()).Scan(&body)
 	return body, err
 }
 
@@ -347,14 +347,14 @@ func checkRunResult(in RunResultPublication, status string, selected bool) error
 	}
 	var actual string
 	var completed *time.Time
-	var version *string
+
 	var body []byte
-	err := in.Start.DB.Conn.QueryRow(`SELECT status,completed_at,result_manifest,terminal_observation_version FROM pipeline_runs WHERE id=$1`, in.Start.Creation.Run.ID()).Scan(&actual, &completed, &body, &version)
+	err := in.Start.DB.Conn.QueryRow(`SELECT status,completed_at,result_manifest FROM pipeline_runs WHERE id=$1`, in.Start.Creation.Run.ID()).Scan(&actual, &completed, &body)
 	if err != nil {
 		return err
 	}
-	if actual != status || completed == nil || version == nil || *version == "" {
-		return fmt.Errorf("Run publication incomplete: status=%s completed=%v version=%v", actual, completed, version)
+	if actual != status || completed == nil || body == nil {
+		return fmt.Errorf("Run publication incomplete: status=%s completed=%v", actual, completed)
 	}
 	var results map[string]struct {
 		Ref     hangar.TreeRef `json:"ref"`

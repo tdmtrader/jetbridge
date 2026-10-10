@@ -2,7 +2,6 @@ package atccmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,29 +12,10 @@ import (
 	"github.com/concourse/concourse/hangar"
 )
 
-// runResultScratchChild is the private directory result reads spool into,
-// inside --run-result-scratch-dir.
-const runResultScratchChild = "run-results"
-
-func (cmd *RunCommand) validateRunResultReads() error {
-	if cmd.RunResultReadConcurrency < 1 {
-		return errors.New("--run-result-read-concurrency must be at least 1")
-	}
-	if cmd.RunResultScratchDir == "" {
-		return nil
-	}
-	if !filepath.IsAbs(cmd.RunResultScratchDir) {
-		return fmt.Errorf("--run-result-scratch-dir %q must be absolute", cmd.RunResultScratchDir)
-	}
-	info, err := os.Stat(cmd.RunResultScratchDir)
-	if err != nil {
-		return fmt.Errorf("--run-result-scratch-dir: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("--run-result-scratch-dir %q is not a directory", cmd.RunResultScratchDir)
-	}
-	return nil
-}
+const (
+	runResultScratchDir   = "/var/concourse/run-result-scratch"
+	runResultScratchChild = "run-results"
+)
 
 // prepareRunResultScratch returns the directory result reads spool into.
 //
@@ -45,11 +25,8 @@ func (cmd *RunCommand) validateRunResultReads() error {
 // crashed read's spool is otherwise charged to the volume's sizeLimit until the
 // Pod is deleted. The parent must not be writable by another uid in the
 // container; web is the only process in its container.
-func (cmd *RunCommand) prepareRunResultScratch() (string, error) {
-	if cmd.RunResultScratchDir == "" {
-		return "", nil
-	}
-	child := filepath.Join(cmd.RunResultScratchDir, runResultScratchChild)
+func prepareRunResultScratch(parent string) (string, error) {
+	child := filepath.Join(parent, runResultScratchChild)
 	if err := os.RemoveAll(child); err != nil {
 		return "", fmt.Errorf("clear Run result scratch: %w", err)
 	}
@@ -70,7 +47,7 @@ func (cmd *RunCommand) configureOutputReads(conn db.DbConn, source *jetbridge.Ou
 	if cmd.readWarrantMinter == nil {
 		return nil
 	}
-	scratch, err := cmd.prepareRunResultScratch()
+	scratch, err := prepareRunResultScratch(runResultScratchDir)
 	if err != nil {
 		return err
 	}

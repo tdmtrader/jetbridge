@@ -120,20 +120,6 @@ var fakeLogFunc = func(logger lager.Logger, id lock.LockID) {}
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
-	// The operator's hold is off by default, and AdmitVersionedRun answers it before
-	// anything else, so every spec in this suite that is about something else
-	// needs it open. It is restored rather than left set: it is a
-	// process-wide global, and a suite that leaked it would decide the
-	// behaviour of whatever ran next in the same binary.
-	//
-	// creation_gate_test.go turns it back off for the specs that are about
-	// the hold itself.
-	previousGate := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = 1
-	DeferCleanup(func() {
-		atc.PipelineRunActivationEpoch = previousGate
-	})
-
 	postgresRunner.CreateTestDBFromTemplate()
 	DeferCleanup(func() {
 		postgresRunner.DropTestDB()
@@ -162,7 +148,7 @@ var _ = BeforeEach(func() {
 	lockFactory = lock.NewLockFactory(lockConns, fakeLogFunc, fakeLogFunc)
 
 	teamFactory = db.NewTeamFactory(dbConn, lockFactory)
-	activateVersionedAdmission(dbConn)
+	enableOutputPlane(dbConn)
 	runFactory = db.NewPipelineRunFactory(dbConn, lockFactory)
 	// The grace periods are the reaper's, and nothing here reaps; five minutes
 	// each is the value atccmd passes and is as arbitrary as it is irrelevant.

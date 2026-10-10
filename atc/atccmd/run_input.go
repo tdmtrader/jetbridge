@@ -9,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runinput"
@@ -100,9 +99,7 @@ func (cmd *RunCommand) credentialHandoffConfig(source runs.SessionTransport) run
 
 // pipelineRunServices is what the v2 routes admit and read through. The port
 // is built with the output plane when detached inputs and credential handoff
-// are configured; otherwise it is built here without them. It is built even
-// with admission off: a held node refuses new Runs through the port, and still
-// replays the Run an invocation key already admitted. The fallback is built
+// are configured; otherwise it is built here without them. The fallback is built
 // over this boot's connection and not kept on cmd, so a later boot of the same
 // command never serves through a closed one.
 func (cmd *RunCommand) pipelineRunServices(conn db.DbConn, factory db.PipelineRunFactory, teams db.TeamFactory) pipelinerunserver.Services {
@@ -113,28 +110,11 @@ func (cmd *RunCommand) pipelineRunServices(conn db.DbConn, factory db.PipelineRu
 			admitter.SetOutputPlane(cmd.outputPlane())
 		}
 	}
-	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: admitter, HangarOutput: cmd.outputPlane(),
-		ResultReadConcurrency: cmd.RunResultReadConcurrency}
+	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: admitter, HangarOutput: cmd.outputPlane()}
 }
 
 // outputPlane reports whether this web has a Hangar output plane, which Run
-// admission may bind results and inputs through. It is not the Run activation
-// epoch.
+// admission may bind results and inputs through.
 func (cmd *RunCommand) outputPlane() bool {
 	return cmd.Kubernetes.OutputPlaneEnabled
-}
-
-// reconcilePipelineRunActivation moves the Run contract's own activation
-// marker to agree with this web node's configuration: a positive
-// --pipeline-run-activation-epoch admits Runs born under it, zero stops
-// admission. It is the only supported writer of the marker, and the chart sets
-// the epoch on every deploy. An epoch older than the recorded one refuses to
-// start rather than admit under a downgraded capability.
-func (cmd *RunCommand) reconcilePipelineRunActivation(logger lager.Logger, conn db.DbConn) error {
-	state, err := db.ReconcilePipelineRunActivation(context.Background(), conn, cmd.PipelineRunActivationEpoch)
-	if err != nil {
-		return fmt.Errorf("reconciling pipeline run activation: %w", err)
-	}
-	logger.Info("pipeline-run-activation", lager.Data{"epoch": state.Epoch, "admitting": state.AdmissionEnabled})
-	return nil
 }

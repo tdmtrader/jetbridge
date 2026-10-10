@@ -60,26 +60,7 @@ var _ = Describe("PipelineRunReclaimer", func() {
 			deferred:                    map[int]time.Time{},
 			deferErr:                    map[int]error{},
 		}
-		collector = gc.NewPipelineRunReclaimer(lifecycle, func() time.Time { return now }, gc.DefaultPipelineRunReclaimBatchSize)
-	})
-
-	It("requests exactly the configured batch size", func() {
-		lifecycle.candidates = []int{1}
-		lifecycle.destroyResult[1] = true
-
-		Expect(gc.NewPipelineRunReclaimer(lifecycle, func() time.Time { return now }, 5).Run(context.Background())).To(Succeed())
-		Expect(lifecycle.limit).To(Equal(5))
-	})
-
-	It("falls back to the default rather than reclaiming nothing forever", func() {
-		// A zero limit makes ReclaimCandidateRunIDs return no candidates at
-		// all, so an unclamped batch size would leave the component running
-		// every minute and destroying nothing, with no error to notice.
-		for _, size := range []int{0, -1} {
-			lifecycle.limit = -999
-			Expect(gc.NewPipelineRunReclaimer(lifecycle, func() time.Time { return now }, size).Run(context.Background())).To(Succeed())
-			Expect(lifecycle.limit).To(Equal(gc.DefaultPipelineRunReclaimBatchSize))
-		}
+		collector = gc.NewPipelineRunReclaimer(lifecycle, func() time.Time { return now })
 	})
 
 	It("requests one bounded batch and attempts every candidate", func() {

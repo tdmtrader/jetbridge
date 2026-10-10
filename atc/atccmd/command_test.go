@@ -5,18 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/flag/v2"
 	"github.com/jessevdk/go-flags"
@@ -109,7 +106,7 @@ func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
 }
 
 func (s *CommandSuite) TestPipelineRunReclaimerComponentIsBoundedAndPeriodic() {
-	component := atccmd.NewPipelineRunReclaimerComponentForTest(db.NewPipelineRunReclaimLifecycle(nil), time.Now, gc.DefaultPipelineRunReclaimBatchSize)
+	component := atccmd.NewPipelineRunReclaimerComponentForTest(db.NewPipelineRunReclaimLifecycle(nil), time.Now)
 	s.Equal(atc.ComponentReclaimerPipelineRuns, component.Component.Name)
 	s.Equal(time.Minute, component.Interval)
 	s.NotNil(component.Runnable)
@@ -119,47 +116,12 @@ func (s *CommandSuite) TestPipelineRunReclaimerComponentIsBoundedAndPeriodic() {
 // reclaimer failing to keep up with its one-minute interval, and there is no
 // other lever. A default that drifted from the code's own would make that
 // diagnosis wrong.
-func (s *CommandSuite) TestPipelineRunReclaimBatchFlagDefaultsToTheCodeDefault() {
-	cmd := &atccmd.ATCCommand{}
-	parser := flags.NewParser(cmd, flags.Default)
-	parser.NamespaceDelimiter = "-"
-
-	runCmd := parser.Find("run")
-	s.NotNil(runCmd, "run subcommand should exist")
-
-	opt := runCmd.FindOptionByLongName("pipeline-run-reclaim-batch")
-	s.NotNil(opt, "--pipeline-run-reclaim-batch should exist")
-	s.Equal([]string{strconv.Itoa(gc.DefaultPipelineRunReclaimBatchSize)}, opt.Default)
-}
 
 // The default is pinned above and the reclaimer honours whatever batch it is
 // constructed with, but until this spec nothing joined the two: gcComponents
 // could hand the constructor the package default and every test in the tree
 // stayed green, which is exactly the "the flag exists but is dead" failure the
 // flag was added to avoid.
-func (s *CommandSuite) TestPipelineRunReclaimBatchFlagReachesTheComponent() {
-	const configured = 5
-	s.NotEqual(gc.DefaultPipelineRunReclaimBatchSize, configured, "the fixture has to differ from the default it is guarding against")
-
-	cmd := &atccmd.RunCommand{}
-	cmd.PipelineRunReclaimBatch = configured
-
-	components, err := atccmd.GCComponentsForTest(cmd, lagertest.NewTestLogger("test"), nil, nil)
-	s.NoError(err)
-
-	var reclaimer atccmd.RunnableComponent
-	var found bool
-	for _, component := range components {
-		if component.Component.Name == atc.ComponentReclaimerPipelineRuns {
-			reclaimer, found = component, true
-		}
-	}
-	s.True(found, "gc components should include the pipeline run reclaimer")
-
-	sized, ok := reclaimer.Runnable.(interface{ BatchSize() int })
-	s.True(ok, "the reclaimer should report the batch it was built with")
-	s.Equal(configured, sized.BatchSize(), "the reclaimer must run on the configured batch, not the package default")
-}
 
 func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
 	cmd := &atccmd.RunCommand{}
@@ -635,18 +597,8 @@ func (s *CommandSuite) TestCaptureAcceptsAnOperationTimeoutLongerThanAControlWar
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(capture(15 * time.Minute)))
 }
 
-// AN ACCEPTED FENCE THAT NOTHING WOULD EVER CONVERGE.
-//
-// The cancellation worker was registered only inside the output plane's
-// components, while the cancel route answers on every web node and Run
-// activation zero stops admission but leaves running Runs running. On a node
-// with no output plane, or one that has turned admission off, an accepted
-// cancellation was a durable fence with no worker to converge it: the Run
-// stayed running forever. The worker's own operations (scheduler debt, build
-// abort, candidate settlement, terminalization) need no output plane, and a
-// source operation it cannot reach stays typed debt with the Run running.
 func (s *CommandSuite) TestTheRunCancellationWorkerRunsWithOrWithoutAnOutputPlane() {
-	// runComponents reads neither the activation epoch nor the plane flag, so
+	// runComponents does not read the plane flag, so
 	// one configuration stands for all of them; what this pins is that the
 	// worker lives there and not among the plane's components. That
 	// backendComponents appends runComponents is not asserted here: building

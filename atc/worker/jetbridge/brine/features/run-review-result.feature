@@ -13,7 +13,7 @@ Feature: Human and agent clients retrieve typed review findings
     And a fresh review "<surface>" retrieves typed findings
     And its disposable payload is reclaimed after a newer Run
     And a fresh review "<surface>" retrieves typed findings
-    Then the header reader returns the retained result and version
+    Then the header reader returns the retained result
 
     Examples:
       | surface |

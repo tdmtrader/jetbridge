@@ -74,9 +74,7 @@ func (silentAuditor) Audit(string, string, *http.Request) {}
 // deadline, which a ResponseRecorder does not support.
 func serveSensitive(t *testing.T, action string, handler http.Handler, request *http.Request) *http.Response {
 	t.Helper()
-	previous := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = 1
-	t.Cleanup(func() { atc.PipelineRunActivationEpoch = previous })
+
 	server := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), action, handler, memberAccess{}, silentAuditor{}, nil))
 	t.Cleanup(server.Close)
 	target, err := url.Parse(server.URL + request.URL.RequestURI())

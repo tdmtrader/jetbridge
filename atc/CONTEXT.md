@@ -235,9 +235,8 @@ core.
 
 **Admission**:
 One request through the port: a template ref, run params, a principal, a
-contract key, optionally the run that caused it and a correlation, and a hook
-that runs inside the transaction before it commits. Every admission creates
-or replays a v2 run, the one Run class there is.
+contract key, and a hook that runs inside the transaction before it commits.
+Every admission creates or replays a pipeline run.
 
 **Template ref**:
 A team-qualified reference to the template to run. The team is part of the
@@ -256,28 +255,6 @@ Presenting it again with the same caller intent replays the run it admitted;
 with changed intent it is an invocation conflict. The wire name is
 `invocation_key`; a build-side caller derives it from its build id and plan
 id. The spec calls it the idempotency key.
-
-**Correlation**:
-An opaque, non-secret caller value retained on a v2 run as caller intent. It
-means nothing to scheduling, cancellation, retry or retention.
-
-**Caused-by run**:
-The earlier run of the same team a v2 run names as its cause. An immutable
-link with no cascade; a purged predecessor leaves its id as an
-unresolved-predecessor marker.
-
-**Run activation**:
-The Run contract's own durable marker (`pipeline_run_activation`): the epoch
-runs are born under and whether admission is on. Each web node writes it at
-startup from `--pipeline-run-activation-epoch` (chart
-`web.pipelineRunActivationEpoch`); it only moves forward. It is independent of
-Hangar's in-service row, and Hangar has no epoch of its own. Admitting a template that
-declares results, or a run given inputs, still needs the Hangar output plane
-in service (`hangar_enabled`). Executing any run needs the output plane's
-execution control, with the node's output capability key configured;
-admission checks none of these, so without them a run is admitted and its
-steps fail.
-_Avoid_: run creation gate, creation flag.
 
 ### Sidecar
 

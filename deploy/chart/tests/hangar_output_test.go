@@ -553,8 +553,7 @@ func TestNoWorkloadSignsAndNoWorkloadVerifies(t *testing.T) {
 		if strings.HasSuffix(doc.name, "-hangar-output-control-keys") || strings.Contains(doc.name, "-hangar-rings-") {
 			t.Errorf("%s %s renders a verification ring", doc.kind, doc.name)
 		}
-		// The Run contract's own epoch stays; everything else named like it goes.
-		body := strings.ReplaceAll(doc.body, "--pipeline-run-activation-epoch", "")
+		body := doc.body
 		for _, forbidden := range []string{"control-key", "control-keys", "activation-epoch", "control.key", "receipt"} {
 			if strings.Contains(body, forbidden) {
 				t.Errorf("%s %s carries %q; nothing is signed and nothing is keyed by generation", doc.kind, doc.name, forbidden)
@@ -566,9 +565,6 @@ func TestNoWorkloadSignsAndNoWorkloadVerifies(t *testing.T) {
 	decodeNamed(t, out, "Deployment", objectNamed(t, out, "Deployment", "-web").name, &web)
 	for _, container := range web.Spec.Template.Spec.Containers {
 		for _, arg := range append(append([]string{}, container.Command...), container.Args...) {
-			if strings.HasPrefix(arg, "--pipeline-run-activation-epoch") {
-				continue // the Run contract's own epoch, which stays
-			}
 			for _, forbidden := range []string{"control-key", "activation-epoch", "receipt"} {
 				if strings.Contains(arg, forbidden) {
 					t.Errorf("web container %s is passed %s; nothing is signed and nothing is keyed by generation", container.Name, arg)

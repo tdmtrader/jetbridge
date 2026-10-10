@@ -18,7 +18,6 @@ Feature: Credentials belong to one invocation and one execution
       | "cancelled Run" |
       | "aborted build" |
       | "closed execution" |
-      | "activation hold" |
       | "unpinned producer image" |
       | "a different pinned image" |
       | "no pinned image" |
@@ -33,6 +32,5 @@ Feature: Credentials belong to one invocation and one execution
       | "HTTP viewer" |
       | "HTTP foreign owner" |
       | "HTTP custom create role" |
-      | "HTTP operator hold" |
       | "HTTP shared client" |
       | "HTTP shared client replay" |

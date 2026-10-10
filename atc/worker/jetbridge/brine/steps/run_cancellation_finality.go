@@ -249,7 +249,7 @@ func exerciseRunCancellationFinalityWith(in RunOutputRuntime, mode string, newWo
 				return nil
 			}
 		} else if found {
-			if result.Status != atc.RunStatusAborted || result.CompletedAt.IsZero() || result.Version == "" || result.Results == nil || len(result.Results) != 0 {
+			if result.Status != atc.RunStatusAborted || result.CompletedAt.IsZero() || result.Results == nil || len(result.Results) != 0 {
 				return fmt.Errorf("cancellation published an incomplete or nonempty result")
 			}
 			var open, unchanged bool

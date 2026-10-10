@@ -259,8 +259,6 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		consumer, err := db.HangarConsumerPrefixHeld("abort-execution-test")
 		Expect(err).NotTo(HaveOccurred())
 		hangarActivateEpoch(ctx, db.NewHangarOutputRepository(consumer))
-		_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-		Expect(err).NotTo(HaveOccurred())
 
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "aborted-executions"}, atc.Config{
 			Template: true,
@@ -278,7 +276,7 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
+		creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		Expect(creation.EntryBuilds).To(HaveLen(2))
@@ -679,8 +677,6 @@ func newClosureCaptures() *closureCaptures {
 	consumer, err := db.HangarConsumerPrefixHeld("abort-capture-test")
 	Expect(err).NotTo(HaveOccurred())
 	hangarActivateEpoch(f.ctx, db.NewHangarOutputRepository(consumer))
-	_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-	Expect(err).NotTo(HaveOccurred())
 
 	producer := func(result string) *atc.TaskStep {
 		return &atc.TaskStep{
@@ -699,7 +695,7 @@ func newClosureCaptures() *closureCaptures {
 	f.factory = db.NewPipelineRunFactory(dbConn, lockFactory)
 	Expect(f.inTx(func(tx db.Tx) error {
 		var err error
-		f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
+		f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 		return err
 	})).To(Succeed())
 	for _, build := range f.creation.EntryBuilds {

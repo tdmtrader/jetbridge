@@ -64,17 +64,7 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	if err != sql.ErrNoRows {
 		return target, err
 	}
-	// The activation rows are already held by lockRunResultPublicationUnder.
-	// New delivery grants the owner's credentials to a producer, so it needs
-	// the Run contract admitting -- an operator's admission hold stops it, as
-	// the HTTP route does -- and the output plane in service. Replay above
-	// retains facts even under a hold, while the plane drains, or after the
-	// Run has completed.
-	marker, err := lockRunActivationMarker(ctx, tx)
-	if err != nil {
-		return target, err
-	}
-	if !marker.enabled || !hangarEnabled {
+	if !hangarEnabled {
 		return target, atc.ErrRunResultsUnavailable
 	}
 	if run.CancellationRequested() {

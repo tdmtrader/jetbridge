@@ -33,7 +33,7 @@ func Status(err error) (int, bool) {
 		errors.Is(err, db.ErrPipelineRunNotRunning) || errors.Is(err, db.ErrPipelineRunPayloadGone) ||
 		errors.Is(err, db.ErrPipelineRunOneOffBuild) || errors.Is(err, db.ErrPipelineTemplateBuild) ||
 		errors.Is(err, db.ErrPipelineTemplateCheck) ||
-		errors.Is(err, atc.ErrPipelineRunCreationDisabled) || errors.Is(err, atc.ErrRunResultsUnavailable) {
+		errors.Is(err, atc.ErrRunResultsUnavailable) {
 		return http.StatusConflict, true
 	}
 	return 0, false

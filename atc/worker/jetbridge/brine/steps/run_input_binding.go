@@ -31,9 +31,7 @@ type RunInputAdmission struct {
 func RunInputBindingDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMap[RunResultPublication, RunInputAdmission]("its result is admitted as a named input with {string}", func(source RunResultPublication, p brine.Params, rec *brine.Recorder) (RunInputAdmission, error) {
-			previousGate := atc.PipelineRunActivationEpoch
-			atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-			TrackDisposer(rec, "the input creation gate", func() error { atc.PipelineRunActivationEpoch = previousGate; return nil })
+
 			in := RunInputAdmission{Source: source}
 			in.Case, _ = p.GetString(0)
 			if source.Err != nil || !source.Completed {
@@ -329,7 +327,7 @@ func (in RunInputAdmission) admitInput(rollback bool) (runs.Run, bool, error) {
 		return runs.Run{}, false, err
 	}
 	defer tx.Rollback()
-	run, replay, err := in.Port.AdmitVersionedRun(ctx, tx, admission, int64(runActivationEpoch))
+	run, replay, err := in.Port.AdmitVersionedRun(ctx, tx, admission)
 	if err != nil {
 		return run, replay, err
 	}

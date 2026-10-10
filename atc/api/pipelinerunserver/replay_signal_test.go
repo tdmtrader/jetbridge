@@ -35,27 +35,23 @@ func (admissionTx) Rollback() error { return nil }
 
 func (a replayAdmitter) Begin(context.Context) (runs.Transaction, error) { return admissionTx{}, nil }
 
-func (a replayAdmitter) AdmitVersionedRun(context.Context, runs.Tx, runs.Admission, int64) (runs.Run, bool, error) {
+func (a replayAdmitter) AdmitVersionedRun(context.Context, runs.Tx, runs.Admission) (runs.Run, bool, error) {
 	return runs.Run{ID: 41, Number: 3}, a.replayed, nil
 }
 
 type admittedRun struct{ db.PipelineRun }
 
-func (admittedRun) ID() int                                 { return 41 }
-func (admittedRun) Number() int                             { return 3 }
-func (admittedRun) ContractVersion() atc.RunContractVersion { return atc.RunContractV2 }
-func (admittedRun) ActivationEpoch() int64                  { return 1 }
-func (admittedRun) TemplateID() int                         { return 7 }
-func (admittedRun) Status() atc.RunStatus                   { return atc.RunStatusRunning }
-func (admittedRun) CreatedBy() string                       { return "some-user" }
-func (admittedRun) Params() atc.Params                      { return atc.Params{} }
-func (admittedRun) ConfigHash() string                      { return "hash" }
-func (admittedRun) CancellationRequested() bool             { return false }
+func (admittedRun) ID() int                     { return 41 }
+func (admittedRun) Number() int                 { return 3 }
+func (admittedRun) TemplateID() int             { return 7 }
+func (admittedRun) Status() atc.RunStatus       { return atc.RunStatusRunning }
+func (admittedRun) CreatedBy() string           { return "some-user" }
+func (admittedRun) Params() atc.Params          { return atc.Params{} }
+func (admittedRun) ConfigHash() string          { return "hash" }
+func (admittedRun) CancellationRequested() bool { return false }
 func (admittedRun) CancellationRequest() *atc.RunCancellationRequest {
 	return nil
 }
-func (admittedRun) CausedByRun() *int   { return nil }
-func (admittedRun) Correlation() string { return "" }
 func (admittedRun) CompletedAt() *time.Time {
 	return nil
 }
@@ -117,7 +113,7 @@ type refusingAdmitter struct {
 	err error
 }
 
-func (a refusingAdmitter) AdmitVersionedRun(context.Context, runs.Tx, runs.Admission, int64) (runs.Run, bool, error) {
+func (a refusingAdmitter) AdmitVersionedRun(context.Context, runs.Tx, runs.Admission) (runs.Run, bool, error) {
 	return runs.Run{}, false, a.err
 }
 
@@ -134,7 +130,7 @@ func TestVersionedRefusalsCarryTheirReasonOnlyAfterAuthorization(t *testing.T) {
 		{"invalid params", runs.InvalidParamsError{Err: errors.New("parameter environment is required")}, http.StatusBadRequest, "parameter environment is required"},
 		{"paused template", runs.ErrTemplatePaused, http.StatusConflict, runs.ErrTemplatePaused.Error()},
 		{"changed intent", runs.ErrInvocationConflict, http.StatusConflict, runs.ErrInvocationConflict.Error()},
-		{"held admission", runs.ErrVersionedAdmissionUnavailable, http.StatusConflict, "not activated"},
+		{"output unavailable", atc.ErrRunResultsUnavailable, http.StatusConflict, "not activated"},
 		{"unauthorized", runs.ErrUnauthorized, http.StatusForbidden, ""},
 		{"not found", runs.ErrTemplateNotFound, http.StatusNotFound, ""},
 	} {

@@ -99,3 +99,12 @@ keep their nonce and wire format; Hangar's materialization receipt is unchanged.
 
 Amended 2026-10-09 — Amended by C2 (durable resource-cache tier removal):
 The resource-cache tier is removed, so cache/output namespace separation is moot. Hangar is the sole long-term plane, remains fail-closed, and retains web-only reclamation.
+
+Amended 2026-10-09 — Amended by C7: the Run epoch is also removed. Run
+admission has no hold or activation table. Hangar's in-service checks remain
+for new output work, input uploads and credential delivery; Run replay and
+finalization continue during a drain. The one-valued contract class, unused
+causation intent and terminal digest are removed with their wire fields.
+Migration 1789793159 refuses retained invocation evidence; the operator
+procedure is in deploy/chart/MIGRATING.md. Reclamation still keeps detached
+builds and logs, with a fixed batch of 20.

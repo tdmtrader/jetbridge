@@ -69,9 +69,6 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 			buildID = in.Source.Start.Creation.EntryBuilds[0].ID()
 		case "aborted build":
 			_, err = in.Source.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, buildID)
-		case "a Run admission hold":
-			// Holding admission stops new Runs, not running ones.
-			_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0)
 		case "Hangar out of service":
 			// Reading a bound input is Hangar work: it needs the plane in service.
 			_, err = db.SetHangarEnabled(context.Background(), in.Source.Start.DB.Conn, false)
@@ -90,7 +87,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		got, err := port.PrepareTask(ctx, buildID, plan, spec)
-		valid := mode == "retained inputs" || mode == "edited template" || mode == "repeated preparation" || mode == "a Run admission hold"
+		valid := mode == "retained inputs" || mode == "edited template" || mode == "repeated preparation"
 		if !valid {
 			if err == nil {
 				return fmt.Errorf("task preparation accepted %s", mode)

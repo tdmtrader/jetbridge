@@ -57,10 +57,6 @@ func (s *Server) credentialSession(pipeline db.Pipeline, deliver bool) http.Hand
 		defer cancel()
 		var state atc.RunCredentialSession
 		if deliver {
-			if !atc.PipelineRunsActivated() {
-				errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
-				return
-			}
 			// Credentials are JSON and nothing else. Refusing every other
 			// media type before the body is read keeps a form-encoded body
 			// from ever being parsed as one, here or upstream.

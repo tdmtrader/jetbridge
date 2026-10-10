@@ -1,6 +1,6 @@
 Feature: Authenticated versioned Run admission over HTTP
 
-  Scenario Outline: Public admission preserves ownership, replay and activation
+  Scenario Outline: Public admission preserves ownership and replay
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
     And its published producer finishes as "succeeded"
@@ -25,10 +25,6 @@ Feature: Authenticated versioned Run admission over HTTP
       | "anonymous"                  |
       | "viewer"                     |
       | "cross-team"                 |
-      | "operator hold"              |
-      | "database hold"              |
-      | "operator hold replay"       |
-      | "database hold replay"       |
       | "paused template"            |
       | "custom create role"         |
       | "shared client"              |

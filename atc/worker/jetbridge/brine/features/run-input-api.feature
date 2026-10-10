@@ -17,7 +17,6 @@ Feature: Uploading a local input through the authenticated public API
       | "anonymous"         |
       | "viewer"            |
       | "cross-team"        |
-      | "held"              |
       | "missing authority" |
       | "malformed archive" |
       | "unknown input"     |

@@ -310,10 +310,10 @@ func (api liveHangarAPI) createRun(t *testing.T, ctx context.Context, intent atc
 	if err := json.Unmarshal(body, &run); err != nil {
 		t.Fatalf("decode the created Run %q: %v", body, err)
 	}
-	if run.Number <= 0 || run.ContractVersion != atc.RunContractV2 || run.ActivationEpoch <= 0 {
-		t.Fatalf("the created Run = %+v, want a numbered v2 Run in an activation epoch", run)
+	if run.Number <= 0 {
+		t.Fatalf("the created Run = %+v, want a numbered Run", run)
 	}
-	t.Logf("created Run %d in activation epoch %d", run.Number, run.ActivationEpoch)
+	t.Logf("created Run %d", run.Number)
 	return run
 }
 

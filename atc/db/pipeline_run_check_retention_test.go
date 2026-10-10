@@ -37,8 +37,6 @@ func newRunCheckFixtureWithRetention(name string, retention *atc.RunRetentionCon
 	consumer, err := db.HangarConsumerPrefixHeld("check-retention-test")
 	Expect(err).NotTo(HaveOccurred())
 	hangarActivateEpoch(ctx, db.NewHangarOutputRepository(consumer))
-	_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-	Expect(err).NotTo(HaveOccurred())
 
 	template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: name}, atc.Config{
 		Template:      true,
@@ -52,7 +50,7 @@ func newRunCheckFixtureWithRetention(name string, retention *atc.RunRetentionCon
 	tx, err := dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
+	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	payload, found, err := factory.InstancePipeline(creation.Run)

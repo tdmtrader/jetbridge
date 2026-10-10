@@ -12,16 +12,11 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The Run contract's activation epoch is its own (amendment M-2 decision 3).
 // Taking the Hangar output plane out of service -- the first step of a drain,
 // hangar_enabled off -- refuses new admission of work that needs it, and must
 // not strand a Run admitted before: it still finalizes, and its invocation key
 // still replays it.
 var _ = Describe("a Hangar output plane drain", func() {
-	const (
-		runEpoch int64 = 5
-	)
-
 	var (
 		ctx        context.Context
 		resultsRef runs.TemplateRef
@@ -30,10 +25,6 @@ var _ = Describe("a Hangar output plane drain", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		atc.PipelineRunActivationEpoch = runEpoch
-		_, err := dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=true WHERE singleton`, runEpoch)
-		Expect(err).NotTo(HaveOccurred())
-
 		// A template that declares a result, so admission needs the output
 		// plane and the Run is one whose finalization reads Hangar claims.
 		task := &atc.TaskStep{
@@ -62,7 +53,7 @@ var _ = Describe("a Hangar output plane drain", func() {
 		defer tx.Rollback()
 		run, replayed, err := port.AdmitVersionedRun(ctx, tx, runs.Admission{
 			Template: resultsRef, Principal: memberPrincipal, ContractKey: key,
-		}, runEpoch)
+		})
 		if err != nil {
 			return run, replayed, err
 		}
@@ -89,9 +80,6 @@ var _ = Describe("a Hangar output plane drain", func() {
 		first, replayed, err := admit(portAt(true), "drain-key")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed).To(BeFalse())
-		var born int64
-		Expect(dbConn.QueryRow(`SELECT activation_epoch FROM pipeline_runs WHERE id=$1`, first.ID).Scan(&born)).To(Succeed())
-		Expect(born).To(Equal(runEpoch), "a Run is born under the Run contract's epoch")
 
 		inService(false)
 

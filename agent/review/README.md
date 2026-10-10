@@ -71,8 +71,7 @@ service key signs input grants; it is unrelated to Codex credentials and must
 not be shared with node keys. Both Hangar facets and `hangarOutput.webEnabled`
 must be configured: a review template declares results, so its Runs are
 admitted only while the Hangar output plane is in service. Run
-admission itself is on at every deploy (`web.pipelineRunActivationEpoch`). Do
-not activate this feature until the remaining acceptance checks pass.
+admission is available to authorized callers of runnable templates.
 
 ## Checking a Run
 
@@ -395,13 +394,12 @@ files, with no credentials. Run it as a privileged CI task; never substitute a
 developer or production cluster. Node runtime loss runs separately, after the
 other scenarios. Missing live infrastructure fails rather than skipping tests.
 
-Named input routing is declared on a template task as `run_inputs: [{name: change, input: source}]` beside its stable `task_id`. Routes require inline task inputs and literal relative mount paths, with no overlapping writable mounts or `input_mapping` for that slot. Validation, durable binding and worker delivery are implemented. Authenticated upload admission publishes through the node and issues a short-lived source grant only after acquiring a temporary claim. Expiry releases that claim; admitted Runs retain their own claims. Shared submission uses this upload and admission path; public v2 activation remains held.
+Named input routing is declared on a template task as `run_inputs: [{name: change, input: source}]` beside its stable `task_id`. Routes require inline task inputs and literal relative mount paths, with no overlapping writable mounts or `input_mapping` for that slot. Validation, durable binding and worker delivery are implemented. Authenticated upload admission publishes through the node and issues a short-lived source grant only after acquiring a temporary claim. Expiry releases that claim; admitted Runs retain their own claims. Shared submission uses this upload and admission path.
 
 The input API is `POST /api/v1/teams/:team/pipelines/:template/run-inputs/:name`,
 with a tar body and the caller's platform login. It returns a typed source grant;
 the bearer is transient and the Run retains only the immutable source identity.
-It requires the operator creation switch, the database activation gate, and the
-web-only `--run-input-signing-key` file (exactly 32 raw bytes). This service key
+It requires the Hangar output plane in service and the web-only `--run-input-signing-key` file (exactly 32 raw bytes). This service key
 must differ from all node capability/materialization keys. It is unrelated to
 the user's Codex credentials. Missing setup refuses intake. The route checks
 the upload-specific team role before reading and at each publication boundary.
@@ -411,5 +409,6 @@ Versioned admission is `POST /api/v2/teams/:team/pipelines/:template/runs` with
 `UploadInput` and `CreateRun`. Keep the same invocation key after an uncertain
 response: new admission returns 201, exact replay returns 200, and changed
 intent returns 409. An admitted source may be replayed without its bearer. The
-server keeps authorization and activation checks on both admission and replay.
+server repeats authorization on admission and replay. New input intake and
+credential delivery require Hangar in service; replay does not.
 Submission follows admission with `POST /api/v2/teams/:team/pipelines/:template/runs/:number/credentials/findings`. The corresponding GET returns only delivery state; claimed/ready replay cannot resend credentials.

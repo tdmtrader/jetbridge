@@ -10,32 +10,15 @@ import (
 	"github.com/hashicorp/go-multierror"
 )
 
-// DefaultPipelineRunReclaimBatchSize bounds how many runs one pass reclaims.
-// It is the default for --pipeline-run-reclaim-batch, not a constant: a
-// cluster whose backlog metric shows the reclaimer falling behind its one
-// minute interval needs a bigger batch, and one whose reclaim duration is
-// long needs a smaller one.
-const DefaultPipelineRunReclaimBatchSize = 20
+const pipelineRunReclaimBatchSize = 20
 
 type pipelineRunReclaimer struct {
 	lifecycle db.PipelineRunReclaimLifecycle
 	now       func() time.Time
-	batchSize int
 }
 
-func NewPipelineRunReclaimer(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) *pipelineRunReclaimer {
-	if batchSize <= 0 {
-		batchSize = DefaultPipelineRunReclaimBatchSize
-	}
-	return &pipelineRunReclaimer{lifecycle: lifecycle, now: now, batchSize: batchSize}
-}
-
-// BatchSize is the bound this reclaimer will ask its lifecycle for. It is
-// exported because the value comes from an operator flag several hops away,
-// and a flag that never reaches its component is indistinguishable from a
-// flag that works until someone reads the batch the component actually got.
-func (r *pipelineRunReclaimer) BatchSize() int {
-	return r.batchSize
+func NewPipelineRunReclaimer(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time) *pipelineRunReclaimer {
+	return &pipelineRunReclaimer{lifecycle: lifecycle, now: now}
 }
 
 func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
@@ -48,7 +31,7 @@ func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
 	defer func() {
 		metric.PipelineRunReclaimDuration{Duration: r.now().Sub(start)}.Emit(logger)
 	}()
-	if err := r.lifecycle.ReleaseExpiredInputUploads(ctx, r.batchSize); err != nil {
+	if err := r.lifecycle.ReleaseExpiredInputUploads(ctx, pipelineRunReclaimBatchSize); err != nil {
 		return err
 	}
 
@@ -63,7 +46,7 @@ func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
 	}
 	metric.PipelineRunReclaimBacklog{Runs: backlog}.Emit(logger)
 
-	ids, err := r.lifecycle.ReclaimCandidateRunIDs(r.batchSize)
+	ids, err := r.lifecycle.ReclaimCandidateRunIDs(pipelineRunReclaimBatchSize)
 	if err != nil {
 		return err
 	}

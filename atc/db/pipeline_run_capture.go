@@ -115,7 +115,7 @@ func (f *pipelineRunFactory) StartRunCapture(ctx context.Context, tx Tx, buildID
 }
 
 // lockOutputProducer takes the Run's domain prefix for a producer and checks
-// it is still admitted: team, activation, Run, payload and build, in that
+// it is still admitted: team, Hangar, Run, payload and build, in that
 // order, then the retained definition.
 func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buildID int, plan atc.TaskPlan) (int, error) {
 	id, err := uuid.Parse(plan.TaskID)
@@ -123,10 +123,9 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 		return 0, fmt.Errorf("%w: task has no stable result declaration", output.ErrInvalidIdentity)
 	}
 	var runID, teamID int
-	var runEpoch int64
-	if err := tx.QueryRowContext(ctx, `SELECT r.id, p.team_id, r.activation_epoch FROM builds b
+	if err := tx.QueryRowContext(ctx, `SELECT r.id, p.team_id FROM builds b
 		JOIN pipeline_runs r ON r.id=b.pipeline_run_id
-		JOIN pipelines p ON p.id=r.template_pipeline_id WHERE b.id=$1`, buildID).Scan(&runID, &teamID, &runEpoch); err != nil {
+		JOIN pipelines p ON p.id=r.template_pipeline_id WHERE b.id=$1`, buildID).Scan(&runID, &teamID); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, fmt.Errorf("%w: build has no owning Run", output.ErrInvalidIdentity)
 		}
@@ -135,11 +134,7 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, teamID).Scan(&teamID); err != nil {
 		return 0, err
 	}
-	// The Run continues under its own epoch; the capture is admitted by an
-	// output plane in service.
-	if err := lockRunContinuation(ctx, tx, runEpoch); err != nil {
-		return 0, err
-	}
+	// New captures require the output plane in service.
 	if err := lockEnabledHangarOutput(ctx, tx); err != nil {
 		return 0, err
 	}
@@ -147,9 +142,6 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	err = scanPipelineRun(run, pipelineRunsQuery.Where(sq.Eq{"r.id": runID}).Suffix("FOR NO KEY UPDATE OF r").RunWith(tx).QueryRowContext(ctx))
 	if err != nil {
 		return 0, err
-	}
-	if run.ActivationEpoch() != runEpoch {
-		return 0, atc.ErrRunResultsUnavailable
 	}
 	if run.CancellationRequested() {
 		return 0, ErrPipelineRunCancelling

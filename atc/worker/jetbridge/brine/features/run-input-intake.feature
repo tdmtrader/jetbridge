@@ -17,7 +17,6 @@ Feature: Authenticated local input intake
       | "unknown team"              |
       | "unknown input"             |
       | "paused template"           |
-      | "held activation"           |
       | "missing authority"         |
       | "unconfigured upload"       |
       | "malformed archive"         |
@@ -26,6 +25,5 @@ Feature: Authenticated local input intake
       | "Run claim survives expiry" |
       | "expired grant"             |
       | "replay after expiry"       |
-      | "expiry while held"         |
       | "revoked during stream"     |
       | "custom role revoked during stream" |

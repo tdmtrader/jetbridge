@@ -87,9 +87,7 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 		return runs.InputUploadNode{UID: uid, Publisher: publisher}, err
 	}})
 	admitter.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{Source: source, Helper: "/usr/local/bin/jb-review-worker", Socket: "/dev/shm/jb-review/auth.sock", Lifetime: 3 * time.Minute, WorkerImages: []string{image}})
-	oldEnabled := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = oldEnabled; return nil })
+
 	auth, err := authServer(res)
 	if err != nil {
 		return err

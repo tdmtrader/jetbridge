@@ -9,7 +9,6 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/hangar"
@@ -27,10 +26,6 @@ func (s *Server) UploadPipelineRunInput(pipeline db.Pipeline) http.Handler {
 		}
 		if !access.IsAuthorized(pipeline.TeamName()) {
 			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		if !atc.PipelineRunsActivated() {
-			errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
 			return
 		}
 		if s.services.Admitter == nil || !s.services.HangarOutput {

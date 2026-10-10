@@ -68,11 +68,7 @@ var _ = Describe("the run_pipeline step", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	Context("when the operator has enabled run creation", func() {
-		BeforeEach(func() {
-			enableRunAdmission()
-		})
-
+	Context("with a runnable template", func() {
 		It("admits a run of the template and names it in the build's log", func() {
 			build := triggerCallingJob(owner)
 			Expect(build.Status).To(Equal(atc.StatusSucceeded), buildOutput(owner, build))
@@ -125,20 +121,6 @@ var _ = Describe("the run_pipeline step", func() {
 		})
 	})
 
-	// The gate is off by default, which is the shape a server ships in. This
-	// is the clause the HTTP gate test cannot make: the route is not involved
-	// here at all, and before the port learned about the hold this step
-	// admitted runs on a server that was refusing them to everyone else.
-	It("fails the step with the hold on stderr when run creation is disabled", func() {
-		build := triggerCallingJob(owner)
-		Expect(build.Status).To(Equal(atc.StatusFailed), buildOutput(owner, build))
-
-		_, stderr := buildStreams(owner, build)
-		Expect(stderr).To(ContainSubstring(atc.ErrPipelineRunCreationDisabled.Error()))
-
-		Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(0))
-		Expect(countRows("SELECT count(*) FROM pipelines WHERE pipeline_run_id IS NOT NULL")).To(Equal(0))
-	})
 })
 
 // triggerCallingJob triggers the caller's job and returns the build once it

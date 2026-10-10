@@ -47,7 +47,7 @@ Feature: A Run input names exact stable task slots
       | separate input path |
 
   @core-review
-  Scenario: Input mappings cannot bypass the Run activation hold
+  Scenario: Input mappings still require the Hangar output plane
     Given a Run input declaration with "one inline target"
     When the existing Run creator receives the result-bearing template
     Then Run result execution is held without allocating a Run or number

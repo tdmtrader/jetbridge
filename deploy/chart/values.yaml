@@ -114,27 +114,6 @@ web:
   env: []
 
 
-  # -- The Run contract activation epoch every web node admits durable pipeline
-  # runs under -- the v2 create route, the web UI and fly run-pipeline, and the
-  # run_pipeline step. At startup each web node writes it into the durable Run
-  # activation marker, so every deploy turns the Run contract on. It is the Run
-  # contract's own epoch and nothing in the Hangar output plane shares it:
-  # changing the plane's configuration leaves running Runs, their
-  # finalization and invocation-key replay alone. The marker only moves forward, so raise this value, never
-  # lower it; a web node configured below the recorded epoch refuses to start.
-  # Zero renders no flag and stops admission on the next web start, keeping the
-  # recorded epoch. A template that declares results (or a Run given inputs)
-  # is still admitted only while hangarOutput.webEnabled puts the output plane
-  # in service. Admission checks nothing more, but EXECUTING any Run, with or
-  # without results, needs the output plane's execution control
-  # (hangarOutput.executionControl.enabled) with the Hangar key
-  # (artifactDaemon.hangar.keySecret, or hangar.key in the daemon TLS Secret)
-  # configured: every step of a Run
-  # build starts through the exact-execution check. Without them, Runs are
-  # admitted and every step fails with "Run result execution is not
-  # activated" -- set this to 0 on such a deploy to keep admission closed.
-  pipelineRunActivationEpoch: 1
-
   # -- Existing web-only Secret containing input.key (exactly 32 raw random
   # bytes) for workload Run input grants. Requires hangarOutput.webEnabled.
   # Use a separate key and Secret from all node capability/materialization keys.
@@ -149,19 +128,6 @@ web:
   # controls, so an unpinned deployment would hand the owner's credentials to
   # whatever image that member names. Tags are refused; pin the digest.
   runCredentialWorkerImages: []
-
-  # -- Run result downloads. Rendered only with hangarOutput.webEnabled.
-  runResults:
-    # -- sizeLimit of the disk-backed emptyDir web spools result downloads
-    # into (mounted at /var/concourse/run-result-scratch). Each read holds the
-    # fetched archive and its canonical copy, up to 256Mi each, until its
-    # response is written, so this must be at least readConcurrency x 512Mi;
-    # the chart refuses less. It counts against the Pod's ephemeral storage,
-    # not its memory.
-    scratchSizeLimit: "1536Mi"
-    # -- Result downloads in flight at once. Readers beyond this get 503 with
-    # Retry-After instead of queueing.
-    readConcurrency: 2
 
   # -- Extra volume mounts for the web container (e.g. custom CA bundles, credential files)
   extraVolumeMounts: []

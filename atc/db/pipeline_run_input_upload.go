@@ -36,17 +36,10 @@ func validateRunnableTemplate(locked *pipeline) error {
 }
 
 // InputUploadAudience follows the shared authorization/team prefix. It retains
-// activation and template locks through the caller's transaction and reads the
+// Hangar and template locks through the caller's transaction and reads the
 // effective declarations on that same connection.
 func (f *pipelineRunFactory) InputUploadAudience(ctx context.Context, tx Tx, template Pipeline, input string, principal string) (runinput.Audience, error) {
 	var audience runinput.Audience
-	// An upload needs the output plane in service, while Run admission is
-	// open under its own marker; both are the activation prefix.
-	if marker, err := lockRunActivationMarker(ctx, tx); err != nil {
-		return audience, err
-	} else if !marker.enabled {
-		return audience, atc.ErrRunResultsUnavailable
-	}
 	if err := lockEnabledHangarOutput(ctx, tx); err != nil {
 		return audience, err
 	}

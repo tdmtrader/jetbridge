@@ -368,7 +368,7 @@ var _ = Describe("BuildLogCollector", func() {
 				}
 				builds[i] = build
 			}
-			_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1", oldestRun.ID())
+			_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}' WHERE id = $1", oldestRun.ID())
 			Expect(err).NotTo(HaveOccurred())
 			destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(oldestRun.ID())
 			Expect(err).NotTo(HaveOccurred())

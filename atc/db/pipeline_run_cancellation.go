@@ -16,8 +16,7 @@ var (
 )
 
 // AcceptRunCancellation only records the command. Its caller commits before
-// stopping executors or settling sources. The immutable birth epoch already
-// identifies the request's Run/Hangar generation; no credential is stored here.
+// stopping executors or settling sources. No credential is stored here.
 // This operation needs only the shared Run boundary, and acquires no inner locks.
 func (f *pipelineRunFactory) AcceptRunCancellation(ctx context.Context, tx Tx, runID int, requester string, reason *string) (atc.RunCancelOutcome, error) {
 	return acceptRunCancellation(ctx, tx, runID, requester, reason)

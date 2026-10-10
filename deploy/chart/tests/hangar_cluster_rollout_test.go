@@ -85,7 +85,7 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 			}
 		}
 
-		capture := strings.Contains(out, "--kubernetes-hangar-output-capture-enabled") || strings.Contains(out, "--run-result-scratch-dir")
+		capture := strings.Contains(out, "--kubernetes-hangar-output-capture-enabled")
 		if capture != (step.name == "S13 capture and Run results") {
 			t.Errorf("%s: capture and Run-result flags rendered = %v", step.name, capture)
 		}

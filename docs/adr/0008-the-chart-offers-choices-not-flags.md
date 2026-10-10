@@ -117,3 +117,8 @@ release. OTel-only measurements are retired, with no promise of emitter parity.
 
 Amended 2026-10-09 — Amended by C2 (durable resource-cache tier removal):
 The binary resource-cache tier is removed as well. `hangarOutput.cacheBucket` is a rejected open-schema tombstone for one release, and the chart value budget drops by one. The existing `artifactDaemon.durable` tombstone remains.
+
+Amended 2026-10-09 — Amended by C7: the Run epoch and two result-read
+settings leave the values budget. Each keeps an open schema tombstone and
+removed-key diagnostic for one release. Result reads use concurrency 2 and a
+fixed 1Gi disk scratch volume; private spool setup and cleanup remain.

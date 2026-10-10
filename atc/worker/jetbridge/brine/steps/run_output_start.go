@@ -97,47 +97,12 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 			in.Err = nil
 			return checkRunOutputStart(in)
 		}),
-		CheckThat[RetainedRunDefinition]("the Run records an immutable v2 birth contract", func(in RetainedRunDefinition) error {
-			var version string
-			var epoch *int64
-			if err := in.DB.Conn.QueryRow(`SELECT run_contract_version, activation_epoch FROM pipeline_runs WHERE id=$1`, in.Creation.Run.ID()).Scan(&version, &epoch); err != nil {
-				return err
-			}
-			if version != "v2" || epoch == nil || *epoch <= 0 {
-				return fmt.Errorf("birth was misclassified: %q %v", version, epoch)
-			}
-			_, err := in.DB.Conn.Exec(`UPDATE pipeline_runs SET activation_epoch=activation_epoch+1 WHERE id=$1`, in.Creation.Run.ID())
-			if err == nil || !strings.Contains(err.Error(), "immutable") {
-				return fmt.Errorf("birth contract was mutable: %v", err)
-			}
-			if _, err = in.DB.Conn.Exec(`UPDATE pipeline_runs SET run_contract_version='legacy_v1' WHERE id=$1`, in.Creation.Run.ID()); err == nil {
-				return fmt.Errorf("a Run was reclassified out of the one contract class")
-			}
-			return nil
-		}),
 		brine.DefineMapUsing[brine.Empty, RunOutputStart]("an internally admitted v2 result Run", []string{"jetbridge-db"}, func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (RunOutputStart, error) {
-			in, err := runOutputFixture(rec, res, "current")
+			in, err := runOutputFixture(rec, res)
 			if err == nil {
 				err = in.Err
 			}
 			return in, err
-		}),
-		brine.DefineMapUsing[brine.Empty, RunOutputStart]("internal v2 admission with {string} activation", []string{"jetbridge-db"}, func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (RunOutputStart, error) {
-			activation, _ := p.GetString(0)
-			return runOutputFixture(rec, res, activation)
-		}),
-		CheckThat[RunOutputStart]("v2 admission is refused before allocating a Run", func(in RunOutputStart) error {
-			if in.Err == nil || !strings.Contains(in.Err.Error(), "not activated") {
-				return fmt.Errorf("expected activation refusal, got %v", in.Err)
-			}
-			var count, number int
-			if err := in.DB.Conn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_runs), coalesce(max(last_run_number),0) FROM pipelines`).Scan(&count, &number); err != nil {
-				return err
-			}
-			if count != 0 || number != 0 {
-				return fmt.Errorf("unavailable v2 admission allocated %d Runs and number %d", count, number)
-			}
-			return nil
 		}),
 		brine.DefineMap[RunOutputStart, RunOutputStart]("its result producer requests start admission", func(in RunOutputStart, _ brine.Params, _ *brine.Recorder) (RunOutputStart, error) {
 			in.Record, in.Err = in.start(in.Plan, brineCaptureNode, hangarNodeUID, false)
@@ -215,17 +180,17 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 	}
 }
 
-func runOutputFixture(rec *brine.Recorder, res brine.Resources, activation string) (RunOutputStart, error) {
-	return runOutputFixtureOnNode(rec, res, activation, hangarNodeUID)
+func runOutputFixture(rec *brine.Recorder, res brine.Resources) (RunOutputStart, error) {
+	return runOutputFixtureOnNode(rec, res, hangarNodeUID)
 }
 
-func runOutputFixtureOnNode(rec *brine.Recorder, res brine.Resources, activation, nodeUID string) (RunOutputStart, error) {
-	return runOutputFixtureConfig(rec, res, activation, nodeUID, false)
+func runOutputFixtureOnNode(rec *brine.Recorder, res brine.Resources, nodeUID string) (RunOutputStart, error) {
+	return runOutputFixtureConfig(rec, res, nodeUID, false)
 }
 
 // runOutputFixtureConfig admits a Run and starts the artifact daemon as the
 // node nodeUID names, reached at loopback and at nodeAddresses.
-func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation, nodeUID string, checks bool, nodeAddresses ...net.IP) (RunOutputStart, error) {
+func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, nodeUID string, checks bool, nodeAddresses ...net.IP) (RunOutputStart, error) {
 	jdb, err := jetbridgeDBFrom(res)
 	if err != nil {
 		return RunOutputStart{}, err
@@ -250,16 +215,8 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 		return in, err
 	}
 	opts := db.RunCreationOpts{}
-	opts.ActivationEpoch = int64(runActivationEpoch)
 	opts.HangarOutput = true
 	if err := putOutputPlaneInService(jdb); err != nil {
-		return in, err
-	}
-	epoch := int64(runActivationEpoch)
-	if activation == "stale" {
-		epoch++
-	}
-	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, activationEpochUnless(activation == "disabled", epoch)); err != nil {
 		return in, err
 	}
 	tx, err := jdb.Conn.Begin()
@@ -345,13 +302,4 @@ func checkNoRunOutputStart(in RunOutputStart) error {
 		return fmt.Errorf("uncommitted start left %d capture links and %d capture rows", links, captures)
 	}
 	return nil
-}
-
-// activationEpochUnless is the Run activation epoch a scenario configures, or
-// zero -- admission off -- when disabled is set.
-func activationEpochUnless(disabled bool, epoch int64) int64 {
-	if disabled {
-		return 0
-	}
-	return epoch
 }

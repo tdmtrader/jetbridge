@@ -11,13 +11,12 @@ import (
 // PipelineRun HTTP type has custom Unix timestamp encoding and is not suitable
 // for reflection-derived MCP schemas.
 type RunObservation struct {
-	ID              int                      `json:"id"`
-	Number          int                      `json:"number"`
-	ContractVersion atc.RunContractVersion   `json:"run_contract_version"`
-	Status          atc.RunStatus            `json:"status"`
-	Reclaimed       bool                     `json:"reclaimed"`
-	Terminal        *atc.RunTerminalResult   `json:"terminal,omitempty"`
-	Captures        []atc.RunCaptureProgress `json:"captures,omitempty"`
+	ID        int                      `json:"id"`
+	Number    int                      `json:"number"`
+	Status    atc.RunStatus            `json:"status"`
+	Reclaimed bool                     `json:"reclaimed"`
+	Terminal  *atc.RunTerminalResult   `json:"terminal,omitempty"`
+	Captures  []atc.RunCaptureProgress `json:"captures,omitempty"`
 }
 
 // Observe reads a Run and projects it. A pending Run has no terminal
@@ -29,7 +28,7 @@ func (c *Client) Observe(ctx context.Context, handle Handle) (RunObservation, er
 		return RunObservation{}, err
 	}
 	return RunObservation{
-		ID: run.ID, Number: run.Number, ContractVersion: run.ContractVersion,
+		ID: run.ID, Number: run.Number,
 		Status: run.Status, Reclaimed: run.Reclaimed, Terminal: run.Terminal,
 		Captures: run.Captures,
 	}, nil

@@ -250,7 +250,7 @@ func acceptRunCancellation(in RunOutputStart, by string, reason *string, rollbac
 }
 func readCancellationSnapshot(in RunOutputStart) ([]byte, error) {
 	var body []byte
-	err := in.DB.Conn.QueryRow(`SELECT jsonb_build_object('at',cancel_requested_at,'by',cancel_requested_by,'reason',cancel_reason,'epoch',activation_epoch) FROM pipeline_runs WHERE id=$1`, in.Creation.Run.ID()).Scan(&body)
+	err := in.DB.Conn.QueryRow(`SELECT jsonb_build_object('at',cancel_requested_at,'by',cancel_requested_by,'reason',cancel_reason) FROM pipeline_runs WHERE id=$1`, in.Creation.Run.ID()).Scan(&body)
 	return body, err
 }
 func readCancellationWork(in RunOutputStart) ([]byte, error) {

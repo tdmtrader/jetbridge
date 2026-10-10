@@ -185,4 +185,4 @@ Feature: A Run atomically publishes one complete immutable result
     And its disposable payload is reclaimed after a newer Run
     And the aggregate Run completion is attempted
     Then replaying completion preserves the same terminal observation
-    And the header reader returns the retained result and version
+    And the header reader returns the retained result

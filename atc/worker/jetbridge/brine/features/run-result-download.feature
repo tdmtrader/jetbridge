@@ -12,7 +12,7 @@ Feature: An authorized client downloads a retained Run result
     And a fresh "<caller>" client downloads the named Run result
     And its disposable payload is reclaimed after a newer Run
     And a fresh "<caller>" client downloads the named Run result
-    Then the header reader returns the retained result and version
+    Then the header reader returns the retained result
 
     Examples:
       | caller     |

@@ -5,11 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
@@ -21,25 +22,13 @@ import (
 type RunParams struct{ Vars atc.RunParams }
 
 type RunCreationOpts struct {
-	// ActivationEpoch is the Run activation epoch a new Run is born under, and
-	// the durable activation marker must admit it. Zero, allowed only with an
-	// Invocation, is a node that admits nothing: it can still replay the Run
-	// its key already admitted, and is refused with
-	// ErrRunActivationEpochRequired otherwise.
-	ActivationEpoch int64
-	// HangarOutput says this control plane has an output plane configured. It
-	// is independent of ActivationEpoch: a Run that declares results or binds
-	// inputs needs the plane in service at admission.
+	// HangarOutput requires the configured plane in service for results and inputs.
 	HangarOutput         bool
 	Invocation           *RunInvocationIdentity
 	Inputs               map[string]atc.RunInputSource
 	SealedInputAuthority *runinput.Authority
 	Config               *atc.Config
 	BeforeCommit         func(Tx, RunCreation) error
-	// CausedByRun and Correlation are v2 caller intent and require Invocation.
-	// The cause must be an existing earlier Run of the template's team.
-	CausedByRun *int
-	Correlation string
 }
 
 type RunCreation struct {
@@ -101,17 +90,11 @@ func NewPipelineRunFactory(conn DbConn, lockFactory lock.LockFactory) PipelineRu
 }
 
 func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template Pipeline, params RunParams, createdBy string, opts RunCreationOpts) (RunCreation, error) {
-	if opts.Invocation != nil && (opts.ActivationEpoch < 0 || opts.Config != nil || !opts.Invocation.valid()) {
+	if opts.Invocation != nil && (opts.Config != nil || !opts.Invocation.valid()) {
 		return RunCreation{}, ErrInvalidRunInvocation
 	}
-	if (len(opts.Inputs) > 0 || opts.CausedByRun != nil || opts.Correlation != "") && opts.Invocation == nil {
+	if len(opts.Inputs) > 0 && opts.Invocation == nil {
 		return RunCreation{}, ErrInvalidRunInvocation
-	}
-	if opts.Correlation != "" && !atc.ValidRunInvocationToken(opts.Correlation) {
-		return RunCreation{}, ErrInvalidRunInvocation
-	}
-	if opts.ActivationEpoch <= 0 && opts.Invocation == nil {
-		return RunCreation{}, ErrRunActivationEpochRequired
 	}
 	var teamID int
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, template.TeamID()).Scan(&teamID); err != nil {
@@ -121,16 +104,6 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		}
 		return RunCreation{}, err
 	}
-	// The marker is locked first, but judged only once replay has been ruled
-	// out: a replay continues a Run that exists, so it needs the marker at or
-	// past that Run's epoch, not admitting at this node's (M-2: a hold stops
-	// new Runs, not running ones).
-	marker, err := lockRunActivationMarker(ctx, tx)
-	if err != nil {
-		return RunCreation{}, err
-	}
-	// Hangar's in-service row is taken inside the activation prefix whenever an
-	// output plane is configured, and required below only when this Run needs one.
 	hangarReady := false
 	if opts.HangarOutput {
 		var err error
@@ -139,30 +112,21 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		}
 	}
 	locked := newPipeline(f.conn, f.lockFactory)
-	err = scanPipeline(locked, pipelinesQuery.Where(sq.Eq{"p.id": template.ID()}).Suffix("FOR UPDATE OF p").RunWith(tx).QueryRow())
+	err := scanPipeline(locked, pipelinesQuery.Where(sq.Eq{"p.id": template.ID()}).Suffix("FOR UPDATE OF p").RunWith(tx).QueryRow())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return RunCreation{}, ErrPipelineRunNotTemplate
 		}
 		return RunCreation{}, err
 	}
-	caller := runCaller{Params: params.Vars, Inputs: opts.Inputs, CausedByRun: opts.CausedByRun, Correlation: opts.Correlation}
+	caller := runCaller{Params: params.Vars, Inputs: opts.Inputs}
 	if opts.Invocation != nil {
 		if replay, found, err := f.replayRunInvocation(ctx, tx, locked, caller, *opts.Invocation); err != nil || found {
-			if err == nil {
-				err = marker.continues(replay.Run.ActivationEpoch())
-			}
 			if err != nil {
 				return RunCreation{}, err
 			}
 			return replay, nil
 		}
-	}
-	if opts.ActivationEpoch <= 0 {
-		return RunCreation{}, ErrRunActivationEpochRequired
-	}
-	if err := marker.admits(opts.ActivationEpoch); err != nil {
-		return RunCreation{}, err
 	}
 	if err := validateRunnableTemplate(locked); err != nil {
 		return RunCreation{}, err
@@ -196,9 +160,6 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		if err != nil {
 			return RunCreation{}, err
 		}
-		if err = resolveRunCause(ctx, tx, locked.TeamID(), opts.CausedByRun); err != nil {
-			return RunCreation{}, err
-		}
 		inputs, err = resolveRunInputs(ctx, tx, runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: opts.Invocation.PrincipalDigest}, declarations, opts.Inputs, opts.SealedInputAuthority)
 		if err != nil {
 			return RunCreation{}, err
@@ -225,21 +186,12 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if err != nil {
 		return RunCreation{}, err
 	}
-	// Run ids come from one sequence and the cause was already visible, so it
-	// is strictly earlier; the schema refuses anything else as well.
-	if opts.CausedByRun != nil && *opts.CausedByRun >= runID {
-		return RunCreation{}, ErrRunCauseUnavailable
-	}
-	run := &pipelineRun{contractVersion: atc.RunContractV2, activationEpoch: opts.ActivationEpoch, id: runID, templateID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText, causedByRun: opts.CausedByRun, correlation: opts.Correlation}
-	var correlation sql.NullString
-	if opts.Correlation != "" {
-		correlation = sql.NullString{String: opts.Correlation, Valid: true}
-	}
+	run := &pipelineRun{id: runID, templateID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText}
 	// New runs are not completed; retain the nullable header value in creation
 	// memory so it stays consistent with later header reads.
 	var completedAt sql.NullTime
-	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch, caused_by_run, correlation)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText, atc.RunContractV2, opts.ActivationEpoch, opts.CausedByRun, correlation).Scan(&run.createdAt, &completedAt); err != nil {
+	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText).Scan(&run.createdAt, &completedAt); err != nil {
 		return RunCreation{}, err
 	}
 	if completedAt.Valid {

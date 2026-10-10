@@ -30,11 +30,11 @@
     },
     "goDuration": {
       "type": "string",
-      "pattern": "^(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$"
+      "pattern": "^(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|\u00b5s|\u03bcs|ms|s|m|h))+)$"
     },
     "optionalGoDuration": {
       "type": "string",
-      "pattern": "^(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)?$"
+      "pattern": "^(0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|\u00b5s|\u03bcs|ms|s|m|h))+)?$"
     },
     "prometheusDuration": {
       "type": "string",
@@ -188,9 +188,7 @@
         "extraArgs": {
           "$ref": "#/definitions/removed"
         },
-        "pipelineRunActivationEpoch": {
-          "type": "integer"
-        },
+        "pipelineRunActivationEpoch": {},
         "enablePipelineRunCreation": {
           "$ref": "#/definitions/removed"
         },
@@ -204,12 +202,8 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "scratchSizeLimit": {
-              "$ref": "#/definitions/quantity"
-            },
-            "readConcurrency": {
-              "type": "integer"
-            }
+            "scratchSizeLimit": {},
+            "readConcurrency": {}
           }
         },
         "extraVolumeMounts": {

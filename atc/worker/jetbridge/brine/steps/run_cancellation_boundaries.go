@@ -53,7 +53,7 @@ func RunCancellationBoundaryDefinitions() []brine.StepDefinition {
 		}),
 
 		brine.DefineMapUsing[brine.Empty, RunOutputStart]("a v2 result Run with resource checks", []string{"jetbridge-db"}, func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (RunOutputStart, error) {
-			return runOutputFixtureConfig(rec, res, "current", hangarNodeUID, true)
+			return runOutputFixtureConfig(rec, res, hangarNodeUID, true)
 		}),
 		brine.DefineMap[RunCancellation, RunCheckAdmission]("the cancelled Run requests a {string} resource check", func(in RunCancellation, p brine.Params, _ *brine.Recorder) (RunCheckAdmission, error) {
 			if in.Err != nil {

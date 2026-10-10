@@ -23,3 +23,8 @@ schema an agentic dependency.
   ban on core's run package naming composition tables. Adding an agentic
   package means pinning it.
 - The word *agent* is reserved for this context.
+
+Amended 2026-10-09 — Amended by C7: remove the Run methodology vocabulary
+scanner as an enforcement simplification. The vocabulary convention and
+agentic import boundary remain standing decisions, with the composition
+boundary and import tests unchanged.

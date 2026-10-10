@@ -193,18 +193,8 @@ type Refusal interface {
 // and its spec cannot drift apart. Everything absent from it -- and from the
 // two wrapping types IsRefusal names below -- is a fault.
 var refusalSentinels = []error{
-	// The operator's hold, which AdmitVersionedRun answers a new admission with.
-	// It is a refusal and not a fault even though nothing the pipeline's
-	// author wrote caused it: retrying does not open the gate, and the person
-	// reading the build's stderr is the one who has to go and ask an operator.
-	// A fault here would be an errored step retried against a server that is
-	// never going to say yes.
-	atc.ErrPipelineRunCreationDisabled,
-	// v2 admission held: no activation epoch, or the durable marker does not
-	// admit it. The same reasoning: only an operator can change it, and
-	// run_pipeline has no legacy path to fall back to.
-	ErrVersionedAdmissionUnavailable,
 	// The same invocation key presented with different caller intent.
+	atc.ErrRunResultsUnavailable,
 	ErrInvocationConflict,
 
 	ErrTemplateNotFound,

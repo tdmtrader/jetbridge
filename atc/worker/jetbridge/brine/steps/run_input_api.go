@@ -58,12 +58,7 @@ func configureRunInputAPI(in RunInputAdmission, caller string, rec *brine.Record
 		client, uid, err := outputSource.ForInputUpload(ctx)
 		return runs.InputUploadNode{UID: uid, Publisher: client}, err
 	}})
-	oldEnabled := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = 0
-	if caller != "held" {
-		atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-	}
-	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = oldEnabled; return nil })
+
 	auth.mu.Lock()
 	auth.RunServices = pipelinerunserver.Services{Admitter: in.Port, HangarOutput: true}
 	auth.API, err = auth.apiHandler(auth.Verifier)
@@ -133,8 +128,6 @@ func exerciseRunInputAPI(in RunInputAdmission, caller string, rec *brine.Recorde
 		want = http.StatusUnauthorized
 	case "viewer", "cross-team":
 		want = http.StatusForbidden
-	case "held":
-		want = http.StatusConflict
 	case "missing authority":
 		want = http.StatusServiceUnavailable
 	case "malformed archive", "unknown input":

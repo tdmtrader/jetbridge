@@ -71,7 +71,8 @@ import (
 // Deriving resolve capability expiry removes its TTL value, leaving 193.
 // Retiring ATC OTel metrics removes three values, leaving 190.
 // Removing the resource-cache bucket leaves 189.
-const maxValues = 189
+// C7 removes the Run epoch and the two fixed result-read settings.
+const maxValues = 186
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -184,6 +185,9 @@ var removedKeys = []string{
 	"hangarBootstrap.secretNames.outputCA",
 	"hangarOutput.activation",
 	"hangarOutput.activationEpoch",
+	"web.pipelineRunActivationEpoch",
+	"web.runResults.readConcurrency",
+	"web.runResults.scratchSizeLimit",
 	"hangarOutput.capabilityKeySecret",
 	"hangarOutput.daemon",
 	"hangarOutput.database",

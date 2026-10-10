@@ -12,17 +12,8 @@ import (
 )
 
 var (
-	ErrInvalidInvocationKey  = errors.New("invalid invocation key")
-	ErrInvocationConflict    = errors.New("invocation conflict")
-	ErrUnsupportedInvocation = errors.New("unsupported invocation fields")
-	ErrInvalidCorrelation    = errors.New("invalid invocation correlation")
-	// ErrRunCauseUnavailable is the one answer for a caused_by_run that is
-	// missing, another team's, or not earlier, so it is no existence oracle.
-	ErrRunCauseUnavailable = errors.New("caused_by_run does not name an earlier Run of this team")
-	// ErrVersionedAdmissionUnavailable is the refusal while this server speaks
-	// for no activation epoch, or the durable activation marker does not admit
-	// its epoch. Nothing falls back to legacy admission; there is none.
-	ErrVersionedAdmissionUnavailable = fmt.Errorf("versioned run admission is not activated on this server: %w", atc.ErrRunResultsUnavailable)
+	ErrInvalidInvocationKey = errors.New("invalid invocation key")
+	ErrInvocationConflict   = errors.New("invocation conflict")
 )
 
 // AdmitVersionedRun admits one v2 Run of the referenced template inside tx,
@@ -36,49 +27,10 @@ var (
 // nothing about existence; and the scoped replay lookup happens only after all
 // of that, in the factory.
 //
-// The operator's hold stops new Runs, not running ones (durable Run contract,
-// amendment M-2), so it is answered after the replay lookup rather than before
-// it. A held server -- one that speaks for no activation epoch -- still
-// replays the Run an invocation already admitted, whose continuation needs
-// only the durable marker at or past that Run's epoch. Anything else it is
-// asked is refused with the hold, whatever else is wrong with the call: a held
-// server weighs a call only as far as finding what it already admitted.
-//
 // Every read goes through tx. The caller holds one pooled connection from
 // Begin to commit, and a read on the pool here would want a second one while
 // the first is checked out; atc/runs/connection_budget_test.go pins that.
-func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission, epoch int64) (Run, bool, error) {
-	if atc.PipelineRunsActivated() && epoch > 0 {
-		return a.admitVersionedRun(ctx, tx, adm, epoch)
-	}
-	// Epoch zero asks the factory for a replay and nothing else.
-	run, replayed, err := a.admitVersionedRun(ctx, tx, adm, 0)
-	switch {
-	case err == nil:
-		return run, replayed, nil
-	case errors.Is(err, ErrInvocationConflict):
-		// The key named an admitted Run; the caller changed its intent.
-		return Run{}, false, err
-	case errors.Is(err, db.ErrRunActivationEpochRequired), heldCallRefusal(err):
-		if !atc.PipelineRunsActivated() {
-			return Run{}, false, atc.ErrPipelineRunCreationDisabled
-		}
-		return Run{}, false, ErrVersionedAdmissionUnavailable
-	default:
-		return Run{}, false, err
-	}
-}
-
-// heldCallRefusal reports a refusal about the call itself, which a held server
-// answers with the hold: such a call cannot be the replay of an admitted
-// invocation. A fault is not a refusal and travels unchanged.
-func heldCallRefusal(err error) bool {
-	var foreign ForeignTransactionError
-	return IsRefusal(err) || errors.As(err, &foreign) || errors.Is(err, ErrPrincipalAmbiguous) ||
-		errors.Is(err, ErrInvalidInvocationKey) || errors.Is(err, ErrInvalidCorrelation)
-}
-
-func (a *admitter) admitVersionedRun(ctx context.Context, tx Tx, adm Admission, epoch int64) (Run, bool, error) {
+func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission) (Run, bool, error) {
 	if !validInvocationKey(adm.ContractKey) {
 		return Run{}, false, ErrInvalidInvocationKey
 	}
@@ -86,9 +38,6 @@ func (a *admitter) admitVersionedRun(ctx context.Context, tx Tx, adm Admission, 
 		if subject, ok := adm.Principal.Claims["sub"].(string); !ok || subject == "" {
 			return Run{}, false, ErrUnauthorized
 		}
-	}
-	if adm.Correlation != "" && !atc.ValidRunInvocationToken(adm.Correlation) {
-		return Run{}, false, ErrInvalidCorrelation
 	}
 	// The one place the port bridges its own interface back to the concrete
 	// transaction type; a foreign Tx is refused rather than panicking.
@@ -109,10 +58,7 @@ func (a *admitter) admitVersionedRun(ctx context.Context, tx Tx, adm Admission, 
 	if err := refuseDirectRecursion(auth, pipeline); err != nil {
 		return Run{}, false, err
 	}
-	// The cause is authorized with the template: it must be a Run of the same
-	// team, which the principal was just authorized on. The factory resolves it
-	// under the creation prefix and refuses anything else without saying why.
-	opts := db.RunCreationOpts{ActivationEpoch: epoch, HangarOutput: a.outputPlane, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, CausedByRun: adm.CausedByRun, Correlation: adm.Correlation, Invocation: &db.RunInvocationIdentity{
+	opts := db.RunCreationOpts{HangarOutput: a.outputPlane, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, Invocation: &db.RunInvocationIdentity{
 		PrincipalDigest: principalDigest(adm.Principal, auth),
 		KeyDigest:       invocationDigest("key", adm.ContractKey),
 	}}

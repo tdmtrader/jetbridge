@@ -13,7 +13,6 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
 	"golang.org/x/oauth2"
 )
 
@@ -97,12 +96,6 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 		auth.API, err = auth.apiHandler(auth.Verifier)
 		auth.mu.Unlock()
 		want = http.StatusForbidden
-	case "operator hold":
-		atc.PipelineRunActivationEpoch = 0
-		want = http.StatusConflict
-	case "database hold":
-		_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0)
-		want = http.StatusConflict
 	case "paused template":
 		err = in.Template.Pause("brine")
 		want = http.StatusConflict
@@ -140,7 +133,7 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 	}
 	var first atc.PipelineRun
 	if want == http.StatusCreated {
-		if json.Unmarshal(data, &first) != nil || first.ID <= 0 || first.Number != before+1 || first.ContractVersion != atc.RunContractV2 {
+		if json.Unmarshal(data, &first) != nil || first.ID <= 0 || first.Number != before+1 {
 			return fmt.Errorf("versioned invocation returned no durable v2 identity")
 		}
 		if strings.Contains(string(data), source.Bearer) {
@@ -159,15 +152,6 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 			}
 			if mode == "replay archived template" {
 				if err := in.Template.Archive(); err != nil {
-					return err
-				}
-			}
-			// A hold stops new Runs, not running ones: the key still replays.
-			switch mode {
-			case "operator hold replay":
-				atc.PipelineRunActivationEpoch = 0
-			case "database hold replay":
-				if _, err := db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0); err != nil {
 					return err
 				}
 			}
@@ -191,13 +175,6 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 				}
 				if replay.AdmissionOutcome != atc.RunAdmissionReplayed || header.Get(atc.IdempotencyReplayedHeader) != "true" {
 					return fmt.Errorf("replay signalled outcome %q with replay header %q", replay.AdmissionOutcome, header.Get(atc.IdempotencyReplayedHeader))
-				}
-			}
-			if strings.HasSuffix(mode, "hold replay") {
-				request["invocation_key"] = "brine-http-invocation-new"
-				body, _ = json.Marshal(request)
-				if status, _, err = send(path, token, body); err != nil || status != http.StatusConflict {
-					return fmt.Errorf("%s new key: HTTP %d, want %d; error=%v", mode, status, http.StatusConflict, err)
 				}
 			}
 		}
@@ -256,7 +233,7 @@ func exerciseSharedInvocationAPI(in RunInputAdmission, auth *AuthFixture, replay
 	}
 	request := atc.CreatePipelineRunV2Request{InvocationKey: "shared-client", Inputs: map[string]atc.RunInputSource{"change": source}}
 	first, err := port.CreateRun(ctx, "output-start", "input-review", request)
-	if err != nil || first.ID <= 0 || first.ContractVersion != atc.RunContractV2 {
+	if err != nil || first.ID <= 0 {
 		return fmt.Errorf("shared Run admission: %v", err)
 	}
 	fresh, err := makeClient()

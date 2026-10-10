@@ -169,7 +169,7 @@ var _ = Describe("run build admission", func() {
 			result <- workJob.EnsurePendingBuildExists(context.Background())
 		}()
 		Consistently(result, 150*time.Millisecond).ShouldNot(Receive())
-		_, err = tx.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1", run.ID())
+		_, err = tx.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now(), result_manifest = '{}' WHERE id = $1", run.ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		Eventually(result).WithTimeout(3 * time.Second).Should(Receive(MatchError("run #1 is complete (failed); run the template again")))

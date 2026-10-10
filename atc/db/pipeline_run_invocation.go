@@ -34,44 +34,12 @@ func (identity RunInvocationIdentity) valid() bool {
 // runCaller is everything the caller states about one invocation. The
 // caller-intent digest covers exactly these facts.
 type runCaller struct {
-	Params      atc.RunParams
-	Inputs      map[string]atc.RunInputSource
-	CausedByRun *int
-	Correlation string
-}
-
-// ErrRunCauseUnavailable is one refusal for every caused_by_run that cannot be
-// linked -- missing, another team's, or not earlier -- so the answer never
-// discloses whether some other team's Run exists.
-var ErrRunCauseUnavailable = errors.New("caused_by_run does not name an earlier Run of this team")
-
-// resolveRunCause runs under the creation prefix's team FOR SHARE, which is
-// what makes one read enough: a predecessor Run leaves only through its team's
-// purge, and that waits for this transaction. It takes no Run lock, so creation
-// never reaches into the post-creation prefix.
-func resolveRunCause(ctx context.Context, tx Tx, teamID int, cause *int) error {
-	if cause == nil {
-		return nil
-	}
-	if *cause <= 0 {
-		return ErrRunCauseUnavailable
-	}
-	var linked bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pipeline_runs r JOIN pipelines t ON t.id = r.template_pipeline_id
-		WHERE r.id = $1 AND t.team_id = $2)`, *cause, teamID).Scan(&linked)
-	if err != nil {
-		return err
-	}
-	if !linked {
-		return ErrRunCauseUnavailable
-	}
-	return nil
+	Params atc.RunParams
+	Inputs map[string]atc.RunInputSource
 }
 
 // Preserve explicit presence (including null), while using the retained schema
 // to normalize scalar values. Applied defaults belong only to admitted facts.
-// Cause and correlation are omitted when absent so records retained before
-// they existed canonicalize to the same bytes.
 func runCallerIntent(schema []atc.ParamSchema, caller runCaller) ([]byte, error) {
 	supplied, inputs := caller.Params, caller.Inputs
 	if len(inputs) > 64 {
@@ -106,11 +74,9 @@ func runCallerIntent(schema []atc.ParamSchema, caller runCaller) ([]byte, error)
 		}
 	}
 	return json.Marshal(struct {
-		Params      atc.RunParams                 `json:"params"`
-		Inputs      map[string]atc.RunInputSource `json:"inputs"`
-		CausedByRun *int                          `json:"caused_by_run,omitempty"`
-		Correlation string                        `json:"correlation,omitempty"`
-	}{explicit, canonicalInputs, caller.CausedByRun, caller.Correlation})
+		Params atc.RunParams                 `json:"params"`
+		Inputs map[string]atc.RunInputSource `json:"inputs"`
+	}{explicit, canonicalInputs})
 }
 
 func runInvocationDocumentDigest(kind string, document []byte) string {
@@ -184,12 +150,9 @@ func runAdmittedInvocation(ctx context.Context, tx Tx, teamID int, run PipelineR
 		RunID          int                            `json:"run_id"`
 		TeamID         int                            `json:"team_id"`
 		TemplateID     int                            `json:"template_id"`
-		Epoch          int64                          `json:"epoch"`
 		TemplateDigest string                         `json:"template_digest"`
 		ConfigDigest   string                         `json:"config_digest"`
 		Params         atc.Params                     `json:"params"`
 		Inputs         map[string]atc.RunInputBinding `json:"inputs"`
-		CausedByRun    *int                           `json:"caused_by_run,omitempty"`
-		Correlation    string                         `json:"correlation,omitempty"`
-	}{run.ID(), teamID, run.TemplateID(), run.ActivationEpoch(), templateDigest, run.ConfigHash(), run.Params(), inputs, run.CausedByRun(), run.Correlation()})
+	}{run.ID(), teamID, run.TemplateID(), templateDigest, run.ConfigHash(), run.Params(), inputs})
 }

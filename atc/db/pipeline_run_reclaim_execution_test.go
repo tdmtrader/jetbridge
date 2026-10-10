@@ -19,8 +19,6 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 		consumer, err := db.HangarConsumerPrefixHeld("reclaim-test")
 		Expect(err).NotTo(HaveOccurred())
 		hangarActivateEpoch(ctx, db.NewHangarOutputRepository(consumer))
-		_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-		Expect(err).NotTo(HaveOccurred())
 
 		keepLast := 1
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "retained-checks"}, atc.Config{
@@ -37,7 +35,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
+			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tx.Commit()).To(Succeed())
 			return creation
@@ -150,7 +148,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(before.Status).To(Equal(atc.RunStatusSucceeded))
-		Expect(before.Version).NotTo(BeEmpty())
+		Expect(before.CompletedAt).NotTo(BeZero())
 		create() // Move the completed Run outside the keep-last window.
 
 		destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(victim.Run.ID())

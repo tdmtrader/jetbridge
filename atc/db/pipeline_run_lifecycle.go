@@ -23,7 +23,7 @@ func announceRunCompletion(bus NotificationsBus) {
 
 // attemptRunCompletion wakes the Run result finalizer when one of a Run's
 // builds settles. Completion itself -- status, time and result manifest in one
-// terminal publication -- takes the activation and team prefix in a fresh
+// terminal publication -- takes the team and Run prefix in a fresh
 // transaction through FinalizeOutputRun, which this caller, already holding
 // build or job locks, cannot. The finalizer polls even if this wake-up is
 // lost, so this never completes a Run itself and always answers false.

@@ -12,7 +12,7 @@ Feature: Authorized clients read the durable Run terminal observation
     And a fresh "<caller>" client reads the retained Run result
     And its disposable payload is reclaimed after a newer Run
     And a fresh "<caller>" client reads the retained Run result
-    Then the header reader returns the retained result and version
+    Then the header reader returns the retained result
 
     Examples:
       | caller     |
@@ -31,7 +31,7 @@ Feature: Authorized clients read the durable Run terminal observation
     Then the aggregate Run remains running with no public result
 
   @core-review
-  Scenario Outline: Non-success has a terminal version and an explicit empty map
+  Scenario Outline: Non-success has a terminal result and an explicit empty map
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
     And its published producer finishes as "succeeded"

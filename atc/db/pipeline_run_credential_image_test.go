@@ -38,8 +38,6 @@ var _ = Describe("Run credential target worker image", func() {
 		consumer, err := db.HangarConsumerPrefixHeld("credential-image-test")
 		Expect(err).NotTo(HaveOccurred())
 		hangarActivateEpoch(ctx, db.NewHangarOutputRepository(consumer))
-		_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-		Expect(err).NotTo(HaveOccurred())
 
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "review"}, config(pinned, ""), 0, false)
@@ -50,9 +48,8 @@ var _ = Describe("Run credential target worker image", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
 			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{
-				ActivationEpoch: 1,
-				HangarOutput:    true,
-				Invocation:      &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat(key, 64)},
+				HangarOutput: true,
+				Invocation:   &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat(key, 64)},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tx.Commit()).To(Succeed())
@@ -85,17 +82,11 @@ var _ = Describe("Run credential target worker image", func() {
 		Expect(target(third.Run.Number()).WorkerImage).To(BeEmpty())
 	})
 
-	// A new delivery grants a running Run's producer the owner's credentials.
-	// It needs both the Run contract admitting (an operator's admission hold
-	// stops it, as it does on the wire) and the Hangar epoch the control plane
-	// speaks for enabled.
-	It("refuses a new delivery under an admission hold or a disabled Hangar epoch", func() {
+	It("refuses a new delivery while Hangar is out of service", func() {
 		ctx := context.Background()
-		consumer, err := db.HangarConsumerPrefixHeld("credential-hold-test")
+		consumer, err := db.HangarConsumerPrefixHeld("credential-drain-test")
 		Expect(err).NotTo(HaveOccurred())
 		hangarActivateEpoch(ctx, db.NewHangarOutputRepository(consumer))
-		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 1)
-		Expect(err).NotTo(HaveOccurred())
 
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "review"}, config(pinned, ""), 0, false)
@@ -103,8 +94,8 @@ var _ = Describe("Run credential target worker image", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{
-			ActivationEpoch: 1, HangarOutput: true,
-			Invocation: &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat("d", 64)},
+			HangarOutput: true,
+			Invocation:   &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat("d", 64)},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
@@ -119,13 +110,6 @@ var _ = Describe("Run credential target worker image", func() {
 
 		Expect(load()).To(Succeed())
 
-		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 0)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(load()).To(MatchError(atc.ErrRunResultsUnavailable), "an admission hold stops new delivery")
-
-		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 1)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(load()).To(Succeed())
 		_, err = db.SetHangarEnabled(ctx, dbConn, false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(load()).To(MatchError(atc.ErrRunResultsUnavailable), "an output plane out of service stops new delivery")

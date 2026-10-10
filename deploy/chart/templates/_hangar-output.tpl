@@ -64,9 +64,6 @@
 {{- end -}}
 {{- end -}}
 
-{{- if lt (int .Values.web.pipelineRunActivationEpoch) 0 -}}
-{{- fail "web.pipelineRunActivationEpoch must be zero (admit no pipeline runs) or a positive Run contract activation epoch." -}}
-{{- end -}}
 
 {{- if and $capture (not $base) -}}
 {{- fail "hangarOutput.enabled requires hangarOutput.executionControl.enabled. Durable output capture is an EXTENSION of exact execution control, never a synonym for it: a capture pod requires both ready labels, and a cohort advertising output without base would be claiming a capture plane with no exact-execution protocol underneath. Output admission can never be true while base admission is false." -}}
@@ -145,22 +142,6 @@
 
 {{- define "concourse.web.runResultReads" -}}
 {{- if and .Values.hangarOutput.executionControl.enabled .Values.hangarOutput.enabled .Values.hangarOutput.webEnabled -}}true{{- end -}}
-{{- end }}
-
-{{- define "concourse.web.validateRunResults" -}}
-{{- $results := .Values.web.runResults -}}
-{{- $concurrency := int $results.readConcurrency -}}
-{{- if lt $concurrency 1 -}}
-{{- fail "web.runResults.readConcurrency must be at least 1; zero would refuse every result download." -}}
-{{- end -}}
-{{- if not $results.scratchSizeLimit -}}
-{{- fail "web.runResults.scratchSizeLimit is required: an emptyDir with no sizeLimit is bounded only by the node's disk." -}}
-{{- end -}}
-{{- $limit := atoi (include "concourse.quantityBytes" (dict "name" "web.runResults.scratchSizeLimit" "value" $results.scratchSizeLimit)) -}}
-{{- $needed := mul $concurrency 2 268435456 -}}
-{{- if gt (int64 $needed) (int64 $limit) -}}
-{{- fail (printf "web.runResults.readConcurrency is %d, so up to %d bytes of result archives may be spooled at once -- more than web.runResults.scratchSizeLimit %s (%d bytes). Raise the limit to at least readConcurrency x 512Mi or lower the concurrency." $concurrency $needed $results.scratchSizeLimit $limit) -}}
-{{- end -}}
 {{- end }}
 
 {{- define "concourse.web.validateRunCredentialWorkerImages" -}}

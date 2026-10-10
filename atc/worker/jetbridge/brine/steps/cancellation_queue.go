@@ -96,7 +96,7 @@ func exerciseCancellationQueue(in RunOutputStart, mode string) error {
 		factory := db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory)
 		for i := 0; i < 51; i++ {
 			if err := transaction(false, func(tx db.Tx) error {
-				creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "queue-fixture", db.RunCreationOpts{ActivationEpoch: int64(runActivationEpoch), HangarOutput: true})
+				creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "queue-fixture", db.RunCreationOpts{HangarOutput: true})
 				if err != nil {
 					return err
 				}

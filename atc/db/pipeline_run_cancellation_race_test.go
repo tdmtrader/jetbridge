@@ -203,9 +203,9 @@ func cancellationBoundaries() []TableEntry {
 	published := func(f *cancellationRace) (string, bool) {
 		GinkgoHelper()
 		var status string
-		var version sql.NullString
-		Expect(dbConn.QueryRow(`SELECT status,terminal_observation_version FROM pipeline_runs WHERE id=$1`, f.runID).Scan(&status, &version)).To(Succeed())
-		return status, version.Valid
+		var published bool
+		Expect(dbConn.QueryRow(`SELECT status,result_manifest IS NOT NULL FROM pipeline_runs WHERE id=$1`, f.runID).Scan(&status, &published)).To(Succeed())
+		return status, published
 	}
 
 	return []TableEntry{
@@ -345,8 +345,6 @@ func newCancellationRace() *cancellationRace {
 	consumer, err := db.HangarConsumerPrefixHeld("cancellation-race-test")
 	Expect(err).NotTo(HaveOccurred())
 	hangarActivateEpoch(f.ctx, db.NewHangarOutputRepository(consumer))
-	_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-	Expect(err).NotTo(HaveOccurred())
 
 	producer := &atc.TaskStep{
 		Name: "review", TaskID: uuid.NewString(), RunResult: &atc.RunResult{Name: "findings", Output: "result"},
@@ -365,7 +363,7 @@ func newCancellationRace() *cancellationRace {
 	tx, err := dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarOutput: true})
+	f.creation, err = f.factory.CreateRunInTx(f.ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	f.runID = f.creation.Run.ID()

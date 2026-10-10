@@ -81,7 +81,7 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 	if nodeIP == nil {
 		return in, nil, fmt.Errorf("the disposable kubelet node %s resolves to %q, which is not an IP address", node.Name, resolved)
 	}
-	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(node.UID), checks, nodeIP)
+	in.Start, err = runOutputFixtureConfig(rec, res, string(node.UID), checks, nodeIP)
 	if err != nil {
 		return in, nil, err
 	}

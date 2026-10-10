@@ -24,10 +24,6 @@ Feature: Versioned Run admission owns one scoped invocation identity
       | a replay callback |
       | a failed first callback |
       | retained record mutation |
-      | a correlated replay |
-      | a caused replay |
-      | a changed correlation |
-      | a changed cause |
 
   @core-review
   Scenario Outline: Invalid invocation keys create nothing
@@ -44,6 +40,3 @@ Feature: Versioned Run admission owns one scoped invocation identity
       | no stable principal |
       | a stronger v2 capability |
       | a weakened v2 capability |
-      | disabled activation |
-      | an unavailable cause |
-      | an invalid correlation |

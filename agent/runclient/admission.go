@@ -74,7 +74,7 @@ func (c *Client) CreateRun(ctx context.Context, team, template string, intent at
 	if err := c.sendAdmission(request, &run, 1<<20, http.StatusCreated, http.StatusOK); err != nil {
 		return run, err
 	}
-	if run.ID <= 0 || run.Number <= 0 || run.ActivationEpoch <= 0 {
+	if run.ID <= 0 || run.Number <= 0 {
 		return atc.PipelineRun{}, errors.New("JetBridge returned an invalid versioned Run identity")
 	}
 	return run, nil

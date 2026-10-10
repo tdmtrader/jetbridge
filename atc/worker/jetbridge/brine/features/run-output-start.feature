@@ -21,20 +21,6 @@ Feature: A Run owns admission of its exact output producer
     Then the original capture link remains immutable
 
   @core-review
-  Scenario: Every Run is born under the one v2 contract and cannot leave it
-    Given a Run admitted from a parameterized template
-    Then the Run records an immutable v2 birth contract
-
-  @core-review
-  Scenario Outline: V2 admission requires the current activated contract
-    Given internal v2 admission with "<activation>" activation
-    Then v2 admission is refused before allocating a Run
-    Examples:
-      | activation |
-      | disabled   |
-      | stale      |
-
-  @core-review
   Scenario: Starting a result producer inserts exactly one pending capture
     Given an internally admitted v2 result Run
     When its result producer requests start admission

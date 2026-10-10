@@ -38,9 +38,7 @@ func RunInputIntakeDefinitions() []brine.StepDefinition {
 }
 
 func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error {
-	previousGate := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-	defer func() { atc.PipelineRunActivationEpoch = previousGate }()
+
 	display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
 	if err != nil {
 		return err
@@ -57,9 +55,6 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		return fmt.Errorf("Run admission has no authenticated input intake")
 	}
 	if err := putOutputPlaneInService(jdb); err != nil {
-		return err
-	}
-	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(runActivationEpoch)); err != nil {
 		return err
 	}
 	team, err := jdb.TeamFactory.CreateTeam(atc.Team{Name: "input-intake"})
@@ -90,7 +85,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		}
 		return runs.InputUploadNode{UID: uid, Publisher: jetbridge.NewOutputControlClient(in.Output.URL, in.HTTP, in.Minter)}, nil
 	}}
-	expires := mode == "unused upload expires" || mode == "Run claim survives expiry" || mode == "expired grant" || mode == "replay after expiry" || mode == "expiry while held"
+	expires := mode == "unused upload expires" || mode == "Run claim survives expiry" || mode == "expired grant" || mode == "replay after expiry"
 	if expires {
 		uploadConfig.ClaimTTL = 3 * time.Second
 	}
@@ -112,10 +107,6 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		name = "undeclared"
 	case "paused template":
 		if err := template.Pause("owner"); err != nil {
-			return err
-		}
-	case "held activation":
-		if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, 0); err != nil {
 			return err
 		}
 	case "missing authority":
@@ -206,7 +197,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		}
 		return assertInputObjectCount(in, 1)
 	}
-	epoch := int64(runActivationEpoch)
+
 	admission := runs.Admission{Template: ref, Principal: principal, ContractKey: "uploaded-change", Inputs: map[string]atc.RunInputSource{name: source}}
 	admit := func() (runs.Run, bool, error) {
 		tx, err := admitter.Begin(in.Ctx)
@@ -214,7 +205,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 			return runs.Run{}, false, err
 		}
 		defer tx.Rollback()
-		run, replayed, err := admitter.AdmitVersionedRun(in.Ctx, tx, admission, epoch)
+		run, replayed, err := admitter.AdmitVersionedRun(in.Ctx, tx, admission)
 		if err != nil {
 			return run, replayed, err
 		}
@@ -228,13 +219,9 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		}
 	}
 	if expires {
-		if mode == "expiry while held" {
-			if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, 0); err != nil {
-				return err
-			}
-		}
+
 		<-time.After(time.Until(deadline) + 100*time.Millisecond)
-		if err := gc.NewPipelineRunReclaimer(db.NewPipelineRunReclaimLifecycle(jdb.Conn), time.Now, 20).Run(in.Ctx); err != nil {
+		if err := gc.NewPipelineRunReclaimer(db.NewPipelineRunReclaimLifecycle(jdb.Conn), time.Now).Run(in.Ctx); err != nil {
 			return fmt.Errorf("expire upload claims: %w", err)
 		}
 		var uploads, active int

@@ -14,7 +14,7 @@ Feature: Any local client can inspect a review Run
     And its disposable payload is reclaimed after a newer Run
     And a fresh review CLI reads the "known" Run status
     And a fresh review CLI reads the "unknown" Run status
-    Then the header reader returns the retained result and version
+    Then the header reader returns the retained result
 
   @core-review
   Scenario: The CLI distinguishes a pending review from a published result
@@ -41,7 +41,7 @@ Feature: Any local client can inspect a review Run
     And a fresh review MCP reads the "unknown" Run status
     And a fresh "cross-team" client reads the retained Run result
     And a fresh review MCP reads the "redacted" Run status
-    Then the header reader returns the retained result and version
+    Then the header reader returns the retained result
 
   @core-review
   Scenario: The MCP distinguishes a pending review from a published result

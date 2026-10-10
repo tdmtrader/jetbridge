@@ -170,15 +170,6 @@ type Admission struct {
 	// calling pipeline).
 	ContractKey string
 
-	// CausedByRun is the id of an earlier Run of the template's team that
-	// caused this one. Versioned admission retains it immutably as caller
-	// intent; it causes no cascade, cancellation, retention, retry or claim.
-	CausedByRun *int
-
-	// Correlation is an opaque, non-secret caller value in the invocation-key
-	// alphabet, retained immutably as caller intent.
-	Correlation string
-
 	// BeforeCommit runs inside the caller's transaction after the run and its
 	// payload pipeline exist and before the caller commits. Returning an error
 	// aborts creation. This is where a consumer writes the rows that must be

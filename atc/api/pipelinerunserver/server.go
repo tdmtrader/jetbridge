@@ -28,7 +28,7 @@ type Server struct {
 
 func NewServer(logger lager.Logger, runFactory db.PipelineRunFactory, externalURL string) *Server {
 	return &Server{logger: logger, runFactory: runFactory, externalURL: externalURL,
-		resultSlots: make(chan struct{}, DefaultResultReadConcurrency)}
+		resultSlots: make(chan struct{}, resultReadConcurrency)}
 }
 
 // presentRun is the single place the run presentation options are decided, so

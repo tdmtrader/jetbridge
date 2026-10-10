@@ -74,21 +74,6 @@ var _ = Describe("Retiring legacy_v1 Runs", func() {
 		Expect(count(`SELECT count(*) FROM pipelines WHERE id=1`)).To(Equal(1), "the template survives")
 	})
 
-	It("admits only the v2 class afterwards, with no default to fall back on", func() {
-		_, err := database.Exec(`ALTER TABLE pipeline_runs DISABLE TRIGGER ALL`)
-		Expect(err).NotTo(HaveOccurred())
-		defer func() {
-			_, err := database.Exec(`ALTER TABLE pipeline_runs ENABLE TRIGGER ALL`)
-			Expect(err).NotTo(HaveOccurred())
-		}()
-		_, err = database.Exec(`INSERT INTO pipeline_runs(id,template_pipeline_id,number,params,config_hash,status,created_by,run_contract_version,activation_epoch)
-			VALUES (30,1,3,'{}','h','running','owner','legacy_v1',NULL)`)
-		Expect(err).To(MatchError(ContainSubstring("pipeline_run_birth_contract")))
-		_, err = database.Exec(`INSERT INTO pipeline_runs(id,template_pipeline_id,number,params,config_hash,status,created_by,activation_epoch)
-			VALUES (30,1,3,'{}','h','running','owner',1)`)
-		Expect(err).To(MatchError(ContainSubstring("run_contract_version")), "a Run must name its class")
-	})
-
 	It("rolls back the schema only: the retired Runs are not restored", func() {
 		Expect(database.Close()).To(Succeed())
 		var err error

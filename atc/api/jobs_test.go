@@ -316,7 +316,7 @@ func createReclaimableJobsAPIRun(fixture *jobsAPIFixture) (db.Pipeline, db.Pipel
 	Expect(err).NotTo(HaveOccurred())
 	_, err = fixture.Real.Conn.Exec(`UPDATE builds SET status = 'failed', completed = true, end_time = now() WHERE pipeline_run_id = $1`, creation.Run.ID())
 	Expect(err).NotTo(HaveOccurred())
-	_, err = fixture.Real.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID())
+	_, err = fixture.Real.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}' WHERE id = $1`, creation.Run.ID())
 	Expect(err).NotTo(HaveOccurred())
 
 	return payload, creation.Run, job, builds[0]

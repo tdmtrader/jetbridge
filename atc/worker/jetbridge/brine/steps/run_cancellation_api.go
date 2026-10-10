@@ -126,7 +126,7 @@ func RunCancellationAPIDefinitions() []brine.StepDefinition {
 				return RunCancellationAPI{}, err
 			}
 			out := RunCancellationAPI{Auth: auth}
-			out.Start, err = runOutputFixture(rec, res, "current")
+			out.Start, err = runOutputFixture(rec, res)
 			if err != nil {
 				return out, err
 			}

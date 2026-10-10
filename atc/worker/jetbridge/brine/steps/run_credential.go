@@ -108,7 +108,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if err != nil {
 		return err
 	}
-	in.Start.Creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{ActivationEpoch: int64(runActivationEpoch), HangarOutput: true, Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest(ownerSubject), KeyDigest: strings.Repeat("a", 64)}})
+	in.Start.Creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{HangarOutput: true, Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest(ownerSubject), KeyDigest: strings.Repeat("a", 64)}})
 	if err != nil {
 		db.Rollback(tx)
 		return err
@@ -265,8 +265,6 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 		_, err = acceptRunCancellation(in.Start, "owner", nil, false)
 	case "aborted build":
 		_, err = in.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, build.ID())
-	case "activation hold":
-		_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Start.DB.Conn, 0)
 	case "claimed replay":
 		_, err = in.Start.DB.Conn.Exec(`INSERT INTO pipeline_run_credential_handoffs(run_id,execution_id,output_name) VALUES($1,$2,$3)`, change.RunID, string(in.Start.Record.Key.ExecutionID), string(in.Start.Record.Key.Output))
 	}
@@ -363,7 +361,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if count != wantCount {
 		return fmt.Errorf("%s retained %d claims, want %d", mode, count, wantCount)
 	}
-	if want == "waiting" || want == "claimed" || mode == "foreign principal" || mode == "same display name" || mode == "revoked role" || mode == "unknown result" || mode == "cancelled Run" || mode == "aborted build" || mode == "closed execution" || mode == "activation hold" || unpinnedCredentialImage(mode) {
+	if want == "waiting" || want == "claimed" || mode == "foreign principal" || mode == "same display name" || mode == "revoked role" || mode == "unknown result" || mode == "cancelled Run" || mode == "aborted build" || mode == "closed execution" || unpinnedCredentialImage(mode) {
 		if unpinnedCredentialImage(mode) && !errors.Is(err, runs.ErrCredentialDelivery) {
 			return fmt.Errorf("%s was refused for another reason: %v", mode, err)
 		}
@@ -412,12 +410,7 @@ func unpinnedCredentialImage(mode string) bool {
 }
 
 func exerciseCredentialHTTP(in RunOutputRuntime, auth *AuthFixture, port runs.Admitter, mode string, rec *brine.Recorder) error {
-	old := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = 0
-	if mode != "operator hold" {
-		atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-	}
-	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = old; return nil })
+
 	team, _, err := in.Start.DB.TeamFactory.FindTeam("output-start")
 	if err != nil {
 		return err
@@ -450,8 +443,6 @@ func exerciseCredentialHTTP(in RunOutputRuntime, auth *AuthFixture, port runs.Ad
 		}
 		port = runs.NewAdmitter(in.Start.DB.Conn, db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory), in.Start.DB.TeamFactory, display, map[string]string{atc.CreatePipelineRunV2: "owner"})
 		port.SetOutputPlane(true)
-	case "operator hold":
-		want = http.StatusConflict
 	}
 	auth.mu.Lock()
 	auth.RunServices = pipelinerunserver.Services{Admitter: port, HangarOutput: true}

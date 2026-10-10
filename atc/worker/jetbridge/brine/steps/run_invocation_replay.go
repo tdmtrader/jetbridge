@@ -18,7 +18,7 @@ import (
 
 // This describes the missing core seam without substituting its behavior.
 type versionedRunAdmitter interface {
-	AdmitVersionedRun(context.Context, runs.Tx, runs.Admission, int64) (runs.Run, bool, error)
+	AdmitVersionedRun(context.Context, runs.Tx, runs.Admission) (runs.Run, bool, error)
 }
 
 type InvocationReplay struct {
@@ -30,18 +30,14 @@ type InvocationReplay struct {
 	Admission     runs.Admission
 	Case          string
 	First, Second runs.Run
-	// Cause is the earlier Run a caused case links to; zero when none.
-	Cause    int
-	Replayed bool
-	Err      error
+	Replayed      bool
+	Err           error
 }
 
 func RunInvocationReplayDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMapUsing[brine.Empty, InvocationReplay]("a versioned invocation of a parameterized template", []string{"jetbridge-db"}, func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (InvocationReplay, error) {
-			previousGate := atc.PipelineRunActivationEpoch
-			atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-			TrackDisposer(rec, "the invocation creation gate", func() error { atc.PipelineRunActivationEpoch = previousGate; return nil })
+
 			jdb, err := jetbridgeDBFrom(res)
 			if err != nil {
 				return InvocationReplay{}, err
@@ -57,9 +53,6 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 				return in, err
 			}
 			if err = putOutputPlaneInService(jdb); err != nil {
-				return in, err
-			}
-			if _, err = db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(runActivationEpoch)); err != nil {
 				return in, err
 			}
 			display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
@@ -96,16 +89,6 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 					}
 					in.Port = runs.NewAdmitter(in.DB.Conn, db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory), in.DB.TeamFactory, display, map[string]string{atc.CreatePipelineRunV2: role})
 					in.Port.SetOutputPlane(true)
-				case "disabled activation":
-					if _, err := db.ReconcilePipelineRunActivation(context.Background(), in.DB.Conn, 0); err != nil {
-						return in, err
-					}
-				case "an unavailable cause":
-					// Absent, another team's, or later: one refusal, no oracle.
-					missing := 1 << 30
-					in.Admission.CausedByRun = &missing
-				case "an invalid correlation":
-					in.Admission.Correlation = "batch/1"
 				}
 				in.First, in.Replayed, in.Err = in.admit(false)
 				return in, nil
@@ -138,21 +121,6 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 			if in.Case == "a maximum length key" {
 				in.Admission.ContractKey = strings.Repeat("a", 128)
 			}
-			switch in.Case {
-			case "a correlated replay", "a changed correlation":
-				in.Admission.Correlation = "review.batch-1~a"
-			case "a caused replay", "a changed cause":
-				intended := in.Admission
-				in.Admission.ContractKey = "predecessor"
-				predecessor, _, err := in.admit(false)
-				if err != nil {
-					return in, err
-				}
-				in.Admission = intended
-				in.Cause = predecessor.ID
-				in.Admission.CausedByRun = &in.Cause
-				in.Admission.Correlation = "review.batch-1~a"
-			}
 			if in.Case == "a failed first callback" {
 				in.Admission.BeforeCommit = func(tx runs.Tx, run runs.Run) error {
 					var present bool
@@ -177,12 +145,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 				return in, nil
 			}
 			switch in.Case {
-			case "an unchanged replay", "a rolled back first transaction", "a failed first callback", "a maximum length key", "a correlated replay", "a caused replay":
-			case "a changed correlation":
-				in.Admission.Correlation = "review.batch-2"
-			case "a changed cause":
-				moved := in.First.ID
-				in.Admission.CausedByRun = &moved
+			case "an unchanged replay", "a rolled back first transaction", "a failed first callback", "a maximum length key":
 			case "an explicit null":
 				in.Admission.Params = atc.RunParams{"target": nil}
 			case "a replay callback":
@@ -253,24 +216,6 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 					}
 					return nil
 				}
-				if in.Case == "disabled activation" {
-					if !errors.Is(in.Err, atc.ErrRunResultsUnavailable) {
-						return fmt.Errorf("activation hold was bypassed: %v", in.Err)
-					}
-					return nil
-				}
-				if in.Case == "an unavailable cause" {
-					if !errors.Is(in.Err, runs.ErrRunCauseUnavailable) {
-						return fmt.Errorf("unavailable cause was not refused: %v", in.Err)
-					}
-					return nil
-				}
-				if in.Case == "an invalid correlation" {
-					if !errors.Is(in.Err, runs.ErrInvalidCorrelation) {
-						return fmt.Errorf("invalid correlation was not refused: %v", in.Err)
-					}
-					return nil
-				}
 				if in.Case == "no stable principal" || in.Case == "a stronger v2 capability" {
 					if !errors.Is(in.Err, runs.ErrUnauthorized) {
 						return fmt.Errorf("expected unauthorized principal refusal, got %v", in.Err)
@@ -282,11 +227,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 				}
 				return nil
 			}
-			// A caused case admitted its predecessor first.
-			if in.Cause != 0 {
-				count, number = count-1, number-1
-			}
-			if in.Case == "a changed parameter" || in.Case == "an explicitly supplied default" || in.Case == "an explicit null" || in.Case == "revoked team membership" || in.Case == "a changed correlation" || in.Case == "a changed cause" {
+			if in.Case == "a changed parameter" || in.Case == "an explicitly supplied default" || in.Case == "an explicit null" || in.Case == "revoked team membership" {
 				want := "conflict"
 				refused := in.Err != nil && strings.Contains(strings.ToLower(in.Err.Error()), want)
 				if in.Case == "revoked team membership" {
@@ -313,16 +254,12 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 			} else if !in.Replayed || in.First.ID != in.Second.ID || count != 1 || number != 1 {
 				return fmt.Errorf("replay did not preserve the original Run and number")
 			}
-			var target, version, correlation string
-			var cause int
-			if err := in.DB.Conn.QueryRow(`SELECT params->>'target',run_contract_version,coalesce(correlation,''),coalesce(caused_by_run,0) FROM pipeline_runs WHERE id=$1`, in.Second.ID).Scan(&target, &version, &correlation, &cause); err != nil {
+			var target string
+			if err := in.DB.Conn.QueryRow(`SELECT params->>'target' FROM pipeline_runs WHERE id=$1`, in.Second.ID).Scan(&target); err != nil {
 				return err
 			}
-			if target != "original" || version != "v2" {
-				return fmt.Errorf("admission lost its original defaults or v2 contract")
-			}
-			if correlation != in.Admission.Correlation || cause != in.Cause {
-				return fmt.Errorf("Run retained correlation %q and cause %d, want %q and %d", correlation, cause, in.Admission.Correlation, in.Cause)
+			if target != "original" {
+				return fmt.Errorf("admission lost its original defaults")
 			}
 			return nil
 		}),
@@ -341,7 +278,7 @@ func (in InvocationReplay) admit(rollback bool) (runs.Run, bool, error) {
 		return runs.Run{}, false, err
 	}
 	defer tx.Rollback()
-	run, replay, err := port.AdmitVersionedRun(ctx, tx, in.Admission, int64(runActivationEpoch))
+	run, replay, err := port.AdmitVersionedRun(ctx, tx, in.Admission)
 	if err != nil {
 		return run, replay, err
 	}
@@ -353,7 +290,7 @@ func (in InvocationReplay) admit(rollback bool) (runs.Run, bool, error) {
 
 func invalidInvocationCase(value string) bool {
 	switch value {
-	case "an empty key", "an oversized key", "a key containing spaces", "a non-ASCII key", "no stable principal", "a stronger v2 capability", "a weakened v2 capability", "disabled activation", "an unavailable cause", "an invalid correlation":
+	case "an empty key", "an oversized key", "a key containing spaces", "a non-ASCII key", "no stable principal", "a stronger v2 capability", "a weakened v2 capability":
 		return true
 	}
 	return false

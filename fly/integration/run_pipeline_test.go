@@ -15,13 +15,13 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-// The refusal text is atc.ErrPipelineRunCreationDisabled's, in
-// atc/pipeline_run_creation.go. It is written out here rather than imported so
+// The refusal text is db.ErrPipelineRunPaused's, in
+// atc/db/pipeline_run_errors.go. It is written out here rather than imported so
 // that this spec describes a server's answer rather than sharing the server's
 // own constant; keep the two in step.
-const heldRunCreation = "durable run creation is disabled on this server; an operator must enable it before runs can be created"
+const pausedRunCreation = "template pipeline is paused"
 
-var _ = Describe("run-pipeline against a server holding run creation", func() {
+var _ = Describe("run-pipeline against a paused template", func() {
 	var createPath, runsPath string
 
 	BeforeEach(func() {
@@ -45,7 +45,7 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", createPath),
 					ghttp.RespondWithJSONEncoded(http.StatusConflict, atc.SaveConfigResponse{
-						Errors: []string{heldRunCreation},
+						Errors: []string{pausedRunCreation},
 					}),
 				),
 			)
@@ -61,7 +61,7 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 			Expect(sess.ExitCode()).NotTo(Equal(0))
 
 			output := string(sess.Out.Contents()) + string(sess.Err.Contents())
-			Expect(output).To(ContainSubstring(heldRunCreation))
+			Expect(output).To(ContainSubstring(pausedRunCreation))
 
 			// The two shapes that mean the client did not recognise the
 			// refusal: the generic wrapper, and the raw body inside it.
@@ -79,7 +79,7 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", createPath),
 					ghttp.RespondWithJSONEncoded(http.StatusNotImplemented, atc.SaveConfigResponse{
-						Errors: []string{heldRunCreation},
+						Errors: []string{pausedRunCreation},
 					}),
 				),
 			)
@@ -114,7 +114,6 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 						CreatedAt:        time.Unix(1000000, 0),
 						CompletedAt:      &completed,
 						Reclaimed:        true,
-						ContractVersion:  atc.RunContractV2,
 						AdmissionOutcome: atc.RunAdmissionReplayed,
 					}, http.Header{"Idempotency-Replayed": []string{"true"}}),
 				),
@@ -136,7 +135,7 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 		})
 	})
 
-	Context("when the gate is closed but runs already exist", func() {
+	Context("when the template is paused but runs already exist", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
@@ -154,7 +153,7 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 			)
 		})
 
-		It("still lists them: the gate withholds a capability, not history", func() {
+		It("still lists retained history", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "runs", "-p", "some-template")
 
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)

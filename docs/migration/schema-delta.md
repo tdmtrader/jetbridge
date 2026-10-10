@@ -188,3 +188,23 @@ worker cache no longer counts build containers. Worker INSERT/UPDATE/DELETE
 notifications, container data and the pod-derived `ActiveContainers` API field
 remain. The down migration restores the container trigger and its bare
 `container_events_channel` notification function without changing data.
+
+## 1789793159 — simplify_run_contract (C7)
+
+Drops the Run activation table and monotonic trigger, the birth and causation
+triggers/constraints, and `pipeline_runs.activation_epoch`,
+`run_contract_version`, `caused_by_run`, `correlation` and
+`terminal_observation_version`. Terminal shape and immutability remain, as do
+the deferred exact-result/claim consistency checks. Reclamation history and
+`reclaim_retry_after` remain unchanged.
+
+The migration locks and refuses a nonempty `pipeline_run_invocations` table
+before changing schema: removing fields changes the attested documents. It
+does not rewrite guarded invocation rows. Stop all web nodes, reconcile
+uncertain submissions and complete credential handoffs, back up the database,
+then explicitly `TRUNCATE TABLE pipeline_run_invocations;` if it is nonempty.
+Retries with old keys can then create new Runs; old credential handoffs lose
+their invocation-owner evidence, and composition callers must not replay old
+calls. See [the rollout procedure](../../deploy/chart/MIGRATING.md#c7-run-contract-simplification).
+The down migration restores empty shapes, refusing existing Run headers; use
+the backup to restore discarded evidence rather than inventing birth data.

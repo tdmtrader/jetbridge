@@ -80,7 +80,7 @@ var _ = Describe("two admissions of the same call, racing on two connections", f
 				Admitter:   newAdmitter(conn),
 				opened:     gates[i],
 				peerOpened: gates[1-i],
-			}, testEpoch)
+			})
 		}
 	})
 

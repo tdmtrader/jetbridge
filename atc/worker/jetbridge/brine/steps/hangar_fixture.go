@@ -172,16 +172,7 @@ func hangarOutputDaemonFlags(endpoint, bucket, nodeUID, terminations, keyFile st
 	}
 }
 
-// The identities the fixture mints. They are constants rather than parameters
-// because no scenario may choose one: a Run activation epoch a feature file
-// could set would be a feature file choosing which contract admitted it.
-const (
-	hangarNodeUID = "brine-node-1"
-	// runActivationEpoch is the Run contract's activation epoch every Run
-	// this fixture admits is born under. It is the Run's, not Hangar's: the
-	// output plane has no generation of its own.
-	runActivationEpoch = uint64(7)
-)
+const hangarNodeUID = "brine-node-1"
 
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
 // bucket, mints the mTLS material every Hangar route requires, and starts the

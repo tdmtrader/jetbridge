@@ -70,9 +70,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Epoch is the Run activation epoch the platform speaks for.
-const Epoch = 7
-
 // Pin is the one credential worker image the platform delivers credentials
 // into. A template's credential-receiving producer declares
 // rootfs_uri docker:///<Pin>.
@@ -191,13 +188,6 @@ func start(postmaster *postgresrunner.Runner) (p *Platform, stop func(), err err
 
 	p = &Platform{conn: conn, locks: locks, teams: db.NewTeamFactory(conn, locks),
 		runs: db.NewPipelineRunFactory(conn, locks), builds: db.NewBuildFactory(conn, locks, 0, time.Hour), refusedTeams: map[string]bool{}}
-
-	previous := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = Epoch
-	cleanups = append(cleanups, func() { atc.PipelineRunActivationEpoch = previous })
-	if _, err = db.ReconcilePipelineRunActivation(context.Background(), conn, Epoch); err != nil {
-		return nil, stop, err
-	}
 
 	p.node, err = startNode(conn)
 	if err != nil {

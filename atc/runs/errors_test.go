@@ -35,8 +35,7 @@ var _ = Describe("IsRefusal", func() {
 		// Not the caller's mistake, but a refusal all the same: no retry
 		// opens the operator's gate, and the person reading the build's
 		// stderr is the one who can go and ask for it to be opened.
-		Entry("the operator's hold on run creation", atc.ErrPipelineRunCreationDisabled),
-		Entry("versioned admission not activated", runs.ErrVersionedAdmissionUnavailable),
+		Entry("Hangar output unavailable", atc.ErrRunResultsUnavailable),
 		Entry("changed intent under the same invocation key", runs.ErrInvocationConflict),
 		Entry("no such template", runs.ErrTemplateNotFound),
 		Entry("not a template", runs.ErrNotATemplate),

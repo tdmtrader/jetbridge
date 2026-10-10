@@ -42,14 +42,11 @@ type Result struct {
 // Service admits child runs through the port.
 type Service struct {
 	admitter runs.Admitter
-	epoch    int64
 }
 
-// NewService builds the service over the port and the activation epoch this
-// server speaks for. Zero is a server that cannot admit versioned Runs; every
-// admission is then refused with runs.ErrVersionedAdmissionUnavailable.
-func NewService(admitter runs.Admitter, epoch int64) *Service {
-	return &Service{admitter: admitter, epoch: epoch}
+// NewService builds the service over the admission port.
+func NewService(admitter runs.Admitter) *Service {
+	return &Service{admitter: admitter}
 }
 
 // Admit admits a child run for the request's call identity, or re-attaches to
@@ -79,7 +76,7 @@ func (s *Service) Admit(ctx context.Context, req Request) (Result, error) {
 		Principal: req.Principal,
 
 		ContractKey: ContractKey(req.BuildID, req.PlanID),
-	}, s.epoch)
+	})
 	if err != nil {
 		return Result{}, err
 	}

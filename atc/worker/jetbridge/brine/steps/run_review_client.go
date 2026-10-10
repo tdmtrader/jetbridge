@@ -166,7 +166,7 @@ func checkReviewClientStatus(ctx context.Context, in RunResultPublication, got a
 	if err != nil {
 		return err
 	}
-	if got.ID != in.Start.Creation.Run.ID() || got.Number != in.Start.Creation.Run.Number() || got.ContractVersion != atc.RunContractV2 {
+	if got.ID != in.Start.Creation.Run.ID() || got.Number != in.Start.Creation.Run.Number() {
 		return fmt.Errorf("client lost the durable Run identity")
 	}
 	if !terminal {
@@ -175,7 +175,7 @@ func checkReviewClientStatus(ctx context.Context, in RunResultPublication, got a
 		}
 		return nil
 	}
-	if got.Terminal == nil || got.Status != retained.Status || got.Terminal.Version != retained.Version || !got.Terminal.CompletedAt.Equal(retained.CompletedAt) || !reflect.DeepEqual(got.Terminal.Results, retained.Results) {
+	if got.Terminal == nil || got.Status != retained.Status || !got.Terminal.CompletedAt.Equal(retained.CompletedAt) || !reflect.DeepEqual(got.Terminal.Results, retained.Results) {
 		return fmt.Errorf("client lost the retained terminal observation")
 	}
 	return nil

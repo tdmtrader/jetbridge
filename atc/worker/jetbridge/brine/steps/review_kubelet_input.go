@@ -20,9 +20,7 @@ import (
 // and generated initializer. Root inside the task must still be unable to
 // change the mounted tree; a Pod spec's readOnly bit alone is not this proof.
 func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor jetbridge.PodExecutor, rec *brine.Recorder) error {
-	previousGate := atc.PipelineRunActivationEpoch
-	atc.PipelineRunActivationEpoch = int64(runActivationEpoch)
-	defer func() { atc.PipelineRunActivationEpoch = previousGate }()
+
 	jdb := in.Start.DB
 	factory := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory)
 	source, signer, config, err := configureRunReadPlaneForClient(RunResultPublication{Start: in.Start}, rec, in.Client, in.Config)
@@ -73,7 +71,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		return err
 	}
 	defer tx.Rollback()
-	run, _, err := admitter.AdmitVersionedRun(ctx, tx, runs.Admission{Template: ref, Principal: principal, ContractKey: "live-read-only", Inputs: map[string]atc.RunInputSource{"change": input}}, int64(runActivationEpoch))
+	run, _, err := admitter.AdmitVersionedRun(ctx, tx, runs.Admission{Template: ref, Principal: principal, ContractKey: "live-read-only", Inputs: map[string]atc.RunInputSource{"change": input}})
 	if err != nil {
 		return err
 	}

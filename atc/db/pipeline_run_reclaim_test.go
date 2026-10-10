@@ -52,7 +52,7 @@ func newReclaimRun(template db.Pipeline, completedAt *time.Time) reclaimFixture 
 	if completedAt != nil {
 		_, err = dbConn.Exec(`UPDATE builds SET status = 'succeeded', completed = true, end_time = $2 WHERE id = $1`, build.ID(), *completedAt)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = $2, result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID(), *completedAt)
+		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = $2, result_manifest = '{}' WHERE id = $1`, creation.Run.ID(), *completedAt)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec(`UPDATE pipelines SET paused = true, paused_by = 'run-completed', paused_at = $2 WHERE id = $1`, payload.ID(), *completedAt)
 		Expect(err).NotTo(HaveOccurred())
@@ -79,7 +79,7 @@ func reclaimPayloadForTest(template db.Pipeline, run db.PipelineRun) {
 	Expect(err).NotTo(HaveOccurred())
 	_, err = dbConn.Exec(`
 		UPDATE pipeline_runs
-		SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture'
+		SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}'
 		WHERE id = $1
 	`, run.ID())
 	Expect(err).NotTo(HaveOccurred())
@@ -698,7 +698,7 @@ var _ = Describe("team purge with pipeline runs", func() {
 			if completed {
 				_, err = dbConn.Exec(`UPDATE builds SET status = 'succeeded', completed = true, end_time = now() WHERE id = $1`, build.ID())
 				Expect(err).NotTo(HaveOccurred())
-				_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID())
+				_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now(), result_manifest = '{}' WHERE id = $1`, creation.Run.ID())
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return creation.Run, payload, build

@@ -40,7 +40,6 @@ var _ = Describe("PipelineRunFactory", func() {
 		defer tx.Rollback()
 
 		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"value": "one"}}, "creator", db.RunCreationOpts{
-			ActivationEpoch: 1,
 			BeforeCommit: func(callbackTx db.Tx, got db.RunCreation) error {
 				var headers, payloads, builds, nextBuildID, payloadID, payloadRunID int
 				var payloadTemplate bool
@@ -193,7 +192,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})
+		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{})
 		Expect(err).To(MatchError(ContainSubstring("required")))
 		var number, runs int
 		Expect(tx.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", template.ID()).Scan(&number)).To(Succeed())
@@ -208,7 +207,7 @@ var _ = Describe("PipelineRunFactory", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
-			_, err = factory.CreateRunInTx(context.Background(), tx, pipeline, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})
+			_, err = factory.CreateRunInTx(context.Background(), tx, pipeline, db.RunParams{}, "creator", db.RunCreationOpts{})
 			Expect(err).To(MatchError(expected))
 
 			var number, runs int
@@ -358,7 +357,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"authoritative": "value"}}, "creator", db.RunCreationOpts{ActivationEpoch: 1, Config: &override})
+		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"authoritative": "value"}}, "creator", db.RunCreationOpts{Config: &override})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Config.Jobs[0].Name).To(Equal("override-value"))
 		Expect(creation.EntryJobs).To(Equal([]string{"override-value"}))
@@ -499,7 +498,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, BeforeCommit: func(db.Tx, db.RunCreation) error { return fmt.Errorf("stop") }})
+		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{BeforeCommit: func(db.Tx, db.RunCreation) error { return fmt.Errorf("stop") }})
 		Expect(err).To(MatchError("stop"))
 		var visibleRows, one int
 		Expect(tx.QueryRow("SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1", template.ID()).Scan(&visibleRows)).To(Succeed())

@@ -9,8 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// The declaration can be saved and reviewed while the joint Run/cancellation/
-// Hangar activation checkpoint is held. It must never fall back to a legacy Run.
 var ErrRunResultPending = errors.New("Run result is not yet terminal")
 
 var ErrRunResultsUnavailable = errors.New("Run result execution is not activated")

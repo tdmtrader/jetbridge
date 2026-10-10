@@ -95,7 +95,7 @@ var _ = Describe("a build acting for itself", func() {
 		Expect(err).NotTo(HaveOccurred())
 		samePipeline, replayed, err := admitter.AdmitVersionedRun(ctx, tx, runs.Admission{
 			Template: templateRef, Principal: runs.Principal{Build: buildPrincipalFor(sibling)}, ContractKey: contractKey,
-		}, testEpoch)
+		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		Expect(replayed).To(BeTrue())

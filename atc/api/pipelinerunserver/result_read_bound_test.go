@@ -68,7 +68,7 @@ func TestResultReadsAreBoundedAndRefusedWhenSaturated(t *testing.T) {
 	}
 	results := &gatedResults{archive: archive, release: make(chan struct{})}
 	server := NewServer(lagertest.NewTestLogger("test"), completedRuns{}, "")
-	server.SetServices(Services{Results: results, ResultReadConcurrency: 2})
+	server.SetServices(Services{Results: results})
 	handler := server.GetPipelineRunResult(template{})
 
 	api := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), atc.GetPipelineRunResult, handler, memberAccess{}, silentAuditor{}, nil))
@@ -132,14 +132,14 @@ func TestResultReadsAreBoundedAndRefusedWhenSaturated(t *testing.T) {
 	}
 }
 
-func TestResultReadBoundDefaultsWhenUnset(t *testing.T) {
+func TestResultReadBoundSurvivesServiceUpdates(t *testing.T) {
 	server := NewServer(lagertest.NewTestLogger("test"), completedRuns{}, "")
 	server.SetServices(Services{})
-	if got := cap(server.resultSlots); got != DefaultResultReadConcurrency {
-		t.Fatalf("unset bound = %d slots, want the default %d", got, DefaultResultReadConcurrency)
+	if got := cap(server.resultSlots); got != resultReadConcurrency {
+		t.Fatalf("fixed bound = %d slots, want %d", got, resultReadConcurrency)
 	}
 	server.SetResultReader(&gatedResults{})
-	if got := cap(server.resultSlots); got != DefaultResultReadConcurrency {
+	if got := cap(server.resultSlots); got != resultReadConcurrency {
 		t.Fatalf("SetResultReader dropped the bound: %d slots", got)
 	}
 }

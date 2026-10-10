@@ -104,20 +104,18 @@ type displayName struct{}
 
 func (displayName) DisplayUserId(_, _, username, _, _ string) string { return "display:" + username }
 
-// createV2Run opens one Run contract activation epoch and admits a v2 Run of
+// createV2Run admits a Run of
 // template under it, which is the only contract cancellation accepts.
 func createV2Run(database *realDB, template db.Pipeline) db.PipelineRun {
 	GinkgoHelper()
 	ctx := context.Background()
 	_, err := db.SetHangarEnabled(ctx, database.Conn, true)
 	Expect(err).NotTo(HaveOccurred())
-	_, err = database.Conn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
-	Expect(err).NotTo(HaveOccurred())
 
 	tx, err := database.Conn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	creation, err := db.NewPipelineRunFactory(database.Conn, database.LockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})
+	creation, err := db.NewPipelineRunFactory(database.Conn, database.LockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	return creation.Run
