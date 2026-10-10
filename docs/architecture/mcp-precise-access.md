@@ -5,10 +5,9 @@ tool-shape benchmark. This replaces the earlier flat-tool default and the propos
 additional shape-selection round. The selected surface remains ordinary MCP
 tools with exact operation-discriminated input schemas.
 
-This document records the selected contract, implemented on the unmerged precise
-MCP branch. Deployment is separate; the production endpoint still exposes the
-earlier `pipeline_status` slice until rollout. The benchmark and its original
-scores remain unchanged.
+This document records the current code contract. Deployment is separate. The
+benchmark and its original scores remain historical evidence, not conformance
+results for the reduced discovery contract.
 
 ## Executable tools
 
@@ -31,7 +30,7 @@ have additional distinctions. Pause and unpause may have different custom roles
 and must be pruned independently.
 
 **Tool listing establishes operation eligibility, not authority over every possible
-argument.** Team/pipeline/instance, build-output visibility, container kind, payload
+argument.** Team/pipeline/instance, build-output visibility, payload
 policy and operation preconditions remain execution checks. There is no existing
 targetless external-policy entitlement API. Do not probe policy with empty targets
 or interpret an advisory denial as a blocking rule.
@@ -47,10 +46,10 @@ consent, and the server diagnostic cannot promise the client will allow a call.
 
 ## One informational tool
 
-Add **`capabilities_explain`**. Its purpose is to explain capabilities, including
-ones absent from the executable catalog; an `include_unavailable` switch adds no
-useful distinction. It cannot execute operations and does not return their argument
-schemas. It supports browsing one resource family and optionally an exact operation.
+**`capabilities_explain`** explains registered operations, including those absent
+from the connection's executable catalog. It cannot execute operations and does
+not return their argument schemas. It supports browsing one resource family and
+optionally an exact operation.
 
 ```json
 {
@@ -59,12 +58,8 @@ schemas. It supports browsing one resource family and optionally an exact operat
   "inputSchema": {
     "type": "object",
     "properties": {
-      "resource": {
-        "type": "string",
-        "enum": ["pipeline", "build", "job", "resource", "container", "team", "server", "worker"]
-      },
-      "operation": {"type": "string", "minLength": 1},
-      "cursor": {"type": "string", "minLength": 1}
+      "resource": {"type": "string", "minLength": 1, "maxLength": 256},
+      "operation": {"type": "string", "minLength": 1, "maxLength": 256}
     },
     "required": ["resource"],
     "additionalProperties": false
@@ -78,12 +73,20 @@ schemas. It supports browsing one resource family and optionally an exact operat
 }
 ```
 
-Return at most 20 compact entries plus an opaque continuation cursor. An unknown
-exact operation yields an explicit unknown-capability result; it must not be
-misrepresented as a known but unimplemented feature. An exact ID inconsistent
-with the selected resource is an argument error. No semantic search service is
-required. Brief server instructions point agents here when a requested action
-is absent; ordinary actions continue directly through their resource tool.
+Return all matching registered operations in `{items: [...]}`, without a cursor.
+An absent exact operation or resource returns an `isError` tool result with
+`NO_REGISTERED_OPERATION: no registered MCP operation`. This does not claim that
+the CLI/API lacks the action, and additional consent cannot register it. An exact
+registered ID inconsistent with the selected resource is an argument error.
+Guessed calls to absent operations or resource tools (including `container`,
+`resource`, `team` and `server`) return the same clear tool error, never an OAuth
+consent challenge. Ordinary actions continue directly through their resource tool.
+
+The C10 cut reduces the registry from 20 definitions (11 executable and nine
+metadata-only entries) to 11 executable operations: six pipeline, four build and
+one job. It removes discovery's base64 **offset** cursor, whose 20-entry limit
+exceeded every resource's inventory. The executable list/log tools retain their
+pagination. Retired IDs are no longer valid disabled-operation restrictions.
 
 This diagnostic is available to **every valid authenticated MCP grant**, including
 write-only, hijack-only and admin-only grants. It reports generic product metadata
@@ -92,7 +95,7 @@ consent and no new consent category. Revoked or invalid grants cannot use it.
 
 ## Example: permission could enable an implemented action
 
-Illustrative response after `pipeline_config_set` has an MCP adapter:
+Illustrative response for `pipeline_config_set`:
 
 ```text
 capabilities_explain({resource: "pipeline", operation: "pipeline_config_set"})
@@ -109,15 +112,12 @@ capabilities_explain({resource: "pipeline", operation: "pipeline_config_set"})
     "account_access": "target_check_required",
     "next_step": "request_new_consent",
     "explanation": "Ask the user whether to authorize pipeline writes for this connection. This may enable the operation on permitted targets; it does not grant a team role."
-  }],
-  "next_cursor": null
+  }]
 }
 ```
 
-For the currently deployed single-tool server, config-set instead reports
-`mcp_support: "not_implemented"` and `next_step: "stop"`. More consent cannot add
-an adapter. Support always means **MCP support in this deployment**, even when the
-CLI or API already performs the action.
+Support means **MCP support in this deployment**. The registry contains only
+operations with adapters; it does not inventory other CLI/API actions.
 
 | Situation | Explanation and next step |
 |---|---|
@@ -125,8 +125,7 @@ CLI or API already performs the action.
 | Implemented, provable account restriction | `account_access: ineligible`; `contact_admin`. Additional consent alone will not help. Report missing consent too if both blockers exist. |
 | Implemented, consent present, remaining checks depend on target | `account_access: target_check_required`; `use_available_tool`, or `refresh_catalog` if the client retains an older schema. |
 | Implemented but administratively disabled | `mcp_support: disabled`; explain operator action, without suggesting broader consent. |
-| Known capability has no MCP adapter | `mcp_support: not_implemented`; `stop`. The explanation may identify a documented CLI/API alternative, without automatically switching credentials/surfaces. |
-| Unknown capability | `mcp_support: unknown`; ask for clarification rather than declaring the product incapable. |
+| No registered operation matches | `NO_REGISTERED_OPERATION` tool error. No consent request and no claim of product impossibility. |
 | Access data cannot be evaluated | Return an ordinary temporary diagnostic error. Fail closed for affected executable branches; do not turn an outage into a permanent permission or support claim. |
 
 `account_access` normally remains `target_check_required`; do not advertise a
@@ -154,9 +153,9 @@ be evaluated later; the current stateless transport does not require them.
 
 ## Shared implementation and checks
 
-Use one operation definition for resource family, stable ID, public title,
-input/output schema, enabled MCP/API/CLI bindings, exact action and consent,
-authorization kind, and effect/retry semantics. Generate the executable union and
+Use one operation definition for resource family, stable ID, description,
+input/output schemas, exact API action and consent, and effect/retry semantics.
+Every definition must bind to a complete adapter. Generate the executable union and
 capability explanations from it. Reuse the role hierarchy and policy enforcement
 already owned by the API; do not build a second policy interpreter for discovery.
 
@@ -166,12 +165,12 @@ Implementation order:
    shipped `pipeline_status` signature while introducing a grouped read slice.
 2. Add branch pruning and the metadata diagnostic using the same authenticated
    context. Check missing scope, known role denial, both blockers, admin-only and
-   write-only grants, public reads, empty groups and unknown/unimplemented actions.
+   write-only grants, public reads, empty groups and absent operations.
 3. Add a small set of precise write branches through the existing API, preserving
    independent pause/unpause policy. Check stale schemas, revocation between list
    and call, and indistinguishable hidden/nonexistent targets.
-4. Repeat the four benchmark scope-diagnosis scenarios on the selected shape with
-   the diagnostic; retain original evidence as a separate cohort. Check one actual
+4. Preserve the historical benchmark scope-diagnosis evidence as a separate cohort;
+   its unsupported/unknown taxonomy is not current server conformance. Check one actual
    client displays/loads the pruned union and re-lists after reauthorization.
 
 The repository audit identifies these existing integration points: AccessFactory

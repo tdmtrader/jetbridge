@@ -32,19 +32,13 @@ func TestBoundRegistryAndAmbiguousMutationOutcomes(t *testing.T) {
 		}
 	}
 	bound := boundOperations(http.NotFoundHandler())
-	count := 0
-	for _, op := range bound {
-		if op.Arguments != nil {
-			count++
-			if !op.Implemented() {
-				t.Errorf("declared first-slice adapter missing: %s", op.ID)
-			}
-		} else if op.Implemented() {
-			t.Errorf("metadata became executable: %s", op.ID)
-		}
-	}
-	if count == 0 {
+	if len(bound) == 0 {
 		t.Fatal("empty operation coverage")
+	}
+	for _, op := range bound {
+		if op.handler == nil || op.Arguments == nil || op.Result == nil {
+			t.Errorf("incomplete bound operation: %s", op.ID)
+		}
 	}
 }
 func TestResultBudgetIncludesEscapingAndBothContentForms(t *testing.T) {

@@ -49,7 +49,12 @@ caller regardless of consent. It is a deployment restriction, never an
 authority grant: a disabled operation is absent from the catalog, answers
 `DISABLED`, and `capabilities_explain` says more consent will not enable it.
 The web node refuses to start on an id no operation answers to, aliases
-included -- disable `pipeline_get`, not `pipeline_status`.
+included -- disable `pipeline_get`, not `pipeline_status`. Retired IDs are invalid
+restrictions too: remove `resource_check`, `resource_pin`, `resource_unpin`,
+`pipeline_run_create`, `build_create`, `container_exec`, `team_set`, `team_delete`
+and `server_log_level_set` from `--mcp-disable-operation` or chart
+`mcp.disabledOperations` before upgrading. `mcp.clients` and
+`mcp.disabledOperations` remain supported chart values.
 
 Example public-client configuration:
 
@@ -101,8 +106,11 @@ by the connection's exact consent and provable account restrictions. Empty group
 are omitted. Listing never grants access to every target: public pipeline/build
 metadata does not imply access to private job output.
 
-Resource, run, container and administration operations remain descriptive only;
-additional consent cannot install their missing adapters. Per-team consent selection is deferred: grants apply to the user's
+The registry contains only executable operations; it has no descriptive entries
+for resource checks/pins, run creation, one-off builds, container execution or
+administration. Queries for absent operations return `NO_REGISTERED_OPERATION`,
+without implying that the corresponding CLI/API action is unavailable. Additional
+consent cannot add an operation. Per-team consent selection is deferred: grants apply to the user's
 current accessible teams and public data. The existing API evaluates local
 team/custom-role/policy restrictions per call, subject to its existing team cache.
 External groups are updated from Dex when MCP tokens renew.
@@ -244,10 +252,21 @@ Build IDs are numeric. No operation invokes another consent category implicitly.
 Successful grouped calls return `{operation,result}` as both structured content
 and compact text. Errors use `isError` and bounded text. A well-formed, implemented
 call without consent receives HTTP 403 with `insufficient_scope`; malformed,
-wrong-resource and unsupported calls do not invite extra consent. The diagnostic
-separates `request_new_consent`, `contact_admin`, `contact_operator`, unsupported
-and unknown capabilities. Refresh cannot broaden consent. An access-service outage
-is a temporary error, not an impossibility or a reason to request privileges.
+wrong-resource and absent-operation calls do not invite extra consent. Guessed calls
+to unregistered resource tools, including `container`, `resource`, `team` and
+`server`, return an `isError` result with `NO_REGISTERED_OPERATION: no registered
+MCP operation`.
+
+The diagnostic returns `{items: [...]}` for all matching registered operations;
+it accepts no cursor and returns no `next_cursor`. An absent ID or resource returns
+the same explicit tool error, never an empty success. Registered operations retain
+`request_new_consent`, `contact_admin` and `contact_operator` recovery. If both
+account authority and consent are missing, it reports both and prioritizes
+`contact_admin`. Disabled operations suggest operator action without requesting
+broader consent. An available branch still requires target/role/policy checks at
+execution; discovery is not authorization. Refresh cannot broaden consent. An
+access-service outage is a temporary error, not an impossibility or a reason to
+request privileges. Absence and disabled-operation diagnostics need no access lookup.
 
 `pipeline_config_set` takes `config_yaml` (at most 128 KiB UTF-8) and `version`.
 Version `"0"` means create only; a positive decimal version means update that exact

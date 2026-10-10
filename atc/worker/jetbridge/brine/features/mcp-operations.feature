@@ -15,4 +15,4 @@ Feature: Precise MCP operations preserve application authority
   Scenario: Metadata-only diagnosis and guessed calls with an admin-only grant
     Given an authentication server with a private pipeline
     When an MCP client requests "admin" and the user selects "admin"
-    Then precise MCP distinguishes missing consent from unsupported and malformed calls
+    Then precise MCP distinguishes missing consent from absent operations and malformed calls

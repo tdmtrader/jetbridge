@@ -58,4 +58,12 @@ func TestMCPDisableOperationFlag(t *testing.T) {
 	if err := cmd.validateMCPDisabledOperations(); err == nil {
 		t.Fatal("typo accepted; the operation would stay enabled")
 	}
+	for _, id := range []string{"resource_check", "resource_pin", "resource_unpin", "pipeline_run_create", "build_create", "container_exec", "team_set", "team_delete", "server_log_level_set"} {
+		t.Run(id, func(t *testing.T) {
+			cmd := &RunCommand{MCPDisableOperation: []string{id}}
+			if err := cmd.validateMCPDisabledOperations(); err == nil {
+				t.Fatal("retired operation accepted as a deployment restriction")
+			}
+		})
+	}
 }

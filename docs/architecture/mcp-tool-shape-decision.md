@@ -8,8 +8,8 @@ any authenticated grant so absent tools can be distinguished from missing consen
 or account authority. All execution still crosses the authorized API boundary.
 
 This is the owner's selected direction after the local experiment, superseding
-the earlier conventional-catalog starting recommendation. It is implemented on
-the unmerged precise MCP branch, with no deployment change.
+the earlier conventional-catalog starting recommendation. Deployment is separate
+from the code contract.
 
 | Shape | Practical tradeoff | Local evidence |
 | --- | --- | --- |
@@ -23,7 +23,9 @@ There were 32 tasks × 6 shapes = 192 sessions, one trial per cell. Permission i
 was absent from the filtered catalog in four scenarios; 19 strict failures were
 missing-scope explanations, with no checked unauthorized or duplicate effects.
 A separate eight-session precise-diagnostic followup passed all eight, using
-183,758 total tokens. Changed prompts and catalog size prevent a clean A/B claim.
+183,758 total tokens. This is historical evidence for the earlier unsupported/
+unknown taxonomy, not conformance for C10. Changed prompts and catalog size
+prevent a clean A/B claim.
 See the original results (`benchmarks/tool-shapes/baseline/RESULTS.md` in the `precise-mcp-20260915` evidence archive, which is held by the maintainer and not published with this repository (141 files; its `MANIFEST.sha256` hashes each one and itself hashes to `1f01774d208039524db30cc7aee81213c14ea7a8f0d849d53782c7a83f2d9151`)) and
 [followup results](../../benchmarks/tool-shapes/RESULTS.md).
 
@@ -63,8 +65,12 @@ Actual schemas add bounds and are derived from the
 ```
 
 A read-only grant's last call reports missing `pipelines:write` and
-`request_new_consent`, subject to account/target checks. A `container_exec`
-diagnostic reports an absent adapter; more `hijack` consent cannot implement it.
+`request_new_consent`, subject to account/target checks. Discovery returns all
+matching registered operations without pagination. A `container_exec` diagnostic
+or guessed call returns `NO_REGISTERED_OPERATION: no registered MCP operation`,
+without a consent challenge or a claim that the CLI/API lacks the action. Disabled
+operations require operator action; provable account restrictions require account
+authority even when scopes are also missing. Access outages remain temporary errors.
 `admin` implies no other category. Config changes use supplied YAML plus an atomic
 version precondition; trigger and abort retain distinct effect/retry semantics.
 

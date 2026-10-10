@@ -69,7 +69,7 @@ func NewHandler(auth *mcpauth.Server, api http.Handler, options HandlerOptions) 
 				if name == "pipeline_status" && !c.disabled["pipeline_get"] && !auth.RequireScope(w, p, mcpauth.ScopeRead) {
 					return
 				}
-				if op, _, err := decodeOperation(name, params["arguments"], operations); err == nil && op.Implemented() && !c.disabled[op.ID] && !auth.RequireScope(w, p, op.Scope) {
+				if op, _, err := decodeOperation(name, params["arguments"], operations); err == nil && !c.disabled[op.ID] && !auth.RequireScope(w, p, op.Scope) {
 					return
 				}
 			}
@@ -85,7 +85,8 @@ func NewHandler(auth *mcpauth.Server, api http.Handler, options HandlerOptions) 
 		}
 		server := mcpserver.NewProtocolServer()
 		// Intercept calls after SDK protocol decoding, including groups whose last
-		// branch was pruned. Do not register a hidden executable tool to do this.
+		// branch was pruned or whose name is unregistered. Do not register a hidden
+		// executable tool to do this.
 		server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
 			return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
 				if method == "tools/call" {
@@ -93,10 +94,8 @@ func NewHandler(auth *mcpauth.Server, api http.Handler, options HandlerOptions) 
 						if call.Params.Name == "pipeline_status" && c.disabled["pipeline_get"] {
 							return toolError("DISABLED: this MCP operation is disabled by the operator"), nil
 						}
-						for _, op := range operations {
-							if op.Resource == call.Params.Name {
-								return c.dispatch(ctx, call.Params.Name, call.Params.Arguments)
-							}
+						if call.Params.Name != "capabilities_explain" && call.Params.Name != "pipeline_status" {
+							return c.dispatch(ctx, call.Params.Name, call.Params.Arguments)
 						}
 					}
 				}

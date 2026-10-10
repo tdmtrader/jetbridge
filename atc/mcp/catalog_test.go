@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/concourse/concourse/atc"
@@ -66,7 +67,7 @@ func TestPreciseArgumentsDoNotMixOperations(t *testing.T) {
 	}
 }
 
-func TestCatalogClassifiesEveryDeclaredActionWithoutEnablingIt(t *testing.T) {
+func TestCatalogDefinesEveryExecutableOperation(t *testing.T) {
 	ops := product.Operations()
 	if len(ops) == 0 {
 		t.Fatal("empty registry")
@@ -83,18 +84,11 @@ func TestCatalogClassifiesEveryDeclaredActionWithoutEnablingIt(t *testing.T) {
 		if _, known := auth.AuthorizationKindForAction(op.Action); !known {
 			t.Errorf("unknown authority for %s", op.ID)
 		}
-		scope, known := product.ScopeForAction(op.Action)
-		if !known || scope == "" || scope != op.Scope {
-			t.Errorf("scope drift for %s", op.ID)
+		if !slices.ContainsFunc(mcpauth.Scopes, func(scope mcpauth.Scope) bool { return scope.Name == op.Scope }) {
+			t.Errorf("unknown scope for %s: %s", op.ID, op.Scope)
 		}
-		if op.Implemented() {
-			t.Errorf("%s advertises an adapter not yet implemented", op.ID)
-		}
-		if op.Arguments == nil {
-			continue
-		}
-		if op.Result == nil {
-			t.Errorf("missing result schema for %s", op.ID)
+		if op.Arguments == nil || op.Result == nil {
+			t.Fatalf("missing schema for %s", op.ID)
 		}
 		if _, err := product.GroupInputSchema([]product.Operation{op}).Resolve(nil); err != nil {
 			t.Errorf("%s input: %v", op.ID, err)
@@ -103,12 +97,6 @@ func TestCatalogClassifiesEveryDeclaredActionWithoutEnablingIt(t *testing.T) {
 			t.Errorf("%s output: %v", op.ID, err)
 		}
 	}
-	if _, known := product.ScopeForAction("arbitrary-new-action"); known {
-		t.Fatal("unclassified action allowed")
-	}
-	if product.AllowsAction(mcpauth.Principal{Scopes: []string{mcpauth.ScopeAdmin}}, atc.SaveConfig) {
-		t.Fatal("admin consent became a wildcard")
-	}
 	if op := operation(t, "builds_list"); op.Action != atc.ListPipelineBuilds {
 		t.Fatal("build listing uses unsafe or differently authorized route")
 	}
@@ -116,23 +104,19 @@ func TestCatalogClassifiesEveryDeclaredActionWithoutEnablingIt(t *testing.T) {
 
 func TestOperationAuthoritiesStayIndependent(t *testing.T) {
 	for id, scope := range map[string]string{
-		"pipeline_get":         mcpauth.ScopeRead,
-		"pipeline_config_set":  mcpauth.ScopePipelines,
-		"pipeline_pause":       mcpauth.ScopePipelines,
-		"pipeline_unpause":     mcpauth.ScopePipelines,
-		"job_trigger":          mcpauth.ScopeBuilds,
-		"build_abort":          mcpauth.ScopeBuilds,
-		"pipeline_run_create":  mcpauth.ScopePipelines,
-		"build_create":         mcpauth.ScopePipelines,
-		"container_exec":       mcpauth.ScopeHijack,
-		"server_log_level_set": mcpauth.ScopeAdmin,
+		"pipeline_get":        mcpauth.ScopeRead,
+		"pipeline_config_set": mcpauth.ScopePipelines,
+		"pipeline_pause":      mcpauth.ScopePipelines,
+		"pipeline_unpause":    mcpauth.ScopePipelines,
+		"job_trigger":         mcpauth.ScopeBuilds,
+		"build_abort":         mcpauth.ScopeBuilds,
 	} {
 		op := operation(t, id)
 		if op.Scope != scope {
 			t.Errorf("%s: got %s, want %s", id, op.Scope, scope)
 		}
 		for _, other := range []string{mcpauth.ScopeRead, mcpauth.ScopePipelines, mcpauth.ScopeBuilds, mcpauth.ScopeHijack, mcpauth.ScopeAdmin} {
-			if product.AllowsAction(mcpauth.Principal{Scopes: []string{other}}, op.Action) != (scope == other) {
+			if (mcpauth.Principal{Scopes: []string{other}}).HasScope(op.Scope) != (scope == other) {
 				t.Errorf("%s leaks authority from %s", id, other)
 			}
 		}

@@ -26,8 +26,7 @@ func (a pipelineArguments) query() url.Values {
 	return atc.PipelineRef{InstanceVars: a.InstanceVars}.QueryParams()
 }
 
-// Bind only complete adapters. Declared schemas and API routes alone never make
-// an operation executable or imply that additional consent would enable it.
+// Bind every registered operation to its API adapter.
 func boundOperations(api http.Handler) []Operation {
 	ops := Operations()
 	for i := range ops {

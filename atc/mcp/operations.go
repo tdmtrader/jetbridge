@@ -10,24 +10,18 @@ import (
 )
 
 // Operation describes one application action. Action is the canonical API
-// authority, even when a future adapter uses an additive HTTP route. Discovery
+// authority, even when an adapter uses an additive HTTP route. Discovery
 // does not replace API role, policy or target checks.
 type Operation struct {
 	ID, Resource, Action, Scope, Description string
 	Arguments, Result                        *jsonschema.Schema
-	Aliases                                  []string
 	ReadOnly, Idempotent                     bool
 	handler                                  mcpserver.ToolHandler
 }
 
-// Implemented reports an actual executable MCP binding, never the existence of
-// an API route, schema or consent label. The shipped compatibility alias is
-// registered separately until the grouped adapters are installed.
-func (o Operation) Implemented() bool { return o.handler != nil }
-
-// Operations returns owned definitions: callers may prune/build schemas without
-// changing another principal's catalog. Nil argument/result schemas are metadata
-// for follow-on capabilities, not generic executable argument bags.
+// Operations returns owned definitions for executable adapters: callers may
+// prune/build schemas without changing another principal's catalog. Handlers
+// are installed by boundOperations.
 func Operations() []Operation {
 	read := func(id, resource, action, description string, args, result *jsonschema.Schema) Operation {
 		return Operation{ID: id, Resource: resource, Action: action, Scope: mcpauth.ScopeRead,
@@ -37,15 +31,10 @@ func Operations() []Operation {
 		return Operation{ID: id, Resource: resource, Action: action, Scope: scope,
 			Description: description, Arguments: args, Result: result, Idempotent: idempotent}
 	}
-	metadata := func(id, resource, action, scope, description string) Operation {
-		return Operation{ID: id, Resource: resource, Action: action, Scope: scope, Description: description}
-	}
-	get := read("pipeline_get", "pipeline", atc.GetPipeline, "Read the exact pipeline instance and scheduling state.", pipelineArgs(nil), pipelineResult())
-	get.Aliases = []string{"pipeline_status"}
 	return []Operation{
 		read("pipelines_list", "pipeline", atc.ListAllPipelines, "Find visible pipelines by optional team and name text. Filters precede live keyset pagination; default 20, maximum 100.",
 			object(map[string]*jsonschema.Schema{"team": nameSchema(), "query": textSchema(256), "limit": integerSchema(1, 100), "cursor": cursorSchema()}), pageResult(pipelineResult())),
-		get,
+		read("pipeline_get", "pipeline", atc.GetPipeline, "Read the exact pipeline instance and scheduling state.", pipelineArgs(nil), pipelineResult()),
 		read("pipeline_config_get", "pipeline", atc.GetConfig, "Read pipeline YAML and its version. Preserves credential references; requires team access even for public pipelines.",
 			pipelineArgs(nil), object(map[string]*jsonschema.Schema{"config_yaml": configSchema(), "version": versionSchema()}, "config_yaml", "version")),
 		write("pipeline_config_set", "pipeline", atc.SaveConfig, mcpauth.ScopePipelines, "Apply supplied YAML with an atomic version precondition. Version 0 creates only; a positive version updates only that version. Never retry a conflict automatically. No implicit read or credential expansion.",
@@ -61,15 +50,6 @@ func Operations() []Operation {
 		write("build_abort", "build", atc.AbortBuild, mcpauth.ScopeBuilds, "Request abort of an exact build. Acceptance does not mean termination has completed.", buildArgs(nil), acceptedResult(), true),
 		write("job_trigger", "job", atc.CreateJobBuild, mcpauth.ScopeBuilds, "Trigger one already configured job. A lost response may follow creation: never retry automatically. Does not upload configuration or read output.",
 			pipelineArgs(map[string]*jsonschema.Schema{"job": nameSchema()}, "job"), object(map[string]*jsonschema.Schema{"build_id": integerSchema(1, 0), "accepted": {Type: "boolean"}}, "build_id", "accepted"), false),
-		metadata("resource_check", "resource", atc.CheckResource, mcpauth.ScopeBuilds, "Request a resource check. Not yet implemented through MCP."),
-		metadata("resource_pin", "resource", atc.PinResourceVersion, mcpauth.ScopePipelines, "Pin a resource version in a pipeline. Not yet implemented through MCP."),
-		metadata("resource_unpin", "resource", atc.UnpinResource, mcpauth.ScopePipelines, "Remove a resource version pin. Not yet implemented through MCP."),
-		metadata("pipeline_run_create", "pipeline", atc.CreatePipelineRunV2, mcpauth.ScopePipelines, "Create a parameterized run that can interpolate configuration. Not yet implemented through MCP."),
-		metadata("build_create", "build", atc.CreateBuild, mcpauth.ScopePipelines, "Create a one-off build with an executable plan. Not yet implemented through MCP."),
-		metadata("container_exec", "container", atc.HijackContainer, mcpauth.ScopeHijack, "Execute in a build container. Container kind and target authorization still apply. Not yet implemented through MCP."),
-		metadata("team_set", "team", atc.SetTeam, mcpauth.ScopeAdmin, "Set team authorization subject to the account's team authority. Not yet implemented through MCP."),
-		metadata("team_delete", "team", atc.DestroyTeam, mcpauth.ScopeAdmin, "Delete a team; requires account-administrator authority. Not yet implemented through MCP."),
-		metadata("server_log_level_set", "server", atc.SetLogLevel, mcpauth.ScopeAdmin, "Change server log level; requires account-administrator authority. Not yet implemented through MCP."),
 	}
 }
 
@@ -78,11 +58,9 @@ func Operations() []Operation {
 func GroupInputSchema(operations []Operation) *jsonschema.Schema {
 	branches := make([]*jsonschema.Schema, 0, len(operations))
 	for _, op := range operations {
-		if op.Arguments != nil {
-			branches = append(branches, object(map[string]*jsonschema.Schema{
-				"operation": {Const: constant(op.ID)}, "arguments": op.Arguments,
-			}, "operation", "arguments"))
-		}
+		branches = append(branches, object(map[string]*jsonschema.Schema{
+			"operation": {Const: constant(op.ID)}, "arguments": op.Arguments,
+		}, "operation", "arguments"))
 	}
 	union := &jsonschema.Schema{OneOf: branches}
 	if len(branches) == 0 {
@@ -96,11 +74,9 @@ func GroupInputSchema(operations []Operation) *jsonschema.Schema {
 func GroupOutputSchema(operations []Operation) *jsonschema.Schema {
 	result := &jsonschema.Schema{Type: "object"}
 	for _, op := range operations {
-		if op.Result != nil {
-			result.OneOf = append(result.OneOf, object(map[string]*jsonschema.Schema{
-				"operation": {Const: constant(op.ID)}, "result": op.Result,
-			}, "operation", "result"))
-		}
+		result.OneOf = append(result.OneOf, object(map[string]*jsonschema.Schema{
+			"operation": {Const: constant(op.ID)}, "result": op.Result,
+		}, "operation", "result"))
 	}
 	if len(result.OneOf) == 0 {
 		result.Not = &jsonschema.Schema{}

@@ -21,7 +21,7 @@ func MCPOperationDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		CheckThat[*MCPScenario]("precise MCP completes the pipeline and build workflow", (*MCPScenario).preciseWorkflow),
 		CheckThat[*MCPScenario]("precise MCP preserves independent and changing authorities", (*MCPScenario).preciseAuthorities),
-		CheckThat[*MCPScenario]("precise MCP distinguishes missing consent from unsupported and malformed calls", (*MCPScenario).preciseDiagnostics),
+		CheckThat[*MCPScenario]("precise MCP distinguishes missing consent from absent operations and malformed calls", (*MCPScenario).preciseDiagnostics),
 	}
 }
 func (s *MCPScenario) preciseSession(ctx context.Context) (*sdk.ClientSession, error) {
@@ -304,13 +304,16 @@ func (s *MCPScenario) preciseDiagnostics() error {
 	if len(list.Tools) != 1 || list.Tools[0].Name != "capabilities_explain" {
 		return errors.New("admin-only grant advertised executable branches")
 	}
-	for _, test := range []struct{ resource, operation, want string }{{"pipeline", "pipeline_config_set", "request_new_consent"}, {"container", "container_exec", "not_implemented"}, {"server", "unknown_action", "unknown"}} {
+	for _, test := range []struct {
+		resource, operation, want string
+		isError                   bool
+	}{{"pipeline", "pipeline_config_set", "request_new_consent", false}, {"container", "container_exec", "NO_REGISTERED_OPERATION", true}, {"server", "unknown_action", "NO_REGISTERED_OPERATION", true}} {
 		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "capabilities_explain", Arguments: map[string]any{"resource": test.resource, "operation": test.operation}})
 		if err != nil {
 			return err
 		}
 		b, _ := json.Marshal(result)
-		if result.IsError || !strings.Contains(string(b), test.want) {
+		if result.IsError != test.isError || !strings.Contains(string(b), test.want) {
 			return fmt.Errorf("diagnostic %s: %s", test.operation, b)
 		}
 	}
@@ -322,7 +325,12 @@ func (s *MCPScenario) preciseDiagnostics() error {
 		{"pipeline", "pipeline_config_set", `{"team":"auth-team","pipeline":"private","instance_vars":{},"version":"0","config_yaml":"jobs: []"}`, 403, "insufficient_scope"},
 		{"pipeline", "pipeline_config_set", `{"team":"auth-team","pipeline":"private","instance_vars":{},"version":"0"}`, 200, "INVALID_ARGUMENTS"},
 		{"build", "pipeline_pause", `{}`, 200, "INVALID_ARGUMENTS"},
-		{"container", "container_exec", `{}`, 200, "NOT_IMPLEMENTED"},
+		{"container", "container_exec", `{}`, 200, "NO_REGISTERED_OPERATION"},
+		{"resource", "resource_check", `{}`, 200, "NO_REGISTERED_OPERATION"},
+		{"team", "team_set", `{}`, 200, "NO_REGISTERED_OPERATION"},
+		{"server", "server_log_level_set", `{}`, 200, "NO_REGISTERED_OPERATION"},
+		{"pipeline", "pipeline_run_create", `{}`, 200, "NO_REGISTERED_OPERATION"},
+		{"build", "build_create", `{}`, 200, "NO_REGISTERED_OPERATION"},
 	} {
 		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":%q,"arguments":{"request":{"operation":%q,"arguments":%s}}}}`, test.resource, test.op, test.args)
 		resp, err := s.mcpRequest(s.Tokens.AccessToken, body)
@@ -332,6 +340,16 @@ func (s *MCPScenario) preciseDiagnostics() error {
 		b, err := authReadBody(resp)
 		if err != nil {
 			return err
+		}
+		if test.status == http.StatusOK {
+			var response struct {
+				Result struct {
+					IsError bool `json:"isError"`
+				} `json:"result"`
+			}
+			if json.Unmarshal(b, &response) != nil || !response.Result.IsError || resp.Header.Get("WWW-Authenticate") != "" {
+				return fmt.Errorf("%s must return a tool error without a consent challenge: %s", test.op, b)
+			}
 		}
 		if resp.StatusCode != test.status || !strings.Contains(string(b)+resp.Header.Get("WWW-Authenticate"), test.want) {
 			return fmt.Errorf("%s HTTP %d: %s", test.op, resp.StatusCode, b)
@@ -358,8 +376,8 @@ func (s *MCPScenario) preciseDiagnostics() error {
 	if !result.IsError || !strings.Contains(string(b), "DISABLED") {
 		return errors.New("disabled alias not handled safely")
 	}
-	// An unrelated access-factory outage must not turn unknown/unsupported
-	// product metadata into a permission request or make it disappear.
+	// An unrelated access-factory outage must not turn absent operations
+	// into a permission request or obscure the absence.
 	unavailable := jetbridgemcp.NewHandler(s.Server, api, jetbridgemcp.HandlerOptions{})
 	s.Fixture.mu.Lock()
 	s.Fixture.extra = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -375,8 +393,9 @@ func (s *MCPScenario) preciseDiagnostics() error {
 		if err != nil {
 			return err
 		}
-		if r.IsError {
-			return errors.New("metadata blocked by unrelated access outage")
+		b, _ := json.Marshal(r)
+		if !r.IsError || !strings.Contains(string(b), "NO_REGISTERED_OPERATION") {
+			return fmt.Errorf("absent operation obscured by unrelated access outage: %s", b)
 		}
 	}
 	r, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "capabilities_explain", Arguments: map[string]any{"resource": "pipeline", "operation": "pipeline_pause"}})

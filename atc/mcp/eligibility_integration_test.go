@@ -71,7 +71,7 @@ var _ = Describe("MCP account eligibility", func() {
 			Expect(eligibility).To(Equal(product.AccountTargetCheckRequired))
 		}
 		principal.Scopes = []string{mcpauth.ScopeAdmin}
-		Expect(product.AllowsAction(principal, atc.SaveConfig)).To(BeFalse())
+		Expect(principal.HasScope(mcpauth.ScopePipelines)).To(BeFalse())
 	})
 
 	It("reports unavailable access data as a temporary error, never a denial", func() {

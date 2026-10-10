@@ -2,14 +2,13 @@ package mcp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/concourse/concourse/atc"
 	"math/big"
 	"unicode/utf8"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/skymarshal/mcpauth"
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -46,9 +45,6 @@ func decodeOperation(resource string, input json.RawMessage, ops []Operation) (O
 		if op.Resource != resource {
 			return Operation{}, nil, errors.New("INVALID_ARGUMENTS: operation belongs to a different resource")
 		}
-		if op.Arguments == nil {
-			return Operation{}, nil, errors.New("NOT_IMPLEMENTED: no MCP adapter for this operation")
-		}
 		if err := validateJSON(GroupInputSchema([]Operation{op}), input); err != nil {
 			return Operation{}, nil, errors.New("INVALID_ARGUMENTS: arguments do not match the operation schema")
 		}
@@ -83,7 +79,7 @@ func decodeOperation(resource string, input json.RawMessage, ops []Operation) (O
 		normalized, _ := json.Marshal(raw)
 		return op, normalized, nil
 	}
-	return Operation{}, nil, errors.New("UNKNOWN_OPERATION: use capabilities_explain to inspect MCP support")
+	return Operation{}, nil, errors.New("NO_REGISTERED_OPERATION: no registered MCP operation; use capabilities_explain to inspect MCP support")
 }
 
 func validateJSON(schema *jsonschema.Schema, data []byte) error {
@@ -104,7 +100,7 @@ func validateJSON(schema *jsonschema.Schema, data []byte) error {
 func (c catalog) eligible(ctx context.Context) (map[string][]Operation, error) {
 	groups := map[string][]Operation{}
 	for _, op := range c.operations {
-		if !op.Implemented() || c.disabled[op.ID] || !c.principal.HasScope(op.Scope) {
+		if c.disabled[op.ID] || !c.principal.HasScope(op.Scope) {
 			continue
 		}
 		access, err := c.access(ctx, op.Action)
@@ -122,9 +118,6 @@ func (c catalog) dispatch(ctx context.Context, resource string, input json.RawMe
 	op, args, err := decodeOperation(resource, input, c.operations)
 	if err != nil {
 		return toolError(err.Error()), nil
-	}
-	if !op.Implemented() {
-		return toolError("NOT_IMPLEMENTED: no MCP adapter for this operation"), nil
 	}
 	if c.disabled[op.ID] {
 		return toolError("DISABLED: this MCP operation is disabled by the operator"), nil
@@ -179,7 +172,6 @@ func toolSuccess(value any) *sdk.CallToolResult {
 type explainArgs struct {
 	Resource  string `json:"resource"`
 	Operation string `json:"operation,omitempty"`
-	Cursor    string `json:"cursor,omitempty"`
 }
 type capability struct {
 	Operation string `json:"operation"`
@@ -193,96 +185,57 @@ type capability struct {
 	NextStep                string   `json:"next_step"`
 	Explanation             string   `json:"explanation"`
 }
-type explanationPage struct {
-	Items      []capability `json:"items"`
-	NextCursor *string      `json:"next_cursor"`
+type explanation struct {
+	Items []capability `json:"items"`
 }
 
 func explainSchema() *jsonschema.Schema {
 	return object(map[string]*jsonschema.Schema{
-		"resource":  {Type: "string", Enum: []any{"pipeline", "build", "job", "resource", "container", "team", "server", "worker"}},
-		"operation": nameSchema(), "cursor": cursorSchema(),
+		"resource": nameSchema(), "operation": nameSchema(),
 	}, "resource")
 }
 
-type explanationCursor struct {
-	Resource, Operation string
-	Offset              int
-}
-
-func (c catalog) explain(ctx context.Context, args explainArgs) (explanationPage, error) {
-	page := explanationPage{Items: []capability{}}
-	offset := 0
-	if args.Cursor != "" {
-		data, err := base64.RawURLEncoding.DecodeString(args.Cursor)
-		var cursor explanationCursor
-		if err != nil || json.Unmarshal(data, &cursor) != nil || cursor.Resource != args.Resource || cursor.Operation != args.Operation || cursor.Offset < 0 {
-			return page, errors.New("INVALID_CURSOR: cursor does not match this capability query")
-		}
-		offset = cursor.Offset
-	}
-	var matches []Operation
+// explain is advisory: it checks account eligibility, never a target or an operation.
+func (c catalog) explain(ctx context.Context, args explainArgs) (explanation, error) {
+	result := explanation{Items: []capability{}}
 	for _, op := range c.operations {
 		if args.Operation != "" && op.ID == args.Operation && op.Resource != args.Resource {
-			return page, errors.New("INVALID_ARGUMENTS: operation belongs to a different resource")
+			return explanation{}, errors.New("INVALID_ARGUMENTS: operation belongs to a different resource")
 		}
-		if op.Resource == args.Resource && (args.Operation == "" || op.ID == args.Operation) {
-			matches = append(matches, op)
+		if op.Resource != args.Resource || (args.Operation != "" && op.ID != args.Operation) {
+			continue
 		}
-	}
-	if args.Operation != "" && len(matches) == 0 {
-		if offset != 0 {
-			return page, errors.New("INVALID_CURSOR")
-		}
-		page.Items = append(page.Items, capability{Operation: args.Operation, Description: "Unknown capability", MCPSupport: "unknown", MissingScopes: []string{}, AccountAccess: "not_evaluated", NextStep: "clarify", Explanation: "This ID is not in this deployment's capability metadata. Clarify the requested action; this does not establish product impossibility."})
-		return page, nil
-	}
-	if offset > len(matches) {
-		return page, errors.New("INVALID_CURSOR")
-	}
-	for i := offset; i < len(matches); i++ {
-		if len(page.Items) == 20 {
-			data, _ := json.Marshal(explanationCursor{args.Resource, args.Operation, i})
-			cursor := base64.RawURLEncoding.EncodeToString(data)
-			page.NextCursor = &cursor
-			break
-		}
-		op := matches[i]
-		e := capability{Operation: op.ID, Description: op.Description, MCPSupport: "not_implemented", MissingScopes: []string{}, AccountAccess: "not_evaluated", NextStep: "stop", Explanation: "No MCP adapter is installed. More consent cannot enable this capability. A separate CLI/API action may exist."}
-		if op.Implemented() {
-			if c.disabled[op.ID] {
-				e.MCPSupport = "disabled"
-				e.NextStep = "contact_operator"
-				e.Explanation = "The operator disabled this MCP adapter. More consent does not enable it."
-			} else {
-				// missing_scopes is only listed where consent is the thing that
-				// would change the answer. On an entry whose explanation says
-				// consent cannot help, a scope list invites the client to open a
-				// consent flow that resolves nothing.
-				if !c.principal.HasScope(op.Scope) {
-					e.MissingScopes = append(e.MissingScopes, op.Scope)
-				}
-				access, err := c.access(ctx, op.Action)
-				if err != nil {
-					return explanationPage{}, errors.New("TEMPORARY_ACCESS_FAILURE: capability access is temporarily unavailable")
-				}
-				e.MCPSupport = "implemented"
-				e.AccountAccess = string(access)
-				switch {
-				case access == AccountIneligible:
-					e.NextStep = "contact_admin"
-					e.Explanation = "The account has no applicable authority. Additional consent alone cannot grant a role; any listed consent is also required."
-				case len(e.MissingScopes) > 0:
-					e.NextStep = "request_new_consent"
-					e.Explanation = "Ask the user to authorize only the listed categories in a new consent flow. Refresh cannot broaden a grant. Target, role and policy checks still apply."
-				default:
-					e.ExecutableBranchPresent = true
-					e.NextStep = "use_available_tool"
-					e.Explanation = "Refresh a stale client catalog if necessary. Every target is still checked at execution; client approval policy may also require user approval."
-				}
+		e := capability{Operation: op.ID, Description: op.Description, MCPSupport: "implemented", MissingScopes: []string{}, AccountAccess: "not_evaluated"}
+		if c.disabled[op.ID] {
+			e.MCPSupport = "disabled"
+			e.NextStep = "contact_operator"
+			e.Explanation = "The operator disabled this MCP adapter. More consent does not enable it."
+		} else {
+			if !c.principal.HasScope(op.Scope) {
+				e.MissingScopes = append(e.MissingScopes, op.Scope)
+			}
+			access, err := c.access(ctx, op.Action)
+			if err != nil {
+				return explanation{}, errors.New("TEMPORARY_ACCESS_FAILURE: capability access is temporarily unavailable")
+			}
+			e.AccountAccess = string(access)
+			switch {
+			case access == AccountIneligible:
+				e.NextStep = "contact_admin"
+				e.Explanation = "The account has no applicable authority. Additional consent alone cannot grant a role; any listed consent is also required."
+			case len(e.MissingScopes) > 0:
+				e.NextStep = "request_new_consent"
+				e.Explanation = "Ask the user to authorize only the listed categories in a new consent flow. Refresh cannot broaden a grant. Target, role and policy checks still apply."
+			default:
+				e.ExecutableBranchPresent = true
+				e.NextStep = "use_available_tool"
+				e.Explanation = "Refresh a stale client catalog if necessary. Every target is still checked at execution; client approval policy may also require user approval."
 			}
 		}
-		page.Items = append(page.Items, e)
+		result.Items = append(result.Items, e)
 	}
-	return page, nil
+	if len(result.Items) == 0 {
+		return explanation{}, errors.New("NO_REGISTERED_OPERATION: no registered MCP operation matches this query. More consent cannot add an operation; a separate CLI/API action may exist.")
+	}
+	return result, nil
 }

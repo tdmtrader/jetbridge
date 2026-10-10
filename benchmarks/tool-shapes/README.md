@@ -5,6 +5,13 @@ This small followup runs the selected precise resource groups with a non-executi
 and distinguish an unimplemented MCP adapter from a supported but blocked action.
 It is a synthetic behavior experiment, not production conformance or an OAuth test.
 
+The diagnostic expectations in `test_diagnostics.py`, the synthetic catalog and
+recorded results are **historical**: they retain the pre-C10 `not_implemented` and
+`unknown` responses. C10 removes those rows and discovery pagination; the server
+now returns `NO_REGISTERED_OPERATION` for an absent ID or resource. These fixtures
+and scores have not been rewritten to imply the reduced server passed them. See
+[current discovery contract](../../docs/architecture/mcp-precise-access.md).
+
 The five original harness files were copied from the sibling `mcp-tool-benchmark`
 worktree. `PROVENANCE.json` records that uncommitted source and its exact hashes;
 the original six-shape experiment and all 192 run traces remain untouched there.
