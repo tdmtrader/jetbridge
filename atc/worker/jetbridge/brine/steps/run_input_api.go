@@ -65,7 +65,7 @@ func configureRunInputAPI(in RunInputAdmission, caller string, rec *brine.Record
 	}
 	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = oldEnabled; return nil })
 	auth.mu.Lock()
-	auth.RunServices = pipelinerunserver.Services{Admitter: in.Port}
+	auth.RunServices = pipelinerunserver.Services{Admitter: in.Port, HangarOutput: true}
 	auth.API, err = auth.apiHandler(auth.Verifier)
 	auth.mu.Unlock()
 	if err != nil {
