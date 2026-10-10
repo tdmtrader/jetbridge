@@ -122,4 +122,18 @@ concourse migrate --postgres-host=... --old-encryption-key <old>
 
 - **Automatic on startup:** If you simply start JetBridge against the database, it will apply all pending migrations automatically. The `concourse migrate` command is useful for running migrations separately (e.g., in a maintenance window before starting the server).
 - **No `--dry-run`:** There is no dry-run mode. Use a database backup to test migrations.
-- **Downgrade support:** You can migrate down to a specific version with `--migrate-db-to-version`, but this is rarely needed. The rollback procedure (pg_restore from backup) is safer.
+- **Fork migrations are forward-only:** Every migration after upstream
+  `1765921815` has an explicit failing down, even on an empty database.
+  `--migrate-db-to-version` still selects a version, but cannot reverse a fork
+  migration. Generated SQL and Go downs also fail and direct the operator to
+  restore the pre-upgrade database backup. Upstream downs remain unchanged.
+- **Transactions are per file:** A refused SQL down rolls back that file and
+  records a failed, non-dirty history entry; the effective version stays put.
+  Earlier successful files in a multi-file migration remain committed. Since
+  every fork down refuses, a downgrade from a fork version stops at its first
+  down file without partial schema reversal.
+- **Image rollback is not a compatibility check:** Older binaries embed their
+  own migration files. They may retain historical downs or start against a
+  newer schema without reversing it. Restore the matching database and
+  encryption key before starting an older image; follow the
+  [recovery procedure](DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).

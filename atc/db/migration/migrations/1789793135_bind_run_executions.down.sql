@@ -1,6 +1,1 @@
-DO $$ BEGIN
- IF EXISTS(SELECT 1 FROM pipeline_run_executions) THEN
-  RAISE EXCEPTION 'cannot discard retained Run execution identities';
- END IF;
-END $$;
-DROP TABLE pipeline_run_executions;
+DO $$ BEGIN RAISE EXCEPTION 'migration 1789793135 is forward-only: restore the pre-upgrade database backup instead'; END $$;

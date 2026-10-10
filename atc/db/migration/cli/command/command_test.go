@@ -1,10 +1,12 @@
 package cli_test
 
 import (
+	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"path"
 	"regexp"
-	"strings"
 
 	cmd "github.com/concourse/concourse/atc/db/migration/cli/command"
 	. "github.com/onsi/ginkgo/v2"
@@ -40,8 +42,12 @@ var _ = Describe("Migration CLI", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				ExpectGeneratedFilesToMatchSpecification(migrationDir, sqlMigrationPattern,
-					migrationName, func(migrationID string, actualFileContents string) {
-						Expect(actualFileContents).To(BeEmpty())
+					migrationName, func(migrationID, direction string, actualFileContents string) {
+						if direction == "up" {
+							Expect(actualFileContents).To(BeEmpty())
+						} else {
+							Expect(actualFileContents).To(Equal(fmt.Sprintf("DO $$ BEGIN RAISE EXCEPTION 'migration %s is forward-only: restore the pre-upgrade database backup instead'; END $$;\n", migrationID)))
+						}
 					})
 			})
 		})
@@ -55,16 +61,18 @@ var _ = Describe("Migration CLI", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				ExpectGeneratedFilesToMatchSpecification(migrationDir, goMigrationPattern,
-					migrationName, func(migrationID string, actualFileContents string) {
-						lines := strings.Split(actualFileContents, "\n")
-						Expect(lines).To(HaveLen(6))
-
-						Expect(lines[0]).To(Equal("package migrations"))
-						Expect(lines[1]).To(Equal(""))
-						Expect(lines[2]).To(HavePrefix("//"))
-						Expect(lines[3]).To(MatchRegexp("^func (Up|Down)_%s\\(\\) error {", migrationID))
-						Expect(lines[4]).To(ContainSubstring("return nil"))
-						Expect(lines[5]).To(Equal("}"))
+					migrationName, func(migrationID, direction string, actualFileContents string) {
+						_, err := parser.ParseFile(token.NewFileSet(), "", actualFileContents, parser.AllErrors)
+						Expect(err).NotTo(HaveOccurred())
+						if direction == "up" {
+							Expect(actualFileContents).To(ContainSubstring("func Up_%s() error", migrationID))
+							Expect(actualFileContents).To(ContainSubstring("return nil"))
+						} else {
+							Expect(actualFileContents).To(ContainSubstring("func Down_%s() error", migrationID))
+							Expect(actualFileContents).To(ContainSubstring(`import "errors"`))
+							Expect(actualFileContents).To(ContainSubstring(`return errors.New("migration %s is forward-only: restore the pre-upgrade database backup instead")`, migrationID))
+							Expect(actualFileContents).NotTo(ContainSubstring("return nil"))
+						}
 					})
 			})
 
@@ -73,7 +81,7 @@ var _ = Describe("Migration CLI", func() {
 })
 
 func ExpectGeneratedFilesToMatchSpecification(migrationDir, fileNamePattern, migrationName string,
-	checkContents func(migrationID string, actualFileContents string)) {
+	checkContents func(migrationID, direction string, actualFileContents string)) {
 	GinkgoHelper()
 
 	files, err := os.ReadDir(migrationDir)
@@ -92,7 +100,7 @@ func ExpectGeneratedFilesToMatchSpecification(migrationDir, fileNamePattern, mig
 
 		fileContents, err := os.ReadFile(path.Join(migrationDir, migrationFileName))
 		Expect(err).ToNot(HaveOccurred())
-		checkContents(matches[1], string(fileContents))
+		checkContents(matches[1], matches[3], string(fileContents))
 		migrationFilesCount++
 	}
 	Expect(migrationFilesCount).To(Equal(2))

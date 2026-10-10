@@ -173,7 +173,10 @@ as described under [In service, and the drain](#in-service-and-the-drain),
 and only then turn the daemons' output plane off or downgrade the DaemonSet.
 This avoids scheduling new managed reads onto nodes that cannot serve them.
 Published objects remain stored; reclamation follows claims, and is the
-web's.
+web's. If the older release requires an older database schema, also follow
+the [restore procedure](migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure)
+before starting it: fork migrations are forward-only, and an old image is
+not a schema compatibility guard.
 
 The daemon container is explicitly UID 0, non-privileged, unable to escalate,
 under `RuntimeDefault`, and drops all capabilities except `DAC_OVERRIDE`. A

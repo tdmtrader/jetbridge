@@ -142,19 +142,4 @@ var _ = Describe("Run evidence deletion allowances", func() {
 		Expect(witnesses(jobGetExecution)).To(Equal(2))
 	})
 
-	It("restores the unconditional guards and non-cascading witnesses on rollback", func() {
-		Expect(database.Close()).To(Succeed())
-		database = postgresRunner.OpenDBAtVersion(runTeamPurgeEvidenceVersion - 1)
-		for _, marker := range []string{"concourse.pipeline_run_team_purge", "concourse.pipeline_run_check_gc"} {
-			Expect(deleteUnder(database, marker, `DELETE FROM pipeline_run_execution_closures WHERE execution_id=$1`, closedCheckExecution)).
-				To(MatchError(ContainSubstring("immutable until Run purge is integrated")))
-		}
-		var helpers int
-		Expect(database.QueryRow(`SELECT count(*) FROM pg_proc WHERE proname IN ('run_team_purge_active','run_check_gc_active')`).Scan(&helpers)).To(Succeed())
-		Expect(helpers).To(BeZero())
-		var cascading int
-		Expect(database.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype='f'
-			AND confrelid='pipeline_run_executions'::regclass AND confdeltype='c'`).Scan(&cascading)).To(Succeed())
-		Expect(cascading).To(BeZero())
-	})
 })

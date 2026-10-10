@@ -96,47 +96,6 @@ var _ = Describe("Pipeline template run schema", func() {
 		Expect(err).To(MatchError(ContainSubstring("builds_pipeline_run_identity_complete")))
 	})
 
-	It("refuses a populated down migration and permits an empty down migration", func() {
-		var templateID int
-		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) SELECT id, 'down-base', true, 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&templateID)).To(Succeed())
-		Expect(database.Close()).To(Succeed())
-		_, err := postgresRunner.TryOpenDBAtVersion(1773105504)
-		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
-
-		database = postgresRunner.OpenDBAtVersion(pipelineTemplateRunsVersion)
-		_, err = database.Exec(`DELETE FROM pipelines WHERE id = $1`, templateID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(database.Close()).To(Succeed())
-		_, err = postgresRunner.TryOpenDBAtVersion(1773105504)
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	It("refuses a down migration when future template-owned task caches remain", func() {
-		var pipelineID int
-		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, secondary_ordering) SELECT id, 'future-cache-owner', 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&pipelineID)).To(Succeed())
-		_, err := database.Exec(`INSERT INTO task_caches(step_name, path, template_pipeline_id, run_job_name) VALUES ('run-cache', '/cache', $1, 'run-job')`, pipelineID)
-		Expect(err).NotTo(HaveOccurred())
-
-		Expect(database.Close()).To(Succeed())
-		_, err = postgresRunner.TryOpenDBAtVersion(1773105504)
-		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
-
-		database = postgresRunner.OpenDBAtVersion(pipelineTemplateRunsVersion)
-	})
-
-	It("refuses a down migration when future run job task caches remain", func() {
-		var pipelineID int
-		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, secondary_ordering) SELECT id, 'future-run-cache-owner', 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&pipelineID)).To(Succeed())
-		_, err := database.Exec(`INSERT INTO task_caches(step_name, path, template_pipeline_id, run_job_name) VALUES ('run-cache', '/cache', $1, 'run-job')`, pipelineID)
-		Expect(err).NotTo(HaveOccurred())
-
-		Expect(database.Close()).To(Succeed())
-		_, err = postgresRunner.TryOpenDBAtVersion(1773105504)
-		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
-
-		database = postgresRunner.OpenDBAtVersion(pipelineTemplateRunsVersion)
-	})
-
 	It("persists exactly one ordinary or shared run task cache identity", func() {
 		// This fails if task-cache rows can be ambiguous, or a shared run cache
 		// cannot survive independently of an ephemeral payload job.

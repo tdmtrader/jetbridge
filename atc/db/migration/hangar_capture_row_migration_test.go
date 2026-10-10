@@ -2,7 +2,6 @@ package migration_test
 
 import (
 	"database/sql"
-	"sort"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,61 +12,9 @@ const (
 	captureIsOneRowVersion   = 1789793153
 )
 
-// schemaFingerprint is the shape of the public schema that a reversal must
-// restore: every column, constraint, index, trigger and function, by name and
-// definition. Column order is not part of it: a reversal appends a column it
-// re-adds.
-func schemaFingerprint(database *sql.DB) []string {
-	rows, err := database.Query(`
-		SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '')
-		  FROM information_schema.columns WHERE table_schema = 'public'
-		UNION ALL
-		SELECT 'constraint ' || conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
-		  FROM pg_constraint WHERE connamespace = 'public'::regnamespace
-		UNION ALL
-		SELECT 'index ' || indexdef FROM pg_indexes WHERE schemaname = 'public'
-		UNION ALL
-		SELECT 'trigger ' || tgrelid::regclass::text || ' ' || tgname || ' ' || pg_get_triggerdef(oid)
-		  FROM pg_trigger WHERE NOT tgisinternal
-		UNION ALL
-		SELECT 'function ' || p.oid::regprocedure::text
-		  FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace`)
-	Expect(err).NotTo(HaveOccurred())
-	defer rows.Close()
-	var shape []string
-	for rows.Next() {
-		var line string
-		Expect(rows.Scan(&line)).To(Succeed())
-		shape = append(shape, line)
-	}
-	Expect(rows.Err()).NotTo(HaveOccurred())
-	sort.Strings(shape)
-	return shape
-}
-
-func difference(of, from []string) []string {
-	present := map[string]bool{}
-	for _, line := range from {
-		present[line] = true
-	}
-	var extra []string
-	for _, line := range of {
-		if !present[line] {
-			extra = append(extra, line)
-		}
-	}
-	return extra
-}
-
 func relationExists(database *sql.DB, name string) bool {
 	var exists bool
 	Expect(database.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, "public."+name).Scan(&exists)).To(Succeed())
-	return exists
-}
-
-func functionExists(database *sql.DB, name string) bool {
-	var exists bool
-	Expect(database.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = $1 AND pronamespace = 'public'::regnamespace)`, name).Scan(&exists)).To(Succeed())
 	return exists
 }
 
@@ -172,36 +119,4 @@ var _ = Describe("Capture is one row migrations", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("reverses past 1789793152 to the schema it started from, and migrates up again", func() {
-		database = postgresRunner.OpenDBAtVersion(hangarCaptureRowsVersion - 1)
-		before := schemaFingerprint(database)
-		Expect(relationExists(database, "hangar_handoff_predeclarations")).To(BeTrue())
-		closeDB()
-
-		database = postgresRunner.OpenDBAtVersion(captureIsOneRowVersion)
-		closeDB()
-
-		database = postgresRunner.OpenDBAtVersion(hangarCaptureRowsVersion)
-		Expect(relationExists(database, "hangar_captures")).To(BeTrue())
-		Expect(relationExists(database, "hangar_handoff_predeclarations")).To(BeTrue())
-		Expect(relationExists(database, "hangar_policy_violations")).To(BeTrue())
-		closeDB()
-
-		database = postgresRunner.OpenDBAtVersion(hangarCaptureRowsVersion - 1)
-		for _, gone := range []string{"hangar_captures", "pipeline_run_captures", "hangar_integrity_findings", "hangar_enabled"} {
-			Expect(relationExists(database, gone)).To(BeFalse(), gone)
-		}
-		for _, gone := range []string{"hangar_capture_transition", "hangar_integrity_finding_resolution"} {
-			Expect(functionExists(database, gone)).To(BeFalse(), gone)
-		}
-		Expect(functionExists(database, "hangar_predeclaration_immutable")).To(BeTrue())
-		after := schemaFingerprint(database)
-		Expect(difference(after, before)).To(BeEmpty(), "shape the reversal added")
-		Expect(difference(before, after)).To(BeEmpty(), "shape the reversal lost")
-		closeDB()
-
-		database = postgresRunner.OpenDBAtVersion(captureIsOneRowVersion)
-		Expect(relationExists(database, "hangar_captures")).To(BeTrue())
-		Expect(relationExists(database, "hangar_handoff_predeclarations")).To(BeFalse())
-	})
 })

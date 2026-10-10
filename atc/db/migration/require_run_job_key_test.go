@@ -100,19 +100,4 @@ var _ = Describe("requiring a run job key", func() {
 		Expect(err).To(MatchError(ContainSubstring("immutable")))
 	})
 
-	It("migrates back down", func() {
-		insertJob("entry", sql.NullString{})
-		postgresRunner.MigrateToVersion(postMigrationVersion)
-		Expect(database.Close()).To(Succeed())
-
-		database = postgresRunner.OpenDBAtVersion(preMigrationVersion)
-		var key sql.NullString
-		Expect(database.QueryRow(`SELECT run_policy_key FROM jobs WHERE pipeline_id = $1`, payloadID).Scan(&key)).To(Succeed())
-		Expect(key.String).To(Equal("entry"))
-
-		// The restored function names the old column again and the trigger
-		// still guards it.
-		_, err := database.Exec(`UPDATE jobs SET run_policy_key = 'other' WHERE pipeline_id = $1`, payloadID)
-		Expect(err).To(MatchError(ContainSubstring("immutable")))
-	})
 })

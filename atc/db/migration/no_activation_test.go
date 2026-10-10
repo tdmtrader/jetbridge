@@ -24,7 +24,7 @@ var _ = Describe("Hangar no_activation_no_inventory migration", func() {
 		DeferCleanup(func() { Expect(database.Close()).To(Succeed()) })
 	})
 
-	It("drops the epochs, the operation leases and the inventory, keeps the in-service row and the findings, and comes back empty", func() {
+	It("drops the epochs, the operation leases and the inventory, keeps the in-service row and the findings", func() {
 		// An epoch and a lifecycle under it, and an open finding: what a
 		// deployment that had activated carries into the migration. Written
 		// with triggers off, as the activation role's guard would refuse the
@@ -78,19 +78,5 @@ var _ = Describe("Hangar no_activation_no_inventory migration", func() {
 		var findings int
 		Expect(database.QueryRow(`SELECT count(*) FROM hangar_integrity_findings WHERE resolved_at IS NULL`).Scan(&findings)).To(Succeed())
 		Expect(findings).To(Equal(1))
-		Expect(database.Close()).To(Succeed())
-
-		// Down: the shapes come back EMPTY -- epochs are not reconstructible --
-		// and the rows recorded since keep their numbers.
-		database = postgresRunner.OpenDBAtVersion(noActivationVersion - 1)
-		for _, back := range []string{"hangar_output_activation_epochs", "hangar_operation_leases",
-			"hangar_inventory_cursors", "hangar_inventory_debt"} {
-			Expect(tableExists(back)).To(BeTrue(), back)
-		}
-		var epochs, lifecycles int
-		Expect(database.QueryRow(`SELECT count(*) FROM hangar_output_activation_epochs`).Scan(&epochs)).To(Succeed())
-		Expect(epochs).To(BeZero())
-		Expect(database.QueryRow(`SELECT count(*) FROM hangar_exact_lifecycles`).Scan(&lifecycles)).To(Succeed())
-		Expect(lifecycles).To(Equal(2))
 	})
 })

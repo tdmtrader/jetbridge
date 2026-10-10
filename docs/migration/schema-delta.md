@@ -2,6 +2,11 @@
 
 This document catalogs every migration between upstream Concourse releases and JetBridge HEAD, documenting what each changes and whether it is destructive or additive.
 
+Every fork migration after upstream `1765921815` is forward-only, including
+`1789793158` and later migrations. Empty and populated databases both refuse
+downgrades. Recovery requires restoring the pre-upgrade backup with its matching
+image and encryption key; upstream downs remain unchanged.
+
 ## Version Boundaries
 
 | Version | Last Migration | Total Migrations |
@@ -116,7 +121,7 @@ CREATE TABLE signing_keys (
 - **Type:** Schema change (triggers/functions)
 - **Risk:** Low — only changes notification behavior
 - **Duration:** Instant
-- **Reversible:** Yes — down migration restores JSON-payload trigger
+- **Reversible:** No — restore the pre-upgrade backup
 
 ### `1773105500` — Drop Component Interval and Last Ran (JetBridge-only)
 
@@ -128,7 +133,7 @@ ALTER TABLE components DROP COLUMN IF EXISTS last_ran;
 - **Type:** Destructive column drop
 - **Risk:** Low — these columns are unused in JetBridge (component runner uses hardcoded intervals)
 - **Duration:** Instant
-- **Reversible:** Yes — down migration adds columns back with defaults
+- **Reversible:** No — restore the pre-upgrade backup
 
 ### `1773105501` — Drop Component Paused (JetBridge-only)
 
@@ -139,7 +144,7 @@ ALTER TABLE components DROP COLUMN IF EXISTS paused;
 - **Type:** Destructive column drop
 - **Risk:** Low — unused in JetBridge
 - **Duration:** Instant
-- **Reversible:** Yes — down migration adds column back with default `false`
+- **Reversible:** No — restore the pre-upgrade backup
 
 ### `1773105505`–`1773105509` — Pipeline templates and numbered runs (JetBridge-only)
 
@@ -154,10 +159,7 @@ on payload deletion.
 - **Risk:** Medium — `1773105506` adds a validating CHECK on `builds`, which
   takes ACCESS EXCLUSIVE for a full heap scan; duration scales with build history
 - **Duration:** Proportional to `builds` row count; measure on a restored copy first
-- **Reversible:** **No, once used.** Every `.down.sql` calls
-  `ensure_pipeline_template_runs_empty()` and raises if any template, run payload
-  or run header exists. Down from an unused install works; down from a used one
-  is a restore-from-backup operation. See Key Observation 3.
+- **Reversible:** No — restore the pre-upgrade backup, even for an unused install.
 
 ## Key Observations
 
@@ -165,12 +167,10 @@ on payload deletion.
    them (`1773105505`–`1773105509`) add pipeline templates and numbered runs, and one of
    those, `1773105506`, is the second most expensive migration in the set — see Observation 6.
 2. **The md5→sha256 migration is the most expensive** — it rehashes every row in `resource_config_versions`. Plan for this on large instances.
-3. **Migrations are reversible up to `1773105501`.** The five pipeline-template
-   migrations (`1773105505`–`1773105509`) are **one-way once the feature is used**:
-   each `.down.sql` calls `ensure_pipeline_template_runs_empty()`, which raises if
-   any template, run payload or run header exists. This is deliberate — the down
-   path refuses rather than silently discarding run history. Rolling a binary back
-   after a template has been created means restoring the database from backup.
+3. **All fork migrations after `1765921815` are forward-only.** Every fork
+   down refuses before schema changes, regardless of retained data. Restore
+   the database backup before starting its matching older image; an older
+   image does not reliably reject a newer schema.
 4. **v7.x users have the biggest gap** — up to 36 migrations depending on the exact v7.x version.
 5. **v8.0.0 and v8.0.1 are identical** in terms of migrations — 10 JetBridge-specific migrations need to apply.
 6. **`1773105506` locks `builds` ACCESS EXCLUSIVE for three full scans.** In one transaction it
@@ -186,8 +186,7 @@ on payload deletion.
 Drops `containers_notify_trigger` and `notify_container_event()` because the
 worker cache no longer counts build containers. Worker INSERT/UPDATE/DELETE
 notifications, container data and the pod-derived `ActiveContainers` API field
-remain. The down migration restores the container trigger and its bare
-`container_events_channel` notification function without changing data.
+remain. Recovery requires the pre-upgrade database backup.
 
 ## 1789793159 — simplify_run_contract (C7)
 
@@ -206,5 +205,5 @@ then explicitly `TRUNCATE TABLE pipeline_run_invocations;` if it is nonempty.
 Retries with old keys can then create new Runs; old credential handoffs lose
 their invocation-owner evidence, and composition callers must not replay old
 calls. See [the rollout procedure](../../deploy/chart/MIGRATING.md#c7-run-contract-simplification).
-The down migration restores empty shapes, refusing existing Run headers; use
-the backup to restore discarded evidence rather than inventing birth data.
+The down migration always refuses; restore the pre-upgrade backup to recover
+the previous schema and discarded evidence.

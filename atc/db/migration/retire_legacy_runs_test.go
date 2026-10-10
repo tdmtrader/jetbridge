@@ -74,17 +74,4 @@ var _ = Describe("Retiring legacy_v1 Runs", func() {
 		Expect(count(`SELECT count(*) FROM pipelines WHERE id=1`)).To(Equal(1), "the template survives")
 	})
 
-	It("rolls back the schema only: the retired Runs are not restored", func() {
-		Expect(database.Close()).To(Succeed())
-		var err error
-		database, err = postgresRunner.TryOpenDBAtVersion(retireLegacyRunsVersion - 1)
-		Expect(err).NotTo(HaveOccurred())
-
-		Expect(count(`SELECT count(*) FROM pipeline_runs WHERE id=10`)).To(BeZero())
-		Expect(count(`SELECT count(*) FROM pipeline_runs WHERE id=20`)).To(Equal(1))
-		var fallback sql.NullString
-		Expect(database.QueryRow(`SELECT column_default FROM information_schema.columns
-			WHERE table_name='pipeline_runs' AND column_name='run_contract_version'`).Scan(&fallback)).To(Succeed())
-		Expect(fallback.String).To(ContainSubstring("legacy_v1"), "the older binary's default is back")
-	})
 })

@@ -108,3 +108,9 @@ causation intent and terminal digest are removed with their wire fields.
 Migration 1789793159 refuses retained invocation evidence; the operator
 procedure is in deploy/chart/MIGRATING.md. Reclamation still keeps detached
 builds and logs, with a fixed batch of 20.
+
+Amended by C13 — Amended 2026-10-09: fork migrations are forward-only;
+rollback is restore-from-backup. Every migration after upstream 1765921815
+refuses reversal, including empty installs. This replaces the former lossy
+reversal contract; restore the matching database, image and encryption key
+using the [recovery runbook](../migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).

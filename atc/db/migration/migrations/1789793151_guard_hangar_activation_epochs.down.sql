@@ -1,3 +1,1 @@
-DROP TRIGGER hangar_output_activation_role_guard_truncate ON hangar_output_activation_epochs;
-DROP TRIGGER hangar_output_activation_role_guard ON hangar_output_activation_epochs;
-DROP FUNCTION hangar_activation_role_guard();
+DO $$ BEGIN RAISE EXCEPTION 'migration 1789793151 is forward-only: restore the pre-upgrade database backup instead'; END $$;

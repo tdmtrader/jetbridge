@@ -71,11 +71,7 @@ var _ = Describe("retiring container-count notifications", func() {
 		expectNotification("worker_events_channel")
 	}
 
-	It("removes container notifications, restores them on rollback, and preserves worker notifications", func() {
-		exercise(true)
-		postgresRunner.MigrateToVersion(after)
-		exercise(false)
-		postgresRunner.MigrateToVersion(before)
+	It("removes container notifications and preserves worker notifications", func() {
 		exercise(true)
 		postgresRunner.MigrateToVersion(after)
 		exercise(false)

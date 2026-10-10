@@ -1,2 +1,1 @@
-DROP TABLE composition_iterations;
-DROP TABLE composition_calls;
+DO $$ BEGIN RAISE EXCEPTION 'migration 1773105511 is forward-only: restore the pre-upgrade database backup instead'; END $$;

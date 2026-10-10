@@ -56,13 +56,13 @@ func (c *GenerateCommand) GenerateSQLMigration() error {
 	upMigrationFileName := fmt.Sprintf(fileNameFormat, currentTime, c.MigrationName, "up")
 	downMigrationFileName := fmt.Sprintf(fileNameFormat, currentTime, c.MigrationName, "down")
 
-	contents := ""
+	down := fmt.Sprintf("DO $$ BEGIN RAISE EXCEPTION 'migration %d is forward-only: restore the pre-upgrade database backup instead'; END $$;\n", currentTime)
 
-	err := os.WriteFile(path.Join(c.MigrationDirectory, upMigrationFileName), []byte(contents), 0644)
+	err := os.WriteFile(path.Join(c.MigrationDirectory, upMigrationFileName), nil, 0644)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path.Join(c.MigrationDirectory, downMigrationFileName), []byte(contents), 0644)
+	return os.WriteFile(path.Join(c.MigrationDirectory, downMigrationFileName), []byte(down), 0644)
 }
 
 type migrationInfo struct {
@@ -72,10 +72,14 @@ type migrationInfo struct {
 
 const goMigrationTemplate = `package migrations
 
-// implement the migration in this function
-func {{ .Direction }}_{{ .MigrationId }}() error {
-	return nil
-}`
+{{ if eq .Direction "Down" }}import "errors"
+
+func Down_{{ .MigrationId }}() error {
+    return errors.New("migration {{ .MigrationId }} is forward-only: restore the pre-upgrade database backup instead")
+}{{ else }}// implement the migration in this function
+func Up_{{ .MigrationId }}() error {
+    return nil
+}{{ end }}`
 
 func renderGoMigrationToFile(filePath string, state migrationInfo) error {
 	migrationFile, err := os.Create(filePath)

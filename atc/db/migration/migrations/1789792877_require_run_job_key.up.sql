@@ -17,8 +17,8 @@
 --
 -- The backfill is kept for any row written outside the factory's path. A job
 -- with no key was never renamed, so its name is its source name; likewise a
--- build's run job name. The down migration restores the old shape and keeps
--- the backfilled values, which the old code tolerates.
+-- build's run job name. This migration is forward-only; recovery requires
+-- the pre-upgrade database backup.
 
 -- The trigger's column list follows the rename by attribute number; only the
 -- function body names the column and must be replaced.

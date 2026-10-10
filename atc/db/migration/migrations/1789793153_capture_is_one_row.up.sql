@@ -3,8 +3,8 @@
 --
 -- IRREVERSIBLE FOR OUTPUT HISTORY. This migration does not carry old output
 -- history across: it refuses to run while ANY exists, and must run on a
--- database that never recorded a handoff (concourse.home has none). The
--- reversal (the .down file) brings the old tables back empty.
+-- database that never recorded a handoff (concourse.home has none).
+-- This migration is forward-only; recovery requires a pre-upgrade backup.
 --
 -- Admission still consults the activation epoch in this track (hangar_enabled
 -- is created and seeded by 1789793152 and switched on by no_activation).

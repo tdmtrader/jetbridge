@@ -14,7 +14,7 @@ var _ = Describe("Hangar integrity admission migration", func() {
 		database = postgresRunner.OpenDBAtVersion(hangarIntegrityAdmissionVersion - 1)
 		DeferCleanup(func() { Expect(database.Close()).To(Succeed()) })
 	})
-	It("preserves historical evidence and replaces the gate reversibly", func() {
+	It("preserves historical evidence and replaces the gate", func() {
 		_, err := database.Exec(`INSERT INTO hangar_output_activation_epochs(epoch_id) VALUES(1)`)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = database.Exec(`INSERT INTO hangar_policy_snapshots
@@ -35,11 +35,5 @@ var _ = Describe("Hangar integrity admission migration", func() {
 		Expect(database.QueryRow(`SELECT pg_get_functiondef('hangar_check_policy_admission'::regproc)`).Scan(&body)).To(Succeed())
 		Expect(body).To(ContainSubstring("unresolved storage integrity"))
 		Expect(body).NotTo(ContainSubstring("hangar_policy_snapshots"))
-		Expect(database.Close()).To(Succeed())
-		database = postgresRunner.OpenDBAtVersion(hangarIntegrityAdmissionVersion - 1)
-		Expect(database.QueryRow(`SELECT pg_get_functiondef('hangar_check_policy_admission'::regproc)`).Scan(&body)).To(Succeed())
-		Expect(body).To(ContainSubstring("hangar_policy_snapshots"))
-		Expect(database.QueryRow(`SELECT count(*) FROM hangar_policy_violations WHERE resolved_at IS NULL`).Scan(&findings)).To(Succeed())
-		Expect(findings).To(Equal(1))
 	})
 })

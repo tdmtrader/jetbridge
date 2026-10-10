@@ -4,23 +4,21 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/concourse/concourse/atc/db/migration"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-// The migration that creates the Hangar output plane, and the head it follows.
+// The migration that creates the Hangar output plane.
 //
 // The number comes from atc/scripts/create-migration rather than from a person:
 // there is one schema_migrations table and one linear version history, and a
 // hand-picked number is how two branches end up claiming the same one.
 const (
-	hangarOutputVersion      = 1788936403
-	hangarOutputPriorVersion = 1773105511
+	hangarOutputVersion = 1788936403
 )
 
-// The twenty tables of the output plane, in the order the down migration
-// removes them. Named here so that a table added later without a test is a
+// The twenty tables of the output plane. Named here so that a table
+// added later without a test is a
 // visible omission rather than an invisible one.
 var hangarOutputTables = []string{
 	"hangar_output_activation_epochs",
@@ -2180,82 +2178,4 @@ var _ = Describe("the Hangar output plane schema", func() {
 		})
 	})
 
-	Describe("the down migration", func() {
-		migrateDown := func() error {
-			return migration.NewOpenHelper("pgx", postgresRunner.DataSourceName(), nil, nil, nil).
-				MigrateToVersion(hangarOutputPriorVersion)
-		}
-
-		It("refuses before any DDL while the plane holds state", func() {
-			seedEpoch()
-			seedSafePolicy()
-			seedPredeclaration(handoffID, sourceLeaseID, executionID, true)
-			seedFullChain()
-			Expect(database.Close()).To(Succeed())
-
-			err := migrateDown()
-			Expect(err).To(MatchError(ContainSubstring("refusing to remove the output plane")))
-			Expect(err.Error()).To(ContainSubstring("1 registered receipt(s)"))
-
-			// "Before any DDL" is the claim, so the schema must be untouched.
-			database = postgresRunner.OpenDBAtVersion(hangarOutputVersion)
-			for _, table := range hangarOutputTables {
-				var exists bool
-				Expect(database.QueryRow(
-					`SELECT EXISTS(SELECT 1 FROM pg_tables WHERE tablename = $1)`, table,
-				).Scan(&exists)).To(Succeed())
-				Expect(exists).To(BeTrue(), "the refused down migration dropped %s", table)
-			}
-		})
-
-		It("refuses while a worker still holds an operation lease", func() {
-			// The one row the blocker list did not check. Every other table it
-			// omits is reachable transitively through a RESTRICT foreign key to
-			// one it does check, so DROP TABLE would have failed loudly; an
-			// operation lease references only the epoch, and an `initial`
-			// epoch is allowed to drop -- so this combination dropped the
-			// plane out from under a running worker.
-			mustExec(database, `
-				INSERT INTO hangar_output_activation_epochs (epoch_id) VALUES (1)`)
-			mustExec(database, fmt.Sprintf(`
-				INSERT INTO hangar_operation_leases
-					(kind, activation_epoch, owner_id, lease_fence, expires_at)
-				VALUES ('inventory', 1, '%s', 1, now() + interval '15 minutes')`, workerID))
-			Expect(database.Close()).To(Succeed())
-
-			err := migrateDown()
-			Expect(err).To(MatchError(ContainSubstring("refusing to remove the output plane")))
-			Expect(err.Error()).To(ContainSubstring("1 held operation lease(s)"))
-
-			database = postgresRunner.OpenDBAtVersion(hangarOutputVersion)
-		})
-
-		It("refuses while an epoch has left initial, even with no other rows", func() {
-			seedEpoch()
-			Expect(database.Close()).To(Succeed())
-
-			Expect(migrateDown()).To(MatchError(ContainSubstring("activation epoch(s) past initial")))
-
-			database = postgresRunner.OpenDBAtVersion(hangarOutputVersion)
-		})
-
-		It("removes the plane when it is held and empty", func() {
-			Expect(database.Close()).To(Succeed())
-			Expect(migrateDown()).To(Succeed())
-
-			database = postgresRunner.OpenDBAtVersion(hangarOutputPriorVersion)
-			for _, table := range hangarOutputTables {
-				var exists bool
-				Expect(database.QueryRow(
-					`SELECT EXISTS(SELECT 1 FROM pg_tables WHERE tablename = $1)`, table,
-				).Scan(&exists)).To(Succeed())
-				Expect(exists).To(BeFalse(), "the down migration left %s behind", table)
-			}
-			var functions int
-			Expect(database.QueryRow(`
-				SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-				WHERE n.nspname = 'public' AND p.proname LIKE 'hangar%'`).Scan(&functions)).To(Succeed())
-			Expect(functions).To(BeZero())
-		})
-	})
 })

@@ -2,8 +2,10 @@
 
 set -e -u
 
-cd $(dirname $0)/..
+cd "$(dirname "$0")/.."
 
-go build -tags 'postgres' -o $(go env GOPATH)/bin/migrate ./db/migration/cli
+# Generate an editable up and a forward-only down with this checkout's generator.
+migration_cli="$(go env GOPATH)/bin/migrate"
+go build -tags 'postgres' -o "$migration_cli" ./db/migration/cli
 
-migrate generate -d ./db/migration/migrations/ -n"$1" -t ${2-"sql"}
+"$migration_cli" generate -d ./db/migration/migrations/ -n"$1" -t "${2-sql}"

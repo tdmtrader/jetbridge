@@ -105,7 +105,7 @@ var _ = Describe("Hangar claims_only_reclaim migration", func() {
 		Expect(database.Close()).To(Succeed())
 	})
 
-	It("folds the lifecycle states into one stamp, gives a claim its expiry, drops the read lease and the reclaim job, and comes back lossily", func() {
+	It("folds the lifecycle states into one stamp, gives a claim its expiry, drops the read lease and the reclaim job", func() {
 		database = postgresRunner.OpenDBAtVersion(claimsOnlyReclaimVersion)
 
 		for _, gone := range []string{"hangar_read_leases", "hangar_reclaim_jobs", "hangar_reclaim_attempts"} {
@@ -167,51 +167,5 @@ var _ = Describe("Hangar claims_only_reclaim migration", func() {
 		_, err = database.Exec(`UPDATE hangar_claims SET expires_at = now() + interval '20 minutes' WHERE claim_id = $1`,
 			readerClaim)
 		Expect(err).NotTo(HaveOccurred(), "a reader's claim cannot be given its term")
-		Expect(database.Close()).To(Succeed())
-
-		// Down: the dropped shapes come back EMPTY -- which reads were in
-		// flight and what the store answered are not reconstructible -- a
-		// lifecycle gets a state back from its stamp, and the reader's
-		// expiring claim is released rather than left as a hold nothing will
-		// give back.
-		database = postgresRunner.OpenDBAtVersion(claimsOnlyReclaimVersion - 1)
-		for _, back := range []string{"hangar_read_leases", "hangar_reclaim_jobs", "hangar_reclaim_attempts"} {
-			Expect(tableExists(back)).To(BeTrue(), back)
-			var count int
-			Expect(database.QueryRow(`SELECT count(*) FROM ` + back).Scan(&count)).To(Succeed())
-			Expect(count).To(BeZero(), back)
-		}
-		Expect(functionsPresent()).To(Equal(6))
-		Expect(columnExists("hangar_exact_lifecycles", "reclaimed_at")).To(BeFalse())
-		Expect(columnExists("hangar_claims", "expires_at")).To(BeFalse())
-
-		restored := map[int64]string{}
-		rows, err = database.Query(`SELECT generation, state FROM hangar_exact_lifecycles`)
-		Expect(err).NotTo(HaveOccurred())
-		for rows.Next() {
-			var generation int64
-			var state string
-			Expect(rows.Scan(&generation, &state)).To(Succeed())
-			restored[generation] = state
-		}
-		Expect(rows.Err()).NotTo(HaveOccurred())
-		Expect(rows.Close()).To(Succeed())
-		Expect(restored).To(Equal(map[int64]string{
-			1: "registered", 2: "registered", 3: "reclaimed_confirmed",
-			4: "reclaimed_confirmed", 5: "reclaimed_confirmed", 6: "registered",
-		}))
-		var origins int
-		Expect(database.QueryRow(`SELECT count(*) FROM hangar_exact_lifecycles
-			WHERE metageneration = 1 AND marker_version = 'hangar-output-v1' AND origin = 'registered'`).
-			Scan(&origins)).To(Succeed())
-		Expect(origins).To(Equal(6))
-
-		var consumerReleased, readerReleased bool
-		Expect(database.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id = $1`,
-			consumerClaim).Scan(&consumerReleased)).To(Succeed())
-		Expect(database.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id = $1`,
-			readerClaim).Scan(&readerReleased)).To(Succeed())
-		Expect(consumerReleased).To(BeFalse(), "a consumer's hold was released on the way down")
-		Expect(readerReleased).To(BeTrue(), "a reader's expiring hold was left as a consumer's hold")
 	})
 })

@@ -157,9 +157,10 @@ handoff for them. Existing headers, payloads, inputs, results and build logs
 remain. Reconcile uncertain submissions and finish credential handoffs before
 this step. Composition retries likewise must not repeat old calls after the
 truncate. Do not truncate any other table or disable its immutability guards.
-Rollback restores the old schema only when `pipeline_runs` is empty; it cannot
-recover discarded birth fields or invocation evidence. Restore the pre-upgrade
-backup if that history is needed.
+All fork migrations after upstream `1765921815` are forward-only, including
+empty installs. Restore the pre-upgrade database backup, matching image and
+encryption key for recovery; starting an old image does not reliably reject
+a newer schema. Follow the [restore procedure](../../docs/migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).
 
 Release server and bundled clients together: Run responses no longer expose
 `activation_epoch` or `run_contract_version`; requests/responses no longer

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupUpgradeDowngrade(t *testing.T, fly flytest.Cmd) {
+func setupUpgrade(t *testing.T, fly flytest.Cmd) {
 	t.Run("set up test pipeline", func(t *testing.T) {
 		fly.Run(t, "set-pipeline", "-p", "test", "-c", "pipelines/smoke-pipeline.yml", "-n")
 		fly.Run(t, "unpause-pipeline", "-p", "test")
@@ -16,7 +16,7 @@ func setupUpgradeDowngrade(t *testing.T, fly flytest.Cmd) {
 	})
 }
 
-func verifyUpgradeDowngrade(t *testing.T, fly flytest.Cmd) {
+func verifyUpgrade(t *testing.T, fly flytest.Cmd) {
 	t.Run("pipeline and build still exists", func(t *testing.T) {
 		fly.Run(t, "get-pipeline", "-p", "test")
 

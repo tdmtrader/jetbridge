@@ -34,9 +34,3 @@ Feature: A Run retains the definition that was actually admitted
   Scenario: Refused admission rolls back the definition with the Run
     Given an admission transaction that rejects its new Run before commit
     Then neither the Run nor its retained definition exists
-
-  @core-review
-  Scenario: An encrypted database with no retained Runs can undo the definition migration
-    Given an admission transaction that rejects its new Run before commit
-    When the encrypted database rolls back the empty definition migration
-    Then the schema rollback completes without losing encryption support

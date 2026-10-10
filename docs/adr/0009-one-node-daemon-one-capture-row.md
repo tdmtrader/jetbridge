@@ -94,3 +94,9 @@ We collapsed it:
 - ADR-0002 stands: the cache fails open, Hangar fails closed, and the two
   share no read path. The separation is a namespace inequality checked at
   startup, not an import ban.
+
+Amended by C13 — Amended 2026-10-09: fork migrations are forward-only;
+rollback is restore-from-backup. Every migration after upstream 1765921815
+refuses reversal, including empty installs. This replaces the former lossy
+reversal contract; restore the matching database, image and encryption key
+using the [recovery runbook](../migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).

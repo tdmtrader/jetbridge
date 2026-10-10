@@ -25,7 +25,7 @@ type encryptedColumn struct {
 	Table      string
 	Column     string
 	PrimaryKey string
-	// A newer table can be absent at a supported schema rollback target.
+	// A newer table can be absent at a supported historical schema version.
 	Optional bool
 }
 

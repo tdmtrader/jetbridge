@@ -1,3 +1,1 @@
-ALTER TABLE pipelines
-  DROP CONSTRAINT pipelines_cache_scope_valid,
-  DROP COLUMN cache_scope;
+DO $$ BEGIN RAISE EXCEPTION 'migration 1773105510 is forward-only: restore the pre-upgrade database backup instead'; END $$;

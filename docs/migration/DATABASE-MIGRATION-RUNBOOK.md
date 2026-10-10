@@ -53,7 +53,18 @@ The script checks:
 
 ## Step 2: Backup
 
-Create a full database backup before migrating. This is your rollback safety net.
+Create a fresh full `pg_dump` immediately before **every** upgrade, including
+self-upgrade. Existing dumps do not establish freshness or restorability.
+For the single-web Kubernetes deployment, first suspend Argo reconciliation
+and self-upgrade, quiesce builds and stop web as described under
+[Rollback Procedure](#rollback-procedure), then dump the external PostgreSQL
+database while writes remain stopped. Keep it stopped through migration.
+The self-upgrade job does not take this backup automatically.
+
+Record the pre-upgrade image digest, database migration version, dump filename
+and checksum, and the version of the separate database-encryption Secret.
+Securely preserve the matching key independently of the dump. A dump without
+the key cannot recover encrypted configuration.
 
 ```bash
 pg_dump \
@@ -75,10 +86,14 @@ pg_dump \
 **Verify the backup:**
 
 ```bash
-pg_restore --list concourse-backup-*.dump | head -20
+pg_restore --list <exact-backup-file.dump>
 ```
 
-Store the backup in a safe location. You will need it if rollback is required.
+Restore the dump into an isolated test database and validate its migration
+version, representative data and decryption using the matching image and key,
+with scheduling and external access disabled. An archive listing alone does
+not verify recovery. Store the dump and checksum securely; retain the key in
+a separate protected location.
 
 ### Backup Size Estimate
 
@@ -398,25 +413,48 @@ fly -t <target> pipelines
 
 ## Rollback Procedure
 
-If migration fails or produces unexpected results, restore from the pre-migration backup.
+Every fork migration after upstream `1765921815` is forward-only. A downgrade
+fails even on an empty database. Recovery restores the pre-upgrade database;
+it discards all ordinary database changes made since that snapshot, including
+build history, configuration changes and new Runs. Older lossy downs could
+retain some surviving rows; restore-only recovery does not retain later writes.
 
-### Step R1: Stop JetBridge
+**An old image does NOT reliably refuse to start against a newer schema.**
+Each binary embeds its own migrations; historical binaries retain historical
+downs, and their migrate-to-latest path is not a compatibility guard.
+Restore the matching database before starting the old image.
 
-```bash
-# Stop the JetBridge server
-concourse land-worker  # if workers are running
-# Then stop the web server
-```
+### Step R1: Freeze deployment and stop writers
 
-### Step R2: Drop the Migrated Database
+This deployment has one web replica, a `Recreate` strategy, external PostgreSQL
+and a separate database-encryption Secret. `Recreate` alone does not prevent
+a reconciler or self-upgrade from starting the wrong image.
+
+1. Pause the self-upgrade job/pipeline and wait for any active deploy build to
+   finish or stop it. Suspend Argo automatic synchronization and self-heal,
+   including any parent application that could re-enable them; stop in-flight
+   synchronization. Record the desired image digests and replica count.
+2. Scale the web Deployment to zero and wait for its pods (including migration
+   init containers) to terminate. Quiesce step pods and other database writers.
+   Confirm no application sessions remain on the external database. Keep Argo
+   and self-upgrade paused throughout restoration.
+3. Save the failed database separately if post-upgrade data must be examined.
+   Select the exact pre-upgrade dump, its recorded image digest and its matching
+   encryption Secret. Do not select a backup with a wildcard.
+
+### Step R2: Recreate the external database
+
+Connect to the maintenance database on the **external PostgreSQL server**,
+confirm the target and owner, then drop and recreate only the application
+database. This destroys post-backup database changes.
 
 ```sql
--- Connect to a different database (e.g., postgres)
+-- Connected to postgres, with application writers stopped:
 DROP DATABASE concourse;
-CREATE DATABASE concourse;
+CREATE DATABASE concourse OWNER concourse;
 ```
 
-### Step R3: Restore from Backup
+### Step R3: Restore the exact backup
 
 ```bash
 pg_restore \
@@ -424,30 +462,37 @@ pg_restore \
   --port=5432 \
   --username=concourse \
   --dbname=concourse \
+  --exit-on-error \
   --verbose \
-  --clean \
-  --if-exists \
-  concourse-backup-*.dump
+  <exact-pre-upgrade-backup.dump>
 ```
 
-### Step R4: Restart Legacy Concourse
+Check the exit status and inspect the restored migration history before
+starting web. A failed restore is not a usable database.
 
-Start the original Concourse version against the restored database:
+### Step R4: Restore the matching image and key
 
-```bash
-# Start the original Concourse binary (not JetBridge)
-concourse web --postgres-host=<pg-host> ...
-concourse worker ...
-```
+While replicas remain zero, restore the database-encryption Secret version
+recorded with the backup and set the web and migration init to the same
+recorded image digest. Preserve the chart's first-init migration ordering and
+image coupling. Restore compatible artifact-daemon and related deployment
+configuration from the same release. Database restoration does not restore
+external artifact objects; verify the objects required by retained results.
 
-### Step R5: Verify Rollback
+Update Argo's desired configuration to this same image, Secret reference and
+release configuration before allowing reconciliation. Check the rendered
+Deployment: no init container may upgrade the restored database with the
+newer image. Then scale web to its original single replica.
 
-```sql
--- Confirm we're back at the original version
-SELECT version, status FROM migrations_history ORDER BY tstamp DESC LIMIT 1;
--- or
-SELECT version FROM schema_migrations;
-```
+### Step R5: Verify and resume automation
+
+Check migration logs and effective database version with the matching binary's
+`migrate --current-db-version`. Verify login, decryption, pipelines, retained
+build history and access to required artifacts. Keep scheduling paused until
+those checks pass. Resume Argo only after its desired state matches the
+restored deployment; resume self-upgrade only after preventing it from
+immediately redeploying the rejected image. Take a new backup before retrying
+an upgrade.
 
 ---
 

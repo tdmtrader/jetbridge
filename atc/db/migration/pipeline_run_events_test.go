@@ -48,36 +48,4 @@ var _ = Describe("run payload event partition", func() {
 		Expect(exists).To(BeTrue())
 	})
 
-	It("refuses a populated down migration and permits an empty one", func() {
-		_, _, runID := newPayload()
-		Expect(database.Close()).To(Succeed())
-		_, err := postgresRunner.TryOpenDBAtVersion(1773105507)
-		Expect(err).To(MatchError(ContainSubstring("cannot roll back pipeline template runs")))
-
-		database = postgresRunner.OpenDBAtVersion(pipelineRunEventsVersion)
-		_, err = database.Exec(`UPDATE pipeline_runs SET status = 'succeeded' WHERE id = $1`, runID)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = database.Exec(`DELETE FROM pipelines WHERE pipeline_run_id IS NOT NULL`)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = database.Exec(`DELETE FROM pipeline_runs`)
-		Expect(err).ToNot(HaveOccurred())
-		_, err = database.Exec(`DELETE FROM pipelines WHERE template`)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(database.Close()).To(Succeed())
-		_, err = postgresRunner.TryOpenDBAtVersion(1773105507)
-		Expect(err).ToNot(HaveOccurred())
-	})
-
-	It("restores ordinary pipeline event partitions on an empty down migration", func() {
-		Expect(database.Close()).To(Succeed())
-		downDatabase, err := postgresRunner.TryOpenDBAtVersion(1773105507)
-		Expect(err).ToNot(HaveOccurred())
-		DeferCleanup(func() { Expect(downDatabase.Close()).To(Succeed()) })
-
-		var pipelineID int
-		Expect(downDatabase.QueryRow(`INSERT INTO pipelines(team_id, name, secondary_ordering) SELECT id, 'ordinary-after-down', 1 FROM teams WHERE name = 'run-events' RETURNING id`).Scan(&pipelineID)).To(Succeed())
-		var exists bool
-		Expect(downDatabase.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`, fmt.Sprintf("pipeline_build_events_%d", pipelineID)).Scan(&exists)).To(Succeed())
-		Expect(exists).To(BeTrue())
-	})
 })

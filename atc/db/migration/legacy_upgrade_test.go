@@ -27,7 +27,7 @@ import (
 // versions (v7.13, v8.0.1) to JetBridge HEAD, ensuring that all pipeline
 // data survives the migration intact. They also validate the migration
 // runbook's pre-flight script, garden-era data cleanup, idempotency, and
-// rollback procedures.
+// forward data preservation.
 
 // v7.13.x ends at this migration version
 const v713LastMigration = 1666754000
@@ -277,59 +277,6 @@ var _ = Describe("Legacy Database Upgrade", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			expectRowCount(db, "teams", 1)
-		})
-	})
-
-	Describe("Migration rollback", func() {
-		It("can migrate down from JetBridge HEAD to v8.0.1", func() {
-			By("Migrating to JetBridge HEAD")
-			err := migrator.Migrate(nil, nil, jetbridgeHeadMigration)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Inserting data at HEAD")
-			mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
-			mustExec(db, `INSERT INTO components(id, name) VALUES(1, 'scheduler')`)
-
-			By("Rolling back to v8.0.1")
-			err = migrator.Migrate(nil, nil, v801LastMigration)
-			Expect(err).NotTo(HaveOccurred())
-			ExpectDatabaseMigrationVersionToEqual(migrator, v801LastMigration)
-
-			By("Verifying teams survived rollback")
-			expectRowCount(db, "teams", 1)
-
-			By("Verifying component columns were restored")
-			for _, col := range []string{"interval", "paused"} {
-				var exists bool
-				err = db.QueryRow(
-					"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'components' AND column_name = $1)",
-					col,
-				).Scan(&exists)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(exists).To(BeTrue(), "column components.%s should be restored after rollback", col)
-			}
-
-			By("Verifying components survived rollback")
-			expectRowCount(db, "components", 1)
-		})
-
-		It("can migrate back up after a rollback", func() {
-			By("Migrating to HEAD, rolling back, then migrating up again")
-			err := migrator.Migrate(nil, nil, jetbridgeHeadMigration)
-			Expect(err).NotTo(HaveOccurred())
-
-			mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
-
-			err = migrator.Migrate(nil, nil, v801LastMigration)
-			Expect(err).NotTo(HaveOccurred())
-
-			err = migrator.Up(nil, nil)
-			Expect(err).NotTo(HaveOccurred())
-			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
-
-			By("Verifying data survived the round-trip")
-			expectRowCount(db, "teams", 1)
-			verifyJetBridgeSchemaChanges(db)
 		})
 	})
 

@@ -88,15 +88,4 @@ var _ = Describe("simplify Run contract upgrade", func() {
 		Expect(err).To(MatchError(ContainSubstring("pipeline_run_result_shape")))
 	})
 
-	It("restores the previous shapes on an empty rollback and can upgrade again", func() {
-		Expect(database.Close()).To(Succeed())
-		database = postgresRunner.OpenDBAtVersion(simplifyRunContractVersion)
-		Expect(database.Close()).To(Succeed())
-		database = postgresRunner.OpenDBAtVersion(simplifyRunContractVersion - 1)
-		var epoch int
-		Expect(database.QueryRow(`SELECT epoch FROM pipeline_run_activation`).Scan(&epoch)).To(Succeed())
-		Expect(epoch).To(BeZero())
-		Expect(database.Close()).To(Succeed())
-		database = postgresRunner.OpenDBAtVersion(simplifyRunContractVersion)
-	})
 })

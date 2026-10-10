@@ -10,7 +10,7 @@ import (
 // The rename is only safe if the trigger bodies moved with the column: a
 // RENAME COLUMN leaves PL/pgSQL text alone, so a function that still says
 // source_lease_id compiles fine and fails on its first row. Both triggers are
-// therefore driven through a real row on either side of the migration.
+// therefore driven through a real row after the migration.
 var _ = Describe("renaming source_lease_id to source_hold_id", func() {
 	const preMigrationVersion = 1789792877
 	const postMigrationVersion = 1789793120
@@ -50,7 +50,7 @@ var _ = Describe("renaming source_lease_id to source_hold_id", func() {
 		"hangar_pre_reservation_cancel_dispositions",
 	}
 
-	It("renames the column on every table that carries it, and back", func() {
+	It("renames the column on every table that carries it", func() {
 		for _, table := range tables {
 			Expect(columns(table)).To(Equal([]string{"source_lease_id"}), table)
 		}
@@ -60,10 +60,6 @@ var _ = Describe("renaming source_lease_id to source_hold_id", func() {
 			Expect(columns(table)).To(Equal([]string{"source_hold_id"}), table)
 		}
 
-		postgresRunner.MigrateToVersion(preMigrationVersion)
-		for _, table := range tables {
-			Expect(columns(table)).To(Equal([]string{"source_lease_id"}), table)
-		}
 	})
 
 	It("moves the trigger bodies with the column", func() {

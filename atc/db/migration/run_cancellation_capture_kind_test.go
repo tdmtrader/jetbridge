@@ -40,7 +40,7 @@ var _ = Describe("Run cancellation capture kind migration", func() {
 		DeferCleanup(func() { Expect(database.Close()).To(Succeed()) })
 	})
 
-	It("renames the live capture kind, drops the two dead kinds and remaps the cycle, and goes back", func() {
+	It("renames the live capture kind, drops the two dead kinds and remaps the cycle", func() {
 		setup, err := database.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		_, err = setup.Exec(`SET LOCAL session_replication_role = replica`)
@@ -67,10 +67,5 @@ var _ = Describe("Run cancellation capture kind migration", func() {
 		Expect(err).To(HaveOccurred(), "the handoff kind is refused")
 		_, err = database.Exec(`UPDATE pipeline_run_cancellation_operations SET kind = 'build_abort' WHERE kind = 'capture_cancel_or_settle'`)
 		Expect(err).To(MatchError(ContainSubstring("immutable")), "the identity trigger is back on")
-		Expect(database.Close()).To(Succeed())
-
-		database = postgresRunner.OpenDBAtVersion(captureKindVersion - 1)
-		Expect(kinds()).To(Equal([]string{"handoff_classify", "build_abort"}))
-		Expect(progress()).To(Equal([2]int{4, 7}))
 	})
 })

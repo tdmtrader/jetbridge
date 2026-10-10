@@ -1,0 +1,108 @@
+package migration_test
+
+import (
+	"database/sql"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/concourse/concourse/atc/db/migration"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// schemaFingerprint captures columns, constraints, indexes, triggers and function bodies.
+func schemaFingerprint(database *sql.DB) []string {
+	rows, err := database.Query(`
+		SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '')
+		  FROM information_schema.columns WHERE table_schema = 'public'
+		UNION ALL
+		SELECT 'constraint ' || conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
+		  FROM pg_constraint WHERE connamespace = 'public'::regnamespace
+		UNION ALL
+		SELECT 'index ' || indexdef FROM pg_indexes WHERE schemaname = 'public'
+		UNION ALL
+		SELECT 'trigger ' || tgrelid::regclass::text || ' ' || tgname || ' ' || pg_get_triggerdef(oid)
+		  FROM pg_trigger WHERE NOT tgisinternal
+		UNION ALL
+		SELECT 'function ' || pg_get_functiondef(p.oid)
+		  FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace`)
+	Expect(err).NotTo(HaveOccurred())
+	defer rows.Close()
+	var shape []string
+	for rows.Next() {
+		var line string
+		Expect(rows.Scan(&line)).To(Succeed())
+		shape = append(shape, line)
+	}
+	Expect(rows.Err()).NotTo(HaveOccurred())
+	sort.Strings(shape)
+	return shape
+}
+
+var _ = Describe("Fork migrations are forward-only", func() {
+	It("embeds an explicit failing down for every SQL migration after the upstream boundary", func() {
+		migrations, err := migration.NewMigrator(nil, nil).Migrations()
+		Expect(err).NotTo(HaveOccurred())
+		ups, downs := map[int]bool{}, map[int]bool{}
+		for _, m := range migrations {
+			if m.Version <= v801LastMigration || m.Strategy != migration.SQLMigration {
+				continue
+			}
+			if m.Direction == "up" {
+				ups[m.Version] = true
+				continue
+			}
+			downs[m.Version] = true
+			Expect(strings.TrimSpace(m.Statements)).To(Equal(fmt.Sprintf(
+				"DO $$ BEGIN RAISE EXCEPTION 'migration %d is forward-only: restore the pre-upgrade database backup instead'; END $$;", m.Version)), m.Name)
+		}
+		Expect(ups).NotTo(BeEmpty())
+		Expect(downs).To(Equal(ups), "every fork SQL up must have its failing down")
+	})
+
+	DescribeTable("refuses HEAD to the upstream boundary without changing schema, data or effective version", func(populated bool) {
+		database := postgresRunner.OpenDBAtVersion(v801LastMigration)
+		// Failure history is recorded outside the failing migration transaction.
+		database.SetMaxOpenConns(2)
+		DeferCleanup(func() { Expect(database.Close()).To(Succeed()) })
+		migrator := migration.NewMigrator(database, nil)
+		head, err := migrator.SupportedVersion()
+		Expect(err).NotTo(HaveOccurred())
+		if populated {
+			insertV801FixtureData(database)
+		}
+		Expect(migrator.Up(nil, nil)).To(Succeed())
+		before := schemaFingerprint(database)
+		dataSnapshot := func() map[string]string {
+			GinkgoHelper()
+			snapshot := map[string]string{}
+			for _, table := range []string{"teams", "pipelines", "jobs", "builds", "components"} {
+				var rows string
+				Expect(database.QueryRow("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id)::text, '[]') FROM " + table + " t").Scan(&rows)).To(Succeed())
+				snapshot[table] = rows
+			}
+			return snapshot
+		}
+		dataBefore := dataSnapshot()
+		var historyBefore int
+		Expect(database.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyBefore)).To(Succeed())
+
+		err = migrator.Migrate(nil, nil, v801LastMigration)
+		Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf(
+			"migration %d is forward-only: restore the pre-upgrade database backup instead", head))))
+		Expect(schemaFingerprint(database)).To(Equal(before))
+		ExpectDatabaseMigrationVersionToEqual(migrator, head)
+		Expect(dataSnapshot()).To(Equal(dataBefore))
+		var historyAfter, failed int
+		Expect(database.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyAfter)).To(Succeed())
+		Expect(historyAfter).To(Equal(historyBefore + 1))
+		Expect(database.QueryRow("SELECT count(*) FROM migrations_history WHERE version=$1 AND direction='down' AND status='failed' AND NOT dirty", head).Scan(&failed)).To(Succeed())
+		Expect(failed).To(Equal(1))
+		Expect(database.Close()).To(Succeed())
+		database = postgresRunner.OpenDBAtVersion(head)
+		Expect(dataSnapshot()).To(Equal(dataBefore))
+		Expect(schemaFingerprint(database)).To(Equal(before))
+		ExpectDatabaseMigrationVersionToEqual(migration.NewMigrator(database, nil), head)
+	}, Entry("empty database", false), Entry("populated database", true))
+})

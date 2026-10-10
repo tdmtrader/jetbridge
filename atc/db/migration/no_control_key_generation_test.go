@@ -34,16 +34,16 @@ var _ = Describe("Hangar no_control_key_generation migration", func() {
 		"pipeline_run_executions": 1, "pipeline_run_input_uploads": 1, "pipeline_run_inputs": 1,
 	}
 
-	columnShape := func(table string) (exists bool, nullable, dflt string) {
+	columnShape := func(table string) (exists bool, nullable string) {
 		GinkgoHelper()
-		var isNullable, columnDefault sql.NullString
-		err := database.QueryRow(`SELECT is_nullable, column_default FROM information_schema.columns
-			WHERE table_name = $1 AND column_name = 'activation_epoch'`, table).Scan(&isNullable, &columnDefault)
+		var isNullable string
+		err := database.QueryRow(`SELECT is_nullable FROM information_schema.columns
+			WHERE table_name = $1 AND column_name = 'activation_epoch'`, table).Scan(&isNullable)
 		if err == sql.ErrNoRows {
-			return false, "", ""
+			return false, ""
 		}
 		Expect(err).NotTo(HaveOccurred(), table)
-		return true, isNullable.String, columnDefault.String
+		return true, isNullable
 	}
 
 	functionsNamingTheEpoch := func() []string {
@@ -75,7 +75,7 @@ var _ = Describe("Hangar no_control_key_generation migration", func() {
 		// Written with triggers off: the old shape's deferred checks want a
 		// whole Run, a whole build and a whole admitted upload around each
 		// row, and what is being arranged is one row per table that the
-		// migration must carry across and give back.
+		// migration must carry across.
 		setup, err := database.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		_, err = setup.Exec(`SET LOCAL session_replication_role = replica`)
@@ -113,15 +113,15 @@ var _ = Describe("Hangar no_control_key_generation migration", func() {
 		Expect(database.Close()).To(Succeed())
 	})
 
-	It("drops the generation from every Hangar row and its guards, keeps the Run epoch, and comes back lossily as generation 1", func() {
+	It("drops the generation from every Hangar row and its guards, keeps the Run epoch", func() {
 		database = postgresRunner.OpenDBAtVersion(noControlKeyGenerationVersion)
 
 		for _, table := range tables {
-			exists, _, _ := columnShape(table)
+			exists, _ := columnShape(table)
 			Expect(exists).To(BeFalse(), table+".activation_epoch survived")
 			Expect(rowCount(table)).To(Equal(seeded[table]), table+" lost rows")
 		}
-		exists, nullable, _ := columnShape("pipeline_runs")
+		exists, nullable := columnShape("pipeline_runs")
 		Expect(exists).To(BeTrue(), "the Run contract's own epoch was touched")
 		Expect(nullable).To(Equal("YES"))
 
@@ -139,28 +139,5 @@ var _ = Describe("Hangar no_control_key_generation migration", func() {
 		Expect(err).To(MatchError(ContainSubstring("immutable")), "the rewritten immutability guard no longer guards")
 		_, err = database.Exec(`UPDATE pipeline_run_input_uploads SET input_name = 'other' WHERE reservation_id = $1`, reservation)
 		Expect(err).To(MatchError(ContainSubstring("immutable")), "the rewritten immutability guard no longer guards")
-		Expect(database.Close()).To(Succeed())
-
-		// Down: the generation is not reconstructible, so every row comes
-		// back as generation 1 under a NOT NULL DEFAULT 1 column, and the
-		// five guards get their epoch predicates back.
-		database = postgresRunner.OpenDBAtVersion(noControlKeyGenerationVersion - 1)
-		for _, table := range tables {
-			exists, nullable, dflt := columnShape(table)
-			Expect(exists).To(BeTrue(), table)
-			Expect(nullable).To(Equal("NO"), table)
-			Expect(dflt).To(Equal("1"), table)
-			var generationOne, total int
-			Expect(database.QueryRow(`SELECT count(*) FILTER (WHERE activation_epoch = 1), count(*) FROM `+table).
-				Scan(&generationOne, &total)).To(Succeed())
-			Expect(total).NotTo(BeZero(), table)
-			Expect(generationOne).To(Equal(total), table)
-		}
-		var check string
-		Expect(database.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
-			WHERE conrelid = 'pipeline_run_executions'::regclass AND conname = 'pipeline_run_executions_activation_epoch_check'`).
-			Scan(&check)).To(Succeed())
-		Expect(check).To(Equal("CHECK ((activation_epoch > 0))"))
-		Expect(functionsNamingTheEpoch()).To(HaveLen(7))
 	})
 })

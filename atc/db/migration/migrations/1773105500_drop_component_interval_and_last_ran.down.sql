@@ -1,2 +1,1 @@
-ALTER TABLE components ADD COLUMN interval text NOT NULL DEFAULT '0s';
-ALTER TABLE components ADD COLUMN last_ran timestamp with time zone;
+DO $$ BEGIN RAISE EXCEPTION 'migration 1773105500 is forward-only: restore the pre-upgrade database backup instead'; END $$;

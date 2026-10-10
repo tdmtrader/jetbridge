@@ -32,53 +32,6 @@ type RetainedRunDefinition struct {
 
 func RunDefinitionDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-		brine.DefineMap[RetainedRunDefinition, RetainedRunDefinition]("the encrypted database rolls back the empty definition migration", func(in RetainedRunDefinition, _ brine.Params, _ *brine.Recorder) (RetainedRunDefinition, error) {
-			key, err := definitionEncryptionKey("AES256Key-32Characters1234567890")
-			if err != nil {
-				return in, err
-			}
-			conn := in.DB.runner.OpenSingleton()
-			conn.SetMaxOpenConns(4)
-			defer conn.Close()
-			migrator := migration.NewMigrator(conn, in.DB.LockFactory)
-			migrations, err := migrator.Migrations()
-			if err != nil {
-				return in, err
-			}
-			head, err := migrator.SupportedVersion()
-			if err != nil {
-				return in, err
-			}
-			target, previous := 0, 0
-			for _, migration := range migrations {
-				if strings.HasSuffix(migration.Name, "_retain_run_definitions.up.sql") {
-					target = migration.Version
-				}
-			}
-			for _, migration := range migrations {
-				if migration.Direction == "up" && migration.Version < target && migration.Version > previous {
-					previous = migration.Version
-				}
-			}
-			if target == 0 || previous == 0 {
-				return in, fmt.Errorf("could not locate the definition migration and its predecessor")
-			}
-			if err := migrator.Migrate(key, nil, head); err != nil {
-				return in, err
-			}
-			in.MutationErr = migrator.Migrate(key, nil, previous)
-			if in.MutationErr == nil {
-				version, err := migrator.CurrentVersion()
-				if err != nil {
-					return in, err
-				}
-				if version != previous {
-					return in, fmt.Errorf("migration remained at %d instead of %d", version, previous)
-				}
-			}
-			return in, nil
-		}),
-		CheckThat[RetainedRunDefinition]("the schema rollback completes without losing encryption support", func(in RetainedRunDefinition) error { return in.MutationErr }),
 		brine.DefineMapUsing[brine.Empty, RetainedRunDefinition]("a Run admitted from a parameterized template", []string{"jetbridge-db"}, func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (RetainedRunDefinition, error) {
 			return retainedDefinitionFixture(res, false)
 		}),
