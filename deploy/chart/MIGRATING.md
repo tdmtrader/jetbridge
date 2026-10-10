@@ -48,7 +48,7 @@ auditing, or optional infrastructure.
 | `rbac.brineLive`, `rbac.brineLiveServiceAccount` | Remove them. The render fails with "rbac.brineLive has been removed; the brine live tier's identity is not part of the chart" (and the same for `rbac.brineLiveServiceAccount`). The chart no longer renders the `<fullname>-brine-live` ClusterRole, its ClusterRoleBinding or the named ServiceAccount, and an upgrade prunes them. If you run the brine live tier, declare its ServiceAccount, ClusterRole and ClusterRoleBinding outside the chart, beside the cluster's other test identities (JetBridge's own cluster names all three `jetbridge-brine-live`). Copy the rules from the template's last version, `git show dba4b49803:deploy/chart/templates/brine-live-rbac.yaml`, and write the binding subject's namespace out, since nothing fills it in any more. Map the brine job and `main/one-off` to that ServiceAccount with `kubernetes.stepPodGrants`. Create it before upgrading, so no brine build runs without it. |
 | `secrets.create` | Remove it, including `false`. The render fails with "secrets.create has been removed; name a Secret holding session_signing_key in secrets.signingKeySecret, which every web pod mounts". `secrets.signingKeySecret` is now required; without it the render fails naming it. Create the Secret once: `concourse generate-key -t rsa -f session_signing_key`, or without the concourse binary `openssl genrsa -out session_signing_key 4096` (web reads a PKCS#1 or PKCS#8 PEM), then `kubectl create secret generic <name> --from-file=session_signing_key`, and set `secrets.signingKeySecret: <name>`. A release that ran with `create: true` keeps an orphaned `<fullname>-keys` Secret after the upgrade, because it carried `helm.sh/resource-policy: keep`; nothing mounts it, so delete it by hand. That release's sessions reset once, because the old key lived in each pod's emptyDir and is gone with it. A release already on `create: false` with a named Secret renders unchanged apart from dropping the value. |
 | `otelMetrics` and `--otel-metrics-*` | Remove them. ATC OTel metrics instruments and both OTLP/GCP export paths are retired. Use `metrics.enabled` for Prometheus; `tracing.*` still exports traces. OTel-only measurements are retired, not replaced by equivalent Prometheus series. |
-| `web.extraArgs` | Remove it. The render fails with "web.extraArgs has been removed; pass-through flags are gone". Move each flag to its typed value: `--cookie-secure` needs nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://` (behind a TLS-terminating proxy with an `http://` URL, set `CONCOURSE_COOKIE_SECURE=true` in `web.env` for now); `--kubernetes-pod-scheduling-timeout` is `kubernetes.podSchedulingTimeout`; `--default-task-cpu-request` is `kubernetes.defaultTaskCPURequest` (millicores); `--kubernetes-preferred-step-node` is `kubernetes.preferredStepNode` (`key=value`); the OTLP flags are `tracing.otlpAddress` and `tracing.serviceName` for traces. A flag with no typed value (OIDC and other auth providers, until they get theirs) goes through `web.env` as its `CONCOURSE_*` variable for now. |
+| `web.extraArgs` | Remove it. The render fails with "web.extraArgs has been removed; pass-through flags are gone". Move each flag to its typed value: `--cookie-secure` needs nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://` (behind a TLS-terminating proxy with an `http://` URL, set `CONCOURSE_COOKIE_SECURE=true` in `web.env` for now); `--kubernetes-pod-scheduling-timeout` is `kubernetes.podSchedulingTimeout`; `--default-task-cpu-request` is `kubernetes.defaultTaskCPURequest` (millicores); `--kubernetes-preferred-step-node` is `kubernetes.preferredStepNode` (`key=value`); the OTLP flags are `tracing.otlpAddress` and `tracing.serviceName` for traces. Retained flags with no typed value can use their `CONCOURSE_*` variables through `web.env`. |
 | `image.repository`, `web.externalUrl`, `web.localUsers`, `web.mainTeamLocalUser` | Now required. The chart's `concourse-local` image, `http://localhost:8080` URL and `test:test` main-team admin defaults are gone, and a render that leaves any of them out fails naming it. Set the image repository you deploy, the URL users reach the UI at, the local users (`user:password`, comma-separated) and the main-team admin. A release that relied on the old defaults sets them explicitly to keep its behaviour. |
 
 Keep `postgresql.enabled`, ingress/native TLS choices, monitoring resources,
@@ -165,3 +165,42 @@ Release server and bundled clients together: Run responses no longer expose
 `activation_epoch` or `run_contract_version`; requests/responses no longer
 carry `caused_by_run` or `correlation`; terminal results no longer carry
 `version`. The shared Run client and MCP observations use the same new shape.
+
+## C6: local authentication and Kubernetes credentials (2026-10-09)
+
+This is a breaking reduction of binary capabilities. Authentication accepts only
+local users; configure `web.localUsers` and `web.mainTeamLocalUser`. GitHub,
+GitLab, LDAP, SAML, OIDC, OAuth2, CloudFoundry, Bitbucket Cloud and Microsoft
+identity-provider connectors, their server flags, and their `fly set-team`
+flags are removed. Team files reject unsupported connector sections, including
+mixed local/external files, instead of silently dropping members. Deliberately
+replace external team membership with local users before upgrading.
+
+Kubernetes Secrets is the retained production secret backend. Vault, CredHub,
+AWS SSM, AWS Secrets Manager and Conjur managers and their flags/environment
+configuration are removed from both binaries. Dummy, noop and ID-token support
+remain; pipeline `var_sources` support only `dummy` and `idtoken`. Kubernetes is
+not a pipeline var_source replacement: move secret lookups into the global
+Kubernetes credential manager deliberately. Generic variable resolution remains.
+
+Before rollout, inventory saved pipeline configurations through the decrypting
+application API (`fly get-pipeline`) and team auth through the team API. Do not
+search encrypted database payloads with SQL. The integrator's 2026-10-09 check of
+concourse.home found all seven pipelines had zero var_sources and main had only
+`local:admin` and `local:live-tests`; no persisted consumers needed migration.
+Recheck if configuration changed after that inventory. No database migration or
+purge of teams, users or tokens is required. Dex still replaces connector
+registrations at startup; local browser/Fly login, refresh and MCP auth remain.
+
+Datadog/DogStatsD, InfluxDB and New Relic metric emitters and their flags are
+removed. Use Prometheus (`metrics.enabled`). Lager remains a manual alternative:
+set `metrics.enabled=false` and `serviceMonitor.enabled=false`, set
+`CONCOURSE_EMIT_TO_LOGS=true` via `web.env` and `web.logLevel=debug`. Only one emitter can be configured.
+
+`web.env` remains available for retained settings, including encryption. These
+capabilities were previously reachable through environment configuration and
+pipeline sources, despite having no dedicated chart values; this cut is not a
+chart-only removal. No chart keys or schema entries change.
+
+After upgrade, verify local browser and Fly login, token refresh, MCP sign-in,
+Kubernetes secret resolution and Prometheus scraping in the deployed cluster.

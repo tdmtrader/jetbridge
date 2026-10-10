@@ -1,12 +1,15 @@
 package creds_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/integration/internal/dctest"
 	"github.com/concourse/concourse/integration/internal/flytest"
+	"github.com/concourse/concourse/integration/internal/ypath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,20 +53,34 @@ var teamVars = map[string]any{
 	"resource_version": "exposed some version not-so-secret",
 }
 
-func testCredentialManagement(
-	t *testing.T,
-	fly flytest.Cmd,
-	dc dctest.Cmd,
-	setTeamVar func(string, string, any),
-	setPipelineVar func(string, string, string, any),
-) {
-	for name, val := range teamVars {
-		setTeamVar("main", name, val)
-	}
+func TestCredentialManagement(t *testing.T) {
+	t.Parallel()
 
-	for name, val := range pipelineVars {
-		setPipelineVar("main", "test", name, val)
+	// Exercise generic interpolation through the retained dummy manager. Scope
+	// its values just as a production manager scopes team and pipeline secrets.
+	values := map[string]any{}
+	for name, value := range teamVars {
+		values["main/"+name] = value
 	}
+	for name, value := range pipelineVars {
+		values["main/test/"+name] = value
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	args := []string{"web"}
+	for _, name := range names {
+		value, err := json.Marshal(values[name])
+		require.NoError(t, err)
+		args = append(args, "--dummy-creds-var", name+"="+strings.ReplaceAll(string(value), "$", "$$"))
+	}
+	doc := ypath.Load(t, "../docker-compose.yml")
+	doc.Replace(t, "$.services.web.command", args)
+	dc := dctest.InitDynamic(t, doc, "..")
+	dc.Run(t, "up", "-d")
+	fly := flytest.Init(t, dc)
 
 	t.Run("pipelines", func(t *testing.T) {
 		fly.Run(t, "set-pipeline", "-n", "-c", "pipelines/credential-management.yml", "-p", "test")

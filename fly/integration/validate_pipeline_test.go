@@ -1,7 +1,9 @@
 package integration_test
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,6 +13,21 @@ import (
 )
 
 var _ = Describe("validate-pipeline", func() {
+	DescribeTable("rejects retired var_sources", func(sourceType string) {
+		config := filepath.Join(GinkgoT().TempDir(), "pipeline.yml")
+		Expect(os.WriteFile(config, []byte("var_sources:\n- name: retired\n  type: "+sourceType+"\n  config: {}\njobs: []\n"), 0600)).To(Succeed())
+		sess, err := gexec.Start(exec.Command(flyPath, "validate-pipeline", "-c", config), GinkgoWriter, GinkgoWriter)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(sess).Should(gexec.Exit(1))
+		Expect(sess.Err).To(gbytes.Say("unsupported credential manager type: " + sourceType))
+	},
+		Entry("Vault", "vault"),
+		Entry("CredHub", "credhub"),
+		Entry("SSM", "ssm"),
+		Entry("Secrets Manager", "secretsmanager"),
+		Entry("Conjur", "conjur"),
+	)
+
 	It("returns valid on valid configuration", func() {
 		flyCmd := exec.Command(
 			flyPath,

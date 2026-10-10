@@ -92,7 +92,7 @@ var _ = Describe("JWKSVerifier", func() {
 					"preferred_username": "testuser",
 					"groups":             []string{"team-a", "team-b"},
 					"federated_claims": map[string]any{
-						"connector_id": "microsoft",
+						"connector_id": "local",
 						"user_id":      "ms-user-456",
 					},
 				},
@@ -110,7 +110,7 @@ var _ = Describe("JWKSVerifier", func() {
 
 			federated, ok := claims["federated_claims"].(map[string]any)
 			Expect(ok).To(BeTrue())
-			Expect(federated["connector_id"]).To(Equal("microsoft"))
+			Expect(federated["connector_id"]).To(Equal("local"))
 			Expect(federated["user_id"]).To(Equal("ms-user-456"))
 		})
 	})

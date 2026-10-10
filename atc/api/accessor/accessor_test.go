@@ -742,7 +742,7 @@ var _ = Describe("Accessor", func() {
 
 		Context("when there is a valid token", func() {
 			BeforeEach(func() {
-				displayUserIdConfig = map[string]string{"oidc": "user_id"}
+				displayUserIdConfig = map[string]string{"local": "user_id"}
 
 				verification.HasToken = true
 				verification.IsTokenValid = true
@@ -753,7 +753,7 @@ var _ = Describe("Accessor", func() {
 					"email":              "some-email",
 					"federated_claims": map[string]any{
 						"user_id":      "some-id",
-						"connector_id": "oidc",
+						"connector_id": "local",
 					},
 				}
 			})
@@ -768,14 +768,14 @@ var _ = Describe("Accessor", func() {
 					IsAdmin:       false,
 					IsSystem:      false,
 					Teams:         map[string][]string{},
-					Connector:     "oidc",
+					Connector:     "local",
 					DisplayUserId: "some-id",
 				}))
 			})
 
 			DescribeTable("DisplayUserId for the field configured on the connector",
 				func(fieldName string, expected string) {
-					generator, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"oidc": fieldName})
+					generator, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": fieldName})
 					Expect(err).NotTo(HaveOccurred())
 
 					access = accessor.NewAccessor(verification, requiredRole, "sub", []string{"system"}, teams, generator)
@@ -896,44 +896,6 @@ var _ = Describe("Accessor", func() {
 					teamFixtures[2].Auth = atc.TeamAuth{
 						"viewer": map[string][]string{
 							"users": {"some-connector:some-user-name"},
-						},
-					}
-				})
-
-				It("returns result with teams", func() {
-					Expect(result["some-team-1"]).To(ContainElement("owner"))
-					Expect(result["some-team-2"]).To(ContainElement("member"))
-					Expect(result["some-team-3"]).To(ContainElement("viewer"))
-				})
-			})
-
-			Context("when the user is granted a role from a group by connector cloudfoundry", func() {
-				BeforeEach(func() {
-					verification.RawClaims = map[string]any{
-						"sub":                "some-sub",
-						"name":               "some-name",
-						"preferred_username": "some-user-name",
-						"email":              "some-email",
-						"federated_claims": map[string]any{
-							"connector_id": "cloudfoundry",
-							"user_id":      "some-user-id",
-						},
-						"groups": []any{"some-group", "some-other-group"},
-					}
-
-					teamFixtures[0].Auth = atc.TeamAuth{
-						"owner": map[string][]string{
-							"users": {"cf:some-user-id"},
-						},
-					}
-					teamFixtures[1].Auth = atc.TeamAuth{
-						"member": map[string][]string{
-							"groups": {"cf:some-group"},
-						},
-					}
-					teamFixtures[2].Auth = atc.TeamAuth{
-						"viewer": map[string][]string{
-							"groups": {"cf:some-other-group"},
 						},
 					}
 				})

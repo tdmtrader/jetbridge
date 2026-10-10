@@ -98,8 +98,7 @@ The identity a role is assigned to: a user or a group, qualified by the
 connector that vouches for it.
 
 **Connector**:
-The identity provider that authenticates users (GitHub, LDAP, OIDC and so
-on). The local password store is a connector too.
+The local password store that authenticates users.
 
 **Local user**:
 A user declared on the command line and authenticated by the local

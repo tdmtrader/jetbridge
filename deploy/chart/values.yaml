@@ -104,13 +104,11 @@ web:
 
   # -- Additional environment variables for the web container.
   # Supports both literal values and valueFrom (secretKeyRef, configMapKeyRef):
-  #   - name: CONCOURSE_GITHUB_CLIENT_ID
-  #     value: "my-client-id"
-  #   - name: CONCOURSE_GITHUB_CLIENT_SECRET
+  #   - name: CONCOURSE_ENCRYPTION_KEY
   #     valueFrom:
   #       secretKeyRef:
-  #         name: github-oauth
-  #         key: client-secret
+  #         name: concourse-encryption
+  #         key: encryption-key
   env: []
 
 

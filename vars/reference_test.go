@@ -91,18 +91,18 @@ var _ = Describe("Reference", func() {
 			},
 			{
 				desc: "empty path segment",
-				raw:  `vault:.field`,
-				err:  `invalid var 'vault:.field': empty field`,
+				raw:  `source:.field`,
+				err:  `invalid var 'source:.field': empty field`,
 			},
 			{
 				desc: "empty quoted path segment",
-				raw:  `vault:"".field`,
-				err:  `invalid var 'vault:"".field': empty field`,
+				raw:  `source:"".field`,
+				err:  `invalid var 'source:"".field': empty field`,
 			},
 			{
 				desc: "no path segments",
-				raw:  `vault:`,
-				err:  `invalid var 'vault:': empty field`,
+				raw:  `source:`,
+				err:  `invalid var 'source:': empty field`,
 			},
 			{
 				desc: "trims spaces in path segments",

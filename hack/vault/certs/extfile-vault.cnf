@@ -1,3 +1,0 @@
-subjectAltName = IP:127.0.0.1,DNS:vault
-extendedKeyUsage = serverAuth,clientAuth
-keyUsage = digitalSignature,keyEncipherment,dataEncipherment,keyAgreement

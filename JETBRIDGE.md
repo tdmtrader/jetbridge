@@ -127,7 +127,7 @@ is best-effort — failures are logged and do not block the rest of the sweep.
   etc.) are mapped to their standard Docker images.
 - **Web UI**: Identical.
 - **PostgreSQL schema**: Same database, same migrations.
-- **Auth**: Same OIDC/OAuth/local user configuration.
+- **Auth**: Local users with browser login and renewable sessions.
 - **API**: Same REST API (plus new health endpoint, see below).
 
 ## New Pipeline Features
@@ -434,8 +434,8 @@ See `deploy/chart/values.yaml` for all configurable parameters and
 
 - **Database**: Use an external managed database (Cloud SQL, RDS).
   Set `postgresql.enabled=false` and provide `postgresql.host`/`postgresql.port`.
-- **Auth**: Add OIDC/OAuth through `web.env` (`CONCOURSE_OIDC_*` and the like), and keep `web.localUsers` to a
-  strong admin credential.
+- **Auth**: Configure local users with strong credentials in `web.localUsers`
+  and assign admins through `web.mainTeamLocalUser`.
 - **Secrets**: The signing-key Secret in `secrets.signingKeySecret` is
   required. Generate the key once, outside the chart; every web replica
   mounts the same Secret, so sessions work across replicas and restarts.

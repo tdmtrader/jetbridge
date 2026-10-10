@@ -47,7 +47,7 @@ type runPipelineStepDelegate struct {
 // team, the template, the params -- is the data.
 //
 // The params are what the run will record, which is credential *references*
-// (`((vault/x))`) rather than the secrets they name; only the calling build's
+// (`((secret/x))`) rather than the secrets they name; only the calling build's
 // own local vars are resolved by the time they get here. An agent that must
 // judge a run by a secret's value cannot, by construction, and that is the
 // same deal set_pipeline's check offers for the config it screens.

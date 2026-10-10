@@ -690,7 +690,7 @@ func validateVarSources(c atc.Config) ([]atc.ConfigWarning, error) {
 
 		if factory, exists := creds.ManagerFactories()[varSource.Type]; exists {
 			switch varSource.Type {
-			case "vault", "dummy", "ssm", "secretsmanager", "idtoken":
+			case "dummy", "idtoken":
 			default:
 				errorMessages = append(errorMessages, fmt.Sprintf("credential manager type %s is not supported in pipeline yet", varSource.Type))
 			}
@@ -712,7 +712,7 @@ func validateVarSources(c atc.Config) ([]atc.ConfigWarning, error) {
 				errorMessages = append(errorMessages, fmt.Sprintf("failed to create credential manager %s: %s", varSource.Name, err.Error()))
 			}
 		} else {
-			errorMessages = append(errorMessages, fmt.Sprintf("unknown credential manager type: %s", varSource.Type))
+			errorMessages = append(errorMessages, fmt.Sprintf("unsupported credential manager type: %s (pipeline var_sources support only dummy and idtoken)", varSource.Type))
 		}
 	}
 

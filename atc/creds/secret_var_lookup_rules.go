@@ -1,13 +1,5 @@
 package creds
 
-import (
-	"bytes"
-	"errors"
-	"io"
-	"text/template"
-	"text/template/parse"
-)
-
 // SecretLookupPath transforms variable name into full secret path
 type SecretLookupPath interface {
 	VariableToSecretPath(string) (string, error)
@@ -26,72 +18,4 @@ func NewSecretLookupWithPrefix(prefix string) SecretLookupPath {
 
 func (sl secretLookupWithPrefix) VariableToSecretPath(path string) (string, error) {
 	return sl.Prefix + path, nil
-}
-
-// SecretLookupWithTemplate uses the given template to construct a lookup path specific
-// to a team and (optionally) pipeline
-type SecretTemplate struct {
-	*template.Template
-	pipelineDependent bool
-}
-
-type SecretLookupWithTemplate struct {
-	PathTemplate *SecretTemplate
-	TeamName     string
-	PipelineName string
-}
-
-func BuildSecretTemplate(name, tmpl string) (*SecretTemplate, error) {
-	t, err := template.New(name).Option("missingkey=error").Parse(tmpl)
-	if err != nil {
-		return nil, err
-	}
-
-	if parse.IsEmptyTree(t.Root) {
-		return nil, errors.New("secret template should not be empty")
-	}
-
-	// Validate that the template only consumes the expected keys
-	dummy := struct{ Team, Pipeline, Secret string }{"team", "pipeline", "secret"}
-	if err = t.Execute(io.Discard, &dummy); err != nil {
-		return nil, err
-	}
-
-	// Detect whether this template requires "Pipeline", and therefore
-	// should only be expanded when there is a pipeline context
-	pipelineDependent := false
-	dummyNoPipeline := struct{ Team, Secret string }{"team", "secret"}
-	if t.Execute(io.Discard, &dummyNoPipeline) != nil {
-		pipelineDependent = true
-	}
-
-	return &SecretTemplate{t, pipelineDependent}, nil
-}
-
-func NewSecretLookupWithTemplate(pathTemplate *SecretTemplate, teamName string, pipelineName string) SecretLookupPath {
-	if pathTemplate.pipelineDependent && len(pipelineName) == 0 {
-		return nil
-	}
-
-	return &SecretLookupWithTemplate{
-		PathTemplate: pathTemplate,
-		TeamName:     teamName,
-		PipelineName: pipelineName,
-	}
-}
-
-func (sl SecretLookupWithTemplate) VariableToSecretPath(path string) (string, error) {
-	var buf bytes.Buffer
-	data := struct {
-		Team     string
-		Pipeline string
-		Secret   string
-	}{
-		sl.TeamName,
-		sl.PipelineName,
-		path,
-	}
-
-	err := sl.PathTemplate.Execute(&buf, &data)
-	return buf.String(), err
 }

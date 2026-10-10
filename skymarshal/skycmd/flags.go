@@ -1,47 +1,16 @@
 package skycmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/hashicorp/go-multierror"
-	flags "github.com/jessevdk/go-flags"
 	"sigs.k8s.io/yaml"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/flag/v2"
 )
-
-var connectors []*Connector
-
-func RegisterConnector(connector *Connector) {
-	connectors = append(connectors, connector)
-}
-
-func GetConnectors() []*Connector {
-	return connectors
-}
-
-func WireConnectors(group *flags.Group) {
-	for _, c := range connectors {
-		description := fmt.Sprintf("%s (%s)", group.ShortDescription, c.Name())
-		connGroup, _ := group.AddGroup(description, description, c.config)
-		connGroup.Namespace = c.ID()
-	}
-}
-
-func WireTeamConnectors(group *flags.Group) {
-	for _, c := range connectors {
-		description := fmt.Sprintf("%s (%s)", group.ShortDescription, c.Name())
-		connTeamGroup, _ := group.AddGroup(description, description, c.teamConfig)
-		connTeamGroup.Namespace = c.ID()
-	}
-}
 
 type AuthFlags struct {
 	SecureCookies               bool              `long:"cookie-secure" description:"Mark cookies Secure even when --external-url is http (a TLS-terminating proxy in front). An https --external-url always does."`
@@ -50,7 +19,7 @@ type AuthFlags struct {
 	RefreshTokenAbsoluteTimeout time.Duration     `long:"auth-refresh-absolute-timeout" default:"2160h" description:"Maximum renewable login lifetime before another login (default 90 days)."`
 	RefreshTokenReuseInterval   time.Duration     `long:"auth-refresh-reuse-interval" default:"5s" description:"Brief recovery window for a retried refresh exchange."`
 	SigningKey                  *flag.PrivateKey  `long:"session-signing-key" required:"true" description:"File containing an RSA private key, used to sign auth tokens."`
-	PasswordConnector           string            `long:"password-connector" default:"local" choice:"local" choice:"ldap" description:"Connector to use when authenticating via 'fly login -u ... -p ...'"`
+	PasswordConnector           string            `long:"password-connector" default:"local" choice:"local" description:"Connector to use when authenticating via 'fly login -u ... -p ...'"`
 	LocalUsers                  map[string]string `long:"add-local-user" description:"List of username:password combinations for all your local users. The password can be bcrypted - if so, it must have a minimum cost of 10." value-name:"USERNAME:PASSWORD"`
 	Clients                     map[string]string `long:"add-client" description:"List of client_id:client_secret combinations" value-name:"CLIENT_ID:CLIENT_SECRET"`
 }
@@ -70,116 +39,64 @@ func (flag *AuthTeamFlags) Format() (atc.TeamAuth, error) {
 
 }
 
-// When formatting from a configuration file we iterate over each connector
-// type and create a new instance of the TeamConfig object for each connector.
-// These connectors all have their own unique configuration so we need to use
-// mapstructure to decode the generic result into a known struct.
-
-// e.g.
-// The github connector has configuration for: users, teams, orgs
-// The cloudfoundry conncetor has configuration for: users, orgs, spaces
-
+// Team files accept only local membership; reject other keys before returning
+// any auth so a mixed file cannot silently remove existing team members.
 func (flag *AuthTeamFlags) formatFromFile() (atc.TeamAuth, error) {
-
 	content, err := os.ReadFile(flag.Config.Path())
 	if err != nil {
 		return nil, err
 	}
-
 	var data struct {
 		Roles []map[string]any `json:"roles"`
 	}
-	if err = yaml.Unmarshal(content, &data); err != nil {
+	if err := yaml.UnmarshalStrict(content, &data); err != nil {
 		return nil, err
 	}
-
 	auth := atc.TeamAuth{}
-
 	for _, role := range data.Roles {
-		roleName := role["name"].(string)
-
+		roleName, ok := role["name"].(string)
+		if !ok || roleName == "" {
+			return nil, fmt.Errorf("team role must have a name")
+		}
+		for key := range role {
+			if key != "name" && key != "local" {
+				return nil, fmt.Errorf("unsupported connector %q in team role %q: only local authentication is supported", key, roleName)
+			}
+		}
+		// Decode the local section strictly too, so misspelled membership keys
+		// cannot turn an intended update into a partial one.
+		local := struct {
+			Users []string `json:"users"`
+		}{}
+		if config, exists := role["local"]; exists {
+			encoded, err := yaml.Marshal(config)
+			if err != nil {
+				return nil, err
+			}
+			if err := yaml.UnmarshalStrict(encoded, &local); err != nil {
+				return nil, err
+			}
+		}
 		users := []string{}
-		groups := []string{}
-
-		for _, connector := range connectors {
-			config, ok := role[connector.ID()]
-			if !ok {
-				continue
-			}
-
-			teamConfig, err := connector.newTeamConfig()
-			if err != nil {
-				return nil, err
-			}
-
-			err = mapstructure.Decode(config, &teamConfig)
-			if err != nil {
-				return nil, err
-			}
-
-			for _, user := range teamConfig.GetUsers() {
-				if user != "" {
-					users = append(users, connector.ID()+":"+strings.ToLower(user))
-				}
-			}
-
-			for _, group := range teamConfig.GetGroups() {
-				if group != "" {
-					groups = append(groups, connector.ID()+":"+strings.ToLower(group))
-				}
+		for _, user := range local.Users {
+			if user != "" {
+				users = append(users, "local:"+strings.ToLower(user))
 			}
 		}
-
-		if conf, ok := role["local"].(map[string]any); ok {
-			for _, user := range conf["users"].([]any) {
-				if user != "" {
-					users = append(users, "local:"+strings.ToLower(user.(string)))
-				}
-			}
-		}
-
-		if len(users) == 0 && len(groups) == 0 {
+		if len(users) == 0 {
 			continue
 		}
-
-		auth[roleName] = map[string][]string{
-			"users":  users,
-			"groups": groups,
-		}
+		auth[roleName] = map[string][]string{"users": users, "groups": {}}
 	}
-
 	if err := auth.Validate(); err != nil {
 		return nil, err
 	}
-
 	return auth, nil
 }
-
-// When formatting team config from the command line flags, the connector's
-// TeamConfig has already been populated by the flags library. All we need to
-// do is grab the teamConfig object and extract the users and groups.
 
 func (flag *AuthTeamFlags) formatFromFlags() (atc.TeamAuth, error) {
 
 	users := []string{}
-	groups := []string{}
-
-	for _, connector := range connectors {
-
-		teamConfig := connector.teamConfig
-
-		for _, user := range teamConfig.GetUsers() {
-			if user != "" {
-				users = append(users, connector.ID()+":"+strings.ToLower(user))
-			}
-		}
-
-		for _, group := range teamConfig.GetGroups() {
-			if group != "" {
-				groups = append(groups, connector.ID()+":"+strings.ToLower(group))
-			}
-		}
-	}
 
 	for _, user := range flag.LocalUsers {
 		if user != "" {
@@ -187,81 +104,16 @@ func (flag *AuthTeamFlags) formatFromFlags() (atc.TeamAuth, error) {
 		}
 	}
 
-	if len(users) == 0 && len(groups) == 0 {
+	if len(users) == 0 {
 		return nil, atc.ErrAuthConfigInvalid
 	}
 
 	return atc.TeamAuth{
 		"owner": map[string][]string{
 			"users":  users,
-			"groups": groups,
+			"groups": {},
 		},
 	}, nil
-}
-
-type Config interface {
-	Name() string
-	Serialize(redirectURI string) ([]byte, error)
-}
-
-type TeamConfig interface {
-	GetUsers() []string
-	GetGroups() []string
-}
-
-type Connector struct {
-	id         string
-	config     Config
-	teamConfig TeamConfig
-}
-
-func (con *Connector) ID() string {
-	return con.id
-}
-
-func (con *Connector) Name() string {
-	return con.config.Name()
-}
-
-func (con *Connector) Serialize(redirectURI string) ([]byte, error) {
-	return con.config.Serialize(redirectURI)
-}
-
-func (con *Connector) newTeamConfig() (TeamConfig, error) {
-
-	typeof := reflect.TypeOf(con.teamConfig)
-	if typeof.Kind() == reflect.Ptr {
-		typeof = typeof.Elem()
-	}
-
-	valueof := reflect.ValueOf(con.teamConfig)
-	if valueof.Kind() == reflect.Ptr {
-		valueof = valueof.Elem()
-	}
-
-	instance := reflect.New(typeof).Interface()
-	res, ok := instance.(TeamConfig)
-	if !ok {
-		return nil, errors.New("Invalid TeamConfig")
-	}
-
-	return res, nil
-}
-
-// validateClientCredentials reports a connector config missing its OAuth
-// client id or client secret.
-func validateClientCredentials(clientID, clientSecret string) error {
-	var errs *multierror.Error
-
-	if clientID == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-id"))
-	}
-
-	if clientSecret == "" {
-		errs = multierror.Append(errs, errors.New("Missing client-secret"))
-	}
-
-	return errs.ErrorOrNil()
 }
 
 type skyDisplayUserIdGenerator struct {
@@ -274,18 +126,7 @@ func NewSkyDisplayUserIdGenerator(config map[string]string) (atc.DisplayUserIdGe
 	}
 
 	for connectorId, fieldName := range config {
-		valid := false
-		if connectorId == "local" {
-			valid = true
-		} else {
-			for _, connector := range GetConnectors() {
-				if connectorId == connector.ID() {
-					valid = true
-					break
-				}
-			}
-		}
-		if !valid {
+		if connectorId != "local" {
 			return nil, fmt.Errorf("invalid connector: %s", connectorId)
 		}
 

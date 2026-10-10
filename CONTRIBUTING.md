@@ -272,16 +272,6 @@ $ docker compose \
   up -d
 ```
 
-### Running Vault locally
-
-1. Make sure you have [`certstrap`]
-2.  Run `./hack/vault/setup`, and follow the instructions.
-
-See more about in the section [The Vault credential manager].
-
-[The Vault credential Manager]: https://concourse-ci.org/vault-credential-manager.html
-[`certstrap`]: https://github.com/square/certstrap
-
 ### Running Prometheus locally
 
 Just like for Jaeger, we have a docker-compose override file that enhances the

@@ -99,12 +99,12 @@ var _ = Describe("Template", func() {
 		excludeNonLocal := func(reference Reference) bool { return reference.Source != "." }
 
 		template := NewTemplate([]byte("" +
-			"secret: ((vault/x))\n" +
+			"secret: ((secret/x))\n" +
 			"sourced: ((mysource:key))\n" +
 			"unqualified: ((plain))\n" +
 			"dotted: ((a.b))\n" +
 			"local: ((.:v))\n" +
-			"mixed: ((.:v))-((vault/x))\n"))
+			"mixed: ((.:v))-((secret/x))\n"))
 
 		vars := NamedVariables{".": StaticVariables{"v": "local-value"}}
 
@@ -116,8 +116,8 @@ var _ = Describe("Template", func() {
 		Expect(string(result)).To(Equal("" +
 			"dotted: ((a.b))\n" +
 			"local: local-value\n" +
-			"mixed: local-value-((vault/x))\n" +
-			"secret: ((vault/x))\n" +
+			"mixed: local-value-((secret/x))\n" +
+			"secret: ((secret/x))\n" +
 			"sourced: ((mysource:key))\n" +
 			"unqualified: ((plain))\n"))
 	})

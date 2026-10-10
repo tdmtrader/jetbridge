@@ -189,7 +189,7 @@ var _ = Describe("Dex Server", func() {
 
 			Context("when not using local connector", func() {
 				BeforeEach(func() {
-					config.PasswordConnector = "ldap"
+					config.PasswordConnector = "unsupported"
 					config.Users = map[string]string{
 						"some-user-0": "some-password-0",
 					}

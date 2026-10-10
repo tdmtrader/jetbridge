@@ -7,11 +7,9 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
-	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/skymarshal/skycmd"
 	s "github.com/concourse/concourse/skymarshal/storage"
 	"github.com/concourse/dex/server"
 	"github.com/concourse/dex/storage"
@@ -71,23 +69,6 @@ func NewDexServerConfig(config *DexConfig) (server.Config, error) {
 			Type: "local",
 			Name: "Username/Password",
 		})
-	}
-
-	redirectURI := strings.TrimRight(config.IssuerURL, "/") + "/callback"
-
-	for _, connector := range skycmd.GetConnectors() {
-		var id = connector.ID()
-		if id == "cf" {
-			id = "cloudfoundry"
-		}
-		if c, err := connector.Serialize(redirectURI); err == nil {
-			connectors = append(connectors, storage.Connector{
-				ID:     id,
-				Type:   id,
-				Name:   connector.Name(),
-				Config: c,
-			})
-		}
 	}
 
 	for clientId, clientSecret := range config.Clients {

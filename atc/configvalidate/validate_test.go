@@ -384,6 +384,18 @@ var _ = Describe("ValidateConfig", func() {
 	})
 
 	Describe("invalid var sources", func() {
+		DescribeTable("rejects retired credential managers", func(sourceType string) {
+			config.VarSources = atc.VarSourceConfigs{{Name: "retired", Type: sourceType, Config: map[string]any{}}}
+			_, errors := configvalidate.Validate(config)
+			Expect(errors).To(ContainElement(ContainSubstring("unsupported credential manager type: " + sourceType + " (pipeline var_sources support only dummy and idtoken)")))
+		},
+			Entry("Vault", "vault"),
+			Entry("CredHub", "credhub"),
+			Entry("SSM", "ssm"),
+			Entry("Secrets Manager", "secretsmanager"),
+			Entry("Conjur", "conjur"),
+		)
+
 		Context("when a var source type is invalid", func() {
 			BeforeEach(func() {
 				config.VarSources = append(config.VarSources, atc.VarSourceConfig{
@@ -395,7 +407,7 @@ var _ = Describe("ValidateConfig", func() {
 
 			It("returns an error", func() {
 				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("unknown credential manager type: some"))
+				Expect(errorMessages[0]).To(ContainSubstring("unsupported credential manager type: some"))
 			})
 		})
 
@@ -2917,7 +2929,7 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 		}(), ""),
 		Entry("qualified reference in a map key is left alone", atc.PipelineRef{Name: "template"}, func() atc.Config {
 			config := dynamicTemplateConfig()
-			config.Resources[0].Source = atc.Source{"((vault:environment))": "example/source"}
+			config.Resources[0].Source = atc.Source{"((source:environment))": "example/source"}
 			return config
 		}(), ""),
 	)

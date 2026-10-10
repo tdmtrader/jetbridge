@@ -1,15 +1,10 @@
 roles:
   - name: member
-    github:
-      orgs: ["some-org"]
+    local:
+      users: ["", "some-member"]
   - name: viewer
     local:
-      users: ["some-viewer"]
+      users: ["some-viewer", ""]
   - name: owner
-    github:
-      users: [""]
     local:
-      users: ["some-admin"]
-    oauth:
-      groups: [""]
-
+      users: ["", "some-admin", ""]
