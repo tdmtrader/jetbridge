@@ -204,9 +204,7 @@ func main() {
 		// Non-fatal — aliases will be re-registered by ATC on next build.
 	}
 
-	// TTL sweeper (with registry ref for alias cleanup). Started below,
-	// after the mirror is wired up, so its step-dir-removed callback can
-	// prune mirror status without racing sweeper startup.
+	// TTL sweeper (with registry ref for alias cleanup). Started below.
 	sweepDone := make(chan struct{})
 
 	// Cancelled alongside the sweeper at shutdown, so a maintenance walk does
@@ -389,11 +387,6 @@ func main() {
 		}
 	}
 
-	// Start the sweeper now that the mirror (if any) exists: swept step
-	// dirs also drop their mirror status entries, keeping the status map
-	// bounded. ForgetHandle is nil-receiver-safe, so this wiring is
-	// unconditional.
-	sweeper.SetOnStepDirRemoved(mirror.ForgetHandle)
 	go func() {
 		sweeper.Run(sweepDone)
 	}()
@@ -566,7 +559,7 @@ func main() {
 // inside: rest.InClusterConfig reads KUBERNETES_SERVICE_HOST and a
 // service-account token whose path client-go hardcodes. That made the daemon
 // undebuggable from a laptop, and made peer discovery — the whole of
-// mirroring, evacuation and cross-node fallback — unreachable by any test that
+// mirroring and cross-node fallback — unreachable by any test that
 // does not deploy into Kubernetes. atc/worker/jetbridge/config.go has taken
 // both paths since it was written; this brings the daemon into line with it.
 func buildK8sClient(kubeconfig string) (kubernetes.Interface, error) {

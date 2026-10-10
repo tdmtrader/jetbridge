@@ -282,16 +282,6 @@ type Mirror struct {
 	client *http.Client
 	logger lager.Logger
 	guard  *ReadGuard
-
-	mu     sync.RWMutex
-	status map[string]map[string]string // key → peer → status (for Phase 3 evacuation)
-
-	// evacuationPeers is an optional explicit peer list used by both
-	// Trigger's run loop and Evacuate's synchronous path. Tests set this
-	// to bypass PeerResolver + EndpointSlice (which would need a real
-	// K8s fake to wire). When empty (production default), the code
-	// falls back to peers.peerIPs.
-	evacuationPeers []string
 }
 
 // MirrorConfig configures a Mirror manager.
@@ -333,7 +323,6 @@ func NewMirror(cfg MirrorConfig) *Mirror {
 		client:         cfg.Client,
 		logger:         cfg.Logger,
 		guard:          cfg.Guard,
-		status:         make(map[string]map[string]string),
 	}
 }
 
@@ -372,18 +361,14 @@ func (m *Mirror) run(ctx context.Context, key string) {
 		return
 	}
 
-	peerIPs := m.evacuationPeers
-	if len(peerIPs) == 0 {
-		if m.peers == nil {
-			m.logger.Debug("mirror-no-peer-resolver", lager.Data{"key": key})
-			return
-		}
-		ips, err := m.peers.peerIPs(ctx)
-		if err != nil {
-			m.logger.Error("mirror-peer-discovery-failed", err, lager.Data{"key": key})
-			return
-		}
-		peerIPs = ips
+	if m.peers == nil {
+		m.logger.Debug("mirror-no-peer-resolver", lager.Data{"key": key})
+		return
+	}
+	peerIPs, err := m.peers.peerIPs(ctx)
+	if err != nil {
+		m.logger.Error("mirror-peer-discovery-failed", err, lager.Data{"key": key})
+		return
 	}
 
 	chosen := peerSelector{}.Select(key, peerIPs, m.replicas)
@@ -410,37 +395,7 @@ func (m *Mirror) run(ctx context.Context, key string) {
 	}
 	outcomes := job.Run(ctx)
 
-	m.recordStatus(key, outcomes)
 	m.logger.Info("mirror-complete", lager.Data{"key": key, "outcomes": outcomes})
-}
-
-func (m *Mirror) recordStatus(key string, outcomes []mirrorPeerOutcome) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.status[key] == nil {
-		m.status[key] = make(map[string]string)
-	}
-	for _, o := range outcomes {
-		m.status[key][o.Peer] = o.Status
-	}
-}
-
-// ForgetHandle prunes mirror status entries for all keys under the given
-// step handle (keys are "handle/output"). Called when the sweeper removes a
-// step directory so the status map doesn't grow for the daemon's lifetime.
-// Safe to call on a nil receiver.
-func (m *Mirror) ForgetHandle(handle string) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	prefix := handle + "/"
-	for key := range m.status {
-		if strings.HasPrefix(key, prefix) {
-			delete(m.status, key)
-		}
-	}
 }
 
 // Stop drains in-flight mirror jobs and prevents new ones. Safe to call on
@@ -451,156 +406,4 @@ func (m *Mirror) Stop() {
 	}
 	m.pool.Stop()
 	m.pool.Wait()
-}
-
-// Evacuate is the synchronous evacuation path fired from the preemption
-// watcher's callback. It:
-//
-//  1. Stops the worker pool (Trigger calls hereafter return false).
-//  2. Walks {storagePath}/steps/ looking for step output directories
-//     ({handle}/{output}) that have not been confirmed mirrored to at
-//     least one peer (per the in-memory mirrorStatus map).
-//  3. Synchronously runs a mirror job for each such directory, capping
-//     the total runtime at `budget`.
-//
-// On budget exhaustion, returns whatever artifacts have been pushed.
-// The remaining unmirrored data falls back to today's behavior — a
-// build that needs it after node loss must rerun. This is the
-// acceptable cost per the track's failure-mode budget.
-func (m *Mirror) Evacuate(ctx context.Context, budget time.Duration) {
-	if m == nil {
-		return
-	}
-
-	logger := m.logger.Session("evacuate", lager.Data{"budget": budget.String()})
-	logger.Info("starting")
-
-	// Drain in-flight jobs and disable Trigger.
-	m.pool.Stop()
-	m.pool.Wait()
-
-	deadline := time.Now().Add(budget)
-	pctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-
-	keys := m.findUnmirroredKeys()
-	logger.Info("unmirrored-keys", lager.Data{"count": len(keys)})
-
-	for _, key := range keys {
-		if pctx.Err() != nil {
-			logger.Info("budget-exhausted", lager.Data{"remaining": len(keys)})
-			return
-		}
-		m.evacuateOne(pctx, key)
-	}
-
-	logger.Info("complete")
-}
-
-// evacuateOne is the synchronous version of run — it runs the mirror job
-// directly on the calling goroutine instead of via the (already-stopped)
-// worker pool.
-func (m *Mirror) evacuateOne(ctx context.Context, key string) {
-	// Routed through the same guard as run. This was the finding carried out
-	// of the predecessor track: a raw join four lines below the one that had
-	// just been routed, in the commit whose message claimed the checks had
-	// moved into the operations.
-	//
-	// It was safe only by accident — findUnmirroredKeys filters with
-	// DirEntry.IsDir(), which has lstat semantics, so a planted symlink was
-	// skipped before reaching here. A guarantee living in a property of a
-	// different function, written down nowhere.
-	stepsRoot := filepath.Join(m.storagePath, "steps")
-	sourceDir, err := locateArtifact(stepsRoot, key)
-	if err != nil {
-		m.logger.Info("evacuate-key-refused", lager.Data{"key": key, "reason": err.Error()})
-		return
-	}
-	if _, err := os.Stat(sourceDir); err != nil {
-		m.logger.Debug("evacuate-source-missing", lager.Data{"key": key})
-		return
-	}
-
-	peerIPs := m.evacuationPeers
-	if len(peerIPs) == 0 && m.peers != nil {
-		ips, err := m.peers.peerIPs(ctx)
-		if err != nil {
-			m.logger.Error("evacuate-peer-discovery-failed", err, lager.Data{"key": key})
-			return
-		}
-		peerIPs = ips
-	}
-
-	chosen := peerSelector{}.Select(key, peerIPs, m.replicas)
-	if len(chosen) == 0 {
-		m.logger.Debug("evacuate-no-peers-selected", lager.Data{
-			"key":         key,
-			"peers_total": len(peerIPs),
-		})
-		return
-	}
-
-	job := &mirrorJob{
-		key:            key,
-		root:           m.root,
-		loc:            RelKey(path.Join("steps", key)),
-		peers:          chosen,
-		port:           m.port,
-		scheme:         m.scheme,
-		client:         m.client,
-		logger:         m.logger.Session("evacuate-job", lager.Data{"key": key}),
-		perPeerTimeout: m.perPeerTimeout,
-		guard:          m.guard,
-	}
-	outcomes := job.Run(ctx)
-	m.recordStatus(key, outcomes)
-}
-
-// findUnmirroredKeys walks {storagePath}/steps/ and returns the
-// {handle}/{output} keys whose status map doesn't contain at least one
-// "ok" outcome. Used by Evacuate to prioritize what to flush.
-func (m *Mirror) findUnmirroredKeys() []string {
-	stepsRoot := filepath.Join(m.storagePath, "steps")
-	var keys []string
-
-	entries, err := os.ReadDir(stepsRoot)
-	if err != nil {
-		// steps/ doesn't exist yet (clean daemon, no work done) — nothing
-		// to evacuate.
-		return nil
-	}
-	for _, handleEntry := range entries {
-		if !handleEntry.IsDir() {
-			continue
-		}
-		handle := handleEntry.Name()
-		outputs, err := os.ReadDir(filepath.Join(stepsRoot, handle))
-		if err != nil {
-			continue
-		}
-		for _, outputEntry := range outputs {
-			if !outputEntry.IsDir() {
-				continue
-			}
-			key := handle + "/" + outputEntry.Name()
-			if !m.isAtLeastOnePeerOK(key) {
-				keys = append(keys, key)
-			}
-		}
-	}
-	return keys
-}
-
-// isAtLeastOnePeerOK reports whether the in-memory status map records
-// at least one peer outcome=ok for the given key. RF=2 considers this
-// "mirrored" (data survives single-node loss).
-func (m *Mirror) isAtLeastOnePeerOK(key string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, status := range m.status[key] {
-		if status == "ok" {
-			return true
-		}
-	}
-	return false
 }

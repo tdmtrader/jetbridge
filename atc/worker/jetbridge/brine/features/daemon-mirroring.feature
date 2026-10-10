@@ -140,7 +140,7 @@ Feature: Copying a step's output off the node that made it
     And the producer still serves the output it was asked to mirror
 
   # Daemon-internal native tests remain in cmd/artifact-daemon for origin
-  # headers, evacuation, per-peer results, pool behavior, streaming framing
+  # headers, per-peer results, pool behavior, streaming framing
   # and handle locking. The client checks below do not retire those tests.
 
   # This is the ATC client contract, separate from the copy-arrival cases.

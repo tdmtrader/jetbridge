@@ -5,21 +5,21 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // ---------------------------------------------------------------------------
@@ -256,14 +256,14 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 	}}
 
 	job := &mirrorJob{
-		key:            "handle/output",
-		root:           mustRoot(t, src),
-		loc:            ".",
-		peers:          []string{peerOK, peerReject, peerSlow},
-		port:           7780,
-		scheme:         "http",
-		client:         &http.Client{Transport: transport, Timeout: 30 * time.Second},
-		logger:         lagertest.NewTestLogger("mirror"),
+		key:    "handle/output",
+		root:   mustRoot(t, src),
+		loc:    ".",
+		peers:  []string{peerOK, peerReject, peerSlow},
+		port:   7780,
+		scheme: "http",
+		client: &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		logger: lagertest.NewTestLogger("mirror"),
 		// Generous so the ok and rejecting peers never time out under
 		// load (build 868788 saw all three deadline-exceeded at 100ms);
 		// the slow peer still times out because it never answers.
@@ -317,151 +317,7 @@ func TestMirrorJob_Run_NoPeers_NoOp(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Mirror.Evacuate — synchronous flush of unmirrored step dirs on
-// preemption notice (P3.4).
-// ---------------------------------------------------------------------------
-
-func TestMirror_Evacuate_FlushesUnmirroredStepDirs(t *testing.T) {
-	// Set up storage with two step output dirs:
-	//   steps/handle-a/done/   — already mirrored (mirrorStatus has "ok")
-	//   steps/handle-b/pending/ — unmirrored (no mirrorStatus entry)
-	storage := t.TempDir()
-	for _, dir := range []string{"steps/handle-a/done", "steps/handle-b/pending"} {
-		full := filepath.Join(storage, dir)
-		if err := os.MkdirAll(full, 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(full, "f.txt"), []byte("payload"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Track which keys peer received PUTs for.
-	var (
-		mu      sync.Mutex
-		putKeys []string
-	)
-	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut && len(r.URL.Path) > len("/stream-in/") {
-			key := r.URL.Path[len("/stream-in/"):]
-			mu.Lock()
-			putKeys = append(putKeys, key)
-			mu.Unlock()
-			w.WriteHeader(http.StatusCreated)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer peer.Close()
-
-	const peerHost = "evacuate-peer"
-	transport := &mirrorRoutingTransport{routes: map[string]string{
-		peerHost + ":7780": peer.URL,
-	}}
-
-	logger := lagertest.NewTestLogger("evacuate")
-	mirror := &Mirror{
-		storagePath:    storage,
-		root:           mustRoot(t, storage),
-		port:           7780,
-		scheme:         "http",
-		replicas:       2,
-		perPeerTimeout: 5 * time.Second,
-		pool:           NewWorkerPool(2),
-		client:         &http.Client{Transport: transport, Timeout: 5 * time.Second},
-		logger:         logger,
-		status:         make(map[string]map[string]string),
-		// Inject an evacuation-only peer list — bypassing PeerResolver
-		// (which would need a real K8s clientset). The Evacuate impl
-		// uses this when set so we can drive the test without K8s fakes.
-		evacuationPeers: []string{peerHost},
-	}
-	defer mirror.Stop()
-
-	// Mark "handle-a/done" as already mirrored so Evacuate skips it.
-	mirror.recordStatus("handle-a/done", []mirrorPeerOutcome{
-		{Peer: peerHost, Status: "ok"},
-	})
-
-	mirror.Evacuate(context.Background(), 5*time.Second)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(putKeys) != 1 || putKeys[0] != "handle-b/pending" {
-		t.Errorf("expected exactly one PUT for handle-b/pending; got %v", putKeys)
-	}
-}
-
-func TestMirror_Evacuate_RespectsBudget(t *testing.T) {
-	// Pre-create several step dirs, all unmirrored. Use a slow peer that
-	// times out per request; Evacuate's budget should bound total runtime.
-	storage := t.TempDir()
-	for i := 0; i < 5; i++ {
-		full := filepath.Join(storage, "steps", "h", "out"+itoaSimple(i))
-		os.MkdirAll(full, 0755)
-		os.WriteFile(filepath.Join(full, "f.txt"), []byte("x"), 0644)
-	}
-
-	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond) // longer than per-peer timeout below
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer slow.Close()
-
-	transport := &mirrorRoutingTransport{routes: map[string]string{
-		"slow-peer:7780": slow.URL,
-	}}
-
-	mirror := &Mirror{
-		storagePath:     storage,
-		root:            mustRoot(t, storage),
-		port:            7780,
-		scheme:          "http",
-		replicas:        2,
-		perPeerTimeout:  50 * time.Millisecond,
-		pool:            NewWorkerPool(2),
-		client:          &http.Client{Transport: transport, Timeout: 1 * time.Second},
-		logger:          lagertest.NewTestLogger("evacuate-budget"),
-		status:          make(map[string]map[string]string),
-		evacuationPeers: []string{"slow-peer"},
-	}
-	defer mirror.Stop()
-
-	budget := 200 * time.Millisecond
-	start := time.Now()
-	mirror.Evacuate(context.Background(), budget)
-	elapsed := time.Since(start)
-
-	// Allow some slop above the budget for goroutine cleanup (~50ms).
-	if elapsed > budget+500*time.Millisecond {
-		t.Errorf("Evacuate ran %v, well above budget %v", elapsed, budget)
-	}
-}
-
-func TestMirror_Evacuate_RejectsNewTriggerAfterCall(t *testing.T) {
-	mirror := &Mirror{
-		storagePath: t.TempDir(),
-		root:        mustRoot(t, t.TempDir()),
-		replicas:    2,
-		pool:        NewWorkerPool(2),
-		logger:      lagertest.NewTestLogger("evacuate-reject"),
-		status:      make(map[string]map[string]string),
-		client:      &http.Client{},
-	}
-
-	mirror.Evacuate(context.Background(), 100*time.Millisecond)
-
-	// After Evacuate, the pool must be drained so subsequent Trigger
-	// calls cannot enqueue work (there's no point — we're shutting down).
-	if mirror.pool.Submit(func() {}) {
-		t.Error("expected pool to reject Submit after Evacuate")
-	}
-}
-
-// itoaSimple is a tiny helper to avoid importing strconv just for this
-// test (strconv IS already imported elsewhere in this file via mirrorJob
-// tests, but keeping it local avoids accidental shadowing).
+// itoaSimple formats the nonnegative key index used by the load test.
 func itoaSimple(n int) string {
 	if n == 0 {
 		return "0"
@@ -472,22 +328,6 @@ func itoaSimple(n int) string {
 		n /= 10
 	}
 	return out
-}
-
-// hostFromURL extracts the host (without scheme/port) from an httptest URL
-// like "http://127.0.0.1:54321".
-func hostFromURL(u string) string {
-	// strip "http://"
-	if len(u) > 7 && u[:7] == "http://" {
-		u = u[7:]
-	}
-	// strip ":port"
-	for i := 0; i < len(u); i++ {
-		if u[i] == ':' {
-			return u[:i]
-		}
-	}
-	return u
 }
 
 // mirrorRoutingTransport routes by URL host:port to a target server URL.
@@ -599,7 +439,7 @@ func TestMirror_Trigger_SourceDisappearsBeforeJobRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Peer that should never receive a PUT (because source was deleted).
+	// Peer that must receive no PUT after the source is deleted.
 	var puts int32
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&puts, 1)
@@ -607,25 +447,30 @@ func TestMirror_Trigger_SourceDisappearsBeforeJobRuns(t *testing.T) {
 	}))
 	defer peer.Close()
 
-	const peerHost = "race-peer"
+	const peerHost = "10.0.0.2"
 	transport := &mirrorRoutingTransport{routes: map[string]string{
 		peerHost + ":7780": peer.URL,
 	}}
 
 	mirror := &Mirror{
-		storagePath:     storage,
-		root:            mustRoot(t, storage),
-		port:            7780,
-		scheme:          "http",
-		replicas:        2,
-		perPeerTimeout:  3 * time.Second,
-		pool:            NewWorkerPool(2),
-		client:          &http.Client{Transport: transport, Timeout: 3 * time.Second},
-		logger:          lagertest.NewTestLogger("sweeper-race"),
-		status:          make(map[string]map[string]string),
-		evacuationPeers: []string{peerHost},
+		storagePath:    storage,
+		root:           mustRoot(t, storage),
+		port:           7780,
+		scheme:         "http",
+		replicas:       2,
+		perPeerTimeout: 3 * time.Second,
+		pool:           NewWorkerPool(2),
+		client:         &http.Client{Transport: transport, Timeout: 3 * time.Second},
+		logger:         lagertest.NewTestLogger("sweeper-race"),
+		peers:          newMirrorTestPeerResolver(peerHost),
 	}
 	defer mirror.Stop()
+
+	// Prove this fixture can deliver before testing a missing source.
+	mirror.run(context.Background(), "race-handle/out")
+	if got := atomic.SwapInt32(&puts, 0); got != 1 {
+		t.Fatalf("expected one PUT while source exists, got %d", got)
+	}
 
 	// Delete the source BEFORE submitting the job so the worker sees it
 	// missing.
@@ -671,23 +516,22 @@ func TestMirror_Trigger_ConcurrentMultiKeyLoad(t *testing.T) {
 	}))
 	defer peer.Close()
 
-	const peerHost = "load-peer"
+	const peerHost = "10.0.0.2"
 	transport := &mirrorRoutingTransport{routes: map[string]string{
 		peerHost + ":7780": peer.URL,
 	}}
 
 	mirror := &Mirror{
-		storagePath:     storage,
-		root:            mustRoot(t, storage),
-		port:            7780,
-		scheme:          "http",
-		replicas:        2,
-		perPeerTimeout:  3 * time.Second,
-		pool:            NewWorkerPool(4), // cap at 4 concurrent
-		client:          &http.Client{Transport: transport, Timeout: 3 * time.Second},
-		logger:          lagertest.NewTestLogger("load"),
-		status:          make(map[string]map[string]string),
-		evacuationPeers: []string{peerHost},
+		storagePath:    storage,
+		root:           mustRoot(t, storage),
+		port:           7780,
+		scheme:         "http",
+		replicas:       2,
+		perPeerTimeout: 3 * time.Second,
+		pool:           NewWorkerPool(4), // cap at 4 concurrent
+		client:         &http.Client{Transport: transport, Timeout: 3 * time.Second},
+		logger:         lagertest.NewTestLogger("load"),
+		peers:          newMirrorTestPeerResolver(peerHost),
 	}
 
 	// Fire all triggers as fast as possible.
@@ -721,7 +565,6 @@ func TestMirror_Trigger_AfterStop_ReturnsCleanly(t *testing.T) {
 		pool:        NewWorkerPool(2),
 		client:      &http.Client{},
 		logger:      lagertest.NewTestLogger("post-stop"),
-		status:      make(map[string]map[string]string),
 	}
 	mirror.Stop()
 
@@ -747,7 +590,6 @@ func TestMirror_Trigger_NilReceiver_NoOp(t *testing.T) {
 	// Must not panic.
 	m.Trigger(context.Background(), "key")
 	m.Stop()
-	m.Evacuate(context.Background(), 100*time.Millisecond)
 }
 
 // TestMirror_Trigger_ReplicasZero_NoOp verifies that with replicas=0,
@@ -768,16 +610,18 @@ func TestMirror_Trigger_ReplicasZero_NoOp(t *testing.T) {
 	}))
 	defer peer.Close()
 
-	const peerHost = "should-not-be-called"
+	const peerHost = "10.0.0.2"
 	mirror := &Mirror{
-		storagePath:     storage,
-		root:            mustRoot(t, storage),
-		replicas:        0, // disabled
-		pool:            NewWorkerPool(2),
-		client:          &http.Client{},
-		logger:          lagertest.NewTestLogger("rf-zero"),
-		status:          make(map[string]map[string]string),
-		evacuationPeers: []string{peerHost},
+		storagePath:    storage,
+		root:           mustRoot(t, storage),
+		port:           7780,
+		scheme:         "http",
+		perPeerTimeout: 3 * time.Second,
+		replicas:       0, // disabled
+		pool:           NewWorkerPool(2),
+		client:         &http.Client{Transport: &mirrorRoutingTransport{routes: map[string]string{peerHost + ":7780": peer.URL}}, Timeout: 3 * time.Second},
+		logger:         lagertest.NewTestLogger("rf-zero"),
+		peers:          newMirrorTestPeerResolver(peerHost),
 	}
 	defer mirror.Stop()
 
@@ -788,33 +632,12 @@ func TestMirror_Trigger_ReplicasZero_NoOp(t *testing.T) {
 	if got := atomic.LoadInt32(&puts); got != 0 {
 		t.Errorf("expected zero peer hits with replicas=0, got %d", got)
 	}
-}
-
-// TestMirror_Evacuate_NoStepsDir_CleanNoOp verifies Evacuate is safe to
-// call on a daemon that has done no work yet (storagePath/steps/ doesn't
-// exist). This can happen on first-startup preemption.
-func TestMirror_Evacuate_NoStepsDir_CleanNoOp(t *testing.T) {
-	mirror := &Mirror{
-		storagePath: t.TempDir(), // no steps/ subdirectory
-		root:        mustRoot(t, t.TempDir()),
-		replicas:    2,
-		pool:        NewWorkerPool(2),
-		client:      &http.Client{},
-		logger:      lagertest.NewTestLogger("evac-empty"),
-		status:      make(map[string]map[string]string),
-	}
-	defer mirror.Stop()
-
-	// Must not panic, must return promptly.
-	done := make(chan struct{})
-	go func() {
-		mirror.Evacuate(context.Background(), 1*time.Second)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Evacuate hung when steps/ didn't exist")
+	// Prove discovery and transport work when replication is enabled.
+	// The pool has drained, so run the control synchronously.
+	mirror.replicas = 2
+	mirror.run(context.Background(), "h/o")
+	if got := atomic.LoadInt32(&puts); got != 1 {
+		t.Fatalf("expected one peer hit with replicas=2, got %d", got)
 	}
 }
 
@@ -979,34 +802,6 @@ func TestMirrorJob_Run_StreamsBodyInsteadOfBuffering(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Status map pruning: entries must not accumulate for the daemon's lifetime.
-// ---------------------------------------------------------------------------
-
-func TestMirror_ForgetHandle_PrunesStatusEntries(t *testing.T) {
-	storage := t.TempDir()
-	m := NewMirror(MirrorConfig{
-		StoragePath: storage,
-		Root:        mustRoot(t, storage),
-		Replicas:    2,
-		Logger:      lagertest.NewTestLogger("mirror"),
-	})
-	defer m.Stop()
-
-	m.recordStatus("h1/out", []mirrorPeerOutcome{{Peer: "p1", Status: "ok"}})
-	m.recordStatus("h1/cache", []mirrorPeerOutcome{{Peer: "p1", Status: "ok"}})
-	m.recordStatus("h2/out", []mirrorPeerOutcome{{Peer: "p1", Status: "ok"}})
-
-	m.ForgetHandle("h1")
-
-	if m.isAtLeastOnePeerOK("h1/out") || m.isAtLeastOnePeerOK("h1/cache") {
-		t.Error("expected h1 status entries to be pruned")
-	}
-	if !m.isAtLeastOnePeerOK("h2/out") {
-		t.Error("expected h2 status entry to survive pruning of h1")
-	}
-}
-
 // The mirror's tar walk must hold the handle's shared lock: walking a tree
 // that a stream-in replace or sweep is deleting silently omits files and
 // mirrors a truncated copy as complete.
@@ -1096,72 +891,6 @@ func TestMirrorJob_PutsCarryMirrorOriginHeader(t *testing.T) {
 	}
 }
 
-// AC2 — the carried finding. evacuateOne joined its key raw, four lines below
-// the run() that had already been routed. Safe only because
-// findUnmirroredKeys filters with DirEntry.IsDir() (lstat semantics), so a
-// planted symlink never reached it — a guarantee living in a different
-// function and written down nowhere.
-func TestEvacuateOne_RefusesAKeyResolvingOutsideTheRoot(t *testing.T) {
-	storage := t.TempDir()
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("HOST-SECRET"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// A link under steps/ pointing out — the shape the IsDir() filter used to
-	// hide, planted directly because that is how one would arrive.
-	if err := os.MkdirAll(filepath.Join(storage, "steps", "h"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(storage, "steps", "h", "out")); err != nil {
-		t.Fatal(err)
-	}
-
-	var mu sync.Mutex
-	var served [][]byte
-	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		served = append(served, b)
-		mu.Unlock()
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer peer.Close()
-
-	host := strings.TrimPrefix(peer.URL, "http://")
-	ip, portStr, _ := net.SplitHostPort(host)
-	port, _ := strconv.Atoi(portStr)
-
-	m := NewMirror(MirrorConfig{
-		Logger:      lagertest.NewTestLogger("evac"),
-		StoragePath: storage,
-		Port:        port,
-		Scheme:      "http",
-		// -1 = all peers. Replicas:1 means "local + 0 peers", which selects
-		// nothing — the first version of this test used it and therefore
-		// passed with and without the fix.
-		Replicas: -1,
-		Root:     mustRoot(t, storage),
-		Guard:    NewReadGuard(),
-		Client:   &http.Client{Timeout: 5 * time.Second},
-	})
-	defer m.Stop()
-	m.evacuationPeers = []string{ip}
-
-	m.evacuateOne(context.Background(), "h/out")
-
-	mu.Lock()
-	defer mu.Unlock()
-	for _, b := range served {
-		if bytes.Contains(b, []byte("HOST-SECRET")) {
-			t.Errorf("AC2: evacuate shipped out-of-root content to a peer")
-		}
-	}
-	if len(served) > 0 {
-		t.Errorf("AC2: evacuate sent %d request(s) for a key resolving outside the root", len(served))
-	}
-}
-
 // mustRoot opens a storage-root handle on dir: the mirror's tar walk goes
 // through a handle now, not a bare path.
 func mustRoot(t *testing.T, dir string) *os.Root {
@@ -1172,4 +901,24 @@ func mustRoot(t *testing.T, dir string) *os.Root {
 	}
 	t.Cleanup(func() { r.Close() })
 	return r
+}
+
+// newMirrorTestPeerResolver discovers the peer through the production
+// EndpointSlice path while the HTTP transport routes its IP to a test server.
+func newMirrorTestPeerResolver(ip string) *PeerResolver {
+	const service, namespace = "artifact-daemon", "ns"
+	ready := true
+	clientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      service + "-slice",
+			Namespace: namespace,
+			Labels:    map[string]string{discoveryv1.LabelServiceName: service},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses:  []string{ip},
+			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		}},
+	})
+	return NewPeerResolver(lagertest.NewTestLogger("peers"), clientset, namespace, service, 7780, "10.0.0.99", nil)
 }

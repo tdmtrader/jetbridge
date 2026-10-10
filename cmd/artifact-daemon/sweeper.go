@@ -25,11 +25,6 @@ type Sweeper struct {
 	interval    time.Duration
 	registry    *Registry
 
-	// onStepDirRemoved is called with the handle name after a step
-	// directory is removed, so other components (the mirror status map)
-	// can drop their bookkeeping for it. Set before Run starts.
-	onStepDirRemoved func(handle string)
-
 	// guard serializes step-dir removal against in-flight reads. Nil-safe
 	// (tests without a server); main wires the server's guard. Set before
 	// Run starts.
@@ -56,12 +51,6 @@ func (s *Sweeper) SetSourceLedger(classifier *ledger.Classifier) {
 // Run starts.
 func (s *Sweeper) SetGuard(g *ReadGuard) {
 	s.guard = g
-}
-
-// SetOnStepDirRemoved registers a callback invoked with the handle name each
-// time a step directory is swept. Must be called before Run starts.
-func (s *Sweeper) SetOnStepDirRemoved(fn func(handle string)) {
-	s.onStepDirRemoved = fn
 }
 
 // NewSweeper creates a new Sweeper. The registry parameter is used to clean
@@ -194,9 +183,6 @@ func (s *Sweeper) removeStepDir(logger lager.Logger, handleDir, handle string, c
 	}
 	if s.registry != nil {
 		s.registry.RemoveByPath(handleDir)
-	}
-	if s.onStepDirRemoved != nil {
-		s.onStepDirRemoved(handle)
 	}
 	return true
 }

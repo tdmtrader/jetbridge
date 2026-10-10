@@ -26,10 +26,10 @@ import (
 // Peers are discovered as EndpointSlice addresses, so a daemon always dials a
 // peer by pod IP. A pod IP is not known when the chart issues the certificate
 // and cannot be one of its SANs: the certificate names the headless service
-// instead. Every peer path — probe, fetch, and the mirror PUT that preemption
-// evacuation also rides — must therefore verify the peer against the service
-// name, not against the address it dialed. Before this held, every one of
-// them failed verification under TLS and each node silently became an island.
+// instead. Every peer path — probe, fetch, and mirror PUT — must therefore
+// verify the peer against the service name, not against the address it dialed.
+// Before this held, every one of them failed verification under TLS and each
+// node silently became an island.
 //
 // The peer here is a real daemon behind a real mTLS listener, holding a
 // certificate whose ONLY SAN is the service DNS name, and it is dialed at
@@ -140,12 +140,6 @@ func TestPeerPathsVerifyThePeerByServiceNameWhenDialedByIP(t *testing.T) {
 		mirror.Trigger(context.Background(), "handle-m/out")
 		mirror.Stop() // drains the job
 
-		mirror.mu.RLock()
-		status := mirror.status["handle-m/out"]["127.0.0.1"]
-		mirror.mu.RUnlock()
-		if status != "ok" {
-			t.Fatalf("mirror outcome for 127.0.0.1 = %q, want ok", status)
-		}
 		data, err := os.ReadFile(filepath.Join(peerStorage, "steps", "handle-m", "out", "data.txt"))
 		if err != nil || string(data) != "mirrored" {
 			t.Fatalf("peer copy = %q, %v; want %q", data, err, "mirrored")
