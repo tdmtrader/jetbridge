@@ -760,9 +760,7 @@
             "existingSecret": {
               "type": "string"
             },
-            "ttl": {
-              "$ref": "#/definitions/optionalGoDuration"
-            }
+            "ttl": {}
           }
         },
         "networkPolicy": {

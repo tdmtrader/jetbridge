@@ -207,7 +207,7 @@ func TestRegister_ThenResolve_FullFlow(t *testing.T) {
 	// Resolve should find it via registry (method=registry), not filesystem.
 	destDir := destUnder(t, storagePath, "resolved")
 	resolveBody := `{"key":"reg-handle/output","dest":"` + destDir + `"}`
-	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,8 +217,16 @@ func TestRegister_ThenResolve_FullFlow(t *testing.T) {
 		t.Fatalf("resolve: expected 200, got %d", resp.StatusCode)
 	}
 
-	var result resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 	if result.Method != "registry" {
 		t.Errorf("expected method=registry, got %q", result.Method)
 	}
@@ -258,7 +266,7 @@ func TestRegister_DuplicateOverwrites(t *testing.T) {
 	// Resolve should use the second registration.
 	destDir := destUnder(t, storagePath, "dup-dest")
 	resolveBody := `{"key":"dup-key","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +285,7 @@ func TestRegister_DuplicateOverwrites(t *testing.T) {
 // DA-PERM-01: Atomic copy — retry succeeds despite stale partial destination
 // ---------------------------------------------------------------------------
 
-// TestResolve_AtomicCopy_OverwritesStaleDestination verifies that /resolve
+// TestResolve_AtomicCopy_OverwritesStaleDestination verifies that /resolve-batch
 // succeeds even when the destination directory already contains read-only files
 // from a prior interrupted copy. The atomic copy pattern (temp dir + rename)
 // should cleanly replace the stale destination.
@@ -306,7 +314,7 @@ func TestResolve_AtomicCopy_OverwritesStaleDestination(t *testing.T) {
 
 	// Resolve should succeed despite the stale destination.
 	resolveBody := `{"key":"atomic-handle/output","dest":"` + destDir + `"}`
-	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +336,7 @@ func TestResolve_AtomicCopy_OverwritesStaleDestination(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DA-08/DA-09: POST /resolve with peer fallback
+// DA-08/DA-09: POST /resolve-batch with peer fallback
 // ---------------------------------------------------------------------------
 
 func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
@@ -381,7 +389,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 	// Resolve via local daemon - should fall back to peer.
 	destDir := destUnder(t, localStorage, "peer-resolved")
 	resolveBody := `{"key":"peer-handle/result","dest":"` + destDir + `"}`
-	resp, err := http.Post(localTS.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(localTS.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,8 +400,16 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
-	var result resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 	if result.Method != "peer" {
 		t.Errorf("expected method=peer, got %q", result.Method)
 	}
@@ -421,12 +437,20 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 	// First resolve: filesystem fallback.
 	destDir1 := destUnder(t, storagePath, "dest1")
 	body := `{"key":"auto-reg/output","dest":"` + destDir1 + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result1 resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result1)
+	var result1Batch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result1Batch); err != nil {
+		t.Fatal(err)
+	}
+	if len(result1Batch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", result1Batch)
+	}
+	result1 := result1Batch.Results[0]
 	resp.Body.Close()
 	if result1.Method != "filesystem" {
 		t.Fatalf("first resolve: expected method=filesystem, got %q", result1.Method)
@@ -435,12 +459,20 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 	// Second resolve: should use registry (auto-registered by first resolve).
 	destDir2 := destUnder(t, storagePath, "dest2")
 	body = `{"key":"auto-reg/output","dest":"` + destDir2 + `"}`
-	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result2 resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result2)
+	var result2Batch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result2Batch); err != nil {
+		t.Fatal(err)
+	}
+	if len(result2Batch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", result2Batch)
+	}
+	result2 := result2Batch.Results[0]
 	resp.Body.Close()
 	if result2.Method != "registry" {
 		t.Errorf("second resolve: expected method=registry, got %q", result2.Method)
@@ -448,7 +480,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DA-10: POST /resolve structured logging
+// DA-10: POST /resolve-batch structured logging
 // ---------------------------------------------------------------------------
 
 func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
@@ -464,14 +496,22 @@ func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "struct-dest")
 	resolveBody := `{"key":"struct-handle/out","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	var raw map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&raw)
+	var rawBatch struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rawBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(rawBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", rawBatch)
+	}
+	raw := rawBatch.Results[0]
 
 	// Verify all structured fields are present.
 	if _, ok := raw["status"]; !ok {
@@ -490,14 +530,22 @@ func TestResolve_NotFound_IncludesStructuredFields(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "nf-dest")
 	body := `{"key":"nonexistent-key","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	var raw map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&raw)
+	var rawBatch struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rawBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(rawBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", rawBatch)
+	}
+	raw := rawBatch.Results[0]
 
 	if raw["status"] != "not_found" {
 		t.Errorf("expected status=not_found, got %v", raw["status"])

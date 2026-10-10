@@ -19,10 +19,8 @@ import (
 // the fsync and the rename, what a restart reads back, what a torn record does
 // to readiness. A double would prove the double.
 //
-// Narrowed by decision F13: what is wired here is a capture-selected execution.
-// The record shape must stay able to hold a base execution with no capture
-// extension, and TestABaseExecutionNeedsNoExtensionToBeComplete is the fixture
-// that says so; the sibling track exact_execution_control adds the callers.
+// The record shape holds a base execution with no capture extension;
+// TestABaseExecutionNeedsNoExtensionToBeComplete checks that boundary.
 
 const (
 	testExecution = executioncontrol.ExecutionID("33333333-3333-4333-8333-333333333333")
@@ -628,12 +626,8 @@ func TestDestructiveCleanupWaitsForTheOutcomeAndForEveryOpenGate(t *testing.T) {
 	}
 }
 
-// Decision F13's contract obligation, as a fixture rather than a promise.
-//
-// The record and acknowledgement shapes frozen here must already be able to
-// hold a base execution that carries no capture extension. The sibling track
-// exact_execution_control adds the callers; this is the assertion that it will
-// not have to change the shape to do it.
+// A base execution's record and acknowledgement must be complete without
+// a capture extension.
 func TestABaseExecutionNeedsNoExtensionToBeComplete(t *testing.T) {
 	fixture := newLedger(t)
 	admitted(t, fixture)

@@ -168,7 +168,8 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-artifact-daemon-port", "7790",
 		"--kubernetes-artifact-daemon-host-path", "/var/lib/jb-artifacts",
 		"--kubernetes-artifact-daemon-resolve-capability-key", resolveKey,
-		"--kubernetes-artifact-daemon-resolve-capability-ttl", "3h",
+		// A stale Deployment argument is accepted but cannot shorten expiry.
+		"--kubernetes-artifact-daemon-resolve-capability-ttl", "1s",
 		"--kubernetes-artifact-daemon-service", "artifacts",
 		"--kubernetes-artifact-daemon-namespace", "ci-daemons",
 		"--kubernetes-artifact-daemon-warm-timeout", "45s",
@@ -235,7 +236,6 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		ArtifactDaemonTLSKey:               "/tls/artifact/key.pem",
 		ArtifactDaemonTLSCACert:            "/tls/artifact/ca.pem",
 		ArtifactDaemonResolveCapabilityKey: bytes.Repeat([]byte{0x52}, 32),
-		ArtifactDaemonResolveCapabilityTTL: 3 * time.Hour,
 		ArtifactDaemonTLSEnabled:           true,
 		OutputPlaneEnabled:                 true,
 		OutputOperationTimeout:             2 * time.Minute,

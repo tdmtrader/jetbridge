@@ -310,8 +310,7 @@ func TestAReplayedWarrantIsRefusedAndAFreshOneIsNot(t *testing.T) {
 
 // The base surface never requires or synthesizes an output or source field.
 //
-// This is decision F13's contract obligation stated where it can fail: a base
-// caller sends an identity and gets a classification, and nothing on the way
+// A base caller sends an identity and gets a classification, and nothing on the way
 // there or back mentions a hold, a capture or a bucket.
 func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 	fixture := newRoutes(t)

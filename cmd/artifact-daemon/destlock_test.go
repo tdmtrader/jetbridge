@@ -82,14 +82,14 @@ func itoa(i int) string {
 	return string(b)
 }
 
-// R9 — the node-wide resolve bound, asserted against the HANDLERS.
+// The node-wide resolve bound is enforced by the batch handler.
 //
 // The previous version of this test took and released slots on s.resolveSem
 // directly, which proved only that a buffered channel is a buffered channel:
 // deleting the acquire/release from the handler left it green. These tests
 // issue real HTTP requests, so the bound must be enforced where the requests
 // arrive or they fail.
-func TestResolveSem_BoundsBothResolveRoutes(t *testing.T) {
+func TestResolveSem_BoundsBatchRequests(t *testing.T) {
 	fill := func(t *testing.T, s *Server) func() {
 		t.Helper()
 		for i := 0; i < cap(s.resolveSem); i++ {
@@ -135,45 +135,34 @@ func TestResolveSem_BoundsBothResolveRoutes(t *testing.T) {
 		return http.DefaultClient.Do(req)
 	}
 
-	for _, route := range []struct {
-		name string
-		path string
-		body func(item string) string
-	}{
-		{"POST /resolve", "/resolve", func(item string) string { return item }},
-		{"POST /resolve-batch", "/resolve-batch", func(item string) string { return `{"items":[` + item + `]}` }},
-	} {
-		t.Run(route.name, func(t *testing.T) {
-			s, ts, dest, item := seed(t)
+	s, ts, dest, item := seed(t)
 
-			// Saturated: the request must NOT complete. 500ms is generous —
-			// with a free slot this resolve finishes in single-digit ms.
-			drain := fill(t, s)
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			resp, err := post(ctx, ts.URL+route.path, route.body(item))
-			if err == nil {
-				resp.Body.Close()
-				t.Fatalf("%s completed while every resolve slot was held — the bound does not bind", route.name)
-			}
-			if _, statErr := os.Stat(filepath.Join(dest, "f.txt")); statErr == nil {
-				t.Error("the copy ran despite the saturated bound")
-			}
+	// Saturated: the request must NOT complete. 500ms is generous —
+	// with a free slot this resolve finishes in single-digit ms.
+	drain := fill(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	resp, err := post(ctx, ts.URL+"/resolve-batch", `{"items":[`+item+`]}`)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("batch completed while every resolve slot was held — the bound does not bind")
+	}
+	if _, statErr := os.Stat(filepath.Join(dest, "f.txt")); statErr == nil {
+		t.Error("the copy ran despite the saturated bound")
+	}
 
-			// Released: the identical request succeeds.
-			drain()
-			resp, err = post(context.Background(), ts.URL+route.path, route.body(item))
-			if err != nil {
-				t.Fatalf("after release: %v", err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("after release: got %d, want 200", resp.StatusCode)
-			}
-			if _, err := os.Stat(filepath.Join(dest, "f.txt")); err != nil {
-				t.Errorf("resolve reported 200 but delivered nothing: %v", err)
-			}
-		})
+	// Released: the identical request succeeds.
+	drain()
+	resp, err = post(context.Background(), ts.URL+"/resolve-batch", `{"items":[`+item+`]}`)
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("after release: got %d, want 200", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "f.txt")); err != nil {
+		t.Errorf("resolve reported 200 but delivered nothing: %v", err)
 	}
 }
 

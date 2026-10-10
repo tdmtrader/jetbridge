@@ -354,7 +354,7 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCac
 //
 // On hit, returns a stub volume whose handle is the cache key. When
 // this volume is used as input to a task step, BuildFetchInitContainers
-// resolves it via the daemon's /resolve endpoint which follows the symlink
+// resolves it via the daemon's /resolve-batch endpoint which follows the symlink
 // to the original get step output.
 //
 // This method always probes live daemon pods via EndpointSlice discovery.

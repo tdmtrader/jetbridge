@@ -19,6 +19,7 @@ template first, so these rules run before anything else in the chart.
   release so this table can say where it went; the release after, both go.
 */ -}}
 {{- range $removed := list
+  (list "artifactDaemon.resolveCapability.ttl" "expiry is derived from pod scheduling and startup timeouts plus the fetch retry budget and margin. Remove the value.")
   (list "artifactDaemon.durable" "the durable tier is not configurable from the chart. Remove the value.")
   (list "artifactDaemon.enabled" "the artifact daemon is always deployed. Remove the value.")
   (list "artifactDaemon.hangar.bucket" "there is no strict-input namespace: every Run input is an input publication in the output namespace, hangarOutput.bucket. Remove the value.")
@@ -96,7 +97,7 @@ template first, so these rules run before anything else in the chart.
 {{- end -}}
 {{- $_ := set $ids .client_id true -}}
 {{- end -}}
-{{- $owned := list "enable-mcp" "mcp-client-config" "mcp-disable-operation" "kubernetes-artifact-daemon-port" "kubernetes-artifact-daemon-host-path" "kubernetes-artifact-daemon-service" "kubernetes-artifact-daemon-resolve-capability-key" "kubernetes-artifact-daemon-resolve-capability-ttl" "kubernetes-artifact-daemon-tls-cert" "kubernetes-artifact-daemon-tls-key" "kubernetes-artifact-daemon-tls-ca-cert" -}}
+{{- $owned := list "enable-mcp" "mcp-client-config" "mcp-disable-operation" "kubernetes-artifact-daemon-port" "kubernetes-artifact-daemon-host-path" "kubernetes-artifact-daemon-service" "kubernetes-artifact-daemon-resolve-capability-key" "kubernetes-artifact-daemon-tls-cert" "kubernetes-artifact-daemon-tls-key" "kubernetes-artifact-daemon-tls-ca-cert" -}}
 {{- range .Values.web.env -}}
 {{- $name := .name -}}
 {{- range $owned -}}

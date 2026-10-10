@@ -106,11 +106,11 @@ func TestResolveEndpoint_LocalRegistry(t *testing.T) {
 	// Create destination directory.
 	destDir := destUnder(t, storagePath, "input")
 
-	// POST /resolve
+	// POST /resolve-batch
 	resolveBody := `{"key":"handle-a/out","dest":"` + destDir + `"}`
-	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -118,8 +118,16 @@ func TestResolveEndpoint_LocalRegistry(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 	if result["status"] != "ok" {
 		t.Errorf("expected status=ok, got %v", result["status"])
 	}
@@ -147,9 +155,9 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "resolved")
 
-	// POST /resolve — should find via filesystem scan fallback.
+	// POST /resolve-batch — should find via filesystem scan fallback.
 	resolveBody := `{"key":"handle-b/dir","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,8 +167,16 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 	if result["method"] != "filesystem" {
 		t.Errorf("expected method=filesystem, got %v", result["method"])
 	}
@@ -179,7 +195,7 @@ func TestResolveEndpoint_NotFound(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "nope")
 	body := `{"key":"nonexistent","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,8 +205,16 @@ func TestResolveEndpoint_NotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
 	}
 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 	if result["status"] != "not_found" {
 		t.Errorf("expected status=not_found, got %v", result["status"])
 	}
@@ -199,7 +223,7 @@ func TestResolveEndpoint_NotFound(t *testing.T) {
 func TestResolveEndpoint_MissingFields(t *testing.T) {
 	ts, _ := setupServer(t)
 
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(`{"key":"a"}`))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[{"key":"a"}`+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +250,7 @@ func TestResolveEndpoint_MultipleFiles(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "dest")
 	resolveBody := `{"key":"handle-c/result","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +290,7 @@ func TestResolveEndpoint_RestrictivePermissionsBecomWorldReadable(t *testing.T) 
 
 	destDir := destUnder(t, storagePath, "dest-restricted")
 	resolveBody := `{"key":"handle-restricted/out","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +341,7 @@ func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "legacy-dest")
 	body := `{"key":"old-handle/output","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,10 +15,8 @@ package jetbridge
 // listed fails; a listed site that no longer exists fails too, so the list
 // cannot rot into exemptions for code that was deleted.
 //
-// NARROWED by decision F13. The job, one-off and check worker paths that carry
-// ExecutionControl WITHOUT a capture belong to the sibling track
-// `exact_execution_control`; this inventory is over capture-selected executions
-// only.
+// This inventory covers capture-selected executions. Base execution control
+// does not select a capture or require capture scheduling.
 
 import (
 	"go/ast"

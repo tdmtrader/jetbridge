@@ -13,9 +13,8 @@ package outputplane
 // build kind, job, check, cancellation reason, output, hold or capture
 // anywhere in this file. An optional capture extension references an execution
 // by identity and may open a named cleanup gate on it; it cannot replace the
-// outcome and it cannot start a second state machine. That is decision F13's
-// contract obligation, and TestABaseExecutionNeedsNoExtensionToBeComplete is
-// what keeps it true: a base execution with no extension at all is a complete,
+// outcome and it cannot start a second state machine.
+// TestABaseExecutionNeedsNoExtensionToBeComplete keeps that boundary true: a base execution with no extension at all is a complete,
 // verifiable, cleanup-eligible thing.
 //
 // Ordering is the substance here, so it is stated once:

@@ -171,12 +171,12 @@ func main() {
 	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
 	server.Registry().SetAliasStore(aliasStore)
 
-	// /resolve and /resolve-batch are mTLS-exempt by design, so this key is
-	// their only authentication. Absent, they are open to anything that can
+	// /resolve-batch is mTLS-exempt by design, so this key is
+	// its only authentication. Absent, it is open to anything that can
 	// reach the port — said once, loudly, rather than left to be inferred.
 	if resolveCapabilityKey == nil {
 		logger.Info("resolve-unauthenticated", lager.Data{
-			"detail": "no --resolve-capability-key: POST /resolve and /resolve-batch accept any caller",
+			"detail": "no --resolve-capability-key: POST /resolve-batch accepts any caller",
 		})
 	} else {
 		if err := server.SetResolveCapabilityKey(resolveCapabilityKey); err != nil {

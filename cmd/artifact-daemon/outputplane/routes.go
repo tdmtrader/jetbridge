@@ -21,8 +21,7 @@ package outputplane
 //
 // Base requests never require or synthesize an output or source field. A base
 // caller sends an identity and gets a classification; nothing on that path
-// mentions a hold, a bucket or a capture, which is decision F13's contract
-// obligation expressed as a route table.
+// mentions a hold, a bucket or a capture.
 
 import (
 	"bytes"
@@ -164,7 +163,7 @@ type route struct {
 	// inside its window. The capture control init holds no client
 	// certificate and cannot be given one (the task's Pod holds no
 	// output-plane credential beyond its one-shot warrant), so its route stays
-	// reachable without one, exactly as cmd/artifact-daemon exempts /resolve
+	// reachable without one, exactly as cmd/artifact-daemon exempts /resolve-batch
 	// for the same caller and the same reason. It is node-local traffic on the
 	// node's own loopback or CNI path, and the warrant is still signed, bound
 	// to its purpose and single-use.
@@ -265,8 +264,7 @@ func (server *Server) routes() map[string]route {
 		// output, a hold or a bucket.
 		// Admission and the supervisor's two writes. They are base routes and
 		// they carry no output, source or capture field: this is the shape a
-		// non-capture execution uses unchanged, which is decision F13's
-		// contract obligation stated as a route rather than promised.
+		// non-capture execution uses unchanged.
 		"POST /execution/v1/admit":   {hangar.PurposeControlBase, "admit", (*Server).admit, false},
 		"POST /execution/v1/start":   {hangar.PurposeControlBase, "start", (*Server).start, false},
 		"POST /execution/v1/outcome": {hangar.PurposeControlBase, "outcome", (*Server).outcome, false},

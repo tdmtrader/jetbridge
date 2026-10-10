@@ -196,7 +196,6 @@ spec:
             # and verifies them against <service>.<namespace>.svc.
             - --kubernetes-artifact-daemon-namespace={{ .Release.Namespace }}
             - --kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
-            - --kubernetes-artifact-daemon-resolve-capability-ttl={{ .Values.artifactDaemon.resolveCapability.ttl | default "2h" }}
             - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt

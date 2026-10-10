@@ -549,7 +549,7 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 		),
 
 		// -------------------------------------------------------------------
-		// Requests against /register, /mirror, /resolve, /resolve-batch
+		// Requests against /register, /mirror, /resolve-batch
 		// -------------------------------------------------------------------
 
 		brine.DefineMap[ContainedDaemon, ContainedDaemon](
@@ -611,8 +611,8 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 					return in, err
 				}
-				body := fmt.Sprintf(`{"key":%q,"dest":%q}`, key, dest)
-				return in.answered(http.MethodPost, "/resolve", []byte(body), "application/json"), nil
+				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, dest)
+				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
 
@@ -628,8 +628,8 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 					return in, fmt.Errorf("no directory outside the storage root was set up")
 				}
 				in.OutsideDest = filepath.Join(in.Outside, "attacker-chosen")
-				body := fmt.Sprintf(`{"key":%q,"dest":%q}`, key, in.OutsideDest)
-				return in.answered(http.MethodPost, "/resolve", []byte(body), "application/json"), nil
+				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, in.OutsideDest)
+				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
 
@@ -646,8 +646,8 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				body := fmt.Sprintf(`{"key":%q,"dest":%q}`, key, in.root())
-				return in.answered(http.MethodPost, "/resolve", []byte(body), "application/json"), nil
+				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, in.root())
+				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
 

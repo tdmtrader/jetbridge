@@ -451,10 +451,10 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 		}
 	}
 
-	// Command should use wget to /resolve endpoint
+	// Command should use wget to /resolve-batch endpoint
 	cmd := strings.Join(init.Command, " ")
-	if !strings.Contains(cmd, "/resolve") {
-		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
+	if !strings.Contains(cmd, "/resolve-batch") {
+		t.Errorf("expected /resolve-batch endpoint in command, got: %s", cmd)
 	}
 	if !strings.Contains(cmd, "test-handle/result") {
 		t.Errorf("expected daemon key in command, got: %s", cmd)
@@ -895,8 +895,8 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 	}
 
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "/resolve") {
-		t.Errorf("init container should use daemon /resolve endpoint, got command: %s", cmd)
+	if !strings.Contains(cmd, "/resolve-batch") {
+		t.Errorf("init container should use daemon /resolve-batch endpoint, got command: %s", cmd)
 	}
 	if !strings.Contains(cmd, "source-handle/src") {
 		t.Errorf("init container should reference daemon key, got command: %s", cmd)
@@ -986,17 +986,17 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 	}
 
 	cmd := strings.Join(inits[0].Command, " ")
-	// Should contain the daemon key in the /resolve call
+	// Should contain the daemon key in the /resolve-batch call
 	if !strings.Contains(cmd, "producer-handle/result") {
 		t.Errorf("expected daemon key in command, got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "/resolve") {
-		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
+	if !strings.Contains(cmd, "/resolve-batch") {
+		t.Errorf("expected /resolve-batch endpoint in command, got: %s", cmd)
 	}
 }
 
 // TestDaemonSetMode_InitContainerUsesResolveCommand verifies that init containers
-// use the daemon /resolve endpoint instead of cp -a or remote wget.
+// use the daemon /resolve-batch endpoint instead of cp -a or remote wget.
 func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 	cfg := daemonSetConfig()
 	locator := NewArtifactLocator()
@@ -1037,10 +1037,10 @@ func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 		}
 	}
 
-	// Command should use wget to localhost /resolve, not cp -a
+	// Command should use wget to localhost /resolve-batch, not cp -a
 	cmd := strings.Join(inits[0].Command, " ")
-	if !strings.Contains(cmd, "/resolve") {
-		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
+	if !strings.Contains(cmd, "/resolve-batch") {
+		t.Errorf("expected /resolve-batch endpoint in command, got: %s", cmd)
 	}
 	if strings.Contains(cmd, "cp -a") {
 		t.Errorf("should NOT use cp -a in daemon resolve mode, got: %s", cmd)
@@ -1329,8 +1329,8 @@ func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
 	if !strings.Contains(cmd, cachedVolHandle) {
 		t.Errorf("expected volume handle %q in daemon resolve command, got: %s", cachedVolHandle, cmd)
 	}
-	if !strings.Contains(cmd, "/resolve") {
-		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
+	if !strings.Contains(cmd, "/resolve-batch") {
+		t.Errorf("expected /resolve-batch endpoint in command, got: %s", cmd)
 	}
 }
 
@@ -1478,7 +1478,7 @@ func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
 // the volume handle alias. This test verifies that the fallback to filesystem
 // scan (checking steps/<key>) happens when the alias is missing.
 //
-// In practice, the daemon's /resolve endpoint checks:
+// In practice, the daemon's /resolve-batch endpoint checks:
 //  1. In-memory registry (alias — lost on restart)
 //  2. Filesystem fallback: does steps/<key> exist? (works for daemon keys
 //     like "container-handle/dir" but NOT for raw volume handles)

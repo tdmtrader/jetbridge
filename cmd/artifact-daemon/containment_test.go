@@ -425,7 +425,7 @@ func TestPeerFetch_ReplacesUnrelatedExistingDestination(t *testing.T) {
 // put the guarantee inside Fetch instead, tolerating ErrExist/ENOTEMPTY on the
 // rename as "a concurrent fetch of this same key won" — but Fetch cannot know
 // that: dest is caller-supplied, distinct keys legitimately share one
-// (TestResolveSem_BoundsBothResolveRoutes fires several), and a failed CLEAR
+// (TestResolveSem_BoundsBatchRequests fires several), and a failed CLEAR
 // produced the same ENOTEMPTY — so the tolerance also reported success while
 // delivering whatever stale content it could not remove. This test therefore
 // drives the real route; direct concurrent Fetch calls to one dest are no
@@ -467,7 +467,7 @@ func TestPeerFetch_ConcurrentFetchesIntoOneDestination(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+			resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 			if err != nil {
 				t.Errorf("concurrent resolve %d: %v", i, err)
 				return

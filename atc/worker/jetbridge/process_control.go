@@ -10,8 +10,8 @@ package jetbridge
 // Every arrow is a durable write that happens before the thing on its right,
 // and none of them is a Pod phase, a container status or an in-memory value. A
 // ProcessResult that reached the engine before the daemon acknowledged the
-// outcome would be a terminal answer the ledger cannot corroborate, which is
-// the state requirement 4 exists to forbid.
+// outcome would be a terminal answer the ledger cannot corroborate. The durable
+// outcome must precede every terminal result exposed to the engine.
 //
 // What it must never do is run the command twice. From exact process start
 // onward recovery may query, attach and report -- and may not re-invoke. The

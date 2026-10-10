@@ -48,10 +48,10 @@ func TestMetricsEndpoint_RecordsResolve(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("x"), 0644)
 
 	destDir := destUnder(t, storagePath, "input")
-	resp, err := http.Post(ts.URL+"/resolve", "application/json",
-		strings.NewReader(`{"key":"handle-m/out","dest":"`+destDir+`"}`))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json",
+		strings.NewReader(`{"items":[{"key":"handle-m/out","dest":"`+destDir+`"}`+`]}`))
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -73,10 +73,10 @@ func TestMetricsEndpoint_RecordsNotFound(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	destDir := destUnder(t, storagePath, "input")
-	resp, err := http.Post(ts.URL+"/resolve", "application/json",
-		strings.NewReader(`{"key":"does-not-exist","dest":"`+destDir+`"}`))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json",
+		strings.NewReader(`{"items":[{"key":"does-not-exist","dest":"`+destDir+`"}`+`]}`))
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

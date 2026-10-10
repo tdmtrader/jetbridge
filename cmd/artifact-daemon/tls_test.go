@@ -371,27 +371,15 @@ func TestTLS_ExemptPaths_WorkWithoutClientCert(t *testing.T) {
 		t.Errorf("/healthz: expected 200, got %d", resp.StatusCode)
 	}
 
-	// /resolve should not get 401 (may get 400 or other, but not 401).
-	req, _ := http.NewRequest("POST", baseURL+"/resolve", strings.NewReader(`{"key":"steps/build-1/out","dest":"/tmp/test"}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = client.Do(req)
-	if err != nil {
-		t.Fatalf("/resolve: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		t.Error("/resolve: expected non-401 without client cert, got 401")
-	}
-
 	// /resolve-batch should not get 401.
-	req, _ = http.NewRequest("POST", baseURL+"/resolve-batch", strings.NewReader(`{"items":[{"key":"steps/build-1/out","dest":"/tmp/test"}]}`))
+	req, _ := http.NewRequest("POST", baseURL+"/resolve-batch", strings.NewReader(`{"items":[{"key":"steps/build-1/out","dest":"/tmp/test"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("/resolve-batch: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		t.Error("/resolve-batch: expected non-401 without client cert, got 401")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("/resolve-batch: expected 400 for an uncontained destination without client cert, got %d", resp.StatusCode)
 	}
 }

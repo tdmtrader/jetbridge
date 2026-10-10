@@ -108,51 +108,6 @@ func TestVerifyResolve_RejectsAWellFormedForgedMAC(t *testing.T) {
 	})
 }
 
-func TestResolveCapabilityHasUniqueAuthenticatedAcknowledgement(t *testing.T) {
-	key := []byte("0123456789abcdef0123456789abcdef")
-	otherKey := []byte("fedcba9876543210fedcba9876543210")
-	signer, _ := artifactcap.NewSigner(key)
-	verifier, _ := artifactcap.NewVerifier(key)
-	otherVerifier, _ := artifactcap.NewVerifier(otherKey)
-	expires := time.Now().Add(time.Hour)
-	first, err := signer.SignResolve("producer/output", "/artifact-store/steps/consumer/input", expires)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := signer.SignResolve("producer/output", "/artifact-store/steps/consumer/input", expires)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first == second {
-		t.Fatal("equivalent operations reused a replayable capability token")
-	}
-	want, err := signer.ResolveAcknowledgement(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := verifier.ResolveAcknowledgement(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got == "" || got != want {
-		t.Fatalf("daemon acknowledgement = %q, want signer expectation %q", got, want)
-	}
-	wrong, err := otherVerifier.ResolveAcknowledgement(first)
-	if err == nil && wrong == want {
-		t.Fatal("different key forged the expected acknowledgement")
-	}
-	receiptName, err := artifactcap.ResolveReceiptFilename(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if filepath.Base(receiptName) != receiptName || receiptName == want {
-		t.Fatalf("receipt filename = %q, want one safe opaque path component", receiptName)
-	}
-	if _, err := artifactcap.ResolveReceiptFilename("../" + want); err == nil {
-		t.Fatal("unsafe acknowledgement was accepted as a receipt filename")
-	}
-}
-
 func TestLoadKeyFileIsStrictAndCopiesTheKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "resolve.key")

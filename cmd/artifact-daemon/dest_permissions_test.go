@@ -56,7 +56,7 @@ func TestResolve_LocalCopyLeavesATraversableDestination(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "perm-dest")
 	body := `{"key":"perm-handle/out","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestResolve_PeerFetchLeavesATraversableDestination(t *testing.T) {
 
 	destDir := destUnder(t, storageB, "peer-perm-dest")
 	body := `{"key":"peer-perm/out","dest":"` + destDir + `"}`
-	resp, err := http.Post(tsB.URL+"/resolve", "application/json", strings.NewReader(body))
+	resp, err := http.Post(tsB.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,8 +144,16 @@ func TestResolve_PeerFetchLeavesATraversableDestination(t *testing.T) {
 		t.Fatalf("got %d, want 200", resp.StatusCode)
 	}
 
-	var result resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 	if result.Method != "peer" {
 		t.Fatalf("method = %q, want peer — the local path answered and this proves nothing", result.Method)
 	}

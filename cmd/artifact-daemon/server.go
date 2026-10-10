@@ -69,7 +69,7 @@ type Server struct {
 	// run the node out of disk.
 	uploadSem chan struct{}
 	// resolveSem bounds concurrent resolves NODE-WIDE, across every request on
-	// both mTLS-exempt routes (/resolve and /resolve-batch) — it is one channel
+	// the mTLS-exempt route (/resolve-batch) — it is one channel
 	// per process, not per batch. Same reasoning as uploadSem: each resolve
 	// copies a whole artifact, and before the bound existed the batch endpoint
 	// spawned one goroutine per item with no cap. The work a slot holds is
@@ -97,8 +97,8 @@ type Server struct {
 	// itself, so there is no ordering to get wrong and no name to out-think.
 	root *os.Root
 
-	// resolveVerifier authenticates the two mTLS-exempt resolve routes. nil
-	// means no key was configured and they are unauthenticated.
+	// resolveVerifier authenticates the mTLS-exempt resolve route. nil
+	// means no key was configured and the route is unauthenticated.
 	resolveVerifier *artifactcap.Verifier
 }
 
@@ -304,12 +304,12 @@ func (s *Server) Registry() *Registry {
 // SetResolveCapabilityKey requires every resolve to carry a capability bound to
 // its exact key and destination.
 //
-// /resolve and /resolve-batch are mTLS-EXEMPT by design: the init container
+// /resolve-batch is mTLS-EXEMPT by design: the init container
 // dials the daemon by node IP, which cannot be a certificate SAN. This is
-// therefore the only authentication those two routes can have — and they take a
+// therefore the only authentication this route can have — and it takes a
 // caller-supplied dest that becomes a RemoveAll and a Rename.
 //
-// When no key is configured the routes stay open, because that is how every
+// When no key is configured the route stays open, because that is how every
 // deployment without the flag behaves; main.go logs loudly in that case. The
 // chart arms it only when artifactDaemon.resolveCapability.existingSecret
 // names a Secret — deliberately, since the chart cannot generate a key that
@@ -339,7 +339,7 @@ func (s *Server) authorizeResolve(req artifactwire.ResolveRequest) bool {
 }
 
 // SetPeerResolver configures the peer resolver for cross-node artifact
-// resolution. When nil, /resolve only checks local storage.
+// resolution. When nil, /resolve-batch only checks local storage.
 func (s *Server) SetPeerResolver(peers *PeerResolver) {
 	s.peers = peers
 }
@@ -354,7 +354,7 @@ func (s *Server) SetMirrorTrigger(trigger func(ctx context.Context, key string))
 // Handler returns the HTTP handler for the server. When tlsEnabled is true,
 // protected routes are wrapped with requireClientCert middleware that returns
 // 401 if the request lacks a verified client certificate. Exempt routes
-// (/healthz, /resolve, /resolve-batch) are accessible without a client cert.
+// (/healthz, /resolve-batch) are accessible without a client cert.
 func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	cfg := handlerConfig{}
 	for _, o := range opts {
@@ -385,9 +385,8 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	}
 
 	handle(artifactwire.Healthz, s.handleHealthz)
-	handle(artifactwire.Resolve, s.handleResolve)
 	handle(artifactwire.ResolveBatch, s.handleResolveBatch)
-	// Read-only, and mTLS-exempt for the same reason /resolve is: the caller
+	// Read-only, and mTLS-exempt for the same reason /resolve-batch is: the caller
 	// is an init container in a pod on this node, it holds no client
 	// certificate, and the question it needs answered is about its OWN step
 	// directory. It reads nothing but the class, writes nothing, and names no
@@ -492,7 +491,7 @@ func (s *Server) requestKey(r *http.Request, prefix string) (string, error) {
 // artifactKey returns the validated key an /artifacts/ request names.
 //
 // Operations go through s.root with this key. The absolute form is still
-// needed by the read/sweep guard (whose keys stay absolute under R12) and by
+// needed by the read/sweep guard (whose keys stay absolute) and by
 // tarDirectory (which walks a path; egress belongs to another track), and
 // artifactPath above produces it — routed through artifactLocation so the
 // walked path keeps the containment check the walker itself does not have.
@@ -1198,8 +1197,7 @@ func failedResolve(source, method string, err error) artifactwire.ResolveRespons
 }
 
 // resolveHTTPStatus is the status ONE result would be answered with on its own.
-// Shared by /resolve and /resolve-batch so the single-item and batch endpoints
-// cannot drift into answering the same outcome differently.
+// Batch aggregation uses it to rank each item's outcome.
 func resolveHTTPStatus(res artifactwire.ResolveResponse) int {
 	switch {
 	case res.Status == "ok":
@@ -1324,54 +1322,6 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp artifac
 	return artifactwire.ResolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", key)}
 }
 
-// handleResolve accepts POST /resolve with a JSON body containing {key, dest}.
-// It looks up the artifact by key and copies it to the destination path.
-//
-// Resolution order:
-//  1. Check local registry for an explicit registration
-//  2. Fall back to filesystem scan (check if the key maps to a steps/ directory)
-//  3. Query peer daemons for cross-node resolution
-func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	var req artifactwire.ResolveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
-		return
-	}
-	if req.Key == "" || req.Dest == "" {
-		s.refuse(w, r, http.StatusBadRequest, reasonMissingField, errors.New("key and dest are required"))
-		return
-	}
-	if err := validateRequestKey(req.Key); err != nil {
-		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
-		return
-	}
-	if err := validateResolveDest(s.storagePath, req.Dest); err != nil {
-		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
-		return
-	}
-	if !s.authorizeResolve(req) {
-		s.logger.Info("resolve-unauthorized", lager.Data{"key": req.Key})
-		s.refuse(w, r, http.StatusForbidden, reasonCapability, errors.New("resolve capability required"))
-		return
-	}
-
-	// The same node-wide bound as /resolve-batch: both routes are mTLS-exempt
-	// and reach the same copy machinery, so capping one and not the other just
-	// moved the unbounded fan-out over by one endpoint.
-	select {
-	case s.resolveSem <- struct{}{}:
-	case <-r.Context().Done():
-		writeJSON(w, http.StatusInternalServerError, artifactwire.ResolveResponse{Key: req.Key, Status: "error", Error: r.Context().Err().Error()})
-		return
-	}
-	defer func() { <-s.resolveSem }()
-
-	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
-
-	writeJSON(w, resolveHTTPStatus(resp), resp)
-}
-
 // handleResolveBatch accepts POST /resolve-batch with a JSON body containing
 // {"items": [{key, dest}, ...]}. It resolves all artifacts concurrently and
 // returns an aggregated response. If any item fails, the overall status is
@@ -1379,8 +1329,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 //
 // The HTTP status SEPARATES the ways an item can fail, because they are
 // different things to do about it. An artifact that is not on this node or any
-// peer is 404, exactly as /resolve reports the same outcome for one item; one
-// this daemon REFUSED -- an absolute symlink, a key naming the control ledger
+// peer is 404; an artifact this daemon REFUSED -- an absolute symlink, a key naming the control ledger
 // -- is 422, because the request is well formed and the answer is simply no;
 // anything that broke while resolving an artifact that IS here is 500.
 // Collapsing all of them into 500 is what this endpoint used to do, and the
@@ -1399,8 +1348,8 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Validate EVERY item before starting ANY of them. A partial batch that
 	// refuses item 3 after item 1 has already copied is a side effect from a
-	// refused request, which R5 forbids — and this endpoint is mTLS-exempt, so
-	// it is the least authenticated way into resolveOne.
+	// refused request, which must never change storage. This endpoint is
+	// mTLS-exempt, so it is the least authenticated way into resolveOne.
 	for i, item := range req.Items {
 		if err := validateRequestKey(item.Key); err != nil {
 			s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, fmt.Errorf("item %d: %v", i, err))

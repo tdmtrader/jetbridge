@@ -128,7 +128,7 @@ func TestDaemonSetMode_StreamOut_FallsBackToPeer_AfterProducerDeath(t *testing.T
 
 	// Volume keyed by daemonKey ("build-handle/result"). This matches what
 	// the daemon's filesystem has at storage/steps/build-handle/result on
-	// the peer post-mirror — and what /resolve (init container) uses.
+	// the peer post-mirror — and what /resolve-batch (init container) uses.
 	vol := NewDaemonSetVolume("build-handle/result", "build-handle/result", "worker-x", nil, "node-a", cfg, resolver)
 	vol.wire = dc.wire
 	vol.daemonClient = dc

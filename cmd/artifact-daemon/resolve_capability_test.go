@@ -16,9 +16,9 @@ import (
 	"github.com/concourse/concourse/artifactcap"
 )
 
-// /resolve and /resolve-batch are mTLS-EXEMPT by design — the init container
+// /resolve-batch is mTLS-EXEMPT by design — the init container
 // dials the daemon by node IP, which cannot be a certificate SAN — so the
-// capability key is the only authentication they can have. They take a
+// capability key is the only authentication it can have. It takes a
 // caller-supplied dest that becomes a RemoveAll and a Rename.
 //
 // This branch had dropped the control entirely while the chart still mounted
@@ -93,15 +93,15 @@ func TestResolveCapability(t *testing.T) {
 
 	t.Run("no capability is refused", func(t *testing.T) {
 		ts, k, dest := setup(t, true)
-		if code := post(t, ts, "/resolve", artifactwire.ResolveRequest{Key: k, Dest: dest}); code != http.StatusForbidden {
+		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest}}}); code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d", code)
 		}
 	})
 
 	t.Run("a valid capability is accepted", func(t *testing.T) {
 		ts, k, dest := setup(t, true)
-		code := post(t, ts, "/resolve", artifactwire.ResolveRequest{Key: k, Dest: dest, Capability: valid(t, k, dest)})
-		if code == http.StatusForbidden {
+		code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest, Capability: valid(t, k, dest)}}})
+		if code != http.StatusOK {
 			t.Fatal("a validly signed capability was refused — the rule is satisfied by refusing everything")
 		}
 		if _, err := os.Stat(filepath.Join(dest, "f.txt")); err != nil {
@@ -114,18 +114,18 @@ func TestResolveCapability(t *testing.T) {
 	// artifact to any destination.
 	t.Run("a capability for another key is refused", func(t *testing.T) {
 		ts, k, dest := setup(t, true)
-		if code := post(t, ts, "/resolve", artifactwire.ResolveRequest{
+		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{
 			Key: k, Dest: dest, Capability: valid(t, "other/key", dest),
-		}); code != http.StatusForbidden {
+		}}}); code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d", code)
 		}
 	})
 
 	t.Run("a capability for another dest is refused", func(t *testing.T) {
 		ts, k, dest := setup(t, true)
-		if code := post(t, ts, "/resolve", artifactwire.ResolveRequest{
+		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{
 			Key: k, Dest: dest, Capability: valid(t, k, dest+"-elsewhere"),
-		}); code != http.StatusForbidden {
+		}}}); code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d", code)
 		}
 	})
@@ -136,7 +136,7 @@ func TestResolveCapability(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if code := post(t, ts, "/resolve", artifactwire.ResolveRequest{Key: k, Dest: dest, Capability: tok}); code != http.StatusForbidden {
+		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest, Capability: tok}}}); code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d", code)
 		}
 	})
@@ -162,7 +162,7 @@ func TestResolveCapability(t *testing.T) {
 	// branch does today. main.go says so loudly at startup.
 	t.Run("no key configured leaves the route open", func(t *testing.T) {
 		ts, k, dest := setup(t, false)
-		if code := post(t, ts, "/resolve", artifactwire.ResolveRequest{Key: k, Dest: dest}); code == http.StatusForbidden {
+		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest}}}); code != http.StatusOK {
 			t.Error("an unconfigured daemon refused a resolve; that breaks every existing deployment")
 		}
 	})

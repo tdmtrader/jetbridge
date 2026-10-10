@@ -233,7 +233,8 @@ type RunCommand struct {
 		ArtifactDaemonPort                 int           `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
 		ArtifactDaemonHostPath             string        `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
 		ArtifactDaemonResolveCapabilityKey string        `long:"kubernetes-artifact-daemon-resolve-capability-key" description:"Path to the raw 32-byte key used to authorize artifact resolve operations. The artifact daemon must be started with the same key."`
-		ArtifactDaemonResolveCapabilityTTL time.Duration `long:"kubernetes-artifact-daemon-resolve-capability-ttl" default:"2h" description:"Lifetime of operation-bound resolve capabilities; must exceed pod scheduling plus startup plus the init retry budget."`
+		// accepted and ignored; remove after the next release — the chart stops rendering it in this change
+		ArtifactDaemonResolveCapabilityTTL time.Duration `long:"kubernetes-artifact-daemon-resolve-capability-ttl" default:"2h" description:"Accepted and ignored; capability expiry is derived from pod timeouts."`
 		ArtifactDaemonService              string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
 		ArtifactDaemonNamespace            string        `long:"kubernetes-artifact-daemon-namespace" description:"Namespace the artifact daemon's Service, EndpointSlices and server certificate live in. Empty means --kubernetes-namespace."`
 		ArtifactDaemonWarmTimeout          time.Duration `long:"kubernetes-artifact-daemon-warm-timeout" default:"90s" description:"How long to wait for a daemon to restore a resource cache from durable storage. A miss or timeout costs a re-download, never a failed build."`
@@ -1555,7 +1556,6 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
 	k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 	k8sCfg.ArtifactDaemonResolveCapabilityKey = key
-	k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
 	k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 	k8sCfg.ArtifactDaemonNamespace = cmd.Kubernetes.ArtifactDaemonNamespace
 	k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout

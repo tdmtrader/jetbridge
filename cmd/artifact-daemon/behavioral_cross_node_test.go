@@ -74,12 +74,12 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 	tsB := httptest.NewServer(serverB.Handler())
 	defer tsB.Close()
 
-	// POST /resolve to server B, which should discover the artifact on server A.
+	// POST /resolve-batch to server B, which should discover the artifact on server A.
 	destDir := destUnder(t, storageB, "cross-resolved")
 	resolveBody := `{"key":"cross-handle/output","dest":"` + destDir + `"}`
-	resp, err := http.Post(tsB.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(tsB.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
-		t.Fatalf("POST /resolve to server B: %v", err)
+		t.Fatalf("POST /resolve-batch to server B: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -88,8 +88,16 @@ func TestDaemonResolve_CrossNode_PeerFallback(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
-	var result resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 
 	if result.Status != "ok" {
 		t.Errorf("expected status=ok, got %q", result.Status)
@@ -135,12 +143,12 @@ func TestDaemonResolve_LocalRegistry(t *testing.T) {
 		t.Fatalf("register: expected 201, got %d", resp.StatusCode)
 	}
 
-	// POST /resolve — should resolve via local registry.
+	// POST /resolve-batch — should resolve via local registry.
 	destDir := destUnder(t, storagePath, "local-resolved")
 	resolveBody := `{"key":"local-handle/output","dest":"` + destDir + `"}`
-	resp, err = http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -149,8 +157,16 @@ func TestDaemonResolve_LocalRegistry(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
-	var result resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	var resultBatch struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resultBatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(resultBatch.Results) != 1 {
+		t.Fatalf("expected one batch result, got %+v", resultBatch)
+	}
+	result := resultBatch.Results[0]
 
 	if result.Status != "ok" {
 		t.Errorf("expected status=ok, got %q", result.Status)
@@ -223,7 +239,7 @@ func TestDaemonResolve_LocalRegistry_NoPeerQueries(t *testing.T) {
 	// Resolve — should use registry, NOT contact peer.
 	destDir := destUnder(t, storagePath, "no-peer-dest")
 	resolveBody := `{"key":"no-peer-handle/dir","dest":"` + destDir + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(resolveBody))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -273,18 +273,21 @@ func TestResolveWillNotClearACaptureHeldDestinationAndStillClearsAnUnheldOne(t *
 		if err != nil {
 			t.Fatalf("encoding: %v", err)
 		}
-		request := httptest.NewRequest(http.MethodPost, "/resolve", bytes.NewReader(body))
+		request := httptest.NewRequest(http.MethodPost, "/resolve-batch", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 
-		var answer artifactwire.ResolveResponse
+		var answer artifactwire.BatchResolveResponse
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 			// A structural 400 is plain text. Carry it through as the error so
 			// the assertion below reads the same either way.
 			return artifactwire.ResolveResponse{Status: "error", Error: recorder.Body.String()}
 		}
 
-		return answer
+		if len(answer.Results) != 1 {
+			t.Fatalf("expected one batch result, got %+v", answer)
+		}
+		return answer.Results[0]
 	}
 
 	// A resolve destination is a VOLUME inside a steps entry, which is exactly
@@ -426,8 +429,8 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
-	if code := do(http.MethodPost, "/resolve", dest); code == http.StatusOK {
-		t.Error("a resolve destination inside the control directory was accepted")
+	if code := do(http.MethodPost, "/resolve-batch", []byte(`{"items":[`+string(dest)+`]}`)); code != http.StatusBadRequest {
+		t.Errorf("resolve into the control directory: got %d, want 400", code)
 	}
 	registration, err := json.Marshal(artifactwire.RegisterRequest{Key: "the-ledger", LocalPath: recordPath})
 	if err != nil {

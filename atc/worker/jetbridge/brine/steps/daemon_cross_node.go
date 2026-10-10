@@ -599,7 +599,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The consumer's request. POST /resolve is what an ATC step's
+		// The consumer's request. POST /resolve-batch is what an ATC step's
 		// fetch-inputs container issues against the daemon on its own node.
 		brine.DefineMap[CrossNode, CrossNode](
 			"a consumer asks this node's daemon to resolve {string}",
@@ -610,7 +610,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				}
 
 				// The destination is contained by the daemon's own storage
-				// root, which /resolve requires, and its PARENT has to exist:
+				// root, which /resolve-batch requires, and its PARENT has to exist:
 				// the local copy path builds a sibling temp directory with
 				// os.MkdirTemp(filepath.Dir(dest)) and fails without one.
 				in.Dest = filepath.Join(in.Local.Root, "resolved", strings.ReplaceAll(key, "/", "-"))
@@ -622,8 +622,8 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				// rather than the suite. The daemon's own peer fetch client
 				// allows three minutes.
 				client := &http.Client{Timeout: 90 * time.Second}
-				body := fmt.Sprintf(`{"key":%q,"dest":%q}`, key, in.Dest)
-				resp, err := client.Post(in.Local.URL+"/resolve", "application/json", strings.NewReader(body))
+				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, in.Dest)
+				resp, err := client.Post(in.Local.URL+"/resolve-batch", "application/json", strings.NewReader(body))
 				if err != nil {
 					in.Err, in.Status, in.Body = err, 0, ""
 					return in, nil

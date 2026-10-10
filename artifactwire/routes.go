@@ -50,7 +50,6 @@ func (r Route) Pattern() string {
 // mounted beside these.
 var (
 	Healthz      = Route{Method: http.MethodGet, Path: "/healthz", MTLSExempt: true}
-	Resolve      = Route{Method: http.MethodPost, Path: "/resolve", MTLSExempt: true}
 	ResolveBatch = Route{Method: http.MethodPost, Path: "/resolve-batch", MTLSExempt: true}
 	CaptureHeld  = Route{Method: http.MethodGet, Path: CaptureHeldStepsPrefix + "{handle...}", MTLSExempt: true}
 	Metrics      = Route{Method: http.MethodGet, Path: "/metrics", MTLSExempt: true}
@@ -71,7 +70,7 @@ var (
 // Routes is every route, in the order the daemon registers them.
 func Routes() []Route {
 	return []Route{
-		Healthz, Resolve, ResolveBatch, CaptureHeld, Metrics,
+		Healthz, ResolveBatch, CaptureHeld, Metrics,
 		GetArtifact, PutArtifact, DeleteArtifact, HeadArtifact,
 		Register, Mirror, StreamIn, DurableRestore,
 		HeadResourceCache, GetResourceCache,

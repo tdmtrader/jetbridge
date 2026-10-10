@@ -69,15 +69,6 @@ func TestResolveCapabilityFlagsAreAllOrNothing(t *testing.T) {
 	})
 }
 
-// The TTL flag is worthless without the key flag: the ATC refuses to start when
-// the TTL is at or below its floor, and never signs at all without a key.
-func TestResolveCapabilityTTLTravelsWithTheKey(t *testing.T) {
-	out := render(t, "artifactDaemon.resolveCapability.existingSecret=jb-resolve-key")
-	if !strings.Contains(out, "--kubernetes-artifact-daemon-resolve-capability-ttl=2h") {
-		t.Errorf("expected the default 2h TTL alongside the key; got:\n%s", capabilityLines(out))
-	}
-}
-
 func capabilityLines(out string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(out, "\n") {
@@ -87,4 +78,11 @@ func capabilityLines(out string) string {
 		}
 	}
 	return b.String()
+}
+
+func TestResolveCapabilityExpiryIsDerived(t *testing.T) {
+	out := render(t, "artifactDaemon.resolveCapability.existingSecret=jb-resolve-key")
+	if strings.Contains(out, "--kubernetes-artifact-daemon-resolve-capability-ttl") {
+		t.Fatal("chart still renders the ignored TTL flag")
+	}
 }

@@ -76,8 +76,8 @@ func TestRefusalsAreCountedAndLogged(t *testing.T) {
 	}
 
 	// An out-of-root dest on the mTLS-exempt resolve route.
-	body := bytes.NewReader([]byte(`{"key":"a/b","dest":"/etc/passwd"}`))
-	resp, err = http.Post(ts.URL+"/resolve", "application/json", body)
+	body := bytes.NewReader([]byte(`{"items":[{"key":"a/b","dest":"/etc/passwd"}]}`))
+	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", body)
 	if err != nil {
 		t.Fatal(err)
 	}

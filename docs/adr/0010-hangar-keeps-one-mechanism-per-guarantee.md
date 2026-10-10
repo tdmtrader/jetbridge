@@ -92,3 +92,7 @@ We cut it to one mechanism per guarantee:
   no replay refusal for a read warrant beyond its window (the init
   container retries after a 503 with the same token); no node-side readiness
   gate for a corrupt ledger.
+
+Amended by C4 (daemon small cuts): the unused `artifactcap` resolve
+acknowledgement and receipt helpers are gone. Artifact resolve capabilities
+keep their nonce and wire format; Hangar's materialization receipt is unchanged.

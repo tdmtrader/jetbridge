@@ -9,7 +9,7 @@ package jetbridge
 // the ATC already speaks to the artifact daemon -- same certificate, same CA,
 // same predicate (DaemonTLSConfigured) -- and the daemon requires a client
 // certificate on every route except the one the in-pod control init calls,
-// exactly as the artifact daemon exempts /resolve.
+// exactly as the artifact daemon exempts /resolve-batch.
 //
 // It is ONE adapter. The base protocol's four closed operations and the two
 // supervisor writes go through the same client as the capture extension's seal,

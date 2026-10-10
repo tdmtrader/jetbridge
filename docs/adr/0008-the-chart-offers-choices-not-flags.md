@@ -102,3 +102,8 @@ is written beside the constant. A raise is a one-line diff a reviewer sees.
   in the daemon, which keeps its durable-tier code and flags; only the
   chart's way of setting them is gone. ADR-0002 is unedited, and this is its
   amendment.
+
+Amended by C4 (daemon small cuts): resolve capability expiry is derived from
+pod timeouts, retries and one margin. `artifactDaemon.resolveCapability.ttl`
+leaves the values budget; its open schema tombstone and actionable rejection
+remain for one release, as above. See `deploy/chart/MIGRATING.md` for rollout.

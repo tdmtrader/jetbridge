@@ -14,7 +14,7 @@ outside the trusted set that may:
     replicasets, statefulsets, daemonsets, jobs, cronjobs), any of which can
     mount a Secret.
 
-The trusted set (proposal amendments M-4, M-5) is the file's `namespace:name`
+The trusted set is the file's `namespace:name`
 lines, every ServiceAccount in kube-system (the control plane), and every
 identity web's step pod grants name (they are trusted readers when they hold
 pods create). It exits non-zero when any other account has such access. It

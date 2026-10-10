@@ -20,9 +20,8 @@ import (
 //
 // The guards here inventory the contract rather than the wiring, and they are
 // written so that widening the population is a change of what the walk finds,
-// not a change of shape. The
-// sibling track `exact_execution_control` (plan decision F13) widens the same
-// inventory to every controlled non-capture execution.
+// not a change of shape. The base contract also covers controlled executions
+// without a capture extension.
 
 // baseClassificationVocabulary is the closed set of exact-execution outcomes.
 // A second state machine anywhere in the tree would have to spell at least one

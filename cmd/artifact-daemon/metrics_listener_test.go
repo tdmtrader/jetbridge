@@ -96,7 +96,7 @@ func TestMetricsPortServesPlainHTTPBesideTheMTLSPort(t *testing.T) {
 	// Anything else on the metrics port would be a daemon route with the mTLS
 	// check taken off. /healthz is exempt on the TLS port and still must not
 	// answer here: the listener is for one caller and one question.
-	for _, path := range []string{"/healthz", "/artifacts/steps/handle/out", "/resolve"} {
+	for _, path := range []string{"/healthz", "/artifacts/steps/handle/out", "/resolve-batch"} {
 		resp, err := http.Get(metricsURL + path)
 		if err != nil {
 			t.Fatalf("GET %s on the metrics port: %v", path, err)

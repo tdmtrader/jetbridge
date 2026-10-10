@@ -299,7 +299,7 @@ func TestRequestContainment_Register_LocalPathInsideRootAccepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AC5 — /resolve must not write or delete outside the storage root. This is
+// AC5 — /resolve-batch must not write or delete outside the storage root. This is
 // the mTLS-EXEMPT endpoint, so it is reachable without a client certificate.
 // ---------------------------------------------------------------------------
 
@@ -322,14 +322,14 @@ func TestRequestContainment_Resolve_DestOutsideRootRefused(t *testing.T) {
 	dest := filepath.Join(outside, "attacker-chosen")
 
 	body, _ := json.Marshal(map[string]string{"key": "srcbuild/out", "dest": dest})
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
-		t.Errorf("expected 4xx for a dest outside the storage root, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for a dest outside the storage root, got %d", resp.StatusCode)
 	}
 	if _, err := os.Stat(dest); err == nil {
 		t.Errorf("ESCAPE: dest created outside the storage root (status %d)", resp.StatusCode)
@@ -358,9 +358,9 @@ func TestRequestContainment_Resolve_DestInsideRootAccepted(t *testing.T) {
 	dest := filepath.Join(storagePath, "resolved", "input")
 
 	body, _ := json.Marshal(map[string]string{"key": "srcbuild2/out", "dest": dest})
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -553,9 +553,11 @@ func TestBypass_DestEqualsRoot(t *testing.T) {
 	os.MkdirAll(keep, 0o755)
 
 	b, _ := json.Marshal(map[string]string{"key": "s/out", "dest": storagePath})
-	resp, _ := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(b))
+	resp, _ := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(b)+`]}`)))
 	resp.Body.Close()
-	t.Logf("POST /resolve dest=<root> -> %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("resolve into root: got %d, want 400", resp.StatusCode)
+	}
 	if _, err := os.Stat(keep); os.IsNotExist(err) {
 		t.Errorf("B1 CONFIRMED: dest==root removed the whole root")
 	}
@@ -679,7 +681,7 @@ func TestRequestContainment_StreamInCannotEscapeStepsIntoStoreRoot(t *testing.T)
 // reproduction had not used.
 // ---------------------------------------------------------------------------
 
-// R5-1: /resolve step 1 copies from a registry path without validating it, then
+// R5-1: /resolve-batch step 1 copies from a registry path without validating it, then
 // serves the result. mTLS-exempt.
 func TestRequestContainment_ResolveRegistryBranchIsValidated(t *testing.T) {
 	ts, storagePath := setupServer(t)
@@ -706,14 +708,26 @@ func TestRequestContainment_ResolveRegistryBranchIsValidated(t *testing.T) {
 	os.MkdirAll(filepath.Join(storagePath, "resolved"), 0o755)
 	dest := filepath.Join(storagePath, "resolved", "d1")
 	rb, _ := json.Marshal(map[string]string{"key": "alias1", "dest": dest})
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(rb))
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(rb)+`]}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("evicted resolve alias: got %d, want 404", resp.StatusCode)
+	}
+	var answer struct {
+		Results []resolveResponse `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Results) != 1 || answer.Results[0].Key != "alias1" || answer.Results[0].Status != "not_found" {
+		t.Fatalf("expected a batch miss after evicting the unsafe alias, got %+v", answer)
+	}
 
 	if got, err := os.ReadFile(filepath.Join(dest, "loot.txt")); err == nil {
-		t.Errorf("R5-1: /resolve copied from outside the root into the store: %q", got)
+		t.Errorf("R5-1: /resolve-batch copied from outside the root into the store: %q", got)
 	}
 }
 

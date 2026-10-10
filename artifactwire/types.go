@@ -53,7 +53,7 @@ type MirrorRequest struct {
 	Key string `json:"key"`
 }
 
-// ResolveRequest is the body of POST /resolve and one item of a batch: copy
+// ResolveRequest is one item of a resolve batch: copy
 // the bytes under Key to Dest on this node.
 type ResolveRequest struct {
 	Key  string `json:"key"`
@@ -65,7 +65,7 @@ type ResolveRequest struct {
 	Capability string `json:"capability,omitempty"`
 }
 
-// ResolveResponse is the body returned by POST /resolve.
+// ResolveResponse is one result in a resolve batch.
 //
 // Key is echoed on every result. A batch answers N items in one body, and
 // without it a caller reading a failed batch knows only an INDEX into a list
@@ -103,7 +103,7 @@ type BatchResolveResponse struct {
 // segment it would have to be un-escaped and joined onto the storage root,
 // where "%2e%2e%2f%2e%2e%2fpwned" decodes to "../../pwned" and escapes the
 // directory entirely. It also keeps this route consistent with /register,
-// /resolve and /mirror.
+// /resolve-batch and /mirror.
 //
 // The two names are different namespaces and must not be conflated. Key is the
 // node-local alias, and becomes a direct child of steps/, which is the only

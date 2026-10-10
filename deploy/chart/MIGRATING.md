@@ -22,6 +22,8 @@ auditing, or optional infrastructure.
 
 | Previous setting | Change |
 | --- | --- |
+| `artifactDaemon.resolveCapability.ttl` and `--kubernetes-artifact-daemon-resolve-capability-ttl` | Remove the value. Expiry is derived from effective pod scheduling and startup timeouts, the 31m fetch retry budget and one 5m margin (56m at defaults; 101m with 60m scheduling and 5m startup). The chart stops rendering the flag. Web accepts and ignores a stale flag for one release, so `kubectl set image` against the previous Deployment still starts. Apply this chart and remove the value before the following release removes flag parsing; verify the Deployment's args no longer contain it. Keep the existing resolve key. The nonce and token format are unchanged, so pending pods and mixed web/daemon versions need no token cutover. |
+| `POST /resolve` | Removed; use `POST /resolve-batch` with `{"items":[{"key":"...","dest":"...","capability":"..."}]}` and read `results[0]`. Product fetch init containers already use the batch route. |
 | `artifactDaemon.enabled` | Remove it, including `true`. The daemon always renders. |
 | `artifactDaemon.tls.enabled` | Remove it. mTLS always renders. |
 | `artifactDaemon.durable` | Remove it. The render fails with "artifactDaemon.durable has been removed; the durable tier is not configurable from the chart". The daemon renders no `--durable-*` flag or credential mount, and the `ArtifactDaemonDurableStoreErrors` alert is gone. If you used the tier: its reclaim walk stops with it, so expire the objects already in the bucket with a lifecycle rule on the prefix (or delete the bucket), and an S3 credentials Secret the chart referenced is now unused. The chart offers no way to keep the tier. |

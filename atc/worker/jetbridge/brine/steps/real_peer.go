@@ -229,19 +229,25 @@ func peerResolveDaemon(res brine.Resources, rec *brine.Recorder, key, content st
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return DaemonPlan{}, err
 	}
-	status, body, err := local.request(ctx, http.MethodPost, "/resolve",
-		fmt.Sprintf(`{"key":%q,"dest":%q}`, key, dest))
+	status, body, err := local.request(ctx, http.MethodPost, "/resolve-batch",
+		fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, dest))
 	if err != nil || status != http.StatusOK {
 		return DaemonPlan{}, fmt.Errorf("real peer resolve must succeed: status %d, error %v, body %s", status, err, abbrev(string(body)))
 	}
-	var resolved struct {
-		Status string `json:"status"`
-		Method string `json:"method"`
-		Source string `json:"source"`
+	var batch struct {
+		Results []struct {
+			Status string `json:"status"`
+			Method string `json:"method"`
+			Source string `json:"source"`
+		} `json:"results"`
 	}
-	if err := json.Unmarshal(body, &resolved); err != nil {
+	if err := json.Unmarshal(body, &batch); err != nil {
 		return DaemonPlan{}, err
 	}
+	if len(batch.Results) != 1 {
+		return DaemonPlan{}, fmt.Errorf("resolve must return one result: %s", body)
+	}
+	resolved := batch.Results[0]
 	if resolved.Status != "ok" || resolved.Method != "peer" || resolved.Source != peer.host {
 		return DaemonPlan{}, fmt.Errorf("resolve must come from the actual peer %s: %s", peer.host, body)
 	}

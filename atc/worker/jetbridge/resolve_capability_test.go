@@ -48,12 +48,11 @@ func capabilitiesFrom(t *testing.T, inits []corev1.Container) []artifactwire.Res
 	return payload.Items
 }
 
-func backendWith(t *testing.T, key []byte, ttl time.Duration) *DaemonSetBackend {
+func backendWith(t *testing.T, key []byte) *DaemonSetBackend {
 	t.Helper()
 	return NewDaemonSetBackend(Config{
 		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
 		ArtifactDaemonResolveCapabilityKey: key,
-		ArtifactDaemonResolveCapabilityTTL: ttl,
 		PodSchedulingTimeout:               DefaultPodSchedulingTimeout,
 		PodStartupTimeout:                  DefaultPodStartupTimeout,
 	}, nil, nil, nil)
@@ -73,7 +72,7 @@ func oneInput(b *DaemonSetBackend) ([]runtime.Input, []corev1.Volume, []corev1.V
 // nothing else checks that they agree on the wire format.
 func TestResolveCapability_ATCSignsWhatTheDaemonVerifies(t *testing.T) {
 	key := capKey()
-	b := backendWith(t, key, DefaultArtifactResolveCapabilityTTL)
+	b := backendWith(t, key)
 
 	inputs, volumes, mounts := oneInput(b)
 	inits, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts)
@@ -101,7 +100,7 @@ func TestResolveCapability_ATCSignsWhatTheDaemonVerifies(t *testing.T) {
 
 // No key configured means no capability, matching a daemon started without one.
 func TestResolveCapability_UnsignedWhenNoKey(t *testing.T) {
-	b := backendWith(t, nil, DefaultArtifactResolveCapabilityTTL)
+	b := backendWith(t, nil)
 
 	inputs, volumes, mounts := oneInput(b)
 	inits, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts)
@@ -115,151 +114,68 @@ func TestResolveCapability_UnsignedWhenNoKey(t *testing.T) {
 	}
 }
 
-// A key that is configured MUST sign. The daemon behind the chart requires a
-// capability unconditionally, so an ATC that quietly stops signing fails every
-// build with no diagnostic — the exact fail-open/fail-closed mismatch this
-// test pins down. A TTL below the floor is a misconfiguration that startup
-// validation refuses; if an unvalidated config gets here anyway, signing with
-// a short TTL 403s only pods slower than the TTL, while not signing 403s all
-// of them.
-func TestResolveCapability_TooShortTTLStillSigns(t *testing.T) {
-	minimum, err := MinimumArtifactResolveCapabilityTTL(DefaultPodSchedulingTimeout, DefaultPodStartupTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if DefaultArtifactResolveCapabilityTTL <= minimum {
-		t.Fatalf("the DEFAULT TTL %v does not clear its own floor %v — every deployment would 403",
-			DefaultArtifactResolveCapabilityTTL, minimum)
-	}
-
-	key := capKey()
-	b := backendWith(t, key, minimum-time.Second)
-	inputs, volumes, mounts := oneInput(b)
-	inits, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier, err := artifactcap.NewVerifier(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items := capabilitiesFrom(t, inits)
-	if len(items) == 0 {
-		t.Fatal("no batch items were generated")
-	}
-	for _, item := range items {
-		if item.Capability == "" {
-			t.Error("stopped signing on a TTL below the floor; an enforcing daemon now 403s every request instead of only slow pods")
-			continue
-		}
-		if err := verifier.VerifyResolve(item.Capability, item.Key, item.Dest, time.Now()); err != nil {
-			t.Errorf("the daemon would reject what the ATC signed for %q: %v", item.Key, err)
-		}
-	}
-}
-
-// Startup refuses the configurations that used to disable signing silently.
-// The ATC either signs, or says exactly why it will not start — never neither.
+// Startup keeps key validation even though expiry needs no configuration.
 func TestValidateResolveCapabilityConfig(t *testing.T) {
-	minimum, err := MinimumArtifactResolveCapabilityTTL(DefaultPodSchedulingTimeout, DefaultPodStartupTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := func() Config {
-		return Config{
-			ArtifactDaemonHostPath:             "/var/concourse/artifacts",
-			ArtifactDaemonResolveCapabilityKey: capKey(),
-			ArtifactDaemonResolveCapabilityTTL: DefaultArtifactResolveCapabilityTTL,
-			PodSchedulingTimeout:               DefaultPodSchedulingTimeout,
-			PodStartupTimeout:                  DefaultPodStartupTimeout,
+	for _, key := range [][]byte{nil, capKey()} {
+		if err := ValidateResolveCapabilityConfig(Config{ArtifactDaemonResolveCapabilityKey: key}); err != nil {
+			t.Fatal(err)
 		}
 	}
-
-	t.Run("valid key and TTL pass", func(t *testing.T) {
-		if err := ValidateResolveCapabilityConfig(base()); err != nil {
-			t.Fatalf("valid configuration refused: %v", err)
-		}
-	})
-
-	t.Run("no key is signing deliberately off", func(t *testing.T) {
-		cfg := base()
-		cfg.ArtifactDaemonResolveCapabilityKey = nil
-		if err := ValidateResolveCapabilityConfig(cfg); err != nil {
-			t.Fatalf("keyless configuration refused: %v", err)
-		}
-	})
-
-	t.Run("TTL at or below the floor is refused with the floor named", func(t *testing.T) {
-		cfg := base()
-		cfg.ArtifactDaemonResolveCapabilityTTL = minimum
-		err := ValidateResolveCapabilityConfig(cfg)
-		if err == nil {
-			t.Fatal("a TTL at the floor was accepted; it used to disable signing silently")
-		}
-		if !strings.Contains(err.Error(), minimum.String()) {
-			t.Errorf("error %q does not name the floor %v the operator must clear", err, minimum)
-		}
-	})
-
-	t.Run("raised pod timeouts move the floor and are still refused", func(t *testing.T) {
-		// The live shape of the bug: values.yaml exposes podStartupTimeout, an
-		// operator raises it for slow image pulls, and the default 2h TTL sinks
-		// below the recomputed floor without any flag changing.
-		cfg := base()
-		cfg.PodStartupTimeout = 3 * time.Hour
-		if err := ValidateResolveCapabilityConfig(cfg); err == nil {
-			t.Fatal("a floor raised past the TTL by pod timeouts was accepted")
-		}
-	})
-
-	t.Run("malformed key is refused", func(t *testing.T) {
-		cfg := base()
-		cfg.ArtifactDaemonResolveCapabilityKey = []byte("short")
-		if err := ValidateResolveCapabilityConfig(cfg); err == nil {
-			t.Fatal("a malformed key was accepted; it used to disable signing silently")
-		}
-	})
-
-	t.Run("non-positive pod timeout is normalised to the default, like the pod code", func(t *testing.T) {
-		// podSchedulingTimeout/podStartupTimeout treat <=0 as "use the default",
-		// and validation computes the floor from those same effective values —
-		// so a zero or negative Config timeout is not fatal, it just contributes
-		// the default. With the default 2h TTL that still clears the floor.
-		for _, d := range []time.Duration{0, -time.Second} {
-			cfg := base()
-			cfg.PodSchedulingTimeout = d
-			cfg.PodStartupTimeout = d
-			if err := ValidateResolveCapabilityConfig(cfg); err != nil {
-				t.Errorf("timeout %v (effective = default) was refused: %v", d, err)
-			}
-		}
-	})
-
-	t.Run("floor uses the EFFECTIVE timeout, not the raw zero", func(t *testing.T) {
-		// Zero scheduling + startup means 15m + 5m at runtime, so the floor is
-		// the full default floor — a TTL just under it must still be refused,
-		// proving validation did not compute the floor from the raw zeros.
-		cfg := base()
-		cfg.PodSchedulingTimeout = 0
-		cfg.PodStartupTimeout = 0
-		cfg.ArtifactDaemonResolveCapabilityTTL = minimum - time.Second
-		if err := ValidateResolveCapabilityConfig(cfg); err == nil {
-			t.Fatal("a TTL below the effective (default) floor was accepted; the floor was computed from raw zeros")
-		}
-	})
+	if err := ValidateResolveCapabilityConfig(Config{ArtifactDaemonResolveCapabilityKey: []byte("short")}); err == nil {
+		t.Fatal("malformed signing key accepted")
+	}
 }
 
-// The floor must cover scheduling, startup AND the init container's own retry
-// budget — a capability signed at spec time is verified after all three.
-func TestMinimumArtifactResolveCapabilityTTL_CoversTheWholeWait(t *testing.T) {
-	got, err := MinimumArtifactResolveCapabilityTTL(15*time.Minute, 5*time.Minute)
-	if err != nil {
-		t.Fatal(err)
+func TestResolveCapabilityCoversEffectivePodWait(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		scheduling, startup time.Duration
+		want                time.Duration
+	}{
+		{"defaults", DefaultPodSchedulingTimeout, DefaultPodStartupTimeout, 56 * time.Minute},
+		{"zero", 0, 0, 56 * time.Minute},
+		{"negative", -time.Second, -time.Second, 56 * time.Minute},
+		{"deployed scheduling", 60 * time.Minute, 5 * time.Minute, 101 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := backendWith(t, capKey())
+			b.config.PodSchedulingTimeout = tc.scheduling
+			b.config.PodStartupTimeout = tc.startup
+			before := time.Now()
+			inputs, volumes, mounts := oneInput(b)
+			inits, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := time.Now()
+			items := capabilitiesFrom(t, inits)
+			if len(items) != 1 {
+				t.Fatalf("want one signed item, got %d", len(items))
+			}
+			item := items[0]
+			verifier, err := artifactcap.NewVerifier(capKey())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The whole wait fits with one five-minute margin, including the
+			// signed wire timestamp's second precision.
+			if err := verifier.VerifyResolve(item.Capability, item.Key, item.Dest, before.Add(tc.want-time.Second)); err != nil {
+				t.Fatalf("capability expired before intended wait: %v", err)
+			}
+			if err := verifier.VerifyResolve(item.Capability, item.Key, item.Dest, after.Add(tc.want)); err == nil {
+				t.Fatal("capability outlived its derived expiry")
+			}
+		})
 	}
-	if want := 15*time.Minute + 5*time.Minute + ArtifactResolveInitRetryBudget + 5*time.Minute; got != want {
-		t.Errorf("floor = %v, want %v", got, want)
-	}
-	if _, err := MinimumArtifactResolveCapabilityTTL(-time.Second, 0); err == nil {
-		t.Error("a negative timeout was accepted")
+}
+
+func TestResolveCapabilityExpiryDoesNotOverflowDuration(t *testing.T) {
+	large := time.Duration(1<<63 - 1)
+	cfg := Config{PodSchedulingTimeout: large, PodStartupTimeout: large}
+	before := time.Now().Add(large).Add(large).Add(31 * time.Minute).Add(5 * time.Minute)
+	got := resolveCapabilityExpiry(cfg)
+	after := time.Now().Add(large).Add(large).Add(31 * time.Minute).Add(5 * time.Minute)
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("expiry wrapped: %v", got)
 	}
 }

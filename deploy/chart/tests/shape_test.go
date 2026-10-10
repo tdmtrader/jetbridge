@@ -68,7 +68,8 @@ import (
 // endpoint, prefix, enabled, webEnabled, scratchPath, scratchSizeLimit,
 // maxContentBytes and maxEntries, and hangarOutput.strictInputBucket, leaving
 // 194.
-const maxValues = 194
+// Deriving resolve capability expiry removes its TTL value, leaving 193.
+const maxValues = 193
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -161,6 +162,7 @@ var grandfathered = []string{
 // not written out below its top level, and the open ancestor already accepts
 // the key for the release.
 var removedKeys = []string{
+	"artifactDaemon.resolveCapability.ttl",
 	"artifactDaemon.durable",
 	"artifactDaemon.enabled",
 	"artifactDaemon.hangar.bucket",

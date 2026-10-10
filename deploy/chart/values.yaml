@@ -220,9 +220,8 @@ kubernetes:
   # -- How long a step pod may wait Pending for cluster resources before its
   # step fails (Go duration; the binary's default is 15m). A pod that does not
   # fit any node waits rather than failing at once, so raising this lets a
-  # busy cluster queue work. Pod scheduling plus startup, plus the init
-  # retry budget (31m) and a 5m margin, must stay under
-  # artifactDaemon.resolveCapability.ttl, or web refuses to start.
+  # busy cluster queue work. Resolve capabilities last for the effective pod
+  # scheduling and startup timeouts plus the init retry budget (31m) and a 5m margin.
   podSchedulingTimeout: ""
   # -- CPU request, in millicores, given to a task step that names none in
   # its own container_requests (0 = none, leaving such pods BestEffort).
@@ -676,10 +675,6 @@ artifactDaemon:
     # Web always signs and the daemon always verifies resolve capabilities.
     # Provision this key outside Helm; rendering must never rotate it.
     existingSecret: ""
-    # -- Capability lifetime. Must exceed pod scheduling + startup + the init
-    # container's retry budget, or a slow-to-schedule pod gets a 403 on a
-    # perfectly legitimate request.
-    ttl: 2h
 
   networkPolicy:
     # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods and
@@ -693,8 +688,7 @@ artifactDaemon:
 #
 # Durable output capture and the exact-execution-control protocol it extends.
 # Two facets, two switches, and OFF is the default for both: with the plane
-# disabled this chart renders exactly what it rendered before, which is what
-# requirement 59 asks for.
+# disabled this chart renders no output-plane resources.
 #
 # WHAT THE CHART DOES NOT DO. It never creates a bucket, a bucket lifecycle
 # rule, a cloud service account, a Workload Identity binding or an IAM policy.
@@ -737,8 +731,7 @@ artifactDaemon:
 #
 #   storage.objects.update
 #     The permission that REWRITES an object's metadata, and therefore its
-#     ownership marker. Requirement 22's "the publisher cannot update the
-#     marker" is what the whole immutable-marker argument rests on: a marker
+#     ownership marker. The publisher must not update the marker: a marker
 #     that can be rewritten is not evidence of who created an object. It is
 #     forbidden to all runtime principals -- including the publisher, which is the
 #     one that would want it -- and note that roles/storage.objectAdmin and
@@ -762,7 +755,7 @@ artifactDaemon:
 # example artifactDaemon.hangar.keySecret, the Hangar key), so the operator
 # turns each Secret on by naming it. Off renders nothing.
 #
-# Trusted readers (proposal amendments M-4 and M-5): the inventory's
+# Trusted readers: the inventory's
 # consumers, web, the cluster administrators the operator lists, and every
 # step pod grant identity that holds privilege or may create pods. Nobody
 # else may read an inventory Secret, create a pod that mounts one, or reach

@@ -20,11 +20,9 @@ import (
 )
 
 const (
-	tokenPrefix           = "jb-resolve-v1"
-	acknowledgementPrefix = "jb-resolve-ack-v1"
-	receiptFilenamePrefix = ".jetbridge-resolve-receipt-"
-	keySize               = sha256.Size
-	nonceSize             = 16
+	tokenPrefix = "jb-resolve-v1"
+	keySize     = sha256.Size
+	nonceSize   = 16
 )
 
 var ErrInvalidCapability = errors.New("invalid artifact resolve capability")
@@ -106,49 +104,6 @@ func (s *Signer) SignResolve(sourceKey, destination string, expiresAt time.Time)
 	mac := hmac.New(sha256.New, s.key[:])
 	_, _ = mac.Write([]byte(signed))
 	return signed + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
-}
-
-func (s *Signer) ResolveAcknowledgement(token string) (string, error) {
-	return resolveAcknowledgement(s.key[:], token)
-}
-
-func (v *Verifier) ResolveAcknowledgement(token string) (string, error) {
-	return resolveAcknowledgement(v.key[:], token)
-}
-
-func resolveAcknowledgement(key []byte, token string) (string, error) {
-	if !validTokenMAC(key, token) {
-		return "", ErrInvalidCapability
-	}
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(acknowledgementPrefix + "\x00" + token))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
-}
-
-// ResolveReceiptFilename maps an authenticated acknowledgement to the one
-// opaque file name the resolving daemon must materialize in the destination.
-// Only canonical raw-URL SHA-256 values are accepted, keeping the result a
-// single safe path component shared by daemon and init-container code.
-func ResolveReceiptFilename(acknowledgement string) (string, error) {
-	decoded, err := base64.RawURLEncoding.Strict().DecodeString(acknowledgement)
-	if err != nil || len(decoded) != sha256.Size || base64.RawURLEncoding.EncodeToString(decoded) != acknowledgement {
-		return "", fmt.Errorf("%w: malformed resolve acknowledgement", ErrInvalidCapability)
-	}
-	return receiptFilenamePrefix + acknowledgement, nil
-}
-
-func validTokenMAC(key []byte, token string) bool {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != tokenPrefix || parts[1] == "" || parts[2] == "" {
-		return false
-	}
-	providedMAC, err := base64.RawURLEncoding.Strict().DecodeString(parts[2])
-	if err != nil || len(providedMAC) != sha256.Size {
-		return false
-	}
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(parts[0] + "." + parts[1]))
-	return hmac.Equal(providedMAC, mac.Sum(nil))
 }
 
 func (v *Verifier) VerifyResolve(token, sourceKey, destination string, now time.Time) error {

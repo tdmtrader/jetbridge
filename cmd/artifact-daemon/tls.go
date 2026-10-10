@@ -73,7 +73,7 @@ func BuildTLSConfig(certPath, keyPath, caCertPath string) (*tls.Config, error) {
 // requireClientCert is middleware that returns 401 if the request does not
 // contain a verified client certificate. It should wrap routes that require
 // mTLS authentication (e.g., /artifacts, /register, /stream-in,
-// /resource-caches). Routes exempt from mTLS (e.g., /healthz, /resolve)
+// /resource-caches). Routes exempt from mTLS (e.g., /healthz, /resolve-batch)
 // should NOT be wrapped.
 func (s *Server) requireClientCert(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

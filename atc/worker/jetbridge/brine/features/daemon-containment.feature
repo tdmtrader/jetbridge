@@ -165,7 +165,7 @@ Feature: What the artifact daemon refuses
     Then the daemon replies with 200
     And the answer's bytes are "LEGACY-BYTES"
 
-  # /resolve is the mTLS-EXEMPT endpoint — reachable with no client
+  # /resolve-batch is the mTLS-EXEMPT endpoint — reachable with no client
   # certificate at all — and it takes a destination the caller chose. An
   # unvalidated dest is an arbitrary WRITE, and copyArtifact makes it worse
   # than that: it creates its temp directory as a SIBLING of dest and does
@@ -197,8 +197,7 @@ Feature: What the artifact daemon refuses
     Then the daemon replies with 200
     And the store's file "resolved/input/payload.txt" reads "PAYLOAD"
 
-  # /resolve-batch is the least authenticated way into resolveOne: mTLS-exempt
-  # like /resolve, and it takes a key and a dest PER ITEM. It was unvalidated
+  # /resolve-batch is mTLS-exempt and takes a key and a dest PER ITEM. It was unvalidated
   # in the first cut of this work and was found by re-deriving the acceptance
   # criteria, not by a review.
   #
@@ -491,7 +490,7 @@ Feature: What the artifact daemon refuses
   #
   # Swept across both routes that read the registry because the first attempt
   # added the check at the two sites the reproduction happened to use and left
-  # three reading it raw, /resolve among them. Both routes are exercised
+  # three reading it raw, /resolve-batch among them. Both routes are exercised
   # WORKING first: the alias resolves, the resource cache is served, and the
   # daemon advertises that it holds it. Then the target is swapped underneath
   # and all three stop — which is the only way to tell a guard that evicts

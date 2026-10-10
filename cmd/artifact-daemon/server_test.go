@@ -1154,10 +1154,10 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 
 	// Resolve the artifact — this read must refresh the handle dir mtime.
 	dest := destUnder(t, storagePath, "dest")
-	body := strings.NewReader(`{"key":"old-handle/output","dest":"` + dest + `"}`)
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", body)
+	body := strings.NewReader(`{"items":[{"key":"old-handle/output","dest":"` + dest + `"}]}`)
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", body)
 	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
+		t.Fatalf("POST /resolve-batch: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

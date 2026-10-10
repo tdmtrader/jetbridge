@@ -201,10 +201,9 @@ type ProbeResult struct {
 // Racing to the first responder is right when every responder is a genuine
 // local holder: the fastest to answer is the least loaded.
 //
-// It also does NOT fall back to POST /resolve, as an earlier version did. That
-// leg answered 200 off a PEER fetch — so a daemon holding nothing locally could
-// win — and it copied the whole artifact into /tmp inside the daemon pod,
-// outside the swept storage path, where nothing ever reclaimed it.
+// Do not fall back to resolution: a peer fetch could answer 200 from a node
+// holding nothing locally and copy the artifact into an unswept directory.
+// The probe must only observe local ownership, never populate it.
 //
 // Never returns an error. Discovery failure, an unreachable pod and a genuine
 // miss are all "no", because the caller re-runs the get step either way.

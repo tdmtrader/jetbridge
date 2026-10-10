@@ -77,10 +77,8 @@ func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *Node
 	// the web off the SAME value, so a key here means the daemon is requiring
 	// one — and quietly not signing is then not a safe degraded mode, it 403s
 	// every resolve on the node with no diagnostic.
-	// ValidateResolveCapabilityConfig refuses the misconfigurations at
-	// startup (TTL at or below the floor, malformed key); if an unvalidated
-	// config reaches here anyway, a short-TTL capability 403s only pods
-	// slower than the TTL, which still beats not signing at all.
+	// ValidateResolveCapabilityConfig rejects malformed keys at startup;
+	// expiry is derived from the effective pod timeouts and fetch budget.
 	var signer *artifactcap.Signer
 	if len(config.ArtifactDaemonResolveCapabilityKey) != 0 {
 		signer, _ = artifactcap.NewSigner(config.ArtifactDaemonResolveCapabilityKey)
@@ -355,7 +353,7 @@ func (b *DaemonSetBackend) helperImage() string {
 // It cannot consult the ledger the way the ATC does: an init container holds no
 // client certificate (see wgetTLSOpts), so /artifacts/ is closed to it. So it
 // asks the read-only classification route, which is mTLS-exempt for exactly the
-// reason /resolve is -- it is a question a pod on this node must be able to ask
+// reason /resolve-batch is -- it is a question a pod on this node must be able to ask
 // about its own step directory, and the answer is a boolean about a handle the
 // caller already named.
 //
@@ -795,7 +793,7 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 // RegisterResourceCache registers a resource cache alias on the daemon using
 // the daemon's POST /register API. The alias maps the cache key (rc-{id}) to
 // the physical disk path of the get step output, making it discoverable via
-// HEAD /artifacts/steps/rc-{id} (filesystem fallback) and /resolve.
+// HEAD /artifacts/steps/rc-{id} (filesystem fallback) and /resolve-batch.
 //
 // Instead of using NodeIPResolver (which needs nodes/get RBAC), this discovers
 // the daemon pod IP from EndpointSlices (only needs discovery.k8s.io RBAC) and
@@ -914,19 +912,8 @@ func (b *DaemonSetBackend) bindProbed(cacheKey, workerName, ip string) runtime.V
 	return vol
 }
 
-// ValidateResolveCapabilityConfig refuses at STARTUP the configurations that
-// would otherwise mint capabilities a legitimately slow pod cannot use, or
-// silently sign nothing while the daemon requires a signature.
-//
-// The daemon fails closed the moment --resolve-capability-key is set, and the
-// chart derives both sides' flags from one value — so a key reaching the ATC
-// means the daemon is enforcing, and the only honest states here are
-// "signing, with a TTL that clears the floor" and "refusing to start, saying
-// exactly what to change". No key means signing is deliberately off, matching
-// a daemon started without one.
-//
-// atccmd calls this wherever it builds a jetbridge Config; a nil error there
-// is what makes NewDaemonSetBackend's unconditional signing sound.
+// ValidateResolveCapabilityConfig rejects a malformed signing key at startup.
+// No key means signing is off, matching a daemon started without one.
 func ValidateResolveCapabilityConfig(cfg Config) error {
 	if len(cfg.ArtifactDaemonResolveCapabilityKey) == 0 {
 		return nil
@@ -934,34 +921,13 @@ func ValidateResolveCapabilityConfig(cfg Config) error {
 	if _, err := artifactcap.NewSigner(cfg.ArtifactDaemonResolveCapabilityKey); err != nil {
 		return fmt.Errorf("artifact resolve capability key: %w", err)
 	}
-	// Effective timeouts, not raw: a zero Config timeout means "use the
-	// default" at pod-build time (podSchedulingTimeout/podStartupTimeout), so
-	// computing the floor from the raw zeros would underestimate the wait a
-	// pod actually experiences and let a too-short TTL through.
-	scheduling, startup := podSchedulingTimeout(cfg), podStartupTimeout(cfg)
-	minimumTTL, err := MinimumArtifactResolveCapabilityTTL(scheduling, startup)
-	if err != nil {
-		return fmt.Errorf("artifact resolve capability TTL floor: %w", err)
-	}
-	if lifetime := resolveCapabilityLifetime(cfg); lifetime <= minimumTTL {
-		return fmt.Errorf(
-			"artifact resolve capability TTL %v does not clear its floor of %v (pod scheduling timeout %v + pod startup timeout %v + init retry budget %v + safety margin %v): a slow-to-start pod would present an expired capability and 403 on a legitimate request; raise --kubernetes-artifact-daemon-resolve-capability-ttl or lower the pod timeouts",
-			lifetime, minimumTTL,
-			scheduling, startup,
-			ArtifactResolveInitRetryBudget, artifactResolveExpirySafetyMargin,
-		)
-	}
 	return nil
 }
 
-// resolveCapabilityLifetime is how long a signed capability stays valid.
-func resolveCapabilityLifetime(cfg Config) time.Duration {
-	if cfg.ArtifactDaemonResolveCapabilityTTL <= 0 {
-		return DefaultArtifactResolveCapabilityTTL
-	}
-	return cfg.ArtifactDaemonResolveCapabilityTTL
-}
-
+// Capabilities are minted with the pod spec and must survive scheduling,
+// startup and fetch retries. Add each interval separately to avoid overflowing
+// a time.Duration sum when operators set large pod timeouts.
 func resolveCapabilityExpiry(cfg Config) time.Time {
-	return time.Now().Add(resolveCapabilityLifetime(cfg))
+	return time.Now().Add(podSchedulingTimeout(cfg)).Add(podStartupTimeout(cfg)).
+		Add(ArtifactResolveInitRetryBudget).Add(artifactResolveExpirySafetyMargin)
 }

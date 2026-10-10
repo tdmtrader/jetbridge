@@ -41,9 +41,9 @@ func TestBoundedWork_JSONBodyCapDiscriminates(t *testing.T) {
 			"dest": destUnder(t, storagePath, fmt.Sprintf("cap-%d", padKiB)),
 			"pad":  string(bytes.Repeat([]byte("a"), padKiB<<10)),
 		})
-		resp, err := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(body))
+		resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 		if err != nil {
-			t.Fatalf("POST /resolve: %v", err)
+			t.Fatalf("POST /resolve-batch: %v", err)
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode
@@ -168,14 +168,26 @@ func TestBoundedWork_ConcurrentResolvesToSameDestAllSucceed(t *testing.T) {
 			body, _ := json.Marshal(map[string]string{
 				"key": fmt.Sprintf("race-%d/out", i), "dest": dest,
 			})
-			resp, err := http.Post(ts.URL+"/resolve", "application/json", bytes.NewReader(body))
+			resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 			if err != nil {
 				atomic.AddInt64(&failures, 1)
 				return
 			}
 			defer resp.Body.Close()
-			var out resolveResponse
-			json.NewDecoder(resp.Body).Decode(&out)
+			var outBatch struct {
+				Results []resolveResponse `json:"results"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&outBatch); err != nil {
+				atomic.AddInt64(&failures, 1)
+				t.Logf("decode batch result: %v", err)
+				return
+			}
+			if len(outBatch.Results) != 1 {
+				atomic.AddInt64(&failures, 1)
+				t.Logf("expected one batch result, got %+v", outBatch)
+				return
+			}
+			out := outBatch.Results[0]
 			if resp.StatusCode != http.StatusOK || out.Status != "ok" {
 				atomic.AddInt64(&failures, 1)
 				t.Logf("resolve %d failed: status=%d body=%+v", i, resp.StatusCode, out)

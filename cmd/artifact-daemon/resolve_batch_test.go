@@ -95,7 +95,7 @@ func TestResolveBatch_HappyPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Partial failure: one artifact exists, one does not
 //
-// A missing artifact is 404, the same answer /resolve gives for the same
+// A missing artifact is 404, the same answer /resolve-batch gives for the same
 // outcome on one item. It used to be 500, and the difference is the whole
 // diagnosis: an init container's BusyBox wget prints the status line and
 // throws the body away, so 500 told an operator "the daemon is broken" for
@@ -337,40 +337,5 @@ func TestResolveBatch_RefusalIs422AndOutranksAMiss(t *testing.T) {
 	// the step an input that looks fetched.
 	if _, err := os.Stat(filepath.Join(storagePath, "resolved", "refused")); !os.IsNotExist(err) {
 		t.Errorf("the refused destination was populated anyway: %v", err)
-	}
-}
-
-// The same refusal on the single-item endpoint. Two endpoints reaching one
-// resolveOne answered the same outcome differently once already; this is the
-// assertion that stops them drifting apart again.
-func TestResolve_RefusalIs422(t *testing.T) {
-	ts, storagePath := setupServer(t)
-
-	out := filepath.Join(storagePath, "steps", "venv-build", "output")
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/usr/local/bin/python3.11", filepath.Join(out, "python")); err != nil {
-		t.Fatal(err)
-	}
-
-	body := `{"key":"venv-build/output","dest":"` + destUnder(t, storagePath, "one") + `"}`
-	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /resolve: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422 for a refused artifact, got %d", resp.StatusCode)
-	}
-
-	var result resolveResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.Key != "venv-build/output" || result.Method != "refused" {
-		t.Errorf("expected the result to name the key and the refusal, got %+v", result)
-	}
-	if !strings.Contains(result.Error, "absolute") {
-		t.Errorf("the error does not say which rule refused it: %q", result.Error)
 	}
 }

@@ -3,8 +3,7 @@ package main_test
 // A resolve destination is REMOVED before it is written: copyArtifact and the
 // peer promote both clear dest and rename over it. So the dest is not merely a
 // place to put bytes — naming one is asking the daemon to delete whatever is
-// already there, and /resolve and /resolve-batch are the two mTLS-exempt
-// routes.
+// already there, and /resolve-batch is mTLS-exempt.
 //
 // Containment alone does not make that safe. "<storage>/steps" is perfectly
 // contained, and resolving into it deletes every artifact on the node and
@@ -57,8 +56,8 @@ func TestResolve_RefusesAStructuralDestination(t *testing.T) {
 			seedTwoArtifacts(t, storagePath)
 
 			body := `{"key":"victim-a/out","dest":"` + filepath.Join(storagePath, dest) + `"}`
-			if got := postJSON(t, ts.URL+"/resolve", body); got < 400 {
-				t.Errorf("resolve into %q -> %d, want 4xx", dest, got)
+			if got := postJSON(t, ts.URL+"/resolve-batch", `{"items":[`+body+`]}`); got != http.StatusBadRequest {
+				t.Errorf("resolve into %q -> %d, want 400", dest, got)
 			}
 
 			// The other artifact must still be there whatever the status was.
@@ -77,8 +76,8 @@ func TestResolve_RefusesATopLevelDestination(t *testing.T) {
 	seedTwoArtifacts(t, storagePath)
 
 	body := `{"key":"victim-a/out","dest":"` + filepath.Join(storagePath, "anything") + `"}`
-	if got := postJSON(t, ts.URL+"/resolve", body); got < 400 {
-		t.Errorf("resolve into a top-level destination -> %d, want 4xx", got)
+	if got := postJSON(t, ts.URL+"/resolve-batch", `{"items":[`+body+`]}`); got != http.StatusBadRequest {
+		t.Errorf("resolve into a top-level destination -> %d, want 400", got)
 	}
 }
 
@@ -94,8 +93,8 @@ func TestResolveBatch_RefusesAStructuralDestination(t *testing.T) {
 		{Key: "victim-a/out", Dest: good},
 		{Key: "victim-a/out", Dest: filepath.Join(storagePath, "steps")},
 	}})
-	if got := postJSON(t, ts.URL+"/resolve-batch", string(body)); got < 400 {
-		t.Errorf("batch with a structural dest -> %d, want 4xx", got)
+	if got := postJSON(t, ts.URL+"/resolve-batch", string(body)); got != http.StatusBadRequest {
+		t.Errorf("batch with a structural dest -> %d, want 400", got)
 	}
 	if _, err := os.Stat(filepath.Join(storagePath, "steps", "victim-b", "out", "f.txt")); err != nil {
 		t.Errorf("an unrelated artifact was destroyed by a refused batch: %v", err)
@@ -125,8 +124,8 @@ func TestResolve_RefusesAnotherBuildsHandleDirectory(t *testing.T) {
 	}
 
 	body := `{"key":"victim-a/out","dest":"` + filepath.Join(storagePath, "steps", "victim-b") + `"}`
-	if got := postJSON(t, ts.URL+"/resolve", body); got < 400 {
-		t.Errorf("resolve onto another build's handle directory -> %d, want 4xx", got)
+	if got := postJSON(t, ts.URL+"/resolve-batch", `{"items":[`+body+`]}`); got != http.StatusBadRequest {
+		t.Errorf("resolve onto another build's handle directory -> %d, want 400", got)
 	}
 	for _, f := range []string{
 		filepath.Join(storagePath, "steps", "victim-b", "out", "f.txt"),
@@ -151,7 +150,7 @@ func TestResolve_StillAcceptsARealDestination(t *testing.T) {
 	}
 	dest := filepath.Join(storagePath, "steps", "consumer-handle", "input-0")
 	body := `{"key":"victim-a/out","dest":"` + dest + `"}`
-	if got := postJSON(t, ts.URL+"/resolve", body); got != http.StatusOK {
+	if got := postJSON(t, ts.URL+"/resolve-batch", `{"items":[`+body+`]}`); got != http.StatusOK {
 		t.Fatalf("resolve into a real input destination -> %d, want 200", got)
 	}
 	if _, err := os.Stat(filepath.Join(dest, "f.txt")); err != nil {
