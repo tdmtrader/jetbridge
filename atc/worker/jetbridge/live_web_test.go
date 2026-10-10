@@ -157,7 +157,7 @@ func TestLiveDaemonMetricsAreScraped(t *testing.T) {
 	}
 
 	loaded := prometheus.alertRules()
-	for _, alert := range []string{"ArtifactDaemonNotScraped", "ArtifactDaemonScrapeFailing", "ArtifactDaemonRefusingForLoad"} {
+	for _, alert := range []string{"ArtifactDaemonNotScraped", "ArtifactDaemonScrapeFailing", "ArtifactDaemonRefusingSignedRequests"} {
 		if !loaded[alert] {
 			t.Errorf("prometheus has not loaded alert %s: the PrometheusRule is missing, not selected, or rendered without artifactDaemon.metrics.port", alert)
 		}
