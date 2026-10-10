@@ -101,9 +101,15 @@ func (sweep *Sweep) Run(ctx context.Context) error {
 	for class, count := range counts {
 		data[class] = count
 	}
-	if err != nil {
+	switch {
+	case err != nil:
 		logger.Error("hangar-output-orphan-sweep-failed", err, data)
-	} else {
+	case !sweep.judged:
+		// The deletes lock was held elsewhere (the reclaim pass, or another
+		// web). Nothing was listed, so the zero counts are not a sweep and
+		// must not read as one.
+		logger.Info("hangar-output-orphan-sweep-skipped")
+	default:
 		logger.Info("hangar-output-orphan-sweep", data)
 	}
 	metric.HangarOutputOrphanSweep{Objects: counts, Failed: err != nil, Skipped: err == nil && !sweep.judged}.Emit(logger)

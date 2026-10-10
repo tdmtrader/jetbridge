@@ -421,8 +421,12 @@ func (cluster *liveCluster) runbookStep(id string) []string {
 		return []string{
 			"hangarOutput.enabled=true", "hangarOutput.store=disk", "hangarOutput.bucket=outputs", "hangarOutput.tenant=" + liveClusterTenant}
 	case "S13":
+		// The sweep's default interval is an hour; the contract waits four
+		// minutes for a pass that saw the probe, and the startup pass may be
+		// skipped when the reclaim pass holds the deletes lock first.
 		return []string{
-			"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=" + names.runInput}
+			"hangarOutput.webEnabled=true", "web.runInputSigningKeySecret=" + names.runInput,
+			"hangarOutput.orphanSweep.interval=30s"}
 	}
 	cluster.t.Fatalf("no runbook step %q", id)
 	return nil
