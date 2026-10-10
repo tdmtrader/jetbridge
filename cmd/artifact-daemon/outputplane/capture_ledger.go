@@ -62,7 +62,7 @@ import (
 const SourceHoldGate = "source-hold"
 
 // stepMarkerPrefix names marker records in the control directory. The
-// read-only classifier in hangar/output/ledger keys on the same prefix.
+// read-only source classifier keys on the same prefix.
 const stepMarkerPrefix = "capture-"
 
 // PodTerminations answers whether every container of one Pod on this node has

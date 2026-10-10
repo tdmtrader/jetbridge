@@ -1,31 +1,4 @@
-// Package ledger reads the output plane's source ledger (the step markers),
-// and only reads it.
-//
-// The existing artifact daemon has no output-bucket credential and no business
-// changing a capture's state, but its sweep, cleanup, delete, replacement,
-// remap and reuse paths all destroy things -- and any of them can be pointed at
-// a source some capture is about to seal. So it needs one question answered
-// before it destroys anything: is this path held?
-//
-// This package answers it, from the same step markers the output plane
-// writes, WITHOUT a way to change them. There is no writer here, no exported
-// mutator and no field an existing caller could use to become one; the
-// architecture guard in hangar/output asserts that stays true. A read-only
-// classifier is what lets one authority own the state and another respect it.
-//
-// It FAILS CLOSED, and that is the whole design. Every answer that is not "this
-// path is unmanaged" refuses the destructive operation:
-//
-//	Unmanaged   nothing here holds it; the ordinary path is unchanged
-//	Held        a capture holds this source and it must survive
-//	Sealed      a capture is reading these exact bytes right now
-//	Unavailable the ledger could not be read
-//
-// Unavailable is deliberately not "probably fine". A daemon that could not read
-// the ledger does not know whether it is about to delete a capture's source,
-// and deleting on a guess is how a build's declared output disappears with no
-// record that it ever existed.
-package ledger
+package outputplane
 
 import (
 	"encoding/json"
@@ -37,16 +10,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 )
-
-// ControlDirName must match the output plane's. It is stated here rather than
-// imported because this package is the READER: a reader that depended on the
-// writer's package would be one import away from being able to write.
-const ControlDirName = ".hangar-output-control"
-
-// stepMarkerPrefix is the writer's; this reader restates it rather than
-// importing it.
-const stepMarkerPrefix = "capture-"
 
 // Class is the closed set of answers.
 type Class string
@@ -63,6 +30,7 @@ const (
 func (class Class) Destructive() bool { return class == Unmanaged }
 
 // ErrRefused is what a caller returns when this classifier says no.
+// Keep the diagnostic prefix stable for existing refusal responses.
 var ErrRefused = errors.New("hangar/output/ledger: the source is held by a durable output capture")
 
 // marker is the subset of the daemon's step marker this reader needs.
@@ -75,13 +43,6 @@ type marker struct {
 	State     string `json:"state"`
 	Execution string `json:"execution"`
 	Output    string `json:"output"`
-}
-
-// StepDirectory is the ONE derivation of a capture's step directory from its
-// execution and output, restated from output.CaptureKey.Directory; a test in
-// hangar/output pins the two spellings together.
-func StepDirectory(execution, output string) string {
-	return execution + ".capture/" + output
 }
 
 // Classifier answers one question about one path.
@@ -114,13 +75,14 @@ type Classifier struct {
 	// silently sharing a stale one.
 }
 
-// New opens a classifier over the managed storage root.
+// NewClassifier creates a read-only classifier over the managed storage root.
+// It requires no output-plane configuration and never creates directories.
 //
 // It does not fail when the control directory is absent: a deployment with no
 // output plane has no captures, every path is unmanaged, and the ordinary path
 // is unchanged. What it must not do is treat an UNREADABLE directory the same
 // way, and Classify is where that distinction lives.
-func New(storageRoot string) *Classifier {
+func NewClassifier(storageRoot string) *Classifier {
 	return &Classifier{dir: path.Join(storageRoot, ControlDirName)}
 }
 
@@ -275,7 +237,8 @@ func (classifier *Classifier) load() (map[string]Class, error) {
 		}
 
 		if class := classFor(body.State); class != Unmanaged {
-			held[StepDirectory(body.Execution, body.Output)] = class
+			key := output.CaptureKey{ExecutionID: executioncontrol.ExecutionID(body.Execution), Output: output.OutputName(body.Output)}
+			held[key.Directory()] = class
 		}
 	}
 

@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // The route table, driven over real HTTP against the real ledgers.
@@ -488,7 +487,7 @@ func TestAWarrantForOneExecutionCannotActOnAnothersCapture(t *testing.T) {
 	}
 
 	// And A's capture is still held.
-	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Held {
+	if class := NewClassifier(fixture.dir).Classify(fixture.key().Directory()); class != Held {
 		t.Errorf("A's step directory is %s after B's attempts", class)
 	}
 }

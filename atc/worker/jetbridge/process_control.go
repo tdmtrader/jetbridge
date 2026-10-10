@@ -509,7 +509,7 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 		return fmt.Errorf("%s is refused: the output ledger could not be read for %s: %w",
 			why, asked, err)
 	}
-	// Only unmanaged permits it (hangar/output/ledger: Class.Destructive). A
+	// Only unmanaged permits it (outputplane.Class.Destructive). A
 	// sealed source is still owed its publication, and unavailable -- or an
 	// answer this runtime does not know -- is not "probably fine".
 	if class != captureClassUnmanaged {

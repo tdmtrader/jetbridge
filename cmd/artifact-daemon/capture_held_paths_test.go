@@ -16,7 +16,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	"github.com/concourse/concourse/hangar/output/ledger"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
+	"github.com/concourse/concourse/hangar/output"
 )
 
 // Every destructive path in this daemon, against a source a capture holds.
@@ -41,7 +42,7 @@ var heldMarkerName = "capture-" + heldExecution + "." + heldOutput + ".json"
 
 // heldIncarnation is the step directory the marker protects.
 func heldIncarnation() string {
-	return ledger.StepDirectory(heldExecution, heldOutput)
+	return (output.CaptureKey{ExecutionID: heldExecution, Output: heldOutput}).Directory()
 }
 
 // heldStepDir is what the Reaper and the sweeper name: the PARENT.
@@ -89,7 +90,7 @@ func capturedNode(t *testing.T) string {
 		}
 	}
 
-	control := filepath.Join(storage, ledger.ControlDirName)
+	control := filepath.Join(storage, outputplane.ControlDirName)
 	if err := os.MkdirAll(control, 0o700); err != nil {
 		t.Fatalf("creating the control directory: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestAnAliasIsNeitherReusedForNorRemappedOffACaptureHeldSource(t *testing.T)
 	// made, so the alias is placed while the hold is momentarily off the disk
 	// -- which is the real sequence: the ATC registers the volume, and the
 	// capture holds it afterwards.
-	record := filepath.Join(storage, ledger.ControlDirName, heldMarkerName)
+	record := filepath.Join(storage, outputplane.ControlDirName, heldMarkerName)
 	held0, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatalf("reading the hold: %v", err)
@@ -388,7 +389,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	server, storage := capturedServer(t)
 	handler := server.Handler()
 
-	recordKey := ledger.ControlDirName + "/" + heldMarkerName
+	recordKey := outputplane.ControlDirName + "/" + heldMarkerName
 	recordPath := filepath.Join(storage, filepath.FromSlash(recordKey))
 	before, err := os.ReadFile(recordPath)
 	if err != nil {
@@ -424,7 +425,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 		t.Fatalf("registering the source: %v", err)
 	}
 	dest, err := json.Marshal(artifactwire.ResolveRequest{
-		Key: "some-artifact", Dest: filepath.Join(storage, ledger.ControlDirName, "nested"),
+		Key: "some-artifact", Dest: filepath.Join(storage, outputplane.ControlDirName, "nested"),
 	})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
@@ -455,7 +456,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	// green: the two doors answer different questions and neither subsumes the
 	// other.
 	link := filepath.Join(storage, "steps", "unheld-handle", "out", "link")
-	if err := os.Symlink(filepath.Join("..", "..", "..", ledger.ControlDirName), link); err != nil {
+	if err := os.Symlink(filepath.Join("..", "..", "..", outputplane.ControlDirName), link); err != nil {
 		t.Fatalf("planting the within-root symlink: %v", err)
 	}
 	throughLink := "/artifacts/steps/unheld-handle/out/link/" +
@@ -483,12 +484,12 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	// different one each run.
 	for _, row := range []struct{ name, target string }{
 		{"the record", "/artifacts/" + recordKey},
-		{"a path under it", "/artifacts/" + ledger.ControlDirName + "/nested"},
-		{"the directory", "/artifacts/" + ledger.ControlDirName},
+		{"a path under it", "/artifacts/" + outputplane.ControlDirName + "/nested"},
+		{"the directory", "/artifacts/" + outputplane.ControlDirName},
 		// Folded, because APFS and NTFS fold and an exact-string check has let
 		// a structural name through here before (rejectStructuralName's own
 		// comment).
-		{"the directory, folded", "/artifacts/" + strings.ToUpper(ledger.ControlDirName)},
+		{"the directory, folded", "/artifacts/" + strings.ToUpper(outputplane.ControlDirName)},
 	} {
 		for _, method := range []string{
 			http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete,
@@ -509,7 +510,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	if !bytes.Equal(before, after) {
 		t.Errorf("the hold record was rewritten through the ordinary API: %q", after)
 	}
-	entries, err := os.ReadDir(filepath.Join(storage, ledger.ControlDirName))
+	entries, err := os.ReadDir(filepath.Join(storage, outputplane.ControlDirName))
 	if err != nil {
 		t.Fatalf("reading the control directory: %v", err)
 	}
@@ -574,11 +575,11 @@ func TestTheCaptureClassRouteAnswersHeldAndUnheldAndDestroysNothing(t *testing.T
 
 	// It reads. It does not remove, and it does not reach outside steps/.
 	stillThere(t, storage, heldIncarnation())
-	if code, body := ask("/capture-held/steps/../" + ledger.ControlDirName); code == http.StatusOK &&
+	if code, body := ask("/capture-held/steps/../" + outputplane.ControlDirName); code == http.StatusOK &&
 		!strings.Contains(body, `"class"`) {
 		t.Errorf("a traversal out of steps/ was served: %d %s", code, body)
 	}
-	entries, err := os.ReadDir(filepath.Join(storage, ledger.ControlDirName))
+	entries, err := os.ReadDir(filepath.Join(storage, outputplane.ControlDirName))
 	if err != nil || len(entries) != 1 {
 		t.Errorf("the control directory holds %d entries after the classification route was "+
 			"asked (err %v)", len(entries), err)
@@ -656,7 +657,7 @@ func TestAReadOnlyAliasOntoACaptureHeldSourceIsAdmittedAndAWriteCapableOneIsNot(
 func TestATornMarkerRefusesTheSweeperDeleteStreamInAndRemap(t *testing.T) {
 	server, storage := capturedServer(t)
 	handler := server.Handler()
-	record := filepath.Join(storage, ledger.ControlDirName, heldMarkerName)
+	record := filepath.Join(storage, outputplane.ControlDirName, heldMarkerName)
 	raw, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatal(err)
@@ -740,7 +741,7 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 	if err := os.MkdirAll(filepath.Join(storage, "steps", "ordinary-handle"), 0o755); err != nil {
 		t.Fatalf("creating an ordinary step: %v", err)
 	}
-	control := filepath.Join(storage, ledger.ControlDirName)
+	control := filepath.Join(storage, outputplane.ControlDirName)
 	if err := os.MkdirAll(control, 0o700); err != nil {
 		t.Fatalf("creating the control directory: %v", err)
 	}

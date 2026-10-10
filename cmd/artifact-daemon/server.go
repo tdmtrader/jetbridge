@@ -24,7 +24,6 @@ import (
 	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
-	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -43,21 +42,10 @@ type Server struct {
 	// this daemon's listener. nil keeps them absent.
 	outputPlane http.Handler
 
-	// sourceLedger is the READ-ONLY view of the output plane's source ledger.
-	//
-	// The output plane is mounted in this same process (outputPlane below),
-	// and its source ledger writes its durable records -- fsync and rename --
-	// under this daemon's storage root. Every destructive path here reads
-	// those same records directly, in process, before it destroys anything:
-	// there is no call to make, over HTTP or otherwise. The package it comes
-	// from has no mutator at all, and its own guard keeps that true, so the
-	// paths that destroy cannot also change what the ledger says.
-	//
-	// It fails CLOSED. A ledger this daemon cannot read is not a ledger that
-	// says nothing is held; it is a daemon that does not know, and destroying
-	// on that basis is how a build's declared output disappears with no record
-	// it existed.
-	sourceLedger *ledger.Classifier
+	// sourceLedger reads the output plane's step markers before destructive
+	// operations. It is initialized even when outputPlane is absent, without
+	// creating the control directory. An unreadable ledger refuses destruction.
+	sourceLedger *outputplane.Classifier
 
 	// resolveSem bounds concurrent resolves NODE-WIDE, across every request on
 	// the mTLS-exempt route (/resolve-batch): one channel per process. Each resolve
@@ -191,11 +179,9 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		return nil, fmt.Errorf("open storage root %q: %w", storagePath, err)
 	}
 
-	// ONE classifier, shared by every component on this node that destroys
-	// something. Two would be two readers of one ledger that could disagree
-	// about whether a source is held, and the disagreement would only show up
-	// as a deleted source.
-	classifier := ledger.New(storagePath)
+	// Every destructive component shares this classifier, independently of
+	// whether the output plane's routes are configured.
+	classifier := outputplane.NewClassifier(storagePath)
 
 	registry := NewRegistry(logger, storagePath)
 	registry.SetSourceLedger(classifier)
@@ -238,7 +224,7 @@ func (s *Server) Guard() *ReadGuard {
 // SourceLedger exposes the read-only output-plane classifier so components
 // that destroy things outside this type -- the Sweeper -- ask the same
 // question the handlers do, of the same reader.
-func (s *Server) SourceLedger() *ledger.Classifier {
+func (s *Server) SourceLedger() *outputplane.Classifier {
 	return s.sourceLedger
 }
 
@@ -685,7 +671,7 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 // s.refuse already names the route and the reason; this adds the two facts it
 // cannot know -- which location, and which class the ledger answered.
 func (s *Server) captureRefusal(w http.ResponseWriter, r *http.Request, loc RelKey,
-	class ledger.Class, err error) {
+	class outputplane.Class, err error) {
 	s.refuse(w, r, http.StatusConflict, reasonCaptureHeld, err)
 	s.logger.Info("refused-destructive-operation-on-capture-source", lager.Data{
 		"rel": string(loc), "class": string(class),
@@ -901,16 +887,15 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 // speaks in incarnations relative to that directory, so the prefix is stripped
 // here rather than at each call site. A key outside steps/ is not a source
 // incarnation and cannot be held.
-func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
+func (s *Server) refuseIfCaptureHeld(loc RelKey) (outputplane.Class, error) {
 	if s.sourceLedger == nil {
-		// No output plane configured on this node. Every path is unmanaged and
-		// the ordinary behaviour is unchanged.
-		return ledger.Unmanaged, nil
+		// Tests may omit the classifier; NewServer always installs it.
+		return outputplane.Unmanaged, nil
 	}
 
 	relative, inSteps := strings.CutPrefix(string(loc), artifactwire.StepsPrefix)
 	if !inSteps {
-		return ledger.Unmanaged, nil
+		return outputplane.Unmanaged, nil
 	}
 
 	class := s.sourceLedger.Classify(relative)
@@ -951,7 +936,7 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 	}
 
 	class, reason := s.refuseIfCaptureHeld(RelKey(key))
-	body := artifactwire.CaptureClassResponse{Class: string(class), Handle: handle, Reason: ledger.PublicReason(class)}
+	body := artifactwire.CaptureClassResponse{Class: string(class), Handle: handle, Reason: outputplane.PublicReason(class)}
 	if reason != nil {
 		// The detailed reason goes to the LOG and not to the body. This route
 		// requires no client certificate -- a pod on this node has to be able
@@ -978,14 +963,14 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 // and cannot be held. This must not become a second, weaker containment check:
 // the callers that take one validate containment separately, and this returns
 // "unmanaged" rather than an error for anything it cannot place.
-func (s *Server) refuseIfCaptureHeldPath(absolute string) (ledger.Class, error) {
+func (s *Server) refuseIfCaptureHeldPath(absolute string) (outputplane.Class, error) {
 	if s.sourceLedger == nil {
-		return ledger.Unmanaged, nil
+		return outputplane.Unmanaged, nil
 	}
 
 	rel, err := containedRelKey(s.storagePath, absolute)
 	if err != nil {
-		return ledger.Unmanaged, nil
+		return outputplane.Unmanaged, nil
 	}
 
 	return s.refuseIfCaptureHeld(rel)
@@ -1128,8 +1113,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// path is the caller's mistake (400); a capture-held one is a conflict
 		// with another authority on this node (409), and answering 400 for it
 		// would tell the ATC to stop retrying something that will clear.
-		if errors.Is(err, ledger.ErrRefused) {
-			s.captureRefusal(w, r, RelKey(req.LocalPath), ledger.Held, err)
+		if errors.Is(err, outputplane.ErrRefused) {
+			s.captureRefusal(w, r, RelKey(req.LocalPath), outputplane.Held, err)
 			return
 		}
 		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)

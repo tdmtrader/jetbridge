@@ -402,7 +402,7 @@ mkdir -p "${TARGET}"`, shellQuote(cleanupPath))
 
 // ledgerCheckedCleanupScript is the same removal, behind the classifier.
 //
-// The three arms mirror the classifier's own (hangar/output/ledger): "held" is
+// The three arms mirror the source classifier's own: "held" is
 // a refusal, "unmanaged" -- which is what an absent control directory means,
 // and it is a real answer rather than an error -- proceeds, and anything else,
 // including no answer at all, is a refusal. A guard whose failure mode is

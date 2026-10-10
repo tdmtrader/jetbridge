@@ -80,11 +80,9 @@ func (key CaptureKey) Validate() error {
 
 func (key CaptureKey) String() string { return string(key.ExecutionID) + "/" + string(key.Output) }
 
-// CaptureDirectory is the ONE derivation of a step directory from a capture,
+// Directory is the derivation of a step directory from a capture,
 // relative to the node daemon's managed steps directory. The pod's hostPath,
-// the daemon's marker and the sweeper's classifier all key on this string;
-// hangar/output/ledger restates it (a reader must not import its writer) and a
-// test pins the two spellings together.
+// the daemon's marker and the sweeper's classifier all use this derivation.
 func (key CaptureKey) Directory() string {
 	return fmt.Sprintf("%s.capture/%s", key.ExecutionID, key.Output)
 }

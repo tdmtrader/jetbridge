@@ -174,8 +174,8 @@ _Avoid_: notification
 
 **Source ledger**:
 The artifact daemon's answer, from its step markers, to whether a step
-directory may be destroyed: unmanaged, held, sealed or unavailable. Only
-unmanaged permits destruction.
+directory may be changed or destroyed: unmanaged, held, sealed or unavailable.
+Only unmanaged permits either, even when capture is disabled.
 _Avoid_: capture ledger
 
 **Input publication**:

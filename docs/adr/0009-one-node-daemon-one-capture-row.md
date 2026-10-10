@@ -100,3 +100,9 @@ rollback is restore-from-backup. Every migration after upstream 1765921815
 refuses reversal, including empty installs. This replaces the former lossy
 reversal contract; restore the matching database, image and encryption key
 using the [recovery runbook](../migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).
+
+Amended by C9: the source classifier lives with the marker writer in
+`cmd/artifact-daemon/outputplane`, sharing marker constants and the leaf's
+capture-directory derivation. Its read-only constructor remains unconditional
+and creates no directories; lenient, fail-closed classification and persisted
+marker formats are unchanged. Hangar remains an import leaf.

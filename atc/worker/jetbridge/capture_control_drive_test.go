@@ -29,10 +29,10 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 const drivePodUID = executioncontrol.PodUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
@@ -186,7 +186,7 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 	// The hold really landed, or it did not. The script's own exit status is
 	// the producer's gate; the daemon's marker is the truth behind it, read
 	// the way every destructive path on the node reads it.
-	if class := ledger.New(harness.StorageRoot).Classify(key.Directory()); class != ledger.Held {
+	if class := outputplane.NewClassifier(harness.StorageRoot).Classify(key.Directory()); class != outputplane.Held {
 		return string(out), fmt.Errorf("the node classifies %s as %s after the script ran "+
 			"(script: %v); the daemon holds no step directory", key.Directory(), class, runErr)
 	}

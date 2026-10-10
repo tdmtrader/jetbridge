@@ -30,10 +30,10 @@ import (
 
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // capture is one capture, at whatever step the spec drove it to.
@@ -987,7 +987,7 @@ func TestAnAbortBeforeTheHoldLeavesNothingHeld(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.Daemon.StepsDir, c.Key().Directory())); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the refused hold created the step directory: %v", err)
 	}
-	if class := ledger.New(h.Daemon.StorageDir).Classify(c.Key().Directory()); class != ledger.Unmanaged {
+	if class := outputplane.NewClassifier(h.Daemon.StorageDir).Classify(c.Key().Directory()); class != outputplane.Unmanaged {
 		t.Errorf("the aborted step classifies %s, want unmanaged", class)
 	}
 }

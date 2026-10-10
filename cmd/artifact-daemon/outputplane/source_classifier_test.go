@@ -1,7 +1,8 @@
-package ledger
+package outputplane
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,7 @@ func TestAHeldSourceIsRefusedAndAnUnmanagedOneIsNot(t *testing.T) {
 	root, dir := controlDir(t)
 	writeMarker(t, dir, "held", execA, "result")
 
-	classifier := New(root)
+	classifier := NewClassifier(root)
 
 	// The control FIRST: an ordinary path is unmanaged and the ordinary
 	// behaviour is unchanged. "Everything is refused" is what a broken
@@ -68,7 +69,7 @@ func TestAHeldSourceIsRefusedAndAnUnmanagedOneIsNot(t *testing.T) {
 		if class.Destructive() {
 			t.Errorf("%s would have been destroyed", path)
 		}
-		if err := classifier.Reason(path, class); err == nil || !strings.Contains(err.Error(), path) {
+		if err := classifier.Reason(path, class); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), path) {
 			t.Errorf("the refusal for %s does not name it: %v", path, err)
 		}
 	}
@@ -84,8 +85,9 @@ func TestAReleasedSourceBecomesDestructibleAndASealedOneDoesNot(t *testing.T) {
 	root, dir := controlDir(t)
 
 	for state, expected := range map[string]Class{
-		"held":   Held,
-		"sealed": Sealed,
+		"held":     Held,
+		"sealed":   Sealed,
+		"released": Unmanaged,
 		// A state this reader does not know is HELD. The writer may learn one,
 		// and the safe reading of "I do not know what this means" over a
 		// marker that exists is that something holds it.
@@ -93,9 +95,12 @@ func TestAReleasedSourceBecomesDestructibleAndASealedOneDoesNot(t *testing.T) {
 	} {
 		writeMarker(t, dir, state, execA, "result")
 
-		classifier := New(root)
+		classifier := NewClassifier(root)
 		if class := classifier.Classify(heldA); class != expected {
 			t.Errorf("state %q classified %s, expected %s", state, class, expected)
+		}
+		if class := classifier.Classify("unrelated/output"); class != Unmanaged {
+			t.Errorf("state %q refused an unrelated path: %s", state, class)
 		}
 	}
 
@@ -103,7 +108,7 @@ func TestAReleasedSourceBecomesDestructibleAndASealedOneDoesNot(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, stepMarkerPrefix+execA+".result.json")); err != nil {
 		t.Fatal(err)
 	}
-	if class := New(root).Classify(heldA); class != Unmanaged {
+	if class := NewClassifier(root).Classify(heldA); class != Unmanaged {
 		t.Errorf("a released step directory classified %s", class)
 	}
 }
@@ -113,7 +118,7 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 	writeMarker(t, dir, "held", execA, "result")
 
 	// The control: readable, and an ordinary path proceeds.
-	if class := New(root).Classify("ordinary/output"); !class.Destructive() {
+	if class := NewClassifier(root).Classify("ordinary/output"); !class.Destructive() {
 		t.Fatalf("a readable ledger refused an ordinary path: %s", class)
 	}
 
@@ -128,7 +133,7 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 			writeMarker(t, dir, "held", execA, "result")
 			corruptIn(t, dir, name)
 
-			classifier := New(root)
+			classifier := NewClassifier(root)
 			// EVERY path, not just the held one. The ledger is the only thing
 			// that could have said which paths are held, so with it unreadable
 			// nothing is known to be safe.
@@ -140,7 +145,7 @@ func TestAnUnreadableLedgerRefusesEverythingRatherThanGuessing(t *testing.T) {
 				if class.Destructive() {
 					t.Errorf("%s would have been destroyed on a guess", path)
 				}
-				if err := classifier.Reason(path, class); err == nil ||
+				if err := classifier.Reason(path, class); !errors.Is(err, ErrRefused) ||
 					!strings.Contains(err.Error(), "could not be read") {
 					t.Errorf("the refusal does not say the ledger was unreadable: %v", err)
 				}
@@ -192,34 +197,14 @@ func corruptIn(t *testing.T, dir, how string) {
 // refused. The absence of the directory is a real answer; being unable to read
 // it is not.
 func TestANodeWithNoOutputPlaneIsUnchanged(t *testing.T) {
-	classifier := New(t.TempDir())
+	root := filepath.Join(t.TempDir(), "absent-storage")
+	classifier := NewClassifier(root)
 
 	if class := classifier.Classify("any/path"); !class.Destructive() {
 		t.Errorf("a node with no output plane classified %s", class)
 	}
-}
-
-// The read-only half, structurally. A writer here would be the two authorities
-// becoming one.
-func TestThisPackageOffersNoWayToChangeALedger(t *testing.T) {
-	source, err := os.ReadFile("ledger.go")
-	if err != nil {
-		t.Fatalf("reading: %v", err)
-	}
-	body := string(source)
-
-	for _, forbidden := range []string{
-		"os.WriteFile", "os.Create", "os.Remove", "os.RemoveAll", "os.Rename",
-		"os.OpenFile", "os.Mkdir", "os.MkdirAll", "os.Chmod",
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("this package calls %s. It is the READER of a ledger another process owns; "+
-				"one authority writes it and this one respects it, and a mutator here is those "+
-				"two becoming one", forbidden)
-		}
-	}
-	if !strings.Contains(body, "os.ReadFile") {
-		t.Error("this package reads no file, so this guard is asserting nothing")
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("classifying without an output plane changed the filesystem: %v", err)
 	}
 }
 
@@ -233,7 +218,7 @@ func TestThisPackageOffersNoWayToChangeALedger(t *testing.T) {
 // cache now, and this row is what keeps one from coming back.
 func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 	root, dir := controlDir(t)
-	classifier := New(root)
+	classifier := NewClassifier(root)
 
 	if class := classifier.Classify(heldA); !class.Destructive() {
 		t.Fatalf("an empty ledger classified %s", class)
@@ -242,8 +227,7 @@ func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 	writeMarker(t, dir, "held", execA, "result")
 
 	if class := classifier.Classify(heldA); class != Held {
-		t.Errorf("a hold established after the previous read classified %s. The cache is keyed "+
-			"on the control directory's modification time for exactly this case", class)
+		t.Errorf("a hold established after the previous read classified %s, want held", class)
 	}
 }
 
@@ -263,7 +247,7 @@ func TestDestroyingAnAncestorOfAHeldIncarnationIsRefused(t *testing.T) {
 	root, dir := controlDir(t)
 	writeMarker(t, dir, "held", "exec-1", "result")
 
-	classifier := New(root)
+	classifier := NewClassifier(root)
 
 	// The incarnation itself, and everything beneath it: the rows that already
 	// held. They are the control -- if these stop working the ancestor rule was

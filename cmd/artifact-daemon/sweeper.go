@@ -7,7 +7,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 
-	"github.com/concourse/concourse/hangar/output/ledger"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 )
 
 // Sweeper periodically removes expired artifacts from the hostPath storage.
@@ -36,14 +36,14 @@ type Sweeper struct {
 	// meet. Nothing refreshes a held source's mtime -- the producer wrote it
 	// and exited, and the capture is waiting for a seal -- so a source waiting
 	// to be sealed ages exactly like an abandoned one, and this loop is the
-	// thing that decides. Nil-safe: a nil ledger is a node with no output
-	// plane, and the sweep is unchanged.
-	sourceLedger *ledger.Classifier
+	// thing that decides. Tests may omit it; main always wires the server's
+	// classifier, even when the output plane's routes are disabled.
+	sourceLedger *outputplane.Classifier
 }
 
 // SetSourceLedger wires the output plane's read-only classifier. Must be
 // called before Run starts.
-func (s *Sweeper) SetSourceLedger(classifier *ledger.Classifier) {
+func (s *Sweeper) SetSourceLedger(classifier *outputplane.Classifier) {
 	s.sourceLedger = classifier
 }
 

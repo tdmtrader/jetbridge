@@ -10,7 +10,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 
-	"github.com/concourse/concourse/hangar/output/ledger"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 )
 
 // Registry is a thread-safe in-memory map from artifact key to the local
@@ -42,7 +42,7 @@ type Registry struct {
 	// not a file, but a remap or a reuse is as destructive as a cleanup:
 	// one hands another consumer a name for bytes a capture is about to seal,
 	// the other takes away the only name those bytes had.
-	sourceLedger *ledger.Classifier
+	sourceLedger *outputplane.Classifier
 }
 
 // NewRegistry creates an empty Registry rooted at storagePath.
@@ -181,9 +181,9 @@ func (r *Registry) registerAlias(key, localPath string, readOnly bool) (RelKey, 
 	return rk, nil
 }
 
-// SetSourceLedger wires the output plane's read-only classifier. Nil is a node
-// with no output plane, and every mapping is unchanged.
-func (r *Registry) SetSourceLedger(classifier *ledger.Classifier) {
+// SetSourceLedger wires the output plane's read-only classifier. NewServer
+// always installs it; standalone registries may omit it.
+func (r *Registry) SetSourceLedger(classifier *outputplane.Classifier) {
 	r.sourceLedger = classifier
 }
 

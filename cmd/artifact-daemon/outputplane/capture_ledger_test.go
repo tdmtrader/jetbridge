@@ -17,7 +17,6 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // The capture ledger, over real directories, a real control store, a real
@@ -178,8 +177,8 @@ func writeFile(t *testing.T, path, body string) {
 
 func TestTheHoldWritesADurableMarkerTheSweeperRespects(t *testing.T) {
 	fixture := newCaptureLedger(t)
-	classifier := ledger.New(fixture.dir)
-	if class := classifier.Classify(fixture.key().Directory()); class != ledger.Unmanaged {
+	classifier := NewClassifier(fixture.dir)
+	if class := classifier.Classify(fixture.key().Directory()); class != Unmanaged {
 		t.Fatalf("before any hold the step directory is %s", class)
 	}
 
@@ -196,7 +195,7 @@ func TestTheHoldWritesADurableMarkerTheSweeperRespects(t *testing.T) {
 	// artifact daemon's destructive paths consult answers held.
 	fixture.restart(t)
 	for _, path := range []string{fixture.key().Directory(), string(testExecution) + ".capture", ""} {
-		if class := classifier.Classify(path); class != ledger.Held {
+		if class := classifier.Classify(path); class != Held {
 			t.Errorf("after a restart %q is %s, want held", path, class)
 		}
 	}
@@ -306,7 +305,7 @@ func TestTheSealWaitsForEveryContainerAndCapturesTheLastWrite(t *testing.T) {
 		t.Fatalf("the seal captured %s and the directory after the last write is %s",
 			result.Digest, final.Digest)
 	}
-	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Sealed {
+	if class := NewClassifier(fixture.dir).Classify(fixture.key().Directory()); class != Sealed {
 		t.Errorf("a sealed step directory classifies %s", class)
 	}
 }
@@ -343,7 +342,7 @@ func TestASealOfARunningPodAnswersNotYetAndKeepsTheMarkerSealed(t *testing.T) {
 	if _, err := sealNow(t, fixture); !errors.Is(err, output.ErrUnresolved) {
 		t.Fatalf("a background seal of a Pod that never stopped answered %v", err)
 	}
-	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Sealed {
+	if class := NewClassifier(fixture.dir).Classify(fixture.key().Directory()); class != Sealed {
 		t.Errorf("after the fence the step directory is %s", class)
 	}
 	// Nobody may hold it again once sealed, and the same Pod's hold replays.
@@ -435,7 +434,7 @@ func TestReleaseClearsTheMarkerOnceAndForAll(t *testing.T) {
 			t.Fatalf("release %d answered %+v, %v", i, ack, err)
 		}
 	}
-	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Unmanaged {
+	if class := NewClassifier(fixture.dir).Classify(fixture.key().Directory()); class != Unmanaged {
 		t.Errorf("a released step directory is %s", class)
 	}
 	if fixture.ledger.gateOpen(t, testExecution, SourceHoldGate) {
@@ -464,9 +463,9 @@ func TestATornMarkerRefusesEverythingAndNeverReadsAsUnmanaged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	classifier := ledger.New(fixture.dir)
+	classifier := NewClassifier(fixture.dir)
 	for _, path := range []string{fixture.key().Directory(), "some-other-handle", ""} {
-		if class := classifier.Classify(path); class != ledger.Unavailable {
+		if class := classifier.Classify(path); class != Unavailable {
 			t.Errorf("with a torn marker %q classifies %s, want unavailable", path, class)
 		}
 	}
@@ -496,15 +495,6 @@ func (ledger *ExecutionLedger) gateOpen(t *testing.T, id executioncontrol.Execut
 	return false
 }
 
-// The sweeper's classifier restates the step-directory derivation rather than
-// importing it (a reader must not import its writer). This pins the two.
-func TestTheClassifierAndTheCaptureAgreeOnTheStepDirectory(t *testing.T) {
-	key := output.CaptureKey{ExecutionID: testExecution, Output: testOutput}
-	if got := ledger.StepDirectory(string(key.ExecutionID), string(key.Output)); got != key.Directory() {
-		t.Fatalf("the classifier keys on %q and the capture writes %q", got, key.Directory())
-	}
-}
-
 // A cancellation that wins the race with the control init: the capture is
 // released before any hold. The release leaves a tombstone, the late hold is
 // refused (the producer must not start), the step classifies unmanaged, and
@@ -523,7 +513,7 @@ func TestAReleaseBeforeTheHoldLeavesATombstoneTheHoldIsRefusedBy(t *testing.T) {
 	if _, err := os.Stat(fixture.stepDir()); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a refused hold created the step directory: %v", err)
 	}
-	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Unmanaged {
+	if class := NewClassifier(fixture.dir).Classify(fixture.key().Directory()); class != Unmanaged {
 		t.Errorf("a released step classifies %s, want unmanaged", class)
 	}
 	if _, err := fixture.capture.Seal(context.Background(), sealRequest(), nil); !errors.Is(err, output.ErrNotFound) {
@@ -558,7 +548,7 @@ func TestATombstoneIsSweptOnlyAfterItsDirectory(t *testing.T) {
 	if _, err := fixture.capture.Release(context.Background(), release); err != nil {
 		t.Fatalf("releasing: %v", err)
 	}
-	if class := ledger.New(fixture.dir).Classify(fixture.key().Directory()); class != ledger.Unmanaged {
+	if class := NewClassifier(fixture.dir).Classify(fixture.key().Directory()); class != Unmanaged {
 		t.Errorf("a released step classifies %s, want unmanaged", class)
 	}
 	fixture.capture.tombstoneRetention = time.Nanosecond

@@ -93,8 +93,12 @@ markers and answers every destructive request unmanaged, held, sealed or
 unavailable. Only unmanaged permits destruction. The reader decodes a marker
 leniently and has one rule for what it does not understand: a state it does
 not know is held, and a file it cannot decode makes the whole ledger
-unavailable. The output plane's own ledgers read the same way: a record that
-does not decode refuses the one execution it names.
+unavailable. The classifier and writer live together in
+`cmd/artifact-daemon/outputplane`, sharing the marker constants and
+`output.CaptureKey.Directory()` derivation. The classifier reads fresh markers
+without creating directories and is initialized even when execution control
+and capture are disabled. The writer separately validates complete marker
+identity; a record that does not decode refuses the execution it names.
 
 ## Recovery
 

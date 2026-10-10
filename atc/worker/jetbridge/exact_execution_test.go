@@ -32,10 +32,10 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // controlExecutor is the exec transport, and it is the thing a spec drives:
@@ -111,7 +111,7 @@ var _ = Describe("An execProcess under exact control", func() {
 	// heldOnNode is the node's own answer about the capture's step directory,
 	// read the way every destructive path on the node reads it.
 	heldOnNode := func() string {
-		return string(ledger.New(harness.StorageRoot).Classify(captureKey.Directory()))
+		return string(outputplane.NewClassifier(harness.StorageRoot).Classify(captureKey.Directory()))
 	}
 
 	// hold drives the sequence in the ONLY order a real producer has, which is
@@ -638,7 +638,7 @@ var _ = Describe("An execProcess under exact control", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// The control: nothing holds the step directory yet.
-		Expect(heldOnNode()).To(Equal(string(ledger.Unmanaged)))
+		Expect(heldOnNode()).To(Equal(string(outputplane.Unmanaged)))
 
 		// 2. The Pod. In this spec it is already in the fake API server, which
 		//    is the point at which a UID first exists at all.
@@ -658,7 +658,7 @@ var _ = Describe("An execProcess under exact control", func() {
 		Expect(acknowledged.Marker.PodUID).To(Equal(executioncontrol.PodUID(pod.UID)))
 		Expect(acknowledged.Marker.Node).To(Equal(executioncontrol.NodeUID(harnessNodeUID)))
 		Expect(acknowledged.Marker.Key()).To(Equal(captureKey))
-		Expect(heldOnNode()).To(Equal(string(ledger.Held)))
+		Expect(heldOnNode()).To(Equal(string(outputplane.Held)))
 		Expect(filepath.Join(harness.StepsDir, captureKey.Directory())).To(BeADirectory())
 
 		// A recreated Pod does not inherit the hold.
@@ -792,7 +792,7 @@ var _ = Describe("An execProcess under exact control", func() {
 			Expect(err).ToNot(HaveOccurred(), "the stop deleted the producer's Pod")
 
 			if wantHeld {
-				Expect(heldOnNode()).To(Equal(string(ledger.Held)),
+				Expect(heldOnNode()).To(Equal(string(outputplane.Held)),
 					"the stop released the source hold")
 			}
 

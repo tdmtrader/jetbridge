@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/hangar/output/ledger"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 )
 
 // What the mTLS-EXEMPT routes may say.
@@ -34,7 +34,7 @@ func TestTheExemptRoutesNameNoNodeLocalPath(t *testing.T) {
 
 	// Make the ledger unreadable in the way that produces the detailed text:
 	// a regular file where the control directory should be.
-	control := filepath.Join(storage, ledger.ControlDirName)
+	control := filepath.Join(storage, outputplane.ControlDirName)
 	if err := os.RemoveAll(control); err != nil {
 		t.Fatalf("removing the control directory: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestTheExemptRoutesNameNoNodeLocalPath(t *testing.T) {
 		if answer.Class == "" {
 			t.Errorf("GET %s answered no class", target)
 		}
-		if answer.Class != string(ledger.Unmanaged) && answer.Reason == "" {
+		if answer.Class != string(outputplane.Unmanaged) && answer.Reason == "" {
 			t.Errorf("GET %s answered class %q with no reason at all; a refusal nobody can read "+
 				"is a stuck operation nobody can diagnose", target, answer.Class)
 		}

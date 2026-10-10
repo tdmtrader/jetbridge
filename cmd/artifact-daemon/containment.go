@@ -18,7 +18,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 
-	"github.com/concourse/concourse/hangar/output/ledger"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 )
 
 // ErrRefused marks an error the ARCHIVE is answerable for rather than the
@@ -302,19 +302,15 @@ func rejectStructuralName(key string) error {
 // served the records would have moved the vector by one path segment. Folded, because APFS and NTFS fold and an exact-string
 // check has already let a structural name through here once.
 //
-// The name is the READER package's constant, which is the one this daemon
-// already classifies with. The writer states its own (control_store.go, with
-// the reason: a reader that imported the writer would be one import away from
-// being able to write), and those two are the whole set — a third spelling
-// here is how an exclusion drifts off the directory it excludes.
+// The exclusion shares the control-directory name with the writer and classifier.
 func refuseControlDirectory(relative string) error {
 	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
 	first, _, _ := strings.Cut(cleaned, "/")
-	if strings.EqualFold(first, ledger.ControlDirName) {
+	if strings.EqualFold(first, outputplane.ControlDirName) {
 		return refused(
 			"%q is inside %s, the output plane's control ledger: this daemon reads that ledger "+
 				"to decide what it may destroy and has no route that serves, replaces or removes it",
-			relative, ledger.ControlDirName,
+			relative, outputplane.ControlDirName,
 		)
 	}
 
