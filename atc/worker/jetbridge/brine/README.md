@@ -87,10 +87,9 @@ fly -t home execute -c deploy/run-kubelet-task.yml --privileged \
 
 `hack/test-run-kubelet` marks the node `brine.dev/run-kubelet=owned-ci` and
 runs `kubelet/.brine` (Run cancellation). The steps refuse any cluster that is
-not that loopback, single, marked node. The review scenarios in the same
-directory have their own runner, `hack/test-review-kubelet`. The Run tier's CI
-home is the `run-cancellation-kubelet` job in `deploy/k8s-e2e-pipeline.yml`
-(live once that pipeline is set); the review tier is in no pipeline.
+not that loopback, single, marked node. Its CI home is the
+`run-cancellation-kubelet` job in `deploy/k8s-e2e-pipeline.yml`
+(live once that pipeline is set).
 
 ## Guard tests and vet
 
@@ -101,13 +100,13 @@ BRINE_PROTOCOL_LAUNCHER="$PWD/scripts/run-private-network" \
 ```
 
 Runs the AST import guard (`steps/kubernetes_clients_test.go`, rejects any
-fake Kubernetes client/reactor import under `steps/`), the vocabulary/wiring
-guards (`steps/vocabulary_test.go`: no dead step definition, no unresolved or
-ambiguous step phrase, every `hangar-*.feature` scenario cites a requirement
-tag), and the adapter's own black-box protocol tests.
+fake Kubernetes client/reactor imports across the module and locally declared
+client doubles in non-test sources), the vocabulary/wiring guards
+(`steps/vocabulary_test.go`: no dead step definition, no unresolved or
+ambiguous step phrase, and a nonempty active feature corpus), and the adapter's
+own black-box protocol tests.
 
-See [features/README.md](features/README.md) for feature tag conventions
-(`@HOP-<n>`, family prefixes like `@RF-`, `@PW-`).
+See [features/README.md](features/README.md) for feature tags.
 
 ## Full coverage gate
 

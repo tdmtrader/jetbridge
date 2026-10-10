@@ -27,8 +27,7 @@ import (
 // ready cohort, with the Run's real artifact daemon -- which mounts the output
 // plane -- bound to every address and certified for the node's, so the node's
 // Pods and the ATC reach it there. It never substitutes envtest for a kubelet
-// and never runs against a cluster it did not create (hack/test-run-kubelet,
-// hack/test-review-kubelet).
+// and never runs against a cluster it did not create (hack/test-run-kubelet).
 func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brine.Resources, owner, namespacePrefix string, checks bool) (RunOutputRuntime, jetbridge.PodExecutor, error) {
 	var in RunOutputRuntime
 	path := os.Getenv("BRINE_KUBELET_CONFIG")

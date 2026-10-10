@@ -1,8 +1,8 @@
 #!/bin/sh
 # Builds and pushes the live tier's fixture review worker: the deployable
 # deploy/Dockerfile.review-worker image with only its codex replaced by the
-# fixture provider (agent/review/testdata/provider), as hack/test-review-kubelet
-# builds it. concourse.home has no model, so the fixture's "finding" and "edit"
+# fixture provider (agent/review/testdata/provider). concourse.home has no
+# model, so the fixture's "finding" and "edit"
 # modes stand in for one in the A8 workload checks
 # (atc/worker/jetbridge/live_hangar_workload_test.go).
 #

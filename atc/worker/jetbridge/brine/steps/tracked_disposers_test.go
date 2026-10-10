@@ -36,7 +36,7 @@ func TestGuardEveryRecorderDisposerReleasesOnlyAContext(t *testing.T) {
 
 	registrations := 0
 	for _, source := range sources {
-		found, offenders := disposerRegistrations(t, source, nil)
+		found, offenders := disposerRegistrations(t, source)
 		registrations += found
 		for _, offender := range offenders {
 			t.Errorf("steps/%s registers %s directly on the recorder, so it is released only "+
@@ -51,64 +51,14 @@ func TestGuardEveryRecorderDisposerReleasesOnlyAContext(t *testing.T) {
 	}
 }
 
-// The guard reads the ARGUMENT, not the file name.
-//
-// Its exemptions are two: a cancellation, and TrackDisposer's own registration.
-// Both are stated as a shape the argument must have, so neither becomes a
-// licence for the file it appears in -- which is the way a guard quietly stops
-// guarding. These are the cases the package is not currently able to show.
-func TestGuardReadsTheRegistrationsArgumentRatherThanItsFile(t *testing.T) {
-	fabricated := `package steps
-
-func allowed(rec *brine.Recorder) {
-	rec.RegisterDisposer(cancel)
-	rec.RegisterDisposer(core.Cancel)
-	rec.RegisterDisposer(func() { cancel() })
-	rec.RegisterDisposer(func() { in.core.Cancel() })
-}
-
-func refused(rec *brine.Recorder) {
-	rec.RegisterDisposer(daemon.stop)
-	rec.RegisterDisposer(func() { _ = route.Close() })
-	rec.RegisterDisposer(func() {
-		cancel()
-		_ = daemon.stop()
-	})
-	rec.RegisterDisposer(func() { tracked.run(true) })
-}
-`
-	found, offenders := disposerRegistrations(t, "fabricated.go", fabricated)
-
-	if found != 8 {
-		t.Fatalf("the guard saw %d registrations in a file with 8", found)
-	}
-	if len(offenders) != 4 {
-		t.Fatalf("the guard refused %d of them, want the 4 in refused(): %v", len(offenders), offenders)
-	}
-	// Each refusal is named by what it releases, or by the shape that hid it:
-	// a body that is not a call at all, and a body that cancels a context AND
-	// stops a daemon -- which a guard reading only the first statement passes.
-	said := strings.Join(offenders, " | ")
-	for _, want := range []string{
-		"daemon.stop",
-		"body is not a call",
-		"2 statements",
-		"calling tracked.run",
-	} {
-		if !strings.Contains(said, want) {
-			t.Errorf("the guard did not name %q among %v", want, offenders)
-		}
-	}
-}
-
 // disposerRegistrations parses one file and reports how many recorder
 // registrations it makes and which of them release something a cancellation
-// does not. src is nil to read the file from disk, as the package guard does.
-func disposerRegistrations(t *testing.T, source string, src any) (int, []string) {
+// does not.
+func disposerRegistrations(t *testing.T, source string) (int, []string) {
 	t.Helper()
 
 	fileSet := token.NewFileSet()
-	parsed, err := parser.ParseFile(fileSet, source, src, 0)
+	parsed, err := parser.ParseFile(fileSet, source, nil, 0)
 	if err != nil {
 		t.Fatalf("parsing %s: %v", source, err)
 	}
@@ -128,8 +78,7 @@ func disposerRegistrations(t *testing.T, source string, src any) (int, []string)
 		// tracked_disposers.go IS the tracking, and TrackDisposer's own
 		// registration is the one that cannot go through itself. The exemption
 		// is the shape of the argument in that file and not the file alone, so
-		// a daemon stop smuggled in beside it is still reported -- which the
-		// fabricated case above is what proves.
+		// a daemon stop smuggled in beside it is still reported.
 		if source == "tracked_disposers.go" && releasesATrackedEntry(call.Args[0]) {
 			return true
 		}

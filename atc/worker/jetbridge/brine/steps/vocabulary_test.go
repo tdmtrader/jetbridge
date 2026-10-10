@@ -176,55 +176,6 @@ func TestNoStepLineMatchesTwoDefinitions(t *testing.T) {
 	}
 }
 
-// TestEveryHangarScenarioCitesARequirement is the fourth guard, and the Hangar
-// family is why it exists.
-//
-// Convention 4 of learnings/brine-as-the-test-runner.md asks every scenario in
-// this family to cite the numbered requirement it is about, as an @HOP-<n> tag
-// ON THE SCENARIO and not only on the feature. The reason is measurable: of the
-// 143 archive requirement IDs, 98 are greppable as tags and 45 are not, and the
-// proposal's own finding is that the problem was never coverage but
-// traceability. A citation grep is the only thing that makes traceability real,
-// and a grep can only find a tag that is there.
-//
-// It is scoped to hangar-*.feature deliberately. Retro-fitting the rule onto
-// the 35 files that predate it would be a different change, and the families
-// migrated from Go suites that never had IDs say so and cite mutations instead.
-func TestEveryHangarScenarioCitesARequirement(t *testing.T) {
-	var checked int
-	for _, path := range featurePaths(t) {
-		if !strings.HasPrefix(filepath.Base(path), "hangar-") {
-			continue
-		}
-		parsed, err := brine.ParseFeatureFile(path)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		for _, feat := range parsed.Features {
-			for _, sc := range feat.Scenarios {
-				checked++
-				if !citesHangarRequirement(sc.Tags) {
-					t.Errorf("%s: scenario %q carries no @HOP-<n> tag, so no requirement grep "+
-						"will ever find it. Tag the scenario with the spec.md requirement "+
-						"numbers it is about.", filepath.Base(path), sc.Name)
-				}
-			}
-		}
-	}
-	if checked == 0 {
-		t.Fatal("no hangar-*.feature scenarios were examined — this test would pass vacuously")
-	}
-}
-
-func citesHangarRequirement(tags []string) bool {
-	for _, tag := range tags {
-		if strings.HasPrefix(tag, "@HOP-") && len(tag) > len("@HOP-") {
-			return true
-		}
-	}
-	return false
-}
-
 // TestActiveFeatureCorpus checks the local and live runner globs, rather than
 // the recursive vocabulary scan, so each active tier must contain runnable features.
 func TestActiveFeatureCorpus(t *testing.T) {

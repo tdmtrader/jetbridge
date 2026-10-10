@@ -50,9 +50,8 @@ const (
 // Run client and the web node, not the adapters that produce the answers:
 // jetbridge.OutputDrain and OutputSource.ExecBoundSession run against a real
 // API server (envtest) in the Brine features bound-session and
-// hangar-recovery, and against a real kubelet in the review-kubelet tier,
-// which is also the only place a Pod actually terminates or an exec actually
-// carries stdin. The answers:
+// hangar-recovery. This harness does not prove kubelet termination or exec
+// stdin delivery. The answers:
 //   - which node serves the output plane and under what name (node
 //     resolution for uploads, result reads, captures and read leases):
 //     always this one;

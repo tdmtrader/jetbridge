@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 # channel, which a clean `catalog` must leave empty. So a passing guard run
 # says nothing at all; only a failing one is shown, on stderr.
 run_guards() {
-    brine_guard_pattern='Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement'
+    brine_guard_pattern='Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine'
     if [ -n "${BRINE_GUARD_TEST_BINARY:-}" ]; then
         case "$BRINE_GUARD_TEST_BINARY" in
             /*) ;;

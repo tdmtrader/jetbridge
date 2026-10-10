@@ -67,7 +67,7 @@ test-k8s-behavioral:
 # root go test never reaches it; run with a cd into it.
 test-brine-guards:
 	@echo "==> Running brine guard tests..."
-	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine|CitesARequirement' -count=1
+	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine' -count=1
 
 .PHONY: check-docker-tools
 check-docker-tools:

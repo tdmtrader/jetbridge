@@ -38,7 +38,7 @@ import (
 //
 // The worker image is the deployable review worker with its codex replaced by
 // the fixture provider (agent/review/testdata/provider), exactly as
-// hack/test-review-kubelet builds it: the cluster has no model, so the
+// hack/build-live-review-fixture-image builds it: the cluster has no model, so the
 // fixture's "finding" and "edit" modes stand in for one. That image must be
 // pinned in web.runCredentialWorkerImages, or the handoff is refused, and is
 // named to the tier by CONCOURSE_LIVE_REVIEW_WORKER_IMAGE. The credential
@@ -257,7 +257,7 @@ func liveHangarFixtureWorkerImage(t *testing.T) string {
 	t.Helper()
 	image := os.Getenv("CONCOURSE_LIVE_REVIEW_WORKER_IMAGE")
 	if image == "" {
-		t.Fatal("CONCOURSE_LIVE_REVIEW_WORKER_IMAGE is unset; the tier needs the review worker image with the fixture provider as its codex (hack/test-review-kubelet builds one), pinned by digest")
+		t.Fatal("CONCOURSE_LIVE_REVIEW_WORKER_IMAGE is unset; the tier needs the review worker image with the fixture provider as its codex (hack/build-live-review-fixture-image builds one), pinned by digest")
 	}
 	var pinned []string
 	for _, arg := range deployed.webContainer.Args {

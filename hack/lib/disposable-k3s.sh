@@ -1,5 +1,5 @@
-# Disposable single-node K3s for the Brine kubelet tiers, sourced by
-# hack/test-run-kubelet and hack/test-review-kubelet. Only for a privileged CI
+# Disposable single-node K3s for the Brine Run-kubelet tier, sourced by
+# hack/test-run-kubelet. Only for a privileged CI
 # task that owns its Docker daemon; never point it at a real cluster.
 #
 # The caller sets: work (a private temp dir), cluster and runner (container

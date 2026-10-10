@@ -268,10 +268,13 @@ Success, error, cancellation and timeout all remove the runtime before publicati
 The timeout includes an abandoned credential stream. A disposable container is
 required so abrupt process/container loss also destroys the tmpfs; **a bare process
 using a shared host `/dev/shm` does not provide that guarantee**. Remote handoff
-installs a bounded Pod deadline before sending credentials. Live Brine checks
-verify deadline enforcement and credential removal after worker and node runtime
-loss, using synthetic credentials. Do not bind a
-host credential directory or persist this runtime in a Secret, volume or artifact.
+installs a bounded Pod deadline before sending credentials. C12 removes the
+unrun disposable-kubelet checks for read-only input, kubelet deadline enforcement,
+credential removal after a killed worker or node runtime loss, and installed
+CLI/MCP completion. Local credential tests remain, but do not prove those physical
+properties. The live review/implement workload tests skip when capture/results
+are disabled and do not replace these checks. Do not bind a host credential
+directory or persist this runtime in a Secret, volume or artifact.
 There is no credential recovery, cross-run reuse or write-back. If a later local
 copy is stale, reauthenticate and submit a new review.
 
@@ -345,7 +348,7 @@ The scenarios use compiled production commands, real Git repositories, real
 stdio pipes and real credential cleanup. Only the model process is substituted,
 with deterministic assessment/event output and synthetic auth. Run, database
 and HTTP operations use their actual implementations. API-only scenarios supply
-Pod status explicitly; the separate live tier observes real kubelet status.
+Pod status explicitly; they do not establish kubelet behavior.
 
 Low-level schema, containment and protocol checks remain in Go:
 
@@ -354,45 +357,6 @@ go test ./agent/review ./cmd/jb ./cmd/jb-review-worker
 go test -count=1 -run TestAgentic .
 go vet ./agent/review ./cmd/jb ./cmd/jb-review-worker
 ```
-
-The real-model smoke is opt-in: `features/subscription/review-live.feature` is
-outside the ordinary Brine glob. `hack/test-review-subscription` creates a private
-two-commit fixture with a first-byte regression and invokes that feature in a
-fresh disposable container. It checks a located finding, schema/provenance,
-unchanged input, matching Markdown and credential cleanup. It makes a real model
-call and consumes subscription usage; never run it as an ordinary CI test.
-
-Prepare a directory with a host `jb`, Linux `jb-review-worker`, and the pinned
-Linux `codex` and companion `codex-code-mode-host` binaries verified against
-`agent/session/codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
-input reader and prohibit evaluating repository code. Shell tools remain disabled,
-and the worker validates the same closed event stream.
-Build the Linux Brine
-adapter from its own module, matching the container architecture. Supply a
-trusted image containing Brine, `/bin/sh` and CA certificates:
-
-```sh
-hack/test-review-subscription \
-  --auth-file /owner/selected/auth.json --model OWNER_SELECTED_MODEL \
-  --brine-image YOUR_BRINE_IMAGE --binaries /docker/shared/review-bin \
-  --adapter atc/worker/jetbridge/brine/.build/brine-adapter-linux \
-  --output /docker/shared/new-review-evidence
-```
-
-All bind-mount paths must be shared with Docker. Auth travels only on stdin into
-tmpfs and is unlinked before the worker starts; the original file is checked for
-changes. The container is removed even on failure. This private-fixture worker
-check complements the installed-template cases; it does not establish provider
-eligibility for public repositories or test a live remote Run with real auth.
-
-The explicit Linux acceptance features live under
-`atc/worker/jetbridge/brine/features/kubelet/`. The disposable CI task in
-`deploy/review-kubelet-task.yml` runs them with a real K3s node, BusyBox, SPDY
-transport and container memory. It requires a committed `repo` input and a
-`brine-module` input containing the pinned private module's Go download-cache
-files, with no credentials. Run it as a privileged CI task; never substitute a
-developer or production cluster. Node runtime loss runs separately, after the
-other scenarios. Missing live infrastructure fails rather than skipping tests.
 
 Named input routing is declared on a template task as `run_inputs: [{name: change, input: source}]` beside its stable `task_id`. Routes require inline task inputs and literal relative mount paths, with no overlapping writable mounts or `input_mapping` for that slot. Validation, durable binding and worker delivery are implemented. Authenticated upload admission publishes through the node and issues a short-lived source grant only after acquiring a temporary claim. Expiry releases that claim; admitted Runs retain their own claims. Shared submission uses this upload and admission path.
 
