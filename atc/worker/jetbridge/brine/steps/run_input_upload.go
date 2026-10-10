@@ -42,7 +42,7 @@ func exerciseInputUpload(in HangarDaemon, mode string) error {
 			return err
 		}
 	}
-	archive, err := durableTarOfOneFile("manifest.json", "committed review bundle")
+	archive, err := plainTarOfOneFile("manifest.json", "committed review bundle")
 	if err != nil {
 		return err
 	}

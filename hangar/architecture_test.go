@@ -122,30 +122,9 @@ func TestArchitectureHangarPackageIsALeaf(t *testing.T) {
 // the constructor, and that is what this scans: every non-test Go file in the
 // module, for any reference to either constructor through its import, called
 // or not (a function value handed elsewhere is the same capability).
-//
-// Two callers, each with the namespace it may delete in:
-//
-//   - the web's reclaim pass and orphan sweep (atc/hangaroutput/reclaim), over
-//     the output namespace: the reclaim pass after the control plane admitted
-//     the exact generation, the sweep only for an object marked for this store
-//     with no lifecycle row, both by exact generation;
-//   - the artifact daemon's fail-open cache tier (cmd/artifact-daemon/durable),
-//     over the cache namespace only. The cache is re-derivable and the daemon
-//     expires its own objects. It never holds delete over input or output:
-//     the daemon refuses to start with the cache namespace equal to either
-//     (objectstore.Namespaces), and the disk store authorizes the cache role
-//     in the cache namespace alone.
-//
-// Credentials remain the real boundary (IAM, the disk store's role table); this
-// keeps the composition from handing the capability to a third place by
-// accident.
-// deleteConstructors are the functions whose call yields a delete capability:
-// the two backend constructors, and the cache tier's own constructors, which
-// build (Open) or accept (New) a delete client for the cache namespace.
 var deleteConstructors = map[string][]string{
-	"github.com/concourse/concourse/hangar/gcs":                  {"NewDeleteClient"},
-	"github.com/concourse/concourse/hangar/disk":                 {"NewDeleteClient"},
-	"github.com/concourse/concourse/cmd/artifact-daemon/durable": {"Open", "New"},
+	"github.com/concourse/concourse/hangar/gcs":  {"NewDeleteClient"},
+	"github.com/concourse/concourse/hangar/disk": {"NewDeleteClient"},
 }
 
 // deleteConstructorCallers are the only production packages that may name a
@@ -154,14 +133,6 @@ var deleteConstructorCallers = map[string]allowedCaller{
 	"atc/hangaroutput/reclaim": {
 		why: "the web's reclaim pass and orphan sweep, over the output namespace",
 		may: []string{"hangar/gcs.NewDeleteClient", "hangar/disk.NewDeleteClient"},
-	},
-	"cmd/artifact-daemon/durable": {
-		why: "the fail-open cache tier, over the cache namespace only",
-		may: []string{"hangar/gcs.NewDeleteClient", "hangar/disk.NewDeleteClient"},
-	},
-	"cmd/artifact-daemon": {
-		why: "the daemon opens its cache tier, whose bucket it has checked is neither input nor output",
-		may: []string{"cmd/artifact-daemon/durable.Open"},
 	},
 }
 
@@ -291,7 +262,7 @@ func productionFiles(t *testing.T) []goFile {
 	return files
 }
 
-func TestOnlyTheReclaimerAndTheCacheTierConstructADeleteClient(t *testing.T) {
+func TestOnlyTheReclaimerConstructsADeleteClient(t *testing.T) {
 	files := productionFiles(t)
 	if len(files) < 500 {
 		t.Fatalf("parsed only %d production Go files; the walk failed", len(files))
@@ -317,7 +288,6 @@ func TestTheDeleteConstructorGuardIsNotVacuous(t *testing.T) {
 	}
 	allowed := map[string]allowedCaller{
 		"cmd/reclaimer": {why: "because", may: []string{"hangar/gcs.NewDeleteClient"}},
-		"cmd/daemon":    {why: "because", may: []string{"cmd/artifact-daemon/durable.Open"}},
 	}
 
 	if problems := deleteConstructorProblems(map[string]map[string][]string{}, 0, allowed); len(problems) == 0 {
@@ -332,31 +302,17 @@ var _, _, _ = gcs.NewDeleteClient(nil, "")`),
 		parse("cmd/web", `package main
 import store "github.com/concourse/concourse/hangar/disk"
 var open = store.NewDeleteClient`),
-		// The daemon may open its cache tier, and that does not license it to
-		// build a backend delete client directly.
-		parse("cmd/daemon", `package main
-import (
-	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
-	"github.com/concourse/concourse/hangar/gcs"
-)
-var _, _, _ = durable.Open(nil, durable.Config{})
-var _, _, _ = gcs.NewDeleteClient(nil, "")
-var _, _, _ = gcs.NewClient(nil, "")`),
-		// The cache tier's other constructor is guarded too.
-		parse("cmd/other", `package main
-import "github.com/concourse/concourse/cmd/artifact-daemon/durable"
-var _ = durable.New(nil, nil, "b", 0)`),
 	}
 	found, scanned := deleteConstructorReferences(files)
 	problems := deleteConstructorProblems(found, scanned, allowed)
 	joined := strings.Join(problems, "\n")
-	for _, want := range []string{"cmd/web names", "cmd/daemon names the delete constructor hangar/gcs.NewDeleteClient", "cmd/other names"} {
+	for _, want := range []string{"cmd/web names"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected a problem containing %q, got:\n%s", want, joined)
 		}
 	}
-	if len(problems) != 3 {
-		t.Fatalf("expected exactly three problems, got %v", problems)
+	if len(problems) != 1 {
+		t.Fatalf("expected exactly one problem, got %v", problems)
 	}
 
 	stale := deleteConstructorProblems(map[string]map[string][]string{"cmd/reclaimer": {"hangar/gcs.NewDeleteClient": {"x"}}}, 1,

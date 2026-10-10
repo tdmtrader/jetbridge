@@ -4,7 +4,7 @@ import "testing"
 
 // The charset regression guard lives in-package: these are all LEGAL Concourse
 // identifiers (atc/configwarning.go admits any Unicode letter, and it is only a
-// warning). An earlier commit required durable.ValidateKey's ASCII charset and
+// warning). An earlier commit required a restricted ASCII charset and
 // 400'd them — a broken build, surfacing nowhere in the suite.
 func TestValidateRequestKey_AcceptsLegalConcourseIdentifiers(t *testing.T) {
 	for _, key := range []string{

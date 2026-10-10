@@ -77,7 +77,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.bucket=jb-output",
 	"hangarOutput.prefix=cluster-a",
 	"hangarOutput.tenant=tenant-a",
-	"hangarOutput.cacheBucket=jb-cache",
 	// The two Workload Identity annotations: the publisher's on the artifact
 	// daemon, and the reclaim principal's on the web. Not required (see
 	// hangar_output_principals_test.go), but declared, so the rules over
@@ -269,21 +268,13 @@ func TestOutputEnablementRequiresBaseControl(t *testing.T) {
 // The dedicated bucket and the server-derived namespace
 // ---------------------------------------------------------------------------
 
-// Req 20. The bucket is explicit, and it is never one of the other two.
-func TestTheOutputBucketIsExplicitAndIsNeitherOtherBucket(t *testing.T) {
+// The output bucket must be explicit.
+func TestTheOutputBucketIsExplicit(t *testing.T) {
 	if message := renderHangarError(t, append(append([]string{}, outputSets...),
 		"hangarOutput.bucket=")...); !strings.Contains(message, "hangarOutput.bucket") {
 		t.Errorf("an empty output bucket was accepted:\n%s", message)
 	}
 
-	for _, collision := range []string{
-		"hangarOutput.bucket=jb-cache",
-	} {
-		message := renderOutputError(t, collision)
-		if !strings.Contains(strings.ToLower(message), "dedicated") {
-			t.Errorf("%s did not name the dedicated-bucket rule:\n%s", collision, message)
-		}
-	}
 }
 
 // The prefix, the tenant and the bucket are server configuration handed to

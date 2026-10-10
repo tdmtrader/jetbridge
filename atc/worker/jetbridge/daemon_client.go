@@ -170,34 +170,17 @@ func (d *DaemonClient) daemonIPs(ctx context.Context) ([]string, error) {
 	return ips, nil
 }
 
-// ProbeResult is what a probe learned about the cluster, not just about the
-// key. Endpoints and DurableCapable are what the caller needs to decide whether
-// a durable warm is even worth attempting.
+// ProbeResult identifies a daemon that holds a resource cache locally.
 type ProbeResult struct {
-	// IP and Node identify a daemon holding the key locally. Meaningful only
+	// IP identifies a daemon holding the key locally. Meaningful only
 	// when ProbeResourceCache reported found.
-	IP   string
-	Node string
-
-	// DurableCapable is true when any daemon advertised a durable tier. It is
-	// the OR across every response, so one misconfigured pod cannot make a key
-	// look permanently unavailable.
-	DurableCapable bool
-
-	// Endpoints is the daemon set as discovered, so a warm does not have to
-	// re-list EndpointSlices.
-	Endpoints []daemonEndpoint
+	IP string
 }
 
 // ProbeResourceCache asks every daemon whether it holds the key ON LOCAL DISK.
 //
 // A 200 has exactly one meaning here and it must keep it: these bytes are on
 // this node right now. That is what makes the returned pod worth binding to.
-// The durable store is deliberately not consulted — every daemon sees the same
-// bucket, so if it were, all of them would answer yes for anything ever stored
-// and the winner of the race below would be arbitrary, which is precisely the
-// node affinity this probe exists to provide.
-//
 // Racing to the first responder is right when every responder is a genuine
 // local holder: the fastest to answer is the least loaded.
 //
@@ -221,9 +204,8 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 	}
 
 	type probeResult struct {
-		ep             daemonEndpoint
-		found          bool
-		durableCapable bool
+		ep    daemonEndpoint
+		found bool
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -243,26 +225,21 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 				return
 			}
 
-			results <- probeResult{ep: ep, found: probe.Found, durableCapable: probe.DurableCapable}
+			results <- probeResult{ep: ep, found: probe.Found}
 		}(ep)
 	}
 
-	out := ProbeResult{Endpoints: eps}
+	out := ProbeResult{}
 	for range eps {
 		r := <-results
-		if r.durableCapable {
-			out.DurableCapable = true
-		}
 		if r.found {
-			// Stop draining: the remaining responses matter only for
-			// DurableCapable, which is not consulted on a hit.
-			out.IP, out.Node = r.ep.IP, r.ep.Node
+			out.IP = r.ep.IP
 			logger.Info("cache-found", lager.Data{"daemon_ip": r.ep.IP, "node": r.ep.Node})
 			return out, true
 		}
 	}
 
-	logger.Debug("cache-not-found", lager.Data{"daemons_checked": len(eps), "durable_capable": out.DurableCapable})
+	logger.Debug("cache-not-found", lager.Data{"daemons_checked": len(eps)})
 
 	return out, false
 }
@@ -366,7 +343,7 @@ func (d *DaemonClient) TriggerMirror(ctx context.Context, daemonIP, key string) 
 // cluster only one daemon exists; on multi-node, only the daemon whose node
 // has the localPath will accept the registration (the daemon validates that
 // the path exists on disk).
-func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath, durableKey string) error {
+func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath string) error {
 	logger := d.logger.Session("register-alias", lager.Data{"key": key})
 
 	ips, err := d.daemonIPs(ctx)
@@ -377,7 +354,7 @@ func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath, durabl
 		return errors.New("no daemon pods found")
 	}
 
-	request := artifactwire.RegisterRequest{Key: key, LocalPath: localPath, DurableKey: durableKey}
+	request := artifactwire.RegisterRequest{Key: key, LocalPath: localPath}
 	registered := false
 
 	for _, ip := range ips {

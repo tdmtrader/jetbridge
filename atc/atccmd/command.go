@@ -65,7 +65,6 @@ import (
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -238,14 +237,12 @@ type RunCommand struct {
 		ArtifactDaemonResolveCapabilityTTL time.Duration `long:"kubernetes-artifact-daemon-resolve-capability-ttl" default:"2h" description:"Accepted and ignored; capability expiry is derived from pod timeouts."`
 		ArtifactDaemonService              string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
 		ArtifactDaemonNamespace            string        `long:"kubernetes-artifact-daemon-namespace" description:"Namespace the artifact daemon's Service, EndpointSlices and server certificate live in. Empty means --kubernetes-namespace."`
-		ArtifactDaemonWarmTimeout          time.Duration `long:"kubernetes-artifact-daemon-warm-timeout" default:"90s" description:"How long to wait for a daemon to restore a resource cache from durable storage. A miss or timeout costs a re-download, never a failed build."`
 		ArtifactDaemonTLSCert              string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
 		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker without capture enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
-		CacheBucket                        string        `long:"kubernetes-artifact-daemon-cache-bucket"   description:"The artifact daemons' fail-open resource-cache bucket or disk namespace, if they have one. Named here only so startup can refuse a cache and output namespace that are not two different places (ADR-0002); web never reaches the cache."`
 		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
 		OutputStore                        string        `long:"kubernetes-hangar-output-store" default:"gcs" choice:"gcs" choice:"disk" description:"The output namespace's store profile: gcs or disk. The web's reclaim pass and orphan sweep reach it; node daemons publish and never delete."`
 		OutputPrefix                       string        `long:"kubernetes-hangar-output-prefix"           description:"Deployment object-key prefix the output namespace hangs off. The orphan sweep lists under it; no caller chooses one."`
@@ -1538,7 +1535,6 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.ArtifactDaemonResolveCapabilityKey = key
 	k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 	k8sCfg.ArtifactDaemonNamespace = cmd.Kubernetes.ArtifactDaemonNamespace
-	k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
 	k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
 	k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 	k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
@@ -2288,12 +2284,6 @@ func (cmd *RunCommand) validateMCPDisabledOperations() error {
 // See track
 // route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
 func (cmd *RunCommand) validateK8sRuntime() error {
-	if err := (objectstore.Namespaces{
-		Cache:  cmd.Kubernetes.CacheBucket,
-		Output: cmd.Kubernetes.OutputBucket,
-	}).Validate(); err != nil {
-		return fmt.Errorf("--kubernetes-artifact-daemon-cache-bucket and --kubernetes-hangar-output-bucket: %w", err)
-	}
 	if cmd.Kubernetes.Namespace == "" {
 		return nil
 	}

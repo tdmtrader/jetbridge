@@ -117,12 +117,6 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 		}
 		return "off"
 	},
-	"daemon.durableStore": func(d *liveDeployment) string {
-		if store, _ := d.daemonFlag("durable-store"); store != "" {
-			return store
-		}
-		return "off"
-	},
 	// Mirroring is on by default and replicates to peers; how many nodes run a
 	// daemon decides whether it can do anything at all, so both are asserted.
 	"daemon.mirrorReplicas": func(d *liveDeployment) string {

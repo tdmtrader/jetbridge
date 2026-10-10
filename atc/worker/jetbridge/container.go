@@ -526,8 +526,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// difference matters: a worker that quietly built the
 	// ordinary pod would produce a step that ran, succeeded and captured
 	// nothing, and its pending capture row would sit until its capture
-	// deadline. There is no cache-tier fallback to
-	// degrade into, so the honest answer is that no capture pod is built.
+	// deadline. The honest answer is that no capture pod is built.
 	if c.containerSpec.ExecutionControl.HasDurableOutputCapture() {
 		if !c.config.OutputPlaneEnabled {
 			return nil, fmt.Errorf("%w: this step selected durable output capture and this "+

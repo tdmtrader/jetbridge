@@ -15,8 +15,7 @@ The durable result plane for a Run's inputs and results: immutable trees
 addressed by exact reference and failing closed. A Run input enters as an
 input publication and reaches a task as a managed read; a Run result enters
 as a capture.
-_Avoid_: exact tree storage, durable storage (that is the runtime's
-fail-open resource-cache tier)
+_Avoid_: exact tree storage
 
 **Tree**:
 A canonical filesystem tree: a bytewise POSIX namespace with deterministic
@@ -59,7 +58,7 @@ _Avoid_: exact input, immutable input, Hangar input
 **Materialization**:
 The daemon opening, verifying and copying a published tree into one task's
 step volume under a read warrant, through its scratch space.
-_Avoid_: download, restore (those are the durable tier's)
+_Avoid_: download, restore
 
 **Materialization receipt**:
 The read-only `.hangar-materialized` record a managed read leaves in the
@@ -258,15 +257,8 @@ _Avoid_: lease control, signed acknowledgement, control-key generation
 
 **Disk store**:
 The persistent-volume store one cluster runs for the output plane's
-namespace, with optionally a second, cache-only instance for the runtime's
-fail-open tier. Initialized exactly once; its store ID is its identity.
+namespace. Initialized exactly once; its store ID is its identity.
 _Avoid_: local store, PVC store
-
-**Cache namespace**:
-The bucket or disk namespace the runtime's fail-open durable tier uses. It
-is one of two namespaces -- cache and output -- which may not be the same;
-a process refuses to start otherwise.
-_Avoid_: shared bucket
 
 **Bootstrap inventory**:
 The one declared list of Secrets a Hangar deployment needs: each entry's

@@ -20,11 +20,9 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/artifactwire"
-	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 	"github.com/concourse/concourse/hangar/output/ledger"
 )
@@ -40,7 +38,6 @@ type Server struct {
 	mirrorTrigger func(ctx context.Context, key string)
 	metrics       *metrics
 	guard         *ReadGuard
-	durable       *DurableTier
 
 	// outputPlane serves the output plane's routes (outputplane.Patterns) on
 	// this daemon's listener. nil keeps them absent.
@@ -62,15 +59,8 @@ type Server struct {
 	// it existed.
 	sourceLedger *ledger.Classifier
 
-	// restoreFlight collapses concurrent durable restores of one key.
-	restoreFlight singleflight.Group
-	// uploadSem bounds concurrent durable uploads. Each spools a whole
-	// artifact through temporary storage, so unbounded promotion is a way to
-	// run the node out of disk.
-	uploadSem chan struct{}
 	// resolveSem bounds concurrent resolves NODE-WIDE, across every request on
-	// the mTLS-exempt route (/resolve-batch) — it is one channel
-	// per process, not per batch. Same reasoning as uploadSem: each resolve
+	// the mTLS-exempt route (/resolve-batch): one channel per process. Each resolve
 	// copies a whole artifact, and before the bound existed the batch endpoint
 	// spawned one goroutine per item with no cap. The work a slot holds is
 	// cancellable (the copy checks its request context per entry), so a caller
@@ -176,9 +166,6 @@ func (s *Server) acquireDest(ctx context.Context, dest string) (func(), error) {
 	}
 }
 
-// maxConcurrentDurableUploads caps in-flight promotions per daemon.
-const maxConcurrentDurableUploads = 4
-
 // maxConcurrentBatchResolves caps in-flight copies from one batch request.
 // Production batches are one item per step input — single digits — against a
 // 180s per-attempt timeout, so this is invisible to legitimate traffic.
@@ -196,7 +183,7 @@ const maxJSONBodyBytes = 1 << 20
 // Deliberately at construction rather than lazily. A lazy open converts a boot
 // failure into a per-request failure and makes "every operation goes through
 // the handle" conditional on something having succeeded earlier; opening it in
-// Handler() cannot work because Mirror, Sweeper and DurableTier are built
+// Handler() cannot work because Mirror and Sweeper are built
 // outside it and need the same root.
 func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, error) {
 	root, err := os.OpenRoot(storagePath)
@@ -220,7 +207,6 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		registry:    registry,
 		metrics:     newMetrics(),
 		guard:       NewReadGuard(),
-		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
 		resolveSem:  make(chan struct{}, maxConcurrentBatchResolves),
 		destLocks:   make(map[string]*destLock),
 		root:        root,
@@ -233,13 +219,6 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		// output plane on this node", and it is answered on every call.
 		sourceLedger: classifier,
 	}, nil
-}
-
-// SetDurableTier attaches the long-term store. When unset the daemon behaves
-// exactly as it did before: a resource cache that is not on this node or a peer
-// is simply a miss.
-func (s *Server) SetDurableTier(tier *DurableTier) {
-	s.durable = tier
 }
 
 // SetOutputPlane mounts the output plane's routes on this daemon's handler.
@@ -291,12 +270,6 @@ func (s *Server) stepHandle(rel RelKey) string {
 const MirrorOriginHeader = "X-Concourse-Mirror"
 
 // Registry returns the server's artifact registry.
-// Metrics returns the server's collector set, so components constructed
-// alongside the Server can record into the same registry.
-func (s *Server) Metrics() *metrics {
-	return s.metrics
-}
-
 func (s *Server) Registry() *Registry {
 	return s.registry
 }
@@ -403,7 +376,6 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	handle(artifactwire.Register, s.handleRegister)
 	handle(artifactwire.Mirror, s.handleMirrorTrigger)
 	handle(artifactwire.StreamIn, s.handleStreamIn)
-	handle(artifactwire.DurableRestore, s.handleDurableRestore)
 	handle(artifactwire.HeadResourceCache, s.handleHeadResourceCache)
 	handle(artifactwire.GetResourceCache, s.handleGetResourceCache)
 	if s.outputPlane != nil {
@@ -1119,9 +1091,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate EVERYTHING before the first side effect. This handler used to
-	// call RegisterAlias and persist it to disk before validating DurableKey,
-	// so a 400 left a poisoned alias behind that survived a restart.
+	// Validate the key and path before the first side effect.
 	if err := validateRequestKey(req.Key); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
@@ -1129,12 +1099,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err := validateContainedPath(s.storagePath, req.LocalPath); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
 		return
-	}
-	if req.DurableKey != "" {
-		if err := durable.ValidateKey(req.DurableKey); err != nil {
-			s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, fmt.Errorf("invalid durable_key: %v", err))
-			return
-		}
 	}
 
 	// Validate that the path exists on disk.
@@ -1157,7 +1121,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.ReadOnly {
 		register = s.registry.RegisterReadOnlyAlias
 	}
-	loc, err := register(req.Key, req.LocalPath)
+	_, err := register(req.Key, req.LocalPath)
 	if err != nil {
 		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
 		// Two different refusals with two different statuses. An uncontained
@@ -1172,11 +1136,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.DurableKey != "" {
-		s.promoteToDurable(r.Context(), req.DurableKey, loc)
-	}
-
-	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath, "durable_key": req.DurableKey})
+	s.logger.Info("registered", lager.Data{"key": req.Key, "path": req.LocalPath})
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -1375,8 +1335,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(idx int, key, dest string) {
 			defer wg.Done()
-			// Bounded like the durable upload path. results[idx] is
-			// index-assigned, so ordering and partial results survive.
+			// Results are index-assigned, so ordering and partial results survive.
 			select {
 			case s.resolveSem <- struct{}{}:
 			case <-r.Context().Done():
@@ -1561,11 +1520,6 @@ func sanitizeMode(typeflag byte, mode os.FileMode) os.FileMode {
 // successful get step). Returns 200 with X-Node-Name header if found, 404
 // otherwise.
 func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request) {
-	// Before any return: capability is a property of this daemon, not of this
-	// key, so it must be reported even on a miss or an error. Reporting it only
-	// on a hit would mean it is known exactly when it is not needed.
-	s.advertiseDurableTier(w)
-
 	key, err := s.requestKey(r, artifactwire.ResourceCachesPrefix)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -1600,8 +1554,6 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 // handleGetResourceCache streams a resource cache as a tar archive. Used by
 // peer daemons to fetch cached resource data for cross-node resolution.
 func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) {
-	s.advertiseDurableTier(w)
-
 	key, err := s.requestKey(r, artifactwire.ResourceCachesPrefix)
 	if err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)

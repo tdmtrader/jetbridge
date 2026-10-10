@@ -14,15 +14,11 @@ import (
 )
 
 // streamHeaderTimeout bounds how long a daemon may take to say anything at all
-// about a stream or a restore. The transfer itself is bounded by the caller's
+// about a stream. The transfer itself is bounded by the caller's
 // context, never by a whole-request timeout: http.Client.Timeout covers
 // reading the entire body, which severs a long tar stream mid-read and
 // surfaces as "unexpected EOF" at the consumer.
 const streamHeaderTimeout = 30 * time.Second
-
-// restoreDialTimeout bounds connecting for a restore, so a black-holed pod IP
-// cannot eat a whole warm budget before the next candidate is tried.
-const restoreDialTimeout = 3 * time.Second
 
 // refusalBodyLimit is how much of a refusal's body is kept for the error.
 const refusalBodyLimit = 512
@@ -48,8 +44,6 @@ type Client struct {
 	plain *http.Client
 	// streaming carries tar bodies in either direction.
 	streaming *http.Client
-	// restore is streaming with a short dial, for the durable tier.
-	restore *http.Client
 }
 
 // NewClient builds a Client for daemons on port with the given TLS triple. A
@@ -74,15 +68,11 @@ func NewClient(port int, tlsTriple TLS) (*Client, error) {
 	streaming := transport.Clone()
 	streaming.ResponseHeaderTimeout = streamHeaderTimeout
 
-	restore := streaming.Clone()
-	restore.DialContext = (&net.Dialer{Timeout: restoreDialTimeout}).DialContext
-
 	return &Client{
 		scheme:    scheme,
 		port:      port,
 		plain:     &http.Client{Transport: transport},
 		streaming: &http.Client{Transport: streaming},
-		restore:   &http.Client{Transport: restore},
 	}, nil
 }
 
@@ -133,28 +123,9 @@ func (c *Client) Mirror(ctx context.Context, host, key string) error {
 	return expect(resp, http.StatusAccepted)
 }
 
-// Restore asks the daemon at host to pull an object out of the durable tier
-// and register it locally, so that it may then be read from that daemon as if
-// it had been there all along. A 200 or 201 is success; a 404 is the shared
-// bucket's answer, not this pod's.
-func (c *Client) Restore(ctx context.Context, host string, req DurableRestoreRequest) error {
-	resp, err := c.postJSON(ctx, c.restore, host, DurableRestore.Path, req)
-	if err != nil {
-		return err
-	}
-	return expect(resp, http.StatusOK, http.StatusCreated)
-}
-
 // ResourceCacheProbe is what one daemon said about a resource cache key.
 type ResourceCacheProbe struct {
-	// Found means these bytes are on that node's disk right now, which is
-	// what makes the daemon worth binding to. The durable tier is not
-	// consulted: every daemon sees the same bucket, and consulting it would
-	// make every one of them say yes.
 	Found bool
-	// DurableCapable is read on every status, not only 200: a daemon that
-	// answers 404 for this key is still the daemon that can warm it.
-	DurableCapable bool
 }
 
 // HeadResourceCache asks the daemon at host whether it holds a resource cache
@@ -166,8 +137,7 @@ func (c *Client) HeadResourceCache(ctx context.Context, host, key string) (Resou
 	}
 	resp.Body.Close()
 	return ResourceCacheProbe{
-		Found:          resp.StatusCode == http.StatusOK,
-		DurableCapable: resp.Header.Get(DurableTierHeader) != "",
+		Found: resp.StatusCode == http.StatusOK,
 	}, nil
 }
 
@@ -299,6 +269,5 @@ func refusalOf(resp *http.Response) *Refusal {
 func (c *Client) WithTransport(rt http.RoundTripper) *Client {
 	c.plain = &http.Client{Transport: rt}
 	c.streaming = &http.Client{Transport: rt}
-	c.restore = &http.Client{Transport: rt}
 	return c
 }

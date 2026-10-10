@@ -23,15 +23,6 @@ import (
 //     packages out of these two.)
 //  2. There is exactly one TreeRef, and it is the foundation's. A second exact
 //     reference type is how two object models start diverging.
-//  3. Output code is never routed through the durable *cache* tier, which is a
-//     fail-open, name-keyed cache whose every method swallows its errors.
-//     The cache shares the object interface and backends with
-//     this plane but never a namespace: the daemon and web refuse to start
-//     with the cache bucket equal to the output or input one
-//     (objectstore.Namespaces), and the artifact daemon, which mounts the
-//     output plane, compares all three of cache, input and output. The
-//     other direction -- the cache tier importing hangar/output -- is the root
-//     architecture_test.go's TestDurableTierAndHangarAreSeparateStores.
 //  4. The privilege split between the two roles. Each role is one binary and
 //     one cloud principal -- the publisher is the node daemon, the reclaimer
 //     is the web -- and the split only means something while each role's
@@ -384,41 +375,6 @@ func checkNoSecondTreeRef(found surface) []string {
 		problems = append(problems, "no scanned file references hangar.TreeRef. This rule exists "+
 			"because the output plane binds the foundation's tree ref; a package that "+
 			"references none satisfies it for the wrong reason.")
-	}
-
-	return problems
-}
-
-const durableCachePackage = "cmd/artifact-daemon/durable"
-
-func checkNotRoutedThroughTheDurableCache(found surface) []string {
-	var problems []string
-
-	if len(found.Files) == 0 {
-		return []string{"the inventory found no file; this rule would pass vacuously"}
-	}
-
-	for _, edge := range found.Imports {
-		if strings.HasSuffix(edge.Path, durableCachePackage) {
-			problems = append(problems, edge.File+" imports "+edge.Path+
-				": the durable tier is a fail-open, name-keyed cache whose every method swallows "+
-				"its errors. Durable output retention cannot be merged into it.")
-		}
-	}
-	for _, file := range found.Files {
-		// Production files only. The import clause above already counts a test
-		// edge; this identifier scan is the belt-and-braces half, and running it
-		// over test sources would make this very file -- which names
-		// durable.Store in the fixture that proves the rule bites -- its own
-		// first violation.
-		if file.Test {
-			continue
-		}
-		if bytes.Contains(file.Body, []byte("durable.Store")) {
-			problems = append(problems, file.Path+" names durable.Store"+
-				": output publication uses its own role packages against the dedicated "+
-				"output bucket, never the cache store.")
-		}
 	}
 
 	return problems
@@ -956,7 +912,6 @@ func TestArchitecture(t *testing.T) {
 	}
 
 	report(t, "one TreeRef", checkNoSecondTreeRef(leafSurface))
-	report(t, "not the durable cache tier", checkNotRoutedThroughTheDurableCache(leafSurface))
 	report(t, "no caller-chosen storage location", checkNoAPIAcceptsAStorageLocation(leafSurface))
 	report(t, "leaf packages", checkPackagesAreLeaves(leafSurface))
 
@@ -975,7 +930,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 	empty := surface{}
 	rules := map[string]func(surface) []string{
 		"one TreeRef":                       checkNoSecondTreeRef,
-		"not the durable cache tier":        checkNotRoutedThroughTheDurableCache,
 		"no caller-chosen storage location": checkNoAPIAcceptsAStorageLocation,
 		"leaf packages":                     checkPackagesAreLeaves,
 		"delete isolation":                  checkOnlyTheReclaimerDeletes,
@@ -1000,10 +954,9 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 		Files: []scannedFile{{
 			Path: "output.go",
 			Go:   true,
-			Body: []byte("package output\n\nvar _ = durable.Store(nil)\n"),
+			Body: []byte("package output\n"),
 		}},
 		Imports: []importEdge{
-			{File: "output.go", Path: "github.com/concourse/concourse/cmd/artifact-daemon/durable"},
 			{File: "output.go", Path: "github.com/concourse/concourse/atc/db"},
 			{File: "output.go", Path: "cloud.google.com/go/storage"},
 		},
@@ -1026,7 +979,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 
 	expectations := map[string]string{
 		"one TreeRef":                       "declares type TreeRef",
-		"not the durable cache tier":        "artifact-daemon/durable",
 		"no caller-chosen storage location": "caller-chosen bucket",
 		"leaf packages":                     "atc/db",
 		"delete isolation":                  "publisher.Publisher.DeleteObject offers a delete",

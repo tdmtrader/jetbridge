@@ -37,12 +37,11 @@ package steps
 // same endpoint the Go tier-2 conformance suite uses, so one deployment serves
 // both runners and both share one failure mode.
 //
-// STARTED IN A GIVEN, not as a ScopeScenario resource, for the reason
-// daemon_durable.go records: brine acquires every scenario-scoped resource
+// STARTED IN A GIVEN, not as a ScopeScenario resource: brine acquires every scenario-scoped resource
 // before EVERY scenario in the corpus, and a daemon registered that way cost
 // 70 seconds to serve five scenarios.
 //
-// ONE DAEMON, TWO NAMESPACES. The artifact daemon serves its cache from the
+// ONE DAEMON. The artifact daemon serves its cache from the
 // storage root and -- with --execution-control -- the output plane: execution
 // control, the capture extension, the input publication route and the managed
 // read route, all against the one output bucket, reached over the same mTLS

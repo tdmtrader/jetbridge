@@ -8,11 +8,11 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// DurableKey exists so a copy of a cache's bytes can outlive the cache's row.
+// ContentKey exists so a copy of a cache's bytes can outlive the cache's row.
 // Every test here is about that one word, "outlive": the id cannot do the job
 // because it is a sequence, so the key has to be derived from what the cache
 // holds.
-var _ = Describe("ResourceCache DurableKey", func() {
+var _ = Describe("ResourceCache ContentKey", func() {
 	var build db.Build
 
 	find := func(typeName string, version atc.Version, source atc.Source, params atc.Params, parent db.ResourceCache) db.ResourceCache {
@@ -42,10 +42,10 @@ var _ = Describe("ResourceCache DurableKey", func() {
 		// The property the whole feature rests on. CleanUpInvalidCaches drops a
 		// cache the moment nothing references it, which is exactly when a
 		// long-term copy is still wanted; the next build re-inserts the same
-		// tuple and gets a fresh id. Keyed on the id, the durable copy would be
+		// tuple and gets a fresh id. Keyed on the id, a node-local alias would be
 		// orphaned and the lookup would miss forever.
 		first := find("some-base-type", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, nil)
-		Expect(first.DurableKey()).ToNot(BeEmpty())
+		Expect(first.ContentKey()).ToNot(BeEmpty())
 
 		_, err := dbConn.Exec("DELETE FROM resource_cache_uses WHERE resource_cache_id = $1", first.ID())
 		Expect(err).ToNot(HaveOccurred())
@@ -55,7 +55,7 @@ var _ = Describe("ResourceCache DurableKey", func() {
 		second := find("some-base-type", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, nil)
 
 		Expect(second.ID()).ToNot(Equal(first.ID()), "the row should genuinely be a new one")
-		Expect(second.DurableKey()).To(Equal(first.DurableKey()))
+		Expect(second.ContentKey()).To(Equal(first.ContentKey()))
 	})
 
 	DescribeTable("distinguishes caches that hold different bytes",
@@ -63,7 +63,7 @@ var _ = Describe("ResourceCache DurableKey", func() {
 			base := find("some-base-type", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, nil)
 			other := find(typeName, version, source, params, nil)
 
-			Expect(other.DurableKey()).ToNot(Equal(base.DurableKey()))
+			Expect(other.ContentKey()).ToNot(Equal(base.ContentKey()))
 		},
 		Entry("a different version", "some-base-type", atc.Version{"v": "2"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}),
 		Entry("a different source", "some-base-type", atc.Version{"v": "1"}, atc.Source{"s": "z"}, atc.Params{"p": "y"}),
@@ -78,12 +78,12 @@ var _ = Describe("ResourceCache DurableKey", func() {
 		// bytes. The parent has to contribute its own key.
 		typeV1 := find("some-base-type", atc.Version{"type": "1"}, atc.Source{"t": "s"}, nil, nil)
 		typeV2 := find("some-base-type", atc.Version{"type": "2"}, atc.Source{"t": "s"}, nil, nil)
-		Expect(typeV1.DurableKey()).ToNot(Equal(typeV2.DurableKey()))
+		Expect(typeV1.ContentKey()).ToNot(Equal(typeV2.ContentKey()))
 
 		viaV1 := find("custom", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, typeV1)
 		viaV2 := find("custom", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, typeV2)
 
-		Expect(viaV1.DurableKey()).ToNot(Equal(viaV2.DurableKey()))
+		Expect(viaV1.ContentKey()).ToNot(Equal(viaV2.ContentKey()))
 	})
 
 	It("is readable on a cache loaded by id", func() {
@@ -96,7 +96,7 @@ var _ = Describe("ResourceCache DurableKey", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 
-		Expect(loaded.DurableKey()).To(Equal(created.DurableKey()))
+		Expect(loaded.ContentKey()).To(Equal(created.ContentKey()))
 	})
 
 	It("backfills a row that predates the column", func() {
@@ -111,20 +111,20 @@ var _ = Describe("ResourceCache DurableKey", func() {
 
 		refound := find("some-base-type", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, nil)
 		Expect(refound.ID()).To(Equal(created.ID()), "expected to find the same row, not create a new one")
-		Expect(refound.DurableKey()).To(Equal(created.DurableKey()))
+		Expect(refound.ContentKey()).To(Equal(created.ContentKey()))
 
 		var stored string
 		err = dbConn.QueryRow("SELECT durable_key FROM resource_caches WHERE id = $1", created.ID()).Scan(&stored)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(stored).To(Equal(created.DurableKey()), "the backfill must be persisted, not just returned")
+		Expect(stored).To(Equal(created.ContentKey()), "the backfill must be persisted, not just returned")
 	})
 
 	It("is a key the artifact daemon will accept", func() {
 		// The daemon takes the key as an opaque string but does validate it,
-		// since it becomes a path component in the durable store. A key it
+		// since it becomes a path component in the daemon alias store. A key it
 		// rejects would disable the feature silently.
 		cache := find("some-base-type", atc.Version{"v": "1"}, atc.Source{"s": "x"}, atc.Params{"p": "y"}, nil)
 
-		Expect(cache.DurableKey()).To(MatchRegexp(`^rc-[0-9a-f]{64}$`))
+		Expect(cache.ContentKey()).To(MatchRegexp(`^rc-[0-9a-f]{64}$`))
 	})
 })

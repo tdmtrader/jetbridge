@@ -92,7 +92,7 @@ func exerciseRunInputAPI(in RunInputAdmission, caller string, rec *brine.Recorde
 	if caller == "viewer" {
 		user = "viewer"
 	}
-	archive, err := durableTarOfOneFile("manifest.json", "public input upload")
+	archive, err := plainTarOfOneFile("manifest.json", "public input upload")
 	if err != nil {
 		return err
 	}

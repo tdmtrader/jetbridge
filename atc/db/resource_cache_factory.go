@@ -68,7 +68,7 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 	marshaledVersion, _ := json.Marshal(version)
 	cacheVersion := string(marshaledVersion)
 
-	durableKey := durableCacheKey(resourceTypeName, source, params, version, customTypeResourceCache)
+	contentKey := resourceCacheContentKey(resourceTypeName, source, params, version, customTypeResourceCache)
 
 	found := true
 	var id int
@@ -92,14 +92,14 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 		}
 	}
 
-	if found && durableKey != "" && existingKey.String != durableKey {
+	if found && contentKey != "" && existingKey.String != contentKey {
 		// A row written before the column existed, backfilled here rather than
 		// in the migration: the source lives in resource_configs and the custom
 		// type chain has to be walked in Go, so this is the first place the key
 		// is computable. Uses FOR SHARE above, so concurrent callers computing
 		// the identical key may both write it.
 		_, err = psql.Update("resource_caches").
-			Set("durable_key", durableKey).
+			Set("durable_key", contentKey).
 			Where(sq.Eq{"id": id}).
 			RunWith(tx).
 			Exec()
@@ -122,7 +122,7 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 				cacheVersion,
 				sq.Expr("encode(digest(?, 'sha256'), 'hex')", cacheVersion),
 				paramsHash(params),
-				sql.NullString{String: durableKey, Valid: durableKey != ""},
+				sql.NullString{String: contentKey, Valid: contentKey != ""},
 			).
 			Suffix(`
 				ON CONFLICT (resource_config_id, version_digest, params_hash) DO UPDATE SET
@@ -179,7 +179,7 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
 		id:             id,
 		resourceConfig: rc,
 		version:        version,
-		durableKey:     durableKey,
+		contentKey:     contentKey,
 
 		lockFactory: f.lockFactory,
 		conn:        f.conn,
@@ -236,14 +236,14 @@ func (f *resourceCacheFactory) FindResourceCacheByID(id int) (ResourceCache, boo
 func findResourceCacheByID(tx Tx, resourceCacheID int, lock lock.LockFactory, conn DbConn) (ResourceCache, bool, error) {
 	var rcID int
 	var versionBytes string
-	var durableKey sql.NullString
+	var contentKey sql.NullString
 
 	err := psql.Select("resource_config_id", "version", "durable_key").
 		From("resource_caches").
 		Where(sq.Eq{"id": resourceCacheID}).
 		RunWith(tx).
 		QueryRow().
-		Scan(&rcID, &versionBytes, &durableKey)
+		Scan(&rcID, &versionBytes, &contentKey)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -271,7 +271,7 @@ func findResourceCacheByID(tx Tx, resourceCacheID int, lock lock.LockFactory, co
 		id:             resourceCacheID,
 		version:        version,
 		resourceConfig: rc,
-		durableKey:     durableKey.String,
+		contentKey:     contentKey.String,
 		lockFactory:    lock,
 		conn:           conn,
 	}

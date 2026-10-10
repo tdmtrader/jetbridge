@@ -129,8 +129,7 @@ func TestDiskInitializationIsExplicitAndStopsTheOwnerDuringProvisioning(t *testi
 	}
 }
 
-// The store serves two namespaces, cache and output. It is handed the output
-// namespace and no other: Run inputs are input publications in it.
+// The store serves the output namespace: Run inputs are input publications in it.
 func TestTheDiskStoreIsHandedOnlyTheOutputNamespace(t *testing.T) {
 	out := renderOutput(t, diskSets...)
 	d := objectNamed(t, out, "Deployment", "-hangar-store")

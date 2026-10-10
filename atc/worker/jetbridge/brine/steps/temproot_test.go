@@ -138,7 +138,7 @@ func TestAStaleAdapterRootWhoseProcessIsGoneIsSwept(t *testing.T) {
 // carries. It used to parse realdaemon.go alone -- the one file whose author
 // had the rule in mind -- and so it reported a clean package while twenty other
 // fixtures (auth binaries, TLS material, registry htpasswd, trace captures,
-// durable stores, task scratch) went on calling os.MkdirTemp("", ...) directly.
+// task scratch) went on calling os.MkdirTemp("", ...) directly.
 // A guard aimed at one file measures that file's discipline, not the package's.
 func TestEveryFixtureTempDirIsUnderTheAdapterRoot(t *testing.T) {
 	sources := packageSourceFiles(t, ".")

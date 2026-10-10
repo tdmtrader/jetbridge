@@ -12,7 +12,7 @@ result plane. Each has its own vocabulary and a checked boundary.
   composition (a build asking for a child run). A layer over core, wired in
   at one composition root.
 - [JetBridge runtime](./atc/worker/jetbridge/CONTEXT.md): step pods, the
-  synthetic worker, the artifact daemon with its fail-open durable tier, and
+  synthetic worker, the artifact daemon with node-local resource caches, and
   the brine behavioral contract.
 - [Hangar](./hangar/CONTEXT.md): exact immutable trees, input publications
   and managed reads, and the output plane that captures a task's output

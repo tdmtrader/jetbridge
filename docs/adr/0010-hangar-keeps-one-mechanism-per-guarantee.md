@@ -96,3 +96,6 @@ We cut it to one mechanism per guarantee:
 Amended by C4 (daemon small cuts): the unused `artifactcap` resolve
 acknowledgement and receipt helpers are gone. Artifact resolve capabilities
 keep their nonce and wire format; Hangar's materialization receipt is unchanged.
+
+Amended 2026-10-09 — Amended by C2 (durable resource-cache tier removal):
+The resource-cache tier is removed, so cache/output namespace separation is moot. Hangar is the sole long-term plane, remains fail-closed, and retains web-only reclamation.

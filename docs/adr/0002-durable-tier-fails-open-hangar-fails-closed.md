@@ -37,3 +37,6 @@ either choice is wrong for the other kind.
   Run's inputs are input publications in the output namespace, read back as
   managed reads. The fail-closed principle is unchanged; the namespace
   inequality is cache ≠ output.
+
+Amended 2026-10-09 — Amended by C2 (durable resource-cache tier removal):
+The resource-cache object-store tier is removed. Resource caches remain node-local, with peer reads and a get retry on a miss. Hangar remains fail-closed and is the only long-term storage plane; only web reclaims its objects.

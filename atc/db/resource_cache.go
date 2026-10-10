@@ -27,10 +27,10 @@ type ResourceCache interface {
 
 	ResourceConfig() ResourceConfig
 
-	// DurableKey names this cache by its content, for storage that has to
-	// outlive the row. See durableCacheKey. Empty for caches created before the
-	// column existed, which simply means "not eligible for durable storage".
-	DurableKey() string
+	// ContentKey names this cache by its content, for storage that has to
+	// outlive the row. See resourceCacheContentKey. Empty for caches created before the
+	// column existed; those use the legacy row-ID alias.
+	ContentKey() string
 
 	Destroy(Tx) (bool, error)
 	BaseResourceType() *UsedBaseResourceType
@@ -40,7 +40,7 @@ type resourceCache struct {
 	id             int
 	resourceConfig ResourceConfig
 	version        atc.Version
-	durableKey     string
+	contentKey     string
 
 	lockFactory lock.LockFactory
 	conn        DbConn
@@ -49,7 +49,7 @@ type resourceCache struct {
 func (cache *resourceCache) ID() int                        { return cache.id }
 func (cache *resourceCache) ResourceConfig() ResourceConfig { return cache.resourceConfig }
 func (cache *resourceCache) Version() atc.Version           { return cache.version }
-func (cache *resourceCache) DurableKey() string             { return cache.durableKey }
+func (cache *resourceCache) ContentKey() string             { return cache.contentKey }
 
 func (cache *resourceCache) Destroy(tx Tx) (bool, error) {
 	rows, err := psql.Delete("resource_caches").
@@ -82,12 +82,12 @@ func (cache *resourceCache) BaseResourceType() *UsedBaseResourceType {
 	return cache.resourceConfig.CreatedByResourceCache().BaseResourceType()
 }
 
-// durableCacheKey names a resource cache by what it holds rather than by which
+// resourceCacheContentKey names a resource cache by what it holds rather than by which
 // row happens to hold it.
 //
 // resource_caches.id is a sequence, and it is the wrong name for anything meant
 // to outlive the row. CleanUpInvalidCaches deletes a cache the moment nothing
-// references it — precisely the moment a long-term copy becomes valuable — and
+// references it — while node-local aliases can still exist — and
 // the next build re-inserts the same tuple under a fresh id. Anything filed
 // under the old id is then unreachable and unreclaimable. Restoring a database
 // backup makes it worse: the sequence rewinds, and a re-minted id can name a
@@ -105,10 +105,10 @@ func (cache *resourceCache) BaseResourceType() *UsedBaseResourceType {
 // here: that flattens the whole custom-type chain to its base, so two different
 // versions of a custom type with identical source and params would collide —
 // the same wrong-bytes bug by a shorter route.
-func durableCacheKey(resourceTypeName string, source atc.Source, params atc.Params, version atc.Version, parent ResourceCache) string {
+func resourceCacheContentKey(resourceTypeName string, source atc.Source, params atc.Params, version atc.Version, parent ResourceCache) string {
 	parentKey := ""
 	if parent != nil {
-		parentKey = parent.DurableKey()
+		parentKey = parent.ContentKey()
 		if parentKey == "" {
 			// A parent predating the column cannot be named, so neither can
 			// anything fetched with it. Better no key than an ambiguous one.

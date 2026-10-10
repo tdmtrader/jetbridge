@@ -45,22 +45,16 @@ type StorageBackend interface {
 	// mapping the cache key to the physical disk path of the get step output.
 	// This makes the cache discoverable via HEAD /resource-caches/{key} on
 	// subsequent runs.
-	//
-	// durableKey names this artifact in long-term storage, or is empty for "do
-	// not keep it". Its presence is the entire eligibility protocol, and its
-	// retention-class prefix is what an object lifecycle rule acts on. The
-	// daemon never inspects it: what an artifact is, whether it is re-derivable,
-	// and how long it should be kept are all knowledge the daemon lacks.
-	RegisterResourceCache(ctx context.Context, cacheKey, durableKey, volumeHandle, nodeName string) error
+	RegisterResourceCache(ctx context.Context, cacheKey, volumeHandle, nodeName string) error
 
 	// FindResourceCache returns a volume bound to a daemon holding the cache,
 	// or (nil, false).
 	//
 	// It never returns an error. Every failure — endpoint discovery, transport,
-	// an unreachable bucket — is a miss, because the caller's next move is to
+	// an unreachable daemon — is a miss, because the caller's next move is to
 	// re-run the get step either way. The error is absent from the signature
 	// so that no future caller can turn a cold cache into a red build.
-	FindResourceCache(ctx context.Context, cacheKey, durableKey, workerName string) (runtime.Volume, bool)
+	FindResourceCache(ctx context.Context, cacheKey, workerName string) (runtime.Volume, bool)
 }
 
 func emptyDirVolume(name string) corev1.Volume {

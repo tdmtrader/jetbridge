@@ -201,7 +201,7 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
   # Resource caches already on a daemon
   # --------------------------------------------------------------------------
 
-  # These cases use legacy database rows with no durable key. Their local
+  # These cases use legacy database rows with no content key. Their local
   # daemon alias is rc-<id>; they do not exercise content-addressed naming.
   Scenario: A resource cache a daemon already holds is found and readable
     Given a Kubernetes worker "k8s-worker-1" with a database behind it

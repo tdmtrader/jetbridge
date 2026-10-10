@@ -2,18 +2,6 @@ package steps
 
 // Closing steps: the executable half of ../features/step-closing.feature.
 //
-// Three families migrate here, from three ginkgo/go suites:
-//
-//   1. integration_test.go            — whole-step workflows
-//   2. storage_daemonset_durable_test.go — the durable resource-cache tier
-//   3. artifact_locator_test.go       — the in-memory artifact index
-//
-// Cache scenarios use production daemons and a real cache bucket on a GCS emulator.
-// Whole-step execution and typed eviction are covered by the live features.
-//
-// Prefix note: every exported identifier here is `Closing*` because other
-// migrations are landing in this package concurrently.
-
 import (
 	"context"
 	"errors"
@@ -308,51 +296,34 @@ func closingStepDefinitions() []brine.StepDefinition {
 }
 
 // ===========================================================================
-// Family 2 — the durable resource-cache tier (storage_daemonset_durable_test.go)
-// ===========================================================================
-
 // ClosingCachePlan is a cluster with one artifact daemon in it, under
 // description. Refinement steps take ClosingCachePlan in and out, so a
-// scenario may say what the node holds, what the store holds, and what the
-// daemon is capable of, in any order.
+// scenario may say what each node holds.
 //
 // Nothing is wired until a When step: readiness has to be decided before the
 // EndpointSlice is published.
 type ClosingCachePlan struct {
-	CacheCtx       context.Context
-	CacheRuntime   *closingCacheRuntime
-	CacheLocal     map[string]string
-	CacheDurable   map[string]string
-	CachePeer      map[string]string
-	CacheReady     bool
-	CacheCapable   bool
-	CacheReachable bool
+	CacheCtx     context.Context
+	CacheRuntime *closingCacheRuntime
+	CacheLocal   map[string]string
+	CachePeer    map[string]string
+	CacheReady   bool
 }
 
-// ClosingCacheLookup is what a consumer got — the bytes, or nothing — and what
-// the operator's four warm counters recorded while it happened.
-//
-// The counters are here rather than in a spy because they are PRODUCTION
-// output. `d.restores.Load()`, which the ginkgo suite asserted, is not
-// observable by anyone.
 type ClosingCacheLookup struct {
 	CacheFound   bool
 	CacheFiles   map[string]string
 	CacheReadErr error
 	CacheMessage string
 
-	CacheLookups    int
-	CacheLocalHits  float64
-	CacheWarmHits   float64
-	CacheWarmMiss   float64
-	CacheSuppressed float64
+	CacheLocalHits float64
 }
 
 func closingCacheDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		brine.DefineMapUsing[brine.Empty, ClosingCachePlan](
-			"an artifact daemon with a durable store behind it",
+			"an artifact daemon serving local resource caches",
 			[]string{"real-cluster"},
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ClosingCachePlan, error) {
 				api, err := getRealCluster(res)
@@ -360,21 +331,14 @@ func closingCacheDefinitions() []brine.StepDefinition {
 					return ClosingCachePlan{}, err
 				}
 				return ClosingCachePlan{CacheCtx: context.Background(), CacheRuntime: &closingCacheRuntime{api: api, rec: rec},
-					CacheLocal: map[string]string{}, CacheDurable: map[string]string{}, CachePeer: map[string]string{},
-					CacheReady: true, CacheCapable: true, CacheReachable: true}, nil
+					CacheLocal: map[string]string{}, CachePeer: map[string]string{},
+					CacheReady: true}, nil
 			}),
 
 		Refine[ClosingCachePlan]("the node already holds the resource cache {string} containing {string}",
 			func(in ClosingCachePlan, a Args) ClosingCachePlan {
 				key, content := a.String(0), a.String(1)
 				in.CacheLocal[key] = content
-				return in
-			}),
-
-		Refine[ClosingCachePlan]("the durable store holds {string} containing {string}",
-			func(in ClosingCachePlan, a Args) ClosingCachePlan {
-				key, content := a.String(0), a.String(1)
-				in.CacheDurable[key] = content
 				return in
 			}),
 
@@ -385,42 +349,11 @@ func closingCacheDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Refine[ClosingCachePlan]("the daemon predates the durable tier",
-			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
-				in.CacheCapable = false
-				return in
-			}),
-
-		Refine[ClosingCachePlan]("the durable store cannot be reached",
-			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
-				in.CacheReachable = false
-				return in
-			}),
-
 		Refine[ClosingCachePlan]("the API has marked the daemon pod not ready",
 			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
 				in.CacheReady = false
 				return in
 			}),
-
-		// Registration is the producing half: it is what puts an object into
-		// permanent storage under a content key, or does not.
-		Transform[ClosingCachePlan, ClosingCachePlan](
-			"the ATC registers the resource cache {string} under content key {string}",
-			func(in ClosingCachePlan, a Args) (ClosingCachePlan, error) {
-				return in, closingRegister(in, a.String(0), a.String(1))
-			},
-		),
-
-		Transform[ClosingCachePlan, ClosingCachePlan](
-			"the ATC registers the resource cache {string} offering no content key",
-			func(in ClosingCachePlan, a Args) (ClosingCachePlan, error) {
-				return in, closingRegister(in, a.String(0), "")
-			},
-		),
-
-		Transform[ClosingCachePlan, ClosingCachePlan]("the node's own copy of {string} is reclaimed",
-			func(in ClosingCachePlan, a Args) (ClosingCachePlan, error) { return in, in.reclaimCache(a.String(0)) }),
 
 		// ------------------------------------------------------------------
 		// The consumer's action. Recorder disposal owns all real processes,
@@ -428,32 +361,18 @@ func closingCacheDefinitions() []brine.StepDefinition {
 		// ------------------------------------------------------------------
 
 		Transform[ClosingCachePlan, ClosingCacheLookup](
-			"a get step looks up the resource cache {string} offering content key {string}",
+			"a get step looks up the resource cache {string}",
 			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
-				return closingLookup(in, a.String(0), a.String(1), 1, false)
-			},
-		),
-
-		Transform[ClosingCachePlan, ClosingCacheLookup](
-			"a get step looks up the resource cache {string} offering no content key",
-			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
-				return closingLookup(in, a.String(0), "", 1, false)
-			},
-		),
-
-		Transform[ClosingCachePlan, ClosingCacheLookup](
-			"a get step looks up the resource cache {string} offering content key {string} {int} times over",
-			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
-				return closingLookup(in, a.String(0), a.String(1), a.Int(2), false)
+				return closingLookup(in, a.String(0), false)
 			},
 		),
 
 		// The alias vanishes between the probe and the read — a sweeper ran,
 		// or the pod rolled. The bound volume has to find the bytes anyway.
 		Transform[ClosingCachePlan, ClosingCacheLookup](
-			"a get step looks up the resource cache {string} offering content key {string}, and the node's alias vanishes before the bytes are read",
+			"a get step looks up the resource cache {string}, and the node's alias vanishes before the bytes are read",
 			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
-				return closingLookup(in, a.String(0), a.String(1), 1, true)
+				return closingLookup(in, a.String(0), true)
 			},
 		),
 
@@ -463,7 +382,7 @@ func closingCacheDefinitions() []brine.StepDefinition {
 
 		CheckThat[ClosingCacheLookup]("the resource cache is found",
 			func(in ClosingCacheLookup) error {
-				if !in.CacheFound {
+				if !in.CacheFound || in.CacheLocalHits != 1 {
 					return fmt.Errorf("expected the resource cache to be found, it was not")
 				}
 				return nil
@@ -501,56 +420,11 @@ func closingCacheDefinitions() []brine.StepDefinition {
 				return nil
 			},
 		),
-
-		// The four counters must partition every lookup that reaches the
-		// daemon. If they do not, no ratio computed from them means anything,
-		// and answering "is this tier earning its egress?" is impossible.
-		// Keeps its own body: four expectations in one sentence, plus that
-		// partition invariant, is a shape no combinator has.
-		Assert[ClosingCacheLookup](
-			"the warm counters read {int} local, {int} hit, {int} miss, {int} suppressed",
-			func(in ClosingCacheLookup, args Args) error {
-				local := args.Int(0)
-				hits := args.Int(1)
-				misses := args.Int(2)
-				suppressed := args.Int(3)
-
-				if in.CacheLocalHits != float64(local) ||
-					in.CacheWarmHits != float64(hits) ||
-					in.CacheWarmMiss != float64(misses) ||
-					in.CacheSuppressed != float64(suppressed) {
-					return fmt.Errorf(
-						"expected local=%d warmHits=%d warmMisses=%d suppressed=%d, got %v/%v/%v/%v",
-						local, hits, misses, suppressed,
-						in.CacheLocalHits, in.CacheWarmHits, in.CacheWarmMiss, in.CacheSuppressed)
-				}
-
-				total := in.CacheLocalHits + in.CacheWarmHits + in.CacheWarmMiss + in.CacheSuppressed
-				if total != float64(in.CacheLookups) {
-					return fmt.Errorf(
-						"the counters sum to %v across %d lookups; they must partition every outcome exactly once",
-						total, in.CacheLookups)
-				}
-				return nil
-			},
-		),
-
-		CheckThat[ClosingCacheLookup]("the operator sees no warm activity at all",
-			func(in ClosingCacheLookup) error {
-				total := in.CacheLocalHits + in.CacheWarmHits + in.CacheWarmMiss + in.CacheSuppressed
-				if total != 0 {
-					return fmt.Errorf(
-						"expected the durable tier to be untouched, but the counters moved: local=%v warmHits=%v warmMisses=%v suppressed=%v",
-						in.CacheLocalHits, in.CacheWarmHits, in.CacheWarmMiss, in.CacheSuppressed)
-				}
-				return nil
-			}),
 	}
 }
 
-// closingLookup runs the consumer's action N times and reads the artifact the
-// last lookup handed back.
-func closingLookup(p ClosingCachePlan, key, durableKey string, times int, sweep bool) (ClosingCacheLookup, error) {
+// closingLookup probes once and reads the selected artifact.
+func closingLookup(p ClosingCachePlan, key string, sweep bool) (ClosingCacheLookup, error) {
 	if err := p.ensureCache(); err != nil {
 		return ClosingCacheLookup{}, err
 	}
@@ -558,19 +432,12 @@ func closingLookup(p ClosingCachePlan, key, durableKey string, times int, sweep 
 
 	// Drain whatever earlier scenarios left on the process-wide counters, so
 	// what follows is this scenario's own.
-	closingDrainWarmCounters()
+	metric.Metrics.ResourceCacheLocalHits.Delta()
 
-	out := ClosingCacheLookup{CacheLookups: times}
-	var vol runtime.Volume
-	for range times {
-		v, found := backend.FindResourceCache(p.CacheCtx, key, durableKey, "k8s-worker-1")
-		vol, out.CacheFound = v, found
-	}
+	vol, found := backend.FindResourceCache(p.CacheCtx, key, "k8s-worker-1")
+	out := ClosingCacheLookup{CacheFound: found}
 
 	out.CacheLocalHits = metric.Metrics.ResourceCacheLocalHits.Delta()
-	out.CacheWarmHits = metric.Metrics.DurableWarmHits.Delta()
-	out.CacheWarmMiss = metric.Metrics.DurableWarmMisses.Delta()
-	out.CacheSuppressed = metric.Metrics.DurableWarmSuppressed.Delta()
 
 	if !out.CacheFound || vol == nil {
 		return out, nil
@@ -600,13 +467,6 @@ func closingLookup(p ClosingCachePlan, key, durableKey string, times int, sweep 
 	_, _, files, _ := decodeArchive(raw)
 	out.CacheFiles = files
 	return out, nil
-}
-
-func closingDrainWarmCounters() {
-	metric.Metrics.ResourceCacheLocalHits.Delta()
-	metric.Metrics.DurableWarmHits.Delta()
-	metric.Metrics.DurableWarmMisses.Delta()
-	metric.Metrics.DurableWarmSuppressed.Delta()
 }
 
 // ===========================================================================

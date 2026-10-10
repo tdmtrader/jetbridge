@@ -1,37 +1,10 @@
 package artifactwire
 
-// DurableTierHeader is set by a daemon that has a durable tier configured. Its
-// presence on any response, at any status, is how the ATC learns the cluster
-// can serve a warm at all. Capability rides an existing response rather than
-// being probed for, so an ATC talking to daemons that predate the tier makes
-// zero requests to a route they do not have.
-const DurableTierHeader = "X-Durable-Tier"
-
-// ArtifactTierHeader says where a restore's bytes came from: "durable" if the
-// call fetched them, "local" if they were already there.
-const ArtifactTierHeader = "X-Artifact-Tier"
-
 // RegisterRequest is the body of POST /register: a node-local alias for bytes
 // already on this daemon's disk.
-//
-// One request, not two. DurableKey and ReadOnly are independent facts about
-// the alias and the daemon reads both; a caller may legitimately name a
-// read-only alias that is also kept for the long term.
 type RegisterRequest struct {
 	Key       string `json:"key"`
 	LocalPath string `json:"local_path"`
-
-	// DurableKey is the name to store this artifact under for the long term,
-	// or empty for "do not keep it".
-	//
-	// Its presence is the entire eligibility protocol: whether an artifact is
-	// re-derivable and how long to keep it are questions only the ATC can
-	// answer, so the daemon neither parses this nor derives it from Key.
-	//
-	// Deliberately a separate field: Key names a node-local alias and stays a
-	// single segment; DurableKey names a bucket object and carries a
-	// retention-class prefix that a lifecycle rule acts on.
-	DurableKey string `json:"durable_key,omitempty"`
 
 	// ReadOnly says this alias is a name for READING bytes another authority
 	// owns, and it is the one kind the capture guard admits onto a held
@@ -95,32 +68,6 @@ type BatchResolveResponse struct {
 	Status  string            `json:"status"`
 	Results []ResolveResponse `json:"results"`
 	Error   string            `json:"error,omitempty"`
-}
-
-// DurableRestoreRequest is the body of POST /durable/restore.
-//
-// The key travels in the body rather than the path deliberately. As a path
-// segment it would have to be un-escaped and joined onto the storage root,
-// where "%2e%2e%2f%2e%2e%2fpwned" decodes to "../../pwned" and escapes the
-// directory entirely. It also keeps this route consistent with /register,
-// /resolve-batch and /mirror.
-//
-// The two names are different namespaces and must not be conflated. Key is the
-// node-local alias, and becomes a direct child of steps/, which is the only
-// thing the sweeper reclaims, so it must be a single path segment. DurableKey
-// names an object in a bucket and carries a retention-class prefix that an
-// object lifecycle rule acts on.
-type DurableRestoreRequest struct {
-	Key        string `json:"key"`
-	DurableKey string `json:"durable_key"`
-}
-
-// DurableRestoreResponse is the body returned by POST /durable/restore.
-type DurableRestoreResponse struct {
-	Restored bool   `json:"restored"`
-	Node     string `json:"node,omitempty"`
-	Path     string `json:"path,omitempty"`
-	Duration string `json:"duration,omitempty"`
 }
 
 // CaptureClassResponse is the body of GET /capture-held/steps/{handle}: what

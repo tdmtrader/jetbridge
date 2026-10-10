@@ -9,7 +9,7 @@
 // most one of them is deleting at a time, and no reclaim interleaves with an
 // orphan verdict.
 //
-// This package and the durable cache tier are the only places a delete client
+// This package is the only place a delete client
 // over a real backend is constructed (hangar/architecture_test.go).
 package reclaim
 

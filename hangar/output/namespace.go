@@ -43,12 +43,6 @@ const (
 
 // NamespaceConfig is the authenticated configuration an output namespace is
 // derived from.
-//
-// CacheBucket is named here rather than assumed absent: the output bucket may
-// not *be* the cache bucket, and a deployment that has both cannot state that
-// rule unless it can name them. An empty value means "this deployment has no
-// such bucket", which is why it is compared only when set. The deployment has
-// two namespaces, cache and output; there is no third.
 type NamespaceConfig struct {
 	// Store is the store profile the output plane runs against.
 	Store   string
@@ -65,9 +59,6 @@ type NamespaceConfig struct {
 	// TenantID is the authenticated deployment/tenant identity the opaque
 	// scope is derived from. It is never rendered into a key.
 	TenantID string
-
-	// CacheBucket is the one other bucket this one may not be.
-	CacheBucket string
 }
 
 // OutputNamespace is the derived identity. Its fields are unexported and it is
@@ -96,11 +87,6 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 
 	if strings.TrimSpace(config.Bucket) == "" {
 		return OutputNamespace{}, fmt.Errorf("%w: no output bucket is configured", ErrIncomplete)
-	}
-	if config.CacheBucket != "" && config.Bucket == config.CacheBucket {
-		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the durable cache bucket "+
-			"%q. The cache is fail-open and re-derivable by re-running a step; a durable result "+
-			"is neither, and one bucket cannot have both lifetimes", ErrConflict, config.Bucket)
 	}
 	if err := hangar.ValidateDeploymentPrefix(config.DeploymentPrefix); err != nil {
 		return OutputNamespace{}, fmt.Errorf("%w: output key prefix: %v", ErrIncomplete, err)

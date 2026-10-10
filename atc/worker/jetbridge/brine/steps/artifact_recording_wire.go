@@ -67,7 +67,7 @@ func (in ArtifactCluster) requireRecording() error {
 		localPath := filepath.Join(in.StoreRoot, "steps", key)
 		aliasBody := map[string]any{
 			"key": out.alias, "local_path": localPath,
-			"durable_key": "", "read_only": false,
+			"read_only": false,
 		}
 		register, mirror := -1, -1
 		for i, req := range requests {
@@ -79,9 +79,6 @@ func (in ArtifactCluster) requireRecording() error {
 			// Normalize only absent optional fields; wrong values, types and
 			// unexpected fields must still fail the exact comparison.
 			if req.Method == "POST" && req.Path == "/register" && body != nil {
-				if _, present := body["durable_key"]; !present {
-					body["durable_key"] = ""
-				}
 				if _, present := body["read_only"]; !present {
 					body["read_only"] = false
 				}

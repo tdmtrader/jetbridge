@@ -30,7 +30,7 @@ func TestArtifactRecordingWireContract(t *testing.T) {
 					in, register, _ := recordingContractInput(t, cache)
 					if explicit {
 						changeRecordingBody(t, &in.recording.requests[register], func(body map[string]any) {
-							body["read_only"], body["durable_key"] = false, ""
+							body["read_only"] = false
 						})
 					}
 					if err := in.requireRecording(); err != nil {
@@ -48,9 +48,6 @@ func TestArtifactRecordingWireContract(t *testing.T) {
 				"read-only":          func(b map[string]any) { b["read_only"] = true },
 				"read-only-type":     func(b map[string]any) { b["read_only"] = "false" },
 				"read-only-null":     func(b map[string]any) { b["read_only"] = nil },
-				"durable-key":        func(b map[string]any) { b["durable_key"] = "content/key" },
-				"durable-key-type":   func(b map[string]any) { b["durable_key"] = false },
-				"durable-key-null":   func(b map[string]any) { b["durable_key"] = nil },
 				"unexpected-field":   func(b map[string]any) { b["unexpected"] = "value" },
 			}
 			for name, change := range badBodies {

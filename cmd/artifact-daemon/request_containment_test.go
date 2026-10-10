@@ -16,15 +16,16 @@ package main_test
 import (
 	"archive/tar"
 	"bytes"
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"encoding/json"
-	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"code.cloudfoundry.org/lager/v3/lagertest"
+	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
 
 // encodeTraversal percent-encodes "." and "/" so path cleaning at the mux
@@ -422,7 +423,7 @@ func TestRequestContainment_BenignPercentEncodingStillResolves(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // AC10 — the three-segment key shape must survive. This is what
-// durable.ValidateKey would reject, and it is ordinary production traffic.
+// a two-segment limit would reject, and it is ordinary production traffic.
 // ---------------------------------------------------------------------------
 
 func TestRequestContainment_ThreeSegmentKeysAccepted(t *testing.T) {

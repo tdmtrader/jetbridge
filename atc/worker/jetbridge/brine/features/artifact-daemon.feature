@@ -85,19 +85,6 @@ Feature: Getting artifacts from the artifact daemon
     When the ATC probes for the resource cache "rc-42"
     Then the probe reports a miss
 
-  Scenario: A durable tier is learned from a miss, not just from a hit
-    Given an artifact daemon with a durable tier
-    When the ATC probes for the resource cache "rc-42"
-    Then the probe reports a miss
-    And the daemon is known to have a durable tier
-    And the probe carries back 1 daemon addresses
-
-  Scenario: A daemon that never advertised a durable tier is not credited with one
-    Given an artifact daemon
-    When the ATC probes for the resource cache "rc-42"
-    Then the probe reports a miss
-    And the daemon is not known to have a durable tier
-
   Scenario: An artifact no daemon holds is reported as a miss with no address
     Given an artifact daemon
     When the ATC probes for a mirrored copy of "handle/output"

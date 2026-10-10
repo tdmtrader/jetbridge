@@ -25,7 +25,6 @@ func validNamespaceConfig() NamespaceConfig {
 		Bucket:           "deployment-output",
 		DeploymentPrefix: "deployments/blue",
 		TenantID:         "tenant-a",
-		CacheBucket:      "deployment-durable-cache",
 	}
 }
 
@@ -46,11 +45,6 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 		sentinel error
 		says     string
 	}{
-		"the cache bucket": {
-			mutate:   func(c *NamespaceConfig) { c.Bucket = c.CacheBucket },
-			sentinel: ErrConflict,
-			says:     "durable cache bucket",
-		},
 		"a store that is not native GCS": {
 			mutate:   func(c *NamespaceConfig) { c.Store = "filesystem" },
 			sentinel: ErrUnsupportedProtocol,

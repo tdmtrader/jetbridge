@@ -21,7 +21,8 @@ template first, so these rules run before anything else in the chart.
 {{- range $removed := list
   (list "otelMetrics" "ATC OTel metrics export has been retired. Remove the value; use metrics.enabled for Prometheus metrics and tracing.* for traces.")
   (list "artifactDaemon.resolveCapability.ttl" "expiry is derived from pod scheduling and startup timeouts plus the fetch retry budget and margin. Remove the value.")
-  (list "artifactDaemon.durable" "the durable tier is not configurable from the chart. Remove the value.")
+  (list "artifactDaemon.durable" "the resource-cache object-store tier has been removed. Remove the value.")
+  (list "hangarOutput.cacheBucket" "resource caches are node-local; there is no cache bucket. Remove the value.")
   (list "artifactDaemon.enabled" "the artifact daemon is always deployed. Remove the value.")
   (list "artifactDaemon.hangar.bucket" "there is no strict-input namespace: every Run input is an input publication in the output namespace, hangarOutput.bucket. Remove the value.")
   (list "artifactDaemon.hangar.enabled" "there is no strict-input plane to enable: every Run input is an input publication in the output namespace, read back by a managed read, which hangarOutput.executionControl.enabled serves. Remove the value.")
@@ -55,7 +56,7 @@ template first, so these rules run before anything else in the chart.
   (list "hangarOutput.readControlURL" "the daemon no longer calls the web; a reader's claim is given back by the web. Remove the value.")
   (list "hangarOutput.receipt" "publication receipts were removed in T3: a capture is one database row, and the control plane trusts the daemon over mTLS, so there is no receipt key to declare. Remove the value and its Secret.")
   (list "hangarOutput.sealDeadline" "a capture seal is asynchronous on the node and bounded by the capture deadline (hangarOutput.captureDeadline); there is no separate seal deadline. Remove the value.")
-  (list "hangarOutput.strictInputBucket" "there is no strict-input bucket: Run inputs are input publications in the output namespace, hangarOutput.bucket, and the only bucket the daemon refuses to be pointed at is hangarOutput.cacheBucket. Remove the value.")
+  (list "hangarOutput.strictInputBucket" "there is no strict-input bucket: Run inputs are input publications in the output namespace, hangarOutput.bucket. Remove the value.")
   (list "hangarOutput.reclaimer" "the reclaimer controller is gone: the web runs the reclaim pass itself; set hangarOutput.reclaim.interval, .deleteTimeout and .batch. Its GCS get and delete grant moves to the web's service account (serviceAccount.annotations); on the disk store the web mounts the reclaimer token. Remove the value.")
   (list "rbac.brineLive" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")
   (list "rbac.brineLiveServiceAccount" "the brine live tier's identity is not part of the chart: declare it with the cluster's other test identities and map the brine job to it with kubernetes.stepPodGrants. Remove the value.")

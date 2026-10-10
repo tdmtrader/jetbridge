@@ -270,7 +270,7 @@ directories or ephemeral emptyDirs.
 `artifactDaemon` also carries `mirror`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
 
-Hangar has two namespaces, cache and output, and one tree path: a Run input
+Hangar has one output namespace and one tree path: a Run input
 is uploaded as an input publication into the output namespace
 (`hangarOutput.bucket`) and reaches the task as a managed read of it. There
 is no separate input store. Native GCS authenticates with Workload Identity;

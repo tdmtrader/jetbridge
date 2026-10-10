@@ -23,7 +23,7 @@ var (
 
 // Refusal is a daemon answer other than the one the operation wanted. The
 // status is carried rather than flattened into "failed" because callers act on
-// it: a reaper keeps its locator entry on a 409, a warm stops on a 404.
+// it: a reaper keeps its locator entry on a 409; a read tries a peer on a 404.
 type Refusal struct {
 	Method string
 	URL    string

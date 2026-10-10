@@ -61,7 +61,6 @@ var (
 	Register       = Route{Method: http.MethodPost, Path: "/register"}
 	Mirror         = Route{Method: http.MethodPost, Path: "/mirror"}
 	StreamIn       = Route{Method: http.MethodPut, Path: StreamInPrefix}
-	DurableRestore = Route{Method: http.MethodPost, Path: "/durable/restore"}
 
 	HeadResourceCache = Route{Method: http.MethodHead, Path: ResourceCachesPrefix}
 	GetResourceCache  = Route{Method: http.MethodGet, Path: ResourceCachesPrefix}
@@ -72,7 +71,7 @@ func Routes() []Route {
 	return []Route{
 		Healthz, ResolveBatch, CaptureHeld, Metrics,
 		GetArtifact, PutArtifact, DeleteArtifact, HeadArtifact,
-		Register, Mirror, StreamIn, DurableRestore,
+		Register, Mirror, StreamIn,
 		HeadResourceCache, GetResourceCache,
 	}
 }

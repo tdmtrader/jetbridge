@@ -23,16 +23,8 @@ import (
 type Config struct {
 	StoreID         string
 	OutputNamespace string
-	// CacheNamespace makes this a CACHE-ONLY store: the artifact daemon's
-	// fail-open resource cache, on a dedicated store instance with its own
-	// disk, process, lock and concurrency slots. It is exclusive with the
-	// output namespace -- the cache's churn must never queue behind, or hold
-	// the mutex of, the result plane's store -- and it takes exactly one
-	// credential, "cache", which may create, stat, read, list and delete
-	// inside the cache namespace and nothing else.
-	CacheNamespace string
-	Credentials    map[string]string
-	MaxConcurrent  int
+	Credentials     map[string]string
+	MaxConcurrent   int
 }
 
 type credential struct {
@@ -55,21 +47,10 @@ func New(store *disk.Store, config Config) (http.Handler, error) {
 	}
 	names := []string{config.StoreID, config.OutputNamespace}
 	roles := []string{"publisher", "inventory", "reclaimer"}
-	if config.CacheNamespace != "" {
-		if config.OutputNamespace != "" {
-			return nil, errors.New("a cache store serves the cache namespace only: run the " +
-				"resource cache on its own store instance, never beside the output namespace")
-		}
-		names = []string{config.StoreID, config.CacheNamespace}
-		roles = []string{"cache"}
-	}
 	for _, name := range names {
 		if err := hangar.Scope(name).Validate(); err != nil {
 			return nil, err
 		}
-	}
-	if err := (objectstore.Namespaces{Cache: config.CacheNamespace, Output: config.OutputNamespace}).Validate(); err != nil {
-		return nil, err
 	}
 	s := &server{store: store, config: config, slots: make(chan struct{}, config.MaxConcurrent)}
 	seen := map[string]bool{}
@@ -120,9 +101,6 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := query.Get("key")
 	operation := strings.TrimPrefix(r.URL.Path, "/v1/")
 	allowed := false
-	if role == "cache" && s.config.CacheNamespace != "" && bucket == s.config.CacheNamespace {
-		allowed = operation == "create" || operation == "stat" || operation == "read" || operation == "list" || operation == "delete"
-	}
 	if bucket != "" && bucket == s.config.OutputNamespace {
 		switch role {
 		case "publisher":

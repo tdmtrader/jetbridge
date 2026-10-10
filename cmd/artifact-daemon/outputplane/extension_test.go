@@ -32,7 +32,6 @@ func baseOnlyConfig(t *testing.T) Config {
 	config.OutputPrefix = ""
 	config.OutputTenant = ""
 	config.OutputEndpoint = ""
-	config.CacheBucket = ""
 
 	return config
 }
@@ -92,7 +91,7 @@ func TestABaseOnlyDaemonHoldsNoPublisher(t *testing.T) {
 }
 
 // Mixed or older components refuse durable output capture with a TYPED
-// result and no cache-tier fallback. The control is first and in the same test:
+// result. The control is first and in the same test:
 // the base routes still answer, so "everything is refused" is not what this
 // proves.
 func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *testing.T) {
@@ -140,14 +139,6 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 		if !strings.Contains(refusal.Error, output.ErrCaptureDisabled.Error()) {
 			t.Errorf("%s refused with %q, which is not the typed capture-disabled result",
 				route.path, refusal.Error)
-		}
-		// No cache-tier fallback. The refusal never mentions one.
-		for _, forbidden := range []string{"cache", "fallback", "resource-cache"} {
-			if strings.Contains(strings.ToLower(refusal.Error), forbidden) {
-				t.Errorf("%s's refusal mentions %q; there is no cache-tier fallback and a "+
-					"message suggesting one is how a caller writes the retry that takes it",
-					route.path, forbidden)
-			}
 		}
 	}
 }

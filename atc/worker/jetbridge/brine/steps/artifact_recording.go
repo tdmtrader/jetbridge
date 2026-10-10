@@ -626,7 +626,7 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 					return in, err
 				}
 				if err := in.observeRecording(key, func() {
-					in.Err = in.Backend.RegisterResourceCache(in.Ctx, key, "", volume.Handle(), in.NodeName)
+					in.Err = in.Backend.RegisterResourceCache(in.Ctx, key, volume.Handle(), in.NodeName)
 				}); err != nil {
 					return in, err
 				}

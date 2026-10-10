@@ -794,8 +794,8 @@ hangarOutput:
   webEnabled: false
 
   # -- The dedicated output bucket. Externally provisioned, contains only
-  # Hangar output-plane objects (captures and Run input publications), and is
-  # never the durable cache bucket. Required when enabled.
+  # Hangar output-plane objects (captures and Run input publications).
+  # Required when enabled.
   bucket: ""
   # -- Authenticated deployment key prefix inside that bucket. Server
   # configuration; no task, consumer, path parameter or request can select or
@@ -805,14 +805,8 @@ hangarOutput:
   # from. It is never rendered into an object key. Required when enabled.
   tenant: ""
 
-  # -- The bucket this plane may not be, named so the daemon can refuse to
-  # be pointed at it. Empty means this deployment has no such bucket.
-  cacheBucket: ""
-
   # -- Endpoint override for the OUTPUT bucket's store. Empty means real GCS;
-  # set it for an emulator. It is the output plane's own: requirement 20
-  # forbids the output plane sharing the cache bucket or its client, and a
-  # render test asserts that this value reaches only --output-endpoint.
+  # set it for an emulator. This value reaches only --output-endpoint.
   endpoint: ""
 
   # -- Deadlines and grace. The chart enforces the relationship between

@@ -200,7 +200,7 @@ func TestTheReaperNeverDeletesAStepDirectoryAResourceCacheResolvesInto(t *testin
 
 	cachedKeys := f.run(t, cachedGet, getSpec())
 	f.run(t, uncachedGet, getSpec())
-	if err := f.backend.RegisterResourceCache(context.Background(), "rc-7", "", cachedGet+"-dir", "node-1"); err != nil {
+	if err := f.backend.RegisterResourceCache(context.Background(), "rc-7", cachedGet+"-dir", "node-1"); err != nil {
 		t.Fatalf("RegisterResourceCache: %v", err)
 	}
 

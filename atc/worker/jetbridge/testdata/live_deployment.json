@@ -67,10 +67,6 @@
       "expect": "9392",
       "coveredBy": ["TestLiveDaemonMetricsAreScraped"]
     },
-    "daemon.durableStore": {
-      "expect": "off",
-      "note": "No durable resource-cache store is configured here; cmd/artifact-daemon/durable covers the cache wrapper against fake-gcs-server and a real disk store, and brine's daemon-durable feature drives the real daemon against a GCS emulator."
-    },
     "daemon.mirrorReplicas": {
       "expect": "2",
       "uncovered": "Mirroring copies each output to a peer daemon. This cluster has two daemon nodes (daemon.nodes), but k3s-agent-y is a desktop VM that sleeps, so mirroring is live only while it is up and no live test can count on a peer. Cross-node mirroring is covered by cmd/artifact-daemon's behavioral_cross_node_test.go with two daemons on one host; cross-node artifact handoff on this cluster by brine's live-multinode tier, which runs only when both nodes are up."

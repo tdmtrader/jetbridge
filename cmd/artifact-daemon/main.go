@@ -46,25 +46,6 @@ func main() {
 	mirrorConcurrency := flag.Int("mirror-concurrency", 4, "Max concurrent in-flight mirror jobs")
 	mirrorTimeout := flag.Duration("mirror-timeout", 5*time.Minute, "Per-peer per-job mirror PUT timeout")
 
-	// Durable tier. Off unless --durable-store names a backend, and the daemon
-	// behaves exactly as before when it is off.
-	durableStore := flag.String("durable-store", "", "Fail-open store for resource caches: \"\" (disabled), \"gcs\" or \"disk\"")
-	durableBucket := flag.String("durable-bucket", "", "The cache's own GCS bucket or disk namespace; never the output one")
-	durableEndpoint := flag.String("durable-endpoint", "", "GCS emulator endpoint (empty is real GCS), or the disk store's HTTPS origin")
-	durableStoreID := flag.String("durable-store-id", "", "Expected persistent disk storage identity, for --durable-store=disk")
-	durableTokenFile := flag.String("durable-token-file", "", "Disk storage cache-role credential file, for --durable-store=disk")
-	durableCACert := flag.String("durable-ca-cert", "", "Disk storage CA certificate, for --durable-store=disk")
-	durableTimeout := flag.Duration("durable-timeout", 5*time.Minute, "Per-operation timeout for the durable store")
-	durableMaintenanceInterval := flag.Duration("durable-maintenance-interval", defaultMaintenanceInterval, "How often to walk the durable store to reclaim expired objects and measure what remains. Every daemon runs its own enumeration, and a List is billed per page, so this is deliberately slow.")
-
-	// Retention is JetBridge's own, not a bucket lifecycle rule, so the period
-	// lives here rather than as a string an operator types into a cloud console
-	// that has to match a prefix this code composes. A class with no entry is
-	// kept forever.
-	var durableRetention RetentionPolicy
-	flag.Var(&durableRetention, "durable-retention", "Retention for one class of durable artifact, as CLASS=DURATION (e.g. resource-caches=720h). Repeatable. A class with no entry is never reclaimed.")
-	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
-
 	// The output plane: exact execution control, and with --output-bucket the
 	// durable-capture extension -- the one tree path, an input publication in
 	// and a managed read out. Mounted on this daemon's listener when
@@ -206,74 +187,6 @@ func main() {
 
 	// TTL sweeper (with registry ref for alias cleanup). Started below.
 	sweepDone := make(chan struct{})
-
-	// Cancelled alongside the sweeper at shutdown, so a maintenance walk does
-	// not hold the process open mid-enumeration.
-	maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
-
-	// A restore assembles the artifact in a temporary directory under steps/,
-	// and the sweeper is what reclaims one left behind by a crash. If a restore
-	// may outlive the TTL, the sweeper can instead delete a live restore's
-	// working directory out from under it.
-	if *durableStore != "" && *durableTimeout >= *ttl {
-		logger.Error("durable-timeout-exceeds-ttl", fmt.Errorf(
-			"--durable-timeout (%s) must be less than --ttl (%s)", *durableTimeout, *ttl))
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
-		cleanupCancel()
-		os.Exit(1)
-	}
-
-	// The cache and the output plane's store are two namespaces, never one,
-	// refused before either is dialled.
-	if err := validateStorageNamespaces(*durableBucket, outputNamespace(*executionControl, planeConfig)); err != nil {
-		logger.Error("storage-namespaces-invalid", err)
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
-		cleanupCancel()
-		os.Exit(1)
-	}
-
-	closeDurable := func() error { return nil }
-	startRetention := func(tier *DurableTier) {
-		maintainer := NewStoreMaintainer(logger, tier, server.Metrics(), *durableMaintenanceInterval, durableRetention)
-		go maintainer.Run(maintenanceCtx)
-	}
-	if tier, closeTier, err := buildDurableTier(maintenanceCtx, logger, server.Metrics(), durableOptions{
-		kind:      *durableStore,
-		bucket:    *durableBucket,
-		endpoint:  *durableEndpoint,
-		storeID:   *durableStoreID,
-		tokenFile: *durableTokenFile,
-		caCert:    *durableCACert,
-		timeout:   *durableTimeout,
-		maxBytes:  *durableMaxBytes,
-	}, startRetention); err != nil {
-		// Misconfiguration is worth failing on: an operator who asked for a
-		// durable store and silently did not get one would discover it as a
-		// mysteriously cold cache months later.
-		logger.Error("durable-store-config-invalid", err)
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
-		cleanupCancel()
-		os.Exit(1)
-	} else if tier != nil {
-		closeDurable = closeTier
-		server.SetDurableTier(tier)
-		logger.Info("durable-store-enabled", lager.Data{"backend": *durableStore, "connected": tier.Ready()})
-
-		if len(durableRetention) == 0 {
-			// Not an error -- an operator may genuinely want to keep
-			// everything, or may be relying on a bucket lifecycle rule -- but
-			// it is worth saying out loud, because the alternative is
-			// discovering it as a bill.
-			logger.Info("durable-retention-unset", lager.Data{
-				"note": "no --durable-retention given; nothing will ever be reclaimed",
-			})
-		} else {
-			logger.Info("durable-retention", lager.Data{"policy": durableRetention.String()})
-		}
-	}
 
 	var tlsCfg *tls.Config
 	if tlsEnabled {
@@ -522,7 +435,7 @@ func main() {
 
 	// Drain mirror jobs with what is left of the budget. Best-effort: Stop
 	// blocks until in-flight jobs complete, and an unfinished mirror is a
-	// peer that resolves the artifact from this node or the durable tier.
+	// peer that resolves the artifact from this node or a peer.
 	if mirror != nil {
 		stopped := make(chan struct{})
 		go func() { mirror.Stop(); close(stopped) }()
@@ -535,10 +448,6 @@ func main() {
 
 	// Stop sweeper.
 	close(sweepDone)
-	maintenanceCancel()
-	if err := closeDurable(); err != nil {
-		logger.Error("durable-store-close-failed", err)
-	}
 
 	if cleanupErr != nil {
 		logger.Error("shutdown-error", cleanupErr)

@@ -83,9 +83,9 @@ func TestStartRealDaemonReportsADaemonThatDiesAtBoot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the artifact-daemon binary")
 	}
-	// An unknown durable store is refused at startup, so the process exits
+	// An invalid listener port is refused at startup, so the process exits
 	// before it ever listens.
-	d, err := startRealDaemon("--durable-store", "not-a-real-store")
+	d, err := startRealDaemon("--port", "not-a-port")
 	if err == nil {
 		_ = d.stop()
 		t.Fatal("a daemon that cannot start MUST be reported as such, not waited on")
@@ -99,7 +99,7 @@ func TestStartRealDaemonReportsADaemonThatDiesAtBoot(t *testing.T) {
 	// And it says WHY, in the daemon's own words. "exit status 1" was the whole
 	// report until the launcher stopped sending both of the daemon's streams to
 	// /dev/null, and an exit code is not a reason.
-	if !strings.Contains(err.Error(), "not-a-real-store") {
+	if !strings.Contains(err.Error(), "not-a-port") {
 		t.Fatalf("the daemon's own account of its refusal is missing from: %v", err)
 	}
 }

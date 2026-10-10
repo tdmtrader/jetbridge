@@ -48,7 +48,7 @@ the test they cite; the first drafts had ~30 contradictions with code.
 
 If your output contradicts an ADR, say so explicitly instead of overriding it:
 
-> _Contradicts ADR-0002 (durable tier fails open, Hangar fails closed), but worth reopening because…_
+> _Contradicts ADR-0002 (Hangar fails closed), but worth reopening because…_
 
 ## Hearth decisions vs ADRs
 

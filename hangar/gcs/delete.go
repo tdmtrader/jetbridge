@@ -16,8 +16,7 @@ import (
 // client in this repository, and it takes an endpoint rather than a client
 // because handing the client to the caller hands the caller the capability.
 // Which packages may call it is fixed by hangar/architecture_test.go: the
-// output reclaimer, and the artifact daemon's fail-open cache tier against its
-// own dedicated cache bucket. The returned closer is the caller's to defer.
+// output reclaimer alone. The returned closer is the caller's to defer.
 func NewDeleteClient(ctx context.Context, endpoint string) (objectstore.DeleteClient, func() error, error) {
 	client, err := gcsclient.New(ctx, endpoint)
 	if err != nil {

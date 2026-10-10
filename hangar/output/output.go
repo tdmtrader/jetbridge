@@ -136,12 +136,10 @@ var (
 	// ErrCaptureDisabled is a durable-output-capture operation asked of a
 	// component that does not have the facet.
 	//
-	// It is a TYPED result with no cache-tier fallback, and the distinction is
+	// It is a TYPED result, and the distinction is
 	// the whole point: "this daemon has no output bucket" and "this capture
 	// failed" must not be the same answer, because a
-	// caller that cannot tell them apart writes the retry, and the retry it
-	// writes is the cache tier. Nothing in this plane degrades into a cache
-	// miss.
+	// caller must not retry an operation the component does not implement.
 	ErrCaptureDisabled = errors.New("hangar/output: durable output capture is not enabled here")
 )
 

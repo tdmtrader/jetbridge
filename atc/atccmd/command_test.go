@@ -3,13 +3,14 @@ package atccmd_test
 import (
 	"errors"
 	"fmt"
-	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/output"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
@@ -196,27 +197,6 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
 
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.NoError(err, "expected validation to pass when DaemonSet host path is set")
-}
-
-// ADR-0002 as configuration: the fail-open cache and the outputs are two
-// different buckets or disk namespaces, and web refuses to start when they
-// coincide.
-func (s *CommandSuite) TestK8sRuntimeRefusesSharedStorageNamespaces() {
-	cmd := &atccmd.RunCommand{}
-	cmd.Kubernetes.Namespace = "concourse"
-	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-	cmd.Kubernetes.CacheBucket, cmd.Kubernetes.OutputBucket = "shared", "shared"
-
-	err := atccmd.ValidateK8sRuntimeForTest(cmd)
-	s.Error(err, "expected startup to refuse a shared cache and output bucket")
-	s.Contains(err.Error(), `"shared"`)
-	s.Contains(err.Error(), "--kubernetes-artifact-daemon-cache-bucket and --kubernetes-hangar-output-bucket")
-
-	cmd = &atccmd.RunCommand{}
-	cmd.Kubernetes.Namespace = "concourse"
-	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-	cmd.Kubernetes.CacheBucket, cmd.Kubernetes.OutputBucket = "cache", "outputs"
-	s.NoError(atccmd.ValidateK8sRuntimeForTest(cmd))
 }
 
 func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {

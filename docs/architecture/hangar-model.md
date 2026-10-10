@@ -34,13 +34,9 @@ or infrastructure.
 
 One object interface (create-absent, current and exact stat, exact open,
 list) with two backends, GCS and the disk store. Exact delete is a separate
-interface constructed only by the web's reclaim pass and orphan sweep, and by
-the durable cache tier over its own namespace.
-
-Two namespaces: **cache** (the runtime's fail-open tier) and **output**
-(input publications and captures). They may not be the same bucket or disk
-namespace; the daemon and the web refuse to start otherwise. Retention class
-is a key prefix.
+interface constructed only by the web's reclaim pass and orphan sweep.
+The output namespace holds input publications and captures. The artifact
+daemon has no object-store delete capability.
 
 ## The capture row
 

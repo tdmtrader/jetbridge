@@ -183,14 +183,9 @@ daemons.
 Another node's artifact daemon.
 
 **Sweeper**:
-The daemon's TTL reaper of node-local step outputs. Resource caches are
-never swept from the node, and a step directory the source ledger does not
-answer unmanaged is never swept.
-
-**Maintenance sweep**:
-The daemon's pass over the durable tier that deletes objects past their
-retention class's age.
-_Avoid_: sweep (alone)
+The daemon's TTL reaper of node-local step outputs, including resource-cache
+aliases backed by expired step directories. A step directory the source ledger
+does not answer unmanaged is never swept.
 
 **Containment**:
 The rule that extraction writes and symlink targets stay inside the daemon's
@@ -207,31 +202,9 @@ The node-local alias a resource cache is registered and probed under.
 Prefers the content key.
 
 **Content key**:
-The content-addressed name of a resource cache, and the name it is stored
-under durably.
+The content-addressed name of a resource cache, stable across database row
+replacement.
 _Avoid_: durable key
-
-**Retention class**:
-The prefix a durable object is stored under, which names the age after
-which the maintenance sweep deletes it.
-
-**Durable tier**:
-The daemon's long-term object-store home for artifacts worth keeping; today
-only resource caches go there. Every path fails open: a miss, timeout or
-corrupt object means "not here".
-
-**Warm**:
-Asking a daemon to pull a resource cache from the durable tier and register
-it node-locally.
-_Avoid_: durable restore
-
-**Warm owner**:
-The daemons a key ranks highest on, tried in order, so concurrent builds
-converge on one warm and a dead first choice does not block.
-
-**Warm negative cache**:
-The short suppression of repeated warms for a key whose last warm did not
-register anything, whether it failed or found nothing.
 
 **Task cache identity**:
 What a step must carry for its task caches to live on the node and survive

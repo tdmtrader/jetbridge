@@ -69,7 +69,7 @@ func TestIsResourceCacheKey_MatchesResourceCacheKeyOutput(t *testing.T) {
 
 // A cache carrying a content key must be addressed by it. Falling back to the
 // id would file a permanent copy under a Postgres sequence, which is the defect
-// the durable key exists to prevent.
+// the content key exists to prevent.
 func TestResourceCacheKeyPrefersTheContentKey(t *testing.T) {
 	sha := "rc-" + strings.Repeat("cd", 32)
 

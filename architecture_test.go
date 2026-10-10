@@ -590,8 +590,6 @@ const hangarGCSPackage = "hangar/gcs"
 // they depend on hangar/objectstore, which names no cloud SDK type, and that
 // is what keeps the cloud client out of anything that links a role.
 var hangarGCSImporters = map[string]string{
-	"cmd/artifact-daemon/durable": "the fail-open cache tier is a thin wrapper over the shared " +
-		"object adapter, against its own dedicated cache bucket and its own client",
 
 	"cmd/artifact-daemon/outputplane": "the artifact daemon's output plane is the publisher: it " +
 		"opens the output bucket's object client through hangar/gcs, which hands back an " +
@@ -599,7 +597,7 @@ var hangarGCSImporters = map[string]string{
 	"atc/hangaroutput/reclaim": "the web's reclaim pass and orphan sweep are the reclaimer " +
 		"principal: they open the output namespace's list client and the exact-delete client, " +
 		"gcs.NewDeleteClient; who may name that constructor is fixed by " +
-		"hangar/architecture_test.go's TestOnlyTheReclaimerAndTheCacheTierConstructADeleteClient",
+		"hangar/architecture_test.go's TestOnlyTheReclaimerConstructsADeleteClient",
 	"hangar/output/conformance": "the tier-2 conformance suite drives the real adapter against " +
 		"fake-gcs-server, because a conformance claim proved through a hand-written fake is a " +
 		"claim about the fake. It is a test-only import: the package has no non-test file that " +
@@ -870,330 +868,6 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 	}
 }
 
-// The second seam this file defends, added by the Hangar output-publication
-// track under the owner's 2026-09-04 ruling on loupe finding hangar-2, and
-// restated by the one-storage-interface track (ADR-0002):
-//
-//	The durable cache tier and Hangar's exact trees never share a read path.
-//
-// cmd/artifact-daemon/durable is a fail-open, name-keyed cache: every miss,
-// timeout or corrupt object is "not here", and "Nothing here may fail a build"
-// (cmd/artifact-daemon/durable_tier.go). That is exactly right for a resource
-// cache, which is re-derivable by re-running the get step -- and exactly wrong
-// for an exact tree, whose whole promise is that losing it is not recoverable
-// by re-running anything.
-//
-// The tier is now a thin wrapper over the SAME object interface the output
-// plane uses (hangar/objectstore, with the hangar/gcs and hangar/disk
-// backends), so "the tier imports nothing from hangar/" is no longer the rule.
-// What keeps the two apart is:
-//
-//   - configuration: the cache is its own bucket or disk namespace, and the
-//     daemon and web refuse to start with it equal to the output one
-//     (objectstore.Namespaces, checked at both process starts);
-//   - imports, below: the tier reaches storage through those three packages
-//     and nothing else under hangar/ -- never hangar/output -- and nothing
-//     under hangar/ reaches the tier.
-const durableCacheTier = "cmd/artifact-daemon/durable"
-
-// durableTierFile is the file declaring DurableTier. It is checked separately
-// from the import graph because it is package main in cmd/artifact-daemon and
-// therefore unimportable — a graph clause naming it would be vacuous by
-// language rule, not by accident.
-const durableTierFile = "cmd/artifact-daemon/durable_tier.go"
-
-// durableTierStorage are the only hangar/ packages the tier's production code
-// may import: the object interface and its two backends.
-var durableTierStorage = map[string]bool{
-	"hangar/objectstore": true,
-	"hangar/gcs":         true,
-	"hangar/disk":        true,
-}
-
-// durableTierTestSupport are the hangar/ packages the tier's TESTS may also
-// import, to drive the wrapper over a real disk store and the in-memory client.
-var durableTierTestSupport = map[string]bool{
-	"hangar/gcstest":    true,
-	"hangar/diskserver": true,
-}
-
-// excludedTree is one side of the rule.
-type excludedTree struct {
-	// name is the package path, which also matches everything beneath it.
-	name string
-	// requireNonEmpty says whether the tree must exist. hangar/ does and must:
-	// a rule about a tree that vanished is a rule that stopped applying.
-	// agent/ and atc/agent/ do not, matching the convention agenticPrefixes
-	// states above -- they are reserved for v4, and listing them now means the
-	// rule already binds when the first package arrives.
-	requireNonEmpty bool
-	why             string
-}
-
-var durableTierExcludedTrees = []excludedTree{
-	{
-		name:            "hangar",
-		requireNonEmpty: true,
-		why: "Hangar's exact trees fail closed. Its promise is that an exact tree survives " +
-			"payload reclamation and node loss; a tier that swallows its errors cannot make it",
-	},
-	{name: "agent", why: "reserved for v4"},
-	{name: "atc/agent", why: "reserved for v4"},
-}
-
-func inTree(pkg string, tree excludedTree) bool {
-	return pkg == tree.name || strings.HasPrefix(pkg, tree.name+"/")
-}
-
-// durableTierSeparation is the rule, as a pure function over an injected graph,
-// so that TestDurableTierSeparationGuardIsNotVacuous can drive it with a
-// fixture that violates it. An assertion that nothing was found is also what a
-// broken listing reports.
-func durableTierSeparation(graph importGraph, trees []excludedTree) []string {
-	var problems []string
-
-	if len(graph.all) == 0 {
-		return []string{"the import graph is empty; every clause below would pass vacuously"}
-	}
-	if len(trees) == 0 {
-		return []string{"no excluded tree is declared; this rule describes nothing"}
-	}
-
-	for _, tree := range trees {
-		members := 0
-		for pkg := range graph.all {
-			if inTree(pkg, tree) {
-				members++
-			}
-		}
-		if tree.requireNonEmpty && members == 0 {
-			problems = append(problems, "no package under "+tree.name+"/ is in the import graph, "+
-				"but this rule requires one. Either it was renamed or the listing failed; either "+
-				"way the clauses below would pass vacuously.")
-		}
-	}
-
-	// (a) Nothing in an excluded tree may reach the tier. Test edges count: a
-	// test dependency is how the production import arrives a week later.
-	for pkg, imports := range graph.all {
-		for _, tree := range trees {
-			if !inTree(pkg, tree) {
-				continue
-			}
-			for _, imported := range imports {
-				if imported != durableCacheTier {
-					continue
-				}
-				problems = append(problems, pkg+" imports "+durableCacheTier+": "+tree.why+". "+
-					"The durable tier is a fail-open cache; an exact-tree plane must not be "+
-					"built on a store whose every method swallows its errors.")
-			}
-		}
-	}
-
-	// (b) And the tier may reach back only for storage. Its production code may
-	// import the object interface and its two backends and nothing else in an
-	// excluded tree; its tests may also import the test substrates. Above all
-	// it never imports hangar/output, which is where an exact result's record
-	// lives: keeping one in a store that fails open is how a swallowed error
-	// becomes a lost result.
-	allowed := func(imported string, test bool) bool {
-		return durableTierStorage[imported] || (test && durableTierTestSupport[imported])
-	}
-	prod := map[string]bool{}
-	for _, imported := range graph.prod[durableCacheTier] {
-		prod[imported] = true
-	}
-	for _, imported := range graph.all[durableCacheTier] {
-		for _, tree := range trees {
-			if !inTree(imported, tree) || allowed(imported, !prod[imported]) {
-				continue
-			}
-			problems = append(problems, durableCacheTier+" imports "+imported+": the tier is a "+
-				"resource cache and must stay one. It reaches storage through hangar/objectstore, "+
-				"hangar/gcs and hangar/disk against its own namespace, and keeping a "+tree.name+
-				" record in it is how a swallowed error becomes a lost result.")
-		}
-	}
-
-	return problems
-}
-
-func TestDurableTierAndHangarAreSeparateStores(t *testing.T) {
-	graph := loadImportGraph(t)
-
-	if _, ok := graph.all[durableCacheTier]; !ok {
-		t.Fatalf("%s is not in the import graph; this rule would pass vacuously", durableCacheTier)
-	}
-
-	scanned := 0
-	for pkg := range graph.all {
-		for _, tree := range durableTierExcludedTrees {
-			if inTree(pkg, tree) {
-				scanned++
-			}
-		}
-	}
-	if scanned == 0 {
-		t.Fatal("no package matched any excluded tree; the rule scanned nothing")
-	}
-	t.Logf("import graph has %d packages, %d of them in an excluded tree", len(graph.all), scanned)
-
-	for _, problem := range durableTierSeparation(graph, durableTierExcludedTrees) {
-		t.Errorf("%s", problem)
-	}
-
-	// The shape the rule exists to allow, stated so a green says the tier really
-	// is the thin wrapper: it reaches the shared object interface.
-	if !slices.Contains(graph.prod[durableCacheTier], "hangar/objectstore") {
-		t.Errorf("%s does not import hangar/objectstore; the cache tier is meant to be a wrapper "+
-			"over the shared object interface, and this rule's allowance is stale", durableCacheTier)
-	}
-}
-
-// TestDurableTierFileDoesNotImportHangar covers the half the import graph
-// cannot: DurableTier is declared in package main, which nothing can import, so
-// go list reports its edges under cmd/artifact-daemon along with the whole
-// daemon's -- including its legitimate hangar import. The file is therefore
-// read directly. The tier's policy speaks durable.Store; only the durable
-// package itself names a storage backend.
-func TestDurableTierFileDoesNotImportHangar(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), durableTierFile, nil, parser.ImportsOnly)
-	if err != nil {
-		t.Fatalf("parsing %s: %v", durableTierFile, err)
-	}
-	if len(file.Imports) == 0 {
-		t.Fatalf("%s declares no import at all; this check would pass vacuously", durableTierFile)
-	}
-
-	// The file must still be the one that declares DurableTier, or this test is
-	// guarding a path that moved.
-	body, err := os.ReadFile(durableTierFile)
-	if err != nil {
-		t.Fatalf("reading %s: %v", durableTierFile, err)
-	}
-	if !strings.Contains(string(body), "type DurableTier struct") {
-		t.Fatalf("%s no longer declares DurableTier. Point durableTierFile at the file that "+
-			"does, so this check keeps guarding the tier rather than a filename.", durableTierFile)
-	}
-
-	checked := 0
-	for _, spec := range file.Imports {
-		path, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			t.Errorf("unquoting an import in %s: %v", durableTierFile, err)
-			continue
-		}
-		checked++
-		if !strings.HasPrefix(path, modulePrefix) {
-			continue
-		}
-		short := strings.TrimPrefix(path, modulePrefix)
-		for _, tree := range durableTierExcludedTrees {
-			if inTree(short, tree) {
-				t.Errorf("%s imports %s: the tier is a resource cache whose every method "+
-					"swallows its errors. %s", durableTierFile, path, tree.why)
-			}
-		}
-	}
-	if checked == 0 {
-		t.Fatalf("no import in %s was readable; this check passed over nothing", durableTierFile)
-	}
-}
-
-// TestDurableTierSeparationGuardIsNotVacuous drives the rule with fixtures, the
-// way TestUnpinnedAgenticPackagesGuardFailsOnAnEmptyScan does for D9.
-func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
-	trees := []excludedTree{{name: "hangar", requireNonEmpty: true, why: "because"}}
-	both := func(edges map[string][]string) importGraph {
-		return importGraph{prod: edges, all: edges}
-	}
-
-	t.Run("objects to an empty graph", func(t *testing.T) {
-		if problems := durableTierSeparation(importGraph{}, trees); len(problems) == 0 {
-			t.Fatal("the rule passed over an empty import graph. That is the vacuous green " +
-				"this assertion exists to prevent.")
-		}
-	})
-
-	t.Run("objects when the required tree is absent", func(t *testing.T) {
-		problems := durableTierSeparation(both(map[string][]string{
-			durableCacheTier: {},
-			"atc/db":         {"atc"},
-		}), trees)
-		if len(problems) == 0 {
-			t.Fatal("the rule passed over a graph with no hangar package at all")
-		}
-		if !strings.Contains(problems[0], "no package under hangar/") {
-			t.Errorf("first problem should name the missing tree, got: %q", problems[0])
-		}
-	})
-
-	t.Run("catches hangar reaching for the tier", func(t *testing.T) {
-		problems := durableTierSeparation(both(map[string][]string{
-			durableCacheTier: {},
-			"hangar":         {},
-			"hangar/output":  {durableCacheTier},
-		}), trees)
-		if len(problems) != 1 || !strings.Contains(problems[0], "hangar/output imports") {
-			t.Fatalf("expected exactly the hangar/output edge to be reported, got %v", problems)
-		}
-	})
-
-	t.Run("catches the tier reaching for hangar/output", func(t *testing.T) {
-		problems := durableTierSeparation(both(map[string][]string{
-			durableCacheTier: {"hangar/objectstore", "hangar/output"},
-			"hangar":         {},
-		}), trees)
-		if len(problems) != 1 || !strings.Contains(problems[0], durableCacheTier+" imports hangar/output") {
-			t.Fatalf("expected exactly the tier's hangar/output edge to be reported, got %v", problems)
-		}
-	})
-
-	t.Run("a test substrate is a test import only", func(t *testing.T) {
-		graph := importGraph{
-			prod: map[string][]string{durableCacheTier: {"hangar/gcstest"}, "hangar": {}},
-			all:  map[string][]string{durableCacheTier: {"hangar/gcstest"}, "hangar": {}},
-		}
-		if problems := durableTierSeparation(graph, trees); len(problems) != 1 {
-			t.Fatalf("a PRODUCTION import of hangar/gcstest passed, got %v", problems)
-		}
-		graph.prod[durableCacheTier] = nil
-		if problems := durableTierSeparation(graph, trees); len(problems) != 0 {
-			t.Fatalf("a test import of hangar/gcstest was refused, got %v", problems)
-		}
-	})
-
-	t.Run("is silent on the shape core actually has", func(t *testing.T) {
-		graph := both(map[string][]string{
-			durableCacheTier:      {"hangar/objectstore", "hangar/gcs", "hangar/disk"},
-			"hangar":              {},
-			"hangar/gcs":          {"hangar"},
-			"cmd/artifact-daemon": {"hangar", "hangar/gcs", durableCacheTier},
-		})
-		if problems := durableTierSeparation(graph, trees); len(problems) != 0 {
-			t.Errorf("expected no problems, got %v", problems)
-		}
-	})
-
-	// The trees that are deliberately allowed to be empty must not be reported
-	// as missing, or the convention agenticPrefixes states would be broken the
-	// moment this rule adopted it.
-	t.Run("does not require the reserved v4 trees to exist", func(t *testing.T) {
-		reserved := []excludedTree{
-			{name: "hangar", requireNonEmpty: true, why: "because"},
-			{name: "agent", why: "reserved for v4"},
-			{name: "atc/agent", why: "reserved for v4"},
-		}
-		if problems := durableTierSeparation(both(map[string][]string{
-			durableCacheTier: {},
-			"hangar":         {},
-		}), reserved); len(problems) != 0 {
-			t.Errorf("expected no problems, got %v", problems)
-		}
-	})
-}
-
 // What this rule claims, and what it does not.
 //
 // It claims exactly one thing: NO COMMAND ROOT REACHES AN OBJECT DELETE THROUGH
@@ -1246,10 +920,9 @@ const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer
 // track folded them into hangar/gcs and hangar/disk beside the read/create
 // clients, which every storage-facing binary links, so the question is now
 // answered at the CALL: hangar/architecture_test.go's
-// TestOnlyTheReclaimerAndTheCacheTierConstructADeleteClient fixes who may name
+// TestOnlyTheReclaimerConstructsADeleteClient fixes who may name
 // gcs.NewDeleteClient or disk.NewDeleteClient -- the reclaimer over the output
-// namespace, and the artifact daemon's cache tier over the cache namespace
-// only. This file keeps the role half: only the reclaimer links the reclaimer.
+// namespace only. This file keeps the role half: only the reclaimer links the reclaimer.
 const outputDeleteCapability = "gcs.NewDeleteClient and disk.NewDeleteClient"
 
 // outputDeleteRoot is the one binary allowed to link the reclaimer role: the
@@ -1576,7 +1249,7 @@ func TestOnlyTheWebStartupWritesTheInServiceRow(t *testing.T) {
 //	round 2  a raw *storage.Client in a local variable in three roots, one
 //	         method call from an arbitrary delete with no new import
 //	round 3  three routes the guards could not see at all -- a key-only delete
-//	         exported by the durable cache tier, the raw JSON API for the same
+//	         in a shared wrapper, the raw JSON API for the same
 //	         service under a different import path, and the same SDK named one
 //	         package away from any file under cmd/
 //
@@ -1599,10 +1272,8 @@ func TestOnlyTheWebStartupWritesTheInServiceRow(t *testing.T) {
 // required) and with `cloud.google.com/go/storage` appearing nowhere in the
 // file. A rule comparing against one constant saw nothing.
 //
-// The third is round 4's route N: the AWS S3 SDK was then required for the
-// durable cache tier's S3 backend, so `s3.DeleteObject` was a delete with no
-// go.mod change and no Google SDK named. That backend is gone (the cache is a
-// wrapper over hangar/objectstore), and the entry stays as a tripwire.
+// The third catches `s3.DeleteObject`: a delete with no Google SDK named.
+// No production code needs that SDK; the entry stays as a tripwire.
 //
 // The rest name SDKs nothing in this repository imports today. They are
 // TRIPWIRES for the first accident shape: reaching for a different cloud's
@@ -2182,79 +1853,6 @@ func TestNoCommandRootReachesForUnsafe(t *testing.T) {
 	if scanned < 20 {
 		t.Fatalf("scanned only %d files under cmd/; the walk failed and this rule would pass "+
 			"vacuously", scanned)
-	}
-}
-
-// durableCacheTierImporters are the binaries allowed to LINK the durable cache
-// tier, and there is one.
-//
-// Round 3's route H: the tier exports a constructor, `durable.Open(ctx,
-// durable.Config{Bucket: …})`, that builds a delete client over whatever bucket
-// its config names, and Store.Delete(ctx, key) is a delete by key. A process
-// that could construct one pointed at the OUTPUT bucket could remove an object
-// in it -- one intra-repo import, no storage SDK named. The artifact daemon
-// itself is held off the output and input namespaces by its startup check
-// (objectstore.Namespaces); every other binary is held off the tier here.
-var durableCacheTierImporters = map[string]string{
-	"cmd/artifact-daemon": "the artifact daemon is the only process that talks to the durable " +
-		"resource-cache bucket, and the only one that has any business holding a tier whose " +
-		"Delete takes a key",
-}
-
-// TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon guards the tier round 3
-// found unguarded.
-func TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
-	graph := loadImportGraph(t)
-
-	if _, ok := graph.all[durableCacheTier]; !ok {
-		t.Fatalf("%s does not exist; this rule would pass vacuously", durableCacheTier)
-	}
-	for importer := range durableCacheTierImporters {
-		imports, ok := graph.all[importer]
-		if !ok {
-			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
-
-			continue
-		}
-		if !slices.Contains(imports, durableCacheTier) {
-			t.Errorf("%s is exempted to import %s and does not import it; the exemption is "+
-				"stale, and an exemption nobody uses is a hole nobody is watching",
-				importer, durableCacheTier)
-		}
-	}
-
-	for pkg, imports := range graph.all {
-		if pkg == durableCacheTier {
-			continue
-		}
-		for _, imported := range imports {
-			if imported != durableCacheTier {
-				continue
-			}
-			if reason, ok := durableCacheTierImporters[pkg]; ok {
-				t.Logf("allowed: %s imports %s — %s", pkg, durableCacheTier, reason)
-
-				continue
-			}
-			t.Errorf("%s imports %s.\n\nThat package exports Open, which builds a delete "+
-				"client over whatever bucket its config names, and Delete(ctx, key). A package that "+
-				"can construct one can remove an object from any bucket it can name -- "+
-				"including the dedicated output bucket -- which is the \"key-only delete "+
-				"route\" requirement 55 asks the guards to reject. It is the artifact "+
-				"daemon's cache tier, and nothing else has business holding it.",
-				pkg, durableCacheTier)
-		}
-	}
-
-	// And the roots, so a green says it was checked at the level that decides:
-	// no output root links it, however many intermediaries it went through.
-	for _, root := range []string{
-		"./cmd/concourse", "./cmd/hangar-store",
-	} {
-		if linksPackage(t, root, modulePrefix+durableCacheTier) {
-			t.Errorf("%s links %s, whose Delete is a delete by key over any bucket its config "+
-				"names", root, durableCacheTier)
-		}
 	}
 }
 

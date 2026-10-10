@@ -137,9 +137,6 @@ spec:
             {{- if $capture }}
             - --pod-terminations-namespace={{ include "concourse.kubernetesNamespace" . }}
             {{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-output-disk") | nindent 12 }}
-            {{- if $output.cacheBucket }}
-            - --cache-bucket={{ $output.cacheBucket }}
-            {{- end }}
             {{- end }}
             {{- end }}
           env:

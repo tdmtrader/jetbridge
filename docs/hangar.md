@@ -124,8 +124,7 @@ init verifies it before the task starts.
 Hangar is fail-closed. Absence, authorization failure, immutable-write
 conflict, limit rejection, corruption, and infrastructure failure remain
 distinct daemon outcomes and every non-success prevents task startup. This is
-deliberately different from durable resource caches, where unavailable or bad
-durable data degrades to a cache miss because the bytes can be reproduced.
+different from node-local resource caches, where a miss reruns the get.
 
 Materialization is bounded node-wide by `artifactDaemon.outputScratch.concurrency`:
 a daemon spools at most that many trees to scratch at once, and refuses
@@ -281,8 +280,7 @@ semantics unchanged. Capturing from a non-successful producer is a separate
 future contract, not a flag on this one.
 
 Ordinary tasks and unselected outputs keep their current behaviour exactly.
-Resource-cache routes and the fail-open durable cache tier are untouched, and
-the output plane deliberately does not reuse any of them.
+Resource-cache routes serve node-local aliases independently of the output plane.
 
 ### Storage configuration belongs to the operator
 
@@ -293,19 +291,11 @@ permissions. Provision the bucket and permissions outside the chart:
 
 | Identity | Object operations |
 | --- | --- |
-| Artifact daemon, resource cache (`--durable-store=gcs`) | create, get, list, delete in the cache bucket **only** |
 | Artifact daemon, output plane (input publications, captures, managed reads) | create, get in the output bucket |
 | Web (reclaim pass and orphan sweep) | list, get, delete in the output bucket |
 
-The artifact daemon's output-plane and resource-cache roles are one Pod and so
-one workload identity. Grant each as a binding on its own bucket. The daemon's
-delete must be granted on the cache bucket alone: never a project-wide role
-such as `roles/storage.objectAdmin`, which would give the node daemon delete
-over the output bucket too. The node daemon holds no delete on any exact
-tree.
-
-Keep output objects in a dedicated bucket, separate from resource caches. Do not configure lifecycle deletion, external cleanup or
-retention rules that prevent Hangar's admitted deletes. GCS `get` covers both
+Keep output objects in a dedicated bucket. Do not configure lifecycle deletion,
+external cleanup or retention rules that prevent Hangar's admitted deletes. GCS `get` covers both
 metadata and body access; the web's reclaim code deliberately exposes only
 metadata operations, but IAM cannot separate those reads. Never give the
 publisher delete permission: replacing an existing GCS object requires both
@@ -364,16 +354,6 @@ The storage link verifies the TLS server identity and the initialized store
 ID on every request. Its fixed roles have the permissions above, except the
 web's `inventory` and `reclaimer` roles cannot read object bodies. There is no general IAM
 engine, overwrite API or unconditional delete API.
-
-The artifact daemon's fail-open resource cache (`--durable-store=disk`) runs on
-a **dedicated** `hangar-store` instance with its own PVC, outside the chart:
-`hangar-store --cache-namespace=<ns>` on a disk of its own, initialized with
-its own store ID. That instance serves the cache namespace only: it refuses
-`--output-namespace` beside it, and its `server.json` names exactly one
-credential, `cache`, which may create, stat, read, list and exact-delete
-inside the cache namespace and nothing else. The cache never shares a
-process, index lock or concurrency slot with the output store, so cache
-churn cannot stall a managed read or a publish.
 
 First provision the disk service, retaining your existing artifact-daemon
 TLS/key configuration and leaving the output plane off:

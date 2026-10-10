@@ -61,17 +61,13 @@ type DaemonSetBackend struct {
 	artifactLocator *ArtifactLocator
 	nodeIPResolver  *NodeIPResolver
 	daemonClient    *DaemonClient
-	warmNegative    *warmNegativeCache
 	wire            *artifactwire.Client
 }
 
 // NewDaemonSetBackend builds the backend with the daemon client it probes,
-// warms and aliases through. A nil client is a backend that cannot reach the
+// probes and aliases through. A nil client is a backend that cannot reach the
 // daemons, not one waiting for a client to arrive.
 func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver, daemonClient *DaemonClient) *DaemonSetBackend {
-	if config.ArtifactDaemonWarmTimeout <= 0 {
-		config.ArtifactDaemonWarmTimeout = defaultWarmTimeout
-	}
 
 	// A configured key ALWAYS signs. The chart hands the key to the daemon and
 	// the web off the SAME value, so a key here means the daemon is requiring
@@ -90,7 +86,6 @@ func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *Node
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
 		daemonClient:    daemonClient,
-		warmNegative:    newWarmNegativeCache(),
 		wire:            newWireClient(config),
 	}
 }
@@ -769,8 +764,6 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 	if sourceNode == "" && b.daemonClient != nil && isResourceCacheKey(key) {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		// Local probe only. A lookup is not a cache-hit decision — the artifact
-		// is already believed to exist — so there is nothing here to warm.
 		if probe, found := b.daemonClient.ProbeResourceCache(probeCtx, key); found {
 			vol := NewDaemonSetVolumeFromIP(key, handle, workerName, probe.IP, b.config)
 			vol.SetDaemonClient(b.daemonClient)
@@ -798,7 +791,7 @@ func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle,
 // Instead of using NodeIPResolver (which needs nodes/get RBAC), this discovers
 // the daemon pod IP from EndpointSlices (only needs discovery.k8s.io RBAC) and
 // POSTs the registration directly.
-func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, durableKey, volumeHandle, nodeName string) error {
+func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, volumeHandle, nodeName string) error {
 	if b.daemonClient == nil {
 		return errors.New("daemon client not configured")
 	}
@@ -826,7 +819,7 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, 
 	// step, the daemon has the data locally. On a single-node cluster
 	// there's only one daemon; on multi-node we register on all daemons
 	// but only the one with local data will have the path.
-	if err := b.daemonClient.RegisterAlias(ctx, cacheKey, diskPath, durableKey); err != nil {
+	if err := b.daemonClient.RegisterAlias(ctx, cacheKey, diskPath); err != nil {
 		return fmt.Errorf("register resource cache alias: %w", err)
 	}
 
@@ -845,17 +838,8 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, 
 	return nil
 }
 
-// FindResourceCache finds a daemon that can serve the cache, warming it from
-// the durable tier if no node holds it and the ATC supplied a content key.
-//
-// The two phases are deliberately separate channels. A probe 200 means "these
-// bytes are on this node's disk right now", which is what makes the returned
-// pod worth binding to; if the durable store could also answer that probe,
-// every daemon would say yes for anything in the bucket and the winner would be
-// arbitrary — destroying the node affinity the probe exists to provide. The
-// warm verb answers a different question, "who can get it", and makes its own
-// answer true before returning.
-func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, durableKey, workerName string) (runtime.Volume, bool) {
+// FindResourceCache binds to a ready daemon holding the cache, or reports a miss.
+func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, workerName string) (runtime.Volume, bool) {
 	if b.daemonClient == nil {
 		return nil, false
 	}
@@ -867,36 +851,7 @@ func (b *DaemonSetBackend) FindResourceCache(ctx context.Context, cacheKey, dura
 		return b.bindProbed(cacheKey, workerName, probe.IP), true
 	}
 
-	// Silence is the protocol: no content key means the ATC is not offering
-	// this cache to the durable tier, so no request is made.
-	if durableKey == "" || !probe.DurableCapable {
-		return nil, false
-	}
-
-	// A get step's own `timeout:` does not bound this — MaybeTimeout is applied
-	// further in, and attemptGet re-enters every GetResourceLockInterval. Without
-	// suppression a degraded bucket turns a 5s lock tick into a warm-timeout tick
-	// for as long as the bucket stays degraded.
-	if b.warmNegative.suppressed(cacheKey) {
-		metric.Metrics.DurableWarmSuppressed.Inc()
-
-		return nil, false
-	}
-
-	warmCtx, cancel := context.WithTimeout(ctx, b.config.ArtifactDaemonWarmTimeout)
-	defer cancel()
-
-	ip, ok := b.daemonClient.WarmResourceCache(warmCtx, cacheKey, durableKey, probe.Endpoints)
-	if !ok {
-		metric.Metrics.DurableWarmMisses.Inc()
-		b.warmNegative.suppress(cacheKey, warmSuppressionWindow)
-
-		return nil, false
-	}
-
-	metric.Metrics.DurableWarmHits.Inc()
-
-	return b.bindProbed(cacheKey, workerName, ip), true
+	return nil, false
 }
 
 // bindProbed wraps a daemon pod IP as a volume.

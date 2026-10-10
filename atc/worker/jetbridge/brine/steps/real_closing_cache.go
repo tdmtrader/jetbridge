@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -20,12 +19,11 @@ import (
 )
 
 // Fixture maps describe input files only. Production daemon processes perform
-// registration, promotion, restore, tar serving and error handling.
+// registration, tar serving and error handling.
 type closingCacheRuntime struct {
 	api       *realCluster
 	rec       *brine.Recorder
 	namespace string
-	store     *cacheEmulator
 	port      int
 	addresses []string
 	nodes     []string
@@ -53,31 +51,11 @@ func (p ClosingCachePlan) ensureCache() error {
 		return fmt.Errorf("cache peer needs a distinct address")
 	}
 	ns, err := r.api.Clientset.CoreV1().Namespaces().Create(p.CacheCtx,
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "cache-tier-"}}, metav1.CreateOptions{})
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "local-cache-"}}, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
 	r.namespace = ns.Name
-	r.store, err = startCacheEmulator(r.rec)
-	if err != nil {
-		return err
-	}
-	for key, content := range p.CacheDurable {
-		if !filepath.IsLocal(key) {
-			return fmt.Errorf("durable key escapes owned store: %q", key)
-		}
-		raw, err := plainTarOfOneFile("cached.txt", content)
-		if err != nil {
-			return err
-		}
-		r.store.put(key, raw, time.Now())
-	}
-	// Standalone data-plane daemons have no daemon-side peer resolver. The
-	// ATC's discovery/client must provide the fallback under test.
-	var args []string
-	if p.CacheCapable {
-		args = r.store.daemonArgs()
-	}
 	// Discovery uses endpoint IPs directly. Standalone daemons do not label
 	// nodes, so no Node object or reported Node address is needed here. The
 	// port is free on the addresses the cache daemons actually bind, not on
@@ -85,7 +63,7 @@ func (p ClosingCachePlan) ensureCache() error {
 	daemons, port, err := startSharedPortDaemons(r.addresses,
 		func(_ int, host string, port int) (*realDaemon, error) {
 			return startConfiguredDaemon("http", http.DefaultClient,
-				daemonOptions{Host: host, Port: port}, args...)
+				daemonOptions{Host: host, Port: port})
 		})
 	if err != nil {
 		return err
@@ -117,11 +95,6 @@ func (p ClosingCachePlan) ensureCache() error {
 				}
 			}
 		}
-	}
-	if !p.CacheReachable {
-		// The bucket goes away under daemons configured for it: every cache
-		// request now fails at the transport.
-		r.store.stop()
 	}
 	slice, err := r.api.Clientset.DiscoveryV1().EndpointSlices(r.namespace).Create(p.CacheCtx, p.cacheEndpoints(false), metav1.CreateOptions{})
 	if err != nil {
@@ -166,8 +139,7 @@ func (p ClosingCachePlan) cacheEndpoints(withPeer bool) *discoveryv1.EndpointSli
 func (p ClosingCachePlan) closingConfig() jetbridge.Config {
 	r := p.CacheRuntime
 	return jetbridge.Config{Namespace: r.namespace, ArtifactDaemonService: "artifact-daemon",
-		ArtifactDaemonPort: r.port, ArtifactDaemonHostPath: r.daemons[0].Root,
-		ArtifactDaemonWarmTimeout: 5 * time.Second}
+		ArtifactDaemonPort: r.port, ArtifactDaemonHostPath: r.daemons[0].Root}
 }
 
 func (p ClosingCachePlan) reclaimCache(key string) error {
@@ -210,55 +182,4 @@ func (p ClosingCachePlan) revealCachePeer() error {
 	next.ResourceVersion = old.ResourceVersion
 	_, err = slices.Update(p.CacheCtx, next, metav1.UpdateOptions{})
 	return err
-}
-
-func closingRegister(p ClosingCachePlan, key, durableKey string) error {
-	if err := p.ensureCache(); err != nil {
-		return err
-	}
-	r := p.CacheRuntime
-	if err := r.client.RegisterAlias(p.CacheCtx, key, filepath.Join(r.daemons[0].Root, "steps", key), durableKey); err != nil {
-		return fmt.Errorf("register alias %q: %w", key, err)
-	}
-	// Positive registration must finish its asynchronous upload before the
-	// next step reclaims the source. For no-key registration, observe the
-	// forbidden row-ID object for a bounded interval; no upload is expected.
-	object := durableKey
-	wait := 5 * time.Second
-	if object == "" {
-		object, wait = key, 500*time.Millisecond
-	}
-	if !filepath.IsLocal(object) {
-		return fmt.Errorf("invalid durable fixture key: %q", object)
-	}
-	deadline := time.NewTimer(wait)
-	defer deadline.Stop()
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		raw, found := r.store.get(object)
-		if found {
-			if durableKey == "" {
-				return fmt.Errorf("registration without a content key filed durable object %q", object)
-			}
-			files, err := filesInTar(bytes.NewReader(raw))
-			if err != nil {
-				return fmt.Errorf("uploaded durable object is not a complete tar: %w", err)
-			}
-			if len(files) != 1 || files["cached.txt"] != p.CacheLocal[key] {
-				return fmt.Errorf("uploaded durable object contains unexpected files: %v", files)
-			}
-			return nil
-		}
-		select {
-		case <-p.CacheCtx.Done():
-			return p.CacheCtx.Err()
-		case <-deadline.C:
-			if durableKey == "" {
-				return nil
-			}
-			return fmt.Errorf("registered cache never reached durable object %q", durableKey)
-		case <-tick.C:
-		}
-	}
 }

@@ -130,7 +130,7 @@ type ArtifactOutcome struct {
 // Database-backed cache and failure fixtures
 // ---------------------------------------------------------------------------
 
-// legacyResourceCache persists the pre-durable-key cache shape used by these
+// legacyResourceCache persists the pre-content-key cache shape used by these
 // rc-ID scenarios. Use the production factory for the config, cache and build
 // use, then reload the deliberately legacy row through that same factory.
 func (w WorkerReady) legacyResourceCache(id int) (db.ResourceCache, error) {
@@ -180,8 +180,8 @@ func (w WorkerReady) legacyResourceCache(id int) (db.ResourceCache, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reload legacy cache: %w", err)
 	}
-	if !found || cache.DurableKey() != "" {
-		return nil, fmt.Errorf("legacy cache %d was not reloaded without a durable key", id)
+	if !found || cache.ContentKey() != "" {
+		return nil, fmt.Errorf("legacy cache %d was not reloaded without a content key", id)
 	}
 	return cache, nil
 }

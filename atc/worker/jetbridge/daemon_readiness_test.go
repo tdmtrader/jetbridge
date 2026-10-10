@@ -79,7 +79,7 @@ func TestDaemonClient_DiscoveryUsesReadyDaemonsOnly(t *testing.T) {
 				t.Errorf("ProbeStepArtifact: expected found=%v, got (%q, %v)", tc.usable, ip, found)
 			}
 
-			err = client.RegisterAlias(ctx, "rc-1", "/artifact-store/steps/handle/dir", "")
+			err = client.RegisterAlias(ctx, "rc-1", "/artifact-store/steps/handle/dir")
 			if tc.usable && err != nil {
 				t.Errorf("RegisterAlias: expected success, got %v", err)
 			}

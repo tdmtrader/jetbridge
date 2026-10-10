@@ -209,9 +209,6 @@ func TestAC2_SwappedAliasTargetIsNeverRead(t *testing.T) {
 		})
 	}
 
-	// The durable half lives in registry_relative_ac_inpkg_test.go: it needs a
-	// configured tier, whose constructor is unexported, and without one the
-	// handler 501s before reaching the registry lookup.
 }
 
 // AC4's positive half, at the level the spec states it: EVERY value in

@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/tar"
-	"code.cloudfoundry.org/lager/v3"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +15,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/hangar/output/ledger"
 )
@@ -88,8 +89,7 @@ func validateSymlinkTarget(entryName, linkname string) error {
 // form is the one that matters.
 //
 // The rule is "a contained relative path", NOT "a single path segment".
-// durable.ValidateKey caps at two segments and real keys run to three
-// ("steps/build-42/result"), so reusing it would refuse production traffic.
+// Real keys include three segments ("steps/build-42/result").
 func validateRequestKey(key string) error {
 	if key == "" {
 		return errors.New("request key is empty")
@@ -1047,7 +1047,6 @@ const (
 	reasonMissingField   = "missing_field"
 	reasonBodyTooLarge   = "body_too_large"
 	reasonCapability     = "capability"
-	reasonNotConfigured  = "not_configured"
 	reasonArchive        = "archive"
 	reasonNotFound       = "not_found"
 	reasonClientCert     = "client_cert"

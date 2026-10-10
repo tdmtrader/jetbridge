@@ -5,12 +5,9 @@
 // It is a shared kernel in the same sense as artifactcap: no transport policy
 // beyond HTTP itself, no filesystem, no Kubernetes, and no hangar. Both ends
 // name these types, so a field renamed on one side fails to compile on the
-// other instead of drifting into a body the handler silently ignores. The
-// daemon's durable tier must never link hangar (ADR-0002), and this package is
-// imported by its handlers, which is why nothing here is a hangar type.
+// other instead of drifting into a body the handler silently ignores.
 //
 // Words used the way atc/worker/jetbridge/CONTEXT.md uses them: an artifact
 // key names bytes a daemon holds; stream in and stream out move a tar over a
-// key; mirror copies a key to peers; warm restores a key from the durable
-// tier; a refusal is the daemon's considered no.
+// key; mirror copies a key to peers; a refusal is the daemon's considered no.
 package artifactwire

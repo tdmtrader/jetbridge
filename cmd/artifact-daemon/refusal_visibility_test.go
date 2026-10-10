@@ -124,8 +124,7 @@ func TestArchitecture_HandlersRefuseThroughOnePath(t *testing.T) {
 	// Sites that may write a 4xx directly, with the reason they are not
 	// refusals a caller can act on.
 	known := map[string]string{
-		"server.go:Server.refuse":                         "IS the one path",
-		"durable_handlers.go:Server.handleDurableRestore": "its 404 is a durable-store MISS, a normal outcome, not a refused request",
+		"server.go:Server.refuse": "IS the one path",
 	}
 
 	scanned := 0

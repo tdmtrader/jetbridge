@@ -114,3 +114,6 @@ value group and use `metrics.enabled` for Prometheus metrics. `tracing.*`
 continues to configure traces. The three metrics values leave the budget;
 `otelMetrics` retains only an open schema tombstone and removal error for one
 release. OTel-only measurements are retired, with no promise of emitter parity.
+
+Amended 2026-10-09 — Amended by C2 (durable resource-cache tier removal):
+The binary resource-cache tier is removed as well. `hangarOutput.cacheBucket` is a rejected open-schema tombstone for one release, and the chart value budget drops by one. The existing `artifactDaemon.durable` tombstone remains.

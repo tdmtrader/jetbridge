@@ -57,7 +57,7 @@ step output ──register──▶ artifact key ──mirror──▶ peers
                              │
                              ├── read refreshes age
                              └── sweeper deletes after TTL (steps only)
-resource cache ──register──▶ content key ──▶ durable tier (fail-open) ──warm──▶ any node
+resource cache ──register──▶ content key alias ──probe──▶ local holder or peer
 ```
 
 - The daemon's registry is the node's source of truth. Keys from scanning
@@ -67,13 +67,10 @@ resource cache ──register──▶ content key ──▶ durable tier (fail-
   after asking the source ledger. An unreadable ledger refuses too.
 - Mirroring fans out after local data settles, to a bounded number of
   peers. Zero disables it; a negative count means every peer.
-- The sweeper deletes step outputs older than the TTL and never touches
-  resource caches. The durable timeout must be shorter than the TTL.
-- The maintenance sweep is the only thing that deletes from the durable
-  tier, by retention class age.
-- Warms are tried against the top-ranked owners in order so concurrent
-  builds converge and a dead first choice does not block. Any warm that
-  registers nothing is suppressed briefly, miss or failure alike.
+- The sweeper deletes expired step directories and their resource-cache
+  aliases. Persisted aliases survive daemon restarts subject to that expiry.
+- Cache discovery probes ready local holders; a read can fall back to a peer.
+  A cache miss reruns the get. There is no resource-cache object store.
 
 ## Task cache identity
 

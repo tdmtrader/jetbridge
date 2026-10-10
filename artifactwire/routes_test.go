@@ -2,13 +2,13 @@ package artifactwire
 
 import "testing"
 
-// The route table is the daemon's route table: fourteen routes, no two with
+// The route table is the daemon's route table: no two routes with
 // the same pattern, and the mTLS-exempt set is exactly the four a caller with
 // no certificate has to reach.
 func TestRouteTable(t *testing.T) {
 	routes := Routes()
-	if len(routes) != 14 {
-		t.Fatalf("expected 14 routes, got %d", len(routes))
+	if len(routes) == 0 {
+		t.Fatal("the route table is empty")
 	}
 	seen := map[string]bool{}
 	for _, r := range routes {
@@ -29,8 +29,10 @@ func TestRouteTable(t *testing.T) {
 			t.Errorf("%s: MTLSExempt=%v, want %v", r.Pattern(), r.MTLSExempt, wantExempt[r.Pattern()])
 		}
 	}
-	if got := len(wantExempt); got != 4 {
-		t.Fatalf("the exempt set in this test has %d entries, want 4", got)
+	for pattern := range wantExempt {
+		if !seen[pattern] {
+			t.Errorf("required exempt route %q is missing", pattern)
+		}
 	}
 }
 

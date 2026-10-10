@@ -1,36 +1,7 @@
-Feature: Reaching the artifact daemon over mTLS, and agreeing on who warms a cache
+Feature: Reaching the artifact daemon over mTLS
 
-  Two things the ATC has to get right about the artifact daemon before any
-  build sees a byte: it has to be able to talk to a daemon that will not talk
-  to strangers, and every web process has to independently agree on which
-  daemon should pull a cache out of durable storage.
+  These cases exercise the production ATC volume client against a real daemon.
 
-  Both were previously guarded by reading fields off constructed objects. The
-  mTLS half counted `transport.TLSClientConfig.Certificates`, checked
-  `RootCAs != nil`, and compared `ServerName` to a string; the warm half
-  compared two `[]daemonEndpoint` slices for element equality. None of that
-  can tell a certificate that is configured from one that is presented, or a
-  ServerName that was copied from one that is used to verify anything. The
-  scenarios below use a real TLS daemon and a real handshake, and a cluster
-  with a daemon on each of two nodes, so the assertion is on the artifact and
-  on where the cache ended up.
-
-  Source: daemon_tls_test.go (the ATC-side mTLS client) and daemon_warm_test.go
-  (rendezvous ownership). Neither has a requirement identifier; both guard
-  named production regressions, recorded below with the scenario that carries
-  them.
-
-  # -------------------------------------------------------------------------
-  # The mTLS data plane
-  # -------------------------------------------------------------------------
-
-  # The daemon protects artifact routes with client-certificate middleware.
-  # A web whose client certificate is configured but never presented cannot
-  # read a single artifact: every get step that needs a peer's output fails,
-  # and the build
-  # goes red for a reason that looks like a network fault. The daemon here
-  # really does refuse anyone it cannot verify, so the artifact arriving is
-  # the proof that the certificate reached the handshake.
   Scenario: A daemon that only serves clients it can authenticate serves the ATC
     Given an artifact daemon serving over TLS
     And it only serves clients whose certificate it can verify
@@ -79,52 +50,3 @@ Feature: Reaching the artifact daemon over mTLS, and agreeing on who warms a cac
     Then the read is refused, naming "certificate"
 
   # -------------------------------------------------------------------------
-  # Who warms a cache
-  # -------------------------------------------------------------------------
-
-  # Every ATC process must independently choose the same daemon to pull a given
-  # cache out of the bucket. When they disagree, N concurrent builds each drag
-  # a private copy of the same multi-gigabyte object onto a different node —
-  # the exact egress bill the durable tier exists to avoid.
-  #
-  # Agreement is reached by ranking daemons with a rendezvous hash, and what
-  # that hash is keyed on is the whole question. A DaemonSet rolling update
-  # replaces every pod at once and the addresses are handed back out from a
-  # pool, so ranking on the address would reshuffle the owner of EVERY key at
-  # the single most common churn event in the cluster — invalidating every
-  # warmed cache in the fleet simultaneously, which is worse than not caching
-  # at all. Ranking on the node name survives it: pods come and go, nodes stay.
-  #
-  # Real daemon processes bind two private addresses and restart on swapped
-  # addresses; a real EndpointSlice publishes the new mapping. This checks
-  # ownership through daemon replacement, not the DaemonSet controller itself.
-  # Before replacement the daemon DELETE API reclaims every local copy;
-  # otherwise the next lookup would be a local hit and bypass ranking.
-  # The durable key uses the production store's accepted prefix/key format.
-  Scenario: A rolling update does not move which node owns a cache
-    Given artifact daemons on two nodes with one durable store behind them
-    And only the durable store holds the object "resource-caches/rc-cafe" containing "cached resource data"
-    When a get step warms the resource cache "rc-42" under content key "resource-caches/rc-cafe"
-    And every node's local copy of "rc-42" is reclaimed
-    And the DaemonSet rolls and every pod comes back answering on a different address
-    And a get step warms the resource cache "rc-42" under content key "resource-caches/rc-cafe"
-    Then every warm was served
-    And both warms left the cache on the same node
-
-  # DISPOSITION — the rest of daemon_tls_test.go stays in Go. daemonURLScheme
-  # and daemonTLSServerName are pure functions mapping one input to one string;
-  # newDaemonStreamingHTTPClient's "no whole-request timeout" guards a real
-  # shipped bug (a timeout severing a tar stream mid-body as "unexpected EOF")
-  # but a scenario that reddened on it would need a daemon trickling an
-  # artifact for longer than the timeout, which is slow and only weakly
-  # discriminating; and the two BuildFetchInitContainers cases read substrings
-  # out of a generated shell script, which is the mechanism this file and
-  # artifact-daemon.feature both refuse to talk about.
-  #
-  # DISPOSITION — the rest of daemon_warm_test.go stays in Go too.
-  # Order-independence and key spreading are properties of a returned slice
-  # over a table of inputs, and at the seam order-independence degenerates into
-  # the same "same node twice" assertion as the scenario above with a strictly
-  # weaker discriminator. The negative cache's eviction assertion reads an
-  # unexported map directly, and its behavioural form would need a sixty-second
-  # wait or an injectable clock that does not exist.

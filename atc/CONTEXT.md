@@ -51,7 +51,7 @@ across pipelines share checks and versions.
 
 **Resource cache**:
 The fetched content of one resource version with given params. It is
-addressed by content, which is what makes it eligible for durable storage.
+addressed by content so a recreated database row still finds the same cache.
 
 **Task cache**:
 A directory a task declares as persisting between builds of the same job.

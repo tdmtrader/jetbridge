@@ -61,7 +61,7 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 		data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		return response.StatusCode, data, err
 	}
-	archive, err := durableTarOfOneFile("manifest.json", "versioned HTTP invocation")
+	archive, err := plainTarOfOneFile("manifest.json", "versioned HTTP invocation")
 	if err != nil {
 		return err
 	}
@@ -246,7 +246,7 @@ func exerciseSharedInvocationAPI(in RunInputAdmission, auth *AuthFixture, replay
 	if !ok {
 		return fmt.Errorf("shared client has no input upload and versioned admission operations")
 	}
-	archive, err := durableTarOfOneFile("manifest.json", "shared review client input")
+	archive, err := plainTarOfOneFile("manifest.json", "shared review client input")
 	if err != nil {
 		return err
 	}

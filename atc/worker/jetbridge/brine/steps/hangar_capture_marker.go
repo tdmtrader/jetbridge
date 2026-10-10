@@ -408,11 +408,6 @@ func HangarCaptureMarkerDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Checks over a held source. The daemon's own status line is spelled
-		// "the Hangar daemon answers" rather than reusing the durable tier's
-		// "the daemon's answer is {int}": one pattern has exactly one input
-		// type, and the shadowing guard catches a second definition of a
-		// sentence that already exists.
 		CheckInt[HeldSource]("the Hangar daemon answers {int}, the marker held",
 			"the daemon's status",
 			func(in HeldSource) (int, error) {

@@ -74,7 +74,7 @@ func TestConfiguredTLSDialsHTTPSWithTheTriple(t *testing.T) {
 	if c.WgetOptions() != "--no-check-certificate" {
 		t.Errorf("wget options %q: an init container dials by node IP, which is not a SAN", c.WgetOptions())
 	}
-	for name, via := range map[string]*http.Client{"plain": c.plain, "streaming": c.streaming, "restore": c.restore} {
+	for name, via := range map[string]*http.Client{"plain": c.plain, "streaming": c.streaming} {
 		cfg := via.Transport.(*http.Transport).TLSClientConfig
 		if cfg == nil {
 			t.Fatalf("%s: no TLS config on an https client", name)

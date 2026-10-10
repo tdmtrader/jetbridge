@@ -62,7 +62,7 @@ func TestPlainClientDialsHTTP(t *testing.T) {
 	if c.Scheme() != "http" || c.Port() != defaultPort {
 		t.Errorf("plain client: scheme %q port %d", c.Scheme(), c.Port())
 	}
-	if c.plain.Timeout != 0 || c.streaming.Timeout != 0 || c.restore.Timeout != 0 {
+	if c.plain.Timeout != 0 || c.streaming.Timeout != 0 {
 		t.Error("a whole-request timeout would sever a long tar stream mid-read")
 	}
 	if c.streaming.Transport.(*http.Transport).ResponseHeaderTimeout <= 0 {

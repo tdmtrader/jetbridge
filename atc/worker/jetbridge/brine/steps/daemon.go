@@ -34,14 +34,6 @@ package steps
 //     daemon's filesystem branch fails these scenarios instead of passing
 //     them.
 //
-// A divergence the double taught wrongly, now gone: it advertised the
-// durable-tier header on EVERY route. The daemon advertises it from
-// /resource-caches only (advertiseDurableTier is called by the two
-// resource-cache handlers and nowhere else). No scenario asserted the
-// difference, but a reader would have taken the double's version for the
-// contract; the durable scenarios now learn the capability from the route that
-// really carries it, and would fail if that route stopped carrying it.
-//
 // The peer-only probe also uses real daemons and Kubernetes discovery. Its
 // setup verifies a successful peer resolve and the exact bytes, reclaims the
 // demonstration copy, then leaves only the empty node visible to the ATC.
@@ -132,14 +124,12 @@ type DaemonFetch struct {
 // ProbeOutcome retains the returned values and passive observation of the
 // actual requests, so misses cannot hide an unwanted resolve fallback.
 type ProbeOutcome struct {
-	Found          bool
-	IP             string
-	DurableCapable bool
-	EndpointCount  int
-	Err            error
-	expectedIP     string
-	fetch          *DaemonFetch
-	observation    *daemonProbeObservation
+	Found       bool
+	IP          string
+	Err         error
+	expectedIP  string
+	fetch       *DaemonFetch
+	observation *daemonProbeObservation
 }
 
 // -----------------------------------------------------------------------
@@ -410,22 +400,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// A separate Given rather than a refinement of the one above, because
-		// the durable tier is a boot flag: --durable-store decides it before
-		// the first request, and a running daemon cannot acquire one. The
-		// store is a cache bucket of its own (cache_emulator.go) so the node's
-		// storage root stays what the node holds.
-		brine.DefineMap[brine.Empty, DaemonPlan](
-			"an artifact daemon with a durable tier",
-			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
-				store, err := startCacheEmulator(rec)
-				if err != nil {
-					return DaemonPlan{}, err
-				}
-				return startDaemonPlan(rec, store.daemonArgs()...)
-			},
-		),
-
 		brine.DefineMap[brine.Empty, DaemonPlan](
 			"a cluster with no artifact daemons",
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
@@ -690,11 +664,9 @@ func DaemonDefinitions() []brine.StepDefinition {
 				}
 				probe, found := client.ProbeResourceCache(in.Ctx, key)
 				return ProbeOutcome{
-					Found:          found,
-					IP:             probe.IP,
-					DurableCapable: probe.DurableCapable,
-					EndpointCount:  len(probe.Endpoints),
-					observation:    observation,
+					Found:       found,
+					IP:          probe.IP,
+					observation: observation,
 				}, nil
 			},
 		),
@@ -970,28 +942,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected no daemon address, got %q", in.IP)
 				}
 				return nil
-			}),
-
-		CheckThat[ProbeOutcome]("the daemon is known to have a durable tier",
-			func(in ProbeOutcome) error {
-				if !in.DurableCapable {
-					return fmt.Errorf("the probe did not learn the daemon has a durable tier")
-				}
-				return nil
-			}),
-
-		CheckThat[ProbeOutcome]("the daemon is not known to have a durable tier",
-			func(in ProbeOutcome) error {
-				if in.DurableCapable {
-					return fmt.Errorf("the probe credited a durable tier to a daemon that never advertised one")
-				}
-				return nil
-			}),
-
-		CheckInt[ProbeOutcome]("the probe carries back {int} daemon addresses",
-			"the number of daemon addresses carried back",
-			func(in ProbeOutcome) (int, error) {
-				return in.EndpointCount, nil
 			}),
 	}
 }

@@ -117,8 +117,8 @@ func TestWireClientAgainstTheRealDaemon(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HeadResourceCache: %v", err)
 		}
-		if probe.Found || probe.DurableCapable {
-			t.Fatalf("a daemon with no durable tier and no such key answered %+v", probe)
+		if probe.Found {
+			t.Fatalf("a daemon with no such key answered %+v", probe)
 		}
 	})
 

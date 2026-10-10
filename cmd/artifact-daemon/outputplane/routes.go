@@ -295,7 +295,7 @@ func (server *Server) protect(declared route) http.Handler {
 		// The extension gate, and it is FIRST because it is the only refusal
 		// here that is about this daemon rather than about this request. A
 		// component without the capture extension refuses durable output
-		// capture with a typed result and no cache-tier fallback. Answering
+		// capture with a typed result. Answering
 		// "forbidden" or "bad request" would tell a caller to fix the call;
 		// answering 501 tells it this daemon does not do this, which is the
 		// one answer that does not produce a retry.
@@ -549,8 +549,7 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, output.ErrCaptureDisabled):
 		// 501 and not 403 or 404. "This component does not implement the
 		// capture extension" is a statement about the daemon; a caller that
-		// read it as "not permitted" or "no such route" would retry, and the
-		// one retry that must never happen is falling back to the cache tier.
+		// read it as "not permitted" or "no such route" would retry needlessly.
 		status = http.StatusNotImplemented
 	case errors.Is(err, output.ErrInfrastructure), errors.Is(err, output.ErrCorrupt):
 		status = http.StatusServiceUnavailable

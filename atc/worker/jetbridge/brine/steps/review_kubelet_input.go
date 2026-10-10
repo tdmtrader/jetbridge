@@ -58,7 +58,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		publisher, uid, err := source.ForInputUpload(ctx)
 		return runs.InputUploadNode{UID: uid, Publisher: publisher}, err
 	}})
-	archive, err := durableTarOfOneFile("manifest.json", "sealed review input")
+	archive, err := plainTarOfOneFile("manifest.json", "sealed review input")
 	if err != nil {
 		return err
 	}

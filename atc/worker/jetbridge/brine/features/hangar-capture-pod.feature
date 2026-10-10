@@ -152,7 +152,7 @@ Feature: What a capture-selected task's Pod says
   # The refusal is at ADMISSION and not an omission in the Pod. A worker that
   # quietly built the ordinary pod would produce a step that ran, succeeded and
   # captured nothing, leaving the pending capture row to fail at its deadline —
-  # and there is no cache-tier fallback to degrade into.
+  # and the refusal reaches the caller.
   #
   # Reddened by: Container.buildPod dropping the OutputPlaneEnabled arm, so a
   # base-only worker builds the capture pod anyway — the refusal line reddens

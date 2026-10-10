@@ -98,7 +98,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	ref := runs.TemplateRef{Team: team.Name(), Pipeline: template.PipelineRef()}
 	principal := invocationPrincipal("owner")
 	name := "change"
-	archive, err := durableTarOfOneFile("manifest.json", "local input review")
+	archive, err := plainTarOfOneFile("manifest.json", "local input review")
 	if err != nil {
 		return err
 	}

@@ -799,7 +799,9 @@
         "activationEpoch": {
           "$ref": "#/definitions/removed"
         },
-        "cacheBucket": {},
+        "cacheBucket": {
+          "description": "Removed; retained as an open tombstone for the template removal diagnostic."
+        },
         "strictInputBucket": {
           "$ref": "#/definitions/removed"
         },

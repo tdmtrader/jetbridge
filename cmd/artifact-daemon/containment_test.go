@@ -381,8 +381,7 @@ func TestPeerFetch_RetryReportsTheRealCause(t *testing.T) {
 // Round-two regression: a Fetch into a destination that already holds unrelated
 // content must deliver the fetched artifact, not report success and leave the
 // stale bytes in place. An earlier revision treated a rename onto an existing
-// directory as success — a policy borrowed from DurableTier.Restore, whose
-// destination corresponds to a bucket key. This destination is chosen by the
+// directory as success. This destination is chosen by the
 // caller, so "something is already here" does not mean "this artifact is
 // already here".
 func TestPeerFetch_ReplacesUnrelatedExistingDestination(t *testing.T) {

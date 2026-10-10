@@ -130,35 +130,6 @@ type DeleteClient interface {
 	DeleteExact(ctx context.Context, bucket, key string, generation int64) error
 }
 
-// Namespaces are the two dedicated places Hangar and the artifact daemon
-// keep objects: a GCS bucket each, or a namespace each on one disk store.
-//
-//   - Cache is the artifact daemon's fail-open resource cache (ADR-0002): every
-//     miss, timeout or corrupt object there is "not here", and the daemon may
-//     expire its own objects.
-//   - Output is the fail-closed result plane: a Run's input publications and
-//     captured results alike.
-//
-// Fail-open and fail-closed reads never share a namespace, and the one holder
-// of a cache delete never shares a namespace with an exact tree. That is the
-// whole separation ADR-0002 asks for, stated as configuration rather than as
-// the depth of an object key. Every process that is handed more than one of
-// these refuses to start when Validate fails.
-type Namespaces struct {
-	Cache  string
-	Output string
-}
-
-// Validate refuses the two configured namespaces being equal. An empty name
-// is a namespace this process does not use and is never compared.
-func (n Namespaces) Validate() error {
-	if n.Cache != "" && n.Cache == n.Output {
-		return fmt.Errorf("the cache and output namespaces are both %q: the cache and output "+
-			"stores must be two different buckets (GCS) or namespaces (disk)", n.Cache)
-	}
-	return nil
-}
-
 // ValidateGeneration rejects accidental current-object operations on exact paths.
 func ValidateGeneration(generation int64) error {
 	if generation <= 0 {

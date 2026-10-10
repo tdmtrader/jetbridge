@@ -72,7 +72,7 @@ func TestAbsoluteSymlink_RefusedOnEveryPath(t *testing.T) {
 		}
 	}
 
-	t.Run("tar egress (GET, mirror, durable store)", func(t *testing.T) {
+	t.Run("tar egress (GET, mirror)", func(t *testing.T) {
 		s, _ := seed(t)
 		wantNamed(t, s.tarDirectory(io.Discard, "steps/build-1/out"))
 	})

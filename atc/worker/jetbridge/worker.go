@@ -47,7 +47,7 @@ type Worker struct {
 //   - VolumeRepo: LookupVolume finds no cache-backed volumes.
 //   - ArtifactLocator: with no ArtifactDaemonHostPath either, the worker has
 //     no storage backend. With a host path, a private locator is made.
-//   - DaemonClient: the storage backend cannot probe, warm or alias through
+//   - DaemonClient: the storage backend cannot probe or alias through
 //     the artifact daemons.
 //   - OutputControls: no output plane; no exact-execution call is reachable.
 //   - ExecutionPreparer: no admission gate before a container or its command.
@@ -316,22 +316,16 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
 // steps for the same resource cache skip the fetch. The alias maps the cache
 // key to the get step output's path on the daemon's hostPath; nothing on disk
 // is created or moved.
-//
-// A cache carrying a content key is also offered to the durable tier. One
-// without is registered node-locally only: its key is a row id, which cannot
-// name anything meant to outlive the row.
 func (w *Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCache, volume runtime.Volume) error {
 	if w.storageBackend == nil {
 		return nil
 	}
 
 	cacheKey := ResourceCacheKey(cache)
-	durableKey := DurableStorageKey(cache)
 
 	logger := lagerctx.FromContext(ctx).Session("register-resource-cache", lager.Data{
 		"cache-id": cache.ID(),
 		"key":      cacheKey,
-		"durable":  durableKey,
 		"handle":   volume.Handle(),
 	})
 
@@ -345,7 +339,7 @@ func (w *Worker) RegisterResourceCache(ctx context.Context, cache db.ResourceCac
 	}
 
 	logger.Info("registering", lager.Data{"node": nodeName})
-	return w.storageBackend.RegisterResourceCache(ctx, cacheKey, durableKey, handle, nodeName)
+	return w.storageBackend.RegisterResourceCache(ctx, cacheKey, handle, nodeName)
 }
 
 // FindDaemonResourceCache probes all live daemon pods for a cached resource.
@@ -373,12 +367,8 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cache db.ResourceC
 		return nil, false, nil
 	}
 
-	// Probe live daemon pods for the cache, then — only on a miss, and only
-	// when the cache has a content key — ask one to warm it from the durable
-	// tier. Never returns an error: a cold cache is a re-download, not a
-	// failure.
 	logger.Info("probing-daemons")
-	vol, found := w.storageBackend.FindResourceCache(ctx, ResourceCacheKey(cache), DurableStorageKey(cache), w.Name())
+	vol, found := w.storageBackend.FindResourceCache(ctx, ResourceCacheKey(cache), w.Name())
 	if !found {
 		return nil, false, nil
 	}

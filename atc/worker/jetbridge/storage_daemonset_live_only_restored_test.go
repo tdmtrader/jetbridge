@@ -402,7 +402,7 @@ func TestDaemonSetBackend_RegisterResourceCache_TriggersMirrorBeforeAlias(t *tes
 	logger := lagertest.NewTestLogger("test")
 	b := NewDaemonSetBackend(cfg, locator, resolver, NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
 
-	if err := b.RegisterResourceCache(context.Background(), "rc-42", "", "container-handle-dir", "node-1"); err != nil {
+	if err := b.RegisterResourceCache(context.Background(), "rc-42", "container-handle-dir", "node-1"); err != nil {
 		t.Fatalf("RegisterResourceCache: %v", err)
 	}
 

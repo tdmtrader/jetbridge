@@ -70,7 +70,8 @@ import (
 // 194.
 // Deriving resolve capability expiry removes its TTL value, leaving 193.
 // Retiring ATC OTel metrics removes three values, leaving 190.
-const maxValues = 190
+// Removing the resource-cache bucket leaves 189.
+const maxValues = 189
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -164,6 +165,7 @@ var removedKeys = []string{
 	"otelMetrics",
 	"artifactDaemon.resolveCapability.ttl",
 	"artifactDaemon.durable",
+	"hangarOutput.cacheBucket",
 	"artifactDaemon.enabled",
 	"artifactDaemon.hangar.bucket",
 	"artifactDaemon.hangar.enabled",

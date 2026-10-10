@@ -32,11 +32,6 @@ type Config struct {
 	OutputPrefix    string
 	OutputTenant    string
 
-	// The bucket this one may not be. It is configuration rather than
-	// inference: a deployment that has a durable cache cannot be told "not
-	// that one" unless it can say which it is.
-	CacheBucket string
-
 	// MaxContentBytes and MaxEntries bound one tree: the regular-file content
 	// and the filesystem entries the canonicalizer admits, whether a capture
 	// canonicalizes a sealed step directory or a managed read materializes a
@@ -106,15 +101,14 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.OutputTokenFile, "output-token-file", "", "Disk storage publisher credential file.")
 	flags.StringVar(&config.OutputCACert, "output-ca-cert", "", "Disk storage CA certificate.")
 	flags.StringVar(&config.OutputEndpoint, "output-endpoint", "",
-		"Endpoint override for the output bucket's store. Empty means real GCS; set it for an emulator. It is a different flag from the artifact daemon's --durable-endpoint because it serves a different bucket under a different identity.")
+		"Endpoint override for the output bucket's store. Empty means real GCS; set it for an emulator.")
 	flags.StringVar(&config.OutputBucket, "output-bucket", "",
-		"The dedicated output bucket. It holds every tree the plane publishes -- captured outputs and input publications alike -- and is never the durable cache bucket.")
+		"The dedicated output bucket. It holds every tree the plane publishes -- captured outputs and input publications alike.")
 	flags.StringVar(&config.OutputPrefix, "output-prefix", "",
 		"Authenticated deployment key prefix inside the output bucket, so one bucket can serve several deployments. It is server configuration; no task or consumer can select or broaden it.")
 	flags.StringVar(&config.OutputTenant, "output-tenant", "",
 		"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key.")
-	flags.StringVar(&config.CacheBucket, "cache-bucket", "",
-		"The durable resource-cache bucket, named so that this daemon can refuse to be pointed at it. Empty means this deployment has none.")
+
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
 		"How long one background capture job may run: a seal (the wait for every container of the producing Pod to terminate, and the canonicalization after it) or a publish (the upload). Both are asynchronous -- the control plane polls them -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
 	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
@@ -217,7 +211,6 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 		Bucket:           config.OutputBucket,
 		DeploymentPrefix: config.OutputPrefix,
 		TenantID:         config.OutputTenant,
-		CacheBucket:      config.CacheBucket,
 	})
 }
 

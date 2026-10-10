@@ -27,8 +27,8 @@ Team ─┬─ Pipeline ─┬─ Job ─── Build
   every pipeline that hashes the same. This is the only way version history
   crosses pipelines.
 - A **resource cache** is identified by config, version and params. It is
-  cluster-wide and pipeline-blind; that is what makes it eligible for the
-  runtime's durable tier.
+  cluster-wide and pipeline-blind. Its content key names the runtime's
+  node-local aliases independently of the database row ID.
 
 ## Build lifecycle
 

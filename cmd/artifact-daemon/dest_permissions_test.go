@@ -9,7 +9,7 @@ package main_test
 // unreachable. The daemon's own staging dirs are created 0700 and promoted by
 // rename (which preserves the mode), so this has to be asserted on the
 // promoted directory itself, on every path that promotes one: local copy,
-// peer fetch, and durable restore.
+// and peer fetch.
 
 import (
 	"archive/tar"

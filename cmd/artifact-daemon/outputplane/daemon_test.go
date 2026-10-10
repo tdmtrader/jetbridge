@@ -50,7 +50,6 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 		OutputBucket:   bucket,
 		OutputPrefix:   "deployments/blue",
 		OutputTenant:   "tenant-a",
-		CacheBucket:    "deployment-durable-cache",
 
 		Key:                hangarKey(),
 		NodeUID:            "node-1",
@@ -71,16 +70,15 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Config){
-		"the durable cache bucket": func(c *Config) { c.OutputBucket = c.CacheBucket },
-		"a filesystem store":       func(c *Config) { c.OutputStore = "filesystem" },
-		"an S3-compatible store":   func(c *Config) { c.OutputStore = "s3" },
-		"no bucket":                func(c *Config) { c.OutputBucket = "" },
-		"no tenant":                func(c *Config) { c.OutputTenant = "" },
-		"no Hangar key":            func(c *Config) { c.Key = nil },
-		"a short Hangar key":       func(c *Config) { c.Key = []byte("short") },
-		"a non-positive timeout":   func(c *Config) { c.OperationTimeout = 0 },
-		"no content limit":         func(c *Config) { c.MaxContentBytes = 0 },
-		"a negative entry limit":   func(c *Config) { c.MaxEntries = -1 },
+		"a filesystem store":     func(c *Config) { c.OutputStore = "filesystem" },
+		"an S3-compatible store": func(c *Config) { c.OutputStore = "s3" },
+		"no bucket":              func(c *Config) { c.OutputBucket = "" },
+		"no tenant":              func(c *Config) { c.OutputTenant = "" },
+		"no Hangar key":          func(c *Config) { c.Key = nil },
+		"a short Hangar key":     func(c *Config) { c.Key = []byte("short") },
+		"a non-positive timeout": func(c *Config) { c.OperationTimeout = 0 },
+		"no content limit":       func(c *Config) { c.MaxContentBytes = 0 },
+		"a negative entry limit": func(c *Config) { c.MaxEntries = -1 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -137,7 +135,6 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 
 	for _, name := range []string{
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
-		"cache-bucket",
 		"output-timeout", "node-uid", "output-scratch-dir",
 		"output-max-content-bytes", "output-max-entries",
 	} {
@@ -146,17 +143,11 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 		}
 	}
 
-	// And the flags it must NOT have. A durable-store flag here would be the
-	// bucket isolation undone by a helm value; the Hangar key and the mount
-	// switch are the daemon's own flags, loaded before the node is labelled,
-	// and a second spelling of either here would be a second key path.
 	for _, forbidden := range []string{
-		"durable-store", "durable-bucket", "durable-endpoint", "durable-path",
 		"storage-path", "hangar-key", "execution-control",
 	} {
 		if flags.Lookup(forbidden) != nil {
-			t.Errorf("the output plane declares --%s. It has no cache client; a flag that "+
-				"lets an operator give it one is the isolation undone by configuration", forbidden)
+			t.Errorf("the output plane duplicates daemon flag --%s", forbidden)
 		}
 	}
 

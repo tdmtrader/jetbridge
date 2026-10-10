@@ -162,7 +162,7 @@ func waitForPeerFile(ctx context.Context, peer *realNode, path, want string) err
 }
 
 // daemonKubeconfig gives production daemons credentials for the owned real API.
-// Artifact peers and warm-ownership use the same credential lifecycle.
+// Artifact peers use the same credential lifecycle.
 func daemonKubeconfig(api *realCluster, rec *brine.Recorder) (string, error) {
 	credentials, err := AttributedTempDir("brine-peer-credentials-")
 	if err != nil {

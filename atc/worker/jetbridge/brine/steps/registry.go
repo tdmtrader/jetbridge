@@ -68,7 +68,6 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DaemonMTLSDefinitions()...)
 	defs = append(defs, RealDaemonDefinitions()...)
 	defs = append(defs, ArtifactRecordingDefinitions()...)
-	defs = append(defs, DaemonDurableDefinitions()...)
 	defs = append(defs, DaemonContainmentDefinitions()...)
 	defs = append(defs, DaemonMirroringDefinitions()...)
 	defs = append(defs, DaemonCrossNodeDefinitions()...)

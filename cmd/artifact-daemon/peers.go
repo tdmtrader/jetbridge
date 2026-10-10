@@ -264,8 +264,8 @@ func (p *PeerResolver) FetchInto(ctx context.Context, peerIP, key string, parent
 			continue
 		}
 
-		// Extract into a sibling temp directory and promote by rename, the
-		// same discipline DurableTier.Restore uses. Extracting straight into
+		// Extract into a sibling temp directory and promote by rename.
+		// Extracting straight into
 		// the destination had two consequences: a refused archive left
 		// everything written before the refusal sitting at the destination, and
 		// the next retry then re-extracted over that residue and failed early
@@ -290,9 +290,7 @@ func (p *PeerResolver) FetchInto(ctx context.Context, peerIP, key string, parent
 		// Clear any existing destination before promoting, the same way
 		// copyArtifact does for the registry and filesystem resolve paths that
 		// feed this identical dest. An earlier version treated a rename onto an
-		// existing directory as success, copied from DurableTier.Restore — but
-		// Restore's destination corresponds to a bucket key, so "either copy is
-		// equally valid" holds there. This dest is chosen by the caller, and
+		// existing directory as success. This dest is chosen by the caller, and
 		// distinct keys legitimately share one, so a directory already sitting
 		// here is not necessarily this artifact.
 		//

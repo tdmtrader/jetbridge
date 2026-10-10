@@ -83,7 +83,6 @@ func (cmd *RunCommand) hangarOutputNamespace() (output.OutputNamespace, error) {
 		Bucket:           cmd.Kubernetes.OutputBucket,
 		DeploymentPrefix: cmd.Kubernetes.OutputPrefix,
 		TenantID:         cmd.Kubernetes.OutputTenant,
-		CacheBucket:      cmd.Kubernetes.CacheBucket,
 	})
 }
 
