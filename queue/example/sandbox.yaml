@@ -1,0 +1,41 @@
+# A complete queue config with placeholder values. Replace every one before use.
+# Strict: an unknown key is refused. Keys left out take the defaults shown.
+apiVersion: jetbridge.dev/queue/v2
+
+repository:
+  uri: https://git.example.invalid/team/repo.git  # required; holds main and every queue ref
+  main: main                                      # default: core
+  candidate: queue-next                           # scratch branch the queue force-pushes
+
+admission:
+  prefix: refs/queue/admit/                       # push <sha>:refs/queue/admit/<id>
+  control_prefix: refs/queue/control/             # where `queue resume` leaves its request
+
+batch:
+  max: 4                # most changes tested together
+  retry_none: 1         # retries on a missing verdict before the queue pauses
+  strategy: serial
+
+compose:
+  committer:  # one squashed commit per change, titled land(<id>)
+    name: merge-queue
+    email: merge-queue@localhost
+
+runner:
+  kind: jetbridge
+  url: https://ci.example.invalid     # the JetBridge web node
+  team: main
+  pipeline: queue-example             # see README.md in this directory
+  job: test-candidate                 # the job that tests the candidate
+  resource: candidate                 # the resource that follows repository.candidate
+  credential: file:/path/to/token     # a file holding a bare bearer token
+  wait_cap: 1h                        # a build not done by then is no verdict
+
+lander:
+  max_failures: 3                     # failed landings in a row before health raises the alarm
+  lease_ref: refs/queue/lease
+
+notify: {kind: log, path: "-"}        # one JSON line per event on stdout
+
+store:
+  ref: refs/queue/state

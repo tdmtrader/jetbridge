@@ -1,0 +1,84 @@
+Feature: A hook script on main regenerates files before a land
+  The repository can keep a hook script on main. The queue reads it from main,
+  never from a queued change. It asks the script which files it owns, the test
+  job runs it on the candidate, and the queue lands what it regenerated.
+
+  Scenario: Changes that both touch a generated file compose, keeping main's copy for the hook to regenerate
+    Given main has a hook script that owns a generated file, and changes "a" and "b" both edit that file
+    When the batch "a", "b" is composed onto main
+    Then the candidate composes, the hook was only asked which files it owns and which lists it merges
+
+  Scenario: The files a hook owns are asked of main's script, never of one a queued change brings
+    Given change "b" rewrites the hook script to own a file "a" and "b" both edit
+    When the batch "a", "b" is composed onto main
+    Then "b" is named as the conflict
+
+  Scenario: A hook script that cannot say what it owns gives no verdict
+    Given main has a hook script that exits with status 3
+    When the change "a" is composed onto main
+    Then composing fails with no verdict
+
+  Scenario: With no hook script on main a land composes as it does without one
+    Given the config names a hook script that main does not have
+    When two changes that edit the same file are composed onto main
+    Then the second is named as the conflict and no hook ran
+
+  Scenario: A hook script is a path in the repository and excludes a hook command
+    Given a queue config file whose hook script is absolute or climbs out, or comes with a hook command or owned paths
+    When the config file is loaded
+    Then loading is refused
+
+  Scenario: A land refreshes the generated boundaries before it reaches main
+    Given main has a hook script, and the test job published the hook's commit on the candidate
+    When the candidate passes and lands
+    Then main is the hook's commit, holding the regenerated file
+
+  Scenario: A candidate whose hook has not run does not land while main has a hook script
+    Given main has a hook script and the candidate has no hooked commit
+    When the candidate passes and lands
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: A hooked commit that is not one commit on the candidate does not land
+    Given the hooked commit of the candidate is made on main instead
+    When the candidate passes and lands
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: A hooked commit that changes a file the hook does not own does not land
+    Given the hooked commit of the candidate writes a file the hook does not own
+    When the candidate passes and lands
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: A hooked commit with an older fence does not land
+    Given the hooked commit of the candidate is published, and a newer queue step has fenced main
+    When the older step lands the candidate
+    Then the land is refused, nobody is ejected and main is unchanged
+
+  Scenario: With no hook script on main the candidate lands as it is
+    Given the config names a hook script that main does not have
+    When the candidate passes and lands
+    Then main is the candidate
+
+  Scenario: The test job's hook step publishes the regenerated files as one commit on the candidate, and that commit lands
+    Given main has a hook script that regenerates a file from the tree and a read-only input
+    When the test job's hook step runs on the candidate and its commit is published
+    Then the hook was asked which files it owns before it ran, and main becomes that commit
+
+  Scenario: The test job's hook step leaves the get's .mq dir out of the hook's commit
+    Given main has a hook script, and the candidate checkout holds the get's .mq dir
+    When the test job's hook step runs on the candidate
+    Then it passes, and the hook's commit changes only the hook's files
+
+  Scenario: A hook that refuses, or changes a file it does not own, fails the test job's hook step
+    Given main has a hook script that exits with status 3, or one that writes a file it does not own
+    When the test job's hook step runs on the candidate
+    Then the step fails, as a red test would, and publishes nothing
+
+  Scenario: A hook that cannot finish or runs out of time leaves the test job's hook step without a verdict
+    Given main has a hook script that exits with status 75, or one that outlives the hook timeout
+    When the test job's hook step runs on the candidate
+    Then the step exits 75, which gives no verdict, and publishes nothing
+
+  Scenario: With no hook script on main the test job's hook step does nothing
+    Given main has no hook script
+    When the test job's hook step runs on the candidate
+    Then the candidate is tested as it is and nothing is published
