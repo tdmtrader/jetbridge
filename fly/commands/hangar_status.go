@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -33,7 +34,7 @@ func (command *HangarStatusCommand) Execute([]string) error {
 
 	if command.ResolveFinding != 0 {
 		if command.ResolveFinding < 0 {
-			return fmt.Errorf("a finding id is a positive integer")
+			return errors.New("a finding id is a positive integer")
 		}
 		if err := target.Client().ResolveHangarFinding(command.ResolveFinding); err != nil {
 			return fmt.Errorf("resolving finding %d: %w", command.ResolveFinding, err)
