@@ -48,9 +48,9 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 	}
 	// The warrant is spent once the materialization's outcome is known, unless
 	// that outcome is one a retry can change: a transient failure leaves the
-	// init its one warrant to retry with. The lease itself is not given back
-	// from here -- this daemon holds no client for the web -- and closes at the
-	// end of its term, swept by the web's abandoned-lease cleaner.
+	// init its one warrant to retry with. The reader's claim is not released
+	// from here -- this daemon holds no client for the web -- and expires on the
+	// database clock at the end of its term.
 	if err := server.materialize(ctx, input, warrant); err != nil {
 		readRefusal(w, err)
 		return

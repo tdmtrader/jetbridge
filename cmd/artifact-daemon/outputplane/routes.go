@@ -213,8 +213,8 @@ func (server *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /handshake", func(w http.ResponseWriter, request *http.Request) {
 		// Node labels are hints; this is the authority. It says what this
-		// daemon speaks and nothing about any execution, but its callers --
-		// the web and the activation walk -- are off-node, and every off-node
+		// daemon speaks and nothing about any execution, but its caller, the
+		// web, is off-node, and every off-node
 		// route requires a verified client certificate when the daemon is
 		// configured for one.
 		if !server.controlPlaneCaller(request) {
