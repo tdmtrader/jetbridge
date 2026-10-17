@@ -1,7 +1,6 @@
 module ApplicationTests exposing (all)
 
 import Application.Application as Application
-import Browser
 import Common exposing (queryView)
 import Concourse
 import Data
