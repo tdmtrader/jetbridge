@@ -35,7 +35,7 @@ func materializeCapturedTreeRoot(ctx context.Context, steps *os.Root, handle, vo
 	}
 	verifySteps := func() error {
 		if same, err := sameOpenAbsoluteDirectory(stepsPath, parent); err != nil || !same {
-			return errors.Join(err, fmt.Errorf("materialization steps authority changed"))
+			return errors.Join(err, errors.New("materialization steps authority changed"))
 		}
 		return nil
 	}
