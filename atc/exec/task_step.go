@@ -215,7 +215,6 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	taskConfigSource = &OverrideContainerLimitsSource{ConfigSource: taskConfigSource, Limits: step.plan.Limits, Requests: step.plan.Requests}
 
-	// override params
 	taskConfigSource = &OverrideParamsConfigSource{ConfigSource: taskConfigSource, Params: step.plan.Params}
 
 	// interpolate template vars
