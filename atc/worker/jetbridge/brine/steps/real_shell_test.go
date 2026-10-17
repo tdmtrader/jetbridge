@@ -23,7 +23,9 @@ func TestBusyboxScriptOutcomeBoundary(t *testing.T) {
 		}
 	}
 	if _, err := os.Stat(binary); err != nil {
-		t.Fatalf("build the real BusyBox prerequisite with scripts/build-private-network: %v", err)
+		t.Fatalf("run scripts/build-private-network, which installs an existing BusyBox into .build/busybox on Linux only "+
+			"(the brine CI job runs this test after it), or set BRINE_BUSYBOX_BINARY to the absolute path of a BusyBox binary "+
+			"elsewhere; without either this test fails, never skips: %v", err)
 	}
 	for _, tc := range []struct {
 		name    string
