@@ -8,8 +8,7 @@ module DashboardInstanceGroupTests exposing
 import Application.Application as Application
 import Common
     exposing
-        ( givenDataUnauthenticated
-        , gotPipelines
+        ( gotPipelines
         , isColorWithStripes
         , pipelineRunningKeyframes
         )
