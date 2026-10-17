@@ -8,9 +8,10 @@ result plane. Each has its own vocabulary and a checked boundary.
 - [Core](./atc/CONTEXT.md): pipelines, jobs, builds, resources, teams and
   auth, pipeline templates and runs, the run admission port, the API, `fly`
   and web surfaces.
-- [Agentic](./atc/agent/CONTEXT.md): the MCP surface, MCP grants, and
-  composition (a build asking for a child run). A layer over core, wired in
-  at one composition root.
+- [Agentic](./atc/agent/CONTEXT.md): the MCP surface, MCP grants,
+  composition (a build asking for a child run), and the workloads an agent
+  submits as Runs (review and implement, through the Run client in `agent/`
+  and `cmd/jb`). A layer over core, wired in at one composition root.
 - [JetBridge runtime](./atc/worker/jetbridge/CONTEXT.md): step pods, the
   synthetic worker, the artifact daemon with node-local resource caches, and
   the brine behavioral contract.
@@ -45,8 +46,12 @@ context, under `docs/architecture/`: [core](./docs/architecture/core-model.md),
   the row names. Hangar is a leaf: `hangar/` imports nothing from core
   (`hangar/architecture_test.go`, `hangar/output/architecture_test.go`).
 - **Agentic → Core**: the agentic context reaches core only through the run
-  admission port, the wrapped API and shared value types, never the
-  database. Core never imports it.
+  admission port, the wrapped API, shared value types and, for `cmd/jb`, the
+  saved `fly` login (`fly/rc`), never the database. Each package's reach is
+  pinned in `agenticCoreReach` (`architecture_test.go`). Core never imports it.
+- **Agentic → Hangar**: the Run client verifies a published result with
+  Hangar's canonicalization (`agent/runclient` imports `hangar`); nothing else
+  in the context imports Hangar.
 
 ## Shared kernel
 
