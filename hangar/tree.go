@@ -580,13 +580,13 @@ func ValidateTempDir(tempDir string) error {
 	return nil
 }
 
-func resolveConfiguredScratchPath(tempDir string) (string, error) {
-	if tempDir == "" {
-		tempDir = os.TempDir()
+func resolveConfiguredScratchPath(scratchPath string) (string, error) {
+	if scratchPath == "" {
+		scratchPath = os.TempDir()
 	}
-	absolute, err := filepath.Abs(tempDir)
+	absolute, err := filepath.Abs(scratchPath)
 	if err != nil {
-		return "", fmt.Errorf("hangar: resolve temporary parent %q: %w", tempDir, err)
+		return "", fmt.Errorf("hangar: resolve temporary parent %q: %w", scratchPath, err)
 	}
 	if err := ValidateTempDir(absolute); err != nil {
 		return "", err
