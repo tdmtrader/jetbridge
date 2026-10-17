@@ -11,30 +11,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureTaskWithCaches returns a pipeline with a task that uses caches.
-func fixtureTaskWithCaches(jobName string, cachePaths []string, script string) string {
-	cachesYAML := ""
-	for _, p := range cachePaths {
-		cachesYAML += fmt.Sprintf("      - path: %s\n", p)
-	}
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      caches:
-%s      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, cachesYAML, script)
-}
-
 // fixtureJobWithEnsure returns a pipeline with a job-level ensure hook.
 func fixtureJobWithEnsure(jobName, mainScript, ensureScript string) string {
 	return fmt.Sprintf(`
