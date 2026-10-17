@@ -11,39 +11,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureCustomResourceType returns a pipeline with a custom resource_type
-// definition and a resource using it.
-func fixtureCustomResourceType(jobName, typeName, typeImage, resourceName, script string) string {
-	return fmt.Sprintf(`
-resource_types:
-- name: %s
-  type: registry-image
-  source:
-    repository: %s
-
-resources:
-- name: %s
-  type: %s
-  source: {}
-
-jobs:
-- name: %s
-  plan:
-  - get: %s
-    trigger: false
-  - task: use-it
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, typeName, typeImage, resourceName, typeName, jobName, resourceName, script)
-}
-
 // fixtureTaskWithCaches returns a pipeline with a task that uses caches.
 func fixtureTaskWithCaches(jobName string, cachePaths []string, script string) string {
 	cachesYAML := ""
