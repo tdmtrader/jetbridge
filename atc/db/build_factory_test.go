@@ -218,8 +218,7 @@ var _ = Describe("BuildFactory", func() {
 				err = build.Finish(db.BuildStatusFailed)
 				Expect(err).NotTo(HaveOccurred())
 
-				var i bool
-				i, err = build.Interceptible()
+				i, err := build.Interceptible()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(i).To(BeFalse())
 			})
