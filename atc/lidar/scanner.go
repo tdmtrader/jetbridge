@@ -383,7 +383,6 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 
 	logger.Debug("resolved-digest", lager.Data{"digest": digest})
 
-	// Find or create resource config.
 	resourceConfig, err := s.resourceConfigFactory.FindOrCreateResourceConfig(
 		"registry-image",
 		source,
