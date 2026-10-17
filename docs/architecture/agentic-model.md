@@ -7,11 +7,18 @@ Vocabulary: [`atc/agent/CONTEXT.md`](../../atc/agent/CONTEXT.md).
 ```
 MCP client ──▶ MCP surface ──▶ wrapped API ──▶ Core
 Build step ──▶ Composition ──▶ Run admission port ──▶ Core
+jb / MCP tool ──▶ Run client ──▶ public API (admit, input upload, credential handoff, result read) ──▶ Core
 ```
+
+The Run client verifies a published result with Hangar's canonicalization;
+that is the context's only Hangar import.
 
 Core never imports this context. Its packages may import only a pinned
 list of core packages, and only the web composition root may import them.
-Removing the context leaves core compiling.
+Removing the context leaves core compiling once the composition root's three
+touches are cut: `atc/atccmd/child_run_admitter.go`, the MCP mount in
+`atc/atccmd/mcp.go`, and `validateMCPDisabledOperations` in
+`atc/atccmd/command.go`.
 
 ## MCP authorization
 
