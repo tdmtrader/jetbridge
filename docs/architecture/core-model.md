@@ -178,7 +178,8 @@ templates; operators control availability by installing and pausing templates.
 A template declaring results or a run given inputs requires the Hangar output
 plane in service (`hangar_enabled`, written from `hangarOutput.webEnabled`).
 New captures, credential delivery and input uploads also require that plane.
-Executing any run requires its execution control and configured Hangar key.
+Executing any run requires its execution control and the warrant key
+(`hangar.key`, `--kubernetes-hangar-key`).
 Finalization and invocation replay do not require Hangar to remain in service.
 A prior run's result can bind as an input while that run succeeded and its
 claim is live.
