@@ -336,7 +336,7 @@ func TestAnAmbiguousReadClaimCommitRedeliversTheSameWarrant(t *testing.T) {
 		t.Fatalf("the retry after an ambiguous commit failed: %v", err)
 	}
 	if first.Token != second.Token {
-		t.Error("the retry delivered a different warrant; requirement 37 asks for the same " +
+		t.Error("the retry delivered a different warrant; a retry must deliver the same " +
 			"bytes rather than another claim")
 	}
 	if minter.calls != 2 {

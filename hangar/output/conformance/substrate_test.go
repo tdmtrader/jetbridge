@@ -21,7 +21,7 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// The two environment variables the plan wires into CI (decision F2).
+// The two environment variables CI sets.
 const (
 	endpointVariable = "HANGAR_FAKE_GCS_ENDPOINT"
 	ciVariable       = "HANGAR_CI"
@@ -334,8 +334,7 @@ func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, object
 // emulatorClient is the bucket-creating client, and it is built here with the
 // SDK rather than through hangar/gcs on purpose.
 //
-// hangar/gcs hands out no *storage.Client at all any more -- that is the whole
-// of R2-F1 -- so a harness that needs one for bucket setup builds its own. The
+// hangar/gcs hands out no *storage.Client at all any more -- so a harness that needs one for bucket setup builds its own. The
 // endpoint convention is still shared, through NormalizeStorageEndpoint, which
 // is a string in and a string out and confers nothing.
 func emulatorClient(t *testing.T, endpoint string) *storage.Client {
