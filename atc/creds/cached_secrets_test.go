@@ -164,7 +164,6 @@ var _ = Describe("Caching of secrets", func() {
 		Expect(secretManager.reads).To(BeIdenticalTo(1))
 		Expect(secretManager.misses).To(BeIdenticalTo(2))
 
-		// sleep
 		time.Sleep(cacheConfig.Duration + time.Millisecond)
 
 		// check counters again and make sure the entries are re-retrieved
@@ -183,7 +182,6 @@ var _ = Describe("Caching of secrets", func() {
 		Expect(secretManager.reads).To(BeIdenticalTo(1))
 		Expect(secretManager.misses).To(BeIdenticalTo(2))
 
-		// sleep
 		time.Sleep(cacheConfig.DurationNotFound + time.Millisecond)
 
 		// existing secret should still be cached
@@ -211,7 +209,6 @@ var _ = Describe("Caching of secrets", func() {
 			Expect(secretManager.reads).To(BeIdenticalTo(1))
 			Expect(secretManager.misses).To(BeIdenticalTo(2))
 
-			// sleep
 			time.Sleep(cacheConfig.Duration + time.Millisecond)
 
 			// existing secret should be gone
