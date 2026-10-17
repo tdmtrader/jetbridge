@@ -13,7 +13,6 @@ import Common
         )
 import Concourse exposing (JsonValue(..))
 import Concourse.BuildStatus exposing (BuildStatus(..))
-import Concourse.PipelineStatus exposing (PipelineStatus(..))
 import DashboardTests
     exposing
         ( job
