@@ -520,7 +520,7 @@ func (p *pipeline) Builds(page Page) ([]BuildForAPI, Pagination, error) {
 // supplied. Newest build ID ordering includes recent reruns in their real place.
 func (p *pipeline) BuildsFiltered(job string, status atc.BuildStatus, page Page) ([]BuildForAPI, Pagination, error) {
 	if page.Limit < 1 || page.Limit > 100 {
-		return nil, Pagination{}, fmt.Errorf("invalid build page limit")
+		return nil, Pagination{}, errors.New("invalid build page limit")
 	}
 	q := buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id})
 	if job != "" {
