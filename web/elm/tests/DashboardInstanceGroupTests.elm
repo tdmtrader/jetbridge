@@ -34,8 +34,7 @@ import Test.Html.Event as Event
 import Test.Html.Query as Query
 import Test.Html.Selector
     exposing
-        ( attribute
-        , class
+        ( class
         , containing
         , id
         , style
