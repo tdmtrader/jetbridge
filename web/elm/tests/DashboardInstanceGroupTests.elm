@@ -25,7 +25,7 @@ import DashboardTests
         )
 import Data
 import Dict
-import Expect exposing (Expectation)
+import Expect
 import Html.Attributes as Attr
 import Http
 import Json.Encode
