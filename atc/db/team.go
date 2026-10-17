@@ -1314,26 +1314,27 @@ func updateJobsName(tx Tx, jobs []atc.JobConfig, pipelineID int) error {
 	jobsToUpdate := []UpdateName{}
 
 	for _, job := range jobs {
-		if job.OldName != "" && job.OldName != job.Name {
-			var count int
-			err := psql.Select("COUNT(*) as count").
-				From("jobs").
-				Where(sq.Eq{
-					"name":        job.OldName,
-					"pipeline_id": pipelineID}).
-				RunWith(tx).
-				QueryRow().
-				Scan(&count)
-			if err != nil {
-				return err
-			}
+		if job.OldName == "" || job.OldName == job.Name {
+			continue
+		}
+		var count int
+		err := psql.Select("COUNT(*) as count").
+			From("jobs").
+			Where(sq.Eq{
+				"name":        job.OldName,
+				"pipeline_id": pipelineID}).
+			RunWith(tx).
+			QueryRow().
+			Scan(&count)
+		if err != nil {
+			return err
+		}
 
-			if count != 0 {
-				jobsToUpdate = append(jobsToUpdate, UpdateName{
-					OldName: job.OldName,
-					NewName: job.Name,
-				})
-			}
+		if count != 0 {
+			jobsToUpdate = append(jobsToUpdate, UpdateName{
+				OldName: job.OldName,
+				NewName: job.Name,
+			})
 		}
 	}
 
