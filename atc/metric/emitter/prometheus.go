@@ -1293,17 +1293,17 @@ func (emitter *PrometheusEmitter) buildFinishedMetrics(logger lager.Logger, even
 func (emitter *PrometheusEmitter) workerContainersMetric(logger lager.Logger, event metric.Event) {
 	worker, exists := event.Attributes["worker"]
 	if !exists {
-		logger.Error("failed-to-find-worker-in-event", fmt.Errorf("expected worker to exist in event.Attributes"))
+		logger.Error("failed-to-find-worker-in-event", errors.New("expected worker to exist in event.Attributes"))
 		return
 	}
 	platform, exists := event.Attributes["platform"]
 	if !exists || platform == "" {
-		logger.Error("failed-to-find-platform-in-event", fmt.Errorf("expected platform to exist in event.Attributes"))
+		logger.Error("failed-to-find-platform-in-event", errors.New("expected platform to exist in event.Attributes"))
 		return
 	}
 	team, exists := event.Attributes["team_name"]
 	if !exists {
-		logger.Error("failed-to-find-team-name-in-event", fmt.Errorf("expected team_name to exist in event.Attributes"))
+		logger.Error("failed-to-find-team-name-in-event", errors.New("expected team_name to exist in event.Attributes"))
 		return
 	}
 	tags := event.Attributes["tags"]
