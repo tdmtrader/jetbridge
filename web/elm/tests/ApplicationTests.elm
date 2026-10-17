@@ -1,7 +1,7 @@
 module ApplicationTests exposing (all)
 
 import Application.Application as Application
-import Common exposing (queryView)
+import Common
 import Concourse
 import Data
 import Dict
