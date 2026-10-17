@@ -480,7 +480,7 @@ func (builder Builder) WithPrototypeVersions(prototypeName string, versions ...a
 func (builder Builder) WithPendingJobBuild(assign *db.Build, jobName string) SetupFunc {
 	return func(scenario *Scenario) error {
 		if scenario.Pipeline == nil {
-			return fmt.Errorf("no pipeline set in scenario")
+			return errors.New("no pipeline set in scenario")
 		}
 
 		job, found, err := scenario.Pipeline.Job(jobName)
