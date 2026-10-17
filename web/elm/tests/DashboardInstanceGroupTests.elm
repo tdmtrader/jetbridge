@@ -26,7 +26,6 @@ import DashboardTests
 import Data
 import Dict
 import Expect
-import Json.Encode
 import Keyboard
 import Message.Callback as Callback
 import Message.Effects as Effects
