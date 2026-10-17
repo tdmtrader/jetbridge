@@ -2,7 +2,6 @@ package idtoken
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/atc/creds"
@@ -39,5 +38,5 @@ func (secrets *IDToken) NewSecretLookupPaths(teamName string, pipelineName strin
 }
 
 func (secrets *IDToken) Get(secretPath string) (interface{}, *time.Time, bool, error) {
-	return nil, nil, false, fmt.Errorf("IDToken provider can only be used with params")
+	return nil, nil, false, errors.New("IDToken provider can only be used with params")
 }
