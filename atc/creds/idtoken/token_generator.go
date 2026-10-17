@@ -1,6 +1,7 @@
 package idtoken
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -96,7 +97,7 @@ func (g TokenGenerator) getSigningKey() (*jose.SigningKey, error) {
 	} else if strings.HasPrefix(string(alg), "ES") {
 		keyType = db.SigningKeyTypeEC
 	} else {
-		return nil, fmt.Errorf("unsupported signing algorithm")
+		return nil, errors.New("unsupported signing algorithm")
 	}
 
 	latestKey, err := g.SigningKeyFactory.GetNewestKey(keyType)
