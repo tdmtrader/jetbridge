@@ -41,8 +41,8 @@ daemon has no object-store delete capability.
 ## The capture row
 
 ```
-             ┌──▶ discarded
-             │
+  ┌──▶ discarded
+  │
 pending ──▶ publishing ──▶ published
    │            │
    └────────────┴──▶ failed
@@ -115,7 +115,7 @@ Recovery reads the row, because the marker kept the directory:
 ```
 Run ──claim──▶ tree ref ◀──claim (expiring)── reader (read warrant)
                   │
-   reclaim pass: hold ──▶ delete exact generation ──▶ stamp reclaimed
+   reclaim pass: tree lock ──▶ delete exact generation ──▶ stamp reclaimed
 ```
 
 - A **claim** is the one refcount. It is opaque and idempotent; Hangar never
