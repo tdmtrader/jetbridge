@@ -202,7 +202,7 @@ func (admission *archiveAdmission) Next() (*tar.Header, error) {
 	var trailing [1]byte
 	n, probeErr := admission.physical.Read(trailing[:])
 	if n != 0 {
-		return nil, fmt.Errorf("hangar: archive contains trailing data after the tar terminator")
+		return nil, errors.New("hangar: archive contains trailing data after the tar terminator")
 	}
 	if errors.Is(probeErr, io.EOF) {
 		return nil, io.EOF
@@ -210,7 +210,7 @@ func (admission *archiveAdmission) Next() (*tar.Header, error) {
 	if probeErr != nil {
 		return nil, fmt.Errorf("hangar: inspect archive terminator: %w", probeErr)
 	}
-	return nil, fmt.Errorf("hangar: inspect archive terminator: reader made no progress")
+	return nil, errors.New("hangar: inspect archive terminator: reader made no progress")
 }
 
 func (admission *archiveAdmission) Read(buffer []byte) (int, error) {
