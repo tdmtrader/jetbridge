@@ -22,7 +22,6 @@ import DashboardTests
 import Data
 import Dict
 import Expect
-import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message as Msgs
 import Message.ScrollDirection as ScrollDirection
