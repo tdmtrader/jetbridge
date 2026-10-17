@@ -690,7 +690,7 @@ func (builder Builder) WithJobBuild(assign *db.Build, jobName string, inputs Job
 func (builder Builder) WithJobBuildContainer(assign *db.CreatingContainer, jobName string, workerName string, teamID int) SetupFunc {
 	return func(scenario *Scenario) error {
 		if len(scenario.Workers) == 0 {
-			return fmt.Errorf("no workers set in scenario")
+			return errors.New("no workers set in scenario")
 		}
 
 		var build db.Build
