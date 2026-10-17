@@ -5,7 +5,6 @@ import Colors
 import Common exposing (defineHoverBehaviour, isColorWithStripes, queryView)
 import Concourse
 import Concourse.BuildStatus exposing (BuildStatus(..))
-import Dashboard.DashboardPreview as DP
 import DashboardTests exposing (whenOnDashboard)
 import Data
 import Expect
