@@ -1,4 +1,4 @@
-// Package landingserver is the landing queue's API (ADR-0009): a team sets a
+// Package landingserver is the landing queue's API (ADR-0011): a team sets a
 // queue, submits an entry, and reads the queue's status. The engine is the
 // component; nothing here composes or lands.
 package landingserver

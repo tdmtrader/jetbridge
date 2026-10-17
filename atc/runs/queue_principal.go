@@ -6,7 +6,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-// QueuePrincipal is a landing queue acting for its team (ADR-0009).
+// QueuePrincipal is a landing queue acting for its team (ADR-0011).
 //
 // The queue is core's own component, so unlike a build it has no row to be
 // verified against: what it asserts is the team and queue it runs for, and

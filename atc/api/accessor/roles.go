@@ -109,7 +109,7 @@ var DefaultRoles = map[string]string{
 	atc.GetArtifact:                     MemberRole,
 	atc.ListBuildArtifacts:              ViewerRole,
 	atc.GetWall:                         ViewerRole,
-	// The landing queue (ADR-0009): owners set it, members submit, viewers read.
+	// The landing queue (ADR-0011): owners set it, members submit, viewers read.
 	atc.SetLandingQueue: OwnerRole,
 	atc.SubmitLanding:   MemberRole,
 	atc.GetLandingQueue: ViewerRole,

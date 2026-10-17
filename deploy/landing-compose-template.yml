@@ -1,4 +1,4 @@
-# The landing queue's compose template (ADR-0009). Install with
+# The landing queue's compose template (ADR-0011). Install with
 # fly set-pipeline -p landing-compose -c deploy/landing-compose-template.yml
 # -v landing_image=<image with git>. The landing queue component admits a Run
 # of it per candidate with the repository, trunk and entries as params.

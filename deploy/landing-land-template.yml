@@ -1,4 +1,4 @@
-# The landing queue's land template (ADR-0009). Install with
+# The landing queue's land template (ADR-0011). Install with
 # fly set-pipeline -p landing-land -c deploy/landing-land-template.yml
 # -v landing_image=<image with git> -v github-token=<token with push to the
 # trunk>. The landing queue component admits a Run of it per candidate, with

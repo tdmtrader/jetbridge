@@ -10,7 +10,7 @@ import (
 	"github.com/concourse/concourse/atc/landing"
 )
 
-// landingQueueComponent runs the landing queue's engine (ADR-0009) on one web
+// landingQueueComponent runs the landing queue's engine (ADR-0011) on one web
 // node at a time. It exists only where the core admitter does: a node with no
 // run-input authority admits no Runs and so can land nothing. The Run
 // lifecycle wakes it; the interval is the net under a lost wake-up.

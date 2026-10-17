@@ -23,7 +23,7 @@ type landingQueueClient interface {
 	LandingQueue(queueName string) (atc.LandingQueueStatus, bool, error)
 }
 
-// SetLandingQueueCommand sets a team's landing queue from its YAML (ADR-0009).
+// SetLandingQueueCommand sets a team's landing queue from its YAML (ADR-0011).
 type SetLandingQueueCommand struct {
 	Queue  string               `short:"q" long:"queue" required:"true" description:"Name of the landing queue"`
 	Config atc.PathFlag         `short:"c" long:"config" required:"true" description:"Landing queue configuration file, \"-\" stands for stdin"`

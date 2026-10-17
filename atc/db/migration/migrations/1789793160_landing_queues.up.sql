@@ -1,4 +1,4 @@
--- The landing queue's own tables (ADR-0009). One queue per (team, name); the
+-- The landing queue's own tables (ADR-0011). One queue per (team, name); the
 -- config is the strictly decoded YAML the API accepted.
 CREATE TABLE landing_queues (
     id bigserial PRIMARY KEY,

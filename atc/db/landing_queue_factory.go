@@ -63,7 +63,7 @@ const (
 	LandingIntentDone      = "done"
 )
 
-// LandingQueueFactory is the landing queue's own tables (ADR-0009). The
+// LandingQueueFactory is the landing queue's own tables (ADR-0011). The
 // component owns every transaction that follows a Run outcome; the settle
 // methods take that transaction and are no-ops when the Run they name was
 // settled before, so a pass that repeats after a restart changes nothing.

@@ -47,7 +47,7 @@ const (
 	ComponentRunResults = "run_results"
 
 	// ComponentLandingQueue composes and lands the entries of every landing
-	// queue (ADR-0009). One web node at a time under its component lock; the
+	// queue (ADR-0011). One web node at a time under its component lock; the
 	// Run lifecycle wakes it and its interval is the net under a lost wake-up.
 	ComponentLandingQueue = "landing_queue"
 

@@ -260,7 +260,7 @@ id. The spec calls it the idempotency key.
 **Landing queue**:
 A team-owned queue that lands submitted changes on a repository's trunk by
 fast-forward once every gate it declares has passed on a candidate. Its state
-is core tables; its only outward acts are Runs it admits (ADR-0009).
+is core tables; its only outward acts are Runs it admits (ADR-0011).
 _Avoid_: merge queue, queue (alone)
 
 **Entry**:

@@ -2402,7 +2402,7 @@ func testHelperPackage(t *testing.T, root, pkg string) bool {
 }
 
 // A landing queue admits Runs as its team with nothing to verify against
-// (ADR-0009), so whoever can construct a queue principal can act as any team.
+// (ADR-0011), so whoever can construct a queue principal can act as any team.
 // Only the landing queue's own component may, and this is the pin: every
 // non-test file that names runs.QueuePrincipal is atc/landing or atc/runs.
 func TestTheQueuePrincipalIsConstructedOnlyByTheLandingQueue(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The landing queue form of the principal (ADR-0009): core's own component
+// The landing queue form of the principal (ADR-0011): core's own component
 // acting for the queue's team, authorized for that team and no other, with
 // nothing to verify against because it is not a caller across a boundary.
 var _ = Describe("a landing queue acting for its team", func() {

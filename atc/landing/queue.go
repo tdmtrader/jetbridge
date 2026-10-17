@@ -1,4 +1,4 @@
-// Package landing is the landing queue's engine (ADR-0009): one bounded pass
+// Package landing is the landing queue's engine (ADR-0011): one bounded pass
 // at a time over every queue, settling the Runs its intents name and
 // admitting the next compose. It decides from Run statuses and one small
 // verdict result; it never runs git and never holds a repository credential.
