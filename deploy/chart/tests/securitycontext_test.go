@@ -9,6 +9,7 @@ package tests
 import (
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -252,10 +253,5 @@ func TestWebLocalUsersSplitIntoSeparateFlags(t *testing.T) {
 }
 
 func containsStr(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, want)
 }
