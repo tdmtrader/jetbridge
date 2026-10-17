@@ -1465,7 +1465,7 @@ func (emitter *PrometheusEmitter) databaseMetrics(logger lager.Logger, event met
 	case "database connections":
 		connectionName, exists := event.Attributes["ConnectionName"]
 		if !exists {
-			logger.Error("failed-to-connection-name-in-event", fmt.Errorf("expected ConnectionName to exist in event.Attributes"))
+			logger.Error("failed-to-connection-name-in-event", errors.New("expected ConnectionName to exist in event.Attributes"))
 			return
 		}
 		emitter.dbConnections.WithLabelValues(connectionName).Set(event.Value)
