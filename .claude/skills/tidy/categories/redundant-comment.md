@@ -127,3 +127,4 @@ the lines around the hunk, which the diff's three lines of context show.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-10-17 | TaskStep.run@atc/exec/task_step.go:apply resource type defaults | deleted | tier 1, one site (line 211): words apply, resource, type, defaults are all words of `taskConfigSource = BaseResourceTypeDefaultsApplySource{`; the statement ends at its closing brace with a blank line after it, and no trailing comment sits above or on it; the sibling `// interpolate template vars` stays (vars is not on its first line); gates: gofmt clean, numstat 0/1, only this file, rescan drops the key (5 rows left), `go build ./... && go vet ./...`, `ginkgo ./atc/exec/` 625/625 passed |

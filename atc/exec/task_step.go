@@ -208,7 +208,6 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		taskVars = []vars.Variables{state}
 	}
 
-	// apply resource type defaults
 	taskConfigSource = BaseResourceTypeDefaultsApplySource{
 		ConfigSource:  taskConfigSource,
 		ResourceTypes: step.plan.ResourceTypes,
