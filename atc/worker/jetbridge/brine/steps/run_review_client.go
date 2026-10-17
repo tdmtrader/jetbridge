@@ -25,7 +25,10 @@ func RunReviewClientDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			binaries := res.Get("review-binaries").(reviewBinaries)
+			binaries, err := getReviewBinaries(res)
+			if err != nil {
+				return in, err
+			}
 			target, _ := p.GetString(0)
 			number := in.Start.Creation.Run.Number()
 			if target == "unknown" {
@@ -61,7 +64,10 @@ func RunReviewClientDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			binaries := res.Get("review-binaries").(reviewBinaries)
+			binaries, err := getReviewBinaries(res)
+			if err != nil {
+				return in, err
+			}
 			target, _ := p.GetString(0)
 			number := in.Start.Creation.Run.Number()
 			if target == "unknown" {

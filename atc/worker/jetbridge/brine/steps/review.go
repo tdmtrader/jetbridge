@@ -25,7 +25,10 @@ import (
 
 const reviewSyntheticAuth = `{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","id_token":"synthetic-id"}}`
 
-type reviewBinaries struct{ Root, CLI, Worker, Provider string }
+type reviewBinaries struct {
+	lazy                        *lazyResource[reviewBinaries]
+	Root, CLI, Worker, Provider string
+}
 type reviewWorkspace struct{ Root, Runtime string }
 
 type ReviewChange struct {
@@ -44,36 +47,9 @@ func ReviewResourceDefinitions() []brine.ResourceDefinition {
 		{
 			Name: "review-binaries", Scope: brine.ScopeSuite,
 			Factory: func(map[string]any) (any, error) {
-				root, err := os.Getwd()
-				if err != nil {
-					return nil, err
-				}
-				for {
-					if _, err := os.Stat(filepath.Join(root, "agent/session/codex-version")); err == nil {
-						break
-					}
-					parent := filepath.Dir(root)
-					if parent == root {
-						return nil, errors.New("cannot locate review source root")
-					}
-					root = parent
-				}
-				dir, err := AttributedTempDir("brine-review-binaries-")
-				if err != nil {
-					return nil, err
-				}
-				b := reviewBinaries{Root: dir, CLI: filepath.Join(dir, "jb"), Worker: filepath.Join(dir, "jb-review-worker"), Provider: filepath.Join(dir, "provider")}
-				for _, build := range []struct{ output, pkg string }{{b.CLI, "./cmd/jb"}, {b.Worker, "./cmd/jb-review-worker"}, {b.Provider, "./agent/review/testdata/provider"}} {
-					cmd := exec.Command("go", "build", "-o", build.output, build.pkg)
-					cmd.Dir = root
-					if out, err := cmd.CombinedOutput(); err != nil {
-						os.RemoveAll(dir)
-						return nil, fmt.Errorf("build review executable: %w: %s", err, out)
-					}
-				}
-				return b, nil
+				return reviewBinaries{lazy: &lazyResource[reviewBinaries]{start: buildReviewBinaries}}, nil
 			},
-			Disposer: func(v any) error { return os.RemoveAll(v.(reviewBinaries).Root) },
+			Disposer: func(v any) error { return v.(reviewBinaries).close() },
 		},
 		{
 			Name: "review-workspace", Scope: brine.ScopeScenario,
@@ -91,6 +67,62 @@ func ReviewResourceDefinitions() []brine.ResourceDefinition {
 			},
 		},
 	}
+}
+
+func buildReviewBinaries() (reviewBinaries, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return reviewBinaries{}, err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "agent/session/codex-version")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return reviewBinaries{}, errors.New("cannot locate review source root")
+		}
+		root = parent
+	}
+	dir, err := AttributedTempDir("brine-review-binaries-")
+	if err != nil {
+		return reviewBinaries{}, err
+	}
+	b := reviewBinaries{Root: dir, CLI: filepath.Join(dir, "jb"), Worker: filepath.Join(dir, "jb-review-worker"), Provider: filepath.Join(dir, "provider")}
+	for _, build := range []struct{ output, pkg string }{{b.CLI, "./cmd/jb"}, {b.Worker, "./cmd/jb-review-worker"}, {b.Provider, "./agent/review/testdata/provider"}} {
+		cmd := exec.Command("go", "build", "-o", build.output, build.pkg)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			os.RemoveAll(dir)
+			return reviewBinaries{}, fmt.Errorf("build review executable: %w: %s", err, out)
+		}
+	}
+	return b, nil
+}
+
+func (b reviewBinaries) ready() (reviewBinaries, error) {
+	if b.lazy != nil {
+		return b.lazy.get()
+	}
+	return b, nil
+}
+
+func (b reviewBinaries) close() error {
+	if b.lazy != nil {
+		return b.lazy.close(func(ready reviewBinaries) error { return ready.close() })
+	}
+	return os.RemoveAll(b.Root)
+}
+
+// getReviewBinaries is the first-use boundary. Acquiring the suite resource
+// builds nothing, so a run with no review step never searches for the review
+// source root; the first review step that asks builds all three executables.
+func getReviewBinaries(res brine.Resources) (reviewBinaries, error) {
+	binaries, ok := res.Get("review-binaries").(reviewBinaries)
+	if !ok {
+		return reviewBinaries{}, fmt.Errorf("review-binaries resource is %T", res.Get("review-binaries"))
+	}
+	return binaries.ready()
 }
 
 func ReviewDefinitions() []brine.StepDefinition {
@@ -355,8 +387,12 @@ func reviewNoCredentials(in ReviewChange) error {
 func reviewTerminate(cmd *exec.Cmd) error { return cmd.Process.Signal(syscall.SIGTERM) }
 
 func newReviewChange(res brine.Resources) (ReviewChange, error) {
+	binaries, err := getReviewBinaries(res)
+	if err != nil {
+		return ReviewChange{}, err
+	}
 	w := res.Get("review-workspace").(*reviewWorkspace)
-	in := ReviewChange{Workspace: w, Binaries: res.Get("review-binaries").(reviewBinaries), Repo: filepath.Join(w.Root, "repo"), Input: filepath.Join(w.Root, "input"), Output: filepath.Join(w.Root, "report"), Plan: filepath.Join(w.Root, "plan.md")}
+	in := ReviewChange{Workspace: w, Binaries: binaries, Repo: filepath.Join(w.Root, "repo"), Input: filepath.Join(w.Root, "input"), Output: filepath.Join(w.Root, "report"), Plan: filepath.Join(w.Root, "plan.md")}
 	if err := os.Mkdir(in.Repo, 0700); err != nil {
 		return in, err
 	}
@@ -374,7 +410,6 @@ func newReviewChange(res brine.Resources) (ReviewChange, error) {
 			return in, err
 		}
 	}
-	var err error
 	if in.Base, err = in.commit("base"); err != nil {
 		return in, err
 	}

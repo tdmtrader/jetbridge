@@ -176,8 +176,12 @@ func (in ImplementChange) recaptureWithFindings(run int) (ImplementChange, error
 }
 
 func newImplementChange(res brine.Resources) (ImplementChange, error) {
+	binaries, err := getReviewBinaries(res)
+	if err != nil {
+		return ImplementChange{}, err
+	}
 	w := res.Get("review-workspace").(*reviewWorkspace)
-	r := ReviewChange{Workspace: w, Binaries: res.Get("review-binaries").(reviewBinaries), Repo: filepath.Join(w.Root, "repo"), Input: filepath.Join(w.Root, "snapshot"), Output: filepath.Join(w.Root, "change")}
+	r := ReviewChange{Workspace: w, Binaries: binaries, Repo: filepath.Join(w.Root, "repo"), Input: filepath.Join(w.Root, "snapshot"), Output: filepath.Join(w.Root, "change")}
 	in := ImplementChange{Review: r, Brief: filepath.Join(w.Root, "brief.md")}
 	if err := os.Mkdir(r.Repo, 0700); err != nil {
 		return in, err
@@ -200,7 +204,6 @@ func newImplementChange(res brine.Resources) (ImplementChange, error) {
 			return in, err
 		}
 	}
-	var err error
 	in.Review.Base, err = r.commit("base")
 	in.Review.Head = in.Review.Base
 	return in, err

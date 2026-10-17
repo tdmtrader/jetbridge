@@ -30,6 +30,10 @@ import (
 func ReviewKubeletSubmitDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{brine.DefineMapUsing[brine.Empty, brine.Empty]("an installed review survives a disconnected {string} client", []string{"jetbridge-db", "auth-server", "review-binaries", "review-workspace"}, func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (brine.Empty, error) {
 		surface, _ := p.GetString(0)
+		// Build the review executables before the step's deadline opens.
+		if _, err := getReviewBinaries(res); err != nil {
+			return brine.Empty{}, err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		in, executor, err := liveReviewRuntime(ctx, rec, res)

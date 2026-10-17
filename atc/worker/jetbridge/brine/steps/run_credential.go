@@ -45,6 +45,10 @@ func RunCredentialDefinitions() []brine.StepDefinition {
 }
 
 func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder, res brine.Resources) error {
+	// Build the review executables before the step's deadline opens.
+	if _, err := getReviewBinaries(res); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)

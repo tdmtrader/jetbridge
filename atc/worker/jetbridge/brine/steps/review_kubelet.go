@@ -25,6 +25,10 @@ import (
 func ReviewKubeletDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{brine.DefineMapUsing[brine.Empty, brine.Empty]("a real review kubelet handles {string}", []string{"jetbridge-db", "review-binaries", "review-workspace"}, func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (brine.Empty, error) {
 		mode, _ := p.GetString(0)
+		// Build the review executables before the step's deadline opens.
+		if _, err := getReviewBinaries(res); err != nil {
+			return brine.Empty{}, err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		in, executor, err := liveReviewRuntime(ctx, rec, res)

@@ -62,7 +62,11 @@ func RunReviewResultDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			binary := res.Get("review-binaries").(reviewBinaries).CLI
+			binaries, err := getReviewBinaries(res)
+			if err != nil {
+				return in, err
+			}
+			binary := binaries.CLI
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			var data []byte

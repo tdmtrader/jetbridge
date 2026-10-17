@@ -62,7 +62,8 @@ func TestLazyFactoriesDoNotStartOrRegisterTempDirsWhenUnused(t *testing.T) {
 	t.Setenv("BRINE_OTELCOL_BINARY", "relative-invalid-collector")
 	t.Setenv("KUBEBUILDER_ASSETS", "/missing-envtest-assets")
 	provider, propagation, configured := otel.GetTracerProvider(), otel.GetTextMapPropagator(), tracing.Configured
-	resources := append([]brine.ResourceDefinition{TracingResourceDefinition(), RealClusterResourceDefinition()}, AuthenticationResourceDefinitions()...)
+	// review-workspace is a cheap scenario mkdir and stays eager; only review-binaries is lazy.
+	resources := append([]brine.ResourceDefinition{TracingResourceDefinition(), RealClusterResourceDefinition(), ReviewResourceDefinitions()[0]}, AuthenticationResourceDefinitions()...)
 	deps := map[string]any{"jetbridge-db": JetbridgeDB{}}
 	before, err := os.ReadDir(adapterDaemonRoot)
 	if err != nil {
@@ -146,6 +147,27 @@ func TestLazyTraceFactoryReportsMissingCollectorOnlyOnUse(t *testing.T) {
 	}
 	if _, err := capture.ready(); err == nil {
 		t.Fatal("first use did not validate the collector")
+	}
+	if err := resource.Disposer(value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The engine runs the adapter from a temp directory outside the repository.
+// There the source-root search fails, and that failure belongs to the first
+// review step, not to the acquisition of every suite resource.
+func TestLazyReviewBinariesReportMissingSourceRootOnlyOnUse(t *testing.T) {
+	t.Chdir(t.TempDir())
+	resource := ReviewResourceDefinitions()[0]
+	value, err := resource.Factory(nil)
+	if err != nil {
+		t.Fatalf("unused factory searched for the review source root: %v", err)
+	}
+	resources := lazyTestResources{"review-binaries": value}
+	for range 2 {
+		if _, err := getReviewBinaries(resources); err == nil || err.Error() != "cannot locate review source root" {
+			t.Fatalf("first use lost the source-root error: %v", err)
+		}
 	}
 	if err := resource.Disposer(value); err != nil {
 		t.Fatal(err)

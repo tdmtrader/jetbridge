@@ -13,6 +13,7 @@ and `resources.Get`; dependency-map lookups are called out separately.
 | auth-binaries | Suite | High: source discovery, RSA key, fly build, temp directory | No step Get; auth-server dependency asserts `authBinaries`; fixture reads Key, fly helpers read Fly | Lazy value with shared state; auth-server calls `ready` |
 | auth-server | Scenario | High: Dex, HTTP, Postgres storage, encrypted DB connection, temp home | auth_sessions.go asserts `*AuthFixture`, reads URL and forwards fixture in AuthScenario | One `ready` call at the authentication Given, before downstream field access |
 | span-capture | Scenario | High: collector subprocess, OTLP exporter, globals, temp directory | live_observability.go and volume_streaming.go assert `SpanCapture`, forward it; assertions later call spans/EventNames | `ready` at both entry points, before any span production; unused disposal leaves globals alone |
+| review-binaries | Suite | High: source discovery, three go builds (jb, jb-review-worker, provider), temp directory | review.go `newReviewChange` and implement_worker.go `newImplementChange` store it in `ReviewChange.Binaries`; run_review_result.go and run_review_client.go (two) read CLI | Lazy value with shared state; shared `getReviewBinaries` accessor at those five boundaries, also called before the step deadline opens in review_kubelet.go, review_kubelet_submit.go and run_credential.go |
 
 Envtest exceeds the requested 15-field-access-site threshold. No downstream
 field accesses were rewritten; only the 20 resource acquisition boundaries use
@@ -22,6 +23,15 @@ but all flow through its single authentication Given, so they stay unchanged.
 Concrete resource types, names, scopes, dependencies and disposer signatures
 are retained. Shared lazy state uses sync.Once, caches startup errors, serializes
 startup against disposal, and never starts an unused resource during disposal.
+
+review-binaries is not in the baseline: `cc48a26120` added it as an eager
+suite factory after the lazy shape above landed in `fdac79d7f4`. Brine starts
+every suite-scoped resource, so its source-root search ran for scenarios with
+no review step, and an engine run (which starts the adapter from a temp
+directory outside the repository) failed every scenario with "Resource
+'review-binaries' factory failed: cannot locate review source root". It now
+follows the auth-binaries shape; the same error reaches the first review step
+instead.
 
 ## jetbridge-db consumers
 
