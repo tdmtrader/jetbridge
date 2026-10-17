@@ -707,11 +707,11 @@ var _ = Describe("Team", func() {
 		var defaultBuild db.Build
 
 		BeforeEach(func() {
-			var err error
 			containerMetadata = db.ContainerMetadata{
 				Type:     "task",
 				StepName: "some-task",
 			}
+			var err error
 			defaultBuild, err = defaultTeam.CreateOneOffBuild()
 			Expect(err).ToNot(HaveOccurred())
 		})
