@@ -107,11 +107,12 @@ func TestOnlyTheStoreBinaryOwnsTheDisk(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if name == diskPath {
-				alias = "disk"
-				if imp.Name != nil {
-					alias = imp.Name.Name
-				}
+			if name != diskPath {
+				continue
+			}
+			alias = "disk"
+			if imp.Name != nil {
+				alias = imp.Name.Name
 			}
 		}
 		if alias == "" {
