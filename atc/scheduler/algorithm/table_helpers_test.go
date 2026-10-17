@@ -331,7 +331,6 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 			Expect(err).ToNot(HaveOccurred())
 
 			cols := []string{"team_id", "id", "job_id", "name", "status"}
-			var copyCount int64
 
 			var outputs [][]any
 			for _, row := range debugDB.BuildOutputs {
@@ -349,7 +348,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 				imported[row.BuildID] = true
 			}
 
-			copyCount, err = txn.CopyFrom(ctx,
+			copyCount, err := txn.CopyFrom(ctx,
 				pgx.Identifier{"builds"},
 				cols, pgx.CopyFromRows(outputs))
 			Expect(err).ToNot(HaveOccurred())
