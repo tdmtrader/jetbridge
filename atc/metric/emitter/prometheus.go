@@ -1225,7 +1225,7 @@ func (emitter *PrometheusEmitter) errorLogsMetric(logger lager.Logger, event met
 	message, exists := event.Attributes["message"]
 	if !exists {
 		logger.Error("failed-to-find-message-in-event",
-			fmt.Errorf("expected message to exist in event.Attributes"))
+			errors.New("expected message to exist in event.Attributes"))
 		return
 	}
 
