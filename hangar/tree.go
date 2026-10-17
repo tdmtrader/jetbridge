@@ -359,7 +359,7 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tempDir, err := resolveConfiguredTempDir(c.TempDir)
+	tempDir, err := resolveConfiguredScratchPath(c.TempDir)
 	if err != nil {
 		return nil, err
 	}
@@ -580,7 +580,7 @@ func ValidateTempDir(tempDir string) error {
 	return nil
 }
 
-func resolveConfiguredTempDir(tempDir string) (string, error) {
+func resolveConfiguredScratchPath(tempDir string) (string, error) {
 	if tempDir == "" {
 		tempDir = os.TempDir()
 	}
