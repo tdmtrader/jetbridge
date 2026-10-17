@@ -721,11 +721,11 @@ func (builder Builder) WithJobBuildContainer(assign *db.CreatingContainer, jobNa
 func (builder Builder) WithCheckContainer(resourceName string, workerName string) SetupFunc {
 	return func(scenario *Scenario) error {
 		if scenario.Pipeline == nil {
-			return fmt.Errorf("no pipeline set in scenario")
+			return errors.New("no pipeline set in scenario")
 		}
 
 		if len(scenario.Workers) == 0 {
-			return fmt.Errorf("no workers set in scenario")
+			return errors.New("no workers set in scenario")
 		}
 
 		resource, found, err := scenario.Pipeline.Resource(resourceName)
