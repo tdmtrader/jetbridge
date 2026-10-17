@@ -519,29 +519,33 @@ about this tree.
   explicitly authorized cluster via `BRINE_KUBE_CONTEXT`). The Go-side
   evidence for the seven fixes is the unit/regression tests that landed with
   them (`go test ./atc/worker/jetbridge/` is green on the integrated tree).
-- **Adapter test prerequisites on a developer Mac**: three
+- **Adapter test prerequisites on a developer Mac**: four
   `cmd/brine-adapter-jetbridge` tests (`TestDocumentOwnsSelection`,
-  `TestEngineReleaseDrainsRealDaemon`,
-  `TestHoldPreservesThenDrainsRealResources`) and one `steps` test
-  (`TestTraceCaptureExportsAndDisposesRealCollector`) fail without `otelcol`;
-  `TestBusyboxScriptOutcomeBoundary` fails without a built `.build/busybox`.
-  The three adapter cases fail for ONE reason and it is not a cwd: the
-  `span-capture` resource is `ScopeScenario`, `RequireAllForScope` acquires
-  every definition at a scope rather than the ones a scenario's steps ask
-  for, and its factory needs `otelcol` on PATH or `BRINE_OTELCOL_BINARY`.
-  Every scenario in every adapter run therefore fails at acquisition
-  ("Resource 'span-capture' factory failed"), before a hold or a release can
-  be reached. `auth-binaries` is suite-scoped and walks up from the adapter's
-  cwd looking for `skymarshal/dexserver/dexserver.go`; the two hold/selection
-  tests leave that cwd inside the repository, so for them it is not
-  implicated. `TestEngineReleaseDrainsRealDaemon` is the exception: it stages
-  its scenario through the engine from a temp-dir scope, so the walk reaches
-  `/` first and its scenario fails at `auth-binaries` ("cannot locate
-  authentication source root") before `span-capture` is ever acquired — the
-  same message at `718763bc57` and on the round-2 integrated tree.
-  They fail identically at `c96fac16a7`; they are environment prerequisites,
-  not regressions, but they fail rather than skip, which hides a real break
-  behind a familiar red.
+  `TestDocumentCheckEchoesRoster`, `TestDocumentRefusals`,
+  `TestHoldPreservesThenDrainsRealResources`) need only `brine` on PATH;
+  without it they fail with `exec: "brine": executable file not found`. They
+  no longer need `otelcol`: `span-capture` and `auth-binaries` are lazy
+  (`steps/lazy_resource.go`), so `RequireAllForScope` acquiring every
+  definition at a scope no longer starts a collector or walks for
+  `skymarshal/dexserver/dexserver.go`; each starts at its first step.
+  `TestEngineReleaseDrainsRealDaemon` also needs `brine-engine` on PATH
+  (both are in brine-private's `target/debug`). It stages its scenario
+  through the engine, which starts the adapter from a temp directory outside
+  the repository, and up to `e6d925b5ad` it failed there at the eager
+  suite-scoped `review-binaries` ("Resource 'review-binaries' factory
+  failed: cannot locate review source root"): Brine starts every
+  suite-scoped resource, and that factory's walk up for
+  `agent/session/codex-version` reached `/` first. CI never saw it because
+  `scripts/run-private-network` enters the module first. `review-binaries`
+  is lazy now too (RESOURCE-INVENTORY.md), so the engine test passes from
+  the default TMPDIR. Two `steps` tests keep a local prerequisite:
+  `TestTraceCaptureExportsAndDisposesRealCollector` needs `otelcol` on PATH
+  or `BRINE_OTELCOL_BINARY`, and `TestBusyboxScriptOutcomeBoundary` needs
+  `.build/busybox`, which `scripts/build-private-network` installs from an
+  existing BusyBox on Linux only (the brine CI job runs the test after that
+  script), or `BRINE_BUSYBOX_BINARY` naming a BusyBox binary elsewhere by
+  absolute path. Both fail rather than skip, which hides a real break behind
+  a familiar red.
 - **SIGTERM without a temp sweep**: closed. The adapter now takes SIGTERM
   itself, drains its tracked scenario disposers and its resource state,
   reports every disposal failure, sweeps its temp root, and only then
