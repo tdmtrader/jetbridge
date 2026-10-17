@@ -1,6 +1,7 @@
 ---
 status: accepted
 date: 2026-08-13
+amended-by: ADR-0008 (chart no longer configures the tier), ADR-0009 (namespace separation), ADR-0010 (one tree path)
 ---
 
 # The durable tier fails open; Hangar fails closed
@@ -33,10 +34,12 @@ either choice is wrong for the other kind.
   the tier. The daemon holds a delete only over the cache namespace.
   Reaffirmed by ADR-0009: the cache has its own namespace and its own
   store instance.
-- Amended 2026-10-08 (one tree path): the strict-input namespace is gone; a
+- Amended 2026-10-08 by [ADR-0010](0010-hangar-keeps-one-mechanism-per-guarantee.md) (one tree path): the strict-input namespace is gone; a
   Run's inputs are input publications in the output namespace, read back as
   managed reads. The fail-closed principle is unchanged; the namespace
   inequality is cache ≠ output.
+- Amended by [ADR-0008](0008-the-chart-offers-choices-not-flags.md): the
+  chart stopped configuring this tier before C2 removed it.
 
 Amended 2026-10-09 — Amended by C2 (durable resource-cache tier removal):
 The resource-cache object-store tier is removed. Resource caches remain node-local, with peer reads and a get retry on a miss. Hangar remains fail-closed and is the only long-term storage plane; only web reclaims its objects.

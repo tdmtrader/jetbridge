@@ -1,5 +1,5 @@
 ---
-status: superseded in part by 0009
+status: superseded in part by 0009; amended by 0010
 date: 2026-09-24
 ---
 
@@ -15,8 +15,7 @@ policy inspection cannot prevent administrator deletion and adds a process,
 permissions and stale-evidence failures to every deployment. Operators own
 bucket isolation, credentials, lifecycle configuration and recovery. Actual
 unexpected absence and runtime authorization failures remain durable findings
-that block new admission until explicitly reconciled. Claims, read leases and
-generation-conditioned reclamation remain authoritative.
+that block new admission until explicitly reconciled. Claims and generation-conditioned reclamation remain authoritative.
 
 Disk storage uses one process and one block-backed PVC, with immutable blobs
 and a transactional bbolt index. The index supplies durable generations and
@@ -40,5 +39,9 @@ replication layer or provider-specific implementation of the output protocol.
 - Historical policy evidence is retained for audit.
 - Superseded in part by [ADR-0009](0009-one-node-daemon-one-capture-row.md)
   (2026-10-07): there is no cohort attestation (whose wire names this ADR
-  had kept compatible), no publication receipt and no fixed set of four
-  storage roles. The storage contract above stands.
+  had kept compatible) and no publication receipt; the four fixed storage
+  principals became three output principals when ADR-0010 removed the input
+  one. The storage contract above stands.
+- Amended by [ADR-0010](0010-hangar-keeps-one-mechanism-per-guarantee.md)
+  (2026-10-08): a claim is the only hold (read leases are gone), and the
+  delete precondition is the generation alone.

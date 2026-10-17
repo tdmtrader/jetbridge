@@ -3,6 +3,7 @@ status: accepted
 date: 2026-10-07
 supersedes: the cohort, receipt and storage-role parts of ADR-0005
 amends: ADR-0002 (consequence: namespace separation)
+amended-by: ADR-0010 (control-key generation, read leases, reclaim workflow, strict-input namespace)
 ---
 
 # One node daemon, one capture row
@@ -20,7 +21,7 @@ We collapsed it:
   cache, strict-input materialization (amended by ADR-0010: gone; a Run
   input is an input publication read back as a managed read), input
   publication, result reads, the base execution-control protocol and the
-  capture routes (seal, publish, release, stat). Nothing else listens on a node. The output
+  capture routes (hold, seal, publish, release, stat). Nothing else listens on a node. The output
   daemon, the activation command, the inventory and the reclaimer binaries
   are gone.
 - **One storage interface, two backends, three namespaces** (amended by
@@ -48,8 +49,9 @@ We collapsed it:
   under the spelling `activation_epoch`; ADR-0010 removed it, with the
   node control key ring and acknowledgement signing it alone justified.
 - **Reclaim and the orphan sweep run in the web**, under one advisory lock,
-  admission excluding pending and publishing captures, claims and live
-  read leases, and the sweep marker-gated to this store (bucket, prefix and
+  admission excluding pending and publishing captures, live claims and
+  unexpired staged input publications (amended by ADR-0010: read leases are
+  gone; a reader's claim is the only hold), and the sweep marker-gated to this store (bucket, prefix and
   scope) and bounded by a per-pass budget. A per-tree advisory lock orders
   a capture's move to publishing against reclaim and the sweep, since the
   CAS alone cannot see a dedup onto the same generation.
@@ -89,8 +91,10 @@ We collapsed it:
     tenant, store) and nothing else.
 - ADR-0005's storage contract (create-absent, exact operations, the disk
   store's single owner, operators owning infrastructure policy, integrity
-  findings blocking admission) stands; its cohort attestation, receipts and
-  four storage roles do not.
+  findings blocking admission) stands; its cohort attestation and receipts do
+  not. The disk store keeps three fixed principals: publisher for the node
+  daemon, and inventory (list) and reclaimer (delete) for the web over the
+  output namespace (ADR-0010 removed the input one).
 - ADR-0002 stands: the cache fails open, Hangar fails closed, and the two
   share no read path. The separation is a namespace inequality checked at
   startup, not an import ban.

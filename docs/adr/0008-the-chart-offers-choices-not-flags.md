@@ -100,8 +100,9 @@ is written beside the constant. A raise is a one-line diff a reviewer sees.
   its own store rather than inheriting the tier's. The tier's fail-open
   semantics, its retention classes and its separation from Hangar still hold
   in the daemon, which keeps its durable-tier code and flags; only the
-  chart's way of setting them is gone. ADR-0002 is unedited, and this is its
-  amendment.
+  chart's way of setting them is gone. This amends ADR-0002's chart-facing
+  consequences; ADR-0002's own amendment lines (ADR-0009, ADR-0010, C2) cover
+  the storage interface, the namespaces and the tier's removal.
 
 Amended by C4 (daemon small cuts): resolve capability expiry is derived from
 pod timeouts, retries and one margin. `artifactDaemon.resolveCapability.ttl`
