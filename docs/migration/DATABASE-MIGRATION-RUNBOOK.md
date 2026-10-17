@@ -154,7 +154,7 @@ concourse migrate \
   --migrate-to-latest-version
 ```
 
-This applies all pending migrations up to the JetBridge target version (`1773105501`).
+This applies all pending migrations up to the JetBridge target version: the highest migration in `atc/db/migration/migrations`, which `migrate-preflight.sh` prints as the JetBridge target version.
 
 ### Option B: Automatic on Startup
 
@@ -222,7 +222,7 @@ FROM migrations_history
 ORDER BY tstamp DESC
 LIMIT 5;
 
--- Expected: version = 1773105501, direction = 'up', status = 'passed'
+-- Expected: version = the pre-flight's JetBridge target version, direction = 'up', status = 'passed'
 ```
 
 ### 5.2 Row Count Comparison
@@ -319,7 +319,7 @@ After validation, clean up stale Garden worker data. **This is optional** — le
 ### 6.1 Truncate Unused Cache Tables
 
 ```sql
--- These tables are completely unused by JetBridge's K8s runtime
+-- Before first JetBridge boot only: every row here is Garden-era. JetBridge writes these tables once it runs.
 TRUNCATE worker_task_caches CASCADE;
 TRUNCATE worker_resource_caches CASCADE;
 TRUNCATE worker_base_resource_types CASCADE;
@@ -328,11 +328,11 @@ TRUNCATE worker_base_resource_types CASCADE;
 ### 6.2 Remove Stale Worker Records
 
 ```sql
--- Delete Garden workers (K8s workers will be re-registered on boot)
+-- Delete Garden workers (the synthetic worker is re-registered on boot)
 -- First, check what workers exist
 SELECT name, state, platform, addr FROM workers;
 
--- Delete all existing workers — JetBridge will create new K8s workers
+-- Delete all existing workers — JetBridge registers its synthetic worker on boot
 DELETE FROM workers;
 ```
 
@@ -383,16 +383,14 @@ concourse web \
 
 1. **Migration check:** JetBridge verifies the database is at the expected version. If you used `concourse migrate`, this is a no-op.
 2. **Component initialization:** All components (scheduler, tracker, scanner, etc.) start running.
-3. **K8s worker registration:** The `k8s-worker-registrar` creates a worker record for the K8s cluster.
+3. **Synthetic worker registration:** the registrar (component `k8s_worker_registrar`) creates the one worker record for the namespace.
 4. **Signing keys:** A new signing key is generated and stored in the `signing_keys` table.
 5. **Pipeline resumption:** Existing pipelines resume executing. Resources begin checking.
 
 ### Expected Log Output
 
 ```
-{"timestamp":"...","source":"atc","message":"atc.db.migrations-already-up-to-date"}
 {"timestamp":"...","source":"atc","message":"atc.listening","data":{"address":"0.0.0.0:8080"}}
-{"timestamp":"...","source":"atc","message":"atc.k8s-worker-registrar.registered"}
 ```
 
 ### Verify Operation
@@ -508,15 +506,15 @@ an upgrade.
 
 ### Migrating from v8.0.0
 
-- **Migration count:** 3 (JetBridge-only migrations)
-- **Duration:** Under 1 second — all three migrations are simple column drops and trigger replacements
-- **Risk:** Very low
+- **Migration count:** 57 (JetBridge-only migrations)
+- **Duration:** scales with the `builds` table (`1773105506` scans it three times under ACCESS EXCLUSIVE; see schema-delta.md)
+- **Risk:** Medium — measure on a restored copy first
 
 ### Migrating from v8.0.1
 
-- **Migration count:** 3 (identical to v8.0.0)
-- **Duration:** Under 1 second
-- **Risk:** Very low
+- **Migration count:** 57 (identical to v8.0.0)
+- **Duration:** as for v8.0.0
+- **Risk:** Medium — measure on a restored copy first
 - **Note:** v8.0.0 and v8.0.1 share identical migration sets
 
 ### MD5 → SHA256 Migration Details
@@ -582,4 +580,4 @@ On managed PostgreSQL (RDS, Cloud SQL), pgcrypto is available but may need enabl
 
 ### Post-migration: resource checks fail
 
-Resource checks may fail initially as the K8s runtime discovers and configures workers. Wait 30–60 seconds for the `k8s-worker-registrar` to register the worker and for the scanner to pick it up.
+Resource checks may fail initially until JetBridge registers its synthetic worker. Wait 30–60 seconds for the registrar (`k8s_worker_registrar`) to register it and for the scanner to pick it up.
