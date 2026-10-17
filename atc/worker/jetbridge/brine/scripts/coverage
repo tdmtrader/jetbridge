@@ -88,7 +88,7 @@ if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 
     while read -r line; do
         from=$((line - 40)); [ "$from" -ge 1 ] || from=1
         echo "--- diagnostics before failing record at line $line:" >&2
-        sed -n "${from},${line}p" "$report_dir/brine.log" | grep -v '^{' >&2
+        sed -n "${from},${line}p" "$report_dir/brine.log" | grep -v '^{' >&2 || true
     done
     echo "Last lines of $report_dir/brine.log:" >&2
     tail -60 "$report_dir/brine.log" >&2
