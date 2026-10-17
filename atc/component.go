@@ -33,8 +33,8 @@ const (
 	// process that started a capture is exactly the process that may be gone:
 	// a capture crosses two systems, and what has to survive an ATC restart is
 	// the ability to ask what is durably true and take the next bounded step.
-	// The DB lease makes one ATC own one capture at a time; the fence makes a
-	// takeover safe.
+	// Each step commits as one compare-and-set on the capture row, so a second web
+	// racing the same row loses benignly; there is no lease or fence.
 	ComponentHangarOutputCapture = "hangar_output_capture"
 
 	// ComponentRunResults completes pipeline runs. Every run is a v2 run, and a
