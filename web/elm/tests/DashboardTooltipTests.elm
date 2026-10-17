@@ -1,6 +1,5 @@
 module DashboardTooltipTests exposing (all)
 
-import Application.Models exposing (Session)
 import Common
 import Concourse exposing (JsonValue(..))
 import Dashboard.Dashboard as Dashboard
