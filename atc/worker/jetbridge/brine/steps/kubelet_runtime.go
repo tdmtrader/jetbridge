@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -23,9 +24,10 @@ import (
 
 // The disposable kubelet runtime: one K3s node that a CI task created,
 // marked owned by the tier running on it, labelled into the output plane's
-// ready cohort, with the Run's real output daemon rebound to an address the
-// node's Pods reach. It never substitutes envtest for a kubelet and never
-// runs against a cluster it did not create (hack/test-run-kubelet,
+// ready cohort, with the Run's real artifact daemon -- which mounts the output
+// plane -- bound to every address and certified for the node's, so the node's
+// Pods and the ATC reach it there. It never substitutes envtest for a kubelet
+// and never runs against a cluster it did not create (hack/test-run-kubelet,
 // hack/test-review-kubelet).
 func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brine.Resources, owner, namespacePrefix string, checks bool) (RunOutputRuntime, jetbridge.PodExecutor, error) {
 	var in RunOutputRuntime
@@ -68,7 +70,18 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 		return releasedIfGone(client.CoreV1().Namespaces().Delete(context.Background(), ns.Name, metav1.DeleteOptions{}))
 	})
 	in.Client, in.Node = client, node
-	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(node.UID), checks)
+	// The ATC reaches the node's artifact daemon at the node's InternalIP and
+	// verifies its certificate against that address, so the fixture mints the
+	// certificate naming it.
+	resolved, err := jetbridge.NewNodeIPResolver(client).Resolve(ctx, node.Name)
+	if err != nil {
+		return in, nil, err
+	}
+	nodeIP := net.ParseIP(resolved)
+	if nodeIP == nil {
+		return in, nil, fmt.Errorf("the disposable kubelet node %s resolves to %q, which is not an IP address", node.Name, resolved)
+	}
+	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(node.UID), checks, nodeIP)
 	if err != nil {
 		return in, nil, err
 	}
@@ -76,21 +89,8 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 		return in, nil, in.Start.Err
 	}
 	d := in.Start.Daemon.Output
-	if err = d.crash(); err != nil {
-		return in, nil, err
-	}
-	listenArgs := 0
-	for i, arg := range d.cmd.Args {
-		if arg == "--listen" && i+1 < len(d.cmd.Args) {
-			listenArgs++
-			d.cmd.Args[i+1] = strings.Replace(d.cmd.Args[i+1], "127.0.0.1:", "0.0.0.0:", 1)
-		}
-	}
-	if listenArgs != 1 {
-		return in, nil, fmt.Errorf("live daemon has no single listen address")
-	}
-	if err = d.restart(ctx, in.Start.Daemon.HTTP); err != nil {
-		return in, nil, err
+	if address := daemonListenAddress(d.cmd.Args); address != "" {
+		return in, nil, fmt.Errorf("the artifact daemon holds only %s; the node's Pods dial it at %s", address, nodeIP)
 	}
 	in.Config = jetbridge.NewConfig(ns.Name, "")
 	in.Config.OutputPlaneEnabled = true
@@ -101,6 +101,23 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 	executor := jetbridge.NewSPDYExecutor(client, cfg)
 	in.OutcomeReader = executor
 	return in, executor, nil
+}
+
+// daemonListenAddress is the one address an artifact daemon's argv binds it
+// to, or "" when it binds every address. The launcher passes --listen-address
+// only when a caller named a host; the disposable kubelet's Pods and the ATC
+// dial the daemon at the node's address, so it must bind every one.
+func daemonListenAddress(args []string) string {
+	address := ""
+	for i, arg := range args {
+		switch {
+		case arg == "--listen-address" && i+1 < len(args):
+			address = args[i+1]
+		case strings.HasPrefix(arg, "--listen-address="):
+			address = strings.TrimPrefix(arg, "--listen-address=")
+		}
+	}
+	return address
 }
 
 // kubeletWorker is the production worker a Run step uses on the node: the real

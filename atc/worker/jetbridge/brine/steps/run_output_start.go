@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -222,7 +223,9 @@ func runOutputFixtureOnNode(rec *brine.Recorder, res brine.Resources, activation
 	return runOutputFixtureConfig(rec, res, activation, nodeUID, false)
 }
 
-func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation, nodeUID string, checks bool) (RunOutputStart, error) {
+// runOutputFixtureConfig admits a Run and starts the artifact daemon as the
+// node nodeUID names, reached at loopback and at nodeAddresses.
+func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation, nodeUID string, checks bool, nodeAddresses ...net.IP) (RunOutputStart, error) {
 	jdb, err := jetbridgeDBFrom(res)
 	if err != nil {
 		return RunOutputStart{}, err
@@ -276,7 +279,7 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 	}
 	task := in.Creation.Config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
 	in.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunResult: task.RunResult, Config: task.Config}
-	in.Daemon, err = startHangarDaemonOnNode(rec, nodeUID, true)
+	in.Daemon, err = startHangarDaemonOnNode(rec, nodeUID, nodeAddresses...)
 	return in, err
 }
 

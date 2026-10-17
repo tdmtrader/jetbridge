@@ -192,10 +192,15 @@ const (
 // callers that dialed a once-separate output daemon over TLS asked for, and is
 // now always true.
 func startHangarDaemon(rec *brine.Recorder, outputTLS ...bool) (HangarDaemon, error) {
-	return startHangarDaemonOnNode(rec, hangarNodeUID, true)
+	return startHangarDaemonOnNode(rec, hangarNodeUID)
 }
 
-func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (HangarDaemon, error) {
+// startHangarDaemonOnNode starts the artifact daemon as the node nodeUID
+// names. nodeAddresses are the addresses the ATC dials it at beyond loopback:
+// a real kubelet's node is reached at its InternalIP, and the ATC verifies the
+// daemon's certificate against the address it dialled, so the certificate
+// must name it.
+func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, nodeAddresses ...net.IP) (HangarDaemon, error) {
 	ctx := context.Background()
 
 	endpoint, err := hangarEmulatorEndpoint(rec)
@@ -211,7 +216,7 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 
 	// One small PKI, minted the same way daemon_mtls.go mints its own. Every
 	// Hangar route but the node-local ones is behind requireClientCert.
-	material, err := mintMTLSMaterial("artifact-daemon", []net.IP{net.ParseIP("127.0.0.1")})
+	material, err := hangarDaemonMaterial(nodeAddresses...)
 	if err != nil {
 		return HangarDaemon{}, fmt.Errorf("mint the daemon's TLS material: %w", err)
 	}
@@ -300,6 +305,13 @@ func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, _ bool) (Hanga
 	state.Output = daemon
 
 	return state, nil
+}
+
+// hangarDaemonMaterial mints the Hangar fixture's PKI: a server certificate
+// for "artifact-daemon", the name the fixture's own client verifies, at
+// loopback and at each node address the ATC dials.
+func hangarDaemonMaterial(nodeAddresses ...net.IP) (mtlsMaterial, error) {
+	return mintMTLSMaterial("artifact-daemon", append([]net.IP{net.ParseIP("127.0.0.1")}, nodeAddresses...))
 }
 
 // prepareOutputPlane creates the output namespace's bucket and the signer the
