@@ -1405,12 +1405,12 @@ func (emitter *PrometheusEmitter) workerUnknownVolumesMetric(logger lager.Logger
 func (emitter *PrometheusEmitter) workerTasksMetric(logger lager.Logger, event metric.Event) {
 	worker, exists := event.Attributes["worker"]
 	if !exists {
-		logger.Error("failed-to-find-worker-in-event", fmt.Errorf("expected worker to exist in event.Attributes"))
+		logger.Error("failed-to-find-worker-in-event", errors.New("expected worker to exist in event.Attributes"))
 		return
 	}
 	platform, exists := event.Attributes["platform"]
 	if !exists || platform == "" {
-		logger.Error("failed-to-find-platform-in-event", fmt.Errorf("expected platform to exist in event.Attributes"))
+		logger.Error("failed-to-find-platform-in-event", errors.New("expected platform to exist in event.Attributes"))
 		return
 	}
 
