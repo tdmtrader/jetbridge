@@ -32,18 +32,32 @@ _Avoid_: task pod (a step pod may be running a check or a get)
 **Step pod grant**:
 An operator-set mapping from a build's authoritative owner (an exact
 team/pipeline/job of a non-instanced pipeline, or a one-off build of team
-`main`) to the step pod identity its pods run under. Only web's
-configuration sets one; check builds, instanced pipelines and other teams'
-builds match none, and nothing a pipeline or API caller supplies can select
-one.
+`main`) to the step pod identity its pods run under. A step pod grant names a
+ServiceAccount, declares `privileged=true`, or both; the step pod identity
+carries that declaration, but nothing reads it yet (see **Privilege gate**).
+Only web's configuration sets one; check builds, instanced pipelines and other
+teams' builds match none, and nothing a pipeline or API caller supplies can
+select one.
 _Avoid_: grant (alone; that is the agentic context's MCP authorization),
 service account mapping
 
 **Trusted reader**:
-An identity allowed to obtain Hangar keys: the bootstrap inventory's
-consumers, web, the cluster administrators the operator lists, and every
-identity a step pod grant gives privilege or `pods create`. The privilege
-gate keeps the set closed: no pipeline can join it by asking.
+An identity allowed to read a bootstrap inventory Secret, create a pod that
+mounts one, or reach the node: the bootstrap inventory's consumers, web, the
+cluster administrators the operator lists, and every identity a step pod grant
+gives privilege or `pods create`. No pipeline can join it through a
+ServiceAccount, a capability or a host namespace, but privilege is not gated
+yet (see **Privilege gate**): a task that sets `privileged:`, or a step whose
+resource type does, runs privileged without a step pod grant.
+
+**Privilege gate**:
+The rule that no step configuration can add a capability or join a host
+namespace: nothing that builds a step pod sets one, and
+`TestNoStepPodCodeSetsACapabilityOrAHostNamespace` keeps it so. Privilege
+itself is not gated today: a step pod's security context follows the task's
+`privileged:` or, for a get, put or check, its resource type's `privileged:`,
+and a step pod grant's `privileged=true` is carried on the step pod identity
+but never read.
 
 **Default step pod identity**:
 What a step pod outside every step pod grant runs as: the configured
@@ -123,8 +137,9 @@ _Avoid_: strict init, materialize init
 **Reaper**:
 The periodic sweep that reports live pods, deletes pods marked destroying or
 left behind by builds that are no longer running (and, gracefully, finished
-capture-selected pause pods whose build still runs), cleans cache volumes, and
-asks the artifact daemon to drop their artifacts.
+capture-selected pause pods whose build still runs), and asks the artifact
+daemon to drop their step directories. It never drops one a resource cache
+resolves into; that is left to the sweeper.
 _Avoid_: GC sweep loop, k8s worker reaper (upstream's build reaper is a
 different thing)
 
@@ -155,8 +170,10 @@ _Avoid_: daemon (alone), DaemonSet (the deployment shape, not the thing),
 artifact-cache
 
 **Artifact key**:
-The name an artifact is registered under in a daemon: a step handle or a
-resource cache key.
+The name an artifact is registered under in an artifact daemon: a volume
+handle the web registers as an alias (`<handle>-dir`, `-input-N`,
+`-output-<name>`), the `<container handle>/<volume>` path the artifact daemon
+finds on disk, or a resource cache key.
 
 **Fetch init container**:
 The init container that asks the daemon where a step's inputs live and
@@ -164,8 +181,9 @@ stages them into the step's volume.
 _Avoid_: artifact-init, artifact-fetch
 
 **Cleanup init container**:
-The init container that clears a reused handle's stale host-path data,
-after asking the source ledger whether it may.
+The init container that clears a reused handle's stale host-path data. Where
+the output plane is enabled it first asks the source ledger and clears only on
+an unmanaged answer; held, or no answer at all, is a refusal.
 _Avoid_: cleanup-stale
 
 **Helper image**:
@@ -211,8 +229,10 @@ What a step must carry for its task caches to live on the node and survive
 the pod. Without it caches are per-pod.
 
 **Cache store**:
-The backend for task caches: node-local host path, per-pod empty directory,
-or detected from the cluster when unset.
+The backend for task caches: node-local host path or per-pod empty directory.
+When unset, the web picks the host path if an artifact daemon or a cache host
+path is configured, and an empty directory otherwise. A step without a task
+cache identity always gets the empty directory.
 
 **Artifact locator**:
 The web's in-memory map from artifact key to the node holding it, used for
