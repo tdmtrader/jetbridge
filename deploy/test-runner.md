@@ -70,8 +70,10 @@ SHA; record hashes for `brine` and `brine-engine`. Check `go`, PostgreSQL, Helm,
 kubectl, Docker and both envtest executables. Confirm `/brine`, Git credentials
 and the build secret are absent from the final image.
 
-Push the final image with `docker push "$runner_image"`, record the returned
-manifest digest, and verify that the registry serves that digest for the tag.
+`docker save` the final image and `crane push` the tarball over the plain-HTTP
+registry ingress (`docker push` fails TLS against its default certificate),
+record the manifest digest, and confirm with `crane digest` that the registry
+serves that digest for the tag.
 Then run the pipeline's tasks against an immutable candidate revision:
 
 ```sh
@@ -80,7 +82,7 @@ hack/ci-check.sh <candidate-ref> build-and-vet unit-tests brine
 
 The Brine task needs its existing `GITHUB_TOKEN` pipeline variable for the
 private Go adapter dependency; that credential is not baked into the runner.
-It also needs four pipeline variables that do not exist until someone creates
+It also needs three pipeline variables that do not exist until someone creates
 them (the task errors on an undefined `((var))` before a scenario runs), and
 an identity on the cluster it runs in (below):
 
@@ -110,7 +112,8 @@ cluster without the grants runs the scenarios as the default step pod
 ServiceAccount, which lacks the ClusterRole, so every live scenario 403s.
 `hack/ci-check.sh` forwards each `((var))` from an environment
 variable of the same name upper-cased with `_` for `-`
-(`BRINE_ALLOW_HOSTPATH_TESTS`, `BRINE_ARTIFACT_NODE`, ...), and names any
+(`BRINE_ALLOW_HOSTPATH_TESTS`, `BRINE_ALLOW_HOSTPORT_TESTS`,
+`BRINE_ARTIFACT_DAEMON_PORT`, `GITHUB_TOKEN`), and names any
 that are missing before it runs the job.
 A passing build or `brine --version` alone does not establish contract-5
 compatibility: the Brine CLI must actually execute the current adapter and
