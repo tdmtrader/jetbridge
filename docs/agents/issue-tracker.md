@@ -1,8 +1,9 @@
 # Issue tracker: the anvil hearth
 
 This repo does not track work in GitHub Issues or in `.scratch/`. Work lives in
-the anvil **hearth** at `../jetbridge-hearth` (resolved from `.hearth` at the
-repo root) and is driven through the `anvil` MCP tools (`checkin`, `begin`,
+the anvil **hearth** at `../jetbridge-hearth` (the anvil MCP launcher named
+in the local, gitignored `.mcp.json` resolves it: `ANVIL_HEARTH`, default
+`~/concourse/jetbridge-hearth`) and is driven through the `anvil` MCP tools (`checkin`, `begin`,
 `complete`, `catalog`, `describe`). The lifecycle rules are the hearth's own
 `playbooks/conventions.md`, not this file.
 
