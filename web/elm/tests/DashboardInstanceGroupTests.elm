@@ -26,7 +26,6 @@ import DashboardTests
 import Data
 import Dict
 import Expect
-import Html.Attributes as Attr
 import Http
 import Json.Encode
 import Keyboard
