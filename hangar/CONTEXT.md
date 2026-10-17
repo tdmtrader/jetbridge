@@ -146,10 +146,17 @@ The bound on a pending capture. A capture row still pending past it fails.
 _Avoid_: seal deadline, timeout
 
 **Step marker**:
-The one JSON file beside a step directory that is the only node-local
-capture state: held, sealed, or released (a tombstone). The file is the
-record; nothing wraps it.
+The one JSON file per capture in the node daemon's control directory
+(`.hangar-output-control`), naming its step directory, that is the only
+node-local capture state: held, sealed, or released (a tombstone). The file
+is the record; nothing wraps it.
 _Avoid_: control record, source incarnation, writer ticket
+
+**Execution record**:
+The one JSON file per admitted execution in the node daemon's control directory,
+written the same way as a step marker; the base protocol's only node-local
+state. A record that does not decode refuses the one execution it names.
+_Avoid_: control record, envelope
 
 **Source hold**:
 A step marker in the held state, written by the control init before the
@@ -180,20 +187,25 @@ _Avoid_: capture ledger
 
 **Input publication**:
 A Run input a Run uploads, staged on a node under a reservation id and
-then published as a tree ref in the output namespace. The reservation id is its correlation handle
-on the wire (`hangar-output-reservation-id`), not a capture reservation.
+then published as a tree ref in the output namespace. The reservation id is
+its correlation handle, carried in its object marker
+(`hangar-output-reservation-id`); a capture's object carries one derived from
+its capture key in the same field.
 _Avoid_: upload (alone), reservation (alone)
 
 **Object marker**:
 The ownership metadata written once at object creation and never updated:
-which store, which scope, which digest. An object carrying none of it is
+which store, which scope, which digest, the reservation id that correlates
+it, and when it was created. An object carrying none of it is
 unmanaged; one carrying it malformed is corrupt.
 _Avoid_: label, tag
 
 **Tree lock**:
-The database lock on one scope and digest that a capture moving to
-publishing, the reclaim pass and an orphan verdict each take, so none
-interleaves with another over the same tree.
+The transaction-scoped database lock on one scope and digest, taken before
+any row lock by everything that changes what protects a tree (reserving or
+publishing an input publication, a capture moving to publishing or
+published, acquiring or releasing a claim) and by the reclaim pass and an
+orphan verdict, so none interleaves with another over the same tree.
 _Avoid_: dedup lock
 
 **Lifecycle**:
@@ -211,15 +223,16 @@ _Avoid_: reference, pin, read lease, lease
 
 **Reclamation**:
 The web's one pass over registered generations: one that no live claim, no
-pending or publishing capture and no unregistered input publication names
-is deleted by its exact generation and stamped reclaimed, in one
+pending or publishing capture and no unexpired staged input publication
+names is deleted by its exact generation and stamped reclaimed, in one
 transaction under the tree lock. Only the web reclaims.
 _Avoid_: garbage collection, purge, reclaim admission, reclaim job
 
 **Orphan sweep**:
 The web's periodic pass that deletes an old object marked for this store
-that no lifecycle or capture accounts for, and counts every other object
-it cannot account for.
+that no lifecycle, no pending or publishing capture and no unexpired staged
+input publication accounts for, and counts every other object it cannot
+account for.
 _Avoid_: inventory, adoption, garbage collection
 
 **In service**:
@@ -252,6 +265,13 @@ the mTLS channel the web reached it on; an acknowledgement is that answer,
 and the channel, not a signature, is what makes it the node's. There is no
 node control key and no key generation.
 _Avoid_: lease control, signed acknowledgement, control-key generation
+
+**Fence**:
+The monotonic epoch in an execution's identity that orders control of it;
+takeover advances it, a control warrant binds it, and a node refuses an
+operation under an older one. It is not the reader-side fence ADR-0010
+removed.
+_Avoid_: epoch (alone)
 
 ### Deployment
 
