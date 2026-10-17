@@ -152,12 +152,6 @@ func expectSupervisedExec(command []string, quotedCommand string) {
 // They lived in worker_test.go until that suite was retired under the brine
 // migration; container_test.go is the remaining consumer.
 
-type creatingContainerCreatedFails struct{ db.CreatingContainer }
-
-func (creatingContainerCreatedFails) Created() (db.CreatedContainer, error) {
-	return nil, fmt.Errorf("db connection lost")
-}
-
 // filterMountsByPaths lived in container_test.go until that suite was retired
 // under the brine migration; podname_integration_test.go is the remaining
 // consumer.
