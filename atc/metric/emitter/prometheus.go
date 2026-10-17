@@ -1239,7 +1239,7 @@ func (emitter *PrometheusEmitter) buildFinishedMetrics(logger lager.Logger, even
 	// concourse_builds_finished
 	team, exists := event.Attributes["team_name"]
 	if !exists {
-		logger.Error("failed-to-find-team-name-in-event", fmt.Errorf("expected team_name to exist in event.Attributes"))
+		logger.Error("failed-to-find-team-name-in-event", errors.New("expected team_name to exist in event.Attributes"))
 		return
 	}
 
@@ -1255,7 +1255,7 @@ func (emitter *PrometheusEmitter) buildFinishedMetrics(logger lager.Logger, even
 
 	buildStatus, exists := event.Attributes["build_status"]
 	if !exists {
-		logger.Error("failed-to-find-build_status-in-event", fmt.Errorf("expected build_status to exist in event.Attributes"))
+		logger.Error("failed-to-find-build_status-in-event", errors.New("expected build_status to exist in event.Attributes"))
 		return
 	}
 	emitter.buildsFinishedVec.WithLabelValues(team, pipeline, job, buildStatus).Inc()
