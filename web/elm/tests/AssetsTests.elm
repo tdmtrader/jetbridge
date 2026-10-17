@@ -9,7 +9,6 @@ import Assets
         , toString
         )
 import Concourse.BuildStatus exposing (BuildStatus(..))
-import Concourse.PipelineStatus exposing (PipelineStatus(..), StatusDetails(..))
 import Expect
 import Test exposing (Test, describe, test)
 
