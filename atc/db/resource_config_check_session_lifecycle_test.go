@@ -79,11 +79,11 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			return query["resource_config_check_session_id"].(int)
-		} else {
-			rccsIDs := query["resource_config_check_session_id"].([]int)
-			Expect(rccsIDs).To(HaveLen(1))
-			return rccsIDs[0]
 		}
+
+		rccsIDs := query["resource_config_check_session_id"].([]int)
+		Expect(rccsIDs).To(HaveLen(1))
+		return rccsIDs[0]
 	}
 
 	Describe("CleanInactiveResourceConfigCheckSessions", func() {
