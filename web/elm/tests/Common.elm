@@ -39,7 +39,6 @@ import List.Extra
 import Message.Callback as Callback
 import Message.Effects exposing (Effect)
 import Message.Message exposing (DomID(..), Message(..))
-import Message.Subscription exposing (Delivery(..))
 import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import Routes
 import Test exposing (Test, describe, test)
