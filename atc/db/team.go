@@ -1377,26 +1377,27 @@ func updateResourcesName(tx Tx, resources []atc.ResourceConfig, pipelineID int) 
 	resourcesToUpdate := []UpdateName{}
 
 	for _, res := range resources {
-		if res.OldName != "" && res.OldName != res.Name {
-			var count int
-			err := psql.Select("COUNT(*) as count").
-				From("resources").
-				Where(sq.Eq{
-					"name":        res.OldName,
-					"pipeline_id": pipelineID}).
-				RunWith(tx).
-				QueryRow().
-				Scan(&count)
-			if err != nil {
-				return err
-			}
+		if res.OldName == "" || res.OldName == res.Name {
+			continue
+		}
+		var count int
+		err := psql.Select("COUNT(*) as count").
+			From("resources").
+			Where(sq.Eq{
+				"name":        res.OldName,
+				"pipeline_id": pipelineID}).
+			RunWith(tx).
+			QueryRow().
+			Scan(&count)
+		if err != nil {
+			return err
+		}
 
-			if count != 0 {
-				resourcesToUpdate = append(resourcesToUpdate, UpdateName{
-					OldName: res.OldName,
-					NewName: res.Name,
-				})
-			}
+		if count != 0 {
+			resourcesToUpdate = append(resourcesToUpdate, UpdateName{
+				OldName: res.OldName,
+				NewName: res.Name,
+			})
 		}
 	}
 
