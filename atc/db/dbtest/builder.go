@@ -610,7 +610,7 @@ func (builder Builder) WithJobBuild(assign *db.Build, jobName string, inputs Job
 		}
 
 		if !inputsReady {
-			return fmt.Errorf("inputs not available?")
+			return errors.New("inputs not available?")
 		}
 
 		job, found, err := scenario.Pipeline.Job(jobName)
@@ -678,7 +678,7 @@ func (builder Builder) WithJobBuild(assign *db.Build, jobName string, inputs Job
 		}
 
 		if !found {
-			return fmt.Errorf("build disappeared")
+			return errors.New("build disappeared")
 		}
 
 		*assign = build
