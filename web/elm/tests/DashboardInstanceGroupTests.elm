@@ -6,7 +6,6 @@ module DashboardInstanceGroupTests exposing
     )
 
 import Application.Application as Application
-import Assets
 import Common
     exposing
         ( defineHoverBehaviour
