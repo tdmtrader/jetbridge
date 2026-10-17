@@ -213,7 +213,6 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		ResourceTypes: step.plan.ResourceTypes,
 	}
 
-	// override limits and requests
 	taskConfigSource = &OverrideContainerLimitsSource{ConfigSource: taskConfigSource, Limits: step.plan.Limits, Requests: step.plan.Requests}
 
 	// override params
