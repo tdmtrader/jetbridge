@@ -47,10 +47,10 @@ type TreeLimits struct {
 
 func (limits TreeLimits) validate() error {
 	if limits.MaxContentBytes <= 0 {
-		return fmt.Errorf("hangar: maximum content bytes must be positive")
+		return errors.New("hangar: maximum content bytes must be positive")
 	}
 	if limits.MaxEntries <= 0 {
-		return fmt.Errorf("hangar: maximum entries must be positive")
+		return errors.New("hangar: maximum entries must be positive")
 	}
 	return nil
 }
