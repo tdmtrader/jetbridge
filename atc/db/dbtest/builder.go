@@ -233,7 +233,7 @@ func (builder Builder) WithResourceVersions(resourceName string, versions ...atc
 			return fmt.Errorf("create check build: %w", err)
 		}
 		if !success {
-			return fmt.Errorf("failed to create check build")
+			return errors.New("failed to create check build")
 		}
 
 		resourceTypes, err := scenario.Pipeline.ResourceTypes()
