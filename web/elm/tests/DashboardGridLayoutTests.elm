@@ -2,7 +2,7 @@ module DashboardGridLayoutTests exposing (all)
 
 import Dashboard.Grid.Layout exposing (cardSize, layout)
 import Expect
-import Test exposing (Test, describe, test, todo)
+import Test exposing (Test, describe, test)
 
 
 all : Test
