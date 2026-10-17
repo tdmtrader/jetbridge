@@ -25,7 +25,7 @@ import Expect
 import Message.Effects as Effects
 import Message.Message as Msgs
 import Message.ScrollDirection as ScrollDirection
-import Message.Subscription as Subscription exposing (Delivery(..), Interval(..))
+import Message.Subscription as Subscription exposing (Delivery(..))
 import Message.TopLevelMessage as ApplicationMsgs
 import Routes exposing (DashboardView(..))
 import Set
