@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -278,7 +279,7 @@ func (d *checkDelegate) pipeline() (db.Pipeline, error) {
 	}
 
 	if !found {
-		return nil, fmt.Errorf("pipeline not found")
+		return nil, errors.New("pipeline not found")
 	}
 
 	d.cachedPipeline = pipeline
