@@ -32,7 +32,6 @@ import Application.Application as Application
 import Concourse
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import Data
-import EffectTransformer exposing (ET)
 import Expect exposing (Expectation)
 import Html
 import Html.Attributes as Attr
