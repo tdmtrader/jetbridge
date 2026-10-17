@@ -2,7 +2,6 @@ package behavioral_test
 
 import (
 	"fmt"
-	"strings"
 )
 
 // ---------------------------------------------------------------------
@@ -11,45 +10,6 @@ import (
 // These helpers generate pipeline YAML strings for common test patterns.
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
-
-// yamlToPrintfArgs converts a multi-line YAML string (as typically passed
-// from Go) into a series of single-quoted shell arguments for printf.
-// It strips the common leading whitespace (dedent) and drops blank lines,
-// preserving the relative indentation structure of the YAML content.
-func yamlToPrintfArgs(yaml string) string {
-	lines := strings.Split(yaml, "\n")
-
-	// Find the minimum indentation of non-empty lines.
-	minIndent := -1
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		indent := len(line) - len(strings.TrimLeft(line, " \t"))
-		if minIndent < 0 || indent < minIndent {
-			minIndent = indent
-		}
-	}
-	if minIndent < 0 {
-		minIndent = 0
-	}
-
-	// Build printf arguments, one per non-empty line, dedented.
-	var args []string
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		dedented := line
-		if len(dedented) >= minIndent {
-			dedented = dedented[minIndent:]
-		}
-		// Escape single quotes for shell: replace ' with '\''
-		escaped := strings.ReplaceAll(dedented, "'", "'\\''")
-		args = append(args, fmt.Sprintf("'%s'", escaped))
-	}
-	return strings.Join(args, " ")
-}
 
 // fixtureCustomResourceType returns a pipeline with a custom resource_type
 // definition and a resource using it.
