@@ -10,8 +10,9 @@ Web node ──creates────▶ Step pod ──mounts──▶ Artifact da
 Step pod: [control init] [cleanup init] [fetch init] [managed-input init ×N] ──▶ step container + sidecars
 ```
 
-- The **synthetic worker** is one record per namespace, named after it,
-  heartbeated every thirty seconds by writing to the store directly. It
+- The **synthetic worker** is one record per namespace, named `k8s-<namespace>`,
+  re-registered every fifteen seconds against a thirty-second TTL by writing
+  to the store directly. It
   reports how many pods carry its label. Placement is Kubernetes's; the web
   expresses only affinity for the node holding a step's inputs.
 - A **step pod** runs one step. Its init containers run in order: control
