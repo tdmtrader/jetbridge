@@ -11,7 +11,6 @@ import Common
         )
 import Concourse exposing (JsonValue(..), hyphenNotation)
 import Concourse.BuildStatus exposing (BuildStatus(..))
-import Dashboard.Filter as Filter
 import Dashboard.SearchBar as SearchBar
 import DashboardInstanceGroupTests exposing (pipelineInstance, pipelineInstanceWithVars)
 import DashboardTests exposing (job, running, whenOnDashboard)
