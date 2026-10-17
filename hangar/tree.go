@@ -350,7 +350,7 @@ const CanonicalizerTempPrefix = "hangar-tree-"
 
 func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *CapturedTree, err error) {
 	if rawTar == nil {
-		return nil, fmt.Errorf("hangar: tar reader is required")
+		return nil, errors.New("hangar: tar reader is required")
 	}
 	maxEntries, maxContent, err := c.limits()
 	if err != nil {
