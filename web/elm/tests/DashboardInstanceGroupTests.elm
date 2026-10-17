@@ -9,7 +9,6 @@ import Application.Application as Application
 import Common
     exposing
         ( gotPipelines
-        , isColorWithStripes
         , pipelineRunningKeyframes
         )
 import Concourse exposing (JsonValue(..))
