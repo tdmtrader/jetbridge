@@ -63,7 +63,6 @@ func (r *registryResolver) Resolve(ctx context.Context, repository string, tag s
 	}
 	ref = ref + ":" + tag
 
-	// Parse the reference.
 	imageRef, err := name.ParseReference(ref)
 	if err != nil {
 		return "", fmt.Errorf("parsing image reference %q: %w", ref, err)
