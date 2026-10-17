@@ -11,18 +11,18 @@ relationship and lifecycle models per context live in `docs/architecture/`.
 
 ## Running Tests
 
-PostgreSQL must be running locally for unit and integration tests. Check with `pg_isready`.
+Unit and integration tests start their own PostgreSQL: each runner runs `initdb` and `postgres` from PATH in a temp directory on a port it picks itself. They need the PostgreSQL server binaries on PATH (`command -v initdb postgres`), not a server that is already running.
 
 ### Quick Reference
 
 | Command | What it runs | Time | Prerequisites |
 |---------|-------------|------|---------------|
-| `make test-unit` | 69 Ginkgo suites (atc, fly, skymarshal, go-concourse, tracing) | ~3 min | PostgreSQL |
-| `make test-elm` | Elm frontend (2972 specs) | ~30 sec | `yarn install` |
+| `make test-unit` | ~115 suites under `ginkgo -r -p` (76 Ginkgo, the rest plain `go test`): root, agent, atc, cmd, fly, go-concourse, hangar, skymarshal, tracing and more; everything but the skipped integration/brine tiers | ~20 min | PostgreSQL binaries on PATH |
+| `make test-elm` | Elm frontend (3111 tests) | ~30 sec | `yarn install` |
 | `make test-brine-guards` | Brine guard tests (nested `atc/worker/jetbridge/brine` module, no cluster) | ~1 sec | None |
-| `make test-quick` | Unit + Elm + brine guards | ~5 min | PostgreSQL, yarn |
-| `make test-fly-integration` | Fly CLI against mock ATC (591 specs) | ~30 sec | None |
-| `make test-integration` | ATC integration with real Postgres (21 specs) | ~12 sec | PostgreSQL |
+| `make test-quick` | Unit + Elm + brine guards | ~22 min | PostgreSQL binaries on PATH, yarn |
+| `make test-fly-integration` | Fly CLI against mock ATC (604 specs) | ~30 sec | None |
+| `make test-integration` | ATC integration with real Postgres (30 specs) | ~12 sec | PostgreSQL binaries on PATH |
 | `make test-k8s-integration` | K8s integration via testcontainers K3s | ~23 min | Docker, Helm, kubectl |
 | `make test-k8s-behavioral` | Full K8s behavioral (2 parallel K3s containers, `K8S_PROCS=4` for more) | ~2-3 hrs | Docker, Helm, kubectl |
 | `make test-all` | All tiers in order | ~2.5+ hrs | All of the above |
@@ -43,7 +43,7 @@ ginkgo --focus="test name" ./atc/db/      # single test by name
 
 ### Running atc/db Tests
 
-The `atc/db` suite is the largest (~1007 specs, ~90s). It uses a template database for fast setup. If you see `database "testdb_template" already exists`, another test process is still running — wait for it or kill it.
+The `atc/db` suite is the largest (~1307 specs). It clones each spec's database from a migrated template (`testdb_template`) in its runner's own postmaster.
 
 ### Before offering a branch for merge
 
@@ -65,7 +65,7 @@ Jobs whose task config interpolates `((var))` need the value exported
 
 - Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`).
 - The `atc/db/worker_cache_test.go` uses `Eventually` with 10s timeouts and a one-hour fallback refresh interval to prove notifications work. These are timing-sensitive — do not reduce timeouts.
-- K8s behavioral tests have ~3/117 flaky specs due to GC timing. This is expected.
+- K8s behavioral tests have a few flaky specs (~3 of ~300) due to GC timing. This is expected.
 - `testhelpers/otel` is excluded from `make test-unit` — it requires external Tempo/Loki services.
 - The `agent/session`, `agent/review` and `agent/implement` tests run the real pinned Codex (`agent/session/codextest`) against a scripted model server. The first run downloads the pinned release from github.com into the user cache and verifies it against `agent/session/codex-checksums.txt`; to run offline, put the release tarball in `$JB_CODEX_CACHE`. Without it they fail, never skip.
 - `fly/integration` builds the fly binary and tests it against a mock ATC. The mock's `atcVersion` (`0.1.0`, in `fly/integration/suite_test.go`) is a self-contained fixture — it is deliberately *not* tied to `versions.go`, and does not need updating when the release version moves. The specs that care about version skew set `flyVersion` from it explicitly.
