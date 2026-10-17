@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -152,13 +153,7 @@ func TestEveryCommandTheChartRunsIsInTheImage(t *testing.T) {
 }
 
 func contains(haystack []string, needle string) bool {
-	for _, one := range haystack {
-		if one == needle {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 func sortedCommandNames(wanted map[string][]string) []string {
