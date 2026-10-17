@@ -1325,7 +1325,7 @@ func (emitter *PrometheusEmitter) workerContainersMetric(logger lager.Logger, ev
 func (emitter *PrometheusEmitter) workersRegisteredMetric(logger lager.Logger, event metric.Event) {
 	state, exists := event.Attributes["state"]
 	if !exists {
-		logger.Error("failed-to-find-state-in-event", fmt.Errorf("expected state to exist in event.Attributes"))
+		logger.Error("failed-to-find-state-in-event", errors.New("expected state to exist in event.Attributes"))
 		return
 	}
 
