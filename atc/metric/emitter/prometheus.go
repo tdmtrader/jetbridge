@@ -1,6 +1,7 @@
 package emitter
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -1209,7 +1210,7 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 func (emitter *PrometheusEmitter) lock(logger lager.Logger, event metric.Event) {
 	lockType, exists := event.Attributes["type"]
 	if !exists {
-		logger.Error("failed-to-find-type-in-event", fmt.Errorf("expected type to exist in event.Attributes"))
+		logger.Error("failed-to-find-type-in-event", errors.New("expected type to exist in event.Attributes"))
 		return
 	}
 
