@@ -23,7 +23,7 @@ type Kind string
 const (
 	// KindRandomKey is one 32-byte symmetric key under Entry.Key.
 	KindRandomKey Kind = "random32"
-	// KindStoreTokens is the disk store's four principal tokens and the
+	// KindStoreTokens is the disk store's three principal tokens and the
 	// server.json mapping them.
 	KindStoreTokens Kind = "store-tokens"
 	// KindCA is a certificate authority (ca.crt, ca.key) other entries'
