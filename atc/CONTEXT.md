@@ -27,8 +27,9 @@ job.
 _Avoid_: run (reserved for a pipeline run), execution
 
 **Step**:
-One element of a build plan (get, put, task, set_pipeline, the prototype
-`run` step, and the composition steps around them).
+One element of a build plan (get, put, task, set_pipeline, load_var,
+`run_pipeline`, which admits a pipeline run on the build's own team, the
+prototype `run` step, and the composition steps around them).
 _Avoid_: node
 
 **Resource**:
@@ -65,13 +66,15 @@ A pipeline identified by its name plus instance vars, one of several
 instances of the same name.
 
 **Paused pipeline**:
-A pipeline the scheduler, lidar and the pauser all skip. Background
-components skip a pipeline for exactly two reasons: it is paused, or it is a
-template.
+A pipeline the scheduler, lidar and the pauser all skip. Scheduling and
+checking skip a pipeline for exactly two reasons: it is paused, or it is a
+template. Build-log reaping reaches a payload's builds through its template,
+and the archiver leaves templates and payloads alone.
 
 **Archived pipeline**:
-A paused pipeline whose job and resource configs have been cleared. Archiving
-is irreversible.
+A paused pipeline whose job and resource configs have been cleared. Its
+cleared configs cannot be recovered; setting the pipeline again un-archives it
+under the new config.
 
 **One-off build**:
 A build submitted directly by `fly execute`, owned by a team and no job.
@@ -116,7 +119,8 @@ connector, teams. A principal at the run admission port is exactly this.
 
 **Template**:
 A pipeline marked `template: true` that never builds itself; it declares
-typed parameters and retention and exists only to be run.
+typed parameters, run retention and a cache scope, its tasks may declare run
+results, and it exists only to be run.
 _Avoid_: template pipeline, base pipeline, template shell
 
 **Pipeline run**:
@@ -186,7 +190,17 @@ _Avoid_: dormant run
 **Run completion**:
 The settlement that moves a run to a terminal status. A run fails, errors or
 aborts as soon as one build does and nothing is pending; it succeeds only
-once every expected job has a finished build.
+once every expected job has a finished build. It is made only by the run
+results component, as one terminal publication of status, time and result
+manifest once the run's builds and captures have settled.
+
+**Run cancellation**:
+A durable request to stop a whole running pipeline run, recorded on the run
+with who asked and why. The run cancellation component aborts its builds,
+settles its captures and stops its executions, and the run then completes as
+aborted through ordinary run completion. Asking again, or asking a terminal
+run, is an outcome, not an error.
+_Avoid_: abort (alone)
 
 **Run lock**:
 The row lock on a run header that serializes build admission, completion and
@@ -225,6 +239,14 @@ pipeline.
 A template's choice of whether its payloads share one growing task cache
 (`template`) or get ephemeral ones (`none`, the default).
 
+**Run result**:
+One output of a template task, declared on that task (`run_result`), that a
+succeeded run publishes as a tree ref in Hangar.
+
+**Run input**:
+A named binding given at admission (a prior run's result, or a sealed
+uploaded source) and delivered to a template task's `run_inputs`.
+
 ### Run admission
 
 **Run admission port**:
@@ -233,9 +255,9 @@ transaction, expressed without database types so consumers cannot reach past
 core.
 
 **Admission**:
-One request through the port: a template ref, run params, a principal, a
-contract key, and a hook that runs inside the transaction before it commits.
-Every admission creates or replays a pipeline run.
+One request through the port: a template ref, run params, named run inputs,
+a principal, a contract key, and a hook that runs inside the transaction
+before it commits. Every admission creates or replays a pipeline run.
 
 **Template ref**:
 A team-qualified reference to the template to run. The team is part of the
@@ -308,7 +330,8 @@ Either a file inside a build artifact listing sidecars, or an inline sidecar
 definition.
 
 **Image artifact**:
-A sidecar image taken from a prior step's artifact instead of a registry.
+A container image taken from a prior step's artifact instead of a registry:
+a task's `image:` or a sidecar's `image_artifact`.
 
 ### Releases
 
