@@ -4,7 +4,6 @@ import Assets
     exposing
         ( Asset(..)
         , CircleOutlineIcon(..)
-        , ComponentType(..)
         , backgroundImage
         , toString
         )
