@@ -10,8 +10,8 @@ import (
 // The read warrant: hangar.PurposeReadResult.
 //
 // It is what a consuming Pod carries to the daemon. It is the one Hangar
-// warrant under its own purpose, so a materialization warrant or a control
-// warrant presented at a read route is refused, and it binds the READER'S
+// warrant under its own purpose, so a control warrant presented at a read route
+// is refused, and it binds the READER'S
 // CLAIM, because a managed read is only ever authorized by a committed claim
 // and a token that did not name one could outlive the protection it was issued
 // under.
@@ -35,7 +35,7 @@ import (
 // the node has: a step handle and one of its volumes.
 //
 // It is never a path. The daemon derives the path from these beneath its own
-// managed root, exactly as the strict-input materializer does, so no caller --
+// managed root, so no caller --
 // task, consumer or API -- can point a read anywhere of its own choosing.
 type ReadDestination struct {
 	Handle string `json:"handle"`

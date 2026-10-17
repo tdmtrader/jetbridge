@@ -36,8 +36,8 @@ var _ Tx = (*sql.Tx)(nil)
 // Deduplicated says the bytes were already there, in the same server-derived
 // scope, with the expected digest, exact strict attributes and an accepted
 // marker. It never means "something plausible was at the key": an unmarked
-// object, a wrong marker version, corrupt metadata or different immutable
-// content is a typed collision, and is never overwritten, relabelled or
+// object, corrupt metadata or different immutable content is a typed
+// collision, and is never overwritten, relabelled or
 // silently adopted.
 type PublishedObject struct {
 	Attributes     hangar.TreeAttributes
