@@ -61,7 +61,7 @@ func (limits TreeLimits) validate() error {
 // entry limit by omitting directory headers.
 func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits TreeLimits) error {
 	if source == nil {
-		return fmt.Errorf("hangar: archive reader is required")
+		return errors.New("hangar: archive reader is required")
 	}
 	if err := limits.validate(); err != nil {
 		return err
