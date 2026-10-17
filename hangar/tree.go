@@ -359,12 +359,12 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tempDir, err := resolveConfiguredScratchPath(c.TempDir)
+	scratchPath, err := resolveConfiguredScratchPath(c.TempDir)
 	if err != nil {
 		return nil, err
 	}
 
-	privateRoot, err := os.MkdirTemp(tempDir, CanonicalizerTempPrefix)
+	privateRoot, err := os.MkdirTemp(scratchPath, CanonicalizerTempPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("hangar: create private capture directory: %w", err)
 	}
