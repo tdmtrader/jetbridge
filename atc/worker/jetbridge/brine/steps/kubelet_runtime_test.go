@@ -15,7 +15,7 @@ import (
 // address dialled, because the ATC verifies against it.
 
 func TestTheHangarDaemonArgvBindsEveryAddress(t *testing.T) {
-	args := append([]string{"artifact-daemon"}, addressableArgs("artifact-daemon", "127.0.0.1", 7780, "/node")...)
+	args := append([]string{"artifact-daemon"}, addressableArgs(7780, "/node")...)
 	if address := daemonListenAddress(args); address != "" {
 		t.Fatalf("the default launch holds %q; the node's Pods could not reach it", address)
 	}

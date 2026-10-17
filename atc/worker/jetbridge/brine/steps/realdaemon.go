@@ -438,12 +438,9 @@ func startRealDaemonProbed(scheme string, ready func(url string) error, extraArg
 	return startNamedDaemonProbed("artifact-daemon", scheme, ready, extraArgs...)
 }
 
-// startNamedDaemonProbed is the same launcher for either daemon.
-//
-// The port and storage flags are the artifact daemon's spelling, so the output
-// daemon -- which listens on --listen and keeps its ledgers under --control-dir
-// -- passes its own and gets them through addressableArgs below rather than
-// having this function learn two vocabularies.
+// startNamedDaemonProbed is the same launcher for a named daemon command. The
+// port and storage flags are the artifact daemon's spelling (addressableArgs
+// below).
 func startNamedDaemonProbed(command, scheme string, ready func(url string) error, extraArgs ...string) (*realDaemon, error) {
 	return startNamedDaemonInRoot(command, "", scheme, ready, extraArgs...)
 }
@@ -588,7 +585,7 @@ func inOwnProcessGroup(cmd *exec.Cmd) {
 // its own process group, and reports the handle plus that capture.
 func startDaemonProcess(bin, command, root, host, scheme string, port int, shared bool,
 	env []string, extraArgs []string) (*realDaemon, *daemonOutput, error) {
-	args := append(addressableArgs(command, host, port, root), extraArgs...)
+	args := append(addressableArgs(port, root), extraArgs...)
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), env...)
 	// Both streams go to a bounded capture rather than to this process's own.
@@ -732,9 +729,10 @@ func (d *realDaemon) restart(ctx context.Context, client *http.Client) error {
 	}
 }
 
-// addressableArgs is the daemon's spelling of "listen here, keep your state
-// there".
-func addressableArgs(command, host string, port int, root string) []string {
+// addressableArgs is the artifact daemon's spelling of "listen on this port,
+// keep your state there". It binds every address: launchDaemon adds
+// --listen-address only when a caller named a host.
+func addressableArgs(port int, root string) []string {
 	return []string{"--port", fmt.Sprint(port), "--storage-path", root}
 }
 

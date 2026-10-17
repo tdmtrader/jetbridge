@@ -22,7 +22,7 @@ import (
 func RunInputUploadDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMap[brine.Empty, HangarDaemon]("a managed input upload node", func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (HangarDaemon, error) {
-			return startHangarDaemon(rec, true)
+			return startHangarDaemon(rec)
 		}),
 		brine.DefineMap[HangarDaemon, HangarDaemon]("its input upload encounters {string}", func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (HangarDaemon, error) {
 			mode, _ := p.GetString(0)

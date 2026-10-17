@@ -18,7 +18,8 @@ import (
 )
 
 // KubeletRun is one Run whose steps execute on the disposable K3s node: the
-// real kubelet runs the Pods, the real output daemon answers for the node.
+// real kubelet runs the Pods, the real artifact daemon, with its output plane,
+// answers for the node.
 type KubeletRun struct {
 	RunOutputRuntime
 	Executor jetbridge.PodExecutor

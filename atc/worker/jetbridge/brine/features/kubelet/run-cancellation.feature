@@ -2,9 +2,10 @@
 Feature: Run cancellation converges on a real kubelet
 
   Run only by hack/test-run-kubelet, against the single disposable K3s node it
-  creates. Real PostgreSQL, output daemon, kubelet, SPDY and worker are used,
-  and missing cluster evidence fails. Sidecar and hijack writers under the
-  Hangar seal are not covered here (spark run_cancellation_sidecar_hijack_k3s).
+  creates. Real PostgreSQL, the artifact daemon with its output plane, kubelet,
+  SPDY and worker are used, and missing cluster evidence fails. Sidecar and
+  hijack writers under the Hangar seal are not covered here (spark
+  run_cancellation_sidecar_hijack_k3s).
 
   Scenario Outline: No process or check begins after the fence
     Given a Run on a disposable kubelet

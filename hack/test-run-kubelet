@@ -2,9 +2,10 @@
 # Disposable single-node K3s for the Brine disposable-kubelet tier
 # (atc/worker/jetbridge/brine/kubelet/.brine). Invoke through
 # deploy/run-kubelet-task.yml; never point this at a real cluster. The node is
-# labelled into the output plane's ready cohort and a node-local output daemon
-# runs beside it -- cluster-scoped changes the deployed cluster's live tier
-# must not make, which is why this tier owns its cluster.
+# labelled into the output plane's ready cohort and a node-local artifact
+# daemon, with its output plane, runs beside it -- cluster-scoped changes the
+# deployed cluster's live tier must not make, which is why this tier owns its
+# cluster.
 set -eu
 root=$(pwd)
 cluster=brine-run-k3s
@@ -21,7 +22,7 @@ test_image=registry.home/concourse-test-runner:v11
 docker pull "$k3s_image"
 docker pull "$busybox_image"
 docker pull "$test_image"
-# The shared directory is the output daemon's node root: the daemon runs in
+# The shared directory is the artifact daemon's node root: the daemon runs in
 # the runner container and the kubelet mounts its reservations as hostPaths.
 dk3s_start_cluster "$k3s_image" "$work/shared" /tmp/run-shared brine.dev/run-kubelet=owned-ci
 dk3s_import_image "$busybox_image" busybox.tar

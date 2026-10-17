@@ -186,12 +186,9 @@ const (
 
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
 // bucket, mints the mTLS material every Hangar route requires, and starts the
-// real daemon against all of it.
-//
-// The output plane is always served over the daemon's TLS; outputTLS is what
-// callers that dialed a once-separate output daemon over TLS asked for, and is
-// now always true.
-func startHangarDaemon(rec *brine.Recorder, outputTLS ...bool) (HangarDaemon, error) {
+// real daemon against all of it. The output plane is always served over the
+// daemon's TLS.
+func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	return startHangarDaemonOnNode(rec, hangarNodeUID)
 }
 
@@ -477,7 +474,7 @@ func HangarFixtureDefinitions() []brine.StepDefinition {
 		brine.DefineMap[brine.Empty, HangarDaemon](
 			"an artifact daemon serving the output plane over authenticated TLS",
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (HangarDaemon, error) {
-				return startHangarDaemon(rec, true)
+				return startHangarDaemon(rec)
 			},
 		),
 
