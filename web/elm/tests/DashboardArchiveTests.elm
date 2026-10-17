@@ -5,7 +5,6 @@ import Assets
 import Colors
 import Common
 import Data
-import Html.Attributes as Attr
 import Message.Callback as Callback
 import Message.Message exposing (DomID(..))
 import Message.Subscription as Subscription
