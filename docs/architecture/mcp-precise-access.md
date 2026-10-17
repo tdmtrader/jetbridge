@@ -5,9 +5,10 @@ tool-shape benchmark. This replaces the earlier flat-tool default and the propos
 additional shape-selection round. The selected surface remains ordinary MCP
 tools with exact operation-discriminated input schemas.
 
-This document records the current code contract. Deployment is separate. The
-benchmark and its original scores remain historical evidence, not conformance
-results for the reduced discovery contract.
+This document records the current code contract, implemented on `core` in
+`atc/mcp`; `pipeline_status` survives as a compatibility tool. Deployment is
+separate. The benchmark and its original scores remain historical evidence,
+not conformance results for the reduced discovery contract.
 
 ## Executable tools
 
@@ -188,5 +189,4 @@ Preserve shipped HTTP authentication/scope challenges and the existing
 
 The independent repository and architecture reviewers support this contract.
 The owner's choice of precise grouping is recorded; capability-diagnostic details
-are presented for review. This document does not claim production implementation
-or deployment.
+are presented for review.

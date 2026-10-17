@@ -1,5 +1,7 @@
 # JetBridge action surface audit
 
+> Superseded: a point-in-time audit. The public MCP endpoint now exists (`atc/mcp`, mounted at `/api/v1/mcp` by `atc/atccmd/mcp.go`); see [mcp-tool-shape-decision.md](mcp-tool-shape-decision.md) and [mcp-precise-access.md](mcp-precise-access.md) for the current shape.
+
 Audited 2026-09-12 against working tree based on `b41dfe01c1`. This is a source
 audit, not a live deployment or protocol-conformance test. Existing unrelated
 working-tree changes were left untouched.

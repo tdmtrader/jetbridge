@@ -8,8 +8,9 @@ any authenticated grant so absent tools can be distinguished from missing consen
 or account authority. All execution still crosses the authorized API boundary.
 
 This is the owner's selected direction after the local experiment, superseding
-the earlier conventional-catalog starting recommendation. Deployment is separate
-from the code contract.
+the earlier conventional-catalog starting recommendation. It is implemented on
+`core` (bef4f3ac8d) in `atc/mcp`, mounted by the web at `/api/v1/mcp`;
+deployment is separate from the code contract.
 
 | Shape | Practical tradeoff | Local evidence |
 | --- | --- | --- |
@@ -78,9 +79,9 @@ version precondition; trigger and abort retain distinct effect/retry semantics.
 
 The completed first slice adds operation contracts/catalog pruning and diagnostics,
 then shared strict config writes, finite list/log reads, the remaining exact
-mutations, and real-client/benchmark verification. See the
-[implementation review](../plans/precise-mcp/implementation-review.md) for evidence
-and rollout/rollback, and [usage/contracts](../mcp-auth.md) for API and CLI details.
+mutations, and real-client/benchmark verification. See
+[usage/contracts](../mcp-auth.md) for API and CLI details; the implementation
+review was removed with `docs/plans` in 7bf8673230.
 Shared API actions/DTOs and domain validation give CLI/API/MCP a common execution
 contract; the UI may adopt the same additive APIs. No generated application
 framework or alternate authorization engine is introduced.
