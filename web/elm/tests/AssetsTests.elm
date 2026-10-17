@@ -4,7 +4,6 @@ import Assets
     exposing
         ( Asset(..)
         , CircleOutlineIcon(..)
-        , backgroundImage
         , toString
         )
 import Concourse.BuildStatus exposing (BuildStatus(..))
