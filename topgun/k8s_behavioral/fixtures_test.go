@@ -11,36 +11,6 @@ import (
 // Each returns a YAML string that can be passed to writePipelineFile.
 // ---------------------------------------------------------------------
 
-// fixtureJobWithEnsure returns a pipeline with a job-level ensure hook.
-func fixtureJobWithEnsure(jobName, mainScript, ensureScript string) string {
-	return fmt.Sprintf(`
-jobs:
-- name: %s
-  ensure:
-    task: job-ensure
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-  plan:
-  - task: main
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -c
-        - |
-          %s
-`, jobName, ensureScript, mainScript)
-}
-
 // fixtureMultiJob returns a pipeline with multiple jobs. Each entry in
 // the jobs map is jobName -> script.
 func fixtureMultiJob(jobs map[string]string) string {
