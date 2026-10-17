@@ -41,7 +41,6 @@ import Test.Html.Selector
         , tag
         , text
         )
-import Time
 
 
 all : Test
