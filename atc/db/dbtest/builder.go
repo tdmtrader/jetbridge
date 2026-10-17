@@ -540,7 +540,7 @@ func (builder Builder) WithStartedJobBuild(assign *db.Build, jobName string, pla
 func (builder Builder) WithNextInputMapping(jobName string, inputs JobInputs) SetupFunc {
 	return func(scenario *Scenario) error {
 		if scenario.Pipeline == nil {
-			return fmt.Errorf("no pipeline set in scenario")
+			return errors.New("no pipeline set in scenario")
 		}
 
 		job, found, err := scenario.Pipeline.Job(jobName)
