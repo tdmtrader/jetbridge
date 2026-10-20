@@ -19,6 +19,9 @@ func (e PutInputNotFoundError) Error() string {
 	return fmt.Sprintf("input not found: %s", e.Input)
 }
 
+// PutInputs chooses the artifacts a put mounts. FindAll returns each artifact
+// at most once: every input lands at a path derived from its name, and two
+// mounts at one path make the pod invalid.
 type PutInputs interface {
 	FindAll(*build.Repository) ([]runtime.Input, error)
 }
@@ -53,13 +56,18 @@ func NewSpecificInputs(inputs []string) PutInputs {
 func (i specificInputs) FindAll(artifacts *build.Repository) ([]runtime.Input, error) {
 	artifactsMap := artifacts.AsMap()
 
-	inputs := make([]runtime.Input, len(i.inputs))
-	for i, name := range i.inputs {
+	inputs := make([]runtime.Input, 0, len(i.inputs))
+	seen := map[build.ArtifactName]bool{}
+	for _, name := range i.inputs {
 		vol, found := artifactsMap[build.ArtifactName(name)]
 		if !found {
 			return nil, PutInputNotFoundError{Input: name}
 		}
-		inputs[i] = putInput(build.ArtifactName(name), vol)
+		if seen[build.ArtifactName(name)] {
+			continue
+		}
+		seen[build.ArtifactName(name)] = true
+		inputs = append(inputs, putInput(build.ArtifactName(name), vol))
 	}
 
 	return inputs, nil
@@ -110,12 +118,17 @@ func (i detectInputs) FindAll(artifacts *build.Repository) ([]runtime.Input, err
 	artifactsMap := artifacts.AsMap()
 
 	inputs := []runtime.Input{}
+	seen := map[build.ArtifactName]bool{}
 	for _, name := range i.guessedNames {
 		artifactEntry, found := artifactsMap[name]
 		if !found {
 			// false positive; not an artifact
 			continue
 		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
 		inputs = append(inputs, putInput(name, artifactEntry))
 	}
 

@@ -387,6 +387,24 @@ var _ = Describe("PutStep", func() {
 			})
 		})
 
+		Context("when the specified inputs name one artifact twice", func() {
+			BeforeEach(func() {
+				putPlan.Inputs = &atc.InputsConfig{
+					Specified: []string{"input1", "input1"},
+				}
+			})
+
+			It("mounts the artifact once", func() {
+				Expect(chosenContainer.Spec.Inputs).To(Equal([]runtime.Input{
+					{
+						Artifact:        volume1,
+						DestinationPath: "/tmp/build/put/input1",
+						FromCache:       false,
+					},
+				}))
+			})
+		})
+
 		Context("when an empty list of inputs is specified", func() {
 			BeforeEach(func() {
 				putPlan.Inputs = &atc.InputsConfig{
@@ -467,6 +485,28 @@ var _ = Describe("PutStep", func() {
 							Artifact:        volume2,
 							DestinationPath: "/tmp/build/put/input2",
 							FromCache:       true,
+						},
+					}))
+				})
+			})
+
+			Context("when the params name one artifact more than once", func() {
+				BeforeEach(func() {
+					putPlan.Params = atc.Params{
+						"repository": "input1",
+						"tag":        "input1/version",
+						"some-map": map[string]any{
+							"key": []any{"./input1/notes"},
+						},
+					}
+				})
+
+				It("mounts the artifact once", func() {
+					Expect(chosenContainer.Spec.Inputs).To(Equal([]runtime.Input{
+						{
+							Artifact:        volume1,
+							DestinationPath: "/tmp/build/put/input1",
+							FromCache:       false,
 						},
 					}))
 				})
