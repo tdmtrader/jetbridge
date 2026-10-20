@@ -17,7 +17,7 @@ type ContainerRepository interface {
 	UpdateContainersMissingSince(workerName string, handles []string) error
 	RemoveMissingContainers(time.Duration) (int, error)
 	DestroyUnknownContainers(workerName string, reportedHandles []string) (int, error)
-	DestroyDirtyInMemoryBuildContainers() (int, error)
+	DestroyDirtyInMemoryBuildContainers(gracePeriod time.Duration) (int, error)
 	DestroyExcessCheckContainers(maxPerResource int, hijackGracePeriod time.Duration) (int, error)
 }
 
@@ -443,12 +443,18 @@ func (repository *containerRepository) DestroyUnknownContainers(workerName strin
 	return len(unknownHandles), nil
 }
 
-func (repository *containerRepository) DestroyDirtyInMemoryBuildContainers() (int, error) {
+// DestroyDirtyInMemoryBuildContainers marks destroying the containers of
+// in-memory check builds created more than gracePeriod ago. A finished build
+// moves its own containers to destroying, so this only catches builds a web
+// left behind. Nothing records whether an in-memory build is still running,
+// so gracePeriod must outlast the longest check, or a running check loses
+// its container.
+func (repository *containerRepository) DestroyDirtyInMemoryBuildContainers(gracePeriod time.Duration) (int, error) {
 	result, err := psql.Update("containers").
 		Set("state", atc.ContainerStateDestroying).
 		Set("in_memory_build_id", nil).
 		Set("in_memory_build_create_time", nil).
-		Where(sq.Expr("((now() - in_memory_build_create_time) > '5 MINUTES'::INTERVAL)")).
+		Where(sq.Expr("(now() - in_memory_build_create_time) > ?::INTERVAL", fmt.Sprintf("%.0f seconds", gracePeriod.Seconds()))).
 		RunWith(repository.conn).
 		Exec()
 

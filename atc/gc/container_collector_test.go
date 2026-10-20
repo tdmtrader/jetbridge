@@ -48,6 +48,7 @@ var _ = Describe("ContainerCollector", func() {
 
 		missingContainerGracePeriod time.Duration
 		hijackContainerGracePeriod  time.Duration
+		inMemoryCheckGracePeriod    time.Duration
 	)
 
 	// A container is orphaned once its build stops being interceptible
@@ -108,12 +109,14 @@ var _ = Describe("ContainerCollector", func() {
 
 		missingContainerGracePeriod = time.Minute
 		hijackContainerGracePeriod = time.Minute
+		inMemoryCheckGracePeriod = time.Hour
 
 		containerRepository = db.NewContainerRepository(dbConn)
 		collector = gc.NewContainerCollector(
 			containerRepository,
 			missingContainerGracePeriod,
 			hijackContainerGracePeriod,
+			inMemoryCheckGracePeriod,
 		)
 
 		var err error
@@ -303,6 +306,7 @@ var _ = Describe("ContainerCollector", func() {
 					failFindOrphanedContainers{containerRepository},
 					missingContainerGracePeriod,
 					hijackContainerGracePeriod,
+					inMemoryCheckGracePeriod,
 				).Run(context.TODO())
 
 				Expect(err).To(MatchError(ContainSubstring("nope")))
@@ -317,6 +321,7 @@ var _ = Describe("ContainerCollector", func() {
 					failDestroyFailedContainers{containerRepository},
 					missingContainerGracePeriod,
 					hijackContainerGracePeriod,
+					inMemoryCheckGracePeriod,
 				).Run(context.TODO())
 
 				Expect(err).To(MatchError(ContainSubstring("nope")))
@@ -331,6 +336,7 @@ var _ = Describe("ContainerCollector", func() {
 					failRemoveMissingContainers{containerRepository},
 					missingContainerGracePeriod,
 					hijackContainerGracePeriod,
+					inMemoryCheckGracePeriod,
 				).Run(context.TODO())
 
 				Expect(err).To(MatchError(ContainSubstring("nope")))

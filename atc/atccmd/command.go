@@ -1651,7 +1651,8 @@ func (cmd *RunCommand) gcComponents(
 
 	// set the 'unreferenced resource config' grace period to be the longer than
 	// the check timeout, just to make sure it doesn't get removed out from under
-	// a running check
+	// a running check. The containers of in-memory checks use the same grace
+	// period, so a check that is still running keeps its container.
 	//
 	// 5 minutes is arbitrary - this really shouldn't matter a whole lot, but
 	// exposing a config specifically for it is a little risky, since you don't
@@ -1667,7 +1668,7 @@ func (cmd *RunCommand) gcComponents(
 		atc.ComponentCollectorResourceCacheUses: gc.NewResourceCacheUseCollector(dbResourceCacheLifecycle),
 		atc.ComponentCollectorArtifacts:         gc.NewArtifactCollector(dbArtifactLifecycle),
 		atc.ComponentCollectorVolumes:           gc.NewVolumeCollector(dbVolumeRepository, cmd.GC.MissingGracePeriod),
-		atc.ComponentCollectorContainers:        gc.NewContainerCollector(dbContainerRepository, cmd.GC.MissingGracePeriod, cmd.GC.HijackGracePeriod),
+		atc.ComponentCollectorContainers:        gc.NewContainerCollector(dbContainerRepository, cmd.GC.MissingGracePeriod, cmd.GC.HijackGracePeriod, unreferencedConfigGracePeriod),
 		atc.ComponentCollectorCheckSessions:     gc.NewResourceConfigCheckSessionCollector(resourceConfigCheckSessionLifecycle),
 		atc.ComponentCollectorPipelines:         gc.NewPipelineCollector(dbPipelineLifecycle),
 		atc.ComponentCollectorAccessTokens:      gc.NewAccessTokensCollector(dbAccessTokenLifecycle, jwt.DefaultLeeway),

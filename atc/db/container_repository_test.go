@@ -1070,6 +1070,48 @@ var _ = Describe("ContainerRepository", func() {
 		})
 	})
 
+	Describe("DestroyDirtyInMemoryBuildContainers", func() {
+		var (
+			runningCheck db.CreatedContainer
+			leftBehind   db.CreatedContainer
+		)
+
+		inMemoryCheckContainer := func(buildID int, createTime time.Time) db.CreatedContainer {
+			owner := db.NewInMemoryCheckBuildContainerOwner(buildID, createTime, "some-plan", defaultTeam.ID())
+			creating, err := defaultWorker.CreateContainer(owner, db.ContainerMetadata{Type: db.ContainerTypeCheck})
+			Expect(err).NotTo(HaveOccurred())
+			created, err := creating.Created()
+			Expect(err).NotTo(HaveOccurred())
+			return created
+		}
+
+		stateOf := func(handle string) string {
+			var state string
+			err := psql.Select("state").From("containers").
+				Where(sq.Eq{"handle": handle}).
+				RunWith(dbConn).QueryRow().Scan(&state)
+			Expect(err).NotTo(HaveOccurred())
+			return state
+		}
+
+		BeforeEach(func() {
+			// A check whose build was created ten minutes ago is still within
+			// an hour-long check timeout; a build created two hours ago was
+			// left behind by a web that went away.
+			runningCheck = inMemoryCheckContainer(1001, time.Now().Add(-10*time.Minute))
+			leftBehind = inMemoryCheckContainer(1002, time.Now().Add(-2*time.Hour))
+		})
+
+		It("keeps the container of a check still within the grace period", func() {
+			destroyed, err := containerRepository.DestroyDirtyInMemoryBuildContainers(time.Hour)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(destroyed).To(Equal(1))
+
+			Expect(stateOf(runningCheck.Handle())).To(Equal(string(atc.ContainerStateCreated)))
+			Expect(stateOf(leftBehind.Handle())).To(Equal(string(atc.ContainerStateDestroying)))
+		})
+	})
+
 	Describe("DestroyExcessCheckContainers", func() {
 		var (
 			destroyedCount int

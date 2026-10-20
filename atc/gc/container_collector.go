@@ -17,17 +17,20 @@ type containerCollector struct {
 	containerRepository         db.ContainerRepository
 	missingContainerGracePeriod time.Duration
 	hijackContainerGracePeriod  time.Duration
+	inMemoryCheckGracePeriod    time.Duration
 }
 
 func NewContainerCollector(
 	containerRepository db.ContainerRepository,
 	missingContainerGracePeriod time.Duration,
 	hijackContainerGracePeriod time.Duration,
+	inMemoryCheckGracePeriod time.Duration,
 ) *containerCollector {
 	return &containerCollector{
 		containerRepository:         containerRepository,
 		missingContainerGracePeriod: missingContainerGracePeriod,
 		hijackContainerGracePeriod:  hijackContainerGracePeriod,
+		inMemoryCheckGracePeriod:    inMemoryCheckGracePeriod,
 	}
 }
 
@@ -95,7 +98,7 @@ func (c *containerCollector) markFailedContainersAsDestroying(logger lager.Logge
 }
 
 func (c *containerCollector) cleanupOrphanedContainers(logger lager.Logger) error {
-	_, err := c.containerRepository.DestroyDirtyInMemoryBuildContainers()
+	_, err := c.containerRepository.DestroyDirtyInMemoryBuildContainers(c.inMemoryCheckGracePeriod)
 	if err != nil {
 		logger.Error("failed-to-destroy-dirty-in-memory-build-containers", err)
 		return err
