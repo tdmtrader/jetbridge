@@ -30,6 +30,8 @@ func SetupPipeline(dbConn *sql.DB, pipeline string) {
 }
 
 func SetupResource(dbConn *sql.DB, resource, config string) {
+	GinkgoHelper()
+
 	_, err := dbConn.Exec("INSERT INTO resources(name, config, pipeline_id) VALUES($1, $2, 1)", resource, config)
 	Expect(err).NotTo(HaveOccurred())
 }
