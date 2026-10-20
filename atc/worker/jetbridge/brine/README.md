@@ -22,6 +22,17 @@ PostgreSQL client tools on `PATH`, an OpenTelemetry Collector
 (`BRINE_OTELCOL_BINARY` if not on `PATH`), and `kube-apiserver`/`etcd`
 binaries selected by `KUBEBUILDER_ASSETS` for `envtest`.
 
+On a developer Mac, the adapter tests (`cmd/brine-adapter-jetbridge`) need
+only the Brine CLI and engine on `PATH` (`brine` and `brine-engine`, in
+`~/brine-private/target/debug`). That includes the engine test
+(`TestEngineReleaseDrainsRealDaemon`) now that `review-binaries`, like
+`auth-binaries` and `span-capture`, starts only at its first step. Two
+`steps` tests keep a prerequisite and fail rather than skip without it:
+`TestBusyboxScriptOutcomeBoundary` needs `.build/busybox`, which
+`scripts/build-private-network` installs on Linux only (or
+`BRINE_BUSYBOX_BINARY`), and `TestTraceCaptureExportsAndDisposesRealCollector`
+needs `otelcol` on `PATH` (or `BRINE_OTELCOL_BINARY`).
+
 ## Local tier
 
 ```sh
