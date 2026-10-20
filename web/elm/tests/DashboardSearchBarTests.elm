@@ -15,7 +15,6 @@ import Dashboard.SearchBar as SearchBar
 import DashboardInstanceGroupTests exposing (pipelineInstance, pipelineInstanceWithVars)
 import DashboardTests exposing (job, running, whenOnDashboard)
 import Data
-import Dict
 import Expect
 import FetchResult
 import Html.Attributes as Attr
