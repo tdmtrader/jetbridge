@@ -676,7 +676,7 @@ func readOpenedEntries(directory *os.File) ([]string, error) {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if !validFilesystemComponent(entry.Name()) {
-			return nil, fmt.Errorf("unsafe directory entry")
+			return nil, errors.New("unsafe directory entry")
 		}
 		names = append(names, entry.Name())
 	}
