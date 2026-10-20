@@ -86,7 +86,30 @@ func (s *SkyServer) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, redirectURI, http.StatusTemporaryRedirect)
+	redirectURL, err := localRedirectURL(redirectURI)
+	if err != nil {
+		logger.Error("invalid-redirect", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	http.Redirect(w, r, redirectURL.RequestURI(), http.StatusTemporaryRedirect)
+}
+
+// localRedirectURL confines a caller-supplied redirect_uri to a path on this
+// server: leading slashes collapse to one, so neither an absolute URL nor a
+// protocol-relative "//host" can send the browser off-site.
+func localRedirectURL(redirectURI string) (*url.URL, error) {
+	redirectURL, err := url.ParseRequestURI("/" + strings.TrimLeft(redirectURI, "/"))
+	if err != nil {
+		return nil, err
+	}
+
+	if redirectURL.Host != "" || redirectURL.Scheme != "" {
+		return nil, fmt.Errorf("Unsupported redirect uri: %s", redirectURI)
+	}
+
+	return redirectURL, nil
 }
 
 func (s *SkyServer) NewLogin(w http.ResponseWriter, r *http.Request) {
@@ -151,15 +174,9 @@ func (s *SkyServer) Callback(w http.ResponseWriter, r *http.Request) {
 func (s *SkyServer) Redirect(w http.ResponseWriter, r *http.Request, oauth2Token *oauth2.Token, redirectURI string) {
 	logger := s.config.Logger.Session("redirect")
 
-	redirectURL, err := url.ParseRequestURI("/" + strings.TrimLeft(redirectURI, "/"))
+	redirectURL, err := localRedirectURL(redirectURI)
 	if err != nil {
-		logger.Error("failed-to-parse-redirect-url", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	if redirectURL.Host != "" || redirectURL.Scheme != "" {
-		logger.Error("invalid-redirect", fmt.Errorf("Unsupported redirect uri: %s", redirectURI))
+		logger.Error("invalid-redirect", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

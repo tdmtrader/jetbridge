@@ -227,6 +227,39 @@ var _ = Describe("Sky Server API", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(redirectURL.Path).To(Equal("/"))
 				})
+
+				Context("when redirect_uri is a path on the ATC", func() {
+					BeforeEach(func() {
+						request.URL.RawQuery = url.Values{"redirect_uri": {"/fly_success?fly_port=1234"}}.Encode()
+					})
+
+					It("redirects to that path, keeping its query", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusTemporaryRedirect))
+						Expect(response.Header.Get("Location")).To(Equal("/fly_success?fly_port=1234"))
+					})
+				})
+
+				for _, offSite := range []string{"https://evil.example/x", "//evil.example/x", "/\\evil.example/x"} {
+					offSite := offSite
+
+					Context("when redirect_uri is "+offSite, func() {
+						BeforeEach(func() {
+							request.URL.RawQuery = url.Values{"redirect_uri": {offSite}}.Encode()
+						})
+
+						It("keeps the browser on the ATC", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusTemporaryRedirect))
+							location := response.Header.Get("Location")
+							Expect(location).To(HavePrefix("/"))
+							Expect(location).NotTo(HavePrefix("//"))
+							Expect(location).NotTo(HavePrefix("/\\"))
+
+							redirectURL, err := response.Location()
+							Expect(err).NotTo(HaveOccurred())
+							Expect(redirectURL.Host).To(Equal(request.URL.Host))
+						})
+					})
+				}
 			})
 		})
 
