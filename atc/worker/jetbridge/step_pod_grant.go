@@ -17,11 +17,15 @@ import (
 type StepPodGrant struct {
 	Name  string
 	Owner StepPodOwner
-	// ServiceAccount is empty for a grant that only allows privilege: its
-	// pods run as the default step pod identity's account, with no token.
+	// ServiceAccount is empty for a step pod grant that only declares
+	// privileged=true: its pods run as the default step pod identity's
+	// account, with no token.
 	ServiceAccount string
-	// Privileged allows the owner's step pods to run privileged
-	// (step_pod_privilege_gate).
+	// Privileged is the step pod grant's privileged=true declaration. The
+	// step pod identity carries it, but nothing reads it: privilege is not
+	// gated yet (Privilege gate, in this package's CONTEXT.md). A step pod's
+	// security context follows its task's privileged: or, for a get, put or
+	// check, its resource type's privileged:.
 	Privileged bool
 }
 
@@ -54,7 +58,7 @@ type StepPodBuilds interface {
 
 // stepPodIdentity is what a step pod runs as. grant is empty for the default
 // step pod identity; ownAccount is false when the pod runs as the default
-// account, whether or not a grant allows it privilege.
+// account, whether or not its step pod grant declares privileged=true.
 type stepPodIdentity struct {
 	grant          string
 	serviceAccount string
@@ -70,7 +74,7 @@ var identifierSegment = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}
 //
 //	name=<grant>,owner=<team>/<pipeline>/<job>|main/one-off[,service-account=<sa>][,privileged=true|false]
 //
-// A grant names a ServiceAccount, allows privilege, or both.
+// A step pod grant names a ServiceAccount, declares privileged=true, or both.
 func ParseStepPodGrant(value string) (StepPodGrant, error) {
 	var grant StepPodGrant
 	seen := map[string]bool{}
