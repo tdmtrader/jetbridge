@@ -16,7 +16,6 @@ import DashboardInstanceGroupTests exposing (pipelineInstance, pipelineInstanceW
 import DashboardTests exposing (job, running, whenOnDashboard)
 import Data
 import Expect
-import FetchResult
 import Html.Attributes as Attr
 import Keyboard
 import Message.Callback as Callback exposing (Callback(..))
