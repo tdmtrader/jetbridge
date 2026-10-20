@@ -146,9 +146,9 @@ type RunCommand struct {
 	k8sRuntime     jetbridgeRuntime
 	k8sRuntimeErr  error
 	// hangarSigner holds the one Hangar key and mints every warrant the web
-	// issues: materialization, read and control. Built once during startup
-	// validation from the key --kubernetes-hangar-key names, and carried by
-	// the assembled JetBridge Config and the output-plane clients.
+	// issues: read, execution control and output capture. Built once during
+	// startup validation from the key --kubernetes-hangar-key names, and
+	// carried by the assembled JetBridge Config and the output-plane clients.
 	hangarSigner *hangar.Signer
 
 	hangarOutputSource     *jetbridge.OutputSource
@@ -253,7 +253,7 @@ type RunCommand struct {
 		OutputOrphanSweepInterval          time.Duration `long:"kubernetes-hangar-output-orphan-sweep-interval" default:"1h" description:"How often the orphan sweep lists the output namespace."`
 		OutputOperationTimeout             time.Duration `long:"kubernetes-hangar-output-operation-timeout" default:"1m" description:"Managed-read operation timeout. Must match the artifact daemon's output-plane operation timeout; a reader's claim and the transport cover this budget."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
-		HangarKey                          string        `long:"kubernetes-hangar-key"                   description:"Path to the raw 32-byte Hangar key the web signs every warrant with: read and control. Required with --kubernetes-hangar-output-enabled. Never present in a task pod."`
+		HangarKey                          string        `long:"kubernetes-hangar-key"                   description:"Path to the raw 32-byte Hangar key the web signs every warrant with: read, execution control and output capture. Required with --kubernetes-hangar-output-enabled. Never present in a task pod."`
 		HangarWarrantTTL                   time.Duration `long:"kubernetes-hangar-warrant-ttl"           default:"15m" description:"Lifetime of the warrants the web mints (maximum 15m)."`
 		ImageRegistryPrefix                string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret                string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`

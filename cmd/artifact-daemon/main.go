@@ -53,7 +53,7 @@ func main() {
 	// Hangar key, and its control and steps directories are this daemon's
 	// storage root and its steps/ beneath it.
 	executionControl := flag.Bool("execution-control", false, "Mount the output plane on this daemon's listener: exact execution control, and with --output-bucket the capture extension. Requires --hangar-key.")
-	hangarKeyFile := flag.String("hangar-key", "", "Path to the raw 32-byte Hangar key. It signs every warrant the web presents: read and control. Required with, and only with, --execution-control.")
+	hangarKeyFile := flag.String("hangar-key", "", "Path to the raw 32-byte Hangar key. It signs every warrant the web presents: read, execution control and output capture. Required with, and only with, --execution-control.")
 	var planeConfig outputplane.Config
 	outputplane.BindFlags(flag.CommandLine, &planeConfig)
 
