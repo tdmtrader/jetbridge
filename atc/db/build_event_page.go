@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -152,18 +153,21 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 	if cursor.Offset > 0 {
 		where = "event_id >= $2"
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT event_id,type,version,octet_length(payload) FROM "+table+" WHERE "+predicate+" AND "+where+" ORDER BY event_id ASC LIMIT 129", buildID, cursor.Event)
+	rows, err := tx.QueryContext(ctx, "SELECT event_id,type,version,octet_length(payload),xmin::text FROM "+table+" WHERE "+predicate+" AND "+where+" ORDER BY event_id ASC LIMIT 129", buildID, cursor.Event)
 	if err != nil {
 		return page, eventPageErr(ctx, err)
 	}
 	type eventRow struct {
-		id, size      int
-		kind, version string
+		id, size            int
+		kind, version, xmin string
+	}
+	keyOf := func(row eventRow) logEventKey {
+		return logEventKey{table: table, build: buildID, event: row.id, xmin: row.xmin, size: row.size}
 	}
 	listed := make([]eventRow, 0, eventPageMaxEvents+1)
 	for rows.Next() {
 		var row eventRow
-		if err = rows.Scan(&row.id, &row.kind, &row.version, &row.size); err != nil {
+		if err = rows.Scan(&row.id, &row.kind, &row.version, &row.size, &row.xmin); err != nil {
 			rows.Close()
 			return page, eventPageErr(ctx, err)
 		}
@@ -194,9 +198,19 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 		storedBytes += row.size
 		wanted = append(wanted, row.id)
 	}
+	// A page resuming inside a log event serves it from the text an earlier
+	// page decoded, when this process still holds that row version.
+	fetch := wanted
+	resumed, resumedHit := decodedLogEvent{}, false
+	if cursor.Offset > 0 && len(wanted) > 0 && listed[0].id == cursor.Event && listed[0].kind == "log" {
+		resumed, resumedHit = decodedLogEvents.get(keyOf(listed[0]))
+		if resumedHit {
+			fetch = wanted[1:]
+		}
+	}
 	payloads := map[int][]byte{}
-	if len(wanted) > 0 {
-		rows, err = tx.QueryContext(ctx, "SELECT event_id,payload FROM "+table+" WHERE "+predicate+" AND event_id = ANY($2)", buildID, wanted)
+	if len(fetch) > 0 {
+		rows, err = tx.QueryContext(ctx, "SELECT event_id,payload FROM "+table+" WHERE "+predicate+" AND event_id = ANY($2)", buildID, fetch)
 		if err != nil {
 			return page, eventPageErr(ctx, err)
 		}
@@ -220,22 +234,13 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 	remaining, encodedBytes := request.MaxBytes, 0
 	anchorRead := cursor.Offset == 0
 pageRows:
-	for _, row := range listed[:len(wanted)] {
-		raw := payloads[row.id]
+	for i, row := range listed[:len(wanted)] {
 		var data map[string]json.RawMessage
-		if json.Unmarshal(raw, &data) != nil || data == nil {
-			return page, errors.New("INVALID_EVENT: event data is not an object")
-		}
 		var logText string
-		if row.kind == "log" {
-			if json.Unmarshal(data["payload"], &logText) != nil {
-				return page, errors.New("INVALID_EVENT: malformed log payload")
-			}
-			delete(data, "payload")
-		}
-		metadata, _ := json.Marshal(data)
-		if len(metadata) > eventMetadataMaxBytes {
-			return page, ErrBuildEventTooLarge
+		if i == 0 && resumedHit {
+			data, logText = maps.Clone(resumed.metadata), resumed.text
+		} else if data, logText, err = decodeStoredEvent(row.kind, payloads[row.id]); err != nil {
+			return page, err
 		}
 		if cursor.Offset > 0 && !anchorRead {
 			if row.id != cursor.Event || row.kind != "log" || cursor.Offset >= len(logText) || !utf8.RuneStart(logText[cursor.Offset]) {
@@ -300,6 +305,9 @@ pageRows:
 		}
 		if row.kind == "log" && start+len(text) < len(logText) {
 			next.Offset = start + len(text)
+			metadata := maps.Clone(data)
+			delete(metadata, "payload")
+			decodedLogEvents.put(keyOf(row), decodedLogEvent{metadata: metadata, text: logText})
 		}
 		page.Events = append(page.Events, record)
 		encodedBytes += len(encoded) + 1
@@ -331,4 +339,25 @@ pageRows:
 		return page, eventPageErr(ctx, err)
 	}
 	return page, nil
+}
+
+// decodeStoredEvent splits a stored event into its metadata and, for a log
+// event, its decoded text.
+func decodeStoredEvent(kind string, raw []byte) (map[string]json.RawMessage, string, error) {
+	var data map[string]json.RawMessage
+	if json.Unmarshal(raw, &data) != nil || data == nil {
+		return nil, "", errors.New("INVALID_EVENT: event data is not an object")
+	}
+	var logText string
+	if kind == "log" {
+		if json.Unmarshal(data["payload"], &logText) != nil {
+			return nil, "", errors.New("INVALID_EVENT: malformed log payload")
+		}
+		delete(data, "payload")
+	}
+	metadata, _ := json.Marshal(data)
+	if len(metadata) > eventMetadataMaxBytes {
+		return nil, "", ErrBuildEventTooLarge
+	}
+	return data, logText, nil
 }

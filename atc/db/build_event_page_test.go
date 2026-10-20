@@ -162,6 +162,52 @@ var _ = Describe("Finite build event pages", func() {
 		_, err = build.EventPage(ctx, atc.BuildEventPageRequest{})
 		Expect(err).To(HaveOccurred())
 	})
+	It("serves the page that resumes a log event from the text the page before it decoded", func() {
+		// Every spec's database starts from one template, so an earlier spec in
+		// this process may hold a decode under these very build and event IDs.
+		DeferCleanup(db.UseEmptyDecodedLogEvents())
+		text := strings.Repeat("a", 100000)
+		insert(5, `{"payload":"`+text+`","origin":{}}`)
+		first, err := build.EventPage(context.Background(), atc.BuildEventPageRequest{MaxBytes: 65536})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.Truncated).To(BeTrue())
+		Expect(db.DecodedLogEventHeld(table, build.ID(), 5)).To(BeTrue())
+		Expect(db.DecodedLogEventHits()).To(BeZero())
+		rest, err := build.EventPage(context.Background(), atc.BuildEventPageRequest{Cursor: *first.NextCursor, MaxBytes: 65536})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(db.DecodedLogEventHits()).To(Equal(1))
+		combined := ""
+		for _, page := range []atc.BuildEventPage{first, rest} {
+			Expect(page.Events).To(HaveLen(1))
+			var data struct {
+				Payload string `json:"payload"`
+			}
+			Expect(json.Unmarshal(page.Events[0].Data, &data)).To(Succeed())
+			combined += data.Payload
+		}
+		Expect(combined).To(Equal(text))
+	})
+	It("resumes a log event from the row version its snapshot lists, never an earlier decode", func() {
+		insert(5, `{"payload":"`+strings.Repeat("a", 100000)+`","origin":{}}`)
+		first, err := build.EventPage(context.Background(), atc.BuildEventPageRequest{MaxBytes: 65536})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.Truncated).To(BeTrue())
+		var head struct {
+			Payload string `json:"payload"`
+		}
+		Expect(json.Unmarshal(first.Events[0].Data, &head)).To(Succeed())
+		// Build events are append-only; rewriting one here stands in for any row
+		// version a decode taken from an earlier one could be mistaken for.
+		_, err = dbConn.Exec("UPDATE "+table+" SET payload=$1 WHERE event_id=5", `{"payload":"`+strings.Repeat("b", 100000)+`","origin":{}}`)
+		Expect(err).NotTo(HaveOccurred())
+		rest, err := build.EventPage(context.Background(), atc.BuildEventPageRequest{Cursor: *first.NextCursor, MaxBytes: 65536})
+		Expect(err).NotTo(HaveOccurred())
+		var tail struct {
+			Payload string `json:"payload"`
+		}
+		Expect(json.Unmarshal(rest.Events[0].Data, &tail)).To(Succeed())
+		Expect(tail.Payload).To(Equal(strings.Repeat("b", 100000-len(head.Payload))))
+	})
 	It("reports the deadline, not a closed transaction, when a page's context has expired", func() {
 		insert(7, `{"payload":"historic","origin":{}}`)
 		expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
