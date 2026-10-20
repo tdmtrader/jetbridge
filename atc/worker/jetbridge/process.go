@@ -416,11 +416,6 @@ func isPodFailedFast(pod *corev1.Pod) (reason, message string, failed bool) {
 // preemption rather than an ordinary pod-deleted event.
 const preemptionAnnotation = "concourse-ci.org/preemption-notice"
 
-// isPodEvicted checks whether the pod has been evicted by the kubelet.
-func isPodEvicted(pod *corev1.Pod) bool {
-	return pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted"
-}
-
 // isPodOOMKilled checks whether any container in the pod was terminated due
 // to an OOM kill. Returns the container name if found, empty string otherwise.
 func isPodOOMKilled(pod *corev1.Pod) (containerName string, oomKilled bool) {
