@@ -7,7 +7,6 @@ import DashboardTests exposing (iconSelector)
 import Data exposing (flags)
 import Expect exposing (Expectation)
 import Html.Attributes as Attr
-import Http
 import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
 import Message.Message
