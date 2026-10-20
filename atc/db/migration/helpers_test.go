@@ -170,6 +170,8 @@ func fetchTeamAuth(dbConn *sql.DB, team string) map[string]any {
 }
 
 func readTeamLegacyAuth(dbConn *sql.DB, team string) []byte {
+	GinkgoHelper()
+
 	var auth []byte
 	err := dbConn.QueryRow("SELECT legacy_auth FROM teams WHERE name = $1", team).Scan(&auth)
 	Expect(err).NotTo(HaveOccurred())
