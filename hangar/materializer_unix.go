@@ -560,7 +560,7 @@ func randomDirectoryAt(parent *os.File, prefix string) (string, *os.File, error)
 		}
 		return name, opened, nil
 	}
-	return "", nil, fmt.Errorf("exhausted private stage names")
+	return "", nil, errors.New("exhausted private stage names")
 }
 
 func copyOpenedTree(ctx context.Context, source, destination *os.File, prefix string) error {
