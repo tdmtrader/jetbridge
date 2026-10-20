@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	pathpkg "path"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/artifactwire"
@@ -105,7 +107,8 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 	}
 
 	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
-	needsFilter := path != "" && path != "."
+	subPath := tarSubPath(path)
+	needsFilter := subPath != ""
 
 	// Fast path: no compression and no sub-path filtering needed.
 	if !needsCompression && !needsFilter {
@@ -129,7 +132,7 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 
 		var copyErr error
 		if needsFilter {
-			copyErr = filterTarEntry(body, dest, path)
+			copyErr = filterTarEntry(body, dest, subPath)
 		} else {
 			_, copyErr = io.Copy(dest, body)
 		}
@@ -144,6 +147,16 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 	}()
 
 	return pr, nil
+}
+
+// tarSubPath turns a StreamOut path into the entry name the artifact daemon's
+// tar uses for it, or "" for the whole volume. The artifact daemon names
+// entries relative to the artifact key with no leading "/" or "./", while
+// callers address the volume root as "", "." or "/" (the artifact server
+// streams every download with "/") and may address a sub-path as "/file" or
+// "./file".
+func tarSubPath(p string) string {
+	return strings.TrimPrefix(pathpkg.Clean("/"+p), "/")
 }
 
 // filterTarEntry reads a tar stream from src and writes a new tar stream to
