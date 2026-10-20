@@ -17,7 +17,6 @@ import Set
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (class, containing, id, style, text)
-import Url
 
 
 all : Test
