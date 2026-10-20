@@ -819,7 +819,7 @@ func collectOpenedCanonicalEntries(ctx context.Context, directory *os.File, pref
 			entry.mode = 0777
 			*entries = append(*entries, entry)
 		default:
-			return fmt.Errorf("hangar: unsupported staged entry type")
+			return errors.New("hangar: unsupported staged entry type")
 		}
 	}
 	return nil
