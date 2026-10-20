@@ -1492,7 +1492,7 @@ func readlinkAt(parent int, name string) (string, error) {
 			return string(buffer[:length]), nil
 		}
 	}
-	return "", fmt.Errorf("symlink target too long")
+	return "", errors.New("symlink target too long")
 }
 
 func validateContainedSymlink(name, target string) error {
