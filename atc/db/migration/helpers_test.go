@@ -132,6 +132,8 @@ func ExpectTeamWithLegacyAuth(dbConn *sql.DB, team, expectedConfig string) {
 }
 
 func readTeamBasicAuth(dbConn *sql.DB, team string) []byte {
+	GinkgoHelper()
+
 	var auth []byte
 	err := dbConn.QueryRow("SELECT basic_auth FROM teams WHERE name = $1", team).Scan(&auth)
 	Expect(err).NotTo(HaveOccurred())
