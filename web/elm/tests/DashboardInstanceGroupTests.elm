@@ -9,7 +9,6 @@ import Application.Application as Application
 import Common
     exposing
         ( gotPipelines
-        , pipelineRunningKeyframes
         )
 import Concourse exposing (JsonValue(..))
 import Concourse.BuildStatus exposing (BuildStatus(..))
