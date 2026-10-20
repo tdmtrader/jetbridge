@@ -1327,7 +1327,7 @@ func captureOwnedMaterializationEntry(parent *os.File, name string) (ownedMateri
 		owned.children = append(owned.children, child)
 	}
 	if same, err := owned.sameAt(parent); err != nil || !same {
-		return ownedMaterializationEntry{}, errors.Join(err, fmt.Errorf("owned directory changed while recording"))
+		return ownedMaterializationEntry{}, errors.Join(err, errors.New("owned directory changed while recording"))
 	}
 	return owned, nil
 }
