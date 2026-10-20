@@ -179,6 +179,8 @@ func readTeamLegacyAuth(dbConn *sql.DB, team string) []byte {
 }
 
 func fetchResourceType(dbConn *sql.DB, name string) string {
+	GinkgoHelper()
+
 	var raw string
 	err := dbConn.QueryRow("SELECT type FROM resources WHERE name = $1", name).Scan(&raw)
 	Expect(err).NotTo(HaveOccurred())
