@@ -798,13 +798,14 @@ func TestTheConcourseBinaryLinksTheCloudStorageClientOnlyThroughTheReclaimer(t *
 					"through hangar/gcs, opened by its reclaim pass; depend on the hangar/objectstore "+
 					"interface instead.", imported, pkg)
 			}
-			if imported == gcsAdapter {
-				if pkg != onlyDoor {
-					t.Errorf("%s names %s inside ./cmd/concourse. The web's one door to the cloud "+
-						"client is %s, the reclaimer principal.", pkg, gcsAdapter, onlyDoor)
-				}
-				reached = true
+			if imported != gcsAdapter {
+				continue
 			}
+			if pkg != onlyDoor {
+				t.Errorf("%s names %s inside ./cmd/concourse. The web's one door to the cloud "+
+					"client is %s, the reclaimer principal.", pkg, gcsAdapter, onlyDoor)
+			}
+			reached = true
 		}
 	}
 	if !reached {
