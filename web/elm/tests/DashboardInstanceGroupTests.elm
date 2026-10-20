@@ -37,7 +37,6 @@ import Test.Html.Selector
         , containing
         , id
         , style
-        , tag
         , text
         )
 
