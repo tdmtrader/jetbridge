@@ -116,9 +116,17 @@ func (source *buildEventSource) Close() error {
 	return nil
 }
 
+// collectEvents feeds the stream until it ends, then records why it ended
+// before closing the channel, so a reader blocked in Next always wakes and
+// never mistakes a stream that stopped on an error for a clean empty event.
 func (source *buildEventSource) collectEvents(from uint, completed bool) {
 	defer source.wg.Done()
 
+	source.err = source.collect(from, completed)
+	close(source.events)
+}
+
+func (source *buildEventSource) collect(from uint, completed bool) error {
 	batchSize := cap(source.events)
 	// cursor points to the last emitted event, so subtract 1
 	// (the first event is fetched using cursor == -1)
@@ -127,84 +135,13 @@ func (source *buildEventSource) collectEvents(from uint, completed bool) {
 	for {
 		select {
 		case <-source.stop:
-			source.err = ErrBuildEventStreamClosed
-			close(source.events)
-			return
+			return ErrBuildEventStreamClosed
 		default:
 		}
 
-		tx, err := source.conn.Begin()
+		rowsReturned, err := source.collectBatch(&cursor, &completed, batchSize)
 		if err != nil {
-			return
-		}
-
-		defer Rollback(tx)
-
-		if !completed {
-			completed, err = source.watcherFunc(tx, source.buildID)
-			if err != nil {
-				source.err = err
-				close(source.events)
-				return
-			}
-		}
-
-		eventsQuery := psql.Select("event_id", "type", "version", "payload").
-			From(source.table)
-
-		query := eventsQuery.Where(sq.Eq{"build_id": source.buildID})
-
-		rows, err := query.
-			Where(sq.Gt{"event_id": cursor}).
-			OrderBy("event_id ASC").
-			Limit(uint64(batchSize)).
-			RunWith(tx).
-			Query()
-		if err != nil {
-			source.err = err
-			close(source.events)
-			return
-		}
-
-		rowsReturned := 0
-
-		for rows.Next() {
-			rowsReturned++
-
-			var t, v, p string
-			err := rows.Scan(&cursor, &t, &v, &p)
-			if err != nil {
-				_ = rows.Close()
-
-				source.err = err
-				close(source.events)
-				return
-			}
-
-			data := json.RawMessage(p)
-
-			ev := event.Envelope{
-				Data:    &data,
-				Event:   atc.EventType(t),
-				Version: atc.EventVersion(v),
-				EventID: strconv.Itoa(cursor),
-			}
-
-			select {
-			case source.events <- ev:
-			case <-source.stop:
-				_ = rows.Close()
-
-				source.err = ErrBuildEventStreamClosed
-				close(source.events)
-				return
-			}
-		}
-
-		err = tx.Commit()
-		if err != nil {
-			close(source.events)
-			return
+			return err
 		}
 
 		if rowsReturned == batchSize {
@@ -213,17 +150,80 @@ func (source *buildEventSource) collectEvents(from uint, completed bool) {
 		}
 
 		if completed {
-			source.err = ErrEndOfBuildEventStream
-			close(source.events)
-			return
+			return ErrEndOfBuildEventStream
 		}
 
 		select {
 		case <-source.signal.C():
 		case <-source.stop:
-			source.err = ErrBuildEventStreamClosed
-			close(source.events)
-			return
+			return ErrBuildEventStreamClosed
 		}
 	}
+}
+
+// collectBatch reads and emits up to batchSize events after the cursor in one
+// transaction, advancing the cursor past each emitted event.
+func (source *buildEventSource) collectBatch(cursor *int, completed *bool, batchSize int) (int, error) {
+	tx, err := source.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+
+	defer Rollback(tx)
+
+	if !*completed {
+		*completed, err = source.watcherFunc(tx, source.buildID)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	rows, err := psql.Select("event_id", "type", "version", "payload").
+		From(source.table).
+		Where(sq.Eq{"build_id": source.buildID}).
+		Where(sq.Gt{"event_id": *cursor}).
+		OrderBy("event_id ASC").
+		Limit(uint64(batchSize)).
+		RunWith(tx).
+		Query()
+	if err != nil {
+		return 0, err
+	}
+
+	defer rows.Close()
+
+	rowsReturned := 0
+
+	for rows.Next() {
+		rowsReturned++
+
+		var t, v, p string
+		err := rows.Scan(cursor, &t, &v, &p)
+		if err != nil {
+			return rowsReturned, err
+		}
+
+		data := json.RawMessage(p)
+
+		ev := event.Envelope{
+			Data:    &data,
+			Event:   atc.EventType(t),
+			Version: atc.EventVersion(v),
+			EventID: strconv.Itoa(*cursor),
+		}
+
+		select {
+		case source.events <- ev:
+		case <-source.stop:
+			return rowsReturned, ErrBuildEventStreamClosed
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return rowsReturned, err
+	}
+
+	_ = rows.Close()
+
+	return rowsReturned, tx.Commit()
 }
