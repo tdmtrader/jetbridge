@@ -23,6 +23,8 @@ func SetupTeam(dbConn *sql.DB, team, auth string) {
 }
 
 func SetupPipeline(dbConn *sql.DB, pipeline string) {
+	GinkgoHelper()
+
 	_, err := dbConn.Exec("INSERT INTO pipelines(name, team_id) VALUES($1, 1)", pipeline)
 	Expect(err).NotTo(HaveOccurred())
 }
