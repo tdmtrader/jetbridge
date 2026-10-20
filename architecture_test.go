@@ -2155,8 +2155,11 @@ func TestExactlyOneFunctionWritesARunsStatusAndOneRecordsItsCancellationFence(t 
 
 // No step configuration can ask for an added capability or a host namespace,
 // because nothing that builds a step pod sets one and a sidecar has no field
-// to carry one (step_pod_privilege_gate, spec amendment B1 §1). The admission
-// still refuses such a pod; this keeps the request itself unexpressible.
+// to carry one (step_pod_privilege_gate, spec amendment B1 §1). This test
+// keeps it so: it fails when production code in atc/worker/jetbridge sets
+// Capabilities, HostNetwork, HostPID or HostIPC, or when SidecarConfig has a
+// field that could carry a security request. The step pod admission checks
+// only hostPath volumes and their mounts, so it would not refuse such a pod.
 func TestNoStepPodCodeSetsACapabilityOrAHostNamespace(t *testing.T) {
 	files := productionGoFiles(t, func(rel string) bool {
 		return filepath.ToSlash(filepath.Dir(rel)) == "atc/worker/jetbridge"
