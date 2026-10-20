@@ -27,6 +27,7 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var (
 	dbConn       db.DbConn
+	lockFactory  lock.LockFactory
 	buildFactory db.BuildFactory
 	job          db.Job
 	resource     db.Resource
@@ -47,7 +48,7 @@ var _ = BeforeEach(func() {
 		lockConns[i] = lockConn
 		DeferCleanup(func() { Expect(connToClose.Close()).To(Succeed()) })
 	}
-	lockFactory := lock.NewLockFactory(
+	lockFactory = lock.NewLockFactory(
 		lockConns,
 		func(lager.Logger, lock.LockID) {},
 		func(lager.Logger, lock.LockID) {},
@@ -120,6 +121,24 @@ func statusOf(buildID int) db.BuildStatus {
 	var status string
 	Expect(dbConn.QueryRow("SELECT status FROM builds WHERE id = $1", buildID).Scan(&status)).To(Succeed())
 	return db.BuildStatus(status)
+}
+
+// scopeResource points the resource at a resource config scope, as a check
+// does before it runs.
+func scopeResource() {
+	GinkgoHelper()
+	resourceConfig, err := db.NewResourceConfigFactory(dbConn, lockFactory).
+		FindOrCreateResourceConfig(resource.Type(), resource.Source(), nil)
+	Expect(err).NotTo(HaveOccurred())
+
+	scope, err := resourceConfig.FindOrCreateScope(&[]int{resource.ID()}[0])
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
+
+	found, err := resource.Reload()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	Expect(resource.ResourceConfigScopeID()).NotTo(BeZero())
 }
 
 func inMemoryStatusOf(resourceID int) string {

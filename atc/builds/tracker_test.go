@@ -135,6 +135,40 @@ var _ = Describe("Tracker", func() {
 			Consistently(running, 100*time.Millisecond).ShouldNot(Receive())
 		})
 
+		It("releases the in-flight check of a second in-memory check it does not run", func() {
+			wait := make(chan struct{})
+			defer close(wait)
+
+			running := make(chan db.Build, 3)
+			engine.newBuild = func(build db.Build) builds.Runnable {
+				return runnableFunc(func(context.Context) {
+					running <- build
+					<-wait
+				})
+			}
+
+			checkFactory := db.NewCheckFactory(dbConn, lockFactory, buildChan, util.NewSequenceGenerator(1))
+			lidarCheck := func() bool {
+				_, created, err := checkFactory.TryCreateCheck(context.Background(), resource, db.ResourceTypes{}, nil, false, false, false)
+				Expect(err).NotTo(HaveOccurred())
+				return created
+			}
+
+			// A new resource has no scope yet, so its first check is not
+			// tracked as in flight.
+			Expect(lidarCheck()).To(BeTrue())
+			<-running
+
+			// That check points the resource at a scope while it still runs,
+			// and the next lidar pass dispatches a check for that scope, which
+			// the tracker does not run.
+			scopeResource()
+			Expect(lidarCheck()).To(BeTrue())
+
+			Eventually(lidarCheck).Should(BeTrue(), "the scope stays in flight with no check running for it")
+			Consistently(running, 100*time.Millisecond).ShouldNot(Receive())
+		})
+
 		It("errors a build whose run panics without stopping the others", func() {
 			crashing := startedJobBuild("crashing")
 			healthy := startedJobBuild("healthy")

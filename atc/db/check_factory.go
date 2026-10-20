@@ -265,3 +265,16 @@ func (b *onFinishBuild) Finish(status BuildStatus) error {
 	defer b.onFinish()
 	return b.Build.Finish(status)
 }
+
+// Discard clears the in-flight tracking of a check that will never run.
+func (b *onFinishBuild) Discard() {
+	b.onFinish()
+}
+
+// A DiscardableBuild holds state that is released only when it finishes. A
+// tracker that declines to run one must Discard it instead, or that state is
+// never released.
+type DiscardableBuild interface {
+	Build
+	Discard()
+}

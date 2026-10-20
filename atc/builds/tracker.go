@@ -81,6 +81,12 @@ func (bt *Tracker) trackBuild(logger lager.Logger, b db.Build) {
 	}
 
 	if _, exists := bt.running.LoadOrStore(id, true); exists {
+		// A second in-memory check for a resource whose first is still
+		// running is never run, so it never finishes; release what it holds
+		// or the check factory skips the resource's scope forever.
+		if discardable, ok := b.(db.DiscardableBuild); ok {
+			discardable.Discard()
+		}
 		return
 	}
 
