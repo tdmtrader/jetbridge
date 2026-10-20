@@ -441,6 +441,81 @@ var _ = Describe("JobFactory", func() {
 			})
 		})
 
+		Context("when a request that began before another request commits after that one was consumed", func() {
+			BeforeEach(func() {
+				pipeline1, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "fake-pipeline"}, atc.Config{
+					Jobs: atc.JobConfigs{
+						{Name: "job-name"},
+					},
+				}, db.ConfigVersion(1), true)
+				Expect(err).ToNot(HaveOccurred())
+
+				var found bool
+				job1, found, err = pipeline1.Job("job-name")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				// Each test conn pools one connection, so the lock holder and the
+				// in-flight Unpause each get their own; dbConn stays free for the
+				// later request and the scheduler's consume.
+				holderConn := postgresRunner.OpenConn()
+				defer holderConn.Close()
+				unpauseConn := postgresRunner.OpenConn()
+				defer unpauseConn.Close()
+
+				team, found, err := db.NewTeamFactory(unpauseConn, lockFactory).FindTeam(defaultTeam.Name())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				inFlight, found, err := team.Pipeline(atc.PipelineRef{Name: "fake-pipeline"})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				// Hold the pipeline row so Unpause begins its transaction and
+				// then waits, with its start time already fixed.
+				holder, err := holderConn.Begin()
+				Expect(err).ToNot(HaveOccurred())
+				defer holder.Rollback()
+				_, err = holder.Exec("SELECT id FROM pipelines WHERE id = $1 FOR UPDATE", pipeline1.ID())
+				Expect(err).ToNot(HaveOccurred())
+
+				unpaused := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					unpaused <- inFlight.Unpause()
+				}()
+
+				Eventually(func() (int, error) {
+					var waiting int
+					err := dbConn.QueryRow(`SELECT count(*) FROM pg_stat_activity
+						WHERE datname = current_database() AND wait_event_type = 'Lock'
+						AND query LIKE 'UPDATE pipelines%'`).Scan(&waiting)
+					return waiting, err
+				}).Should(Equal(1))
+
+				// A later request commits and the scheduler consumes it while
+				// the earlier one is still in flight.
+				err = job1.RequestSchedule()
+				Expect(err).ToNot(HaveOccurred())
+
+				found, err = job1.Reload()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				err = job1.ConsumeScheduleRequest(job1.ScheduleRequestedTime())
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(holder.Rollback()).To(Succeed())
+				Eventually(unpaused).Should(Receive(BeNil()))
+			})
+
+			It("fetches that job", func() {
+				jobs, err := jobFactory.JobsToSchedule()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(len(jobs)).To(Equal(1))
+				Expect(jobs[0].Name()).To(Equal(job1.Name()))
+			})
+		})
+
 		Context("when there are multiple jobs with different times", func() {
 			BeforeEach(func() {
 				pipeline1, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "fake-pipeline"}, atc.Config{

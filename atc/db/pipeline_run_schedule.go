@@ -58,8 +58,15 @@ func requestScheduleJobs(tx Tx, jobIDs []int, strict bool) error {
 	if strict && len(admitted) != len(jobIDs) {
 		return NonOneRowAffectedError{int64(len(admitted))}
 	}
+	// schedule_requested must grow in commit order, not in transaction-start
+	// order. now() is fixed at BEGIN, so a writer that began before another
+	// request but commits after the scheduler consumed it would write an
+	// older time under last_scheduled and its request would never be seen.
+	// The row lock makes this UPDATE re-read the latest committed value, so
+	// stepping past it keeps every committed request ahead of any consume
+	// that could not have observed it.
 	for _, id := range admitted {
-		if _, err := psql.Update("jobs").Set("schedule_requested", sq.Expr("now()")).Where(sq.Eq{"id": id}).RunWith(tx).Exec(); err != nil {
+		if _, err := psql.Update("jobs").Set("schedule_requested", sq.Expr("GREATEST(clock_timestamp(), schedule_requested + interval '1 microsecond')")).Where(sq.Eq{"id": id}).RunWith(tx).Exec(); err != nil {
 			return err
 		}
 	}
