@@ -175,8 +175,11 @@ kubernetes:
   # pipeline, or main/one-off for team main's one-off builds. Every other
   # build's pods run as serviceAccount above, the default step pod identity.
   # Only this configuration selects a grant; nothing in a pipeline can.
-  # privileged: true lets the owner's step pods run privileged; such a grant
-  # may leave serviceAccount out and keep the default identity's account.
+  # privileged: true is carried on the owner's step pod identity, but nothing
+  # reads it yet: privilege is not gated today, and a step pod's security
+  # context follows its task's privileged: or, for a get, put or check, its
+  # resource type's. Such a grant may leave serviceAccount out and keep the
+  # default identity's account.
   # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: jetbridge-brine-live, privileged: true}]
   stepPodGrants: []
 
@@ -710,11 +713,13 @@ artifactDaemon:
 # example artifactDaemon.hangar.keySecret, the Hangar key), so the operator
 # turns each Secret on by naming it. Off renders nothing.
 #
-# Trusted readers: the inventory's
-# consumers, web, the cluster administrators the operator lists, and every
-# step pod grant identity that holds privilege or may create pods. Nobody
-# else may read an inventory Secret, create a pod that mounts one, or reach
-# the node; the step pod grants and the privilege gate keep that set closed.
+# Trusted readers: the inventory's consumers, web, the cluster administrators
+# the operator lists, and every step pod grant identity that holds privilege
+# or may create pods. Nobody else may read an inventory Secret, create a pod
+# that mounts one, or reach the node. No pipeline can join that set through a
+# ServiceAccount, a capability or a host namespace, but privilege is not
+# gated yet: a task that sets privileged:, or a step whose resource type
+# does, runs privileged without a step pod grant.
 hangarBootstrap:
   enabled: false
   secretNames:
