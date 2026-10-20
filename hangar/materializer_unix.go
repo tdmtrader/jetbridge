@@ -747,7 +747,7 @@ func canonicalDigestOpenedTree(ctx context.Context, root *os.File) (Digest, erro
 			header.Typeflag = tar.TypeSymlink
 		default:
 			_ = writer.Close()
-			return "", fmt.Errorf("hangar: unsupported staged entry type")
+			return "", errors.New("hangar: unsupported staged entry type")
 		}
 		if err := writer.WriteHeader(header); err != nil {
 			_ = writer.Close()
