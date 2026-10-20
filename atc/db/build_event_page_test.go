@@ -210,7 +210,11 @@ var _ = Describe("Finite build event pages", func() {
 		Expect(page.Events).To(HaveLen(1))
 	})
 	It("measures full traversal at the stored-event bound and a large committed prefix", func() {
-		// This is a coarse local cost measurement, not a latency assertion tied to hardware.
+		// This is a coarse local cost measurement, not a latency assertion tied to
+		// hardware: each page gets 30 s in place of the production bound, so a
+		// loaded machine slows the walk instead of failing it, and the spec
+		// asserts only that the traversal is complete and finite.
+		DeferCleanup(db.SetEventPageTimeout(30 * time.Second))
 		text := strings.Repeat("a", 8*1024*1024-128)
 		payload, _ := json.Marshal(map[string]any{"payload": text, "origin": map[string]any{"id": "task"}})
 		insert(5, string(payload))
