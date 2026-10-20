@@ -463,7 +463,7 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 func openAbsoluteDirectoryNoFollow(name string) (*os.File, error) {
 	name = filepath.Clean(name)
 	if !filepath.IsAbs(name) {
-		return nil, fmt.Errorf("path must be absolute")
+		return nil, errors.New("path must be absolute")
 	}
 	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -476,7 +476,7 @@ func openAbsoluteDirectoryNoFollow(name string) (*os.File, error) {
 		}
 		if !validFilesystemComponent(segment) {
 			current.Close()
-			return nil, fmt.Errorf("unsafe absolute directory segment")
+			return nil, errors.New("unsafe absolute directory segment")
 		}
 		nextFD, openErr := unix.Openat(int(current.Fd()), segment, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if openErr != nil {
