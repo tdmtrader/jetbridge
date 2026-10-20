@@ -2528,6 +2528,8 @@ func envelope(ev atc.Event, eventID string) event.Envelope {
 }
 
 func convertToSHA256(version atc.Version) string {
+	GinkgoHelper()
+
 	versionJSON, err := json.Marshal(version)
 	Expect(err).ToNot(HaveOccurred())
 
