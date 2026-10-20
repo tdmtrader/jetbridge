@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -460,7 +461,7 @@ func (f *pipelineRunFactory) getRun(row scannable) (PipelineRun, bool, error) {
 
 func (f *pipelineRunFactory) Runs(template Pipeline, page Page) ([]PipelineRun, Pagination, error) {
 	if page.From != nil && page.To != nil && *page.From > *page.To {
-		return nil, Pagination{}, fmt.Errorf("invalid range boundaries")
+		return nil, Pagination{}, errors.New("invalid range boundaries")
 	}
 	tx, err := f.conn.Begin()
 	if err != nil {
