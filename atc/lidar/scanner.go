@@ -185,7 +185,7 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
 	}
 
 	// Resolve the digest via registry API.
-	digest, err := s.resolver.Resolve(ctx, repository, tag, auth)
+	digest, err := s.resolve(ctx, repository, tag, auth, rt.CheckTimeout())
 	if err != nil {
 		logger.Error("failed-to-resolve-digest", err)
 		return
@@ -375,7 +375,7 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 	}
 
 	// Resolve the digest via registry API.
-	digest, err := s.resolver.Resolve(ctx, repository, tag, auth)
+	digest, err := s.resolve(ctx, repository, tag, auth, rs.CheckTimeout())
 	if err != nil {
 		logger.Error("failed-to-resolve-digest", err)
 		return
@@ -440,6 +440,30 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 
 	metric.Metrics.ChecksEnqueued.Inc()
 	logger.Info("resolved-resource", lager.Data{"digest": digest})
+}
+
+// nativeResolveTimeout bounds one native registry-image resolve. A scan waits
+// for every resolve it starts while it holds the scanner's task lock, which no
+// other web can take, so a registry that accepts a connection and never answers
+// would otherwise stop lidar for every team. The bound is a minute, the default
+// resource checking interval, per resolve: resource types and resources resolve
+// in two phases one after the other, so stalled registries behind both can hold
+// a scan for about one bound per phase, and more stalled resolves than the
+// scanner's concurrency hold each phase for one bound per batch.
+var nativeResolveTimeout = time.Minute
+
+// resolve asks the registry for a digest within nativeResolveTimeout, or within
+// the resource's check_timeout when that is shorter.
+func (s *scanner) resolve(ctx context.Context, repository, tag string, auth *imageresolver.BasicAuth, checkTimeout string) (string, error) {
+	timeout := nativeResolveTimeout
+	if d, err := time.ParseDuration(checkTimeout); err == nil && d > 0 && d < timeout {
+		timeout = d
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	return s.resolver.Resolve(ctx, repository, tag, auth)
 }
 
 func (s *scanner) check(ctx context.Context, checkable db.Checkable, resourceTypes db.ResourceTypes) {

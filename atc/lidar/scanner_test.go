@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/lidar"
 	"github.com/concourse/concourse/atc/metric"
@@ -601,6 +603,19 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
 	})
 
+	It("gives up on a registry that never answers within the native resolve bound", func() {
+		DeferCleanup(lidar.SetNativeResolveTimeout(time.Second))
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Source = stalledRegistrySource()
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		logger := lagertest.NewTestLogger("test")
+
+		Eventually(runNativeScanner(fixture, logger)).WithTimeout(10 * time.Second).Should(Receive(BeNil()))
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeTrue())
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+	})
+
 	It("skips a persisted resource type whose nonzero interval has not elapsed", func() {
 		fixture := useLidarDB()
 		config := defaultResourceType()
@@ -1086,4 +1101,79 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(initialBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		finished = true
 	})
+
+	It("gives up on a registry that never answers within the resource's check_timeout", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.CheckTimeout = "1s"
+		config.Source = stalledRegistrySource()
+		pipeline, _ := persistResource(fixture, config)
+		logger := lagertest.NewTestLogger("test")
+
+		Eventually(runNativeScanner(fixture, logger)).WithTimeout(10 * time.Second).Should(Receive(BeNil()))
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeTrue())
+		Expect(lidarPipelineResource(pipeline, resourceName).ResourceConfigID()).To(BeZero())
+	})
+
+	It("gives up on a registry that never answers within the native resolve bound when the resource sets no check_timeout", func() {
+		DeferCleanup(lidar.SetNativeResolveTimeout(time.Second))
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.Source = stalledRegistrySource()
+		pipeline, _ := persistResource(fixture, config)
+		logger := lagertest.NewTestLogger("test")
+
+		Eventually(runNativeScanner(fixture, logger)).WithTimeout(10 * time.Second).Should(Receive(BeNil()))
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeTrue())
+		Expect(lidarPipelineResource(pipeline, resourceName).ResourceConfigID()).To(BeZero())
+	})
 })
+
+// stalledRegistrySource starts a registry that accepts connections and never
+// answers them, and returns a registry-image source that points at it. The
+// listener and every connection it held close when the spec ends.
+func stalledRegistrySource() atc.Source {
+	GinkgoHelper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	Expect(err).NotTo(HaveOccurred())
+	var held []net.Conn
+	accepted := make(chan struct{})
+	go func() {
+		defer close(accepted)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, conn)
+		}
+	}()
+	DeferCleanup(func() {
+		listener.Close()
+		<-accepted
+		for _, conn := range held {
+			conn.Close()
+		}
+	})
+
+	return atc.Source{
+		"repository": listener.Addr().String() + "/stalled/image",
+		"tag":        "latest",
+		// Explicit credentials keep the keychain off the network.
+		"username": "user",
+		"password": "pass",
+	}
+}
+
+// runNativeScanner runs one scan with the real registry resolver and delivers
+// its result on the returned channel.
+func runNativeScanner(fixture *lidarDB, logger *lagertest.TestLogger) <-chan error {
+	ran := make(chan error, 1)
+	go func() {
+		ran <- lidar.NewScanner(
+			fixture.CheckFactory, atc.NewPlanFactory(0), 10,
+			imageresolver.NewResolver(nil), fixture.ResourceConfigFactory,
+		).Run(lagerctx.NewContext(context.Background(), logger))
+	}()
+	return ran
+}
