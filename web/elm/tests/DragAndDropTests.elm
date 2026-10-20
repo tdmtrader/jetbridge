@@ -19,7 +19,6 @@ import Test.Html.Event as Event
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (class, containing, id, style, text)
 import Time
-import Url
 
 
 all : Test
