@@ -2,9 +2,10 @@
 {{- $base := $output.executionControl.enabled | default false }}
 {{- /*
 The Hangar key, hangar.key: the one raw 32-byte key the web signs every
-warrant with (read and control) and this daemon verifies against. The daemon
-needs it for the output plane, which every Run input is a managed read of, so
-it is mounted, and its source checked, with exact execution control.
+warrant with (read, execution control and output capture) and this daemon
+verifies against. The daemon needs it for the output plane, which every Run
+input is a managed read of, so it is mounted, and its source checked, with
+exact execution control.
 */}}
 {{- $hangarKey := $base }}
 {{- if and $hangarKey (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}

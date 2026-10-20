@@ -529,8 +529,8 @@ artifactDaemon:
 
   # -- The Hangar key. Every Run input reaches a task as a managed read of
   # the output namespace, and every warrant the web signs for that plane --
-  # read and control -- is signed with this one key. It is needed with
-  # hangarOutput.executionControl.enabled.
+  # read, execution control and output capture -- is signed with this one
+  # key. It is needed with hangarOutput.executionControl.enabled.
   hangar:
     # -- Permit the chart to generate hangar.key in its managed TLS Secret.
     # Use only with live Helm install/upgrade, where lookup can preserve the
@@ -538,11 +538,11 @@ artifactDaemon:
     # tls.existingSecret with all TLS keys plus an exact raw-32-byte hangar.key.
     allowGeneratedKey: false
     # -- Secret holding hangar.key, the raw 32-byte Hangar key the web signs
-    # every read and control warrant with and every artifact daemon verifies
-    # against. Needed with hangarOutput.executionControl.enabled. When set,
-    # web and the artifact daemon mount it from here instead of from
-    # artifactDaemon.tls.existingSecret, and the Hangar bootstrap creates it
-    # if it is absent.
+    # every read, execution control and output capture warrant with and every
+    # artifact daemon verifies against. Needed with
+    # hangarOutput.executionControl.enabled. When set, web and the artifact
+    # daemon mount it from here instead of from artifactDaemon.tls.existingSecret,
+    # and the Hangar bootstrap creates it if it is absent.
     keySecret: ""
     # -- Lifetime of every warrant the web signs with the Hangar key, expressed
     # as positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).

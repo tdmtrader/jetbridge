@@ -277,8 +277,8 @@ is no separate input store. Native GCS authenticates with Workload Identity;
 S3-compatible and filesystem stores are unsupported.
 
 One Hangar key, `hangar.key` (exactly 32 raw bytes after base64 decoding),
-signs every warrant the web issues -- read and control -- and every artifact
-daemon verifies against it. The output plane
+signs every warrant the web issues -- read, execution control and output
+capture -- and every artifact daemon verifies against it. The output plane
 (`hangarOutput.executionControl.enabled`) needs it. Name a Secret holding it in
 `artifactDaemon.hangar.keySecret` (the Hangar bootstrap creates an absent one);
 otherwise `artifactDaemon.tls.existingSecret` must carry `hangar.key` beside
