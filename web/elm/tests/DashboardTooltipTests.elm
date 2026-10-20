@@ -5,7 +5,6 @@ import Concourse exposing (JsonValue(..))
 import Dashboard.Dashboard as Dashboard
 import Data
 import Dict
-import Expect
 import HoverState exposing (HoverState(..))
 import Html
 import Message.Message exposing (DomID(..), PipelinesSection(..))
