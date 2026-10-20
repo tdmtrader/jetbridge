@@ -1,6 +1,5 @@
 module FlySuccessTests exposing (all)
 
-import Application.Application as Application
 import Common exposing (defineHoverBehaviour, queryView)
 import DashboardTests exposing (iconSelector)
 import Expect exposing (Expectation)
