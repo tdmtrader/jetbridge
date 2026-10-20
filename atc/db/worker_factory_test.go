@@ -340,11 +340,11 @@ var _ = Describe("WorkerFactory", func() {
 		)
 
 		BeforeEach(func() {
-			var err error
 			containerMetadata = db.ContainerMetadata{
 				Type:     "task",
 				StepName: "some-task",
 			}
+			var err error
 			build, err = defaultTeam.CreateOneOffBuild()
 			Expect(err).ToNot(HaveOccurred())
 			otherTeam, err := teamFactory.CreateTeam(atc.Team{Name: "other-team"})
