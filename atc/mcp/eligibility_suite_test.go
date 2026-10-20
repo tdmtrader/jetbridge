@@ -51,6 +51,7 @@ func grantRole(team db.Team, role string) {
 	Expect(team.UpdateProviderAuth(atc.TeamAuth{role: {"users": {"test:some-user"}}})).To(Succeed())
 }
 func makeAdmin(team db.Team) {
+	GinkgoHelper()
 	grantRole(team, accessor.OwnerRole)
 	_, err := dbConn.Exec("UPDATE teams SET admin=true WHERE id=$1", team.ID())
 	Expect(err).NotTo(HaveOccurred())
