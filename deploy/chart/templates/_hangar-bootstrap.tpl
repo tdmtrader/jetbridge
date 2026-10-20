@@ -33,7 +33,7 @@ says is signed.
 
 {{- with .Values.artifactDaemon.hangar.keySecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "random32" "key" "hangar.key"
-  "purposes" (dict "hangar.key" "the Hangar key: signs every warrant (materialization, read, control)")
+  "purposes" (dict "hangar.key" "the Hangar key: signs every warrant (read, execution control, output capture)")
   "consumers" (list "web" "artifact-daemon")) -}}
 {{- end -}}
 
