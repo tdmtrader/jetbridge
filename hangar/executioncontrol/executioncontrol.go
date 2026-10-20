@@ -71,12 +71,14 @@ var (
 // all-zero identity is what an uninitialized caller sends.
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-func validateUUID(what, value string) error {
+// ValidateUUID returns invalid, wrapped, when value is empty or is not a
+// lowercase RFC 4122 UUID; what names the identity in the message.
+func ValidateUUID(invalid error, what, value string) error {
 	if value == "" {
-		return fmt.Errorf("%w: %s is empty", ErrInvalidIdentity, what)
+		return fmt.Errorf("%w: %s is empty", invalid, what)
 	}
 	if !uuidPattern.MatchString(value) {
-		return fmt.Errorf("%w: %s %q is not a lowercase RFC 4122 UUID", ErrInvalidIdentity, what, value)
+		return fmt.Errorf("%w: %s %q is not a lowercase RFC 4122 UUID", invalid, what, value)
 	}
 
 	return nil
@@ -87,7 +89,9 @@ func validateUUID(what, value string) error {
 // read, and is never reused: a second attempt is a second execution.
 type ExecutionID string
 
-func (id ExecutionID) Validate() error { return validateUUID("execution id", string(id)) }
+func (id ExecutionID) Validate() error {
+	return ValidateUUID(ErrInvalidIdentity, "execution id", string(id))
+}
 
 // Fence is the monotonic fencing epoch for an execution's control. Takeover
 // advances it; a holder of an older fence may observe but never act.

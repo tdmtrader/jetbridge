@@ -158,17 +158,6 @@ func validateProtocol(version string) error {
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-func validateUUID(what, value string) error {
-	if value == "" {
-		return fmt.Errorf("%w: %s is empty", ErrInvalidIdentity, what)
-	}
-	if !uuidPattern.MatchString(value) {
-		return fmt.Errorf("%w: %s %q is not a lowercase RFC 4122 UUID", ErrInvalidIdentity, what, value)
-	}
-
-	return nil
-}
-
 // The opaque identities. Every one of them is caller- or server-generated, has
 // no readable structure, and is a distinct Go type so that passing a claim id
 // where a capture id belongs does not compile.
@@ -179,7 +168,9 @@ func validateUUID(what, value string) error {
 // correlated without trusting a task-supplied key.
 type ReservationID string
 
-func (id ReservationID) Validate() error { return validateUUID("reservation id", string(id)) }
+func (id ReservationID) Validate() error {
+	return executioncontrol.ValidateUUID(ErrInvalidIdentity, "reservation id", string(id))
+}
 
 // ClaimID is a caller-generated UUID with no domain meaning. Acquiring the same
 // id for the same tree ref is idempotent; reusing it for another ref is a
@@ -187,7 +178,9 @@ func (id ReservationID) Validate() error { return validateUUID("reservation id",
 // keeps the same id -- Hangar neither replaces nor reacquires it.
 type ClaimID string
 
-func (id ClaimID) Validate() error { return validateUUID("claim id", string(id)) }
+func (id ClaimID) Validate() error {
+	return executioncontrol.ValidateUUID(ErrInvalidIdentity, "claim id", string(id))
+}
 
 // OpaqueID is an identifier Hangar stores, compares and hands back, and never
 // interprets. Producer checkpoints and consumer bindings are opaque: the moment
