@@ -700,6 +700,7 @@ var _ = Describe("Teams API", func() {
 			realdb = useRealDB()
 			server = realdb.Serve()
 			fakeAccess.IsAuthenticatedReturns(true)
+			fakeAccess.IsAuthorizedReturns(true)
 		})
 		JustBeforeEach(func() {
 			var err error
@@ -739,6 +740,51 @@ var _ = Describe("Teams API", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(builds).To(HaveLen(1))
 				Expect(builds[0].ID()).To(Equal(protectedBuild.ID()))
+			})
+		})
+
+		Context("when authenticated but not authorized for the team", func() {
+			var (
+				team         db.Team
+				privateBuild db.Build
+				state        *teamsAPITeamState
+			)
+
+			BeforeEach(func() {
+				fakeAccess.IsAuthorizedReturns(false)
+				var err error
+				team, err = realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+				Expect(err).NotTo(HaveOccurred())
+				pipeline := realdb.SavePipeline(team, "private-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "private-job"}}})
+				Expect(pipeline.Public()).To(BeFalse())
+				job, found, err := pipeline.Job("private-job")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				privateBuild, err = job.CreateBuild("api-test")
+				Expect(err).NotTo(HaveOccurred())
+				state = &teamsAPITeamState{}
+				deps := realdb.Deps
+				deps.teamFactory = &teamsAPITeamFactory{
+					TeamFactory:  realdb.Deps.teamFactory,
+					state:        state,
+					targetTeamID: team.ID(),
+				}
+				server = newAPIServer(deps)
+				DeferCleanup(server.Close)
+			})
+
+			It("returns 403 without listing the team's builds", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+				Expect(fakeAccess.IsAuthorizedCallCount()).To(BeNumerically(">", 0))
+				Expect(fakeAccess.IsAuthorizedArgsForCall(0)).To(Equal("some-team"))
+				Expect(state.buildPageSnapshot()).To(BeEmpty())
+				body, err := io.ReadAll(response.Body)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(body)).NotTo(ContainSubstring("private-pipeline"))
+				builds, _, err := team.Builds(db.Page{Limit: 100})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(builds).To(HaveLen(1))
+				Expect(builds[0].ID()).To(Equal(privateBuild.ID()))
 			})
 		})
 

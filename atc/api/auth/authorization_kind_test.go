@@ -28,6 +28,7 @@ var _ = Describe("Authorization kind", func() {
 			atc.GetBuild:           auth.AuthorizationBuildRead,
 			atc.BuildEvents:        auth.AuthorizationBuildOutput,
 			atc.GetConfig:          auth.AuthorizationTeam,
+			atc.ListTeamBuilds:     auth.AuthorizationTeam,
 			atc.SaveConfig:         auth.AuthorizationTeam,
 			atc.PausePipeline:      auth.AuthorizationTeam,
 			atc.UnpausePipeline:    auth.AuthorizationTeam,

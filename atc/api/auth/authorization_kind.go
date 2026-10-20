@@ -58,7 +58,6 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 	case atc.ListWorkers,
 		atc.RegisterWorker,
 		atc.DeleteWorker,
-		atc.ListTeamBuilds,
 		atc.GetUser:
 		return AuthorizationAuthenticated, true
 	case atc.DownloadCLI,
@@ -98,6 +97,7 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.GetLandingQueue,
 		atc.SetTeam,
 		atc.RenameTeam,
+		atc.ListTeamBuilds,
 		atc.ListContainers,
 		atc.GetContainer,
 		atc.HijackContainer,
