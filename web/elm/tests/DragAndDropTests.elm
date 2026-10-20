@@ -8,7 +8,6 @@ import DashboardTests exposing (whenOnDashboard)
 import Data
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
-import Http
 import Json.Encode as Encode
 import Message.Callback as Callback
 import Message.Effects as Effects
