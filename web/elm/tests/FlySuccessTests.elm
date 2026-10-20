@@ -1,7 +1,6 @@
 module FlySuccessTests exposing (all)
 
 import Common exposing (defineHoverBehaviour, queryView)
-import Expect exposing (Expectation)
 import FlySuccess.FlySuccess as FlySuccess
 import Html.Attributes as Attr
 import Http
