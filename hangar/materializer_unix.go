@@ -910,7 +910,7 @@ func sealOpenedTreeContents(directory *os.File) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("hangar: unsupported entry while sealing")
+			return errors.New("hangar: unsupported entry while sealing")
 		}
 	}
 	return nil
