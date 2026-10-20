@@ -849,7 +849,7 @@ func openRegularAt(root *os.File, relative string) (*os.File, error) {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		file.Close()
-		return nil, errors.Join(err, fmt.Errorf("staged path is not regular"))
+		return nil, errors.Join(err, errors.New("staged path is not regular"))
 	}
 	return file, nil
 }
