@@ -562,10 +562,15 @@ export function addIcon(iconName, nodeId) {
   iconsModulePromise.then(icons => {
     var id = nodeId + "-svg-icon";
     if (document.getElementById(id) === null) {
-      var svg = icons.svg(iconName, id);
+      // The id comes from job and resource names and the icon: field, all set
+      // by pipeline config. Parse the markup with no id and set the id as an
+      // attribute value, so a quote in a name cannot close the attribute and
+      // add markup. iconName only selects a path from a fixed map.
+      var svg = icons.svg(iconName, "");
       var template = document.createElement('template');
       template.innerHTML = svg;
       var icon = template.content.firstChild;
+      icon.setAttribute("id", id);
       var iconStore = document.getElementById("icon-store");
       if (iconStore == null) {
         iconStore = createIconStore();
