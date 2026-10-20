@@ -81,4 +81,20 @@ var _ = Describe("IDToken behind the secret cache", func() {
 		Expect(again).To(Equal(tokenA))
 	})
 
+	Context("when the token expires sooner than the cache duration", func() {
+		BeforeEach(func() {
+			config["expires_in"] = "2s"
+		})
+
+		It("does not serve the token once it has expired", func() {
+			job := creds.SecretLookupParams{Team: "team-a", Pipeline: "pipeline-a", Job: "job-a"}
+
+			first, _ := tokenFor(job)
+			time.Sleep(2100 * time.Millisecond)
+
+			second, claims := tokenFor(job)
+			Expect(second).ToNot(Equal(first))
+			Expect(claims.Expiry.Time()).To(BeTemporally(">", time.Now()))
+		})
+	})
 })

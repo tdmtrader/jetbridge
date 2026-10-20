@@ -25,12 +25,13 @@ func (secrets *IDToken) GetWithParams(secretPath string, params creds.SecretLook
 		return nil, nil, false, errors.New("idtoken credential provider was called with empty params")
 	}
 
-	token, _, err := secrets.TokenGenerator.GenerateToken(params)
+	token, validUntil, err := secrets.TokenGenerator.GenerateToken(params)
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	return token, nil, true, nil
+	// the expiration caps how long the secret cache may serve this token
+	return token, &validUntil, true, nil
 }
 
 func (secrets *IDToken) NewSecretLookupPaths(teamName string, pipelineName string, allowRootPath bool) []creds.SecretLookupPath {
