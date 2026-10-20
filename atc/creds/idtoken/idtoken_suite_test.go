@@ -67,6 +67,8 @@ var _ = BeforeEach(func() {
 // production interface: a test wanting an old key is not a reason for callers to
 // be able to choose creation times.
 func saveSigningKey(jwk jose.JSONWebKey, age time.Duration) db.SigningKey {
+	GinkgoHelper()
+
 	num, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
 	Expect(err).NotTo(HaveOccurred())
 	jwk.KeyID = strconv.Itoa(int(num.Int64()))
