@@ -742,7 +742,7 @@ func validateDisplay(c atc.Config) ([]atc.ConfigWarning, error) {
 	case "":
 		break
 	default:
-		return warnings, fmt.Errorf("background_image scheme must be either http, https or relative")
+		return warnings, errors.New("background_image scheme must be either http, https or relative")
 	}
 
 	return warnings, nil
