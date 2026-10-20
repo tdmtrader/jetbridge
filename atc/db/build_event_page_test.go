@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -161,6 +162,25 @@ var _ = Describe("Finite build event pages", func() {
 		_, err = build.EventPage(ctx, atc.BuildEventPageRequest{})
 		Expect(err).To(HaveOccurred())
 	})
+	It("reports the deadline, not a closed transaction, when a page's context has expired", func() {
+		insert(7, `{"payload":"historic","origin":{}}`)
+		expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		_, err := build.EventPage(expired, atc.BuildEventPageRequest{})
+		Expect(err).To(MatchError(context.DeadlineExceeded))
+
+		// The page's own bound expires after its last statement, while it is
+		// still decoding: database/sql rolls the transaction back, and the commit
+		// that follows reports a closed transaction the API cannot tell from a
+		// fault.
+		DeferCleanup(db.SetEventPageTimeout(200 * time.Millisecond))
+		late, found, err := db.NewBuildFactory(commitAfterDeadline{dbConn}, lockFactory, 5*time.Minute, 5*time.Minute).Build(build.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = late.EventPage(context.Background(), atc.BuildEventPageRequest{})
+		Expect(err).To(MatchError(context.DeadlineExceeded))
+		Expect(err).NotTo(MatchError(sql.ErrTxDone))
+	})
 	It("fails explicitly on indivisible bounds", func() {
 		_, err := dbConn.Exec("DELETE FROM " + table)
 		Expect(err).NotTo(HaveOccurred())
@@ -235,3 +255,29 @@ var _ = Describe("Finite build event pages", func() {
 	})
 
 })
+
+// commitAfterDeadline holds each transaction's commit until its context has
+// expired and database/sql has rolled the transaction back: where a page lands
+// when its work after the last statement outlives its bound.
+type commitAfterDeadline struct{ db.DbConn }
+
+func (c commitAfterDeadline) BeginTx(ctx context.Context, opts *sql.TxOptions) (db.Tx, error) {
+	tx, err := c.DbConn.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return lateCommit{Tx: tx, ctx: ctx}, nil
+}
+
+type lateCommit struct {
+	db.Tx
+	ctx context.Context
+}
+
+func (tx lateCommit) Commit() error {
+	<-tx.ctx.Done()
+	Eventually(func() error {
+		return tx.Tx.QueryRowContext(context.Background(), "SELECT 1").Scan(new(int))
+	}).Should(MatchError(sql.ErrTxDone))
+	return tx.Tx.Commit()
+}

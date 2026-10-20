@@ -29,12 +29,28 @@ const eventPageMaxEncoded = 256 * 1024
 const eventMetadataMaxBytes = 64 * 1024
 const eventStoredMaxBytes = 8 * 1024 * 1024
 
+// eventPageTimeout bounds one event page: its snapshot, its statements and the
+// work between them. A var only so a spec can move it.
+var eventPageTimeout = 1500 * time.Millisecond
+
 type eventPageCursor struct {
 	Version int   `json:"v"`
 	Build   int   `json:"b"`
 	Event   int   `json:"e"`
 	Offset  int   `json:"o"`
 	Prefix  int64 `json:"n"`
+}
+
+// eventPageErr names the page's expired context over the statement error it
+// caused. Once the context expires, database/sql rolls the transaction back,
+// and a statement or commit after that reports ErrTxDone, which says nothing
+// about why.
+func eventPageErr(ctx context.Context, err error) error {
+	ctxErr := ctx.Err()
+	if ctxErr == nil || errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w (%v)", ctxErr, err)
 }
 
 func (c eventPageCursor) token() string {
@@ -97,16 +113,19 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 			return page, ErrBuildEventCursor
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, eventPageTimeout)
 	defer cancel()
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
-		return page, err
+		return page, eventPageErr(ctx, err)
 	}
 	defer Rollback(tx)
 	completed, reaped, err := state(ctx, tx)
-	if err != nil {
+	if errors.Is(err, ErrBuildEventsUnavailable) {
 		return page, err
+	}
+	if err != nil {
+		return page, eventPageErr(ctx, err)
 	}
 	if reaped {
 		return page, ErrBuildEventsReaped
@@ -117,7 +136,7 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 		var anchor bool
 		err = tx.QueryRowContext(ctx, "SELECT count(*),coalesce(bool_or(event_id=$2),false) FROM "+table+" WHERE "+predicate+" AND event_id <= $2", buildID, cursor.Event).Scan(&count, &anchor)
 		if err != nil {
-			return page, err
+			return page, eventPageErr(ctx, err)
 		}
 		if !anchor {
 			return page, ErrBuildEventCursor
@@ -135,7 +154,7 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT event_id,type,version,octet_length(payload) FROM "+table+" WHERE "+predicate+" AND "+where+" ORDER BY event_id ASC LIMIT 129", buildID, cursor.Event)
 	if err != nil {
-		return page, err
+		return page, eventPageErr(ctx, err)
 	}
 	type eventRow struct {
 		id, size      int
@@ -146,16 +165,16 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 		var row eventRow
 		if err = rows.Scan(&row.id, &row.kind, &row.version, &row.size); err != nil {
 			rows.Close()
-			return page, err
+			return page, eventPageErr(ctx, err)
 		}
 		listed = append(listed, row)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
-		return page, err
+		return page, eventPageErr(ctx, err)
 	}
 	if err = rows.Close(); err != nil {
-		return page, err
+		return page, eventPageErr(ctx, err)
 	}
 	// Select the rows this page can hold before touching payloads: at most 128
 	// events and 8 MiB of stored JSON, each row individually within its limit.
@@ -179,23 +198,23 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 	if len(wanted) > 0 {
 		rows, err = tx.QueryContext(ctx, "SELECT event_id,payload FROM "+table+" WHERE "+predicate+" AND event_id = ANY($2)", buildID, wanted)
 		if err != nil {
-			return page, err
+			return page, eventPageErr(ctx, err)
 		}
 		for rows.Next() {
 			var id int
 			var raw []byte
 			if err = rows.Scan(&id, &raw); err != nil {
 				rows.Close()
-				return page, err
+				return page, eventPageErr(ctx, err)
 			}
 			payloads[id] = raw
 		}
 		if err = rows.Err(); err != nil {
 			rows.Close()
-			return page, err
+			return page, eventPageErr(ctx, err)
 		}
 		if err = rows.Close(); err != nil {
-			return page, err
+			return page, eventPageErr(ctx, err)
 		}
 	}
 	remaining, encodedBytes := request.MaxBytes, 0
@@ -309,7 +328,7 @@ pageRows:
 		return page, fmt.Errorf("event page exceeds %d encoded bytes", eventPageMaxEncoded)
 	}
 	if err = tx.Commit(); err != nil {
-		return page, err
+		return page, eventPageErr(ctx, err)
 	}
 	return page, nil
 }
