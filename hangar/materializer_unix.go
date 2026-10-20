@@ -508,7 +508,7 @@ func sameOpenAbsoluteDirectory(name string, opened *os.File) (bool, error) {
 
 func openDirectoryAt(parent *os.File, name string, create bool, mode uint32) (*os.File, error) {
 	if !validFilesystemComponent(name) {
-		return nil, fmt.Errorf("unsafe directory segment")
+		return nil, errors.New("unsafe directory segment")
 	}
 	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil && create && errors.Is(err, unix.ENOENT) {
