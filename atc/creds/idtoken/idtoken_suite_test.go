@@ -93,6 +93,8 @@ func saveSigningKey(jwk jose.JSONWebKey, age time.Duration) db.SigningKey {
 }
 
 func allSigningKeys() []db.SigningKey {
+	GinkgoHelper()
+
 	keys, err := signingKeyFactory.GetAllKeys()
 	Expect(err).NotTo(HaveOccurred())
 	return keys
