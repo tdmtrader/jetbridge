@@ -194,8 +194,9 @@ func TestAWarrantBindsEveryFieldAndItsWindow(t *testing.T) {
 			}
 		})
 	}
-	// The verifier's window: at the exact expiry and before issue.
-	for name, at := range map[string]time.Time{"at expiry": now.Add(15 * time.Minute), "before issue": now.Add(-time.Nanosecond)} {
+	// The verifier's window: at the exact expiry, and before issue by more
+	// than the clock skew it allows.
+	for name, at := range map[string]time.Time{"at expiry": now.Add(15 * time.Minute), "before issue": now.Add(-maxWarrantClockSkew - time.Nanosecond)} {
 		verifier.clock = warrantClock(at)
 		if _, err := verifier.Verify(token, control); !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("%s: %v", name, err)
@@ -208,6 +209,39 @@ func TestAWarrantBindsEveryFieldAndItsWindow(t *testing.T) {
 	}
 	if _, err := tight.Verify(token, control); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("a 15m warrant verified under a 1m bound: %v", err)
+	}
+}
+
+// The web stamps a control warrant from its own clock and a read warrant from
+// the database's (the claim's acquired_at); the node verifies with its own.
+// Clocks on different machines are never equal, so a node a little behind the
+// clock that dated the warrant still admits it, up to maxWarrantClockSkew.
+func TestAWarrantDatedByAClockAheadOfTheNodeVerifiesWithinTheSkew(t *testing.T) {
+	signedAt := time.Unix(1_800_000_000, 123).UTC()
+	for _, lag := range []time.Duration{time.Nanosecond, 5 * time.Millisecond, time.Second, maxWarrantClockSkew} {
+		signer, verifier := newWarrantPair(t, signedAt)
+		verifier.clock = warrantClock(signedAt.Add(-lag))
+		for _, purpose := range []Purpose{PurposeControlBase, PurposeControlCapture} {
+			control := controlWarrant(purpose)
+			token, err := signer.Sign(control)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := verifier.Verify(token, control); err != nil {
+				t.Errorf("node %s behind the web: %s warrant refused: %v", lag, purpose, err)
+			}
+		}
+		read := readWarrant(t, signedAt)
+		read.IssuedAt = signedAt.UnixNano() // acquired_at: the database's now
+		token, err := signer.Sign(read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := read
+		expected.IssuedAt, expected.ExpiresAt = 0, 0
+		if _, err := verifier.Verify(token, expected); err != nil {
+			t.Errorf("node %s behind the database: read warrant refused: %v", lag, err)
+		}
 	}
 }
 

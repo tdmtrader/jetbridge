@@ -60,6 +60,14 @@ const (
 	// warrant is presented once, within one operation; an hour-long one is a
 	// credential.
 	MaxWarrantTTL = 15 * time.Minute
+	// maxWarrantClockSkew is how far ahead of the node's clock a warrant's
+	// issue time may be. The web dates a control warrant from its own clock
+	// and a read warrant from the database's (the claim's acquired_at); the
+	// node checks the window against its own. Those are different machines,
+	// and a node a few milliseconds behind would otherwise refuse every
+	// warrant it is handed, on every retry. Expiry gets no allowance: a
+	// warrant is never presentable past its window.
+	maxWarrantClockSkew = 30 * time.Second
 	// MaxReadWarrantTTL bounds a read warrant's window, which is its claim's:
 	// a task's input reads are admitted together before the pod exists and
 	// each must stay presentable through pod startup and every transfer
@@ -370,8 +378,10 @@ func (verifier *Verifier) Verify(token string, expected Warrant) (Warrant, error
 	if warrant.Purpose != expected.Purpose || (warrant.Purpose != PurposeReadResult && warrant.ExpiresAt-warrant.IssuedAt > verifier.maxTTL.Nanoseconds()) {
 		return unauthorized()
 	}
+	// The issue time may lead this node's clock by maxWarrantClockSkew; the
+	// expiry is strict.
 	now, ok := exactUnixNano(verifier.clock().UTC())
-	if !ok || now < warrant.IssuedAt || now >= warrant.ExpiresAt {
+	if !ok || now < warrant.IssuedAt-maxWarrantClockSkew.Nanoseconds() || now >= warrant.ExpiresAt {
 		return unauthorized()
 	}
 	if !sameTreeRef(warrant.Ref, expected.Ref) ||
