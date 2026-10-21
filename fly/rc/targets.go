@@ -26,6 +26,14 @@ func (err UnknownTargetError) Error() string {
 	return fmt.Sprintf("unknown target: %s", err.TargetName)
 }
 
+type TargetExistsError struct {
+	TargetName TargetName
+}
+
+func (err TargetExistsError) Error() string {
+	return fmt.Sprintf("target already exists: %s", err.TargetName)
+}
+
 type Targets map[TargetName]TargetProps
 
 type RC struct {
@@ -82,14 +90,28 @@ func UpdateTargetProps(targetName TargetName, targetProps TargetProps) error {
 	})
 }
 
+// UpdateTargetName renames a target, keeping its saved token and any fields a
+// newer fly wrote for it. Renaming to the target's own name changes nothing; a
+// name another target already has is refused rather than overwritten.
 func UpdateTargetName(targetName TargetName, newTargetName TargetName) error {
-	return updateTargets(func(flyTargets Targets) error {
-		if newTargetName != "" {
-			flyTargets[newTargetName] = flyTargets[targetName]
-			delete(flyTargets, targetName)
-		}
-
+	if newTargetName == "" || newTargetName == targetName {
 		return nil
+	}
+	return withTargetsLock(func() error {
+		flyTargets, err := LoadTargets()
+		if err != nil {
+			return err
+		}
+		target, ok := flyTargets[targetName]
+		if !ok {
+			return UnknownTargetError{targetName}
+		}
+		if _, taken := flyTargets[newTargetName]; taken {
+			return TargetExistsError{newTargetName}
+		}
+		flyTargets[newTargetName] = target
+		delete(flyTargets, targetName)
+		return writeRenamedTargets(flyrcPath(), flyTargets, map[TargetName]TargetName{newTargetName: targetName})
 	})
 }
 
@@ -191,6 +213,12 @@ func LoadTargets() (Targets, error) {
 }
 
 func writeTargets(configFileLocation string, targetsToWrite Targets) error {
+	return writeRenamedTargets(configFileLocation, targetsToWrite, nil)
+}
+
+// writeRenamedTargets is writeTargets where renamedFrom maps a target's new name
+// to the name its extension fields are stored under in the existing file.
+func writeRenamedTargets(configFileLocation string, targetsToWrite Targets, renamedFrom map[TargetName]TargetName) error {
 	// Keep extension fields written by newer clients while updating known fields.
 	var raw map[string]json.RawMessage
 	old, err := os.ReadFile(configFileLocation)
@@ -217,7 +245,11 @@ func writeTargets(configFileLocation string, targetsToWrite Targets) error {
 	}
 	merged := map[TargetName]map[string]json.RawMessage{}
 	for name, props := range targetsToWrite {
-		fields := previous[name]
+		stored := name
+		if from, ok := renamedFrom[name]; ok {
+			stored = from
+		}
+		fields := previous[stored]
 		if fields == nil {
 			fields = map[string]json.RawMessage{}
 		}

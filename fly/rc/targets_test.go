@@ -9,6 +9,7 @@ import (
 	"github.com/concourse/concourse/fly/rc"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"sigs.k8s.io/yaml"
 )
 
 var _ = Describe("Targets", func() {
@@ -201,6 +202,60 @@ var _ = Describe("Targets", func() {
 						},
 					},
 				}))
+			})
+		})
+
+		Context("when the target name is changed to a name that is already taken", func() {
+			BeforeEach(func() {
+				flyrcContents := `targets:
+  some-target:
+    api: http://concourse.com
+    team: main
+    future_field: from-some-target
+    token:
+      type: Bearer
+      value: some-token
+  other-target:
+    api: http://other.example.com
+    team: other-team
+    future_field: from-other-target
+    token:
+      type: Bearer
+      value: other-token`
+				Expect(os.WriteFile(flyrc, []byte(flyrcContents), 0600)).To(Succeed())
+			})
+
+			It("keeps the target when it is given its own name", func() {
+				before, err := rc.LoadTargets()
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(rc.UpdateTargetName("some-target", "some-target")).To(Succeed())
+
+				Expect(rc.LoadTargets()).To(Equal(before))
+			})
+
+			It("refuses to overwrite the other target", func() {
+				before, err := rc.LoadTargets()
+				Expect(err).ToNot(HaveOccurred())
+
+				err = rc.UpdateTargetName("some-target", "other-target")
+				Expect(err).To(MatchError(rc.TargetExistsError{TargetName: "other-target"}))
+
+				Expect(rc.LoadTargets()).To(Equal(before))
+			})
+
+			It("carries the renamed target's own extension fields", func() {
+				Expect(rc.UpdateTargetName("some-target", "new-target")).To(Succeed())
+
+				contents, err := os.ReadFile(flyrc)
+				Expect(err).ToNot(HaveOccurred())
+				var config struct {
+					Targets map[string]map[string]any `json:"targets"`
+				}
+				Expect(yaml.Unmarshal(contents, &config)).To(Succeed())
+				Expect(config.Targets).ToNot(HaveKey("some-target"))
+				Expect(config.Targets["new-target"]).To(HaveKeyWithValue("future_field", "from-some-target"))
+				Expect(config.Targets["other-target"]).To(HaveKeyWithValue("future_field", "from-other-target"))
 			})
 		})
 	})

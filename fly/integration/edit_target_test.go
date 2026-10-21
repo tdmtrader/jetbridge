@@ -162,6 +162,23 @@ var _ = Describe("edit-target", func() {
 					},
 				}))
 			})
+
+			It("refuses a name another target has and leaves both targets as they were", func() {
+				flyCmd = exec.Command(flyPath, "-t", "test2", "edit-target", "--target-name", "test1", "-u", "https://example.com/changed")
+
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				<-sess.Exited
+				Expect(sess.ExitCode()).To(Equal(1))
+				Expect(sess.Err).To(gbytes.Say(`target already exists: test1`))
+
+				targets, err := rc.LoadTargets()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(targets).To(HaveLen(2))
+				Expect(targets["test1"].API).To(Equal("https://example.com/test1"))
+				Expect(targets["test2"].API).To(Equal("https://example.com/test2"))
+			})
 		})
 	})
 })

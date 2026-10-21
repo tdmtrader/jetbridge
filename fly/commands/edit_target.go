@@ -23,19 +23,22 @@ func (command *EditTargetCommand) Execute([]string) error {
 		return errors.New("error: no attributes specified to update")
 	}
 
+	// Rename first so a refused rename leaves the target untouched.
+	targetName := Fly.Target
+	if command.NewName != "" {
+		err = rc.UpdateTargetName(Fly.Target, command.NewName)
+		if err != nil {
+			return err
+		}
+		targetName = command.NewName
+	}
+
 	targetProps := rc.TargetProps{}
 	targetProps.API = command.Url
 	targetProps.TeamName = command.Team
 
 	if command.Url != "" || command.Team != "" {
-		err = rc.UpdateTargetProps(Fly.Target, targetProps)
-		if err != nil {
-			return err
-		}
-	}
-
-	if command.NewName != "" {
-		err = rc.UpdateTargetName(Fly.Target, command.NewName)
+		err = rc.UpdateTargetProps(targetName, targetProps)
 		if err != nil {
 			return err
 		}
