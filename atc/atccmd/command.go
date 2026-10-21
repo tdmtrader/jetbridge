@@ -2221,7 +2221,22 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateJobSchedulingMaxInFlight(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	return errs.ErrorOrNil()
+}
+
+// validateJobSchedulingMaxInFlight refuses 0. The scheduler sizes its guard on
+// jobs being scheduled at once from this value, so 0 leaves no slot: the first
+// job blocks the scheduler forever while it holds the scheduler lock, no web
+// schedules a job again, and the web cannot shut down.
+func (cmd *RunCommand) validateJobSchedulingMaxInFlight() error {
+	if cmd.JobSchedulingMaxInFlight == 0 {
+		return errors.New("--job-scheduling-max-in-flight must be at least 1")
+	}
+	return nil
 }
 
 // validateMCPDisabledOperations refuses an id no operation answers to. A typo
