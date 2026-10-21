@@ -402,6 +402,73 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(versionCount).To(Equal(2))
 		})
+
+		scopeFor := func(resourceID *int, source string) (db.ResourceConfigScope, error) {
+			rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": source},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			return rc.FindOrCreateScope(resourceID)
+		}
+
+		It("lets a resource whose source returns to an earlier config change source again", func() {
+			resourceID := intptr(scenario.Resource("some-resource").ID())
+
+			_, err := scopeFor(resourceID, "other-source") // (R, source) deprecated
+			Expect(err).ToNot(HaveOccurred())
+			_, err = scopeFor(resourceID, "source") // (R, other-source) deprecated, new live (R, source)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = scopeFor(resourceID, "other-source") // second deprecated scope for "source"
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("lets two resources that share a config both change source", func() {
+			shared := dbtest.Setup(
+				builder.WithPipeline(atc.Config{
+					Resources: atc.ResourceConfigs{
+						{Name: "r1", Type: "some-base-resource-type", Source: atc.Source{"some": "shared"}},
+						{Name: "r2", Type: "some-base-resource-type", Source: atc.Source{"some": "shared"}},
+					},
+				}),
+			)
+			r1 := intptr(shared.Resource("r1").ID())
+			r2 := intptr(shared.Resource("r2").ID())
+
+			for _, step := range []struct {
+				resourceID *int
+				source     string
+			}{
+				{r1, "shared"},
+				{r2, "shared"},
+				{r1, "r1-new"},
+				{r2, "r2-new"},
+			} {
+				_, err := scopeFor(step.resourceID, step.source)
+				Expect(err).ToNot(HaveOccurred())
+			}
+		})
+
+		It("does not hand a deprecated scope back as the global scope for its config", func() {
+			resource := scenario.Resource("some-resource")
+			oldScopeID := resource.ResourceConfigScopeID()
+
+			_, err := scopeFor(intptr(resource.ID()), "other-source")
+			Expect(err).ToNot(HaveOccurred())
+
+			global, err := scopeFor(nil, "source")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(global.ID()).ToNot(Equal(oldScopeID))
+
+			var deprecatedAt *time.Time
+			err = dbConn.QueryRow(
+				`SELECT deprecated_at FROM resource_config_scopes WHERE id = $1`,
+				global.ID(),
+			).Scan(&deprecatedAt)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecatedAt).To(BeNil())
+		})
 	})
 
 	Describe("DeprecatedScopes", func() {

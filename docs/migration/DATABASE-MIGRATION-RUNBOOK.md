@@ -506,13 +506,13 @@ an upgrade.
 
 ### Migrating from v8.0.0
 
-- **Migration count:** 57 (JetBridge-only migrations)
+- **Migration count:** 58 (JetBridge-only migrations)
 - **Duration:** scales with the `builds` table (`1773105506` scans it three times under ACCESS EXCLUSIVE; see schema-delta.md)
 - **Risk:** Medium — measure on a restored copy first
 
 ### Migrating from v8.0.1
 
-- **Migration count:** 57 (identical to v8.0.0)
+- **Migration count:** 58 (identical to v8.0.0)
 - **Duration:** as for v8.0.0
 - **Risk:** Medium — measure on a restored copy first
 - **Note:** v8.0.0 and v8.0.1 share identical migration sets

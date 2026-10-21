@@ -224,7 +224,7 @@ func findOrCreateResourceConfigScope(
 			Columns("resource_id", "resource_config_id").
 			Values(nil, resourceConfig.ID()).
 			Suffix(`
-				ON CONFLICT (resource_config_id) WHERE resource_id IS NULL DO UPDATE SET
+				ON CONFLICT (resource_config_id) WHERE resource_id IS NULL AND deprecated_at IS NULL DO UPDATE SET
 					resource_config_id = ?
 				RETURNING id
 			`, resourceConfig.ID()).
