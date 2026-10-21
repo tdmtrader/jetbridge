@@ -1101,7 +1101,7 @@ func scanResource(r *resource, row scannable) error {
 	}
 	r.pipelineRunID = int(pipelineRunID.Int64)
 
-	if buildData.inMemoryBuildId.Valid || buildData.lastCheckBuildId.Valid {
+	if buildData.lastCheckBuildId.Valid || (buildData.inMemoryBuildId.Valid && !buildData.resolvedNativelySince()) {
 		r.buildSummary = &atc.BuildSummary{
 			Name: CheckBuildName,
 
@@ -1116,9 +1116,27 @@ func scanResource(r *resource, row scannable) error {
 		if err != nil {
 			return err
 		}
+	} else {
+		// A natively resolved resource has no check build newer than its
+		// last resolve, but its scope still records when it last resolved;
+		// the check interval is measured from that.
+		r.lastCheckStartTime = buildData.lastCheckStartTime.Time
+		r.lastCheckEndTime = buildData.lastCheckEndTime.Time
 	}
 
 	return nil
+}
+
+// resolvedNativelySince reports whether the scope's last check ended after the
+// resource's in-memory check build started and names no check build, as a
+// native resolve does. The resource's in-memory build id is never cleared, so
+// otherwise one check build that errored before it reached the scope (a
+// fallback check, a manual check) would hide every later native resolve's end
+// time, and the check interval would never apply again.
+func (d buildData) resolvedNativelySince() bool {
+	return !d.lastCheckBuildId.Valid &&
+		d.lastCheckEndTime.Valid &&
+		d.lastCheckEndTime.Time.After(d.inMemoryBuildStartTime.Time)
 }
 
 type buildData struct {

@@ -1056,6 +1056,67 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(lastCheck.EndTime).To(Equal(baselineLastCheck.EndTime))
 	})
 
+	It("does not resolve again before the interval elapses after a native resolve that made no check build", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.CheckEvery = &atc.CheckEvery{Interval: time.Hour}
+		pipeline, _ := persistResource(fixture, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:nativeinterval", nil)
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		freshResource := lidarPipelineResource(pipeline, resourceName)
+		lastCheck, err := resolvedLidarResourceScope(fixture, freshResource).LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).NotTo(BeZero())
+		Expect(freshResource.LastCheckEndTime()).To(Equal(lastCheck.EndTime))
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1), "second scanner pass within check_every resolved again")
+	})
+
+	It("keeps the check interval for a resource whose last check build errored before it reached a scope", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.CheckEvery = &atc.CheckEvery{Interval: time.Hour}
+		pipeline, resource := persistResource(fixture, config)
+
+		// A manual check whose build errored before it reached a scope leaves
+		// the resource's in-memory check build behind.
+		_, created, err := fixture.CheckFactory.TryCreateCheck(
+			context.Background(), resource, db.ResourceTypes{}, nil, true, false, false,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(drainLidarCheckBuilds(fixture, 1)[0].Finish(db.BuildStatusErrored)).To(Succeed())
+
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:afterthecheckbuild", nil)
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		freshResource := lidarPipelineResource(pipeline, resourceName)
+		lastCheck, err := resolvedLidarResourceScope(fixture, freshResource).LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).NotTo(BeZero())
+		Expect(freshResource.LastCheckEndTime()).To(Equal(lastCheck.EndTime))
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1), "second scanner pass within check_every resolved again")
+	})
+
 	It("does not persist native scope or version when the resolver fails", func() {
 		fixture := useLidarDB()
 		pipeline, _ := persistResource(fixture, defaultResource())
