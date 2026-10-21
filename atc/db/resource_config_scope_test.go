@@ -469,6 +469,20 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(deprecatedAt).To(BeNil())
 		})
+
+		It("lets a resource leave a config while that config has a live global scope", func() {
+			resourceID := intptr(scenario.Resource("some-resource").ID())
+
+			global, err := scopeFor(nil, "source")
+			Expect(err).ToNot(HaveOccurred())
+
+			_, err = scopeFor(resourceID, "other-source") // (R, source) deprecated beside the live global scope
+			Expect(err).ToNot(HaveOccurred())
+
+			again, err := scopeFor(nil, "source")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(again.ID()).To(Equal(global.ID()))
+		})
 	})
 
 	Describe("DeprecatedScopes", func() {

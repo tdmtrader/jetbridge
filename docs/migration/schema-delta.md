@@ -58,7 +58,7 @@ Migrations `1773105510` through `1789793161` (48 of them) are not catalogued her
 
 Same as v8.0.1 — v8.0.0 and v8.0.1 share identical migration sets.
 
-### From v7.0.0 to JetBridge HEAD (82 migrations)
+### From v7.0.0 to JetBridge HEAD (83 migrations)
 
 In addition to the 12 listed above, v7.0.0 users must apply 24 intermediate migrations covering:
 - Job/pipeline cascade deletes and ordering indexes
