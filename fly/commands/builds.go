@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -106,6 +107,8 @@ func (command *BuildsCommand) getBuilds(builds []atc.Build, currentTeam concours
 
 			builds = append(builds, teamBuilds...)
 		}
+
+		builds = newestBuildsFirst(builds, command.Count)
 	} else {
 		if command.pipelineFlag() {
 			builds, err = command.validatePipelineBuilds(builds, currentTeam, page)
@@ -127,6 +130,29 @@ func (command *BuildsCommand) getBuilds(builds []atc.Build, currentTeam concours
 	}
 
 	return builds, err
+}
+
+// newestBuildsFirst merges the per-team lists into the order the server gives
+// a single list (a rerun sorts with the build it reruns, newest first) and
+// keeps the count newest, so one team's builds cannot crowd out newer builds
+// of the teams listed after it.
+func newestBuildsFirst(builds []atc.Build, count int) []atc.Build {
+	recency := func(b atc.Build) int {
+		if b.RerunOf != nil {
+			return b.RerunOf.ID
+		}
+		return b.ID
+	}
+	sort.SliceStable(builds, func(i, j int) bool {
+		if ri, rj := recency(builds[i]), recency(builds[j]); ri != rj {
+			return ri > rj
+		}
+		return builds[i].ID > builds[j].ID
+	})
+	if count >= 0 && count < len(builds) {
+		builds = builds[:count]
+	}
+	return builds
 }
 
 func (command *BuildsCommand) getAllTeams(client concourse.Client, teams []concourse.Team) ([]concourse.Team, error) {

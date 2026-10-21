@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -809,17 +810,6 @@ var _ = Describe("builds", func() {
 						Headers: expectedHeaders,
 						Data: []ui.TableRow{
 							{
-								{Contents: "3"},
-								{Contents: "some-pipeline/some-job/63"},
-								{Contents: "succeeded"},
-								{Contents: succeededBuildStartTime.Local().Format(timeDateLayout)},
-								{Contents: succeededBuildEndTime.Local().Format(timeDateLayout)},
-								{Contents: "1h15m0s"},
-								{Contents: "team1"},
-								{Contents: "system"},
-							},
-
-							{
 								{Contents: "4"},
 								{Contents: "some-pipeline/some-job/63"},
 								{Contents: "succeeded"},
@@ -827,6 +817,16 @@ var _ = Describe("builds", func() {
 								{Contents: succeededBuildEndTime.Local().Format(timeDateLayout)},
 								{Contents: "1h15m0s"},
 								{Contents: "team2"},
+								{Contents: "system"},
+							},
+							{
+								{Contents: "3"},
+								{Contents: "some-pipeline/some-job/63"},
+								{Contents: "succeeded"},
+								{Contents: succeededBuildStartTime.Local().Format(timeDateLayout)},
+								{Contents: succeededBuildEndTime.Local().Format(timeDateLayout)},
+								{Contents: "1h15m0s"},
+								{Contents: "team1"},
 								{Contents: "system"},
 							},
 						},
@@ -880,7 +880,6 @@ var _ = Describe("builds", func() {
 
 			JustBeforeEach(func() {
 				expectedURL = "/api/v1/teams/team2/builds"
-				queryParams = []string{"limit=50"}
 				returnedStatusCode = http.StatusOK
 				returnedBuilds = []atc.Build{
 					{
@@ -908,16 +907,6 @@ var _ = Describe("builds", func() {
 					Headers: expectedHeaders,
 					Data: []ui.TableRow{
 						{
-							{Contents: "3"},
-							{Contents: "some-pipeline/some-job/63"},
-							{Contents: "succeeded"},
-							{Contents: succeededBuildStartTime.Local().Format(timeDateLayout)},
-							{Contents: succeededBuildEndTime.Local().Format(timeDateLayout)},
-							{Contents: "1h15m0s"},
-							{Contents: "team1"},
-							{Contents: "system"},
-						},
-						{
 							{Contents: "4"},
 							{Contents: "some-pipeline/some-job/63"},
 							{Contents: "succeeded"},
@@ -927,9 +916,59 @@ var _ = Describe("builds", func() {
 							{Contents: "team2"},
 							{Contents: "system"},
 						},
+						{
+							{Contents: "3"},
+							{Contents: "some-pipeline/some-job/63"},
+							{Contents: "succeeded"},
+							{Contents: succeededBuildStartTime.Local().Format(timeDateLayout)},
+							{Contents: succeededBuildEndTime.Local().Format(timeDateLayout)},
+							{Contents: "1h15m0s"},
+							{Contents: "team1"},
+							{Contents: "system"},
+						},
 					},
 				}))
 				Eventually(session).Should(gexec.Exit(0))
+			})
+
+			Context("and the count argument", func() {
+				BeforeEach(func() {
+					cmdArgs = append(cmdArgs, "-c", "1")
+					queryParams = []string{"limit=1"}
+				})
+
+				It("keeps the newest build across the teams, not the first team's", func() {
+					Eventually(session.Out).Should(PrintTable(ui.Table{
+						Headers: expectedHeaders,
+						Data: []ui.TableRow{
+							{
+								{Contents: "4"},
+								{Contents: "some-pipeline/some-job/63"},
+								{Contents: "succeeded"},
+								{Contents: succeededBuildStartTime.Local().Format(timeDateLayout)},
+								{Contents: succeededBuildEndTime.Local().Format(timeDateLayout)},
+								{Contents: "1h15m0s"},
+								{Contents: "team2"},
+								{Contents: "system"},
+							},
+						},
+					}))
+					Eventually(session).Should(gexec.Exit(0))
+				})
+
+				Context("when --json is given", func() {
+					BeforeEach(func() {
+						cmdArgs = append(cmdArgs, "--json")
+					})
+
+					It("prints the same capped list", func() {
+						Eventually(session).Should(gexec.Exit(0))
+						var printed []atc.Build
+						Expect(json.Unmarshal(session.Out.Contents(), &printed)).To(Succeed())
+						Expect(printed).To(HaveLen(1))
+						Expect(printed[0].ID).To(Equal(4))
+					})
+				})
 			})
 
 		})
