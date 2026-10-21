@@ -29,24 +29,32 @@ func newAssetCache(fs fs.FS, dynamic bool) *assetCache {
 }
 
 func (ac *assetCache) asset(path string) (string, error) {
+	hash, err := ac.hash(path)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("/public/%s?id=%s", path, hash), nil
+}
+
+// hash returns the first 8 hex characters of the sha256 of the file's contents.
+func (ac *assetCache) hash(path string) (string, error) {
 	if !ac.dynamic {
 		// Try reading from cache first for embedded assets
 		ac.cacheMu.RLock()
 		if hash, ok := ac.cache[path]; ok {
 			ac.cacheMu.RUnlock()
-			return fmt.Sprintf("/public/%s?id=%s", path, hash), nil
+			return hash, nil
 		}
 		ac.cacheMu.RUnlock()
 	}
 
-	// Calculate hash
 	contents, err := fs.ReadFile(ac.fs, path)
 	if err != nil {
 		return "", fmt.Errorf("read asset %s: %w", path, err)
 	}
 
 	sum := sha256.Sum256(contents)
-	hash := fmt.Sprintf("%x", sum[:4]) // First 8 hex characters
+	hash := fmt.Sprintf("%x", sum[:4])
 
 	// Only cache if not in dynamic mode
 	if !ac.dynamic {
@@ -55,7 +63,7 @@ func (ac *assetCache) asset(path string) (string, error) {
 		ac.cacheMu.Unlock()
 	}
 
-	return fmt.Sprintf("/public/%s?id=%s", path, hash), nil
+	return hash, nil
 }
 
 func IndexHandler(logger lager.Logger, publicFS fs.FS, live bool) http.Handler {

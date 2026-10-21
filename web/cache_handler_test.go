@@ -15,21 +15,37 @@ import (
 )
 
 var _ = Describe("CacheNearlyForever", func() {
-	It("adds a cache control header to the wrapped handler", func() {
+	It("caches a URL that carries a content hash for a year", func() {
 		insideHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, "The wrapped handler was called!")
 		})
 
 		wrappedHandler := web.CacheNearlyForever(insideHandler)
 		recorder := httptest.NewRecorder()
-		request, err := http.NewRequest("GET", "/", nil)
+		request, err := http.NewRequest("GET", "/main.css?id=deadbeef", nil)
 		Expect(err).ToNot(HaveOccurred())
 
-		wrappedHandler.ServeHTTP(recorder, request) // request is never used
+		wrappedHandler.ServeHTTP(recorder, request)
 
 		Expect(recorder.Body.String()).To(Equal("The wrapped handler was called!"))
 		Expect(recorder.Header().Get("Cache-Control")).To(Equal("max-age=31536000, public, immutable"))
 		Expect(recorder.Header().Get("Content-Encoding")).ToNot(Equal("gzip"))
+	})
+
+	It("makes the browser revalidate a URL without a content hash", func() {
+		insideHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "The wrapped handler was called!")
+		})
+
+		wrappedHandler := web.CacheNearlyForever(insideHandler)
+		recorder := httptest.NewRecorder()
+		request, err := http.NewRequest("GET", "/index.mjs", nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		wrappedHandler.ServeHTTP(recorder, request)
+
+		Expect(recorder.Body.String()).To(Equal("The wrapped handler was called!"))
+		Expect(recorder.Header().Get("Cache-Control")).To(Equal("no-cache"))
 	})
 
 	Context("when accept encoding uses gzip", func() {
