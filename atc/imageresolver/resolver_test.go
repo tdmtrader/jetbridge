@@ -2,11 +2,13 @@ package imageresolver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -179,6 +181,35 @@ func TestResolver_CancelledContext(t *testing.T) {
 	_, err := resolver.Resolve(ctx, host+"/myrepo/myimage", "v1.0", nil)
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
+	}
+}
+
+// A registry that accepts the connection and never answers must not hold a
+// caller whose context has no deadline, such as an image fetched for an
+// in-memory check build, which nothing can abort.
+func TestResolver_StalledRegistryIsBounded(t *testing.T) {
+	defer imageresolver.SetResolveTimeout(200 * time.Millisecond)()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(server.Close)
+	host := strings.TrimPrefix(server.URL, "http://")
+
+	resolver := imageresolver.NewResolver(authn.DefaultKeychain)
+
+	start := time.Now()
+	_, err := resolver.Resolve(context.Background(), host+"/myrepo/myimage", "v1.0", nil)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected a deadline error from a stalled registry, got: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("resolve waited %s on a stalled registry, want about 200ms", elapsed)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -46,6 +47,14 @@ func NewResolver(keychain authn.Keychain, options ...remote.Option) Resolver {
 	}
 }
 
+// resolveTimeout bounds one resolve. The registry transport has no response
+// timeout, and some callers resolve under a context with no deadline that
+// nothing can cancel, such as an image fetched for an in-memory check build,
+// so a registry that accepts the connection and never answers would otherwise
+// hold them forever. A minute is the default resource checking interval; a
+// caller with a shorter bound, such as a check timeout, keeps it.
+var resolveTimeout = time.Minute
+
 func (r *registryResolver) Resolve(ctx context.Context, repository string, tag string, auth *BasicAuth) (string, error) {
 	if repository == "" {
 		return "", errors.New("empty repository")
@@ -67,6 +76,9 @@ func (r *registryResolver) Resolve(ctx context.Context, repository string, tag s
 	if err != nil {
 		return "", fmt.Errorf("parsing image reference %q: %w", ref, err)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
 
 	// Build remote options.
 	opts := make([]remote.Option, 0, len(r.options)+2)
