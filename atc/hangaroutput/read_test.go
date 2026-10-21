@@ -25,9 +25,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
@@ -690,6 +692,52 @@ func TestAManagedReadOfAMissingRegisteredGenerationRecordsTheAbsence(t *testing.
 	status := readStatus(t, h)
 	if !status.AtRisk || status.Violations[output.ViolationOutOfBandAbsence] != 1 {
 		t.Errorf("no blocking finding was recorded: %+v", status.Findings)
+	}
+}
+
+// taskInputStat restates runs.taskInputStat, the one-line adapter a task
+// input's read admission stats through: the task's selected node, by name and
+// UID.
+type taskInputStat struct {
+	source    *jetbridge.OutputSource
+	name, uid string
+}
+
+func (s taskInputStat) StatExactObject(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error) {
+	return s.source.StatTaskInput(ctx, s.name, s.uid, ref)
+}
+
+// A task input read whose selected node was deleted after the start was
+// admitted is refused, but the generation is still in the store: a gone node
+// is not an out-of-band absence, and records no finding that blocks admission.
+func TestATaskInputReadWhoseNodeIsGoneRecordsNoAbsence(t *testing.T) {
+	h := newHarness(t)
+	ref := registeredRef(t, h)
+	if keys := h.bucketKeys(t); len(keys) != 1 {
+		t.Fatalf("want the one published object still present, have %v", keys)
+	}
+
+	// No Node named "gone-node": it was deleted between PrepareContainer and
+	// PrepareInputs.
+	source := jetbridge.NewOutputSource(fake.NewSimpleClientset(), jetbridge.Config{}, nil)
+	admission, minter := readAdmission(t, h)
+	admission.Stat = taskInputStat{source: source, name: "gone-node", uid: string(harnessNode)}
+	admission.Absences = &db.HangarAbsences{Conn: h.Conn}
+
+	_, err := admission.Admit(context.Background(), readRequest(t, ref))
+	if err == nil {
+		t.Fatal("a read through a gone node was admitted")
+	}
+	if errors.Is(err, output.ErrNotFound) {
+		t.Errorf("a gone node answered %v; not found is the store's answer for an absent generation", err)
+	}
+	if minter.calls != 0 {
+		t.Error("a warrant was minted through a gone node")
+	}
+	status := readStatus(t, h)
+	if status.AtRisk || status.Violations[output.ViolationOutOfBandAbsence] != 0 {
+		t.Errorf("a gone node was recorded as an out-of-band absence of a generation still in the store: %+v",
+			status.Findings)
 	}
 }
 

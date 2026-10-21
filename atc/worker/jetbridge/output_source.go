@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -246,8 +247,13 @@ func (s *OutputSource) BaseRuntimeControl(ctx context.Context, name, uid string,
 
 // StatTaskInput asks the selected node for exact managed object metadata. The
 // web process neither opens the object store nor materializes repository bytes.
+//
+// Only the node's stat may answer output.ErrNotFound: the read admission
+// records that answer as an out-of-band absence of the generation. A selected
+// node that is gone, before or after the stat, is this exact node no longer
+// existing -- as a replaced node is -- and says nothing about the store.
 func (s *OutputSource) StatTaskInput(ctx context.Context, name, uid string, ref hangar.TreeRef) (output.PublishedObject, error) {
-	client, err := s.recoveryClient(ctx, name, uid)
+	client, err := s.taskInputNode(ctx, name, uid)
 	if err != nil {
 		return output.PublishedObject{}, err
 	}
@@ -255,8 +261,16 @@ func (s *OutputSource) StatTaskInput(ctx context.Context, name, uid string, ref 
 	if err != nil {
 		return output.PublishedObject{}, err
 	}
-	if _, err := s.exactClient(ctx, name, uid); err != nil {
+	if _, err := s.taskInputNode(ctx, name, uid); err != nil {
 		return output.PublishedObject{}, err
 	}
 	return object, nil
+}
+
+func (s *OutputSource) taskInputNode(ctx context.Context, name, uid string) (*OutputControlClient, error) {
+	client, err := s.recoveryClient(ctx, name, uid)
+	if errors.Is(err, output.ErrNotFound) {
+		return nil, fmt.Errorf("%w: the task's selected node is gone: %v", output.ErrInvalidIdentity, err)
+	}
+	return client, err
 }
