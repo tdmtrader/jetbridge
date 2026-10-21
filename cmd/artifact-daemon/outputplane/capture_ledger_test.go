@@ -81,9 +81,19 @@ func newCaptureLedger(t *testing.T) *captureFixture {
 func (fixture *captureFixture) openCapture(t *testing.T) {
 	t.Helper()
 
+	// SealWait bounds each background seal (the wait for the Pod, then the
+	// canonicalization: tar, extract into scratch, verify, write the canonical
+	// tar and hash it again) and each background publish (canonicalizing again
+	// when nothing is staged, then the write to the fake store). In production
+	// it is --capture-seal-wait, an hour by default; no test here is about its
+	// size. A tiny tree canonicalizes in a few milliseconds on an idle
+	// machine, but the CI unit-tests job runs every suite at once on one node,
+	// and there a 200 ms bound ran out mid-canonicalization often enough to
+	// redden ordinary seals and publishes. The one row that needs a seal to
+	// run out sets its own short bound.
 	capture, err := OpenCaptureLedger(fixture.store, fixture.ledger, fixture.daemon, CaptureLedgerConfig{
 		Node: testNode, StepsDir: fixture.stepsDir(), ScratchDir: fixture.config.ScratchDir,
-		Terminations: fixture.pods, SealWait: 200 * time.Millisecond,
+		Terminations: fixture.pods, SealWait: 10 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("opening the capture ledger: %v", err)
@@ -270,7 +280,6 @@ func TestASealOfAnotherPodsMarkerIsRefused(t *testing.T) {
 func TestTheSealWaitsForEveryContainerAndCapturesTheLastWrite(t *testing.T) {
 	fixture := newCaptureLedger(t)
 	held(t, fixture)
-	fixture.capture.sealWait = 10 * time.Second
 	writeFile(t, filepath.Join(fixture.stepDir(), "main.txt"), "the main process exited")
 
 	// The sidecar keeps writing; it stops, and then the Pod's last container
@@ -332,6 +341,9 @@ func TestASealOfASymlinkedStepDirectoryIsRefusedBeforeItStarts(t *testing.T) {
 
 func TestASealOfARunningPodAnswersNotYetAndKeepsTheMarkerSealed(t *testing.T) {
 	fixture := newCaptureLedger(t)
+	// This seal must run out: its Pod never stops, so the short bound is
+	// what it waits for, and nothing is canonicalized inside it.
+	fixture.capture.sealWait = 200 * time.Millisecond
 	held(t, fixture)
 	_, err := fixture.capture.Seal(context.Background(), sealRequest(), nil)
 	if !errors.Is(err, output.ErrSealInProgress) {
