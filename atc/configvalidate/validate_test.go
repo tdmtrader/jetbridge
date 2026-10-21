@@ -897,6 +897,36 @@ var _ = Describe("ValidateConfig", func() {
 			})
 		})
 
+		Context("when two resource types name each other as their type", func() {
+			BeforeEach(func() {
+				config.ResourceTypes = append(config.ResourceTypes,
+					atc.ResourceType{Name: "type-a", Type: "type-b"},
+					atc.ResourceType{Name: "type-b", Type: "type-a"},
+					atc.ResourceType{Name: "type-c", Type: "type-a"},
+				)
+			})
+
+			It("returns one error naming the cycle", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("invalid resource types:"))
+				Expect(errorMessages[0]).To(ContainSubstring("resource_types.type-a is in a cycle of resource types: type-a -> type-b -> type-a"))
+				Expect(errorMessages[0]).ToNot(ContainSubstring("type-c"))
+			})
+		})
+
+		Context("when a resource type names itself as its type", func() {
+			BeforeEach(func() {
+				config.ResourceTypes = append(config.ResourceTypes,
+					atc.ResourceType{Name: "registry-image", Type: "registry-image"},
+					atc.ResourceType{Name: "uses-registry-image", Type: "registry-image"},
+				)
+			})
+
+			It("does not return an error, since the type names the base resource type", func() {
+				Expect(errorMessages).To(HaveLen(0))
+			})
+		})
+
 	})
 
 	Describe("invalid prototypes", func() {

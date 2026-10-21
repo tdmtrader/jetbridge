@@ -493,7 +493,61 @@ func validateResourceTypes(c atc.Config, seenTypes map[string]location) ([]atc.C
 
 	}
 
+	errorMessages = append(errorMessages, validateResourceTypeCycles(c)...)
+
 	return warnings, compositeErr(errorMessages)
+}
+
+// validateResourceTypeCycles rejects resource types whose type chain comes
+// back to itself (a: type b, b: type a). A resource type whose type is its own
+// name is not a cycle: that names the base resource type it overrides. Each
+// cycle is reported once, at its first resource type in config order.
+func validateResourceTypeCycles(c atc.Config) []string {
+	var errorMessages []string
+
+	byName := map[string]atc.ResourceType{}
+	for _, resourceType := range c.ResourceTypes {
+		if _, exists := byName[resourceType.Name]; !exists {
+			byName[resourceType.Name] = resourceType
+		}
+	}
+
+	reported := map[string]bool{}
+	for i, start := range c.ResourceTypes {
+		if reported[start.Name] {
+			continue
+		}
+
+		chain := []string{start.Name}
+		walked := map[string]bool{start.Name: true}
+		current := start
+		for {
+			parent, found := byName[current.Type]
+			if current.Type == "" || !found || parent.Name == current.Name {
+				break
+			}
+
+			chain = append(chain, parent.Name)
+			if parent.Name == start.Name {
+				for _, name := range chain {
+					reported[name] = true
+				}
+				location := location{section: "resource_types", index: i}
+				errorMessages = append(errorMessages, fmt.Sprintf(
+					"%s is in a cycle of resource types: %s",
+					location.Identifier(start.Name), strings.Join(chain, " -> ")))
+				break
+			}
+			if walked[parent.Name] {
+				break
+			}
+
+			walked[parent.Name] = true
+			current = parent
+		}
+	}
+
+	return errorMessages
 }
 
 func validatePrototypes(c atc.Config, seenTypes map[string]location) ([]atc.ConfigWarning, error) {
