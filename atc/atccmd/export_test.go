@@ -3,6 +3,8 @@ package atccmd
 import (
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -41,4 +43,10 @@ func HangarOutputDeleteComponentsForTest(cmd *RunCommand) ([]RunnableComponent, 
 // above, a nil connection is enough to build the list.
 func RunComponentsForTest(cmd *RunCommand, dbConn db.DbConn) []RunnableComponent {
 	return cmd.runComponents(dbConn)
+}
+
+// PublishCheckIntervalsForTest exports the private publishCheckIntervals
+// method, which Runner calls to set the atc.Default*Interval globals.
+func PublishCheckIntervalsForTest(cmd *RunCommand, logger lager.Logger) {
+	cmd.publishCheckIntervals(logger)
 }

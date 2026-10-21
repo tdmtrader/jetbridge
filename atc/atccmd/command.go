@@ -587,6 +587,37 @@ func (cmd *RunCommand) Execute(args []string) error {
 	return <-ifrit.Invoke(sigmon.New(runner)).Wait()
 }
 
+// publishCheckIntervals sets the check intervals the checker reads. In case a
+// user configures resource-checking-interval but forgets to configure
+// resource-with-webhook-checking-interval or resource-type-checking-interval,
+// both are raised to it first: there is no reason webhooked resources or
+// resource types take a shorter checking interval than normal resources. The
+// raise must happen before the globals are set, because nothing reads the
+// flag fields afterwards.
+func (cmd *RunCommand) publishCheckIntervals(logger lager.Logger) {
+	if cmd.ResourceWithWebhookCheckingInterval < cmd.ResourceCheckingInterval {
+		logger.Info("update-resource-with-webhook-checking-interval",
+			lager.Data{
+				"oldValue": cmd.ResourceWithWebhookCheckingInterval,
+				"newValue": cmd.ResourceCheckingInterval,
+			})
+		cmd.ResourceWithWebhookCheckingInterval = cmd.ResourceCheckingInterval
+	}
+
+	if cmd.ResourceTypeCheckingInterval < cmd.ResourceCheckingInterval {
+		logger.Info("update-resource-type-checking-interval",
+			lager.Data{
+				"oldValue": cmd.ResourceTypeCheckingInterval,
+				"newValue": cmd.ResourceCheckingInterval,
+			})
+		cmd.ResourceTypeCheckingInterval = cmd.ResourceCheckingInterval
+	}
+
+	atc.DefaultCheckInterval = cmd.ResourceCheckingInterval
+	atc.DefaultWebhookInterval = cmd.ResourceWithWebhookCheckingInterval
+	atc.DefaultResourceTypeInterval = cmd.ResourceTypeCheckingInterval
+}
+
 func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error) {
 	if cmd.ExternalURL.URL == nil {
 		cmd.ExternalURL = cmd.DefaultURL()
@@ -621,9 +652,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	atc.EnableGlobalResources = cmd.FeatureFlags.EnableGlobalResources
 	atc.EnableBuildRerunWhenWorkerDisappears = cmd.FeatureFlags.EnableBuildRerunWhenWorkerDisappears
 	atc.EnableResourceCausality = cmd.FeatureFlags.EnableResourceCausality
-	atc.DefaultCheckInterval = cmd.ResourceCheckingInterval
-	atc.DefaultWebhookInterval = cmd.ResourceWithWebhookCheckingInterval
-	atc.DefaultResourceTypeInterval = cmd.ResourceTypeCheckingInterval
+	cmd.publishCheckIntervals(logger)
 	atc.DisableRedactSecrets = cmd.DisableRedactSecrets
 
 	if cmd.BaseResourceTypeDefaults.Path() != "" {
@@ -1208,29 +1237,6 @@ func (cmd *RunCommand) backendComponents(
 		imgResolver,
 		childRunAdmitter,
 	)
-
-	// In case that a user configures resource-checking-interval, but forgets to
-	// configure resource-with-webhook-checking-interval, keep both checking-
-	// intervals consistent. Even if both intervals are configured, there is no
-	// reason webhooked resources take shorter checking interval than normal
-	// resources.
-	if cmd.ResourceWithWebhookCheckingInterval < cmd.ResourceCheckingInterval {
-		logger.Info("update-resource-with-webhook-checking-interval",
-			lager.Data{
-				"oldValue": cmd.ResourceWithWebhookCheckingInterval,
-				"newValue": cmd.ResourceCheckingInterval,
-			})
-		cmd.ResourceWithWebhookCheckingInterval = cmd.ResourceCheckingInterval
-	}
-
-	if cmd.ResourceTypeCheckingInterval < cmd.ResourceCheckingInterval {
-		logger.Info("update-resource-type-checking-interval",
-			lager.Data{
-				"oldValue": cmd.ResourceTypeCheckingInterval,
-				"newValue": cmd.ResourceCheckingInterval,
-			})
-		cmd.ResourceTypeCheckingInterval = cmd.ResourceCheckingInterval
-	}
 
 	components := []RunnableComponent{
 		{

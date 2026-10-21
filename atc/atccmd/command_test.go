@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 
@@ -309,6 +310,39 @@ func (s *CommandSuite) TestOrphanedIntervalFlagsRemoved() {
 		"signing-key-check-interval": "the signing key lifecycler reads only rotation and grace periods",
 	} {
 		s.Nil(runCmd.FindOptionByLongName(flag), "--%s should not exist: %s", flag, why)
+	}
+}
+
+// An operator who sets only --resource-checking-interval expects webhooked
+// resources and resource types to be checked no more often than that. The
+// checker reads only the atc.Default*Interval globals, so the raise has to
+// reach them, not just the flag fields and the log line.
+func (s *CommandSuite) TestOnlyTheResourceCheckingIntervalSetRaisesTheIntervalsTheCheckerReads() {
+	oldCheck, oldWebhook, oldType := atc.DefaultCheckInterval, atc.DefaultWebhookInterval, atc.DefaultResourceTypeInterval
+	defer func() {
+		atc.DefaultCheckInterval, atc.DefaultWebhookInterval, atc.DefaultResourceTypeInterval = oldCheck, oldWebhook, oldType
+	}()
+
+	for _, tc := range []struct {
+		args                       []string
+		check, webhook, resourceTy time.Duration
+	}{
+		{[]string{"--resource-checking-interval", "5m"}, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute},
+		{[]string{"--resource-checking-interval", "5m", "--resource-with-webhook-checking-interval", "10m"}, 5 * time.Minute, 10 * time.Minute, 5 * time.Minute},
+		{[]string{}, time.Minute, time.Minute, time.Minute},
+	} {
+		cmd := &atccmd.RunCommand{}
+		// Only the interval flags are under test; the required auth flags are not.
+		if _, err := flags.NewParser(cmd, flags.IgnoreUnknown).ParseArgs(tc.args); err != nil {
+			var ferr *flags.Error
+			s.True(errors.As(err, &ferr) && ferr.Type == flags.ErrRequired, "parse %v: %v", tc.args, err)
+		}
+
+		atccmd.PublishCheckIntervalsForTest(cmd, lagertest.NewTestLogger("test"))
+
+		s.Equal(tc.check, atc.DefaultCheckInterval, "check interval for %v", tc.args)
+		s.Equal(tc.webhook, atc.DefaultWebhookInterval, "webhook interval for %v", tc.args)
+		s.Equal(tc.resourceTy, atc.DefaultResourceTypeInterval, "resource type interval for %v", tc.args)
 	}
 }
 
