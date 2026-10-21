@@ -756,6 +756,11 @@ type execProcess struct {
 	// twice is not losing a race, it is telling us something.
 	pausePodRecreated bool
 
+	// recreatedPodUID is the Pod UID the one replacement was created with,
+	// empty until a replacement was created. An exact execution's start may
+	// name a Pod other than the admitted one only when it is this one.
+	recreatedPodUID executioncontrol.PodUID
+
 	// execTransportLive records that the exec transport actually carried
 	// bytes — the command's own input was read, or its output was written.
 	// Past that point the step has started and must never be exec'd a
@@ -1591,9 +1596,11 @@ func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) err
 		}
 	}
 
-	if _, createErr := p.container.createPausePod(ctx, p.processSpec); createErr != nil {
+	created, createErr := p.container.createPausePod(ctx, p.processSpec)
+	if createErr != nil {
 		return fmt.Errorf("recreate pause pod %s: %w", p.podName, createErr)
 	}
+	p.recreatedPodUID = executioncontrol.PodUID(created.UID)
 	return nil
 }
 

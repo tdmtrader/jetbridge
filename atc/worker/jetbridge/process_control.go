@@ -269,6 +269,10 @@ func (p *execProcess) beginExactCommand(ctx context.Context) error {
 	// node's held marker before any other container could start, and a seal
 	// refuses a step directory with no marker naming exactly this Pod.
 
+	if err := p.confirmAdmittedPod(ctx); err != nil {
+		return err
+	}
+
 	start, err := p.exact.client.RecordStart(ctx, p.control.Identity, p.exact.podUID, p.exactProcessIdentity())
 	if err != nil {
 		return fmt.Errorf("recording the exact start before launching the command: %w", err)
@@ -284,6 +288,36 @@ func (p *execProcess) beginExactCommand(ctx context.Context) error {
 
 		return &startWitnessError{err: unresolvedLedgerError(err)}
 	}
+
+	return nil
+}
+
+// confirmAdmittedPod makes the Pod the start names the Pod the command is sent
+// to. Admission read the Pod when it was bound; the readiness watch may since
+// have replaced a pause pod that died before Running, and the replacement is a
+// new Pod UID. A start naming the dead one could never be recovered or
+// interrupted: every reader compares the live Pod against the start. So the
+// live Pod is read again here, after the readiness watch and before the start.
+// A replacement on another node is refused, because admission named the node;
+// a UID other than the one this step's replacement was created with is
+// refused, because nothing here knows what runs in it.
+func (p *execProcess) confirmAdmittedPod(ctx context.Context) error {
+	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading pod %s before recording the exact start: %w", p.podName, err)
+	}
+	if pod.Spec.NodeName != p.exact.nodeName {
+		return fmt.Errorf("pod %s is on node %q, not node %q where the exact execution was admitted",
+			p.podName, pod.Spec.NodeName, p.exact.nodeName)
+	}
+	live := executioncontrol.PodUID(pod.UID)
+	if live == p.exact.podUID {
+		return nil
+	}
+	if p.recreatedPodUID == "" || live != p.recreatedPodUID {
+		return fmt.Errorf("pod %s was replaced by something other than this step since the exact execution was admitted", p.podName)
+	}
+	p.exact.podUID = live
 
 	return nil
 }

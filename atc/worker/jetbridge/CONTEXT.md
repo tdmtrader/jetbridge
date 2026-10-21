@@ -76,7 +76,9 @@ node's ledger.
 Replacing a pause pod at most once if it dies before the step's command
 started. Never after the command has begun, never when a capture holds the
 source, never when the pod's own init container failed. A failed
-replacement still spends the one attempt.
+replacement still spends the one attempt. An exact execution's start names
+the replacement, not the Pod admission saw, and a replacement on a node other
+than the admitted one is refused before the start.
 
 **Supervisor**:
 The in-pod shell wrapper a command runs under so a web restart resumes the
