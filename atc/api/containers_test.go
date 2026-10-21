@@ -1295,6 +1295,61 @@ var _ = Describe("Containers API", func() {
 									Expect(hijackOutput.Error).To(Equal("idle timeout (1h0m0s) reached"))
 								})
 							})
+
+							// The idle timeout fires while a Wait error is already
+							// buffered in the one-slot errs channel. The loop is held in
+							// stdinW.Write (an io.Pipe write blocks until the process reads
+							// stdin) while the Wait error lands in errs and the idle expiry
+							// parks on its channel; releasing the read lets the loop re-enter
+							// its select with both cases ready. Go picks one at random, so
+							// MustPassRepeatedly makes the idle pick certain to be exercised
+							// (a handler that sends the idle error into errs deadlocks there).
+							Context("when the idle timeout fires while a wait error is already buffered", func() {
+								var failWait chan struct{}
+
+								BeforeEach(func() {
+									failWait = make(chan struct{})
+									fail := failWait
+									container.ProcessDefs[0].Stub.Call = func(_ context.Context, _ *runtimetest.Process) (runtime.ProcessResult, error) {
+										<-fail
+										return runtime.ProcessResult{}, errors.New("exec stream lost")
+									}
+								})
+
+								It("still writes an error and ends the hijack", MustPassRepeatedly(20), func() {
+									process := waitForHijack()
+
+									Expect(conn.WriteJSON(atc.HijackInput{Stdin: []byte("x")})).To(Succeed())
+									// the loop has taken the input and is now blocked in stdinW.Write
+									Eventually(interceptTimeout.resetCount).Should(Equal(1))
+
+									close(failWait)
+									time.Sleep(100 * time.Millisecond) // Wait's error is now in errs
+
+									// the handler may take the Wait error and never read the
+									// idle expiry; stop offering it when the spec ends
+									stopExpiry := make(chan struct{})
+									DeferCleanup(func() { close(stopExpiry) })
+									go func() {
+										select {
+										case interceptTimeout.channel <- time.Time{}:
+										case <-stopExpiry:
+										}
+									}()
+									time.Sleep(100 * time.Millisecond) // the idle expiry is parked
+
+									_, err := process.Stdin().Read(make([]byte, 1))
+									Expect(err).NotTo(HaveOccurred())
+
+									Expect(conn.SetReadDeadline(time.Now().Add(2 * time.Second))).To(Succeed())
+									var hijackOutput atc.HijackOutput
+									err = conn.ReadJSON(&hijackOutput)
+									Expect(err).NotTo(HaveOccurred(), "handler wrote nothing: it is stuck sending the idle error into a full errs")
+									Expect(hijackOutput.Error).To(Or(Equal("exec stream lost"), Equal("idle timeout (1h0m0s) reached")))
+
+									Eventually(container.ContextOfRun().Done()).Should(BeClosed())
+								})
+							})
 						})
 					})
 				})

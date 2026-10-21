@@ -315,7 +315,14 @@ func (s *Server) hijack(ctx context.Context, hLog lager.Logger, conn *websocket.
 			}
 
 		case <-idleChan:
-			errs <- idle.Error()
+			// Write the idle error here rather than through errs: this loop
+			// is errs' only reader, so sending into it would block forever
+			// whenever Wait had already filled its one slot.
+			_ = conn.WriteJSON(atc.HijackOutput{
+				Error: idle.Error().Error(),
+			})
+
+			return
 
 		case output := <-outputs:
 			err := conn.WriteJSON(output)
