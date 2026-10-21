@@ -180,6 +180,16 @@ func TestResourceGet(t *testing.T) {
 			_, processResult, err := resource.Get(ctx, container, new(bytes.Buffer))
 			require.NoError(t, err)
 			require.Equal(t, 123, processResult.ExitStatus)
+
+			// a failed script leaves no result on the container, so a re-run
+			// of the step on the same container reports the failure again
+			properties, err := container.Properties()
+			require.NoError(t, err)
+			require.NotContains(t, properties, resultCachePropertyName)
+
+			_, processResult, err = resource.Get(ctx, container, new(bytes.Buffer))
+			require.NoError(t, err)
+			require.Equal(t, 123, processResult.ExitStatus)
 		})
 
 		t.Run("run", func(t *testing.T) {
@@ -318,6 +328,16 @@ func TestResourcePut(t *testing.T) {
 					},
 				)
 			_, processResult, err := resource.Put(ctx, container, new(bytes.Buffer))
+			require.NoError(t, err)
+			require.Equal(t, 123, processResult.ExitStatus)
+
+			// a failed script leaves no result on the container, so a re-run
+			// of the step on the same container reports the failure again
+			properties, err := container.Properties()
+			require.NoError(t, err)
+			require.NotContains(t, properties, resultCachePropertyName)
+
+			_, processResult, err = resource.Put(ctx, container, new(bytes.Buffer))
 			require.NoError(t, err)
 			require.Equal(t, 123, processResult.ExitStatus)
 		})

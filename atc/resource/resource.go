@@ -69,6 +69,9 @@ func (resource Resource) Get(ctx context.Context, container runtime.Container, s
 	if err != nil {
 		return VersionResult{}, runtime.ProcessResult{}, err
 	}
+	if processResult.ExitStatus != 0 {
+		return versionResult, processResult, nil
+	}
 
 	if err := resource.cacheResult(container, versionResult); err != nil {
 		return VersionResult{}, runtime.ProcessResult{}, err
@@ -102,7 +105,10 @@ func (resource Resource) Put(ctx context.Context, container runtime.Container, s
 	if err != nil {
 		return VersionResult{}, runtime.ProcessResult{}, err
 	}
-	if processResult.ExitStatus == 0 && versionResult.Version == nil {
+	if processResult.ExitStatus != 0 {
+		return versionResult, processResult, nil
+	}
+	if versionResult.Version == nil {
 		return VersionResult{}, runtime.ProcessResult{}, fmt.Errorf("resource script (%s %s) output a null version", spec.Path, strings.Join(spec.Args, " "))
 	}
 
