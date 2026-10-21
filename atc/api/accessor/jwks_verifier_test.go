@@ -1,11 +1,14 @@
 package accessor_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -280,6 +283,99 @@ var _ = Describe("JWKSVerifier", func() {
 		It("fetches new keys and succeeds", func() {
 			Expect(verifyErr).NotTo(HaveOccurred())
 			Expect(claims["sub"]).To(Equal("user-123"))
+		})
+	})
+})
+
+var _ = Describe("JWKSVerifier key fetch", func() {
+	var (
+		privateKey *rsa.PrivateKey
+		gets       atomic.Int32
+	)
+
+	BeforeEach(func() {
+		var err error
+		privateKey, err = rsa.GenerateKey(rand.Reader, 2048)
+		Expect(err).NotTo(HaveOccurred())
+		gets.Store(0)
+	})
+
+	requestWithin := func(kid string, d time.Duration) *http.Request {
+		GinkgoHelper()
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+			(&jose.SignerOptions{}).WithType("JWT").WithHeader(jose.HeaderKey("kid"), kid),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		raw, err := jwt.Signed(signer).Claims(jwt.Claims{
+			Audience: jwt.Audience{"some-aud"},
+			Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		}).Serialize()
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), d)
+		DeferCleanup(cancel)
+		req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:8080", nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Authorization", "Bearer "+raw)
+		return req
+	}
+
+	Context("when the JWKS endpoint accepts but never answers", func() {
+		var verifier accessor.TokenVerifier
+
+		BeforeEach(func() {
+			release := make(chan struct{})
+			stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gets.Add(1)
+				<-release
+			}))
+			DeferCleanup(func() {
+				close(release)
+				stall.CloseClientConnections()
+				stall.Close()
+			})
+			verifier = accessor.NewJWKSVerifier(stall.URL, []string{"some-aud"})
+		})
+
+		It("refuses the request once its context is done", func() {
+			done := make(chan error, 1)
+			go func() {
+				_, err := verifier.Verify(requestWithin("unknown-kid", 100*time.Millisecond))
+				done <- err
+			}()
+			Eventually(done, 3*time.Second).Should(Receive(MatchError(accessor.ErrVerificationInvalidToken)))
+		})
+
+		It("shares one fetch between concurrent misses", func() {
+			var wg sync.WaitGroup
+			for range 5 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_, _ = verifier.Verify(requestWithin("unknown-kid", 100*time.Millisecond))
+				}()
+			}
+			Eventually(gets.Load, time.Second).Should(BeNumerically(">=", 1))
+			Consistently(gets.Load, time.Second).Should(Equal(int32(1)))
+			wg.Wait()
+		})
+	})
+
+	Context("when the JWKS endpoint fails", func() {
+		It("does not re-fetch on every request after the failure", func() {
+			failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gets.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			DeferCleanup(failing.Close)
+			verifier := accessor.NewJWKSVerifier(failing.URL, []string{"some-aud"})
+
+			for range 5 {
+				_, err := verifier.Verify(requestWithin("unknown-kid", time.Second))
+				Expect(err).To(MatchError(accessor.ErrVerificationInvalidToken))
+			}
+			Expect(gets.Load()).To(Equal(int32(1)))
 		})
 	})
 })

@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -23,6 +24,22 @@ type jwksVerifier struct {
 	keys      *jose.JSONWebKeySet
 	fetchedAt time.Time
 	cacheTTL  time.Duration
+
+	// A failed fetch is remembered for retryAfter so that requests during an
+	// outage are refused from memory instead of each re-fetching.
+	failedAt   time.Time
+	failErr    error
+	retryAfter time.Duration
+
+	// refresh is the fetch in flight, shared by every request that misses
+	// while it runs.
+	refresh      *keyRefresh
+	fetchTimeout time.Duration
+}
+
+type keyRefresh struct {
+	done chan struct{}
+	err  error
 }
 
 // NewJWKSVerifier creates a verifier that validates JWTs by fetching public
@@ -32,6 +49,9 @@ func NewJWKSVerifier(jwksURL string, audience []string) TokenVerifier {
 		jwksURL:  jwksURL,
 		audience: audience,
 		cacheTTL: 5 * time.Minute,
+
+		retryAfter:   5 * time.Second,
+		fetchTimeout: 10 * time.Second,
 	}
 }
 
@@ -53,7 +73,7 @@ func (v *jwksVerifier) Verify(r *http.Request) (map[string]any, error) {
 	kid := token.Headers[0].KeyID
 
 	// Try cached keys first
-	key, err := v.getKey(kid)
+	key, err := v.getKey(r.Context(), kid)
 	if err != nil {
 		return nil, ErrVerificationInvalidToken
 	}
@@ -87,25 +107,45 @@ func (v *jwksVerifier) Verify(r *http.Request) (map[string]any, error) {
 	return nil, ErrVerificationInvalidAudience
 }
 
-func (v *jwksVerifier) getKey(kid string) (any, error) {
-	// Try cached keys
+func (v *jwksVerifier) getKey(ctx context.Context, kid string) (any, error) {
 	v.mu.RLock()
 	key := v.findKey(kid)
-	cacheValid := v.keys != nil && time.Since(v.fetchedAt) < v.cacheTTL
 	v.mu.RUnlock()
-
 	if key != nil {
 		return key, nil
 	}
 
+	v.mu.Lock()
+	if key := v.findKey(kid); key != nil {
+		v.mu.Unlock()
+		return key, nil
+	}
 	// If cache is still valid and key not found, it's genuinely unknown
-	if cacheValid {
+	if v.keys != nil && time.Since(v.fetchedAt) < v.cacheTTL {
+		v.mu.Unlock()
 		return nil, errors.New("unknown key ID")
 	}
-
-	// Fetch fresh keys
-	if err := v.fetchKeys(); err != nil {
+	if v.failErr != nil && time.Since(v.failedAt) < v.retryAfter {
+		err := v.failErr
+		v.mu.Unlock()
 		return nil, err
+	}
+	refresh := v.refresh
+	if refresh == nil {
+		refresh = &keyRefresh{done: make(chan struct{})}
+		v.refresh = refresh
+		// The fetch is shared, so it must outlive the request that started it.
+		go v.runRefresh(context.WithoutCancel(ctx), refresh)
+	}
+	v.mu.Unlock()
+
+	select {
+	case <-refresh.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if refresh.err != nil {
+		return nil, refresh.err
 	}
 
 	v.mu.RLock()
@@ -116,6 +156,28 @@ func (v *jwksVerifier) getKey(kid string) (any, error) {
 		return nil, errors.New("unknown key ID after refresh")
 	}
 	return key, nil
+}
+
+func (v *jwksVerifier) runRefresh(ctx context.Context, refresh *keyRefresh) {
+	ctx, cancel := context.WithTimeout(ctx, v.fetchTimeout)
+	defer cancel()
+
+	keys, err := v.fetchKeys(ctx)
+
+	v.mu.Lock()
+	if err != nil {
+		v.failErr = err
+		v.failedAt = time.Now()
+	} else {
+		v.keys = keys
+		v.fetchedAt = time.Now()
+		v.failErr = nil
+	}
+	refresh.err = err
+	v.refresh = nil
+	v.mu.Unlock()
+
+	close(refresh.done)
 }
 
 func (v *jwksVerifier) findKey(kid string) any {
@@ -129,28 +191,28 @@ func (v *jwksVerifier) findKey(kid string) any {
 	return keys[0].Key
 }
 
-func (v *jwksVerifier) fetchKeys() error {
-	resp, err := http.Get(v.jwksURL)
+func (v *jwksVerifier) fetchKeys(ctx context.Context) (*jose.JSONWebKeySet, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return errors.New("JWKS endpoint returned non-200")
+		return nil, errors.New("JWKS endpoint returned non-200")
 	}
 
 	var jwks jose.JSONWebKeySet
 	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		return err
+		return nil, err
 	}
 
-	v.mu.Lock()
-	v.keys = &jwks
-	v.fetchedAt = time.Now()
-	v.mu.Unlock()
-
-	return nil
+	return &jwks, nil
 }
 
 func extractBearerToken(r *http.Request) (string, error) {
