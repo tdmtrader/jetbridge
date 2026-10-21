@@ -427,6 +427,78 @@ var _ = Describe("ResourceType", func() {
 		})
 	})
 
+	Describe("ResolvedImage", func() {
+		var resolvedPipeline db.Pipeline
+
+		// resolve attaches the scope a native resolve or a check of the type's
+		// evaluated source finds, holding one digest version.
+		resolve := func(name string, evaluated atc.Source) {
+			GinkgoHelper()
+			config, err := resourceConfigFactory.FindOrCreateResourceConfig("registry-image", evaluated, nil)
+			Expect(err).ToNot(HaveOccurred())
+			scope, err := config.FindOrCreateScope(nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resolvedPipeline.SetResourceConfigScopeForResourceType(name, scope)).To(Succeed())
+			Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{{"digest": "sha256:resolved"}})).To(Succeed())
+		}
+
+		deserialized := func(name string) atc.ResourceType {
+			GinkgoHelper()
+			resourceTypes, err := resolvedPipeline.ResourceTypes()
+			Expect(err).ToNot(HaveOccurred())
+			resourceType, found := resourceTypes.Deserialize().Lookup(name)
+			Expect(found).To(BeTrue())
+			return resourceType
+		}
+
+		BeforeEach(func() {
+			var err error
+			resolvedPipeline, _, err = defaultTeam.SavePipeline(
+				atc.PipelineRef{Name: "pipeline-with-resolved-types"},
+				atc.Config{
+					ResourceTypes: atc.ResourceTypes{
+						{
+							Name:   "literal-type",
+							Type:   "registry-image",
+							Source: atc.Source{"repository": "registry.example.com/team/app", "tag": "latest"},
+						},
+						{
+							Name:   "var-type",
+							Type:   "registry-image",
+							Source: atc.Source{"repository": "((repo))", "tag": "latest"},
+						},
+					},
+				},
+				0,
+				false,
+			)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("pins a type with a literal repository to its resolved digest", func() {
+			resolve("literal-type", atc.Source{"repository": "registry.example.com/team/app", "tag": "latest"})
+
+			resourceType := deserialized("literal-type")
+			Expect(resourceType.Image).To(Equal("registry.example.com/team/app@sha256:resolved"))
+			image := atc.ResourceTypes{resourceType}.ImageForType("plan", "literal-type", nil, false)
+			Expect(image.ImageRef).To(Equal("registry.example.com/team/app@sha256:resolved"))
+			Expect(image.GetPlan).To(BeNil())
+		})
+
+		It("leaves a type whose repository holds a ((var)) to a check and get that evaluate its source", func() {
+			resolve("var-type", atc.Source{"repository": "registry.example.com/team/app", "tag": "latest"})
+
+			resourceType := deserialized("var-type")
+			Expect(resourceType.Image).To(BeEmpty())
+			image := atc.ResourceTypes{resourceType}.ImageForType("plan", "var-type", nil, false)
+			Expect(image.ImageRef).To(BeEmpty())
+			Expect(image.CheckPlan).NotTo(BeNil())
+			Expect(image.CheckPlan.Check.Source).To(Equal(atc.Source{"repository": "((repo))", "tag": "latest"}))
+			Expect(image.GetPlan).NotTo(BeNil())
+			Expect(image.GetPlan.Get.Source).To(Equal(atc.Source{"repository": "((repo))", "tag": "latest"}))
+		})
+	})
+
 	Describe("SetResourceConfigScope", func() {
 		var resourceType db.ResourceType
 		var scope db.ResourceConfigScope

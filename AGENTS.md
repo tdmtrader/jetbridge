@@ -52,9 +52,13 @@ and reads as if it were the main path.
 **Images are resolved in-process against the OCI registry — no check pod is ever
 created.** This diverges from upstream Concourse. A failed native resolve makes no check
 build and shows no error in the UI: diagnose from web logs (`resolve-resource`,
-`failed-to-resolve-digest`). A resolve the registry refuses records a failed check end time
-on the resource config scope, so the check interval gates the retry; a resolve cut short by
-the web shutting down records nothing.
+`failed-to-evaluate-source`, `failed-to-resolve-digest`). A resolve the registry refuses
+records a failed check end time on the resource config scope, so the check interval gates
+the retry; a resolve cut short by the web shutting down records nothing. The source's
+`((var))` references are evaluated through the pipeline's credential variables first, as a
+check build's would be. A resource whose `((var))` does not evaluate gets an ordinary check
+build, which reports why; a resource type whose `((var))` does not evaluate records
+nothing, and is evaluated and logged again on every scan.
 
 **Native resolution reads only `repository`, `tag`, `username` and `password`, and
 silently ignores everything else — including `insecure` and `ca_certs`.** `atc.Source` is

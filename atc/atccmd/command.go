@@ -1249,6 +1249,8 @@ func (cmd *RunCommand) backendComponents(
 				1000,
 				imgResolver,
 				dbResourceConfigFactory,
+				secretManager,
+				cmd.varSourcePool,
 			),
 		},
 		{

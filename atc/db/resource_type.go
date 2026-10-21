@@ -12,6 +12,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/concourse/concourse/vars"
 )
 
 type ResourceType interface {
@@ -225,7 +226,10 @@ func (t *resourceType) HasWebhook() bool                  { return false }
 
 // ResolvedImage returns the fully-qualified image ref (repo@sha256:digest)
 // if a digest version has been resolved for this resource type via the native
-// registry resolver. Returns empty string if no resolved version exists.
+// registry resolver. Returns empty string if no resolved version exists, or
+// when the stored repository holds a ((var)): the ref would carry the literal
+// placeholder text, so the type's image is planned as a check and get instead,
+// which evaluate the source.
 func (t *resourceType) ResolvedImage() string {
 	if t.image != "" {
 		// Already has a direct image ref.
@@ -236,7 +240,7 @@ func (t *resourceType) ResolvedImage() string {
 	}
 
 	repo, _ := t.source["repository"].(string)
-	if repo == "" {
+	if repo == "" || len(vars.NewTemplate([]byte(repo)).ExtraVarNames()) > 0 {
 		return ""
 	}
 

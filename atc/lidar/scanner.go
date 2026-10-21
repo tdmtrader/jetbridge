@@ -3,12 +3,15 @@ package lidar
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
@@ -22,6 +25,8 @@ func NewScanner(
 	maxConcurrency int,
 	resolver imageresolver.Resolver,
 	resourceConfigFactory db.ResourceConfigFactory,
+	secrets creds.Secrets,
+	varSourcePool creds.VarSourcePool,
 ) *scanner {
 	return &scanner{
 		checkFactory:          checkFactory,
@@ -29,6 +34,8 @@ func NewScanner(
 		maxConcurrency:        maxConcurrency,
 		resolver:              resolver,
 		resourceConfigFactory: resourceConfigFactory,
+		secrets:               secrets,
+		varSourcePool:         varSourcePool,
 	}
 }
 
@@ -38,6 +45,11 @@ type scanner struct {
 	maxConcurrency        int
 	resolver              imageresolver.Resolver
 	resourceConfigFactory db.ResourceConfigFactory
+
+	// secrets and varSourcePool evaluate the ((var)) references in a
+	// registry-image source before native resolution, as a check build would.
+	secrets       creds.Secrets
+	varSourcePool creds.VarSourcePool
 }
 
 func (s *scanner) Run(ctx context.Context) error {
@@ -167,11 +179,15 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, r
 		return
 	}
 
-	// A ((var)) is left to the check of this type that every check of a
-	// resource using it plans (atc.ResourceTypes.ImageForType).
-	source, native := nativeSource(rt, resourceTypes)
+	// A source whose ((var)) does not evaluate is left to the check of this
+	// type that every check of a resource using it plans
+	// (atc.ResourceTypes.ImageForType). It records no failed check, so it is
+	// evaluated and logged again on every scan: no scope is keyed by a source
+	// that never evaluated, and the scope an earlier evaluation attached is
+	// shared by every resource and type whose source evaluates the same, whose
+	// resolves a failed check there would gate and report as failed.
+	source, native := s.nativeSource(logger, rt, resourceTypes)
 	if !native {
-		logger.Debug("skip-source-with-vars")
 		return
 	}
 
@@ -311,12 +327,9 @@ func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, re
 
 						// Resolve registry-image resources natively when
 						// the resolver is available — no check pod needed.
-						// A source holding a ((var)) is checked instead.
 						if s.resolver != nil && rs.Type() == "registry-image" {
-							if source, native := nativeSource(rs, resourceTypes); native {
-								s.resolveResource(ctx, rs, source)
-								return
-							}
+							s.resolveResource(ctx, rs, resourceTypes)
+							return
 						}
 
 						s.check(ctx, rs, resourceTypes)
@@ -345,7 +358,10 @@ func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, re
 	}
 }
 
-func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, source atc.Source) {
+// resolveResource resolves a registry-image resource natively once its check
+// interval has elapsed. A source whose ((var)) does not evaluate is checked
+// instead: the check build evaluates it again and reports why it fails.
+func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, resourceTypes db.ResourceTypes) {
 	logger := lagerctx.FromContext(ctx)
 	logger = logger.Session("resolve-resource", lager.Data{
 		"name":     rs.Name(),
@@ -366,6 +382,12 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, source at
 	}
 	if interval > 0 && !rs.LastCheckEndTime().IsZero() && time.Now().Before(rs.LastCheckEndTime().Add(interval)) {
 		logger.Debug("skip-interval-not-elapsed")
+		return
+	}
+
+	source, native := s.nativeSource(logger, rs, resourceTypes)
+	if !native {
+		s.check(ctx, rs, resourceTypes)
 		return
 	}
 
@@ -499,11 +521,11 @@ func (s *scanner) resolve(ctx context.Context, repository, tag string, auth *ima
 
 // nativeSource returns the source native resolution uses: the checkable's
 // source over the same defaults a check merges under it (the parent type's,
-// else the base resource type's), so the resource config lidar finds is the
-// one a build looks up. It reports false when that source still holds a
-// ((var)): only a build's RunState evaluates one, and the registry would be
-// sent the literal placeholder text.
-func nativeSource(checkable db.Checkable, resourceTypes db.ResourceTypes) (atc.Source, bool) {
+// else the base resource type's), with its ((var)) references evaluated as a
+// check build evaluates them, so the resource config lidar finds is the one a
+// build looks up. It reports false, having logged why, when a ((var)) does not
+// evaluate: the registry must never be sent the literal placeholder text.
+func (s *scanner) nativeSource(logger lager.Logger, checkable db.Checkable, resourceTypes db.ResourceTypes) (atc.Source, bool) {
 	defaults := atc.Source{}
 	if parentType, found := resourceTypes.Parent(checkable); found {
 		defaults = parentType.Defaults()
@@ -514,9 +536,43 @@ func nativeSource(checkable db.Checkable, resourceTypes db.ResourceTypes) (atc.S
 	source := defaults.Merge(checkable.Source())
 	payload, err := json.Marshal(source)
 	if err != nil {
+		logger.Error("failed-to-evaluate-source", err)
 		return nil, false
 	}
-	return source, len(vars.NewTemplate(payload).ExtraVarNames()) == 0
+	if len(vars.NewTemplate(payload).ExtraVarNames()) == 0 {
+		return source, true
+	}
+
+	evaluated, err := s.evaluateSource(logger, checkable, checkable.TeamName(), source)
+	if err != nil {
+		logger.Error("failed-to-evaluate-source", err)
+		return nil, false
+	}
+	return evaluated, true
+}
+
+// evaluateSource interpolates a stored source through the pipeline's
+// credential variables: the global credential manager and the pipeline's
+// var_sources, looked up under the same team and pipeline a check build uses.
+func (s *scanner) evaluateSource(logger lager.Logger, ref db.PipelineRef, teamName string, source atc.Source) (atc.Source, error) {
+	pipeline, found, err := ref.Pipeline()
+	if err != nil {
+		return nil, fmt.Errorf("find pipeline: %w", err)
+	}
+	if !found {
+		return nil, errors.New("pipeline not found")
+	}
+
+	variables, err := pipeline.Variables(logger, s.secrets, s.varSourcePool, creds.SecretLookupParams{
+		Team:         teamName,
+		Pipeline:     ref.PipelineName(),
+		InstanceVars: ref.PipelineInstanceVars(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pipeline variables: %w", err)
+	}
+
+	return creds.NewSource(variables, source).Evaluate()
 }
 
 func (s *scanner) check(ctx context.Context, checkable db.Checkable, resourceTypes db.ResourceTypes) {
