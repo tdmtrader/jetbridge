@@ -6,6 +6,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -84,6 +85,70 @@ var _ = Describe("ResourceConfigFactory", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(recreated.ID()).To(Equal(resourceConfig.ID()))
 			})
+		})
+	})
+
+	Context("when a resource's source changes and its old scope is deprecated", func() {
+		var (
+			oldConfigID int
+			oldScopeID  int
+			resource    db.Resource
+		)
+
+		BeforeEach(func() {
+			scenario := dbtest.Setup(
+				builder.WithPipeline(atc.Config{
+					Resources: atc.ResourceConfigs{
+						{
+							Name:   "some-resource",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "source"},
+						},
+					},
+				}),
+				builder.WithResourceVersions("some-resource", atc.Version{"ref": "v1"}, atc.Version{"ref": "v2"}),
+			)
+
+			resource = scenario.Resource("some-resource")
+			oldConfigID = resource.ResourceConfigID()
+			oldScopeID = resource.ResourceConfigScopeID()
+
+			newConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "changed-source"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			newScope, err := newConfig.FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resource.SetResourceConfigScope(newScope)).To(Succeed())
+
+			_, err = dbConn.Exec(`UPDATE resource_configs SET last_referenced = now() - interval '2 hours' WHERE id = $1`, oldConfigID)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("keeps the old config, so the deprecated scope and its versions survive", func() {
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+
+			deprecated, err := resource.DeprecatedScopes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecated).To(HaveLen(1))
+			Expect(deprecated[0].ID).To(Equal(oldScopeID))
+
+			var versions int
+			Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`, oldScopeID).Scan(&versions)).To(Succeed())
+			Expect(versions).To(Equal(2))
+		})
+
+		It("removes the old config once the deprecated scope is gone", func() {
+			_, err := dbConn.Exec(`DELETE FROM resource_config_scopes WHERE id = $1`, oldScopeID)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+
+			_, found, err := resourceConfigFactory.FindResourceConfigByID(oldConfigID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
 		})
 	})
 

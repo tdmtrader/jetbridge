@@ -254,12 +254,27 @@ func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod time.Durati
 		return err
 	}
 
+	// A deprecated scope keeps its old config alive: once the resource is
+	// repointed nothing else references it, and deleting the config would
+	// cascade the scope and its versions away long before the deprecated-scope
+	// collector's grace period. That collector decides when the scope goes;
+	// the config follows on the next pass.
+	usedByDeprecatedScopesIds, _, err := sq.
+		Select("resource_config_id").
+		From("resource_config_scopes").
+		Where("deprecated_at IS NOT NULL").
+		ToSql()
+	if err != nil {
+		return err
+	}
+
 	_, err = psql.Delete("resource_configs").
 		Where("id NOT IN (" +
 			usedByResourceCachesIds + " UNION " +
 			usedByResourcesIds + " UNION " +
 			usedByResourceTypesIds + " UNION " +
-			usedByPrototypesIds + ")").
+			usedByPrototypesIds + " UNION " +
+			usedByDeprecatedScopesIds + ")").
 		Where(sq.Expr(fmt.Sprintf("now() - last_referenced > '%d seconds'::interval", int(gracePeriod.Seconds())))).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(f.conn).Exec()
