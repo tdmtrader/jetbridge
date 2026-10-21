@@ -668,6 +668,97 @@ var _ = Describe("Resource Config Scope", func() {
 	})
 
 	Describe("CopyVersionsFrom", func() {
+		Context("when the new scope already has versions of its own after a source change", func() {
+			var resource db.Resource
+			var oldScope, newScope db.ResourceConfigScope
+
+			scopeVersionsByCheckOrder := func(scopeID int) ([]string, []int) {
+				rows, err := dbConn.Query(`
+					SELECT version->>'ref', check_order
+					FROM resource_config_versions
+					WHERE resource_config_scope_id = $1
+					ORDER BY check_order DESC`, scopeID)
+				Expect(err).ToNot(HaveOccurred())
+				defer db.Close(rows)
+
+				var refs []string
+				var checkOrders []int
+				for rows.Next() {
+					var ref string
+					var checkOrder int
+					Expect(rows.Scan(&ref, &checkOrder)).To(Succeed())
+					refs = append(refs, ref)
+					checkOrders = append(checkOrders, checkOrder)
+				}
+				Expect(rows.Err()).ToNot(HaveOccurred())
+				return refs, checkOrders
+			}
+
+			BeforeEach(func() {
+				resource = scenario.Resource("some-resource")
+				oldScope = resourceScope
+
+				Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{
+					{"ref": "v1"}, {"ref": "v2"}, {"ref": "v3"}, {"ref": "v4"}, {"ref": "v5"},
+				})).To(Succeed())
+
+				newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
+					"some-base-resource-type",
+					atc.Source{"some": "source-after-change"},
+					nil,
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				newScope, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+				Expect(err).ToNot(HaveOccurred())
+				Expect(newScope.ID()).ToNot(Equal(oldScope.ID()))
+
+				Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{
+					{"ref": "n1"}, {"ref": "n2"},
+				})).To(Succeed())
+			})
+
+			assertCopiedHistorySortsBelow := func() {
+				latest, found, err := newScope.LatestVersion()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(latest.Version()).To(Equal(db.Version{"ref": "n2"}))
+
+				refs, checkOrders := scopeVersionsByCheckOrder(newScope.ID())
+				Expect(refs).To(Equal([]string{"n2", "n1", "v5", "v4", "v3", "v2", "v1"}))
+				for i := 1; i < len(checkOrders); i++ {
+					Expect(checkOrders[i]).To(BeNumerically("<", checkOrders[i-1]), "check_orders must be distinct")
+				}
+				Expect(checkOrders[len(checkOrders)-1]).To(BeNumerically(">", 0))
+			}
+
+			It("copies the deprecated scope's versions below the new scope's own versions", func() {
+				copied, err := newScope.CopyVersionsFrom(oldScope.ID())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(copied).To(Equal(5))
+
+				assertCopiedHistorySortsBelow()
+			})
+
+			It("changes nothing when the copy is repeated", func() {
+				copied, err := newScope.CopyVersionsFrom(oldScope.ID())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(copied).To(Equal(5))
+
+				refsBefore, checkOrdersBefore := scopeVersionsByCheckOrder(newScope.ID())
+
+				copied, err = newScope.CopyVersionsFrom(oldScope.ID())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(copied).To(Equal(0))
+
+				refsAfter, checkOrdersAfter := scopeVersionsByCheckOrder(newScope.ID())
+				Expect(refsAfter).To(Equal(refsBefore))
+				Expect(checkOrdersAfter).To(Equal(checkOrdersBefore))
+
+				assertCopiedHistorySortsBelow()
+			})
+		})
+
 		It("copies versions from a source scope to the target scope", func() {
 			// Save versions to the current scope
 			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
