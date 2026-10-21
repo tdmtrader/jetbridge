@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/policy"
@@ -1148,6 +1149,33 @@ var _ = Describe("CheckStep", func() {
 
 			It("increments the error metric", func() {
 				Expect(metric.Metrics.ChecksFinishedWithError.Delta()).To(BeNumerically(">=", 1))
+			})
+		})
+
+		// A registry that accepts the connection and never answers would hold
+		// the resource checking lock for as long as the resolve runs.
+		Context("when the registry accepts the connection and never answers", func() {
+			var resolveCtxErr error
+
+			BeforeEach(func() {
+				resolveCtxErr = nil
+				checkPlan.Timeout = "100ms"
+				fakeResolver.ResolveStub(func(rctx context.Context, _ string, _ string, _ *imageresolver.BasicAuth) (string, error) {
+					select {
+					case <-rctx.Done():
+						resolveCtxErr = rctx.Err()
+						return "", fmt.Errorf("wrapped: %w", rctx.Err())
+					case <-time.After(5 * time.Second):
+						return "", errors.New("the resolve was not bounded by the check timeout")
+					}
+				})
+			})
+
+			It("bounds the resolve by the check timeout and errors the check as timed out", func() {
+				Expect(resolveCtxErr).To(Equal(context.DeadlineExceeded))
+				Expect(stepErr).ToNot(HaveOccurred())
+				Expect(stepOk).To(BeFalse())
+				Expect(execBuildErrorMessages(fixture, realBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
 			})
 		})
 

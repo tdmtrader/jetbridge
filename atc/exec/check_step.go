@@ -346,7 +346,18 @@ func (step *CheckStep) runCheck(
 // resolveNatively resolves a registry-image resource's digest via the OCI
 // registry API without spawning a check container. The source has already
 // been through credential evaluation so ((var)) placeholders are resolved.
+//
+// The resolve runs under the check timeout, as a check container does: the
+// caller holds the resource checking lock throughout, and an in-memory check
+// build has no abort, so a registry that accepts the connection and never
+// answers would otherwise hold the lock until the web restarts.
 func (step *CheckStep) resolveNatively(ctx context.Context, logger lager.Logger, source atc.Source) ([]atc.Version, error) {
+	ctx, cancel, err := MaybeTimeout(ctx, step.plan.Timeout, step.defaultCheckTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
 	repository, _ := source["repository"].(string)
 	if repository == "" {
 		return nil, errors.New("native check: missing repository in source")
@@ -364,7 +375,7 @@ func (step *CheckStep) resolveNatively(ctx context.Context, logger lager.Logger,
 
 	digest, err := step.resolver.Resolve(ctx, repository, tag, auth)
 	if err != nil {
-		return nil, fmt.Errorf("native check: resolving digest for %s: %w", repository, err)
+		return nil, attributeStepTimeout(ctx, fmt.Errorf("native check: resolving digest for %s: %w", repository, err))
 	}
 
 	logger.Info("native-check-resolved", lager.Data{"repository": repository, "digest": digest})
