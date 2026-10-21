@@ -2,6 +2,7 @@ package lidar
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/concourse/concourse/vars"
 )
 
 func NewScanner(
@@ -112,7 +114,7 @@ func (s *scanner) scanResourceTypes(ctx context.Context, resourceTypesMap map[in
 								logger.Error("panic-in-resource-type-scan", err)
 							}
 						}()
-						s.resolveResourceType(ctx, rt)
+						s.resolveResourceType(ctx, rt, resourceTypesMap[rt.PipelineID()])
 					}()
 
 				case <-ctx.Done():
@@ -135,7 +137,7 @@ func (s *scanner) scanResourceTypes(ctx context.Context, resourceTypesMap map[in
 	}
 }
 
-func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
+func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, resourceTypes db.ResourceTypes) {
 	logger := lagerctx.FromContext(ctx)
 	logger = logger.Session("resolve-resource-type", lager.Data{
 		"name":     rt.Name(),
@@ -165,8 +167,15 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType) {
 		return
 	}
 
+	// A ((var)) is left to the check of this type that every check of a
+	// resource using it plans (atc.ResourceTypes.ImageForType).
+	source, native := nativeSource(rt, resourceTypes)
+	if !native {
+		logger.Debug("skip-source-with-vars")
+		return
+	}
+
 	// Extract repository and tag from source config.
-	source := rt.Source()
 	repository, _ := source["repository"].(string)
 	if repository == "" {
 		logger.Error("missing-repository-in-source", nil)
@@ -300,9 +309,12 @@ func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, re
 
 						// Resolve registry-image resources natively when
 						// the resolver is available — no check pod needed.
+						// A source holding a ((var)) is checked instead.
 						if s.resolver != nil && rs.Type() == "registry-image" {
-							s.resolveResource(ctx, rs)
-							return
+							if source, native := nativeSource(rs, resourceTypes); native {
+								s.resolveResource(ctx, rs, source)
+								return
+							}
 						}
 
 						s.check(ctx, rs, resourceTypes)
@@ -331,7 +343,7 @@ func (s *scanner) scanResources(ctx context.Context, resources []db.Resource, re
 	}
 }
 
-func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
+func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, source atc.Source) {
 	logger := lagerctx.FromContext(ctx)
 	logger = logger.Session("resolve-resource", lager.Data{
 		"name":     rs.Name(),
@@ -356,7 +368,6 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource) {
 	}
 
 	// Extract repository and tag from source config.
-	source := rs.Source()
 	repository, _ := source["repository"].(string)
 	if repository == "" {
 		logger.Error("missing-repository-in-source", nil)
@@ -464,6 +475,28 @@ func (s *scanner) resolve(ctx context.Context, repository, tag string, auth *ima
 	defer cancel()
 
 	return s.resolver.Resolve(ctx, repository, tag, auth)
+}
+
+// nativeSource returns the source native resolution uses: the checkable's
+// source over the same defaults a check merges under it (the parent type's,
+// else the base resource type's), so the resource config lidar finds is the
+// one a build looks up. It reports false when that source still holds a
+// ((var)): only a build's RunState evaluates one, and the registry would be
+// sent the literal placeholder text.
+func nativeSource(checkable db.Checkable, resourceTypes db.ResourceTypes) (atc.Source, bool) {
+	defaults := atc.Source{}
+	if parentType, found := resourceTypes.Parent(checkable); found {
+		defaults = parentType.Defaults()
+	} else if base, found := atc.FindBaseResourceTypeDefaults(checkable.Type()); found {
+		defaults = base
+	}
+
+	source := defaults.Merge(checkable.Source())
+	payload, err := json.Marshal(source)
+	if err != nil {
+		return nil, false
+	}
+	return source, len(vars.NewTemplate(payload).ExtraVarNames()) == 0
 }
 
 func (s *scanner) check(ctx context.Context, checkable db.Checkable, resourceTypes db.ResourceTypes) {

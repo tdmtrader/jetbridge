@@ -573,6 +573,61 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:private"})
 	})
 
+	It("resolves a resource type over the base resource type defaults", func() {
+		atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{
+			"registry-image": {"username": "default-user", "password": "default-pass"},
+		})
+		DeferCleanup(atc.LoadBaseResourceTypeDefaults, map[string]atc.Source{})
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Source = atc.Source{"repository": "private-registry/image"}
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:defaults", nil)
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		_, _, _, auth := resolver.ResolveArgsForCall(0)
+		Expect(auth).NotTo(BeNil())
+		Expect(auth.Username).To(Equal("default-user"))
+		Expect(auth.Password).To(Equal("default-pass"))
+		expectedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig("registry-image", atc.Source{
+			"repository": "private-registry/image",
+			"username":   "default-user",
+			"password":   "default-pass",
+		}, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigID()).To(Equal(expectedConfig.ID()))
+	})
+
+	It("leaves a resource type whose source holds a ((var)) to the check of a resource using it", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.Source = atc.Source{"repository": "((repo))"}
+		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, lidarConfigWithGets(
+			atc.ResourceConfigs{{Name: "custom-resource", Type: resourceTypeName, Source: atc.Source{}}},
+			atc.ResourceTypes{config},
+		))
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:never", nil)
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		typeCheck := build.PrivatePlan().Check.TypeImage.CheckPlan
+		Expect(typeCheck).NotTo(BeNil())
+		Expect(typeCheck.Check.Source).To(Equal(atc.Source{"repository": "((repo))"}))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
 	It("skips a persisted direct image reference", func() {
 		fixture := useLidarDB()
 		config := defaultResourceType()
@@ -884,6 +939,65 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(auth.Password).To(Equal("mypass"))
 		scope := resolvedLidarResourceScope(fixture, lidarPipelineResource(pipeline, resourceName))
 		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:private"})
+	})
+
+	It("checks a native resource whose source holds a ((var)) instead of resolving it", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.Source = atc.Source{
+			"repository": "private-registry/app",
+			"username":   "((registry-user))",
+			"password":   "((registry-password))",
+		}
+		pipeline, resource := persistResource(fixture, config)
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:never", nil)
+
+		Expect(runScanner(
+			fixture, factory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(BeZero())
+		Expect(lidarPipelineResource(pipeline, resourceName).ResourceConfigScopeID()).To(BeZero())
+		Expect(factory.Calls()).To(HaveLen(1))
+		Expect(factory.Calls()[0].resource().ID()).To(Equal(resource.ID()))
+		build := drainLidarCheckBuilds(fixture, 1)[0]
+		Expect(build.ResourceID()).To(Equal(resource.ID()))
+		Expect(build.PrivatePlan().Check.Source).To(Equal(config.Source))
+		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+	})
+
+	It("resolves a native resource over the base resource type defaults", func() {
+		atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{
+			"registry-image": {"username": "default-user", "password": "default-pass"},
+		})
+		DeferCleanup(atc.LoadBaseResourceTypeDefaults, map[string]atc.Source{})
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.Source = atc.Source{"repository": "private-registry/app", "username": "myuser"}
+		pipeline, _ := persistResource(fixture, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:defaults", nil)
+
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(1))
+		_, _, _, auth := resolver.ResolveArgsForCall(0)
+		Expect(auth).NotTo(BeNil())
+		Expect(auth.Username).To(Equal("myuser"))
+		Expect(auth.Password).To(Equal("default-pass"))
+		expectedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig("registry-image", atc.Source{
+			"repository": "private-registry/app",
+			"username":   "myuser",
+			"password":   "default-pass",
+		}, nil)
+		Expect(err).NotTo(HaveOccurred())
+		freshResource := lidarPipelineResource(pipeline, resourceName)
+		Expect(freshResource.ResourceConfigID()).To(Equal(expectedConfig.ID()))
+		expectLidarLatestVersion(resolvedLidarResourceScope(fixture, freshResource), atc.Version{"digest": "sha256:defaults"})
 	})
 
 	It("skips a persisted native resource with check_every never", func() {
