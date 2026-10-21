@@ -102,9 +102,8 @@ func (command *LandCommand) run(client landingQueueClient, out io.Writer) error 
 	if !atc.ValidLandingEntryID(id) {
 		return fmt.Errorf("entry id %q is not one safe ref component", id)
 	}
-	submitRef := "refs/queue/submit/" + id
-	if _, err := gitOutput(command.Repo, "push", "--quiet", "--no-follow-tags", "--", command.Remote, sha+":"+submitRef); err != nil {
-		return fmt.Errorf("push %s: %w", submitRef, err)
+	if err := pushSubmitRef(command.Repo, command.Remote, id, sha); err != nil {
+		return err
 	}
 	created, err := client.SubmitLanding(command.Queue, atc.LandingSubmission{ID: id, Commit: sha})
 	if err != nil {
@@ -116,6 +115,34 @@ func (command *LandCommand) run(client landingQueueClient, out io.Writer) error 
 		fmt.Fprintf(out, "%s is already queued as %s in landing queue %q\n", sha, id, command.Queue)
 	}
 	return nil
+}
+
+// pushSubmitRef creates the entry's submit ref on the remote at sha. It never
+// moves an existing submit ref: the compose and land Runs refuse a ref that is
+// not at the queued entry's commit, so a re-submission refused by the server
+// must not have moved it first. The lease makes the push create-only, and a
+// ref already at sha is the same submission run again, which changes nothing.
+func pushSubmitRef(repo, remote, id, sha string) error {
+	submitRef := "refs/queue/submit/" + id
+	_, pushErr := gitOutput(repo, "push", "--quiet", "--no-follow-tags", "--force-with-lease="+submitRef+":", "--", remote, sha+":"+submitRef)
+	if pushErr == nil {
+		return nil
+	}
+	listed, err := gitOutput(repo, "ls-remote", "--", remote, submitRef)
+	if err != nil {
+		return fmt.Errorf("push %s: %w", submitRef, pushErr)
+	}
+	for _, line := range strings.Split(listed, "\n") {
+		current, name, ok := strings.Cut(line, "\t")
+		if !ok || name != submitRef {
+			continue
+		}
+		if current == sha {
+			return nil
+		}
+		return fmt.Errorf("entry id %q is taken: %s is at %s, not %s; choose another id", id, submitRef, current, sha)
+	}
+	return fmt.Errorf("push %s: %w", submitRef, pushErr)
 }
 
 // LandingQueueCommand prints a landing queue's entries and the state of its

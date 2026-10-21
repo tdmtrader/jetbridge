@@ -2,12 +2,14 @@ package commands
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/jessevdk/go-flags"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -99,6 +101,42 @@ var _ = Describe("The landing queue commands", func() {
 
 		bad := &LandCommand{Queue: "trunk", Repo: work, ID: "a/b"}
 		Expect(bad.run(client, out)).To(MatchError(ContainSubstring("safe ref component")))
+		Expect(client.submissions).To(HaveLen(2))
+	})
+
+	It("land never moves an entry's submit ref: a fixup under a queued id is refused before it is pushed or submitted", func() {
+		root := GinkgoT().TempDir()
+		remote := filepath.Join(root, "remote.git")
+		work := filepath.Join(root, "work")
+		git(root, "init", "-q", "--bare", "-b", "core", remote)
+		git(root, "clone", "-q", remote, work)
+		Expect(os.WriteFile(filepath.Join(work, "a.txt"), []byte("a\n"), 0o644)).To(Succeed())
+		git(work, "add", "a.txt")
+		git(work, "commit", "-q", "-m", "a")
+		first := git(work, "rev-parse", "HEAD")
+
+		client := &recordingLandingClient{created: true}
+		command := &LandCommand{Queue: "trunk", Repo: work, Remote: "origin", ID: "fix-1"}
+		Expect(command.run(client, &bytes.Buffer{})).To(Succeed())
+		Expect(git(remote, "rev-parse", "refs/queue/submit/fix-1")).To(Equal(first))
+
+		// The same commit again changes nothing and is still submitted.
+		client.created = false
+		out := &bytes.Buffer{}
+		Expect(command.run(client, out)).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("is already queued as fix-1"))
+		Expect(client.submissions).To(HaveLen(2))
+
+		// A fixup on top fast-forwards, so a plain push would move the ref;
+		// the server would then refuse the id, leaving the queued entry's
+		// compose and land Runs failing their ref check.
+		Expect(os.WriteFile(filepath.Join(work, "a.txt"), []byte("a fixup\n"), 0o644)).To(Succeed())
+		git(work, "commit", "-q", "-am", "fixup")
+		second := git(work, "rev-parse", "HEAD")
+		client.err = fmt.Errorf("%w: entry %q is already queued or settled for another commit", concourse.ErrLandingEntryConflict, "fix-1")
+		err := command.run(client, &bytes.Buffer{})
+		Expect(git(remote, "rev-parse", "refs/queue/submit/fix-1")).To(Equal(first), "the refused re-submission moved the queued entry's submit ref")
+		Expect(err).To(MatchError(ContainSubstring("refs/queue/submit/fix-1 is at " + first + ", not " + second + "; choose another id")))
 		Expect(client.submissions).To(HaveLen(2))
 	})
 
