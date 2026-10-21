@@ -272,19 +272,80 @@ func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, erro
 // this scope, skipping any versions that already exist (by version_sha256).
 // Returns the number of new versions copied.
 func (r *resourceConfigScope) CopyVersionsFrom(sourceScopeID int) (int, error) {
-	result, err := r.conn.Exec(`
+	return copyVersionsIntoScope(r.conn, r.id, sourceScopeID)
+}
+
+// copyVersionsIntoScope copies the source scope's versions that the
+// destination scope lacks, ranked below every version the destination already
+// holds: the destination's own versions came from its checks, so they are
+// newer than anything in the source's history. The copied versions keep their
+// source order but are renumbered 1..N, and the destination's versions move up
+// by N, so the latest version stays the latest and no check_order repeats.
+func copyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error) {
+	tx, err := conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+
+	defer Rollback(tx)
+
+	var missing int
+	err = tx.QueryRow(`
+		SELECT COUNT(*)
+		FROM resource_config_versions s
+		WHERE s.resource_config_scope_id = $2
+		AND NOT EXISTS (
+			SELECT 1 FROM resource_config_versions d
+			WHERE d.resource_config_scope_id = $1
+			AND d.version_sha256 = s.version_sha256
+		)
+	`, toScopeID, fromScopeID).Scan(&missing)
+	if err != nil {
+		return 0, err
+	}
+
+	if missing == 0 {
+		return 0, nil
+	}
+
+	_, err = tx.Exec(`
+		UPDATE resource_config_versions
+		SET check_order = check_order + $2
+		WHERE resource_config_scope_id = $1
+	`, toScopeID, missing)
+	if err != nil {
+		return 0, err
+	}
+
+	result, err := tx.Exec(`
 		INSERT INTO resource_config_versions
 			(resource_config_scope_id, version, version_md5, version_sha256, metadata, check_order, span_context)
-		SELECT $1, version, version_md5, version_sha256, metadata, check_order, span_context
-		FROM resource_config_versions
-		WHERE resource_config_scope_id = $2
+		SELECT $1, s.version, s.version_md5, s.version_sha256, s.metadata,
+			row_number() OVER (ORDER BY s.check_order, s.id), s.span_context
+		FROM resource_config_versions s
+		WHERE s.resource_config_scope_id = $2
+		AND NOT EXISTS (
+			SELECT 1 FROM resource_config_versions d
+			WHERE d.resource_config_scope_id = $1
+			AND d.version_sha256 = s.version_sha256
+		)
 		ON CONFLICT (resource_config_scope_id, version_sha256) DO NOTHING
-	`, r.id, sourceScopeID)
+	`, toScopeID, fromScopeID)
 	if err != nil {
 		return 0, err
 	}
 
 	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	err = requestScheduleForJobsUsingResourceConfigScope(tx, toScopeID)
+	if err != nil {
+		return 0, err
+	}
+
+	err = tx.Commit()
 	if err != nil {
 		return 0, err
 	}

@@ -542,31 +542,15 @@ func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
 	return scopes, nil
 }
 
-// CopyVersionsFromScope copies all resource config versions from the given
-// source scope into this resource's current scope. Returns count of versions copied.
+// CopyVersionsFromScope copies the given source scope's versions into this
+// resource's current scope, below the versions the current scope already
+// holds. Returns count of versions copied.
 func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 	if r.resourceConfigScopeID == 0 {
 		return 0, errors.New("resource does not have a current scope")
 	}
 
-	result, err := r.conn.Exec(`
-		INSERT INTO resource_config_versions
-			(resource_config_scope_id, version, version_md5, version_sha256, metadata, check_order, span_context)
-		SELECT $1, version, version_md5, version_sha256, metadata, check_order, span_context
-		FROM resource_config_versions
-		WHERE resource_config_scope_id = $2
-		ON CONFLICT (resource_config_scope_id, version_sha256) DO NOTHING
-	`, r.resourceConfigScopeID, fromScopeID)
-	if err != nil {
-		return 0, err
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-
-	return int(rowsAffected), nil
+	return copyVersionsIntoScope(r.conn, r.resourceConfigScopeID, fromScopeID)
 }
 
 func (r *resource) ClearVersions() (int64, error) {

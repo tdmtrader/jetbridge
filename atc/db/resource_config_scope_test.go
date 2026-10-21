@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -594,6 +595,75 @@ var _ = Describe("Resource Config Scope", func() {
 			copiedAgain, err := resource.CopyVersionsFromScope(oldScopeID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copiedAgain).To(Equal(0))
+		})
+	})
+
+	Describe("copying a deprecated scope's versions into the resource's current scope", func() {
+		It("ranks the copied versions below the versions the current scope already checked", func() {
+			resource := scenario.Resource("some-resource")
+			oldScopeID := resourceScope.ID()
+
+			// The old scope's checks saved v1, v2, v3 (check_order 1, 2, 3).
+			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"},
+				{"ref": "v2"},
+				{"ref": "v3"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			// The config changes; the check step points the resource at the new
+			// scope, whose first check saves only the newest version, at check_order 1.
+			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "source-after-change"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			newScope, err := newRC.FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(newScope.ID()).ToNot(Equal(oldScopeID))
+			Expect(resource.SetResourceConfigScope(newScope)).To(Succeed())
+
+			err = newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}})
+			Expect(err).ToNot(HaveOccurred())
+
+			reloaded, err := resource.Reload()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(reloaded).To(BeTrue())
+			Expect(resource.ResourceConfigScopeID()).To(Equal(newScope.ID()))
+
+			requestedSchedule := scenario.Job("some-job").ScheduleRequestedTime()
+
+			copied, err := resource.CopyVersionsFromScope(oldScopeID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(2))
+
+			latest, found, err := newScope.LatestVersion()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(latest.Version()).To(Equal(db.Version{"ref": "v3"}))
+
+			rows, err := dbConn.Query(`
+				SELECT version->>'ref', check_order
+				FROM resource_config_versions
+				WHERE resource_config_scope_id = $1
+				ORDER BY check_order DESC, id DESC`,
+				newScope.ID(),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			var ordered []string
+			for rows.Next() {
+				var ref string
+				var checkOrder int
+				Expect(rows.Scan(&ref, &checkOrder)).To(Succeed())
+				ordered = append(ordered, fmt.Sprintf("%s@%d", ref, checkOrder))
+			}
+			Expect(rows.Err()).ToNot(HaveOccurred())
+			Expect(rows.Close()).To(Succeed())
+			Expect(ordered).To(Equal([]string{"v3@3", "v2@2", "v1@1"}))
+
+			Expect(scenario.Job("some-job").ScheduleRequestedTime()).To(BeTemporally(">", requestedSchedule))
 		})
 	})
 
