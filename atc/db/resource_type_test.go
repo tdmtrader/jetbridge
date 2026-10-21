@@ -289,6 +289,58 @@ var _ = Describe("ResourceType", func() {
 			})
 		})
 
+		Context("when two resource types name each other as their type", func() {
+			BeforeEach(func() {
+				var err error
+				pipeline, _, err = defaultTeam.SavePipeline(
+					atc.PipelineRef{Name: "pipeline-with-types"},
+					atc.Config{
+						Resources: atc.ResourceConfigs{
+							{Name: "some-resource", Type: "type-a", Source: atc.Source{}},
+						},
+						ResourceTypes: atc.ResourceTypes{
+							{Name: "type-a", Type: "type-b", Source: atc.Source{}},
+							{Name: "type-b", Type: "type-a", Source: atc.Source{}},
+						},
+					},
+					pipeline.ConfigVersion(),
+					false,
+				)
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			filter := func(checkable db.Checkable) db.ResourceTypes {
+				done := make(chan db.ResourceTypes, 1)
+				go func() { done <- resourceTypes.Filter(checkable) }()
+
+				var tree db.ResourceTypes
+				Eventually(done, 5*time.Second).Should(Receive(&tree))
+				return tree
+			}
+
+			It("returns each type in a resource's chain once", func() {
+				resource, found, err := pipeline.Resource("some-resource")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				tree := filter(resource)
+				Expect(tree).To(HaveLen(2))
+				Expect(tree[0].Name()).To(Equal("type-a"))
+				Expect(tree[1].Name()).To(Equal("type-b"))
+			})
+
+			It("returns each type in a resource type's chain once", func() {
+				typeA, found, err := pipeline.ResourceType("type-a")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				tree := filter(typeA)
+				Expect(tree).To(HaveLen(2))
+				Expect(tree[0].Name()).To(Equal("type-b"))
+				Expect(tree[1].Name()).To(Equal("type-a"))
+			})
+		})
+
 		Context("Deserialize", func() {
 			var rts atc.ResourceTypes
 			JustBeforeEach(func() {

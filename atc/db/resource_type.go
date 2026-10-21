@@ -65,15 +65,22 @@ func (resourceTypes ResourceTypes) Parent(checkable Checkable) (ResourceType, bo
 	return nil, false
 }
 
+// Filter returns the chain of resource types the checkable's type resolves
+// through, nearest first. Each type appears at most once: a chain that comes
+// back to a type it already walked (a: type b, b: type a) stops there instead
+// of looping, the same way atc.ResourceTypes.ImageForType drops each type it
+// has resolved.
 func (resourceTypes ResourceTypes) Filter(checkable Checkable) ResourceTypes {
 	var result ResourceTypes
+	walked := map[string]bool{}
 
 	for {
 		resourceType, found := resourceTypes.Parent(checkable)
-		if !found {
+		if !found || walked[resourceType.Name()] {
 			return result
 		}
 
+		walked[resourceType.Name()] = true
 		result = append(result, resourceType)
 		checkable = resourceType
 	}
