@@ -460,6 +460,54 @@ var _ = Describe("Job", func() {
 			})
 		})
 
+		Context("when an older build is rerun after newer builds", func() {
+			var rerun db.Build
+
+			BeforeEach(func() {
+				var err error
+				rerun, err = someJob.RerunBuild(builds[2], defaultBuildCreatedBy)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("pages through every build, keeping the rerun beside its original in both directions", func() {
+				ids := func(page []db.BuildForAPI) []int {
+					out := []int{}
+					for _, b := range page {
+						out = append(out, b.ID())
+					}
+					return out
+				}
+
+				expected := [][]int{
+					{builds[9].ID(), builds[8].ID(), builds[7].ID(), builds[6].ID()},
+					{builds[5].ID(), builds[4].ID(), builds[3].ID(), rerun.ID()},
+					{builds[2].ID(), builds[1].ID(), builds[0].ID()},
+				}
+
+				var older [][]int
+				var last db.Pagination
+				page := &db.Page{Limit: 4}
+				for i := 0; page != nil && i < 10; i++ {
+					buildsPage, pagination, err := someJob.Builds(*page)
+					Expect(err).ToNot(HaveOccurred())
+					older = append(older, ids(buildsPage))
+					last = pagination
+					page = pagination.Older
+				}
+				Expect(older).To(Equal(expected))
+
+				var newer [][]int
+				page = last.Newer
+				for i := 0; page != nil && i < 10; i++ {
+					buildsPage, pagination, err := someJob.Builds(*page)
+					Expect(err).ToNot(HaveOccurred())
+					newer = append(newer, ids(buildsPage))
+					page = pagination.Newer
+				}
+				Expect(newer).To(Equal([][]int{expected[1], expected[0]}))
+			})
+		})
+
 		Context("with no from/to", func() {
 			It("returns the first page, with the given limit, and a next page", func() {
 				buildsPage, pagination, err := someJob.Builds(db.Page{Limit: 2})

@@ -322,9 +322,23 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 
 	desc := "COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC"
 	asc := "COALESCE(b.rerun_of, b.rerun_of_old, b.id) ASC, b.id ASC"
+	// The page window and the Older/Newer probes must compare the same key the
+	// rows are ordered by, or a rerun (whose id is newer than the builds it is
+	// listed beside) falls outside every page but the first. The cursor stays a
+	// build id; its sort key is looked up from that build, and an id naming no
+	// build sorts as if it were a build that was never rerun.
+	cursor := func(op string, id int) sq.Sqlizer {
+		return sq.Expr(
+			"(COALESCE(b.rerun_of, b.rerun_of_old, b.id), b.id) "+op+
+				" (COALESCE((SELECT COALESCE(c.rerun_of, c.rerun_of_old, c.id) FROM builds c WHERE c.id = ?), ?), ?)",
+			id, id, id)
+	}
 	if chronological {
 		desc = "b.id DESC"
 		asc = "b.id ASC"
+		cursor = func(op string, id int) sq.Sqlizer {
+			return sq.Expr("b.id "+op+" ?", id)
+		}
 	}
 
 	if page.From == nil && page.To == nil { // none
@@ -332,12 +346,12 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 			OrderBy(desc)
 	} else if page.From != nil && page.To == nil { // only from
 		buildsQuery = buildsQuery.
-			Where(sq.GtOrEq{"b.id": uint64(*page.From)}).
+			Where(cursor(">=", *page.From)).
 			OrderBy(asc)
 		reverse = true
 	} else if page.From == nil && page.To != nil { // only to
 		buildsQuery = buildsQuery.
-			Where(sq.LtOrEq{"b.id": uint64(*page.To)}).
+			Where(cursor("<=", *page.To)).
 			OrderBy(desc)
 	} else if page.From != nil && page.To != nil { // both
 		if *page.From > *page.To {
@@ -346,8 +360,8 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 
 		buildsQuery = buildsQuery.Where(
 			sq.And{
-				sq.GtOrEq{"b.id": uint64(*page.From)},
-				sq.LtOrEq{"b.id": uint64(*page.To)},
+				cursor(">=", *page.From),
+				cursor("<=", *page.To),
 			}).
 			OrderBy(asc)
 	}
@@ -390,7 +404,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 	var pagination Pagination
 
 	row := origBuildsQuery.
-		Where(sq.Lt{"b.id": oldestBuild.ID()}).
+		Where(cursor("<", oldestBuild.ID())).
 		OrderBy(desc).
 		Limit(1).
 		RunWith(tx).
@@ -409,7 +423,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 	}
 
 	row = origBuildsQuery.
-		Where(sq.Gt{"b.id": newestBuild.ID()}).
+		Where(cursor(">", newestBuild.ID())).
 		OrderBy(asc).
 		Limit(1).
 		RunWith(tx).
