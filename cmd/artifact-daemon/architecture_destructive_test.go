@@ -188,13 +188,6 @@ var destructiveInventory = map[string]struct {
 			"capture. It touches no source: the step directory becomes the artifact daemon's " +
 			"ordinary business, which is what a release is.",
 	}},
-	"outputplane/capture_ledger.go | CaptureLedger.runSeal | os.Rename(captured.ArchivePath)": {1, admission{
-		why: "moves the seal's canonical archive from the canonicalizer's private scratch into " +
-			"the capture's staging file in the same scratch volume. It touches no source.",
-	}},
-	"outputplane/capture_ledger.go | CaptureLedger.Release | os.Remove(file)": {1, admission{
-		why: "deletes a released capture's staged archive in scratch. It touches no source.",
-	}},
 	"outputplane/config.go | Config.PrepareScratch | os.RemoveAll(filepath.Join())": {1, admission{
 		why: "sweeps what a KILLED canonicalization left in the scratch volume, at startup, " +
 			"before the listener exists. It touches no source: the scratch directory is the " +

@@ -402,7 +402,7 @@ func TestPublishIsIdempotentDeduplicatesAndRefusesAChangedTree(t *testing.T) {
 	}
 	request := output.CapturePublishRequest{
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
-		Digest: sealed.Digest, Staged: sealed.Staged,
+		Digest: sealed.Digest,
 	}
 	first, err := publishNow(t, fixture, request)
 	if err != nil {
@@ -422,14 +422,8 @@ func TestPublishIsIdempotentDeduplicatesAndRefusesAChangedTree(t *testing.T) {
 		t.Fatalf("stat answered %+v, %v", stat, err)
 	}
 
-	// Remove the stage and change the tree: a publish for the recorded digest
-	// must refuse rather than publish what is there now.
-	if err := os.RemoveAll(filepath.Join(fixture.config.ScratchDir, "staged")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(fixture.config.ScratchDir, "staged"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	// Change the tree: a publish for the recorded digest must refuse rather
+	// than publish what is there now.
 	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "changed after the seal")
 	if _, err := publishNow(t, fixture, request); !errors.Is(err, output.ErrConflict) {
 		t.Fatalf("a publish of a changed tree answered %v", err)
@@ -578,8 +572,8 @@ func TestATombstoneIsSweptOnlyAfterItsDirectory(t *testing.T) {
 }
 
 // Release cancels a seal still waiting for its Pod, and a job that is no
-// longer registered stages nothing: no archive survives in scratch.
-func TestAReleaseDuringTheTerminationWaitLeavesNoStagedArchive(t *testing.T) {
+// longer registered leaves no archive in scratch.
+func TestAReleaseDuringTheTerminationWaitLeavesNoArchive(t *testing.T) {
 	fixture := newCaptureLedger(t)
 	fixture.capture.sealWait = time.Minute
 	held(t, fixture)
@@ -611,17 +605,13 @@ func TestAReleaseDuringTheTerminationWaitLeavesNoStagedArchive(t *testing.T) {
 		t.Errorf("a released seal answered success")
 	}
 	time.Sleep(200 * time.Millisecond)
-	staged, err := filepath.Glob(filepath.Join(fixture.config.ScratchDir, "staged", "*.tar"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(staged) != 0 {
-		t.Errorf("a released seal staged %v", staged)
+	if left := scratchFiles(t, fixture); len(left) != 0 {
+		t.Errorf("a released seal left %v in scratch", left)
 	}
 }
 
 // A seal that finished canonicalizing after its release was already decided
-// is not staged either: the rename happens only while the job is registered.
+// answers nothing and leaves no archive in scratch.
 func TestASealForgottenBeforeItFinishesRemovesItsArchive(t *testing.T) {
 	fixture := newCaptureLedger(t)
 	held(t, fixture)
@@ -645,11 +635,78 @@ func TestASealForgottenBeforeItFinishesRemovesItsArchive(t *testing.T) {
 	close(gate)
 	<-job.done
 
-	staged, err := filepath.Glob(filepath.Join(fixture.config.ScratchDir, "staged", "*.tar"))
+	if left := scratchFiles(t, fixture); len(left) != 0 || job.err == nil {
+		t.Errorf("an unregistered seal left %v in scratch (err %v)", left, job.err)
+	}
+}
+
+// The scratch volume is sized for PublishConcurrency trees, and a spool slot
+// is what admits a tree onto it. A seal and a publish leave nothing in
+// scratch once they give their slot back: a sealed capture waiting for its
+// publish and release takes no room the spool does not count.
+func TestNothingASealOrPublishWroteOutlivesItsSpoolSlot(t *testing.T) {
+	fixture := newCaptureLedger(t)
+	spool := make(chan struct{}, 1)
+	slot := func(ctx context.Context) (func(), error) {
+		select {
+		case spool <- struct{}{}:
+			return func() { <-spool }, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	held(t, fixture)
+	writeFile(t, filepath.Join(fixture.stepDir(), "result.txt"), "produced")
+	fixture.pods.stop(testPod)
+
+	deadline := time.Now().Add(20 * time.Second)
+	sealed, err := fixture.capture.Seal(context.Background(), sealRequest(), slot)
+	for errors.Is(err, output.ErrSealInProgress) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		sealed, err = fixture.capture.Seal(context.Background(), sealRequest(), slot)
+	}
+	if err != nil {
+		t.Fatalf("sealing: %v", err)
+	}
+	if left := scratchFiles(t, fixture); len(left) != 0 {
+		t.Errorf("a finished seal left %v in scratch outside any spool slot", left)
+	}
+
+	request := output.CapturePublishRequest{
+		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
+		Digest: sealed.Digest,
+	}
+	_, err = fixture.capture.Publish(context.Background(), request, slot)
+	for errors.Is(err, output.ErrPublishInProgress) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		_, err = fixture.capture.Publish(context.Background(), request, slot)
+	}
+	if err != nil {
+		t.Fatalf("publishing: %v", err)
+	}
+	if left := scratchFiles(t, fixture); len(left) != 0 {
+		t.Errorf("a finished publish left %v in scratch outside any spool slot", left)
+	}
+}
+
+// scratchFiles is every file under the scratch directory.
+func scratchFiles(t *testing.T, fixture *captureFixture) []string {
+	t.Helper()
+
+	var files []string
+	err := filepath.WalkDir(fixture.config.ScratchDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			files = append(files, path)
+		}
+
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(staged) != 0 || job.err == nil {
-		t.Errorf("an unregistered seal staged %v (err %v)", staged, job.err)
-	}
+
+	return files
 }

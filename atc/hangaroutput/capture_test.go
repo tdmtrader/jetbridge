@@ -889,9 +889,6 @@ func TestRecoveryFailsAPublishingRowWithNoObjectAndNoSource(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(h.Daemon.StepsDir, c.Key().Directory())); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(h.Daemon.Dir, "scratch", "staged")); err != nil {
-		t.Fatal(err)
-	}
 
 	// The node's publish is asynchronous: the first pass starts it, and a
 	// later pass reads that the step is gone.

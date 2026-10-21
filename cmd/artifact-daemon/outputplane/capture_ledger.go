@@ -83,7 +83,6 @@ type CaptureLedger struct {
 	// symlink swapped under a step directory cannot redirect a read.
 	steps     *os.Root
 	stepsPath string
-	staging   string
 
 	// sealWait bounds one background seal: the wait for termination and the
 	// canonicalization. A job that runs past it ends ErrUnresolved, and the
@@ -108,7 +107,7 @@ type CaptureLedger struct {
 }
 
 // sealJob is one background seal. done is closed when result or err is set;
-// cancel is Release's, so a released capture's job stops and stages nothing.
+// cancel is Release's, so a released capture's job stops.
 type sealJob struct {
 	pod    executioncontrol.PodUID
 	done   chan struct{}
@@ -168,13 +167,6 @@ func OpenCaptureLedger(store *controlStore, base *ExecutionLedger, daemon *Daemo
 	if err != nil {
 		return nil, fmt.Errorf("%w: opening the managed steps directory: %v", output.ErrInfrastructure, err)
 	}
-	staging := filepath.Join(config.ScratchDir, "staged")
-	if err := os.MkdirAll(staging, 0o700); err != nil {
-		_ = steps.Close()
-
-		return nil, fmt.Errorf("%w: creating the capture staging directory: %v", output.ErrInfrastructure, err)
-	}
-
 	if config.TombstoneRetention <= 0 {
 		config.TombstoneRetention = DefaultTombstoneRetention
 	}
@@ -186,7 +178,7 @@ func OpenCaptureLedger(store *controlStore, base *ExecutionLedger, daemon *Daemo
 	ledger := &CaptureLedger{
 		store: store, base: base, node: config.Node, daemon: daemon,
 		terminations: config.Terminations, steps: steps, stepsPath: config.StepsDir,
-		staging: staging, sealWait: config.SealWait, poll: config.Poll,
+		sealWait: config.SealWait, poll: config.Poll,
 		tombstoneRetention: config.TombstoneRetention,
 		jobs:               map[output.CaptureKey]*sealJob{},
 		uploads:            map[output.CaptureKey]*publishJob{}, ctx: ctx, cancel: cancel,
@@ -369,11 +361,6 @@ func (ledger *CaptureLedger) resolve(key output.CaptureKey) (string, error) {
 	return path.Join(ledger.stepsPath, relative), nil
 }
 
-func (ledger *CaptureLedger) stagedPath(key output.CaptureKey, digest hangar.Digest) string {
-	return filepath.Join(ledger.staging, string(key.ExecutionID)+"."+string(key.Output)+"."+
-		strings.TrimPrefix(string(digest), "sha256:")+".tar")
-}
-
 // Seal is step 2: flip the marker to sealed, and wait -- in the background --
 // until every container of the marker's Pod has terminated, then
 // canonicalize. It answers ErrSealInProgress until the job has finished, and
@@ -385,7 +372,9 @@ func (ledger *CaptureLedger) stagedPath(key output.CaptureKey, digest hangar.Dig
 //
 // slot, when given, is taken after the wait and held for the
 // canonicalization: scratch is bounded, and a Pod that takes minutes to stop
-// must not hold a slot every other capture needs.
+// must not hold a slot every other capture needs. The seal keeps only the
+// digest; its canonical archive is removed with the slot, because an archive
+// left in scratch past its slot is a tree the spool no longer counts.
 func (ledger *CaptureLedger) Seal(_ context.Context, request output.CaptureSealRequest,
 	slot func(context.Context) (func(), error)) (output.CaptureSealResult, error) {
 	if err := request.Validate(); err != nil {
@@ -446,9 +435,10 @@ func (ledger *CaptureLedger) inProgress(key output.CaptureKey) error {
 	return fmt.Errorf("%w: %s is sealed and its tree is not read yet; ask again", output.ErrSealInProgress, key)
 }
 
-// runSeal is the background half of one seal. The staged archive is renamed
-// into place only while the job is still registered, under the ledger lock: a
-// job Release cancelled or forgot stages nothing and removes what it read.
+// runSeal is the background half of one seal. The answer is recorded only
+// while the job is still registered, under the ledger lock: a job Release
+// cancelled or forgot answers nothing. Either way the canonical archive is
+// removed before the job ends.
 func (ledger *CaptureLedger) runSeal(ctx context.Context, key output.CaptureKey, marker output.StepMarker,
 	job *sealJob, slot func(context.Context) (func(), error)) {
 	defer job.cancel()
@@ -458,9 +448,6 @@ func (ledger *CaptureLedger) runSeal(ctx context.Context, key output.CaptureKey,
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 	defer close(job.done)
-	if captured != nil {
-		defer captured.Close()
-	}
 	if ledger.jobs[key] != job {
 		job.err = fmt.Errorf("%w: %s was released while it was being sealed", output.ErrNotFound, key)
 
@@ -472,11 +459,6 @@ func (ledger *CaptureLedger) runSeal(ctx context.Context, key output.CaptureKey,
 		return
 	}
 
-	staged := ledger.stagedPath(key, captured.Digest)
-	if err := os.Rename(captured.ArchivePath, staged); err != nil {
-		// Staging is an optimisation; the publish canonicalizes again.
-		staged = ""
-	}
 	job.result = output.CaptureSealResult{
 		ProtocolVersion: output.ProtocolVersion,
 		Marker:          marker,
@@ -484,15 +466,13 @@ func (ledger *CaptureLedger) runSeal(ctx context.Context, key output.CaptureKey,
 		Digest:          captured.Digest,
 		LogicalBytes:    captured.ByteSize,
 	}
-	if staged != "" {
-		job.result.Staged = filepath.Base(staged)
-	}
 	job.err = job.result.Validate()
 }
 
-// seal waits for the Pod and canonicalizes. It holds no lock.
+// seal waits for the Pod and canonicalizes. It holds no lock, and it removes
+// the canonical archive before it gives back the slot.
 func (ledger *CaptureLedger) seal(ctx context.Context, key output.CaptureKey, marker output.StepMarker,
-	slot func(context.Context) (func(), error)) (*hangar.CapturedTree, error) {
+	slot func(context.Context) (func(), error)) (*capturedDigest, error) {
 	if err := ledger.awaitTermination(ctx, marker.PodUID); err != nil {
 		return nil, err
 	}
@@ -507,8 +487,20 @@ func (ledger *CaptureLedger) seal(ctx context.Context, key output.CaptureKey, ma
 	if err != nil {
 		return nil, err
 	}
+	captured, err := ledger.daemon.CanonicalizeDirectory(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	defer captured.Close()
 
-	return ledger.daemon.CanonicalizeDirectory(ctx, root)
+	return &capturedDigest{Digest: captured.Digest, ByteSize: captured.ByteSize}, nil
+}
+
+// capturedDigest is what a seal keeps of its canonicalization: the digest and
+// the logical size, not the archive.
+type capturedDigest struct {
+	Digest   hangar.Digest
+	ByteSize int64
 }
 
 func (ledger *CaptureLedger) awaitTermination(ctx context.Context, pod executioncontrol.PodUID) error {
@@ -641,19 +633,10 @@ func (ledger *CaptureLedger) publish(ctx context.Context, key output.CaptureKey,
 	return result, result.Validate()
 }
 
-// canonical opens the staged archive for digest, or canonicalizes the sealed
-// directory again when the stage is gone (a restart, a full scratch). Either
-// way the bytes must BE the digest; a tree that changed is a conflict.
+// canonical canonicalizes the sealed directory again, inside the publish's
+// slot. The bytes must BE the digest the seal recorded; a tree that changed
+// is a conflict.
 func (ledger *CaptureLedger) canonical(ctx context.Context, key output.CaptureKey, digest hangar.Digest) (*os.File, int64, func(), error) {
-	staged := ledger.stagedPath(key, digest)
-	if file, err := os.Open(staged); err == nil {
-		info, err := file.Stat()
-		if err == nil {
-			return file, info.Size(), func() { _ = file.Close() }, nil
-		}
-		_ = file.Close()
-	}
-
 	root, err := ledger.resolve(key)
 	if err != nil {
 		return nil, 0, nil, err
@@ -678,8 +661,8 @@ func (ledger *CaptureLedger) canonical(ctx context.Context, key output.CaptureKe
 	return file, captured.ByteSize, func() { _ = file.Close(); _ = captured.Close() }, nil
 }
 
-// Release is step 6: replace the marker with a released tombstone, clear
-// anything staged for it, then close the base gate. Idempotent.
+// Release is step 6: replace the marker with a released tombstone, end its
+// background jobs, then close the base gate. Idempotent.
 //
 // A capture this node never held -- the producer ran elsewhere, or a
 // cancellation won the race with the control init -- gets a tombstone too, so
@@ -713,7 +696,7 @@ func (ledger *CaptureLedger) Release(_ context.Context, request output.CaptureRe
 		}
 	}
 	// Background jobs end: the capture is over and their answers will never
-	// be asked for. A seal that finishes after this stages nothing.
+	// be asked for.
 	if job, running := ledger.jobs[key]; running {
 		job.cancel()
 		delete(ledger.jobs, key)
@@ -721,12 +704,6 @@ func (ledger *CaptureLedger) Release(_ context.Context, request output.CaptureRe
 	if job, running := ledger.uploads[key]; running {
 		job.cancel()
 		delete(ledger.uploads, key)
-	}
-	if stale, err := filepath.Glob(filepath.Join(ledger.staging,
-		string(key.ExecutionID)+"."+string(key.Output)+".*.tar")); err == nil {
-		for _, file := range stale {
-			_ = os.Remove(file)
-		}
 	}
 	// The gate last: the marker is a tombstone, so the execution's cleanup is
 	// withheld by nothing this capture owns. A capture this node never held
