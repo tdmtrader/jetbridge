@@ -472,9 +472,11 @@ type stdinWriter struct {
 	inputs chan<- atc.HijackInput
 }
 
+// Write copies d before sending it: io.Copy reuses d for its next Read, and
+// the input is only encoded when the hijacker drains the channel later.
 func (w *stdinWriter) Write(d []byte) (int, error) {
 	w.inputs <- atc.HijackInput{
-		Stdin: d,
+		Stdin: append([]byte(nil), d...),
 	}
 
 	return len(d), nil
