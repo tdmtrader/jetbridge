@@ -193,15 +193,6 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, r
 		}
 	}
 
-	// Resolve the digest via registry API.
-	digest, err := s.resolve(ctx, repository, tag, auth, rt.CheckTimeout())
-	if err != nil {
-		logger.Error("failed-to-resolve-digest", err)
-		return
-	}
-
-	logger.Debug("resolved-digest", lager.Data{"digest": digest})
-
 	// Find or create resource config for this resource type.
 	// The resource type is backed by "registry-image" at its core.
 	resourceConfig, err := s.resourceConfigFactory.FindOrCreateResourceConfig(
@@ -235,6 +226,17 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, r
 		logger.Error("failed-to-set-resource-config-scope", err)
 		return
 	}
+
+	// Resolve the digest via registry API. The scope is attached first so a
+	// failed resolve records a failed check end time, and the check interval
+	// gates the retry instead of every scanner pass re-asking the registry.
+	digest, err := s.resolve(ctx, repository, tag, auth, rt.CheckTimeout())
+	if err != nil {
+		recordFailedResolve(ctx, logger, scope, err)
+		return
+	}
+
+	logger.Debug("resolved-digest", lager.Data{"digest": digest})
 
 	// Save the resolved version.
 	version := atc.Version{"digest": digest}
@@ -385,15 +387,6 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, source at
 		}
 	}
 
-	// Resolve the digest via registry API.
-	digest, err := s.resolve(ctx, repository, tag, auth, rs.CheckTimeout())
-	if err != nil {
-		logger.Error("failed-to-resolve-digest", err)
-		return
-	}
-
-	logger.Debug("resolved-digest", lager.Data{"digest": digest})
-
 	resourceConfig, err := s.resourceConfigFactory.FindOrCreateResourceConfig(
 		"registry-image",
 		source,
@@ -426,6 +419,17 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, source at
 		return
 	}
 
+	// Resolve the digest via registry API. The scope is attached first so a
+	// failed resolve records a failed check end time, and the check interval
+	// gates the retry instead of every scanner pass re-asking the registry.
+	digest, err := s.resolve(ctx, repository, tag, auth, rs.CheckTimeout())
+	if err != nil {
+		recordFailedResolve(ctx, logger, scope, err)
+		return
+	}
+
+	logger.Debug("resolved-digest", lager.Data{"digest": digest})
+
 	// Save the resolved version.
 	version := atc.Version{"digest": digest}
 	err = scope.SaveVersions(db.SpanContext{}, []atc.Version{version})
@@ -451,6 +455,22 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, source at
 
 	metric.Metrics.ChecksEnqueued.Inc()
 	logger.Info("resolved-resource", lager.Data{"digest": digest})
+}
+
+// recordFailedResolve records a failed resolve as a failed check end time on
+// the scope, so the check interval gates the retry. A resolve cut short by the
+// scan's own cancellation (the web shutting down) was never refused by the
+// registry: it records nothing, and the next scan resolves again.
+func recordFailedResolve(ctx context.Context, logger lager.Logger, scope db.ResourceConfigScope, err error) {
+	if ctx.Err() != nil {
+		logger.Debug("resolve-cancelled", lager.Data{"error": err.Error()})
+		return
+	}
+
+	logger.Error("failed-to-resolve-digest", err)
+	if _, err := scope.UpdateLastCheckEndTime(false); err != nil {
+		logger.Error("failed-to-update-last-check-end-time", err)
+	}
 }
 
 // nativeResolveTimeout bounds one native registry-image resolve. A scan waits

@@ -668,7 +668,7 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 
 		Eventually(runNativeScanner(fixture, logger)).WithTimeout(10 * time.Second).Should(Receive(BeNil()))
 		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeTrue())
-		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+		expectFailedLidarResolve(resolvedLidarResourceTypeScope(fixture, lidarPipelineResourceType(pipeline, resourceTypeName)))
 	})
 
 	It("skips a persisted resource type whose nonzero interval has not elapsed", func() {
@@ -696,18 +696,31 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		Expect(lastCheck.EndTime).NotTo(BeZero())
 	})
 
-	It("does not persist a version when the resolver fails", func() {
+	It("records a failed resolve so the check interval gates the retry", func() {
 		fixture := useLidarDB()
-		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, defaultResourceType())
+		config := defaultResourceType()
+		config.CheckEvery = &atc.CheckEvery{Interval: time.Hour}
+		pipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
 		resolver := new(imageresolvertesting.FakeResolver)
 		resolver.ResolveReturns("", errors.New("registry down"))
 
-		Expect(runScanner(
-			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
-			lagertest.NewTestLogger("test"),
-		)).To(Succeed())
+		for range 2 {
+			Expect(runScanner(
+				fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+				lagertest.NewTestLogger("test"),
+			)).To(Succeed())
+		}
 		Expect(resolver.ResolveCallCount()).To(Equal(1))
-		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
+		freshType := lidarPipelineResourceType(pipeline, resourceTypeName)
+		scope := resolvedLidarResourceTypeScope(fixture, freshType)
+		_, found, err := scope.LatestVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).NotTo(BeZero())
+		Expect(lastCheck.Succeeded).To(BeFalse())
+		Expect(freshType.LastCheckEndTime()).To(Equal(lastCheck.EndTime))
 	})
 
 	It("does not call the resolver when persisted source has no repository", func() {
@@ -1117,7 +1130,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(resolver.ResolveCallCount()).To(Equal(1), "second scanner pass within check_every resolved again")
 	})
 
-	It("does not persist native scope or version when the resolver fails", func() {
+	It("records a failed native resolve as a failed check end time on the attached scope", func() {
 		fixture := useLidarDB()
 		pipeline, _ := persistResource(fixture, defaultResource())
 		resolver := new(imageresolvertesting.FakeResolver)
@@ -1128,9 +1141,59 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 			lagertest.NewTestLogger("test"),
 		)).To(Succeed())
 		Expect(resolver.ResolveCallCount()).To(Equal(1))
-		freshResource := lidarPipelineResource(pipeline, resourceName)
-		Expect(freshResource.ResourceConfigID()).To(BeZero())
-		Expect(freshResource.ResourceConfigScopeID()).To(BeZero())
+		scope := resolvedLidarResourceScope(fixture, lidarPipelineResource(pipeline, resourceName))
+		_, found, err := scope.LatestVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck.EndTime).NotTo(BeZero())
+		Expect(lastCheck.Succeeded).To(BeFalse())
+		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+	})
+
+	It("records no failed check when the scan is cancelled during a resolve", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		pipeline, _ := persistResource(fixture, config)
+		persistedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+			config.Type, config.Source, nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		Expect(err).NotTo(HaveOccurred())
+		baselineLastCheck, err := baselineScope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		resolving := make(chan struct{})
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveStub(func(ctx context.Context, _, _ string, _ *imageresolver.BasicAuth) (string, error) {
+			close(resolving)
+			<-ctx.Done()
+			return "", ctx.Err()
+		})
+		logger := lagertest.NewTestLogger("test")
+		ctx, cancel := context.WithCancel(lagerctx.NewContext(context.Background(), logger))
+		defer cancel()
+
+		ran := make(chan error, 1)
+		go func() {
+			ran <- lidar.NewScanner(
+				fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory,
+			).Run(ctx)
+		}()
+		Eventually(resolving).WithTimeout(5 * time.Second).Should(BeClosed())
+		cancel()
+		Eventually(ran).WithTimeout(5 * time.Second).Should(Receive(BeNil()))
+
+		Eventually(func() bool {
+			return loggedAt(logger.Logs(), lager.DEBUG, "resolve-cancelled")
+		}).WithTimeout(5 * time.Second).Should(BeTrue())
+		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeFalse())
+		scope := resolvedLidarResourceScope(fixture, lidarPipelineResource(pipeline, resourceName))
+		Expect(scope.ID()).To(Equal(baselineScope.ID()))
+		lastCheck, err := scope.LastCheck()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lastCheck).To(Equal(baselineLastCheck))
 	})
 
 	It("does not resolve or attach a persisted native source without a repository", func() {
@@ -1287,7 +1350,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 
 		Eventually(runNativeScanner(fixture, logger)).WithTimeout(10 * time.Second).Should(Receive(BeNil()))
 		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeTrue())
-		Expect(lidarPipelineResource(pipeline, resourceName).ResourceConfigID()).To(BeZero())
+		expectFailedLidarResolve(resolvedLidarResourceScope(fixture, lidarPipelineResource(pipeline, resourceName)))
 	})
 
 	It("gives up on a registry that never answers within the native resolve bound when the resource sets no check_timeout", func() {
@@ -1300,7 +1363,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 
 		Eventually(runNativeScanner(fixture, logger)).WithTimeout(10 * time.Second).Should(Receive(BeNil()))
 		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-resolve-digest")).To(BeTrue())
-		Expect(lidarPipelineResource(pipeline, resourceName).ResourceConfigID()).To(BeZero())
+		expectFailedLidarResolve(resolvedLidarResourceScope(fixture, lidarPipelineResource(pipeline, resourceName)))
 	})
 })
 

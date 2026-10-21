@@ -416,6 +416,19 @@ func expectLidarLatestVersion(scope db.ResourceConfigScope, expected atc.Version
 	Expect(atc.Version(latest.Version())).To(Equal(expected))
 }
 
+// expectFailedLidarResolve asserts a native resolve that failed: the scope it
+// attached holds no version and records a failed check end time.
+func expectFailedLidarResolve(scope db.ResourceConfigScope) {
+	GinkgoHelper()
+	_, found, err := scope.LatestVersion()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeFalse())
+	lastCheck, err := scope.LastCheck()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(lastCheck.EndTime).NotTo(BeZero())
+	Expect(lastCheck.Succeeded).To(BeFalse())
+}
+
 func drainLidarCheckBuilds(fixture *lidarDB, count int) []db.Build {
 	GinkgoHelper()
 	builds := make([]db.Build, 0, count)

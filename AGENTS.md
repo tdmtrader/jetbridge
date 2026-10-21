@@ -50,9 +50,11 @@ fires — which makes `Process.Wait`'s delete-pod-on-cancel branch dead code. Re
 and reads as if it were the main path.
 
 **Images are resolved in-process against the OCI registry — no check pod is ever
-created.** This diverges from upstream Concourse. Every failure inside the lidar
-resolvers logs and returns: no check build, no DB check error, nothing in the UI.
-Diagnose from web logs (`resolve-resource`, `failed-to-resolve-digest`).
+created.** This diverges from upstream Concourse. A failed native resolve makes no check
+build and shows no error in the UI: diagnose from web logs (`resolve-resource`,
+`failed-to-resolve-digest`). A resolve the registry refuses records a failed check end time
+on the resource config scope, so the check interval gates the retry; a resolve cut short by
+the web shutting down records nothing.
 
 **Native resolution reads only `repository`, `tag`, `username` and `password`, and
 silently ignores everything else — including `insecure` and `ca_certs`.** `atc.Source` is
