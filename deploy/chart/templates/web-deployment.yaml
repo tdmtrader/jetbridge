@@ -168,9 +168,6 @@ spec:
             {{- if .Values.kubernetes.artifactHelperImage }}
             - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
             {{- end }}
-            {{- if .Values.kubernetes.imageRegistryPrefix }}
-            - --kubernetes-image-registry-prefix={{ .Values.kubernetes.imageRegistryPrefix }}
-            {{- end }}
             {{- if .Values.kubernetes.imageRegistrySecret }}
             - --kubernetes-image-registry-secret={{ .Values.kubernetes.imageRegistrySecret }}
             {{- end }}

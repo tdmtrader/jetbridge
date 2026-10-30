@@ -72,7 +72,8 @@ import (
 // Retiring ATC OTel metrics removes three values, leaving 190.
 // Removing the resource-cache bucket leaves 189.
 // C7 removes the Run epoch and the two fixed result-read settings.
-const maxValues = 186
+// Removing the never-read kubernetes.imageRegistryPrefix leaves 185.
+const maxValues = 185
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside

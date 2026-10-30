@@ -267,9 +267,6 @@
         "artifactHelperImage": {
           "type": "string"
         },
-        "imageRegistryPrefix": {
-          "type": "string"
-        },
         "imageRegistrySecret": {
           "type": "string"
         },

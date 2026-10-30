@@ -215,11 +215,6 @@ kubernetes:
   # -- Artifact helper image (needs tar; used by init containers and sidecar)
   artifactHelperImage: "alpine:latest"
 
-  # -- Image registry prefix for custom resource type images.
-  # Applied as a prefix to resource type image references, e.g. "myregistry.io/"
-  # combined with imagePullSecrets enables pulling custom resource type images
-  # from private registries without a custom registry-image resource type.
-  imageRegistryPrefix: ""
   # -- Image registry pull secret name for resource type image pulls.
   # When set, this secret is added to pods that pull resource type images.
   imageRegistrySecret: ""

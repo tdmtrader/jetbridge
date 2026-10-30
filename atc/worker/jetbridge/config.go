@@ -148,10 +148,9 @@ type Config struct {
 	// containers that fetch artifacts from the DaemonSet.
 	ArtifactHelperImage string
 
-	// ImageRegistry configures a container image registry for custom resource
-	// type images. When set, its SecretName is auto-added to imagePullSecrets
-	// on every pod and its Prefix is used when resolving custom resource type
-	// images. Nil means disabled.
+	// ImageRegistry names the registry auth secret for resource type images.
+	// When set, its SecretName is auto-added to imagePullSecrets on every
+	// pod. Nil means disabled.
 	ImageRegistry *ImageRegistryConfig
 
 	// ArtifactDaemonPort is the HTTP port for the DaemonSet artifact server.
@@ -204,13 +203,8 @@ type Config struct {
 	OutputOperationTimeout time.Duration
 }
 
-// ImageRegistryConfig holds configuration for a container image registry
-// used for custom resource type images in production K8s environments.
+// ImageRegistryConfig holds the registry auth for resource type image pulls.
 type ImageRegistryConfig struct {
-	// Prefix is the registry path prefix (e.g. "gcr.io/my-project/concourse").
-	// Custom resource type images are resolved as "<Prefix>/<type-name>".
-	Prefix string
-
 	// SecretName is the name of a K8s Secret (type kubernetes.io/dockerconfigjson)
 	// to use as an imagePullSecret on every created pod. Must exist in the
 	// configured namespace. Empty means no registry auth.

@@ -236,7 +236,6 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `kubernetes.preferredStepNode` | `""` | Node label `key=value` every step pod prefers but does not require. Step pods also tolerate the taint `key=value:NoSchedule`, so tainting the node reserves it for builds. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
 | `kubernetes.artifactHelperImage` | `alpine:latest` | Image for init containers and sidecar. Must have `tar`. |
-| `kubernetes.imageRegistryPrefix` | `""` | Registry prefix for custom resource type images. |
 | `kubernetes.imageRegistrySecret` | `""` | Pull secret name for resource type images. |
 
 ### Storage

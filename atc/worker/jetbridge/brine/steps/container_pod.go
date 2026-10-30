@@ -490,7 +490,7 @@ func ClusterConfigDefinitions() []brine.StepDefinition {
 		Refine[WorkerReady]("the worker uses private registry secret {string}, alongside {string}",
 			func(in WorkerReady, a Args) WorkerReady {
 				in.Config.ImagePullSecrets = splitList(a.String(1))
-				in.Config.ImageRegistry = &jetbridge.ImageRegistryConfig{Prefix: "gcr.io/my-project/concourse", SecretName: a.String(0)}
+				in.Config.ImageRegistry = &jetbridge.ImageRegistryConfig{SecretName: a.String(0)}
 				return in.rebuild()
 			}),
 	}

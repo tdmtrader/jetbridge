@@ -242,10 +242,6 @@ Default mappings:
 | `semver` | `concourse/semver-resource` |
 | `mock` | `concourse/mock-resource` |
 
-Custom resource types use `--kubernetes-image-registry-prefix` to resolve images.
-For example, with prefix `gcr.io/my-project/concourse`, a custom type `my-type`
-resolves to `gcr.io/my-project/concourse/my-type`.
-
 Source: `atc/worker/jetbridge/config.go` (DefaultResourceTypeImages, MergeResourceTypeImages)
 
 ### Direct image references for resource types
@@ -315,7 +311,6 @@ Kubernetes flags are optional.
 | `--kubernetes-artifact-helper-image` | `alpine:latest` | Image for the artifact init containers. Must have `tar`. |
 | `--kubernetes-image-pull-secret` | (none) | K8s Secret for imagePullSecrets on task pods. Repeatable. |
 | `--kubernetes-service-account` | namespace default | ServiceAccount for task pods. |
-| `--kubernetes-image-registry-prefix` | (none) | Registry prefix for custom resource type images (e.g. `gcr.io/my-project/concourse`). |
 | `--kubernetes-image-registry-secret` | (none) | K8s Secret (type `kubernetes.io/dockerconfigjson`) for registry auth. Auto-added to every pod. |
 | `--kubernetes-base-resource-type` | (none) | Override base resource type images. Format: `name=image`. Repeatable. Merges with defaults. |
 
@@ -423,9 +418,8 @@ See `deploy/chart/values.yaml` for all configurable parameters and
   `artifactDaemon.hostPath` for the node's disk and set
   `artifactDaemon.ttl` for how long artifacts are retained.
 - **Ingress**: Enable `ingress.enabled=true` with TLS.
-- **Image registry**: Set `kubernetes.imageRegistryPrefix` and
-  `kubernetes.imageRegistrySecret` if using custom resource types from a
-  private registry.
+- **Image registry**: Set `kubernetes.imageRegistrySecret` if resource type
+  images come from a private registry.
 - **Connection pool sizing**: For N web replicas, ensure PostgreSQL
   `max_connections >= N * (apiMaxConns + backendMaxConns + 7)`.
   Default: `N * (10 + 50 + 7) = 67 per replica`.
