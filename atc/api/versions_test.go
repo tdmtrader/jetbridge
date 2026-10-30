@@ -801,8 +801,8 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			resourceName = "some-resource"
 			stringVersionID = ""
 			exposePipeline = false
@@ -836,7 +836,7 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 			})
 
 			Context("and the pipeline is private", func() {
@@ -848,7 +848,7 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 
 				Context("when not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						scriptedAccess.authenticated = false
 					})
 
 					It("returns 401", func() {
@@ -860,7 +860,7 @@ func versionsAPIBuildRelationshipSpecs(relationship string) func() {
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
 					exposePipeline = true
-					fakeAccess.IsAuthenticatedReturns(false)
+					scriptedAccess.authenticated = false
 				})
 
 				It("returns 200 OK", func() {
@@ -1011,13 +1011,13 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 			})
 
 			Context("and the pipeline is private", func() {
 				Context("user is not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						scriptedAccess.authenticated = false
 					})
 
 					It("returns 401", func() {
@@ -1027,7 +1027,7 @@ var _ = Describe("Versions API", func() {
 
 				Context("user is authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						scriptedAccess.authenticated = true
 					})
 
 					It("returns 403", func() {
@@ -1076,7 +1076,7 @@ var _ = Describe("Versions API", func() {
 
 					Context("when the user is authenticated", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAuthenticatedReturns(true)
+							scriptedAccess.authenticated = true
 						})
 
 						It("returns the json without version metadata", func() {
@@ -1091,8 +1091,8 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			It("finds the resource", func() {
@@ -1465,12 +1465,12 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				It("finds the configured resource", func() {
@@ -1531,7 +1531,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
@@ -1541,7 +1541,7 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns Unauthorized", func() {
@@ -1577,12 +1577,12 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authenticated ", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				It("finds the configured resource", func() {
@@ -1642,7 +1642,7 @@ var _ = Describe("Versions API", func() {
 			})
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns Forbidden", func() {
@@ -1652,7 +1652,7 @@ var _ = Describe("Versions API", func() {
 		})
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns Unauthorized", func() {
@@ -1691,12 +1691,12 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				It("finds the configured resource", func() {
@@ -1786,7 +1786,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 				It("returns Forbidden", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
@@ -1796,7 +1796,7 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns Unauthorized", func() {
@@ -1817,8 +1817,8 @@ var _ = Describe("Versions API", func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(false)
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = false
 			resourceName = "resource-name"
 			prepare = nil
 		})
@@ -1840,7 +1840,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the user is an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("returns 200", func() {
@@ -1918,8 +1918,8 @@ var _ = Describe("Versions API", func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(false)
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = false
 			resourceTypeName = "some-resource-type"
 			prepare = nil
 		})
@@ -1934,7 +1934,7 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns Unauthorized", func() {
@@ -1951,7 +1951,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the user is an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("returns 200", func() {

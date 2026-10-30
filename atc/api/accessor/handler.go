@@ -12,7 +12,6 @@ import (
 const accessorContextKey atc.ContextKey = "accessor"
 const customRolesContextKey atc.ContextKey = "custom-roles"
 
-//counterfeiter:generate . AccessFactory
 type AccessFactory interface {
 	Create(req *http.Request, role string) (Access, error)
 }

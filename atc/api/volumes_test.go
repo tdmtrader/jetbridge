@@ -108,7 +108,7 @@ var _ = Describe("Volumes API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -118,13 +118,13 @@ var _ = Describe("Volumes API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			Context("when identifying the team succeeds", func() {
 				It("receives correct team name as function argument", func() {
-					Expect(fakeAccess.IsAuthorizedArgsForCall(0)).To(Equal("a-team"))
+					Expect(scriptedAccess.authorizedTeams()[0]).To(Equal("a-team"))
 				})
 
 				It("does not return volumes owned by another team", func() {

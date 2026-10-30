@@ -54,7 +54,7 @@ var _ = Describe("Hangar status API", func() {
 		realdb = useRealDB()
 		realdb.Deps.hangarStatus = hangarSource{conn: realdb.Conn}
 		server = realdb.Serve()
-		fakeAccess.IsAuthenticatedReturns(true)
+		scriptedAccess.authenticated = true
 	})
 
 	get := func() *http.Response {
@@ -74,14 +74,14 @@ var _ = Describe("Hangar status API", func() {
 	}
 
 	It("is admin-only", func() {
-		fakeAccess.IsAdminReturns(false)
+		scriptedAccess.admin = false
 		Expect(get().StatusCode).To(Equal(http.StatusForbidden))
 		Expect(resolve("1").StatusCode).To(Equal(http.StatusForbidden))
 	})
 
 	Context("as an admin", func() {
 		BeforeEach(func() {
-			fakeAccess.IsAdminReturns(true)
+			scriptedAccess.admin = true
 		})
 
 		It("reports the in-service flag, the residue and the open findings, and resolves one by id", func() {

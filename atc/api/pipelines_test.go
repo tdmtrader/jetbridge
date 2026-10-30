@@ -555,7 +555,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when team is set in user context", func() {
 			BeforeEach(func() {
-				fakeAccess.TeamNamesReturns([]string{"some-team"})
+				scriptedAccess.teamNames = []string{"some-team"}
 			})
 
 			It("does not grant visibility to an unrelated team", func() {
@@ -571,7 +571,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.TeamNamesReturns([]string{"main"})
+				scriptedAccess.teamNames = []string{"main"}
 			})
 
 			It("returns all pipelines of the team + all public pipelines", func() {
@@ -584,7 +584,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("user has the Admin privilege", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("user can see all private and public pipelines from all teams", func() {
@@ -640,7 +640,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as requested team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authorized = true
 			})
 
 			It("returns 200 OK", func() {
@@ -688,8 +688,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as another team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = false
 			})
 
 			It("returns only team's public pipelines", func() {
@@ -699,7 +699,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns only team's public pipelines", func() {
@@ -742,7 +742,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 				Expect(detailPipeline.Hide()).To(Succeed())
 			})
 
@@ -753,8 +753,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as requested team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			It("returns 200 ok", func() {
@@ -785,8 +785,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated as another team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = false
 
 			})
 
@@ -813,7 +813,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated at all", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			Context("and the pipeline is private", func() {
@@ -877,7 +877,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 			})
 
 			Context("and the pipeline is private", func() {
@@ -887,7 +887,7 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when user is authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						scriptedAccess.authenticated = true
 					})
 					It("returns 403", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
@@ -896,7 +896,7 @@ var _ = Describe("Pipelines API", func() {
 
 				Context("when user is not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						scriptedAccess.authenticated = false
 					})
 
 					It("returns 401", func() {
@@ -919,8 +919,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			Context("when the pipeline has no finished builds", func() {
@@ -1127,12 +1127,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when deleting succeeds", func() {
@@ -1168,7 +1168,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1179,7 +1179,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when the user is not logged in", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1210,12 +1210,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when pausing the pipeline succeeds", func() {
@@ -1226,7 +1226,7 @@ var _ = Describe("Pipelines API", func() {
 						})
 						server = realdb.Serve()
 						requestTeam = "main"
-						fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
+						scriptedAccess.userInfo = atc.UserInfo{DisplayUserId: "api-user"}
 					})
 
 					It("returns 200", func() {
@@ -1259,7 +1259,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1270,7 +1270,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -1291,8 +1291,8 @@ var _ = Describe("Pipelines API", func() {
 
 		BeforeEach(func() {
 			requestTeam = "a-team"
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 
 		JustBeforeEach(func() {
@@ -1350,7 +1350,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -1381,11 +1381,11 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when unpausing the pipeline succeeds", func() {
@@ -1427,7 +1427,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1438,7 +1438,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1469,12 +1469,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when exposing the pipeline succeeds", func() {
@@ -1513,7 +1513,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1524,7 +1524,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1555,11 +1555,11 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when hiding the pipeline succeeds", func() {
@@ -1599,7 +1599,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403 Forbidden", func() {
@@ -1610,7 +1610,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1653,12 +1653,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when ordering the pipelines succeeds", func() {
@@ -1744,7 +1744,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1755,7 +1755,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1796,12 +1796,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when requester belongs to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when ordering the pipelines succeeds", func() {
@@ -1876,7 +1876,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1887,7 +1887,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -1920,11 +1920,11 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when renaming succeeds", func() {
@@ -2029,7 +2029,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when requester does not belong to the team", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403 Forbidden", func() {
@@ -2040,7 +2040,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -2111,7 +2111,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			Context("and the pipeline is private", func() {
@@ -2138,8 +2138,8 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			Context("when no params are passed", func() {
@@ -2381,7 +2381,7 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 				postDB = useRealDB()
 				postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 				server = postDB.Serve()
@@ -2398,12 +2398,12 @@ var _ = Describe("Pipelines API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 					postDB = useRealDB()
 					postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 					server = postDB.Serve()
@@ -2420,7 +2420,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when creating a started build fails", func() {
@@ -2498,7 +2498,7 @@ var _ = Describe("Pipelines API", func() {
 
 			Context("when the target is a template", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 					postDB = useRealDB()
 					postPipeline = postDB.SavePipeline(postDB.Main, "a-pipeline", atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "job"}}})
 					server = postDB.Serve()

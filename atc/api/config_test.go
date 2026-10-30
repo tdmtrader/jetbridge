@@ -387,8 +387,8 @@ var _ = Describe("Config API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server := realdb.Serve()
 			generator := rata.NewRequestGenerator(server.URL, atc.Routes)
 			routeParams := rata.Params{"team_name": team.Name(), "pipeline_name": template.Name()}
@@ -444,8 +444,8 @@ var _ = Describe("Config API", func() {
 			build, err := job.CreateBuild("manual-user")
 			Expect(err).NotTo(HaveOccurred())
 
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server := realdb.Serve()
 			generator := rata.NewRequestGenerator(server.URL, atc.Routes)
 			templateConfig := atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}
@@ -543,8 +543,8 @@ var _ = Describe("Config API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			Context("when the team is found", func() {
@@ -714,7 +714,7 @@ var _ = Describe("Config API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -852,8 +852,8 @@ var _ = Describe("Config API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = true
 			})
 
 			Context("when an identifier is invalid", func() {
@@ -1818,7 +1818,7 @@ jobs:
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {

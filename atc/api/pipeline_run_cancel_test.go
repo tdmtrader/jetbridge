@@ -28,9 +28,9 @@ var _ = Describe("Pipeline Run cancellation API", func() {
 		team, found, err := database.Deps.teamFactory.FindTeam(atc.DefaultTeamName)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		fakeAccessor.CreateReturns(accessor.NewAccessor(accessor.Verification{
+		scriptedAccessFactory.access = accessor.NewAccessor(accessor.Verification{
 			HasToken: true, IsTokenValid: true, RawClaims: claims,
-		}, accessor.OperatorRole, "aud", []string{"concourse-worker"}, []db.Team{team}, displayName{}), nil)
+		}, accessor.OperatorRole, "aud", []string{"concourse-worker"}, []db.Team{team}, displayName{})
 	}
 
 	operator := func(subject string) map[string]any {

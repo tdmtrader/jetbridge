@@ -70,8 +70,8 @@ var _ = Describe("Pipelines API", func() {
 		})
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = true
 			credsManagers["kubernetes"] = &kubernetes.KubernetesManager{
 				InClusterConfig: true,
 				NamespacePrefix: "concourse-",

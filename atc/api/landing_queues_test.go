@@ -24,8 +24,8 @@ var _ = Describe("Landing queues API", func() {
 		server = realdb.Serve()
 		_, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team", Auth: atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:username"}}}})
 		Expect(err).NotTo(HaveOccurred())
-		fakeAccess.IsAuthenticatedReturns(true)
-		fakeAccess.IsAuthorizedReturns(true)
+		scriptedAccess.authenticated = true
+		scriptedAccess.authorized = true
 		base = server.URL + "/api/v1/teams/a-team/landing-queues/trunk"
 	})
 
@@ -86,7 +86,7 @@ var _ = Describe("Landing queues API", func() {
 	})
 
 	It("A member of another team is refused", func() {
-		fakeAccess.IsAuthorizedReturns(false)
+		scriptedAccess.authorized = false
 		Expect(do(http.MethodPut, base, config).StatusCode).To(Equal(http.StatusForbidden))
 		Expect(do(http.MethodGet, base, "").StatusCode).To(Equal(http.StatusForbidden))
 	})

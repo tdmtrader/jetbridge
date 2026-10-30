@@ -644,7 +644,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("adds persisted private jobs for authenticated team membership", func() {
 			state := setupListing()
-			fakeAccess.TeamNamesReturns([]string{"some-team"})
+			scriptedAccess.teamNames = []string{"some-team"}
 			server = state.fixture.Serve()
 			response := jobsAPIGet(server, "/api/v1/jobs")
 			expectListing(response, state, "public-pipeline", "private-authorized")
@@ -652,7 +652,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns every persisted active job for an administrator", func() {
 			state := setupListing()
-			fakeAccess.IsAdminReturns(true)
+			scriptedAccess.admin = true
 			server = state.fixture.Serve()
 			response := jobsAPIGet(server, "/api/v1/jobs")
 			expectListing(response, state, "public-pipeline", "private-authorized", "private-unauthorized")
@@ -699,8 +699,8 @@ var _ = Describe("Jobs API", func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			pipelineRef = atc.PipelineRef{Name: "some-pipeline"}
 			exposePipeline = false
 			routePipeline = nil
@@ -763,8 +763,8 @@ var _ = Describe("Jobs API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authenticated = false
+				scriptedAccess.authorized = false
 			})
 
 			It("returns 401 for a private pipeline", func() {
@@ -784,8 +784,8 @@ var _ = Describe("Jobs API", func() {
 
 		Context("when authenticated and not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = false
 			})
 
 			It("returns 403 for a private pipeline", func() {
@@ -952,8 +952,8 @@ var _ = Describe("Jobs API", func() {
 		var failure string
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			config = atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}
 			expose = false
 			hasFinishedBuild = false
@@ -1008,8 +1008,8 @@ var _ = Describe("Jobs API", func() {
 
 		Context("when authenticated and not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = false
 			})
 
 			Context("and the pipeline is private", func() {
@@ -1171,8 +1171,8 @@ var _ = Describe("Jobs API", func() {
 				pipelineRef,
 				dashboardConfig(),
 			)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			jobs := map[string]db.Job{}
 			for _, name := range []string{"job-1", "job-2", "job-3"} {
 				jobs[name] = fixture.Job(name)
@@ -1226,8 +1226,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns an empty dashboard for a persisted pipeline with no jobs", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -1236,8 +1236,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 from the narrow real-pipeline dashboard boundary", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.ServePipeline(dashboardErrorPipeline{Pipeline: fixture.Pipeline, err: errors.New("dashboard failed")})
 			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -1245,8 +1245,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 401 for an unauthenticated private persisted pipeline", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authenticated = false
+			scriptedAccess.authorized = false
 			Expect(fixture.Pipeline.Hide()).To(Succeed())
 			server = fixture.Serve()
 			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
@@ -1255,8 +1255,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns a public persisted dashboard without authentication", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authenticated = false
+			scriptedAccess.authorized = false
 			Expect(fixture.Pipeline.Expose()).To(Succeed())
 			server = fixture.Serve()
 			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
@@ -1278,8 +1278,8 @@ var _ = Describe("Jobs API", func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			pipelineRef = atc.PipelineRef{Name: "some-pipeline"}
 			config = atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}
 			queryParams = ""
@@ -1309,8 +1309,8 @@ var _ = Describe("Jobs API", func() {
 
 		Context("when authenticated and not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authenticated = true
+				scriptedAccess.authorized = false
 			})
 
 			It("returns 403 for a private pipeline", func() {
@@ -1572,9 +1572,9 @@ var _ = Describe("Jobs API", func() {
 		}
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthorizedReturns(true)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
+			scriptedAccess.authorized = true
+			scriptedAccess.authenticated = true
+			scriptedAccess.userInfo = atc.UserInfo{DisplayUserId: "api-user"}
 		})
 
 		It("persists exactly one pending build and schedules a real check from the persisted pin", func() {
@@ -1794,13 +1794,13 @@ var _ = Describe("Jobs API", func() {
 		}
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 
 		It("returns 401 when unauthenticated", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			server = fixture.Serve()
 			response := jobsAPIGet(server, path)
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -1808,7 +1808,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 403 when authenticated but unauthorized", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authorized = false
 			server = fixture.Serve()
 			response := jobsAPIGet(server, path)
 			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
@@ -1949,8 +1949,8 @@ var _ = Describe("Jobs API", func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthorizedReturns(true)
-			fakeAccess.IsAuthenticatedReturns(true)
+			scriptedAccess.authorized = true
+			scriptedAccess.authenticated = true
 			config = atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}}
 			buildName = ""
 			expose = false
@@ -2055,13 +2055,13 @@ var _ = Describe("Jobs API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 			})
 
 			Context("and the pipeline is private", func() {
 				Context("when not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
+						scriptedAccess.authenticated = false
 					})
 
 					It("returns 401", func() {
@@ -2071,7 +2071,7 @@ var _ = Describe("Jobs API", func() {
 
 				Context("when authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						scriptedAccess.authenticated = true
 					})
 
 					It("returns 403", func() {
@@ -2136,9 +2136,9 @@ var _ = Describe("Jobs API", func() {
 		}
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthorizedReturns(true)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "rerun-user"})
+			scriptedAccess.authorized = true
+			scriptedAccess.authenticated = true
+			scriptedAccess.userInfo = atc.UserInfo{DisplayUserId: "rerun-user"}
 		})
 
 		It("persists a pending rerun linked to the real original build", func() {
@@ -2273,9 +2273,9 @@ var _ = Describe("Jobs API", func() {
 
 		It("persists the authenticated user's pause state", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
+			scriptedAccess.userInfo = atc.UserInfo{DisplayUserId: "api-user"}
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -2290,8 +2290,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 404 for a missing configured job", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
@@ -2299,8 +2299,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.ServePipeline(fixture.doomedPipeline())
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -2308,8 +2308,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when pausing a preloaded real job on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
 			server = fixture.ServePipeline(pipeline)
 			response := jobsAPIRequest(server, http.MethodPut, path)
@@ -2318,7 +2318,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 401 without authentication", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -2337,8 +2337,8 @@ var _ = Describe("Jobs API", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			job := fixture.Job("job-name")
 			Expect(job.Pause("setup-user")).To(Succeed())
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -2352,8 +2352,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 404 for a missing configured job", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
@@ -2361,8 +2361,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.ServePipeline(fixture.doomedPipeline())
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -2370,8 +2370,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when unpausing a preloaded real job on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
 			server = fixture.ServePipeline(pipeline)
 			response := jobsAPIRequest(server, http.MethodPut, path)
@@ -2380,7 +2380,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 401 without authentication", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -2409,8 +2409,8 @@ var _ = Describe("Jobs API", func() {
 		It("deletes all matching step caches and preserves another job's cache", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			factory, job, otherJob := seedCaches(fixture)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodDelete, basePath)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -2430,8 +2430,8 @@ var _ = Describe("Jobs API", func() {
 		It("deletes only the selected cache path and preserves decoys", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			factory, job, otherJob := seedCaches(fixture)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodDelete, basePath+"?"+atc.ClearTaskCacheQueryPath+"=cache-path")
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -2450,8 +2450,8 @@ var _ = Describe("Jobs API", func() {
 		It("reports zero when no persisted cache matches", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			seedCaches(fixture)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodDelete, basePath+"?"+atc.ClearTaskCacheQueryPath+"=missing")
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -2461,8 +2461,8 @@ var _ = Describe("Jobs API", func() {
 		It("reports zero for a missing step and preserves persisted caches", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			factory, job, otherJob := seedCaches(fixture)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(
 				server,
@@ -2484,8 +2484,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 404 for a missing configured job", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodDelete, basePath)
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
@@ -2493,8 +2493,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.ServePipeline(fixture.doomedPipeline())
 			response := jobsAPIRequest(server, http.MethodDelete, basePath)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -2502,8 +2502,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when clearing a preloaded real job on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
 			server = fixture.ServePipeline(pipeline)
 			response := jobsAPIRequest(server, http.MethodDelete, basePath)
@@ -2512,7 +2512,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 401 without authentication", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodDelete, basePath)
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -2528,8 +2528,8 @@ var _ = Describe("Jobs API", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
 			job := fixture.Job("job-name")
 			before := job.ScheduleRequestedTime()
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -2541,8 +2541,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 404 for a missing configured job", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
@@ -2550,8 +2550,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			server = fixture.ServePipeline(fixture.doomedPipeline())
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -2559,8 +2559,8 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 500 when scheduling a preloaded real job on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			pipeline := jobsAPIPipeline{Pipeline: fixture.Pipeline, jobName: "job-name", job: fixture.doomedJob("job-name")}
 			server = fixture.ServePipeline(pipeline)
 			response := jobsAPIRequest(server, http.MethodPut, path)
@@ -2569,7 +2569,7 @@ var _ = Describe("Jobs API", func() {
 
 		It("returns 401 without authentication", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			server = fixture.Serve()
 			response := jobsAPIRequest(server, http.MethodPut, path)
 			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -2583,8 +2583,8 @@ var _ = Describe("Jobs API", func() {
 				Template: true,
 				Jobs:     atc.JobConfigs{{Name: "entry"}},
 			})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			return fixture
 		}
 

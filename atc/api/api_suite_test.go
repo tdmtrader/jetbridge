@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/hangarserver"
@@ -37,23 +37,81 @@ var (
 	"resource_causality": false
 }`
 
-	workerRuntime    *apiWorkerRuntime
-	fakeAccess       *accessorfakes.FakeAccess
-	fakeAccessor     *accessorfakes.FakeAccessFactory
-	secretManager    creds.Secrets
-	varSourcePool    creds.VarSourcePool
-	credsManagers    creds.Managers
-	interceptTimeout *observingInterceptTimeout
-	isTLSEnabled     bool
-	cliDownloadsDir  string
-	logger           *lagertest.TestLogger
-	fakeClock        *fakeclock.FakeClock
+	workerRuntime         *apiWorkerRuntime
+	scriptedAccess        *apiAccess
+	scriptedAccessFactory *staticAccessFactory
+	secretManager         creds.Secrets
+	varSourcePool         creds.VarSourcePool
+	credsManagers         creds.Managers
+	interceptTimeout      *observingInterceptTimeout
+	isTLSEnabled          bool
+	cliDownloadsDir       string
+	logger                *lagertest.TestLogger
+	fakeClock             *fakeclock.FakeClock
 
 	constructedEventHandler *fakeEventHandlerFactory
 
 	server *httptest.Server
 	client *http.Client
 )
+
+// apiAccess is the accessor's answer, set per spec: whether the caller is
+// authenticated, which teams it is authorized for, whether it is an admin or
+// the system, and what it says about itself.
+//
+// The handler specs are about what a handler does with that answer; how the
+// answer is computed from a token and the teams table is the accessor's own
+// contract, pinned by atc/api/accessor's suite over real teams. Several
+// hundred specs across this package set the answer, most of them over handlers
+// built with no database at all, so the answer is a value here rather than a
+// claim set and a team row.
+type apiAccess struct {
+	authenticated bool
+	authorized    bool
+	authorize     func(team string) bool
+	admin         bool
+	system        bool
+	teamNames     []string
+	userInfo      atc.UserInfo
+
+	mu            sync.Mutex
+	authorizedFor []string
+}
+
+func (a *apiAccess) HasToken() bool                 { return a.authenticated }
+func (a *apiAccess) IsAuthenticated() bool          { return a.authenticated }
+func (a *apiAccess) IsAdmin() bool                  { return a.admin }
+func (a *apiAccess) IsSystem() bool                 { return a.system }
+func (a *apiAccess) TeamNames() []string            { return a.teamNames }
+func (a *apiAccess) UserInfo() atc.UserInfo         { return a.userInfo }
+func (a *apiAccess) TeamRoles() map[string][]string { return nil }
+func (a *apiAccess) Claims() accessor.Claims        { return accessor.Claims{} }
+
+func (a *apiAccess) IsAuthorized(team string) bool {
+	a.mu.Lock()
+	a.authorizedFor = append(a.authorizedFor, team)
+	a.mu.Unlock()
+	if a.authorize != nil {
+		return a.authorize(team)
+	}
+	return a.authorized
+}
+
+// authorizedTeams is every team a handler asked about, in order.
+func (a *apiAccess) authorizedTeams() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.authorizedFor)
+}
+
+// staticAccessFactory hands every request the same access.
+type staticAccessFactory struct {
+	access accessor.Access
+}
+
+func (f *staticAccessFactory) Create(*http.Request, string) (accessor.Access, error) {
+	return f.access, nil
+}
 
 type fakeEventHandlerFactory struct {
 	build db.BuildForAPI
@@ -119,9 +177,8 @@ var _ = BeforeEach(func() {
 		channel:          make(chan time.Time),
 	}
 
-	fakeAccess = new(accessorfakes.FakeAccess)
-	fakeAccessor = new(accessorfakes.FakeAccessFactory)
-	fakeAccessor.CreateReturns(fakeAccess, nil)
+	scriptedAccess = new(apiAccess)
+	scriptedAccessFactory = &staticAccessFactory{access: scriptedAccess}
 
 	workerRuntime = newAPIWorkerRuntime()
 
@@ -190,7 +247,7 @@ type apiDBDeps struct {
 const auditedAction = atc.GetInfo
 
 // newAPIServer builds the full API handler over deps and serves it. The
-// accessor, policy checker and event handler stay fake: none of them is a
+// accessor's answer and the event handler stay scripted: neither is a
 // database seam.
 func newAPIServer(deps apiDBDeps) *httptest.Server {
 	GinkgoHelper()
@@ -273,7 +330,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		logger,
 		auditedAction,
 		handler,
-		fakeAccessor,
+		scriptedAccessFactory,
 		map[string]string{},
 	)
 

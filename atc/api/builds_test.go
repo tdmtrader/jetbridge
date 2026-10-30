@@ -581,7 +581,7 @@ var _ = Describe("Builds API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -596,12 +596,12 @@ var _ = Describe("Builds API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -612,7 +612,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authorized = true
 				})
 
 				Context("when creating a started build fails", func() {
@@ -824,8 +824,8 @@ var _ = Describe("Builds API", func() {
 			}
 
 			queryParams = ""
-			fakeAccess.TeamNamesReturns(nil)
-			fakeAccess.IsAdminReturns(false)
+			scriptedAccess.teamNames = nil
+			scriptedAccess.admin = false
 		})
 
 		JustBeforeEach(func() {
@@ -842,7 +842,7 @@ var _ = Describe("Builds API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			Context("when no params are passed", func() {
@@ -923,7 +923,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when next/previous pages are available", func() {
 				BeforeEach(func() {
-					fakeAccess.TeamNamesReturns(nil)
+					scriptedAccess.teamNames = nil
 					queryParams = fmt.Sprintf("?from=%d&limit=2", publicBuilds[1].ID())
 				})
 
@@ -949,13 +949,13 @@ var _ = Describe("Builds API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.TeamNamesReturns([]string{"some-team"})
+				scriptedAccess.authenticated = true
+				scriptedAccess.teamNames = []string{"some-team"}
 			})
 
 			Context("when user has the admin privilege", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("calls AllBuilds", func() {
@@ -1029,7 +1029,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when next/previous pages are available", func() {
 				BeforeEach(func() {
-					fakeAccess.TeamNamesReturns(nil)
+					scriptedAccess.teamNames = nil
 					queryParams = fmt.Sprintf("?from=%d&limit=2", publicBuilds[1].ID())
 				})
 
@@ -1167,8 +1167,8 @@ var _ = Describe("Builds API", func() {
 			Context("when the build can be found", func() {
 				Context("when not authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(false)
-						fakeAccess.IsAuthorizedReturns(false)
+						scriptedAccess.authenticated = false
+						scriptedAccess.authorized = false
 					})
 
 					Context("and build is one off", func() {
@@ -1218,12 +1218,12 @@ var _ = Describe("Builds API", func() {
 
 				Context("when authenticated", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthenticatedReturns(true)
+						scriptedAccess.authenticated = true
 					})
 
 					Context("when user is not authorized", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAuthorizedReturns(false)
+							scriptedAccess.authorized = false
 
 						})
 						It("returns 200 OK", func() {
@@ -1233,7 +1233,7 @@ var _ = Describe("Builds API", func() {
 
 					Context("when user is authorized", func() {
 						BeforeEach(func() {
-							fakeAccess.IsAuthorizedReturns(true)
+							scriptedAccess.authorized = true
 						})
 
 						It("returns 200 OK", func() {
@@ -1379,7 +1379,7 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is found", func() {
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					scriptedAccess.authenticated = false
 				})
 
 				Context("and build is one off", func() {
@@ -1419,8 +1419,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1430,8 +1430,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated and authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = true
 				})
 
 				It("returns 200 OK", func() {
@@ -1656,8 +1656,8 @@ var _ = Describe("Builds API", func() {
 		Context("when the build can be found", func() {
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -1667,8 +1667,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = true
 				})
 
 				It("returns 200", func() {
@@ -1687,7 +1687,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					scriptedAccess.authenticated = false
 				})
 
 				Context("and the pipeline is private", func() {
@@ -1862,7 +1862,7 @@ var _ = Describe("Builds API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -1874,7 +1874,7 @@ var _ = Describe("Builds API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("when looking up the build fails", func() {
@@ -1904,7 +1904,7 @@ var _ = Describe("Builds API", func() {
 			Context("when the build is found", func() {
 				Context("when not authorized", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthorizedReturns(false)
+						scriptedAccess.authorized = false
 					})
 
 					It("returns 403", func() {
@@ -1916,7 +1916,7 @@ var _ = Describe("Builds API", func() {
 
 				Context("when authorized", func() {
 					BeforeEach(func() {
-						fakeAccess.IsAuthorizedReturns(true)
+						scriptedAccess.authorized = true
 					})
 
 					Context("when aborting the build fails", func() {
@@ -2124,8 +2124,8 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is found", func() {
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -2135,7 +2135,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					scriptedAccess.authenticated = false
 				})
 
 				Context("and build is one off", func() {
@@ -2207,8 +2207,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = true
 				})
 
 				It("fetches data from the db", func() {
@@ -2429,8 +2429,8 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is found", func() {
 			Context("when authenticated, but not authorized", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(false)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = false
 				})
 
 				It("returns 403", func() {
@@ -2440,7 +2440,7 @@ var _ = Describe("Builds API", func() {
 
 			Context("when not authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(false)
+					scriptedAccess.authenticated = false
 				})
 
 				Context("and build is one off", func() {
@@ -2520,8 +2520,8 @@ var _ = Describe("Builds API", func() {
 
 			Context("when authenticated", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAuthenticatedReturns(true)
-					fakeAccess.IsAuthorizedReturns(true)
+					scriptedAccess.authenticated = true
+					scriptedAccess.authorized = true
 				})
 
 				Context("when the build returns a plan", func() {

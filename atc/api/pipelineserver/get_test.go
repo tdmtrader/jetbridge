@@ -10,12 +10,18 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// staticAccessFactory hands every request the real accessor a spec built.
+type staticAccessFactory struct{ access accessor.Access }
+
+func (f staticAccessFactory) Create(*http.Request, string) (accessor.Access, error) {
+	return f.access, nil
+}
 
 var _ = Describe("Pipeline presenter matrix", func() {
 	It("reports run creation capability using the configured route role", func() {
@@ -93,8 +99,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 			if tc.requiredRole != "" {
 				customRoles[atc.CreatePipelineRunV2] = tc.requiredRole
 			}
-			accessFactory := &accessorfakes.FakeAccessFactory{}
-			accessFactory.CreateReturns(access, nil)
+			accessFactory := staticAccessFactory{access}
 			accessor.NewHandler(
 				lagertest.NewTestLogger("test"),
 				atc.GetPipeline,
@@ -155,8 +160,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 				},
 			} {
 				response := httptest.NewRecorder()
-				accessFactory := &accessorfakes.FakeAccessFactory{}
-				accessFactory.CreateReturns(access, nil)
+				accessFactory := staticAccessFactory{access}
 				accessor.NewHandler(
 					lagertest.NewTestLogger("test"),
 					tc.action,

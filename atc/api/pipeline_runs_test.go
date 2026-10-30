@@ -28,9 +28,9 @@ var _ = Describe("Pipeline Runs API", func() {
 			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
 			Jobs:     atc.JobConfigs{{Name: "entry"}},
 		})
-		fakeAccess.IsAuthenticatedReturns(true)
-		fakeAccess.IsAuthorizedReturns(true)
-		fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
+		scriptedAccess.authenticated = true
+		scriptedAccess.authorized = true
+		scriptedAccess.userInfo = atc.UserInfo{DisplayUserId: "api-user"}
 		server = database.Serve()
 	})
 
@@ -171,8 +171,8 @@ var _ = Describe("Pipeline Runs API", func() {
 		created := decodeRun(create(map[string]any{"environment": "production"}))
 		Expect(created.InstanceRef).NotTo(BeNil())
 
-		fakeAccess.IsAuthenticatedReturns(false)
-		fakeAccess.IsAuthorizedReturns(false)
+		scriptedAccess.authenticated = false
+		scriptedAccess.authorized = false
 		response, err := client.Get(pipelineRunsURL(server, template.Name()))
 		Expect(err).NotTo(HaveOccurred())
 		defer response.Body.Close()
@@ -187,8 +187,8 @@ var _ = Describe("Pipeline Runs API", func() {
 
 	It("denies a private template's durable history to anonymous viewers", func() {
 		// This fails if durable history bypasses base-template pipeline access.
-		fakeAccess.IsAuthenticatedReturns(false)
-		fakeAccess.IsAuthorizedReturns(false)
+		scriptedAccess.authenticated = false
+		scriptedAccess.authorized = false
 		response, err := client.Get(pipelineRunsURL(server, template.Name()))
 		Expect(err).NotTo(HaveOccurred())
 		defer response.Body.Close()
@@ -207,8 +207,8 @@ var _ = Describe("Pipeline Runs API", func() {
 		_, err = database.Conn.Exec("UPDATE pipelines SET public = true WHERE id = $1", payload.ID())
 		Expect(err).NotTo(HaveOccurred())
 
-		fakeAccess.IsAuthenticatedReturns(false)
-		fakeAccess.IsAuthorizedReturns(false)
+		scriptedAccess.authenticated = false
+		scriptedAccess.authorized = false
 		response, err := client.Get(pipelineRunsURL(server, template.Name()) + "/" + strconv.Itoa(created.Number))
 		Expect(err).NotTo(HaveOccurred())
 		run := decodeRun(response)

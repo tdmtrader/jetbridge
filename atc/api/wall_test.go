@@ -107,12 +107,12 @@ var _ = Describe("Wall API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("and is admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("returns 200", func() {
@@ -150,7 +150,7 @@ var _ = Describe("Wall API", func() {
 
 			Context("and is not admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(false)
+					scriptedAccess.admin = false
 				})
 
 				It("returns 403", func() {
@@ -161,7 +161,7 @@ var _ = Describe("Wall API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -185,12 +185,12 @@ var _ = Describe("Wall API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("is an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("returns 200", func() {
@@ -205,7 +205,7 @@ var _ = Describe("Wall API", func() {
 			})
 			Context("is not an admin", func() {
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(false)
+					scriptedAccess.admin = false
 				})
 
 				It("returns 403", func() {
@@ -215,7 +215,7 @@ var _ = Describe("Wall API", func() {
 		})
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {

@@ -38,9 +38,9 @@ var _ = Describe("Users API", func() {
 		Context("when authenticated", func() {
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 
-				fakeAccess.UserInfoReturns(atc.UserInfo{
+				scriptedAccess.userInfo = atc.UserInfo{
 					Sub:      "some-sub",
 					Name:     "some-name",
 					UserId:   "some-user-id",
@@ -54,7 +54,7 @@ var _ = Describe("Users API", func() {
 					},
 					Connector:     "some-connector",
 					DisplayUserId: "some-user-id",
-				})
+				}
 			})
 
 			It("succeeds", func() {
@@ -89,7 +89,7 @@ var _ = Describe("Users API", func() {
 
 		Context("not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -120,7 +120,7 @@ var _ = Describe("Users API", func() {
 		Context("when authenticated", func() {
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
+				scriptedAccess.authenticated = true
 			})
 
 			Context("not an admin", func() {
@@ -134,7 +134,7 @@ var _ = Describe("Users API", func() {
 			Context("being an admin", func() {
 
 				BeforeEach(func() {
-					fakeAccess.IsAdminReturns(true)
+					scriptedAccess.admin = true
 				})
 
 				It("succeeds", func() {
@@ -204,7 +204,7 @@ var _ = Describe("Users API", func() {
 		Context("not authenticated", func() {
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401", func() {
@@ -224,8 +224,8 @@ var _ = Describe("Users API", func() {
 			realdb = useRealDB()
 			server = realdb.Serve()
 
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = true
 		})
 
 		JustBeforeEach(func() {

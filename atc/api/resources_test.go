@@ -484,8 +484,8 @@ var _ = Describe("Resources API", func() {
 	Describe("GET /api/v1/resources", func() {
 		It("returns the persisted public and authorized-private resources with their real build state", func() {
 			resources := persistResourceListingGraph(fixture)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.TeamNamesReturns([]string{fixture.team.Name()})
+			scriptedAccess.authenticated = true
+			scriptedAccess.teamNames = []string{fixture.team.Name()}
 
 			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -512,8 +512,8 @@ var _ = Describe("Resources API", func() {
 
 		It("returns only the exposed resource to an anonymous user", func() {
 			resources := persistResourceListingGraph(fixture)
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.TeamNamesReturns(nil)
+			scriptedAccess.authenticated = false
+			scriptedAccess.teamNames = nil
 
 			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -524,7 +524,7 @@ var _ = Describe("Resources API", func() {
 
 		It("returns every persisted resource to an administrator", func() {
 			resources := persistResourceListingGraph(fixture)
-			fakeAccess.IsAdminReturns(true)
+			scriptedAccess.admin = true
 
 			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
 			presented := decodeResourceAPIResponse[[]atc.Resource](response)
@@ -536,7 +536,7 @@ var _ = Describe("Resources API", func() {
 
 		It("returns an empty JSON array when no resource rows exist", func() {
 			fixture.updatePipeline(atc.Config{})
-			fakeAccess.TeamNamesReturns([]string{fixture.team.Name()})
+			scriptedAccess.teamNames = []string{fixture.team.Name()}
 			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
 			Expect(decodeResourceAPIResponse[[]atc.Resource](response)).To(BeEmpty())
@@ -556,8 +556,8 @@ var _ = Describe("Resources API", func() {
 			fixture.scenario.Run(fixture.builder.WithResourceVersions(
 				"resource-name", atc.Version{"ref": "persisted"},
 			))
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -571,8 +571,8 @@ var _ = Describe("Resources API", func() {
 		})
 
 		It("permits anonymous reads only after the persisted pipeline is exposed", func() {
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authenticated = false
+			scriptedAccess.authorized = false
 			privateResponse := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(privateResponse.StatusCode).To(Equal(http.StatusUnauthorized))
 
@@ -584,16 +584,16 @@ var _ = Describe("Resources API", func() {
 
 		It("returns an empty array for a pipeline persisted without resources", func() {
 			fixture.updatePipeline(atc.Config{})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
 			Expect(decodeResourceAPIResponse[[]atc.Resource](response)).To(BeEmpty())
 		})
 
 		It("returns 500 when the production pipeline resource query fails", func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			fixture.overridePipeline(fixture.doomedPipeline())
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -607,8 +607,8 @@ var _ = Describe("Resources API", func() {
 			config := defaultResourceAPIConfig()
 			config.ResourceTypes[0].CheckEvery = &atc.CheckEvery{Interval: 10 * time.Millisecond}
 			fixture.updatePipeline(config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
 			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
@@ -626,8 +626,8 @@ var _ = Describe("Resources API", func() {
 		})
 
 		It("permits anonymous reads only for an exposed pipeline", func() {
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authenticated = false
+			scriptedAccess.authorized = false
 			Expect(requestResourceAPI(fixture, http.MethodGet, path, nil).StatusCode).To(Equal(http.StatusUnauthorized))
 			Expect(fixture.pipeline.Expose()).To(Succeed())
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
@@ -637,16 +637,16 @@ var _ = Describe("Resources API", func() {
 
 		It("returns an empty array when the real pipeline has no resource types", func() {
 			fixture.updatePipeline(atc.Config{})
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
 			Expect(decodeResourceAPIResponse[atc.ResourceTypes](response)).To(BeEmpty())
 		})
 
 		It("returns 500 when the production resource-type query fails", func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 			fixture.overridePipeline(fixture.doomedPipeline())
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
@@ -657,8 +657,8 @@ var _ = Describe("Resources API", func() {
 		const path = "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name"
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 
 		It("returns the persisted resource, last check, and completed check build", func() {
@@ -720,14 +720,14 @@ var _ = Describe("Resources API", func() {
 		})
 
 		It("enforces persisted pipeline visibility", func() {
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authenticated = false
+			scriptedAccess.authorized = false
 			Expect(requestResourceAPI(fixture, http.MethodGet, path, nil).StatusCode).To(Equal(http.StatusUnauthorized))
 
-			fakeAccess.IsAuthenticatedReturns(true)
+			scriptedAccess.authenticated = true
 			Expect(requestResourceAPI(fixture, http.MethodGet, path, nil).StatusCode).To(Equal(http.StatusForbidden))
 
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			Expect(fixture.pipeline.Expose()).To(Succeed())
 			Expect(requestResourceAPI(fixture, http.MethodGet, path, nil).StatusCode).To(Equal(http.StatusOK))
 		})
@@ -740,8 +740,8 @@ var _ = Describe("Resources API", func() {
 		)
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 
 		It("unpins the persisted API pin", func() {
@@ -825,9 +825,9 @@ var _ = Describe("Resources API", func() {
 			missing := "/api/v1/teams/a-team/pipelines/a-pipeline/resources/missing/pin_comment"
 			Expect(requestResourceAPI(fixture, http.MethodPut, missing, body()).StatusCode).To(Equal(http.StatusNotFound))
 
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authorized = false
 			Expect(requestResourceAPI(fixture, http.MethodPut, commentPath, body()).StatusCode).To(Equal(http.StatusForbidden))
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			Expect(requestResourceAPI(fixture, http.MethodPut, commentPath, body()).StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 
@@ -835,9 +835,9 @@ var _ = Describe("Resources API", func() {
 			missing := "/api/v1/teams/a-team/pipelines/a-pipeline/resources/missing/unpin"
 			Expect(requestResourceAPI(fixture, http.MethodPut, missing, nil).StatusCode).To(Equal(http.StatusNotFound))
 
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authorized = false
 			Expect(requestResourceAPI(fixture, http.MethodPut, unpinPath, nil).StatusCode).To(Equal(http.StatusForbidden))
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			Expect(requestResourceAPI(fixture, http.MethodPut, unpinPath, nil).StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 	})
@@ -846,8 +846,8 @@ var _ = Describe("Resources API", func() {
 		const path = "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/cache"
 
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 
 		It("removes only the worker-cache association matching the requested version", func() {
@@ -921,9 +921,9 @@ var _ = Describe("Resources API", func() {
 		})
 
 		It("preserves cache authorization statuses", func() {
-			fakeAccess.IsAuthorizedReturns(false)
+			scriptedAccess.authorized = false
 			Expect(requestResourceAPI(fixture, http.MethodDelete, path, nil).StatusCode).To(Equal(http.StatusForbidden))
-			fakeAccess.IsAuthenticatedReturns(false)
+			scriptedAccess.authenticated = false
 			Expect(requestResourceAPI(fixture, http.MethodDelete, path, nil).StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 
@@ -936,8 +936,8 @@ var _ = Describe("Resources API", func() {
 
 	Describe("manual resource and resource-type checks", func() {
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 
 		DescribeTable("persists a started manual check with the forwarded request and private plan",
@@ -1062,11 +1062,11 @@ var _ = Describe("Resources API", func() {
 				Expect(requestResourceAPI(
 					fixture, http.MethodPost, missingPath, resourceAPIJSONBody(atc.CheckRequestBody{}),
 				).StatusCode).To(Equal(http.StatusNotFound))
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 				Expect(requestResourceAPI(
 					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
 				).StatusCode).To(Equal(http.StatusForbidden))
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 				Expect(requestResourceAPI(
 					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
 				).StatusCode).To(Equal(http.StatusUnauthorized))
@@ -1223,9 +1223,9 @@ var _ = Describe("Resources API", func() {
 
 	Describe("shared resources and resource types", func() {
 		BeforeEach(func() {
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(true)
-			fakeAccess.TeamNamesReturns([]string{fixture.team.Name()})
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = true
+			scriptedAccess.teamNames = []string{fixture.team.Name()}
 		})
 
 		It("returns the public, authorized-private, and unauthorized-private resources sharing a real scope", func() {
@@ -1316,9 +1316,9 @@ var _ = Describe("Resources API", func() {
 
 		DescribeTable("requires authentication and administrator access",
 			func(path string) {
-				fakeAccess.IsAdminReturns(false)
+				scriptedAccess.admin = false
 				Expect(requestResourceAPI(fixture, http.MethodGet, path, nil).StatusCode).To(Equal(http.StatusForbidden))
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 				Expect(requestResourceAPI(fixture, http.MethodGet, path, nil).StatusCode).To(Equal(http.StatusUnauthorized))
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/shared"),

@@ -146,8 +146,8 @@ var _ = Describe("Teams API", func() {
 			Expect(err).NotTo(HaveOccurred())
 			predators, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "predators", Auth: listTeamAuth})
 			Expect(err).NotTo(HaveOccurred())
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedCalls(func(name string) bool { return name == avengers.Name() || name == predators.Name() })
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorize = func(name string) bool { return name == avengers.Name() || name == predators.Name() }
 			_ = aliens
 		})
 
@@ -199,9 +199,9 @@ var _ = Describe("Teams API", func() {
 			var err error
 			team, err = realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team", Auth: atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:username"}}}})
 			Expect(err).NotTo(HaveOccurred())
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = true
+			scriptedAccess.authorized = true
 		})
 
 		JustBeforeEach(func() {
@@ -219,11 +219,11 @@ var _ = Describe("Teams API", func() {
 		})
 
 		Context("when not authenticated", func() {
-			BeforeEach(func() { fakeAccess.IsAuthenticatedReturns(false) })
+			BeforeEach(func() { scriptedAccess.authenticated = false })
 			It("returns 401", func() { Expect(response.StatusCode).To(Equal(http.StatusUnauthorized)) })
 		})
 		Context("when authenticated but not authorized", func() {
-			BeforeEach(func() { fakeAccess.IsAdminReturns(false); fakeAccess.IsAuthorizedReturns(false) })
+			BeforeEach(func() { scriptedAccess.admin = false; scriptedAccess.authorized = false })
 			It("returns 403", func() { Expect(response.StatusCode).To(Equal(http.StatusForbidden)) })
 		})
 	})
@@ -243,7 +243,7 @@ var _ = Describe("Teams API", func() {
 			teamAuth = atc.TeamAuth{"owner": map[string][]string{"groups": {}, "users": {"local:username"}}}
 			atcTeam = atc.Team{Auth: teamAuth}
 			teamName = "some-team"
-			fakeAccess.IsAuthenticatedReturns(true)
+			scriptedAccess.authenticated = true
 		})
 		JustBeforeEach(func() {
 			request, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/"+teamName, jsonEncode(atcTeam))
@@ -253,7 +253,7 @@ var _ = Describe("Teams API", func() {
 		})
 
 		Context("when the requester is an admin and the team is not found", func() {
-			BeforeEach(func() { fakeAccess.IsAuthorizedReturns(true); fakeAccess.IsAdminReturns(true) })
+			BeforeEach(func() { scriptedAccess.authorized = true; scriptedAccess.admin = true })
 			It("persists team mutations through PostgreSQL", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusCreated))
 				created, found, err := realdb.Deps.teamFactory.FindTeam("some-team")
@@ -336,8 +336,8 @@ var _ = Describe("Teams API", func() {
 			BeforeEach(func() {
 				_, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team", Auth: oldAuth})
 				Expect(err).NotTo(HaveOccurred())
-				fakeAccess.IsAuthorizedReturns(true)
-				fakeAccess.IsAdminReturns(false)
+				scriptedAccess.authorized = true
+				scriptedAccess.admin = false
 			})
 			It("updates persisted provider auth", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -403,8 +403,8 @@ var _ = Describe("Teams API", func() {
 
 		Context("when an authorized non-admin targets a missing team", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-				fakeAccess.IsAdminReturns(false)
+				scriptedAccess.authorized = true
+				scriptedAccess.admin = false
 			})
 
 			It("refuses to create the team", func() {
@@ -418,8 +418,8 @@ var _ = Describe("Teams API", func() {
 
 		Context("when the direct team lookup fails", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
-				fakeAccess.IsAdminReturns(true)
+				scriptedAccess.authorized = true
+				scriptedAccess.admin = true
 				doomed := postgresRunner.OpenConn()
 				Expect(doomed.Close()).To(Succeed())
 				deps := realdb.Deps
@@ -443,9 +443,9 @@ var _ = Describe("Teams API", func() {
 		BeforeEach(func() {
 			realdb = useRealDB()
 			server = realdb.Serve()
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAdminReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.admin = true
+			scriptedAccess.authorized = true
 			teamName = "team"
 		})
 		JustBeforeEach(func() {
@@ -490,7 +490,7 @@ var _ = Describe("Teams API", func() {
 			BeforeEach(func() {
 				_, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "team"})
 				Expect(err).NotTo(HaveOccurred())
-				fakeAccess.IsAdminReturns(false)
+				scriptedAccess.admin = false
 			})
 
 			It("returns 403 without deleting the team", func() {
@@ -574,8 +574,8 @@ var _ = Describe("Teams API", func() {
 			realdb = useRealDB()
 			server = realdb.Serve()
 			requestBody = `{"name":"some-new-name"}`
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 		JustBeforeEach(func() {
 			req, err := http.NewRequest("PUT", server.URL+"/api/v1/teams/a-team/rename", bytes.NewBufferString(requestBody))
@@ -585,7 +585,7 @@ var _ = Describe("Teams API", func() {
 		})
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 				_, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -604,7 +604,7 @@ var _ = Describe("Teams API", func() {
 		})
 		Context("when authenticated but not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 				_, err := realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "a-team"})
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -699,8 +699,8 @@ var _ = Describe("Teams API", func() {
 		BeforeEach(func() {
 			realdb = useRealDB()
 			server = realdb.Serve()
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
+			scriptedAccess.authenticated = true
+			scriptedAccess.authorized = true
 		})
 		JustBeforeEach(func() {
 			var err error
@@ -716,7 +716,7 @@ var _ = Describe("Teams API", func() {
 			)
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 				var err error
 				team, err = realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 				Expect(err).NotTo(HaveOccurred())
@@ -751,7 +751,7 @@ var _ = Describe("Teams API", func() {
 			)
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 				var err error
 				team, err = realdb.Deps.teamFactory.CreateTeam(atc.Team{Name: "some-team"})
 				Expect(err).NotTo(HaveOccurred())
@@ -775,8 +775,8 @@ var _ = Describe("Teams API", func() {
 
 			It("returns 403 without listing the team's builds", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				Expect(fakeAccess.IsAuthorizedCallCount()).To(BeNumerically(">", 0))
-				Expect(fakeAccess.IsAuthorizedArgsForCall(0)).To(Equal("some-team"))
+				Expect(len(scriptedAccess.authorizedTeams())).To(BeNumerically(">", 0))
+				Expect(scriptedAccess.authorizedTeams()[0]).To(Equal("some-team"))
 				Expect(state.buildPageSnapshot()).To(BeEmpty())
 				body, err := io.ReadAll(response.Body)
 				Expect(err).NotTo(HaveOccurred())

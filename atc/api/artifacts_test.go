@@ -142,7 +142,7 @@ var _ = Describe("ArtifactRepository API", func() {
 				team:        routeTeam,
 			}
 
-			fakeAccess.IsAuthenticatedReturns(true)
+			scriptedAccess.authenticated = true
 		})
 
 		JustBeforeEach(func() {
@@ -170,7 +170,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -180,7 +180,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 			})
 
 			It("returns 403 Forbidden", func() {
@@ -192,7 +192,7 @@ var _ = Describe("ArtifactRepository API", func() {
 			var volume *runtimetest.Volume
 
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authorized = true
 
 				tarContents = runtimetest.VolumeContent{
 					"some/file": {Data: []byte("some contents")},
@@ -285,7 +285,7 @@ var _ = Describe("ArtifactRepository API", func() {
 				team:        routeTeam,
 			}
 
-			fakeAccess.IsAuthenticatedReturns(true)
+			scriptedAccess.authenticated = true
 		})
 
 		JustBeforeEach(func() {
@@ -309,7 +309,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
+				scriptedAccess.authenticated = false
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -319,7 +319,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(false)
+				scriptedAccess.authorized = false
 			})
 
 			It("returns 403 Forbidden", func() {
@@ -329,7 +329,7 @@ var _ = Describe("ArtifactRepository API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				fakeAccess.IsAuthorizedReturns(true)
+				scriptedAccess.authorized = true
 			})
 
 			It("uses the artifactID to fetch the db volume record", func() {

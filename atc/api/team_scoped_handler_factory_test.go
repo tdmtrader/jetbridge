@@ -48,7 +48,7 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 			logger,
 			auditedAction,
 			innerHandler,
-			fakeAccessor,
+			scriptedAccessFactory,
 			map[string]string{},
 		)
 	})
@@ -94,7 +94,7 @@ var _ = Describe("TeamScopedHandlerFactory", func() {
 			handler = accessor.NewHandler(
 				logger, auditedAction,
 				api.NewTeamScopedHandlerFactory(logger, doomedFactory).HandlerFor(delegate.GetHandler),
-				fakeAccessor, map[string]string{},
+				scriptedAccessFactory, map[string]string{},
 			)
 		})
 
