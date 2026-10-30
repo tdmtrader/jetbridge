@@ -1261,7 +1261,7 @@ loginInstruction userState =
                 , style "line-height" "42px"
                 ]
                 [ Html.a
-                    [ href "/login"
+                    [ href "/sky/login"
                     , style "text-decoration" "underline"
                     , style "color" Colors.welcomeCardText
                     ]

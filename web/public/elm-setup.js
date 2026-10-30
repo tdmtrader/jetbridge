@@ -104,7 +104,7 @@ app.ports.requestLoginRedirect.subscribe(function () {
         });
       } else if (resp.status === 401) {
         const redirect = encodeURIComponent(document.location.pathname + document.location.search);
-        document.location.href = "/login?redirect_uri=" + redirect;
+        document.location.href = "/sky/login?redirect_uri=" + redirect;
       } else {
         retryMessage();
       }

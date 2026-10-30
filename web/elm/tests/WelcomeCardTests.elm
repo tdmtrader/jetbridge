@@ -92,7 +92,7 @@ all =
                         , Query.find [ tag "a", containing [ text "here" ] ]
                             >> Expect.all
                                 [ Query.has
-                                    [ attribute <| Attr.href "/login" ]
+                                    [ attribute <| Attr.href "/sky/login" ]
                                 , Query.has
                                     [ style "text-decoration" "underline" ]
                                 ]
