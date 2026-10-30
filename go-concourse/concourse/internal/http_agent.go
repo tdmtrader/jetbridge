@@ -73,8 +73,6 @@ func (a *httpAgent) send(req *http.Request) (http.Response, error) {
 		log.Println(string(b))
 	}
 
-	showPolicyCheckWarningIfHas(response)
-
 	return *response, nil
 }
 

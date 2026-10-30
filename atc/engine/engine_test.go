@@ -150,7 +150,6 @@ var _ = Describe("Engine", func() {
 				nil,
 				nil,
 				nil,
-				nil,
 			),
 		}
 

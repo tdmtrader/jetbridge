@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -33,7 +32,6 @@ var _ = Describe("Builder", func() {
 				fakeCoreStepFactory,
 				"http://example.com",
 				newCheckRateLimiter(),
-				policy.NoopChecker{},
 				fixture.WorkerFactory,
 				nil,
 				nil,

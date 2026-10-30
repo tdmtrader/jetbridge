@@ -224,11 +224,6 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 		return true, nil
 	}
 
-	err = delegate.CheckRunSetPipelinePolicy(&atcConfig)
-	if err != nil {
-		return false, err
-	}
-
 	fmt.Fprintf(stdout, "setting pipeline: %s\n", pipelineRef.String())
 	delegate.SetPipelineChanged(logger, true)
 

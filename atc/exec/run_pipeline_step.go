@@ -92,22 +92,6 @@ func (step *RunPipelineStep) run(ctx context.Context, state RunState, delegate R
 
 	delegate.Starting(logger)
 
-	// The API route that creates a run is screened by the policy wrappa; this
-	// step reaches no route, so a policy agent would never see a
-	// build-initiated run unless it is asked here. It is asked with the params
-	// exactly as they will be recorded: the references the author wrote, plus
-	// the build's resolved local values. That is what set_pipeline shows for
-	// its own config too, and it is the only honest thing to show -- a secret
-	// the run never stores is not part of the call the agent is judging.
-	//
-	// A policy refusal errors the step rather than failing it, exactly as it
-	// does for set_pipeline: the build did not fail on its own terms, it was
-	// stopped.
-	err = delegate.CheckRunPipelinePolicy(step.metadata.TeamName, resolvedPlan.Name, resolvedPlan.Params)
-	if err != nil {
-		return false, err
-	}
-
 	digest, err := runPipelineInputDigest(step.metadata.TeamName, resolvedPlan)
 	if err != nil {
 		return false, err

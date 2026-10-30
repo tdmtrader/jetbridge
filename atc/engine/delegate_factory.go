@@ -8,14 +8,12 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/imageresolver"
-	"github.com/concourse/concourse/atc/policy"
 )
 
 type DelegateFactory struct {
 	build           db.Build
 	plan            atc.Plan
 	rateLimiter     RateLimiter
-	policyChecker   policy.Checker
 	dbWorkerFactory db.WorkerFactory
 	lockFactory     lock.LockFactory
 
@@ -51,49 +49,49 @@ func (df DelegateFactory) configureDelegate(d any) {
 }
 
 func (delegate DelegateFactory) GetDelegate(state exec.RunState) exec.GetDelegate {
-	d := NewGetDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
+	d := NewGetDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock())
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) PutDelegate(state exec.RunState) exec.PutDelegate {
-	d := NewPutDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
+	d := NewPutDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock())
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) TaskDelegate(state exec.RunState) exec.TaskDelegate {
-	d := NewTaskDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, delegate.dbWorkerFactory, delegate.lockFactory)
+	d := NewTaskDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.dbWorkerFactory, delegate.lockFactory)
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) RunDelegate(state exec.RunState) exec.RunDelegate {
-	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets)
+	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), atc.DisableRedactSecrets)
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) CheckDelegate(state exec.RunState) exec.CheckDelegate {
-	d := NewCheckDelegate(delegate.build, delegate.plan, state, clock.NewClock(), delegate.rateLimiter, delegate.policyChecker)
+	d := NewCheckDelegate(delegate.build, delegate.plan, state, clock.NewClock(), delegate.rateLimiter)
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) BuildStepDelegate(state exec.RunState) exec.BuildStepDelegate {
-	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker, atc.DisableRedactSecrets)
+	d := NewBuildStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), atc.DisableRedactSecrets)
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) SetPipelineStepDelegate(state exec.RunState) exec.SetPipelineStepDelegate {
-	d := NewSetPipelineStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
+	d := NewSetPipelineStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock())
 	delegate.configureDelegate(d)
 	return d
 }
 
 func (delegate DelegateFactory) RunPipelineStepDelegate(state exec.RunState) exec.RunPipelineStepDelegate {
-	d := NewRunPipelineStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
+	d := NewRunPipelineStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock())
 	delegate.configureDelegate(d)
 	return d
 }

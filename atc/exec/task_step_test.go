@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/tracing"
@@ -167,7 +166,6 @@ var _ = Describe("TaskStep", func() {
 					planID,
 					state,
 					clock.NewClock(),
-					policy.NoopChecker{},
 					fixture.WorkerFactory,
 					fixture.LockFactory,
 				),

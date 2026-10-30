@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 )
 
@@ -20,12 +19,11 @@ func NewTaskDelegate(
 	planID atc.PlanID,
 	state exec.RunState,
 	clock clock.Clock,
-	policyChecker policy.Checker,
 	dbWorkerFactory db.WorkerFactory,
 	lockFactory lock.LockFactory,
 ) exec.TaskDelegate {
 	return &taskDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets),
+		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, atc.DisableRedactSecrets),
 
 		eventOrigin: event.Origin{ID: event.OriginID(planID)},
 		planID:      planID,

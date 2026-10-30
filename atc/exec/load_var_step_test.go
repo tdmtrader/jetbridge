@@ -17,7 +17,6 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 )
@@ -90,7 +89,7 @@ var _ = Describe("LoadVarStep", func() {
 		)
 
 		delegateFactory = buildStepDelegateFactory(func(state exec.RunState) exec.BuildStepDelegate {
-			return engine.NewBuildStepDelegate(dbBuild, atc.PlanID(planID), state, clock.NewClock(), policy.NoopChecker{}, false)
+			return engine.NewBuildStepDelegate(dbBuild, atc.PlanID(planID), state, clock.NewClock(), false)
 		})
 
 		streamer = newRecordingStreamer()

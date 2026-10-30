@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/metric"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -246,7 +245,6 @@ var _ = Describe("CheckStep", func() {
 					state,
 					clock.NewClock(),
 					db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
-					policy.NoopChecker{},
 					delegateOpts...,
 				),
 				onScope: func(config db.ResourceConfig, scope db.ResourceConfigScope) {

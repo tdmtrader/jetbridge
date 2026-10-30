@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	. "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -47,7 +46,7 @@ var _ = Describe("RetryErrorStep", func() {
 		)
 
 		delegateFactory = buildStepDelegateFactory(func(state RunState) BuildStepDelegate {
-			return engine.NewBuildStepDelegate(build, "some-plan-id", state, clock.NewClock(), policy.NoopChecker{}, false)
+			return engine.NewBuildStepDelegate(build, "some-plan-id", state, clock.NewClock(), false)
 		})
 
 		state = NewRunState(noopStepper, vars.StaticVariables{})

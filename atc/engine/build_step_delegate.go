@@ -19,7 +19,6 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
@@ -34,7 +33,6 @@ type buildStepDelegate struct {
 	state                exec.RunState
 	stderr               io.Writer
 	stdout               io.Writer
-	policyChecker        policy.Checker
 	disableRedactSecrets bool
 
 	// Optional factories for metadata-only FetchImage.
@@ -73,7 +71,6 @@ func NewBuildStepDelegate(
 	planID atc.PlanID,
 	state exec.RunState,
 	clock clock.Clock,
-	policyChecker policy.Checker,
 	disableRedactSecrets bool,
 	opts ...DelegateOption,
 ) *buildStepDelegate {
@@ -84,7 +81,6 @@ func NewBuildStepDelegate(
 		state:                state,
 		stdout:               nil,
 		stderr:               nil,
-		policyChecker:        policyChecker,
 		disableRedactSecrets: disableRedactSecrets,
 	}
 	for _, opt := range opts {
@@ -289,11 +285,6 @@ func (delegate *buildStepDelegate) FetchImage(
 	checkPlan *atc.Plan,
 	privileged bool,
 ) (runtime.ImageSpec, db.ResourceCache, error) {
-	err := delegate.checkImagePolicy(getPlan.Get.Source, getPlan.Get.Type, privileged)
-	if err != nil {
-		return runtime.ImageSpec{}, nil, err
-	}
-
 	// Try metadata-only path when resource factories are available.
 	// This resolves type images from cached DB versions (populated by lidar)
 	// instead of spawning check+get pods.
@@ -612,66 +603,10 @@ func (delegate *buildStepDelegate) ConstructAcrossSubsteps(templateBytes []byte,
 	return substeps, nil
 }
 
-func (delegate *buildStepDelegate) checkImagePolicy(imageSource atc.Source, imageType string, privileged bool) error {
-	if !delegate.policyChecker.ShouldCheckAction(policy.ActionUseImage) {
-		return nil
-	}
-
-	redactedSource, err := delegate.redactImageSource(imageSource)
-	if err != nil {
-		return fmt.Errorf("redact source: %w", err)
-	}
-
-	return delegate.checkPolicy(policy.PolicyCheckInput{
-		Action:   policy.ActionUseImage,
-		Team:     delegate.build.TeamName(),
-		Pipeline: delegate.build.PipelineName(),
-		Data: map[string]any{
-			"image_type":   imageType,
-			"image_source": redactedSource,
-			"privileged":   privileged,
-		},
-	})
-}
-
-func (delegate *buildStepDelegate) checkPolicy(input policy.PolicyCheckInput) error {
-	result, err := delegate.policyChecker.Check(input)
-	if err != nil {
-		return fmt.Errorf("policy check: %w", err)
-	}
-
-	if !result.Allowed() {
-		policyCheckErr := policy.PolicyCheckNotPass{
-			Messages: result.Messages(),
-		}
-		if result.ShouldBlock() {
-			return policyCheckErr
-		}
-		fmt.Fprintf(delegate.Stderr(), "\x1b[1;33m%s\x1b[0m\n\n", policyCheckErr.Error())
-		fmt.Fprintln(delegate.Stderr(), "\x1b[33mWARNING: unblocking from the policy check failure for soft enforcement\x1b[0m")
-	}
-
-	return nil
-}
-
 func (delegate *buildStepDelegate) buildOutputFilter(str string) string {
 	it := &credVarsIterator{line: str}
 	delegate.state.IterateInterpolatedCreds(it)
 	return it.line
-}
-
-func (delegate *buildStepDelegate) redactImageSource(source atc.Source) (atc.Source, error) {
-	b, err := json.Marshal(&source)
-	if err != nil {
-		return source, err
-	}
-	s := delegate.buildOutputFilter(string(b))
-	newSource := atc.Source{}
-	err = json.Unmarshal([]byte(s), &newSource)
-	if err != nil {
-		return source, err
-	}
-	return newSource, nil
 }
 
 func (delegate *buildStepDelegate) ContainerOwner(planId atc.PlanID) db.ContainerOwner {

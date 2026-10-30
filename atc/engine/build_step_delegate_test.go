@@ -23,7 +23,6 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
@@ -86,11 +85,10 @@ func (factory fixedResourceConfigFactory) FindOrCreateResourceConfig(
 
 var _ = Describe("BuildStepDelegate", func() {
 	var (
-		logger        *lagertest.TestLogger
-		fakeClock     *fakeclock.FakeClock
-		planID        atc.PlanID
-		runState      exec.RunState
-		policyChecker policy.Checker
+		logger    *lagertest.TestLogger
+		fakeClock *fakeclock.FakeClock
+		planID    atc.PlanID
+		runState  exec.RunState
 
 		credVars vars.StaticVariables
 
@@ -115,8 +113,6 @@ var _ = Describe("BuildStepDelegate", func() {
 
 		runState = exec.NewRunState(noopStepper, credVars)
 
-		policyChecker = policy.NoopChecker{}
-
 		fixture = useEngineDB()
 		_, _, _, realBuild = createEngineJobBuild(
 			fixture,
@@ -130,7 +126,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 	Describe("persisted PostgreSQL state", func() {
 		BeforeEach(func() {
-			delegate = engine.NewBuildStepDelegate(realBuild, planID, runState, fakeClock, policyChecker, false)
+			delegate = engine.NewBuildStepDelegate(realBuild, planID, runState, fakeClock, false)
 		})
 
 		It("persists the initializing event", func() {
@@ -155,7 +151,7 @@ var _ = Describe("BuildStepDelegate", func() {
 	// spec needs one, an injected save failure.
 	Describe("runtime behavior over the real build", func() {
 		BeforeEach(func() {
-			delegate = engine.NewBuildStepDelegate(build, planID, runState, fakeClock, policyChecker, false)
+			delegate = engine.NewBuildStepDelegate(build, planID, runState, fakeClock, false)
 		})
 
 		Describe("FetchImage", func() {
@@ -237,7 +233,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			})
 
 			JustBeforeEach(func() {
-				delegate = engine.NewBuildStepDelegate(buildUnderTest, planID, parentRunState, fakeClock, policyChecker, false)
+				delegate = engine.NewBuildStepDelegate(buildUnderTest, planID, parentRunState, fakeClock, false)
 				imageSpec, resourceCache, fetchErr = delegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, privileged)
 			})
 
@@ -288,190 +284,6 @@ var _ = Describe("BuildStepDelegate", func() {
 				})
 			})
 
-			Describe("policy checking", func() {
-				var checker *recordingChecker
-
-				BeforeEach(func() {
-					// The warnings are delivered as build events, which only the
-					// recording wrapper exposes; the values checked come from the
-					// same real build row.
-					buildUnderTest = build
-				})
-
-				Context("when the action does not need to be checked", func() {
-					BeforeEach(func() {
-						checker = &recordingChecker{Checker: newPolicyChecker()}
-						policyChecker = checker
-					})
-
-					It("succeeds", func() {
-						Expect(fetchErr).ToNot(HaveOccurred())
-					})
-
-					It("checked if ActionUseImage is enabled", func() {
-						Expect(checker.actions).To(Equal([]string{policy.ActionUseImage}))
-					})
-
-					It("does not check", func() {
-						Expect(opaServer.Requests()).To(BeEmpty())
-					})
-				})
-
-				Context("when the action needs to be checked", func() {
-					BeforeEach(func() {
-						checker = &recordingChecker{Checker: newPolicyChecker(policy.ActionUseImage)}
-						policyChecker = checker
-					})
-
-					It("policy check should be done", func() {
-						Expect(opaServer.Requests()).To(HaveLen(1))
-					})
-
-					Context("when the check fails", func() {
-						BeforeEach(func() {
-							opaServer.Fails()
-						})
-
-						It("should fail", func() {
-							Expect(fetchErr).To(HaveOccurred())
-							Expect(fetchErr.Error()).To(Equal("policy check: OPA server returned status: 500"))
-						})
-					})
-
-					Context("when the check is not allowed", func() {
-						BeforeEach(func() {
-							opaServer.Answers(`{"result": {"allowed": false, "block": true, "reasons": ["reasonA", "reasonB"]}}`)
-						})
-
-						It("should fail", func() {
-							Expect(fetchErr).To(HaveOccurred())
-							Expect(fetchErr.Error()).To(ContainSubstring("policy check failed"))
-							Expect(fetchErr.Error()).To(ContainSubstring("reasonA"))
-							Expect(fetchErr.Error()).To(ContainSubstring("reasonB"))
-						})
-					})
-
-					// This test case should do same thing as "when the check is allowed",
-					// thus this case only verifies policy check warning messages.
-					Context("when the check is not allowed but non-block", func() {
-						BeforeEach(func() {
-							opaServer.Answers(`{"result": {"allowed": false, "block": false, "reasons": ["reasonA", "reasonB"]}}`)
-						})
-
-						It("succeeds", func() {
-							Expect(fetchErr).ToNot(HaveOccurred())
-						})
-
-						It("log warning messages", func() {
-							e := build.events[0]
-							Expect(e.EventType()).To(Equal(event.EventTypeLog))
-							Expect(e.(event.Log).Origin).To(Equal(event.Origin{
-								ID:     "some-plan-id",
-								Source: event.OriginSourceStderr,
-							}))
-							Expect(e.(event.Log).Payload).To(ContainSubstring("policy check failed"))
-							Expect(e.(event.Log).Payload).To(ContainSubstring("reasonA"))
-							Expect(e.(event.Log).Payload).To(ContainSubstring("reasonB"))
-
-							e = build.events[1]
-							Expect(e.EventType()).To(Equal(event.EventTypeLog))
-							Expect(e.(event.Log).Origin).To(Equal(event.Origin{
-								ID:     "some-plan-id",
-								Source: event.OriginSourceStderr,
-							}))
-							Expect(e.(event.Log).Payload).To(ContainSubstring("WARNING: unblocking from the policy check failure for soft enforcement"))
-						})
-					})
-
-					Context("when the check is allowed", func() {
-						BeforeEach(func() {
-							opaServer.Answers(`{"result": {"allowed": true}}`)
-						})
-
-						It("succeeds", func() {
-							Expect(fetchErr).ToNot(HaveOccurred())
-						})
-
-						It("should not log policy check warning", func() {
-							for i := 0; i < len(build.events); i++ {
-								e := build.events[i]
-								if logEvent, ok := e.(event.Log); ok {
-									Expect(logEvent.Payload).ToNot(ContainSubstring("WARNING: unblocking from the policy check failure for soft enforcement"))
-								}
-							}
-						})
-
-						It("checked with the right values", func() {
-							Expect(opaServer.Requests()).To(HaveLen(1))
-							request := opaServer.Requests()[0]
-							Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
-								Service:        "concourse",
-								ClusterName:    "some-cluster",
-								ClusterVersion: "some-version",
-								Action:         policy.ActionUseImage,
-								Team:           "some-team",
-								Pipeline:       "some-pipeline",
-							}))
-							Expect(request.Data).To(MatchJSON(`{
-								"image_type": "docker",
-								"image_source": {"some": "((source-var))"},
-								"privileged": false
-							}`))
-						})
-
-						Context("when the image source contains credentials", func() {
-							BeforeEach(func() {
-								expectedGetPlan.Get.Source = atc.Source{"some": "super-secret-source"}
-
-								parentRunState.AddLocalVar("source-var", "super-secret-source", true)
-							})
-
-							It("redacts the value prior to checking", func() {
-								Expect(opaServer.Requests()).To(HaveLen(1))
-								request := opaServer.Requests()[0]
-								Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
-									Service:        "concourse",
-									ClusterName:    "some-cluster",
-									ClusterVersion: "some-version",
-									Action:         policy.ActionUseImage,
-									Team:           "some-team",
-									Pipeline:       "some-pipeline",
-								}))
-								Expect(request.Data).To(MatchJSON(`{
-									"image_type": "docker",
-									"image_source": {"some": "((redacted))"},
-									"privileged": false
-								}`))
-							})
-						})
-
-						Context("when privileged", func() {
-							BeforeEach(func() {
-								privileged = true
-							})
-
-							It("checks with privileged", func() {
-								Expect(opaServer.Requests()).To(HaveLen(1))
-								request := opaServer.Requests()[0]
-								Expect(request.PolicyCheckInput).To(Equal(policy.PolicyCheckInput{
-									Service:        "concourse",
-									ClusterName:    "some-cluster",
-									ClusterVersion: "some-version",
-									Action:         policy.ActionUseImage,
-									Team:           "some-team",
-									Pipeline:       "some-pipeline",
-								}))
-								Expect(request.Data).To(MatchJSON(`{
-									"image_type": "docker",
-									"image_source": {"some": "((source-var))"},
-									"privileged": true
-								}`))
-							})
-						})
-					})
-				})
-			})
-
 			Context("when there is no check plan", func() {
 				BeforeEach(func() {
 					expectedCheckPlan = nil
@@ -487,7 +299,7 @@ var _ = Describe("BuildStepDelegate", func() {
 			Context("when no resource factories are set", func() {
 				It("runs both check and get plans (no metadata-only shortcut)", func() {
 					runPlans = nil
-					nativeDelegate := engine.NewBuildStepDelegate(build, planID, parentRunState, fakeClock, policyChecker, false)
+					nativeDelegate := engine.NewBuildStepDelegate(build, planID, parentRunState, fakeClock, false)
 					_, resCache, err := nativeDelegate.FetchImage(context.TODO(), *expectedGetPlan, expectedCheckPlan, false)
 					Expect(err).ToNot(HaveOccurred())
 
@@ -667,7 +479,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				parentRunState := exec.NewRunState(stepper, nil)
 				nativeDelegate = engine.NewBuildStepDelegate(
-					realBuild, planID, parentRunState, fakeClock, policyChecker, false,
+					realBuild, planID, parentRunState, fakeClock, false,
 					engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
 				)
 			})
@@ -734,7 +546,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
 							return new(scriptedStep)
-						}, nil), fakeClock, policyChecker, false,
+						}, nil), fakeClock, false,
 						engine.WithResourceFactories(wrappedFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
@@ -759,7 +571,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
 							return new(scriptedStep)
-						}, nil), fakeClock, policyChecker, false,
+						}, nil), fakeClock, false,
 						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
@@ -816,7 +628,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					registryCheckPlan.Check.Source = registryGetPlan.Get.Source
 
 					nativeDelegate = engine.NewBuildStepDelegate(
-						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step { return new(scriptedStep) }, nil), fakeClock, policyChecker, false,
+						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step { return new(scriptedStep) }, nil), fakeClock, false,
 						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
@@ -847,7 +659,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
 
 					nativeDelegate = engine.NewBuildStepDelegate(
-						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step { return new(scriptedStep) }, nil), fakeClock, policyChecker, false,
+						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step { return new(scriptedStep) }, nil), fakeClock, false,
 						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
@@ -1395,7 +1207,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			BeforeEach(func() {
 				runState = exec.NewRunState(noopStepper, credVars)
-				delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, false)
+				delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, false)
 
 				runState.Get(vars.Reference{Path: "source-param"})
 				runState.Get(vars.Reference{Path: "git-key"})
@@ -1480,7 +1292,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, true)
+						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, true)
 					})
 
 					It("does not redact secrets", func() {
@@ -1581,7 +1393,7 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				Context("is disabled", func() {
 					BeforeEach(func() {
-						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, policyChecker, true)
+						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, true)
 					})
 
 					It("does not redact secrets", func() {

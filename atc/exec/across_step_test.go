@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
@@ -139,7 +138,7 @@ var _ = Describe("AcrossStep", func() {
 		)
 
 		delegateFactory = buildStepDelegateFactory(func(state exec.RunState) exec.BuildStepDelegate {
-			return engine.NewBuildStepDelegate(dbBuild, "across-plan-id", state, clock.NewClock(), policy.NoopChecker{}, false)
+			return engine.NewBuildStepDelegate(dbBuild, "across-plan-id", state, clock.NewClock(), false)
 		})
 
 		plan.Vars = []atc.AcrossVar{

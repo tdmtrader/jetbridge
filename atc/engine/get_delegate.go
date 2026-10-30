@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 )
 
@@ -19,11 +18,10 @@ func NewGetDelegate(
 	planID atc.PlanID,
 	state exec.RunState,
 	clock clock.Clock,
-	policyChecker policy.Checker,
 	opts ...DelegateOption,
 ) exec.GetDelegate {
 	return &getDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets, opts...),
+		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, atc.DisableRedactSecrets, opts...),
 
 		eventOrigin: event.Origin{ID: event.OriginID(planID)},
 		build:       build,

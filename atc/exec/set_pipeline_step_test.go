@@ -17,35 +17,9 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 )
-
-// deniedPolicyCheck is the result a policy agent returns when it blocks an
-// action; the policy package keeps its own result type unexported.
-type deniedPolicyCheck struct {
-	messages []string
-}
-
-func (result deniedPolicyCheck) Allowed() bool      { return false }
-func (result deniedPolicyCheck) ShouldBlock() bool  { return true }
-func (result deniedPolicyCheck) Messages() []string { return result.messages }
-
-// setPipelineDenyingChecker is a policy.Checker wired the way a deployment with
-// a policy agent is: it screens the set_pipeline action, and denies it.
-type setPipelineDenyingChecker struct {
-	policy.NoopChecker
-	messages []string
-}
-
-func (checker setPipelineDenyingChecker) ShouldCheckAction(action string) bool {
-	return action == policy.ActionRunSetPipeline
-}
-
-func (checker setPipelineDenyingChecker) Check(policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
-	return deniedPolicyCheck{messages: checker.messages}, nil
-}
 
 func persistedSetPipelineChanges(fixture *execDBFixture, build db.Build) []bool {
 	GinkgoHelper()
@@ -256,7 +230,6 @@ jobs:
 		currentRef      atc.PipelineRef
 		targetRef       atc.PipelineRef
 
-		policyChecker   policy.Checker
 		delegateFactory exec.SetPipelineStepDelegateFactory
 
 		streamer *recordingStreamer
@@ -302,10 +275,8 @@ jobs:
 		artifactRepository = state.ArtifactRepository()
 		pipelineFileContent = ""
 
-		policyChecker = policy.NoopChecker{}
-
 		delegateFactory = setPipelineStepDelegateFactory(func(state exec.RunState) exec.SetPipelineStepDelegate {
-			return engine.NewSetPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock(), policyChecker)
+			return engine.NewSetPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock())
 		})
 
 		stepMetadata = exec.StepMetadata{
@@ -674,27 +645,6 @@ jobs:
 						config, err := pipeline.Config()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(config).To(Equal(setPipelineTestConfig()))
-					})
-				})
-
-				Context("when policy check fails", func() {
-					BeforeEach(func() {
-						policyChecker = setPipelineDenyingChecker{messages: []string{"policy-check-error"}}
-					})
-
-					It("should return error", func() {
-						Expect(stepErr).To(MatchError(policy.PolicyCheckNotPass{
-							Messages: []string{"policy-check-error"},
-						}))
-					})
-
-					It("should leave the existing config in place", func() {
-						pipeline, found, err := currentTeam.Pipeline(targetRef)
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						config, err := pipeline.Config()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(config).To(Equal(setPipelineTestConfig("hello world")))
 					})
 				})
 

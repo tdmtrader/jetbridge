@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	atcresource "github.com/concourse/concourse/atc/resource"
 	atcworker "github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
@@ -321,7 +320,7 @@ func (b ExecBuild) getStepWithPool(planID atc.PlanID, plan atc.GetPlan, pool exe
 		b.core.DB.LockFactory,
 		b.core.Caches,
 		execGetDelegates(func(state exec.RunState) exec.GetDelegate {
-			return engine.NewGetDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{},
+			return engine.NewGetDelegate(b.core.Build, planID, state, clock.NewClock(),
 				engine.WithResourceFactories(nil, b.core.Caches, nil))
 		}),
 		pool,
@@ -342,7 +341,7 @@ func (b ExecBuild) putStepWithPool(planID atc.PlanID, plan atc.PutPlan, pool exe
 		},
 		pool,
 		execPutDelegates(func(state exec.RunState) exec.PutDelegate {
-			return engine.NewPutDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{},
+			return engine.NewPutDelegate(b.core.Build, planID, state, clock.NewClock(),
 				engine.WithResourceFactories(nil, b.core.Caches, nil))
 		}),
 		0,

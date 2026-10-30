@@ -830,7 +830,7 @@ func (cmd *RunCommand) constructMembers(
 		return nil, err
 	}
 
-	backendComponents, err := cmd.backendComponents(logger, backendConn, lockFactory, secretManager, policyChecker, workerCache, checkBuildsChan)
+	backendComponents, err := cmd.backendComponents(logger, backendConn, lockFactory, secretManager, workerCache, checkBuildsChan)
 	if err != nil {
 		return nil, err
 	}
@@ -1122,7 +1122,6 @@ func (cmd *RunCommand) backendComponents(
 	dbConn db.DbConn,
 	lockFactory lock.LockFactory,
 	secretManager creds.Secrets,
-	policyChecker policy.Checker,
 	workerCache *db.WorkerCache,
 	checkBuildsChan chan db.Build,
 ) ([]RunnableComponent, error) {
@@ -1187,7 +1186,6 @@ func (cmd *RunCommand) backendComponents(
 		defaultRequests,
 		lockFactory,
 		rateLimiter,
-		policyChecker,
 		imgResolver,
 		childRunAdmitter,
 	)
@@ -2367,7 +2365,6 @@ func (cmd *RunCommand) constructEngine(
 	defaultRequests atc.ContainerLimits,
 	lockFactory lock.LockFactory,
 	rateLimiter engine.RateLimiter,
-	policyChecker policy.Checker,
 	resolver imageresolver.Resolver,
 	childRunAdmitter exec.ChildRunAdmitter,
 ) engine.Engine {
@@ -2398,7 +2395,6 @@ func (cmd *RunCommand) constructEngine(
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,
-			policyChecker,
 			workerFactory,
 			lockFactory,
 			resourceConfigFactory,

@@ -16,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/execfakes"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/vars"
 )
@@ -37,39 +36,6 @@ func (digestConflictRefusal) Error() string {
 
 func (digestConflictRefusal) AdmissionRefusal() {}
 
-// runPipelineRecordingChecker is a policy.Checker wired the way a deployment
-// with a policy agent is -- it screens the run_pipeline action -- and it
-// allows, so that what the step showed it can be read back.
-type runPipelineRecordingChecker struct {
-	policy.NoopChecker
-	asked  []string
-	inputs []policy.PolicyCheckInput
-}
-
-func (checker *runPipelineRecordingChecker) ShouldCheckAction(action string) bool {
-	checker.asked = append(checker.asked, action)
-	return action == policy.ActionRunPipeline
-}
-
-func (checker *runPipelineRecordingChecker) Check(input policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
-	checker.inputs = append(checker.inputs, input)
-	return policy.PassedPolicyCheck(), nil
-}
-
-// runPipelineDenyingChecker screens the same action and blocks it.
-type runPipelineDenyingChecker struct {
-	policy.NoopChecker
-	messages []string
-}
-
-func (checker runPipelineDenyingChecker) ShouldCheckAction(action string) bool {
-	return action == policy.ActionRunPipeline
-}
-
-func (checker runPipelineDenyingChecker) Check(policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
-	return deniedPolicyCheck{messages: checker.messages}, nil
-}
-
 var _ = Describe("RunPipelineStep", func() {
 	var (
 		ctx        context.Context
@@ -83,7 +49,6 @@ var _ = Describe("RunPipelineStep", func() {
 		realBuild       db.Build
 
 		fakeAdmitter    *execfakes.FakeChildRunAdmitter
-		policyChecker   policy.Checker
 		delegateFactory exec.RunPipelineStepDelegateFactory
 
 		state exec.RunState
@@ -122,10 +87,8 @@ var _ = Describe("RunPipelineStep", func() {
 		fakeAdmitter = new(execfakes.FakeChildRunAdmitter)
 		fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{RunID: 42, Number: 7}, nil)
 
-		policyChecker = policy.NoopChecker{}
-
 		delegateFactory = runPipelineStepDelegateFactory(func(state exec.RunState) exec.RunPipelineStepDelegate {
-			return engine.NewRunPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock(), policyChecker)
+			return engine.NewRunPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock())
 		})
 
 		stepMetadata = exec.StepMetadata{
@@ -454,85 +417,6 @@ var _ = Describe("RunPipelineStep", func() {
 			Expect(stepErr).To(HaveOccurred())
 			Expect(stepOk).To(BeFalse())
 			Expect(fakeAdmitter.AdmitChildRunCallCount()).To(BeZero())
-		})
-	})
-
-	// Creating a run over the API is screened by the policy wrappa. A build
-	// creating one reaches no route, so without this the agent that a
-	// deployment installed to govern run creation would never see a
-	// build-initiated run at all.
-	Describe("the policy check", func() {
-		var checker *runPipelineRecordingChecker
-
-		BeforeEach(func() {
-			checker = &runPipelineRecordingChecker{}
-			policyChecker = checker
-		})
-
-		It("screens the run_pipeline action", func() {
-			Expect(checker.asked).To(Equal([]string{policy.ActionRunPipeline}))
-		})
-
-		// The agent is shown the call as the run will record it: the
-		// references the author wrote, with the calling build's own local vars
-		// resolved. It is not shown credential values, because the run never
-		// holds any -- the same deal set_pipeline's check offers.
-		It("shows the agent the call as it will be recorded", func() {
-			Expect(checker.inputs).To(HaveLen(1))
-
-			input := checker.inputs[0]
-			Expect(input.Action).To(Equal(policy.ActionRunPipeline))
-			Expect(input.Team).To(Equal("some-team"))
-			Expect(input.Pipeline).To(Equal("parent-pipeline"))
-			Expect(input.Data).To(Equal(exec.RunPipelinePolicyData{
-				Team:     "some-team",
-				Pipeline: "version-upgrade",
-				Params:   atc.RunParams{"ref": "deadbeef"},
-			}))
-		})
-
-		Context("when a param names a credential", func() {
-			BeforeEach(func() {
-				rpPlan = &atc.RunPipelinePlan{
-					Name:   "version-upgrade",
-					Params: atc.RunParams{"ref": "((secret/x))"},
-				}
-			})
-
-			It("shows the agent the reference, never the secret", func() {
-				Expect(checker.inputs).To(HaveLen(1))
-				Expect(checker.inputs[0].Data).To(Equal(exec.RunPipelinePolicyData{
-					Team:     "some-team",
-					Pipeline: "version-upgrade",
-					Params:   atc.RunParams{"ref": "((secret/x))"},
-				}))
-			})
-		})
-
-		It("admits once the agent allows", func() {
-			Expect(stepErr).NotTo(HaveOccurred())
-			Expect(stepOk).To(BeTrue())
-			Expect(fakeAdmitter.AdmitChildRunCallCount()).To(Equal(1))
-		})
-
-		Context("when the agent blocks the run", func() {
-			BeforeEach(func() {
-				policyChecker = runPipelineDenyingChecker{messages: []string{"policy-check-error"}}
-			})
-
-			// A blocked run errors the step rather than failing it, exactly as
-			// set_pipeline's does: the build did not fail on its own terms, it
-			// was stopped by the operator's policy.
-			It("errors the step", func() {
-				Expect(stepOk).To(BeFalse())
-				Expect(stepErr).To(MatchError(policy.PolicyCheckNotPass{
-					Messages: []string{"policy-check-error"},
-				}))
-			})
-
-			It("admits nothing", func() {
-				Expect(fakeAdmitter.AdmitChildRunCallCount()).To(BeZero())
-			})
 		})
 	})
 

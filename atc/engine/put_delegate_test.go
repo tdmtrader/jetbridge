@@ -14,7 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/vars"
 )
@@ -91,7 +90,7 @@ var _ = Describe("PutDelegate", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		delegate = engine.NewPutDelegate(realBuild, "some-plan-id", state, fakeClock, policy.NoopChecker{})
+		delegate = engine.NewPutDelegate(realBuild, "some-plan-id", state, fakeClock)
 	})
 
 	Describe("Finished", func() {

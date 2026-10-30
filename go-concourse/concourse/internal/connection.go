@@ -178,8 +178,6 @@ func (connection *connection) populateResponse(response *http.Response, returnRe
 		}
 	}
 
-	showPolicyCheckWarningIfHas(response)
-
 	if passedResponse == nil {
 		return nil
 	}

@@ -18,7 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
@@ -176,7 +175,7 @@ var _ = Describe("TaskDelegate", func() {
 		}
 		state = exec.NewRunState(noopStepper, credVars)
 
-		delegate = NewTaskDelegate(realBuild, planID, state, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory).(*taskDelegate)
+		delegate = NewTaskDelegate(realBuild, planID, state, fakeClock, fixture.WorkerFactory, fixture.LockFactory).(*taskDelegate)
 
 		delegate.SetTaskConfig(atc.TaskConfig{
 			Platform: "some-platform",
@@ -399,7 +398,7 @@ var _ = Describe("TaskDelegate", func() {
 			}
 
 			runState := exec.NewRunState(stepper, nil)
-			delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
+			delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
 
 			imageResource = atc.ImageResource{
 				Type:   "docker",
@@ -563,7 +562,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				runState := exec.NewRunState(stepper, nil)
-				delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
+				delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
 			})
 
 			It("succeeds", func() {
@@ -650,7 +649,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
+				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
 
 				imgSpec, fetchErr := nativeDelegate.FetchImage(
 					context.TODO(), customImage, atc.ResourceTypes{}, false, atc.Tags{"k8s"}, false,
@@ -713,7 +712,7 @@ var _ = Describe("TaskDelegate", func() {
 				}
 
 				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, policy.NoopChecker{}, fixture.WorkerFactory, fixture.LockFactory)
+				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
 
 				imgSpec, fetchErr := nativeDelegate.FetchImage(
 					context.TODO(), pinnedImage, atc.ResourceTypes{}, false, nil, false,
@@ -760,7 +759,6 @@ var _ = Describe("TaskDelegate", func() {
 			delegateFactory = DelegateFactory{
 				build:                 realBuild,
 				plan:                  plan,
-				policyChecker:         policy.NoopChecker{},
 				dbWorkerFactory:       fixture.WorkerFactory,
 				lockFactory:           fixture.LockFactory,
 				resourceConfigFactory: resourceConfigFactory,
@@ -1221,7 +1219,6 @@ var _ = Describe("TaskDelegate", func() {
 				df := DelegateFactory{
 					build:                 realBuild,
 					plan:                  atc.Plan{ID: planID},
-					policyChecker:         policy.NoopChecker{},
 					dbWorkerFactory:       fixture.WorkerFactory,
 					lockFactory:           fixture.LockFactory,
 					resourceConfigFactory: resourceConfigFactory,

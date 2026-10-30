@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
 	atcexec "github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runs"
 	atcworker "github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -98,7 +97,7 @@ func exerciseRunTaskEngine(in RunInputAdmission, mode string, rec *brine.Recorde
 		}
 	}
 	core := engine.NewCoreStepFactory(pool, atcworker.NewStreamer(compression.NewGzipCompression()), jdb.LockFactory, jdb.TeamFactory, jdb.BuildFactory, nil, nil, atc.ContainerLimits{}, atc.ContainerLimits{}, 0, 0, 0, 0, options...)
-	stepper, err := engine.NewStepperFactory(core, "http://jetbridge.test", nil, policy.NoopChecker{}, jdb.WorkerFactory, jdb.LockFactory, nil, nil, nil).StepperForBuild(build)
+	stepper, err := engine.NewStepperFactory(core, "http://jetbridge.test", nil, jdb.WorkerFactory, jdb.LockFactory, nil, nil, nil).StepperForBuild(build)
 	if err != nil {
 		return err
 	}

@@ -17,7 +17,6 @@ import (
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
@@ -256,7 +255,7 @@ var _ = Describe("GetStep", func() {
 		delegateOpts = nil
 		delegateFactory = getDelegateFactory(func(state exec.RunState) exec.GetDelegate {
 			delegate = &recordingGetDelegate{
-				GetDelegate: engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), policy.NoopChecker{}, delegateOpts...),
+				GetDelegate: engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), delegateOpts...),
 			}
 			return delegate
 		})
