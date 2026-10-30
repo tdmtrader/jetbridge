@@ -24,7 +24,6 @@ module Concourse exposing
     , DatabaseID
     , FeatureFlags
     , HookedPlan
-    , ImageBuildPlans
     , InstanceGroupIdentifier
     , InstanceVars
     , Job
@@ -387,29 +386,14 @@ mapBuildPlan fn plan =
                 BuildStepArtifactInput _ ->
                     []
 
-                BuildStepPut _ _ imagePlans ->
-                    case imagePlans of
-                        Nothing ->
-                            []
+                BuildStepPut _ _ ->
+                    []
 
-                        Just { check, get } ->
-                            mapBuildPlan fn check ++ mapBuildPlan fn get
+                BuildStepCheck _ ->
+                    []
 
-                BuildStepCheck _ imagePlans ->
-                    case imagePlans of
-                        Nothing ->
-                            []
-
-                        Just { check, get } ->
-                            mapBuildPlan fn check ++ mapBuildPlan fn get
-
-                BuildStepGet _ _ _ imagePlans ->
-                    case imagePlans of
-                        Nothing ->
-                            []
-
-                        Just { check, get } ->
-                            mapBuildPlan fn check ++ mapBuildPlan fn get
+                BuildStepGet _ _ _ ->
+                    []
 
                 BuildStepArtifactOutput _ ->
                     []
@@ -464,22 +448,16 @@ type alias ResourceName =
     String
 
 
-type alias ImageBuildPlans =
-    { check : BuildPlan
-    , get : BuildPlan
-    }
-
-
 type BuildStep
     = BuildStepTask StepName
     | BuildStepSetPipeline StepName (Maybe TeamName) InstanceVars
     | BuildStepRunPipeline StepName
     | BuildStepLoadVar StepName
     | BuildStepArtifactInput StepName
-    | BuildStepCheck StepName (Maybe ImageBuildPlans)
-    | BuildStepGet StepName (Maybe ResourceName) (Maybe Version) (Maybe ImageBuildPlans)
+    | BuildStepCheck StepName
+    | BuildStepGet StepName (Maybe ResourceName) (Maybe Version)
     | BuildStepArtifactOutput StepName
-    | BuildStepPut StepName (Maybe ResourceName) (Maybe ImageBuildPlans)
+    | BuildStepPut StepName (Maybe ResourceName)
     | BuildStepAggregate (Array BuildPlan)
     | BuildStepInParallel (Array BuildPlan)
     | BuildStepAcross AcrossPlan
@@ -703,27 +681,22 @@ decodeBuildStepArtifactInput =
         |> andMap (Json.Decode.field "name" Json.Decode.string)
 
 
+{-| A step's image is resolved natively and is not part of the public plan.
+A build from before that cut may still carry image_check_plan and
+image_get_plan keys; they are ignored.
+-}
 decodeBuildStepGet : Json.Decode.Decoder BuildStep
 decodeBuildStepGet =
     Json.Decode.succeed BuildStepGet
         |> andMap (Json.Decode.field "name" Json.Decode.string)
         |> andMap (Json.Decode.maybe <| Json.Decode.field "resource" Json.Decode.string)
         |> andMap (Json.Decode.maybe <| Json.Decode.field "version" decodeVersion)
-        |> andMap (Json.Decode.maybe decodeImageBuildPlans)
 
 
 decodeBuildStepCheck : Json.Decode.Decoder BuildStep
 decodeBuildStepCheck =
     Json.Decode.succeed BuildStepCheck
         |> andMap (Json.Decode.field "name" Json.Decode.string)
-        |> andMap (Json.Decode.maybe decodeImageBuildPlans)
-
-
-decodeImageBuildPlans : Json.Decode.Decoder ImageBuildPlans
-decodeImageBuildPlans =
-    Json.Decode.succeed ImageBuildPlans
-        |> andMap (Json.Decode.field "image_check_plan" <| lazy (\_ -> decodeBuildPlan))
-        |> andMap (Json.Decode.field "image_get_plan" <| lazy (\_ -> decodeBuildPlan))
 
 
 decodeBuildStepArtifactOutput : Json.Decode.Decoder BuildStep
@@ -737,7 +710,6 @@ decodeBuildStepPut =
     Json.Decode.succeed BuildStepPut
         |> andMap (Json.Decode.field "name" Json.Decode.string)
         |> andMap (Json.Decode.maybe <| Json.Decode.field "resource" Json.Decode.string)
-        |> andMap (Json.Decode.maybe decodeImageBuildPlans)
 
 
 decodeBuildStepAggregate : Json.Decode.Decoder BuildStep

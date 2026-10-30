@@ -215,10 +215,7 @@ var _ = Describe("BuildStarter", func() {
 			startedBuild := reloadStarterBuild(fixture, manualBuild.ID())
 			Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
 			Expect(startedBuild.IsScheduled()).To(BeTrue())
-
-			// A manually triggered plan skips the check interval; that is
-			// the one mark the planner leaves for it on a task.
-			Expect(taskPlanOf(startedBuild).CheckSkipInterval).To(BeTrue())
+			Expect(taskPlanOf(startedBuild).Name).To(Equal("some-task"))
 		})
 
 		It("returns the error when scheduling the build fails", func() {
@@ -730,7 +727,6 @@ var _ = Describe("BuildStarter", func() {
 			Expect(task.Name).To(Equal("some-task"))
 			Expect(task.ConfigPath).To(Equal("some/config/path.yml"))
 			Expect(task.ResourceTypes).To(Equal(resourceTypes))
-			Expect(task.CheckSkipInterval).To(BeFalse())
 		})
 
 		It("persists the plan it created onto the started build", func() {

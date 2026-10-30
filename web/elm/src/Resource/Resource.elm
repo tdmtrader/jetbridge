@@ -876,11 +876,6 @@ update msg ( model, effects ) =
                 (Build.Output.Output.handleStepTreeMsg <| StepTree.toggleStep id)
                 ( model, effects )
 
-        Click (StepInitialization id) ->
-            updateOutput
-                (Build.Output.Output.handleStepTreeMsg <| StepTree.toggleStepInitialization id)
-                ( model, effects ++ [ SyncStickyBuildLogHeaders ] )
-
         EditComment input ->
             let
                 newPinnedVersion =

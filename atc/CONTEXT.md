@@ -38,7 +38,10 @@ A versioned external thing a pipeline reads with `get` and writes with
 
 **Resource type**:
 The image and protocol that knows how to check, get and put one kind of
-resource.
+resource. Its image is always a registry-image reference: a direct `image:`
+(its pinned image) or `type: registry-image` with a source, resolved natively
+(`atc.ValidateImageType`). A type is never fetched through another type.
+_Avoid_: type chain, nested resource type
 
 **Pinned image**:
 The image a resource type declared with a direct `image:` runs in, named as

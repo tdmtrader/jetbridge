@@ -24,7 +24,7 @@ type PutDelegateFactory interface {
 type PutDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 
-	FetchImage(context.Context, atc.Plan, *atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
+	FetchImage(context.Context, atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
 	PinnedImage(context.Context, string, bool) (runtime.ImageSpec, db.ResourceCache, error)
 
 	Stdout() io.Writer
@@ -150,7 +150,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 			return false, err
 		}
 	} else if step.plan.TypeImage.GetPlan != nil {
-		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.CheckPlan, step.plan.TypeImage.Privileged)
+		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.Privileged)
 		if err != nil {
 			return false, err
 		}

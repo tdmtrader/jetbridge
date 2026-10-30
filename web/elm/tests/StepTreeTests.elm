@@ -74,9 +74,6 @@ someVersionedStep version id buildStep state =
     , finish = Nothing
     , tabFocus = Models.Auto
     , expandedHeaders = Dict.empty
-    , initializationExpanded = False
-    , imageCheck = Nothing
-    , imageGet = Nothing
     , sidecars = []
     }
 
@@ -195,7 +192,7 @@ initCheck : Test
 initCheck =
     let
         step =
-            BuildStepCheck "some-name" Nothing
+            BuildStepCheck "some-name"
 
         { tree, steps } =
             StepTree.init Nothing
@@ -222,7 +219,7 @@ initGet =
             Dict.fromList [ ( "some", "version" ) ]
 
         step =
-            BuildStepGet "some-name" (Just "some-resource") (Just version) Nothing
+            BuildStepGet "some-name" (Just "some-resource") (Just version)
 
         { tree, steps } =
             StepTree.init Nothing
@@ -246,7 +243,7 @@ initPut : Test
 initPut =
     let
         step =
-            BuildStepPut "some-name" (Just "some-resource") Nothing
+            BuildStepPut "some-name" (Just "some-resource")
 
         { tree, steps } =
             StepTree.init Nothing

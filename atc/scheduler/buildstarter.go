@@ -202,7 +202,7 @@ func (s *BuildStarter) tryStartNextPendingBuild(
 		return startResults{}, fmt.Errorf("config: %w", err)
 	}
 
-	plan, err := s.planner.Create(config.StepConfig(), job.Resources, job.ResourceTypes, buildInputs, nextPendingBuild.IsManuallyTriggered())
+	plan, err := s.planner.Create(config.StepConfig(), job.Resources, job.ResourceTypes, buildInputs)
 	planSpan.End()
 	if err != nil {
 		logger.Error("failed-to-create-build-plan", err)

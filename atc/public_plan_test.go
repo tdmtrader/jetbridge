@@ -126,28 +126,6 @@ var _ = Describe("Plan", func() {
 								Tags:     atc.Tags{"tags"},
 								TypeImage: atc.TypeImage{
 									BaseType: "some-base-type",
-									GetPlan: &atc.Plan{
-										ID: "3/image-get",
-										Get: &atc.GetPlan{
-											Type:   "some-base-type",
-											Name:   "name",
-											Source: atc.Source{"some": "source"},
-											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
-											},
-										},
-									},
-									CheckPlan: &atc.Plan{
-										ID: "3/image-check",
-										Check: &atc.CheckPlan{
-											Type:   "some-base-type",
-											Name:   "name",
-											Source: atc.Source{"some": "source"},
-											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
-											},
-										},
-									},
 								},
 							},
 						},
@@ -163,70 +141,18 @@ var _ = Describe("Plan", func() {
 								Version:  &atc.Version{"some": "version"},
 								Tags:     atc.Tags{"tags"},
 								TypeImage: atc.TypeImage{
-									BaseType: "some-base-type",
+									BaseType: "registry-image",
+									// The type's image is a registry-image reference the
+									// delegate resolves natively; it is private to the
+									// build and never shown.
 									GetPlan: &atc.Plan{
 										ID: "3.1/image-get",
 										Get: &atc.GetPlan{
 											Name:   "some-custom-type",
-											Type:   "second-custom-type",
-											Source: atc.Source{"custom": "source"},
+											Type:   "registry-image",
+											Source: atc.Source{"repository": "registry.example/custom"},
 											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
-												GetPlan: &atc.Plan{
-													ID: "3.1/image-get/image-get",
-													Get: &atc.GetPlan{
-														Name:   "second-custom-type",
-														Type:   "some-base-type",
-														Source: atc.Source{"custom": "second-source"},
-														TypeImage: atc.TypeImage{
-															BaseType: "some-base-type",
-														},
-													},
-												},
-												CheckPlan: &atc.Plan{
-													ID: "3.1/image-get/image-check",
-													Check: &atc.CheckPlan{
-														Name:   "second-custom-type",
-														Type:   "some-base-type",
-														Source: atc.Source{"custom": "second-source"},
-														TypeImage: atc.TypeImage{
-															BaseType: "some-base-type",
-														},
-													},
-												},
-											},
-										},
-									},
-									CheckPlan: &atc.Plan{
-										ID: "3.1/image-check",
-										Check: &atc.CheckPlan{
-											Name:   "some-custom-type",
-											Type:   "second-custom-type",
-											Source: atc.Source{"custom": "source"},
-											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
-												GetPlan: &atc.Plan{
-													ID: "3.1/image-check/image-get",
-													Get: &atc.GetPlan{
-														Name:   "second-custom-type",
-														Type:   "some-base-type",
-														Source: atc.Source{"custom": "second-source"},
-														TypeImage: atc.TypeImage{
-															BaseType: "some-base-type",
-														},
-													},
-												},
-												CheckPlan: &atc.Plan{
-													ID: "3.1/image-check/image-check",
-													Check: &atc.CheckPlan{
-														Name:   "second-custom-type",
-														Type:   "some-base-type",
-														Source: atc.Source{"custom": "second-source"},
-														TypeImage: atc.TypeImage{
-															BaseType: "some-base-type",
-														},
-													},
-												},
+												BaseType: "registry-image",
 											},
 										},
 									},
@@ -243,26 +169,15 @@ var _ = Describe("Plan", func() {
 								Params:   atc.Params{"some": "params"},
 								Tags:     atc.Tags{"tags"},
 								TypeImage: atc.TypeImage{
-									BaseType: "some-base-type",
+									BaseType: "registry-image",
 									GetPlan: &atc.Plan{
 										ID: "4/image-get",
 										Get: &atc.GetPlan{
-											Type:   "some-base-type",
+											Type:   "registry-image",
 											Name:   "name",
-											Source: atc.Source{"some": "source"},
+											Source: atc.Source{"repository": "registry.example/custom"},
 											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
-											},
-										},
-									},
-									CheckPlan: &atc.Plan{
-										ID: "4/image-check",
-										Check: &atc.CheckPlan{
-											Type:   "some-base-type",
-											Name:   "name",
-											Source: atc.Source{"some": "source"},
-											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
+												BaseType: "registry-image",
 											},
 										},
 									},
@@ -277,26 +192,15 @@ var _ = Describe("Plan", func() {
 								Source: atc.Source{"some": "source"},
 								Tags:   atc.Tags{"tags"},
 								TypeImage: atc.TypeImage{
-									BaseType: "some-base-type",
+									BaseType: "registry-image",
 									GetPlan: &atc.Plan{
 										ID: "4.2/image-get",
 										Get: &atc.GetPlan{
-											Type:   "some-base-type",
+											Type:   "registry-image",
 											Name:   "name",
-											Source: atc.Source{"some": "source"},
+											Source: atc.Source{"repository": "registry.example/custom"},
 											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
-											},
-										},
-									},
-									CheckPlan: &atc.Plan{
-										ID: "4.2/image-check",
-										Check: &atc.CheckPlan{
-											Type:   "some-base-type",
-											Name:   "name",
-											Source: atc.Source{"some": "source"},
-											TypeImage: atc.TypeImage{
-												BaseType: "some-base-type",
+												BaseType: "registry-image",
 											},
 										},
 									},
@@ -665,20 +569,6 @@ var _ = Describe("Plan", func() {
 					"resource": "resource",
 					"version": {
 						"some": "version"
-					},
-					"image_get_plan": {
-						"id": "3/image-get",
-						"get": {
-							"type": "some-base-type",
-							"name": "name"
-						}
-					},
-					"image_check_plan": {
-						"id": "3/image-check",
-						"check": {
-							"type": "some-base-type",
-							"name": "name"
-						}
 					}
 				}
 			},
@@ -690,48 +580,6 @@ var _ = Describe("Plan", func() {
 					"resource": "resource",
 					"version": {
 						"some": "version"
-					},
-					"image_get_plan": {
-						"id": "3.1/image-get",
-						"get": {
-							"name": "some-custom-type",
-							"type": "second-custom-type",
-							"image_get_plan": {
-								"id": "3.1/image-get/image-get",
-								"get": {
-									"name": "second-custom-type",
-									"type": "some-base-type"
-								}
-							},
-							"image_check_plan": {
-								"id": "3.1/image-get/image-check",
-								"check": {
-									"name": "second-custom-type",
-									"type": "some-base-type"
-								}
-							}
-						}
-					},
-					"image_check_plan": {
-						"id": "3.1/image-check",
-						"check": {
-							"name": "some-custom-type",
-							"type": "second-custom-type",
-							"image_get_plan": {
-								"id": "3.1/image-check/image-get",
-								"get": {
-									"name": "second-custom-type",
-									"type": "some-base-type"
-								}
-							},
-							"image_check_plan": {
-								"id": "3.1/image-check/image-check",
-								"check": {
-									"name": "second-custom-type",
-									"type": "some-base-type"
-								}
-							}
-						}
 					}
 				}
 			},
@@ -740,42 +588,14 @@ var _ = Describe("Plan", func() {
 				"put": {
 					"type": "type",
 					"name": "name",
-					"resource": "resource",
-					"image_get_plan": {
-						"id": "4/image-get",
-						"get": {
-							"type": "some-base-type",
-							"name": "name"
-						}
-					},
-					"image_check_plan": {
-						"id": "4/image-check",
-						"check": {
-							"type": "some-base-type",
-							"name": "name"
-						}
-					}
+					"resource": "resource"
 				}
 			},
 			{
 				"id": "4.2",
 				"check": {
 					"type": "type",
-					"name": "name",
-					"image_get_plan": {
-						"id": "4.2/image-get",
-						"get": {
-							"type": "some-base-type",
-							"name": "name"
-						}
-					},
-					"image_check_plan": {
-						"id": "4.2/image-check",
-						"check": {
-							"type": "some-base-type",
-							"name": "name"
-						}
-					}
+					"name": "name"
 				}
 			},
 			{

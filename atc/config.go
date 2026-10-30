@@ -325,10 +325,10 @@ func (types ResourceTypes) Without(name string) ResourceTypes {
 }
 
 type ImagePlanner interface {
-	ImageForType(planID PlanID, resourceType string, stepTags Tags, skipInterval bool) TypeImage
+	ImageForType(planID PlanID, resourceType string, stepTags Tags) TypeImage
 }
 
-func (types ResourceTypes) ImageForType(planID PlanID, resourceType string, stepTags Tags, skipInterval bool) TypeImage {
+func (types ResourceTypes) ImageForType(planID PlanID, resourceType string, stepTags Tags) TypeImage {
 	// Check if resource type is a custom type
 	parent, found := types.Lookup(resourceType)
 	if !found {
@@ -338,8 +338,8 @@ func (types ResourceTypes) ImageForType(planID PlanID, resourceType string, step
 		}
 	}
 
-	// Direct image reference — no check/get plans needed.
-	// The image ref is passed straight to the container runtime.
+	// A direct image reference is the type's pinned image, handed straight
+	// to the container runtime.
 	// BaseType is left empty: the worker pool uses it to filter workers by
 	// supported resource type, and custom type names aren't registered on
 	// workers. An empty BaseType skips that filter.
@@ -350,99 +350,75 @@ func (types ResourceTypes) ImageForType(planID PlanID, resourceType string, step
 		}
 	}
 
-	imageResource := ImageResource{
+	// A type declared with type: and a source names its image as a
+	// registry-image reference (ValidateImageType). The delegate resolves
+	// that reference natively (atc/imageresolver); no check or get runs for
+	// it, so the type's image plan is the reference and nothing more.
+	getPlan := FetchImagePlan(planID, ImageResource{
 		Name:   parent.Name,
 		Type:   parent.Type,
 		Source: parent.Source,
 		Params: parent.Params,
 		Tags:   parent.Tags,
-	}
-
-	getPlan, checkPlan := FetchImagePlan(planID, imageResource, types.Without(parent.Name), stepTags, skipInterval, parent.CheckEvery)
-	checkPlan.Check.ResourceType = resourceType
+	}, stepTags)
 
 	return TypeImage{
-		// Set the base type as the base type of its parent. The value of the base
-		// type will always be the base type at the bottom of the dependency chain.
-		//
-		// For example, if there is a resource that depends on a custom type that
-		// depends on a git base resource type, the BaseType value of the resource's
-		// TypeImage will be git.
-		BaseType: getPlan.Get.TypeImage.BaseType,
-
+		BaseType:   parent.Type,
 		Privileged: parent.Privileged,
-
-		// GetPlan for fetching the custom type's image and CheckPlan
-		// for checking the version of the custom type.
-		GetPlan:   &getPlan,
-		CheckPlan: checkPlan,
+		GetPlan:    &getPlan,
 	}
 }
 
-func FetchImagePlan(planID PlanID, image ImageResource, resourceTypes ResourceTypes, stepTags Tags, skipInterval bool, checkEvery *CheckEvery) (Plan, *Plan) {
-	// If resource type is a custom type, recurse in order to resolve nested resource types
-	getPlanID := planID + "/image-get"
-
+// FetchImagePlan is the registry-image reference a step's image is resolved
+// from: the image resource's type, source, params and, when the author pinned
+// one, version. It is never run as a step; BuildStepDelegate.FetchImage reads
+// it to resolve the digest natively.
+func FetchImagePlan(planID PlanID, image ImageResource, stepTags Tags) Plan {
 	tags := image.Tags
 	if len(image.Tags) == 0 {
 		tags = stepTags
 	}
 
-	// Construct get plan for image.
-	// For registry-image types, set SkipDownload since JetBridge only needs
-	// the image ref URL — the container runtime pulls images directly.
-	imageGetPlan := Plan{
-		ID: getPlanID,
+	plan := Plan{
+		ID: planID + "/image-get",
 		Get: &GetPlan{
 			Name:   image.Name,
 			Type:   image.Type,
 			Source: image.Source,
 			Params: image.Params,
 
-			TypeImage: resourceTypes.ImageForType(getPlanID, image.Type, tags, skipInterval),
-
-			SkipDownload: image.Type == "registry-image",
+			TypeImage: TypeImage{BaseType: image.Type},
 
 			Tags: tags,
 		},
 	}
 
-	var maybeCheckPlan *Plan
-	if image.Version == nil {
-		checkPlanID := planID + "/image-check"
-		// don't know the version, need to do a Check before the Get
-		interval := CheckEvery{
-			Interval: DefaultCheckInterval,
-		}
-
-		if checkEvery != nil {
-			interval = *checkEvery
-		}
-
-		checkPlan := Plan{
-			ID: checkPlanID,
-			Check: &CheckPlan{
-				Name:     image.Name,
-				Type:     image.Type,
-				Source:   image.Source,
-				Interval: interval,
-
-				TypeImage: resourceTypes.ImageForType(checkPlanID, image.Type, tags, skipInterval),
-
-				Tags: tags,
-
-				SkipInterval: skipInterval,
-			},
-		}
-		maybeCheckPlan = &checkPlan
-
-		imageGetPlan.Get.VersionFrom = &checkPlan.ID
-	} else {
-		// version is already provided, only need to do Get step
-		imageGetPlan.Get.Version = &image.Version
+	if image.Version != nil {
+		plan.Get.Version = &image.Version
 	}
 
-	return imageGetPlan, maybeCheckPlan
+	return plan
+}
+
+// UnsupportedImageTypeError refuses an image whose type is not registry-image.
+// A resource type's image, and a task's image_resource, is always a
+// registry-image reference the web resolves natively; nothing fetches an
+// image through another resource type any more.
+type UnsupportedImageTypeError struct {
+	Type string
+}
+
+func (err UnsupportedImageTypeError) Error() string {
+	return fmt.Sprintf("an image declared with type '%s' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'", err.Type)
+}
+
+// ValidateImageType is the one rule behind UnsupportedImageTypeError. An empty
+// type is not this rule's concern; the caller reports a missing type itself.
+func ValidateImageType(imageType string) error {
+	if imageType != "" && imageType != "registry-image" {
+		return UnsupportedImageTypeError{Type: imageType}
+	}
+	return nil
 }
 
 type ResourceConfigs []ResourceConfig

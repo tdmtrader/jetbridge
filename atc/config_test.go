@@ -91,56 +91,51 @@ jobs:
 				}
 			})
 
-			It("returns a TypeImage with ImageRef and no GetPlan/CheckPlan", func() {
-				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+			It("returns a TypeImage with ImageRef and no GetPlan", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", nil)
 				Expect(typeImage.ImageRef).To(Equal("my-registry/custom-git:latest"))
 				Expect(typeImage.BaseType).To(BeEmpty())
 				Expect(typeImage.Privileged).To(BeTrue())
 				Expect(typeImage.GetPlan).To(BeNil())
-				Expect(typeImage.CheckPlan).To(BeNil())
 			})
 		})
 
-		Context("when the resource type has type+source (no image)", func() {
+		Context("when the resource type has type: registry-image and a source", func() {
 			BeforeEach(func() {
 				types = ResourceTypes{
 					{
-						Name:   "custom-git",
-						Type:   "registry-image",
-						Source: Source{"repository": "my-registry/custom-git"},
+						Name:       "custom-git",
+						Type:       "registry-image",
+						Source:     Source{"repository": "my-registry/custom-git", "tag": "v2"},
+						Params:     Params{"format": "oci"},
+						Tags:       Tags{"type-tag"},
+						Privileged: true,
 					},
 				}
 			})
 
-			It("returns a TypeImage with GetPlan and CheckPlan (existing behavior)", func() {
-				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+			It("returns the registry-image reference as the GetPlan and plans no check", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", Tags{"step-tag"})
 				Expect(typeImage.ImageRef).To(BeEmpty())
-				Expect(typeImage.GetPlan).ToNot(BeNil())
-				Expect(typeImage.CheckPlan).ToNot(BeNil())
-			})
-
-			It("sets SkipDownload on the image get plan for registry-image types", func() {
-				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
-				Expect(typeImage.GetPlan).ToNot(BeNil())
-				Expect(typeImage.GetPlan.Get.SkipDownload).To(BeTrue())
-			})
-		})
-
-		Context("when the resource type uses a non-registry-image type", func() {
-			BeforeEach(func() {
-				types = ResourceTypes{
-					{
-						Name:   "custom-s3",
-						Type:   "s3",
-						Source: Source{"bucket": "my-bucket"},
+				Expect(typeImage.BaseType).To(Equal("registry-image"))
+				Expect(typeImage.Privileged).To(BeTrue())
+				Expect(typeImage.GetPlan).To(Equal(&Plan{
+					ID: "some-plan/image-get",
+					Get: &GetPlan{
+						Name:      "custom-git",
+						Type:      "registry-image",
+						Source:    Source{"repository": "my-registry/custom-git", "tag": "v2"},
+						Params:    Params{"format": "oci"},
+						Tags:      Tags{"type-tag"},
+						TypeImage: TypeImage{BaseType: "registry-image"},
 					},
-				}
+				}))
 			})
 
-			It("does not set SkipDownload on the image get plan", func() {
-				typeImage := types.ImageForType("some-plan", "custom-s3", nil, false)
-				Expect(typeImage.GetPlan).ToNot(BeNil())
-				Expect(typeImage.GetPlan.Get.SkipDownload).To(BeFalse())
+			It("takes the step's tags when the type declares none", func() {
+				types[0].Tags = nil
+				typeImage := types.ImageForType("some-plan", "custom-git", Tags{"step-tag"})
+				Expect(typeImage.GetPlan.Get.Tags).To(Equal(Tags{"step-tag"}))
 			})
 		})
 
@@ -157,12 +152,11 @@ jobs:
 				}
 			})
 
-			It("returns a TypeImage with ImageRef and no GetPlan/CheckPlan", func() {
-				typeImage := types.ImageForType("some-plan", "custom-git", nil, false)
+			It("returns a TypeImage with ImageRef and no GetPlan", func() {
+				typeImage := types.ImageForType("some-plan", "custom-git", nil)
 				Expect(typeImage.ImageRef).To(Equal("my-registry/custom-git@sha256:abc123"))
 				Expect(typeImage.BaseType).To(BeEmpty())
 				Expect(typeImage.GetPlan).To(BeNil())
-				Expect(typeImage.CheckPlan).To(BeNil())
 			})
 		})
 
@@ -172,12 +166,51 @@ jobs:
 			})
 
 			It("returns a TypeImage with just BaseType", func() {
-				typeImage := types.ImageForType("some-plan", "git", nil, false)
+				typeImage := types.ImageForType("some-plan", "git", nil)
 				Expect(typeImage.ImageRef).To(BeEmpty())
 				Expect(typeImage.BaseType).To(Equal("git"))
 				Expect(typeImage.GetPlan).To(BeNil())
-				Expect(typeImage.CheckPlan).To(BeNil())
 			})
+		})
+	})
+
+	Describe("FetchImagePlan", func() {
+		It("pins the version the image resource carries", func() {
+			plan := FetchImagePlan("task-plan", ImageResource{
+				Name:    "image",
+				Type:    "registry-image",
+				Source:  Source{"repository": "my-registry/task"},
+				Version: Version{"digest": "sha256:abc"},
+			}, nil)
+			Expect(plan.ID).To(Equal(PlanID("task-plan/image-get")))
+			Expect(plan.Get.Version).To(Equal(&Version{"digest": "sha256:abc"}))
+			Expect(plan.Get.VersionFrom).To(BeNil())
+		})
+
+		It("leaves the version open when none is carried", func() {
+			plan := FetchImagePlan("task-plan", ImageResource{
+				Name:   "image",
+				Type:   "registry-image",
+				Source: Source{"repository": "my-registry/task"},
+			}, nil)
+			Expect(plan.Get.Version).To(BeNil())
+			Expect(plan.Get.VersionFrom).To(BeNil())
+		})
+	})
+
+	Describe("ValidateImageType", func() {
+		It("accepts registry-image", func() {
+			Expect(ValidateImageType("registry-image")).To(Succeed())
+		})
+
+		It("leaves an empty type to the caller", func() {
+			Expect(ValidateImageType("")).To(Succeed())
+		})
+
+		It("refuses any other type by name", func() {
+			err := ValidateImageType("docker-image")
+			Expect(err).To(Equal(UnsupportedImageTypeError{Type: "docker-image"}))
+			Expect(err.Error()).To(Equal("an image declared with type 'docker-image' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'"))
 		})
 	})
 

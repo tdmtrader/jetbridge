@@ -318,8 +318,8 @@ var _ = Describe("Config API", func() {
 			ResourceTypes: atc.ResourceTypes{
 				{
 					Name:   "custom-resource",
-					Type:   "custom-type",
-					Source: atc.Source{"custom": "source"},
+					Type:   "registry-image",
+					Source: atc.Source{"repository": "registry.example/custom-resource"},
 					Tags:   atc.Tags{"some-tag"},
 				},
 			},
@@ -1266,8 +1266,9 @@ jobs:
 									payload = `---
 resource_types:
 - name: some-type
-  type: some-base-resource-type
+  type: registry-image
   source:
+    repository: registry.example/some-type
     FOO: ((BAR))
 
 jobs:

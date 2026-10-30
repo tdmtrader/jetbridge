@@ -9,7 +9,6 @@ module Build.Styles exposing
     , historyItem
     , historyTriangle
     , imageSteps
-    , initializationToggle
     , keyValuePairHeaderLabel
     , metadataCell
     , metadataTable
@@ -362,21 +361,4 @@ imageSteps : List (Html.Attribute msg)
 imageSteps =
     [ style "padding" "10px"
     , style "background" Colors.backgroundDark
-    ]
-
-
-initializationToggle : Bool -> List (Html.Attribute msg)
-initializationToggle expanded =
-    [ style "color" <|
-        if expanded then
-            Colors.text
-
-        else
-            Colors.pending
-    , style "background" <|
-        if expanded then
-            Colors.backgroundDark
-
-        else
-            "transparent"
     ]

@@ -444,29 +444,30 @@ var _ = Describe("CheckFactory", func() {
 						},
 						atc.ResourceType{
 							Name:     "custom-type",
-							Type:     "some-base-type",
-							Source:   atc.Source{"some": "type-source"},
+							Type:     "registry-image",
+							Source:   atc.Source{"repository": "registry.example/custom"},
 							Tags:     atc.Tags{"some-tag"},
 							Defaults: atc.Source{"sdk": "sdk"},
 						},
 					)
 				})
 
-				It("creates a check plan with the parent type's defaults and image", func() {
+				It("creates a check plan with the parent type's defaults and its image reference", func() {
 					plan := persistedPlan(build)
 					Expect(plan.Check.FromVersion).To(Equal(atc.Version{"from": "version"}))
 					Expect(plan.Check.Interval.Interval).To(Equal(defaultCheckInterval))
 					Expect(plan.Check.Source).To(Equal(atc.Source{"sdk": "sdk", "some": "source"}))
 
+					// The type's image is a registry-image reference the delegate
+					// resolves natively; no check runs inside the check build.
 					typeImage := plan.Check.TypeImage
-					Expect(typeImage.BaseType).To(Equal("some-base-type"))
+					Expect(typeImage.BaseType).To(Equal("registry-image"))
 					Expect(typeImage.GetPlan).NotTo(BeNil())
 					Expect(typeImage.GetPlan.Get.Name).To(Equal("custom-type"))
-					Expect(typeImage.GetPlan.Get.Type).To(Equal("some-base-type"))
-					Expect(typeImage.GetPlan.Get.Source).To(Equal(atc.Source{"some": "type-source"}))
+					Expect(typeImage.GetPlan.Get.Type).To(Equal("registry-image"))
+					Expect(typeImage.GetPlan.Get.Source).To(Equal(atc.Source{"repository": "registry.example/custom"}))
 					Expect(typeImage.GetPlan.Get.Tags).To(Equal(atc.Tags{"some-tag"}))
-					Expect(typeImage.CheckPlan).NotTo(BeNil())
-					Expect(typeImage.CheckPlan.Check.ResourceType).To(Equal("custom-type"))
+					Expect(typeImage.GetPlan.Get.VersionFrom).To(BeNil())
 				})
 
 				It("returns the build", func() {

@@ -17,7 +17,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
@@ -35,15 +34,13 @@ type buildStepDelegate struct {
 	stdout               io.Writer
 	disableRedactSecrets bool
 
-	// Optional factories for metadata-only FetchImage.
-	// When set, FetchImage resolves custom type images from cached DB
-	// versions instead of spawning check+get pods.
+	// FetchImage and PinnedImage resolve images through these; a delegate
+	// built without them cannot fetch an image.
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
 
-	// Optional resolver for on-demand image digest resolution.
-	// When set and no cached version exists, resolves digests via
-	// native OCI registry API calls instead of falling back to pods.
+	// imageResolver asks the registry for a digest when the scope has no
+	// version yet. Without it, an unseen reference is an error.
 	imageResolver imageresolver.Resolver
 }
 
@@ -51,9 +48,9 @@ type buildStepDelegate struct {
 // arguments.
 type DelegateOption func(*buildStepDelegate)
 
-// WithResourceFactories gives the delegate the factories it resolves type
-// images with: the metadata-only FetchImage and the pinned image of an image:
-// resource type.
+// WithResourceFactories gives the delegate the factories it resolves images
+// with: FetchImage for a registry-image reference and PinnedImage for a
+// resource type declared with a direct image:.
 func WithResourceFactories(
 	resourceConfigFactory db.ResourceConfigFactory,
 	resourceCacheFactory db.ResourceCacheFactory,
@@ -279,96 +276,133 @@ func (delegate *buildStepDelegate) Errored(logger lager.Logger, message string) 
 	}
 }
 
+// FetchImage resolves a step's image from the registry-image reference in
+// getPlan (atc.FetchImagePlan). A version pinned on the plan is used as it is
+// when it carries a digest; otherwise the reference's resource config scope
+// supplies the latest version lidar saw, or the registry is asked once and
+// the answer saved to that scope. Nothing runs as a step: kubelet pulls the
+// returned ImageURL. The resource cache returned is the parent the step's own
+// resource config is created under.
 func (delegate *buildStepDelegate) FetchImage(
 	ctx context.Context,
 	getPlan atc.Plan,
-	checkPlan *atc.Plan,
 	privileged bool,
 ) (runtime.ImageSpec, db.ResourceCache, error) {
-	// Try metadata-only path when resource factories are available.
-	// This resolves type images from cached DB versions (populated by lidar)
-	// instead of spawning check+get pods.
-	if delegate.resourceConfigFactory != nil && delegate.resourceCacheFactory != nil {
-		spec, cache, err := delegate.metadataFetchImage(ctx, getPlan, privileged)
-		if err == nil {
-			return spec, cache, nil
-		}
-		// When a resolver is available and the type is registry-image,
-		// metadata-fetch errors are fatal (a real failure like no cached
-		// version). For custom resource types (non-registry-image), fall
-		// through to plan-based fetch which handles type chain resolution.
-		if delegate.imageResolver != nil && getPlan.Get.Type == "registry-image" {
-			return runtime.ImageSpec{}, nil, err
-		}
-		// Fall through to plan-based fetch for custom types or when no
-		// resolver is configured.
+	if getPlan.Get == nil {
+		return runtime.ImageSpec{}, nil, errors.New("image plan is not a get")
 	}
 
-	fetchState := delegate.state.NewLocalScope()
-
-	if checkPlan != nil {
-		ok, err := fetchState.Run(ctx, *checkPlan)
-		if err != nil {
-			return runtime.ImageSpec{}, nil, err
-		}
-
-		if !ok {
-			return runtime.ImageSpec{}, nil, errors.New("image check failed")
-		}
+	if getPlan.Get.Type != "registry-image" {
+		return runtime.ImageSpec{}, nil, atc.UnsupportedImageTypeError{Type: getPlan.Get.Type}
 	}
 
-	ok, err := fetchState.Run(ctx, getPlan)
+	if delegate.resourceConfigFactory == nil || delegate.resourceCacheFactory == nil {
+		return runtime.ImageSpec{}, nil, errors.New("image fetch needs the resource config and resource cache factories")
+	}
+
+	source, err := creds.NewSource(delegate.state, getPlan.Get.Source).Evaluate()
 	if err != nil {
-		return runtime.ImageSpec{}, nil, err
-	}
-
-	if !ok {
-		return runtime.ImageSpec{}, nil, errors.New("image fetching failed")
-	}
-
-	var result exec.GetResult
-	if !fetchState.Result(getPlan.ID, &result) {
-		return runtime.ImageSpec{}, nil, errors.New("get did not return a result")
-	}
-
-	if result.ResourceCache != nil {
-		err = delegate.build.SaveImageResourceVersion(result.ResourceCache)
-		if err != nil {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("save image version: %w", err)
-		}
-	}
-
-	artifact, _, found := fetchState.ArtifactRepository().ArtifactFor(build.ArtifactName(result.Name))
-	if !found {
-		return runtime.ImageSpec{}, nil, errors.New("fetched artifact not found")
+		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate source: %w", err)
 	}
 
 	var version atc.Version
-	if result.ResourceCache != nil {
-		version = result.ResourceCache.Version()
-	}
-	imageURL := imageURLFromSource(getPlan.Get.Type, getPlan.Get.Source, version)
 
-	spec := runtime.ImageSpec{
-		ImageArtifact: artifact,
-		ImageURL:      imageURL,
-		Privileged:    privileged,
+	if pinned, isPinned := pinnedImageVersion(getPlan); isPinned {
+		// A pinned digest is already the exact answer any resolution would
+		// compute, so use it as-is. Consulting the DB scope or calling the
+		// registry to confirm it defeats the point of pinning, and fails
+		// closed when the registry is unreachable (e.g. a TLS failure).
+		//
+		// The pinned version is deliberately NOT written back to the resource
+		// config scope: it is one caller's explicit choice, not lidar's view
+		// of the latest version for this source, and publishing it as the
+		// scope's latest would silently redirect unpinned users to it.
+		version = pinned
+	} else {
+		// The same resource config lidar checks this reference under.
+		resourceConfig, err := delegate.resourceConfigFactory.FindOrCreateResourceConfig(
+			getPlan.Get.Type,
+			source,
+			nil,
+		)
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("find resource config: %w", err)
+		}
+
+		// Type images are not scoped to a pipeline resource.
+		scope, err := resourceConfig.FindOrCreateScope(nil)
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("find scope: %w", err)
+		}
+
+		latestVersion, found, err := scope.LatestVersion()
+		if err != nil {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("get latest version: %w", err)
+		}
+
+		if found {
+			version = atc.Version(latestVersion.Version())
+		} else if delegate.imageResolver != nil {
+			ref, err := imageresolver.ReferenceFromSource(source)
+			if err != nil {
+				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve: %w", err)
+			}
+
+			digest, resolveErr := ref.Resolve(ctx, delegate.imageResolver)
+			if resolveErr != nil {
+				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", ref.Repository, resolveErr)
+			}
+
+			version = atc.Version{"digest": digest}
+
+			// Saved so the next build finds it in the scope.
+			if saveErr := scope.SaveVersions(db.SpanContext{}, []atc.Version{version}); saveErr != nil {
+				return runtime.ImageSpec{}, nil, fmt.Errorf("save resolved version: %w", saveErr)
+			}
+		} else {
+			return runtime.ImageSpec{}, nil, fmt.Errorf("no cached version for image %q and no image resolver", getPlan.Get.Name)
+		}
 	}
+
+	imageURL := imageURLFromSource(source, version)
 	if imageURL == "" {
-		spec.ResourceType = getPlan.Get.Name
+		return runtime.ImageSpec{}, nil, fmt.Errorf("cannot construct image URL for image %q: source has no repository", getPlan.Get.Name)
 	}
 
-	return spec, result.ResourceCache, nil
+	params, err := creds.NewParams(delegate.state, getPlan.Get.Params).Evaluate()
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate params: %w", err)
+	}
+
+	// The step's resource config is created under this cache, so a type's
+	// identity is its image.
+	resourceCache, err := delegate.resourceCacheFactory.FindOrCreateResourceCache(
+		db.ForBuild(delegate.build.ID()),
+		getPlan.Get.Type,
+		version,
+		source,
+		params,
+		nil,
+	)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("create resource cache: %w", err)
+	}
+
+	err = delegate.build.SaveImageResourceVersion(resourceCache)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("save image version: %w", err)
+	}
+
+	return runtime.ImageSpec{
+		ImageURL:   imageURL,
+		Privileged: privileged,
+	}, resourceCache, nil
 }
 
-// imageURLFromSource constructs a Docker image URL from a resource type's
-// source config and fetched version. Kubelet uses this URL to pull the image
-// natively instead of downloading it into an artifact volume.
-func imageURLFromSource(resourceType string, source atc.Source, version atc.Version) string {
-	if resourceType != "registry-image" {
-		return ""
-	}
-
+// imageURLFromSource is the docker:/// reference kubelet pulls for a
+// registry-image source at a version: the repository at its digest, or at the
+// source's tag when the version carries none.
+func imageURLFromSource(source atc.Source, version atc.Version) string {
 	repo, ok := source["repository"].(string)
 	if !ok || repo == "" {
 		return ""
@@ -406,134 +440,6 @@ func pinnedImageVersion(getPlan atc.Plan) (atc.Version, bool) {
 	}
 
 	return version, true
-}
-
-// metadataFetchImage resolves a type image without running check+get plans.
-// This is used on K8s where kubelet handles image pulls natively and we only
-// need the image reference URL.
-//
-// A version pinned on the get plan is authoritative and is used directly. When
-// nothing is pinned, it looks up the latest version for the image's resource
-// config (populated by lidar's periodic checks), falling back to an on-demand
-// registry resolve. Either way it constructs an ImageURL + ResourceCache.
-// Returns an error if the metadata path can't be used (no cached version,
-// unsupported type, etc.), signaling the caller to fall back to plan-based fetch.
-func (delegate *buildStepDelegate) metadataFetchImage(
-	ctx context.Context,
-	getPlan atc.Plan,
-	privileged bool,
-) (runtime.ImageSpec, db.ResourceCache, error) {
-	// Only registry-image types support metadata-only resolution.
-	// The source must follow registry-image conventions (repository field).
-	if getPlan.Get.Type != "registry-image" {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("metadata-only fetch not supported for type %q", getPlan.Get.Type)
-	}
-
-	// Evaluate source credentials
-	source, err := creds.NewSource(delegate.state, getPlan.Get.Source).Evaluate()
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate source: %w", err)
-	}
-
-	var version atc.Version
-
-	if pinned, isPinned := pinnedImageVersion(getPlan); isPinned {
-		// A pinned digest is already the exact answer any resolution would
-		// compute, so use it as-is. Consulting the DB scope or calling the
-		// registry to confirm it defeats the point of pinning, and fails
-		// closed when the registry is unreachable (e.g. a TLS failure).
-		//
-		// The pinned version is deliberately NOT written back to the resource
-		// config scope: it is one caller's explicit choice, not lidar's view
-		// of the latest version for this source, and publishing it as the
-		// scope's latest would silently redirect unpinned users to it.
-		version = pinned
-	} else {
-		// Find the resource config for this type+source (same config lidar uses)
-		resourceConfig, err := delegate.resourceConfigFactory.FindOrCreateResourceConfig(
-			getPlan.Get.Type,
-			source,
-			nil, // base type, no parent cache
-		)
-		if err != nil {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("find resource config: %w", err)
-		}
-
-		// Find scope (nil resource ID - type images aren't scoped to a pipeline resource)
-		scope, err := resourceConfig.FindOrCreateScope(nil)
-		if err != nil {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("find scope: %w", err)
-		}
-
-		// Get latest version from DB (populated by lidar's periodic checks)
-		latestVersion, found, err := scope.LatestVersion()
-		if err != nil {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("get latest version: %w", err)
-		}
-
-		if found {
-			version = atc.Version(latestVersion.Version())
-		} else if delegate.imageResolver != nil {
-			// On-demand resolution: resolve digest via native OCI registry API
-			// call instead of falling back to check+get pods.
-			ref, err := imageresolver.ReferenceFromSource(source)
-			if err != nil {
-				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve: %w", err)
-			}
-
-			digest, resolveErr := ref.Resolve(ctx, delegate.imageResolver)
-			if resolveErr != nil {
-				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", ref.Repository, resolveErr)
-			}
-
-			version = atc.Version{"digest": digest}
-
-			// Save the resolved version to DB so subsequent builds can use cached path
-			if saveErr := scope.SaveVersions(db.SpanContext{}, []atc.Version{version}); saveErr != nil {
-				return runtime.ImageSpec{}, nil, fmt.Errorf("save resolved version: %w", saveErr)
-			}
-		} else {
-			return runtime.ImageSpec{}, nil, fmt.Errorf("no cached version for type %q", getPlan.Get.Type)
-		}
-	}
-
-	// Construct image URL (e.g. docker:///repo@sha256:abc123)
-	imageURL := imageURLFromSource(getPlan.Get.Type, source, version)
-	if imageURL == "" {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("cannot construct image URL for type %q", getPlan.Get.Type)
-	}
-
-	// Evaluate params for resource cache key
-	params, err := creds.NewParams(delegate.state, getPlan.Get.Params).Evaluate()
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("evaluate params: %w", err)
-	}
-
-	// Create/find resource cache for the type image version.
-	// This cache is needed by calling steps (check_step, get_step, etc.)
-	// to build the resource config chain for custom resource types.
-	resourceCache, err := delegate.resourceCacheFactory.FindOrCreateResourceCache(
-		db.ForBuild(delegate.build.ID()),
-		getPlan.Get.Type,
-		version,
-		source,
-		params,
-		nil, // base type
-	)
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("create resource cache: %w", err)
-	}
-
-	// Save image resource version for build tracking
-	err = delegate.build.SaveImageResourceVersion(resourceCache)
-	if err != nil {
-		return runtime.ImageSpec{}, nil, fmt.Errorf("save image version: %w", err)
-	}
-
-	return runtime.ImageSpec{
-		ImageURL:   imageURL,
-		Privileged: privileged,
-	}, resourceCache, nil
 }
 
 func (delegate *buildStepDelegate) ConstructAcrossSubsteps(templateBytes []byte, acrossVars []atc.AcrossVar, valueCombinations [][]any) ([]atc.VarScopedPlan, error) {

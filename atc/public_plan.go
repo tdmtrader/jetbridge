@@ -188,19 +188,15 @@ func (plan EnsurePlan) Public() *json.RawMessage {
 
 func (plan GetPlan) Public() *json.RawMessage {
 	return enc(struct {
-		Name           string           `json:"name"`
-		Type           string           `json:"type"`
-		Resource       string           `json:"resource,omitempty"`
-		Version        *Version         `json:"version,omitempty"`
-		ImageGetPlan   *json.RawMessage `json:"image_get_plan,omitempty"`
-		ImageCheckPlan *json.RawMessage `json:"image_check_plan,omitempty"`
+		Name     string   `json:"name"`
+		Type     string   `json:"type"`
+		Resource string   `json:"resource,omitempty"`
+		Version  *Version `json:"version,omitempty"`
 	}{
-		Type:           plan.Type,
-		Name:           plan.Name,
-		Resource:       plan.Resource,
-		Version:        plan.Version,
-		ImageGetPlan:   plan.TypeImage.GetPlan.Public(),
-		ImageCheckPlan: plan.TypeImage.CheckPlan.Public(),
+		Type:     plan.Type,
+		Name:     plan.Name,
+		Resource: plan.Resource,
+		Version:  plan.Version,
 	})
 }
 
@@ -258,31 +254,23 @@ func (plan OnSuccessPlan) Public() *json.RawMessage {
 
 func (plan PutPlan) Public() *json.RawMessage {
 	return enc(struct {
-		Name           string           `json:"name"`
-		Type           string           `json:"type"`
-		Resource       string           `json:"resource,omitempty"`
-		ImageGetPlan   *json.RawMessage `json:"image_get_plan,omitempty"`
-		ImageCheckPlan *json.RawMessage `json:"image_check_plan,omitempty"`
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Resource string `json:"resource,omitempty"`
 	}{
-		Type:           plan.Type,
-		Name:           plan.Name,
-		Resource:       plan.Resource,
-		ImageGetPlan:   plan.TypeImage.GetPlan.Public(),
-		ImageCheckPlan: plan.TypeImage.CheckPlan.Public(),
+		Type:     plan.Type,
+		Name:     plan.Name,
+		Resource: plan.Resource,
 	})
 }
 
 func (plan CheckPlan) Public() *json.RawMessage {
 	return enc(struct {
-		Name           string           `json:"name"`
-		Type           string           `json:"type"`
-		ImageGetPlan   *json.RawMessage `json:"image_get_plan,omitempty"`
-		ImageCheckPlan *json.RawMessage `json:"image_check_plan,omitempty"`
+		Name string `json:"name"`
+		Type string `json:"type"`
 	}{
-		Type:           plan.Type,
-		Name:           plan.Name,
-		ImageGetPlan:   plan.TypeImage.GetPlan.Public(),
-		ImageCheckPlan: plan.TypeImage.CheckPlan.Public(),
+		Type: plan.Type,
+		Name: plan.Name,
 	})
 }
 

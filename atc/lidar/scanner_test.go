@@ -211,14 +211,14 @@ var _ = Describe("Scanner", func() {
 		Expect(plan.Check.Type).To(Equal("custom-type"))
 		Expect(plan.Check.Source).To(Equal(atc.Source{"repository": "custom-resource"}))
 		Expect(plan.Check.TypeImage.BaseType).To(Equal(dbtest.BaseResourceType))
-		Expect(plan.Check.TypeImage.CheckPlan).NotTo(BeNil())
-		Expect(plan.Check.TypeImage.CheckPlan.Check.Name).To(Equal("custom-type"))
-		Expect(plan.Check.TypeImage.CheckPlan.Check.Source).To(Equal(atc.Source{"repository": "custom-image"}))
-		Expect(plan.Check.TypeImage.CheckPlan.Check.Tags).To(Equal(atc.Tags{"type-tag"}))
+		// The type's image is its registry-image reference, resolved natively;
+		// the check build plans no check or get for it.
 		Expect(plan.Check.TypeImage.GetPlan).NotTo(BeNil())
 		Expect(plan.Check.TypeImage.GetPlan.Get.Name).To(Equal("custom-type"))
 		Expect(plan.Check.TypeImage.GetPlan.Get.Type).To(Equal(dbtest.BaseResourceType))
 		Expect(plan.Check.TypeImage.GetPlan.Get.Source).To(Equal(atc.Source{"repository": "custom-image"}))
+		Expect(plan.Check.TypeImage.GetPlan.Get.Tags).To(Equal(atc.Tags{"type-tag"}))
+		Expect(plan.Check.TypeImage.GetPlan.Get.VersionFrom).To(BeNil())
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 	})
 
@@ -627,9 +627,12 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
 
 		build := drainLidarCheckBuilds(fixture, 1)[0]
-		typeCheck := build.PrivatePlan().Check.TypeImage.CheckPlan
-		Expect(typeCheck).NotTo(BeNil())
-		Expect(typeCheck.Check.Source).To(Equal(atc.Source{"repository": "((repo))"}))
+		// The type's image stays a reference the delegate evaluates and
+		// resolves at check time; no check is planned for it.
+		typeImage := build.PrivatePlan().Check.TypeImage
+		Expect(typeImage.ImageRef).To(BeEmpty())
+		Expect(typeImage.GetPlan).NotTo(BeNil())
+		Expect(typeImage.GetPlan.Get.Source).To(Equal(atc.Source{"repository": "((repo))"}))
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 	})
 
@@ -1529,14 +1532,13 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 		deserialized := resourceTypes.Deserialize()
 		Expect(deserialized).To(HaveLen(1))
 		Expect(deserialized[0].Image).To(BeEmpty())
-		image := deserialized.ImageForType("plan", config.Name, nil, false)
+		image := deserialized.ImageForType("plan", config.Name, nil)
 		Expect(image.ImageRef).To(BeEmpty())
-		Expect(image.CheckPlan).NotTo(BeNil())
 		Expect(image.GetPlan).NotTo(BeNil())
 		Expect(image.GetPlan.Get.Source).To(Equal(varSource))
 
-		// The get evaluates its source to the resource config lidar resolved,
-		// and finds the digest there.
+		// The delegate evaluates the reference's source to the resource config
+		// lidar resolved, and finds the digest there.
 		evaluatedConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
 			"registry-image", evaluatedSource, nil,
 		)

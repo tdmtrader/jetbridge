@@ -14,12 +14,10 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/imageresolver/imageresolvertesting"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	"github.com/concourse/concourse/vars"
 )
 
@@ -340,392 +338,69 @@ var _ = Describe("TaskDelegate", func() {
 	})
 
 	Describe("FetchImage", func() {
-		var delegate exec.TaskDelegate
-
-		var expectedCheckPlan, expectedGetPlan atc.Plan
-		var types atc.ResourceTypes
-		var imageResource atc.ImageResource
-
-		var volume *runtimetest.Volume
-		var persistedResourceCache db.ResourceCache
-
-		var runPlans []atc.Plan
-		var stepper exec.Stepper
-
-		var tags []string
-		var privileged bool
-
-		var imageSpec runtime.ImageSpec
-		var fetchErr error
+		// A task's image_resource is a registry-image reference the build step
+		// delegate resolves natively. Nothing runs as a step and no event is
+		// emitted for it.
+		var (
+			runPlans  []atc.Plan
+			imageSpec runtime.ImageSpec
+			fetchErr  error
+			source    atc.Source
+		)
 
 		BeforeEach(func() {
-			atc.DefaultCheckInterval = 1 * time.Minute
-			volume = runtimetest.NewVolume("some-volume")
-
 			runPlans = nil
-			stepper = func(p atc.Plan) exec.Step {
+			stepper := func(p atc.Plan) exec.Step {
 				runPlans = append(runPlans, p)
-
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-					if p.Get != nil {
-						source := p.Get.Source
-						params := p.Get.Params
-						if source["some"] == "((source-var))" {
-							source = atc.Source{"some": "super-secret-source"}
-						}
-						if params["some"] == "((params-var))" {
-							params = atc.Params{"some": "super-secret-params"}
-						}
-						version := atc.Version{"some": "version"}
-						if p.Get.Version != nil {
-							version = *p.Get.Version
-						} else if p.Get.Type == "registry-image" {
-							version = atc.Version{"digest": "sha256:plan-path"}
-						}
-						persistedResourceCache = createTaskDelegateCache(
-							fixture, realBuild, p.Get.Type, version, source, params,
-						)
-						state.ArtifactRepository().RegisterArtifact("image", volume, false)
-						state.StoreResult(expectedGetPlan.ID, exec.GetResult{
-							Name:          "image",
-							ResourceCache: persistedResourceCache,
-						})
-					}
-					return true, nil
-				}
-				return step
+				return new(scriptedStep)
 			}
+			delegate = NewTaskDelegate(
+				realBuild, planID, exec.NewRunState(stepper, vars.StaticVariables{"tag-var": "v7"}), fakeClock,
+				fixture.WorkerFactory, fixture.LockFactory,
+				WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
+			).(*taskDelegate)
 
-			runState := exec.NewRunState(stepper, nil)
-			delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
-
-			imageResource = atc.ImageResource{
-				Type:   "docker",
-				Source: atc.Source{"some": "((source-var))"},
-				Params: atc.Params{"some": "((params-var))"},
-				Tags:   atc.Tags{"some", "tags"},
-			}
-
-			types = atc.ResourceTypes{
-				{
-					Name:   "some-custom-type",
-					Type:   "another-custom-type",
-					Source: atc.Source{"some-custom": "((source-var))"},
-					Params: atc.Params{"some-custom": "((params-var))"},
-				},
-				{
-					Name:       "another-custom-type",
-					Type:       "registry-image",
-					Source:     atc.Source{"another-custom": "((source-var))"},
-					Privileged: true,
-				},
-			}
-
-			expectedCheckPlan = atc.Plan{
-				ID: planID + "/image-check",
-				Check: &atc.CheckPlan{
-					Name:   "image",
-					Type:   "docker",
-					Source: atc.Source{"some": "((source-var))"},
-					TypeImage: atc.TypeImage{
-						BaseType: "docker",
-					},
-					Tags: atc.Tags{"some", "tags"},
-					Interval: atc.CheckEvery{
-						Interval: 1 * time.Minute,
-					},
-				},
-			}
-
-			expectedGetPlan = atc.Plan{
-				ID: planID + "/image-get",
-				Get: &atc.GetPlan{
-					Name:   "image",
-					Type:   "docker",
-					Source: atc.Source{"some": "((source-var))"},
-					TypeImage: atc.TypeImage{
-						BaseType: "docker",
-					},
-					VersionFrom: &expectedCheckPlan.ID,
-					Params:      atc.Params{"some": "((params-var))"},
-					Tags:        atc.Tags{"some", "tags"},
-				},
-			}
-		})
-
-		AfterEach(func() {
-			atc.DefaultCheckInterval = 0
+			source = atc.Source{"repository": "registry.example/task", "tag": "((tag-var))"}
+			saveTaskDelegateVersion(fixture, "registry-image", atc.Source{"repository": "registry.example/task", "tag": "v7"}, atc.Version{"digest": "sha256:task"})
 		})
 
 		JustBeforeEach(func() {
-			imageSpec, fetchErr = delegate.FetchImage(context.TODO(), imageResource, types, privileged, tags, false)
+			imageSpec, fetchErr = delegate.FetchImage(context.TODO(), atc.ImageResource{
+				Type:   "registry-image",
+				Source: source,
+				Params: atc.Params{"format": "oci"},
+			}, true, atc.Tags{"some", "tags"})
 		})
 
-		It("succeeds", func() {
+		It("resolves the reference natively, running no step", func() {
 			Expect(fetchErr).ToNot(HaveOccurred())
-			Expect(persistedResourceCache).NotTo(BeNil())
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, persistedResourceCache)).To(Equal(1))
-		})
-
-		It("returns an image spec containing the artifact", func() {
+			Expect(runPlans).To(BeEmpty())
 			Expect(imageSpec).To(Equal(runtime.ImageSpec{
-				ImageArtifact: volume,
-				ResourceType:  "image",
-				Privileged:    false,
+				ImageURL:   "docker:///registry.example/task@sha256:task",
+				Privileged: true,
 			}))
 		})
 
-		It("generates and runs a check and get plan", func() {
-			Expect(runPlans).To(Equal([]atc.Plan{
-				expectedCheckPlan,
-				expectedGetPlan,
-			}))
+		It("records the image's resource cache for the build and emits no event", func() {
+			Expect(fetchErr).ToNot(HaveOccurred())
+			cache := taskDelegateAssociatedCache(fixture, realBuild)
+			Expect(cache.Version()).To(Equal(atc.Version{"digest": "sha256:task"}))
+			Expect(cache.BaseResourceType().Name).To(Equal("registry-image"))
+			Expect(taskDelegateBuildEventCount(fixture, realBuild)).To(BeZero())
 		})
 
-		It("sends events for image check and get", func() {
-			e := consumeTaskDelegateBuildEvent(fixture, realBuild, 2, 0)
-			Expect(e).To(Equal(event.ImageCheck{
-				Time: 675927000,
-				Origin: event.Origin{
-					ID: event.OriginID(planID),
-				},
-				PublicPlan: expectedCheckPlan.Public(),
-			}))
-
-			e = consumeTaskDelegateBuildEvent(fixture, realBuild, 2, 1)
-			Expect(e).To(Equal(event.ImageGet{
-				Time: 675927000,
-				Origin: event.Origin{
-					ID: event.OriginID(planID),
-				},
-				PublicPlan: expectedGetPlan.Public(),
-			}))
-		})
-
-		Context("when the check plan is nil", func() {
-			BeforeEach(func() {
-				imageResource.Version = atc.Version{"some": "version"}
-				expectedGetPlan.Get.Version = &atc.Version{"some": "version"}
+		Context("when the image_resource is not a registry-image reference", func() {
+			JustBeforeEach(func() {
+				imageSpec, fetchErr = delegate.FetchImage(context.TODO(), atc.ImageResource{
+					Type:   "docker-image",
+					Source: atc.Source{"repository": "busybox"},
+				}, false, nil)
 			})
 
-			It("only saves an ImageGet event", func() {
-				e := consumeTaskDelegateBuildEvent(fixture, realBuild, 1, 0)
-				Expect(e).To(Equal(event.ImageGet{
-					Time: 675927000,
-					Origin: event.Origin{
-						ID: event.OriginID(planID),
-					},
-					PublicPlan: expectedGetPlan.Public(),
-				}))
-			})
-		})
-
-		Context("FetchImage event emission", func() {
-			BeforeEach(func() {
-				imageResource = atc.ImageResource{
-					Type:   "registry-image",
-					Source: atc.Source{"repository": "my-repo", "tag": "latest"},
-					Tags:   atc.Tags{"some", "tags"},
-				}
-
-				types = atc.ResourceTypes{}
-
-				expectedCheckPlan = atc.Plan{
-					ID: planID + "/image-check",
-					Check: &atc.CheckPlan{
-						Name:   "image",
-						Type:   "registry-image",
-						Source: atc.Source{"repository": "my-repo", "tag": "latest"},
-						TypeImage: atc.TypeImage{
-							BaseType: "registry-image",
-						},
-						Tags: atc.Tags{"some", "tags"},
-						Interval: atc.CheckEvery{
-							Interval: 1 * time.Minute,
-						},
-					},
-				}
-
-				expectedGetPlan = atc.Plan{
-					ID: planID + "/image-get",
-					Get: &atc.GetPlan{
-						Name:   "image",
-						Type:   "registry-image",
-						Source: atc.Source{"repository": "my-repo", "tag": "latest"},
-						TypeImage: atc.TypeImage{
-							BaseType: "registry-image",
-						},
-						VersionFrom: &expectedCheckPlan.ID,
-						Tags:        atc.Tags{"some", "tags"},
-					},
-				}
-
-				runState := exec.NewRunState(stepper, nil)
-				delegate = NewTaskDelegate(realBuild, planID, runState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
-			})
-
-			It("succeeds", func() {
-				Expect(fetchErr).ToNot(HaveOccurred())
-			})
-
-			It("runs both plans and returns ImageSpec with artifact and URL", func() {
-				Expect(imageSpec.ImageArtifact).ToNot(BeNil())
-				Expect(imageSpec.ImageURL).ToNot(BeEmpty())
-			})
-
-			It("still saves ImageCheck event for build log continuity", func() {
-				e := consumeTaskDelegateBuildEvent(fixture, realBuild, 2, 0)
-				Expect(e).To(Equal(event.ImageCheck{
-					Time: 675927000,
-					Origin: event.Origin{
-						ID: event.OriginID(planID),
-					},
-					PublicPlan: expectedCheckPlan.Public(),
-				}))
-			})
-
-			It("still saves ImageGet event for build log continuity", func() {
-				e := consumeTaskDelegateBuildEvent(fixture, realBuild, 2, 1)
-				Expect(e).To(Equal(event.ImageGet{
-					Time: 675927000,
-					Origin: event.Origin{
-						ID: event.OriginID(planID),
-					},
-					PublicPlan: expectedGetPlan.Public(),
-				}))
-			})
-		})
-
-		Context("integration: end-to-end custom resource type on K8s", func() {
-			It("resolves a custom registry-image resource type with digest via FetchImagePlan", func() {
-				// Simulate the real pipeline flow:
-				// 1. FetchImagePlan generates check+get plans (no static version)
-				// 2. Check runs and stores resolved version with digest
-				// 3. Get step runs (in production, short-circuits in get_step.go)
-				// 4. FetchImage returns ImageSpec with ResourceCache for config chain
-
-				customImage := atc.ImageResource{
-					Name:   "image",
-					Type:   "registry-image",
-					Source: atc.Source{"repository": "my-org/custom-resource", "tag": "2.0"},
-				}
-
-				// FetchImagePlan is what the real pipeline planner uses
-				getPlan, checkPlan := atc.FetchImagePlan(planID, customImage, atc.ResourceTypes{}, atc.Tags{"k8s"}, false, nil)
-				Expect(checkPlan).ToNot(BeNil(), "check plan should be generated when no version is specified")
-				Expect(getPlan.Get.Version).To(BeNil(), "get plan should not have a static version")
-				Expect(getPlan.Get.VersionFrom).To(Equal(&checkPlan.ID), "get plan should reference check plan for version")
-
-				// Set up a stepper that simulates check storing version AND
-				// get step storing a GetResult with ResourceCache (as the real
-				// get_step short-circuit does on K8s).
-				cache := createTaskDelegateCache(
-					fixture,
-					realBuild,
-					"registry-image",
-					atc.Version{"digest": "sha256:e2d4a1f5c8b9"},
-					atc.Source{"repository": "my-org/custom-resource", "tag": "2.0"},
-					nil,
-				)
-				var integrationRunPlans []atc.Plan
-				integrationStepper := func(p atc.Plan) exec.Step {
-					integrationRunPlans = append(integrationRunPlans, p)
-					step := new(scriptedStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						if p.Check != nil {
-							state.StoreResult(p.ID, atc.Version{"digest": "sha256:e2d4a1f5c8b9"})
-						}
-						if p.Get != nil {
-							state.ArtifactRepository().RegisterArtifact("image", nil, false)
-							state.StoreResult(p.ID, exec.GetResult{
-								Name:          "image",
-								ResourceCache: cache,
-							})
-						}
-						return true, nil
-					}
-					return step
-				}
-
-				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
-
-				imgSpec, fetchErr := nativeDelegate.FetchImage(
-					context.TODO(), customImage, atc.ResourceTypes{}, false, atc.Tags{"k8s"}, false,
-				)
-				Expect(fetchErr).ToNot(HaveOccurred())
-
-				By("running both check and get plans")
-				Expect(integrationRunPlans).To(HaveLen(2))
-				Expect(integrationRunPlans[0].Check).ToNot(BeNil())
-				Expect(integrationRunPlans[1].Get).ToNot(BeNil())
-
-				By("returning an ImageURL pinned to the checked digest")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/custom-resource@sha256:e2d4a1f5c8b9"))
-
-				By("saving both ImageCheck and ImageGet events for build log continuity")
-				checkEvent := consumeTaskDelegateBuildEvent(fixture, realBuild, 4, 2)
-				Expect(checkEvent.EventType()).To(Equal(atc.EventType("image-check")))
-				getEvent := consumeTaskDelegateBuildEvent(fixture, realBuild, 4, 3)
-				Expect(getEvent.EventType()).To(Equal(atc.EventType("image-get")))
-				Expect(taskDelegateCacheAssociationCount(fixture, realBuild, cache)).To(Equal(1))
-			})
-
-			It("resolves a custom resource type with pinned version (no check plan)", func() {
-				// When a version is pinned, FetchImagePlan generates no check plan.
-				// The get step still runs (and short-circuits in production).
-				pinnedImage := atc.ImageResource{
-					Name:    "image",
-					Type:    "registry-image",
-					Source:  atc.Source{"repository": "my-org/pinned-resource"},
-					Version: atc.Version{"digest": "sha256:pinned999"},
-				}
-
-				getPlan, checkPlan := atc.FetchImagePlan(planID, pinnedImage, atc.ResourceTypes{}, nil, false, nil)
-				Expect(checkPlan).To(BeNil(), "no check plan when version is pinned")
-				Expect(getPlan.Get.Version).ToNot(BeNil())
-
-				cache := createTaskDelegateCache(
-					fixture,
-					realBuild,
-					"registry-image",
-					atc.Version{"digest": "sha256:pinned999"},
-					atc.Source{"repository": "my-org/pinned-resource"},
-					nil,
-				)
-				var integrationRunPlans []atc.Plan
-				integrationStepper := func(p atc.Plan) exec.Step {
-					integrationRunPlans = append(integrationRunPlans, p)
-					step := new(scriptedStep)
-					step.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
-						if p.Get != nil {
-							state.ArtifactRepository().RegisterArtifact("image", nil, false)
-							state.StoreResult(p.ID, exec.GetResult{
-								Name:          "image",
-								ResourceCache: cache,
-							})
-						}
-						return true, nil
-					}
-					return step
-				}
-
-				integrationState := exec.NewRunState(integrationStepper, nil)
-				nativeDelegate := NewTaskDelegate(realBuild, planID, integrationState, fakeClock, fixture.WorkerFactory, fixture.LockFactory)
-
-				imgSpec, fetchErr := nativeDelegate.FetchImage(
-					context.TODO(), pinnedImage, atc.ResourceTypes{}, false, nil, false,
-				)
-				Expect(fetchErr).ToNot(HaveOccurred())
-
-				By("running the get plan (no check needed)")
-				Expect(integrationRunPlans).To(HaveLen(1))
-				Expect(integrationRunPlans[0].Get).ToNot(BeNil())
-
-				By("returning an ImageURL with the pinned digest")
-				Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/pinned-resource@sha256:pinned999"))
-				Expect(taskDelegateCacheAssociationCount(fixture, realBuild, cache)).To(Equal(1))
+			It("refuses it by name without running a step", func() {
+				Expect(fetchErr).To(MatchError(atc.UnsupportedImageTypeError{Type: "docker-image"}))
+				Expect(runPlans).To(BeEmpty())
+				Expect(taskDelegateBuildEventCount(fixture, realBuild)).To(BeZero())
 			})
 		})
 	})
@@ -793,8 +468,7 @@ var _ = Describe("TaskDelegate", func() {
 			imgSpec, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{},
-				false, nil, false,
+				false, nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -803,113 +477,6 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(imgSpec.ImageArtifact).To(BeNil(), "no volume artifact expected")
 			cache := taskDelegateAssociatedCache(fixture, realBuild)
 			Expect(cache.Version()).To(Equal(atc.Version{"digest": "sha256:metadata42"}))
-		})
-
-		It("falls back to check+get plans when no cached version exists", func() {
-			source := atc.Source{"repository": "my-org/uncached"}
-			scope := findTaskDelegateScope(fixture, "registry-image", source)
-			latest, found, err := scope.LatestVersion()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeFalse())
-			Expect(latest).To(BeNil())
-
-			fallbackCache := createTaskDelegateCache(
-				fixture, realBuild, "registry-image",
-				atc.Version{"digest": "sha256:fallback123"}, source, nil,
-			)
-
-			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
-					if p.Check != nil {
-						s.StoreResult(p.ID, atc.Version{"digest": "sha256:fallback123"})
-					}
-					if p.Get != nil {
-						vol := runtimetest.NewVolume("fallback-vol")
-						s.ArtifactRepository().RegisterArtifact("image", vol, false)
-						s.StoreResult(p.ID, exec.GetResult{
-							Name:          "image",
-							ResourceCache: fallbackCache,
-						})
-					}
-					return true, nil
-				}
-				return step
-			}
-
-			td, executedPlans := buildTaskDelegate(fallbackStepper)
-
-			imgSpec, err := td.FetchImage(
-				context.TODO(),
-				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{},
-				false, nil, false,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(*executedPlans).To(HaveLen(2), "should spawn check+get plans as fallback")
-			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/uncached@sha256:fallback123"))
-			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "fallback should produce an artifact")
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, fallbackCache)).To(Equal(1))
-		})
-
-		It("transitions from fallback to cached resolution across runs", func() {
-			source := atc.Source{"repository": "my-org/evolving"}
-			scope := findTaskDelegateScope(fixture, "registry-image", source)
-			fallbackCache := createTaskDelegateCache(
-				fixture, realBuild, "registry-image", atc.Version{"digest": "sha256:v1"}, source, nil,
-			)
-
-			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
-					if p.Check != nil {
-						s.StoreResult(p.ID, atc.Version{"digest": "sha256:v1"})
-					}
-					if p.Get != nil {
-						vol := runtimetest.NewVolume("v1-vol")
-						s.ArtifactRepository().RegisterArtifact("image", vol, false)
-						s.StoreResult(p.ID, exec.GetResult{Name: "image", ResourceCache: fallbackCache})
-					}
-					return true, nil
-				}
-				return step
-			}
-
-			td1, plans1 := buildTaskDelegate(fallbackStepper)
-			spec1, err := td1.FetchImage(
-				context.TODO(),
-				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
-			)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(*plans1).To(HaveLen(2), "first run falls back to plans")
-			Expect(spec1.ImageURL).To(Equal("docker:///my-org/evolving@sha256:v1"))
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, fallbackCache)).To(Equal(1))
-
-			Expect(scope.SaveVersions(
-				db.SpanContext{}, []atc.Version{{"digest": "sha256:v2-cached"}},
-			)).To(Succeed())
-
-			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
-				return step
-			}
-
-			td2, plans2 := buildTaskDelegate(noopStepper)
-			spec2, err := td2.FetchImage(
-				context.TODO(),
-				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
-			)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(*plans2).To(BeEmpty(), "second run uses cached version, no pods")
-			Expect(spec2.ImageURL).To(Equal("docker:///my-org/evolving@sha256:v2-cached"))
-			cached := createTaskDelegateCache(
-				fixture, realBuild, "registry-image", atc.Version{"digest": "sha256:v2-cached"}, source, nil,
-			)
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, cached)).To(Equal(1))
 		})
 
 		It("saves image resource version for build tracking", func() {
@@ -927,7 +494,7 @@ var _ = Describe("TaskDelegate", func() {
 			_, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -952,7 +519,7 @@ var _ = Describe("TaskDelegate", func() {
 			imgSpec, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(imgSpec.ImageURL).To(HavePrefix("docker:///"))
@@ -960,109 +527,42 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(imgSpec.ImageURL).To(ContainSubstring("gcr.io/my-project/worker-image"))
 		})
 
-		It("emits ImageCheck and ImageGet events even when using cached resolution", func() {
-			source := atc.Source{"repository": "my-org/events-test"}
-			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
-
+		It("refuses a non-registry-image type by name instead of running a step", func() {
 			noopStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) { return true, nil }
-				return step
+				Fail("no step may run for an image")
+				return nil
 			}
 
-			td, _ := buildTaskDelegate(noopStepper)
+			td, executedPlans := buildTaskDelegate(noopStepper)
+
+			_, err := td.FetchImage(
+				context.TODO(),
+				atc.ImageResource{Name: "image", Type: "s3-resource", Source: atc.Source{"bucket": "my-bucket"}},
+				false, nil,
+			)
+			Expect(err).To(MatchError(atc.UnsupportedImageTypeError{Type: "s3-resource"}))
+			Expect(*executedPlans).To(BeEmpty())
+		})
+
+		It("returns the database error instead of running a step", func() {
+			source := atc.Source{"repository": "my-org/db-fail-test"}
+			resourceConfigFactory = db.NewResourceConfigFactory(ClosedEngineCloneConn(), fixture.LockFactory)
+			imageResolver = nil
+
+			noopStepper := func(p atc.Plan) exec.Step {
+				Fail("no step may run for an image")
+				return nil
+			}
+
+			td, executedPlans := buildTaskDelegate(noopStepper)
 
 			_, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(consumeTaskDelegateBuildEvent(fixture, realBuild, 2, 0).EventType()).To(Equal(atc.EventType("image-check")))
-			Expect(consumeTaskDelegateBuildEvent(fixture, realBuild, 2, 1).EventType()).To(Equal(atc.EventType("image-get")))
-		})
-
-		It("falls back to plans for a non-registry-image type without image: field", func() {
-			source := atc.Source{"bucket": "my-bucket"}
-			fallbackCache := createTaskDelegateCache(
-				fixture, realBuild, "s3-resource", atc.Version{"digest": "sha256:custom123"}, source, nil,
-			)
-
-			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
-					if p.Check != nil {
-						s.StoreResult(p.ID, atc.Version{"digest": "sha256:custom123"})
-					}
-					if p.Get != nil {
-						vol := runtimetest.NewVolume("custom-vol")
-						s.ArtifactRepository().RegisterArtifact("image", vol, false)
-						s.StoreResult(p.ID, exec.GetResult{
-							Name:          "image",
-							ResourceCache: fallbackCache,
-						})
-					}
-					return true, nil
-				}
-				return step
-			}
-
-			td, executedPlans := buildTaskDelegate(fallbackStepper)
-
-			imgSpec, err := td.FetchImage(
-				context.TODO(),
-				atc.ImageResource{Name: "image", Type: "s3-resource", Source: source},
-				atc.ResourceTypes{},
-				false, nil, false,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(*executedPlans).To(HaveLen(2), "non-registry type must spawn check+get pods")
-			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "plan-based path returns artifact")
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, fallbackCache)).To(Equal(1))
-		})
-
-		It("falls back gracefully when DB metadata lookup fails", func() {
-			source := atc.Source{"repository": "my-org/db-fail-test"}
-			fallbackCache := createTaskDelegateCache(
-				fixture, realBuild, "registry-image", atc.Version{"digest": "sha256:dbfail"}, source, nil,
-			)
-			resourceConfigFactory = db.NewResourceConfigFactory(ClosedEngineCloneConn(), fixture.LockFactory)
-			imageResolver = nil
-
-			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
-					if p.Check != nil {
-						s.StoreResult(p.ID, atc.Version{"digest": "sha256:dbfail"})
-					}
-					if p.Get != nil {
-						vol := runtimetest.NewVolume("dbfail-vol")
-						s.ArtifactRepository().RegisterArtifact("image", vol, false)
-						s.StoreResult(p.ID, exec.GetResult{
-							Name:          "image",
-							ResourceCache: fallbackCache,
-						})
-					}
-					return true, nil
-				}
-				return step
-			}
-
-			td, executedPlans := buildTaskDelegate(fallbackStepper)
-
-			imgSpec, err := td.FetchImage(
-				context.TODO(),
-				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(*executedPlans).To(HaveLen(2), "DB failure should trigger plan-based fallback")
-			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/db-fail-test@sha256:dbfail"))
-			Expect(imgSpec.ImageArtifact).ToNot(BeNil())
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, fallbackCache)).To(Equal(1))
+			Expect(err).To(MatchError(ContainSubstring("find resource config:")))
+			Expect(*executedPlans).To(BeEmpty())
 		})
 
 		It("does not spawn any pods when resource factories are injected and cache is warm", func() {
@@ -1080,7 +580,7 @@ var _ = Describe("TaskDelegate", func() {
 			imgSpec, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/warm-cache@sha256:metadata42"))
@@ -1104,7 +604,7 @@ var _ = Describe("TaskDelegate", func() {
 			imgSpec, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -1144,7 +644,7 @@ var _ = Describe("TaskDelegate", func() {
 			_, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("on-demand image resolve"))
@@ -1156,45 +656,25 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(latest).To(BeNil())
 		})
 
-		It("works without resource factories (fallback-only mode)", func() {
+		It("fails without resource factories rather than fetch the image another way", func() {
 			source := atc.Source{"repository": "my-org/no-factory"}
-			fallbackCache := createTaskDelegateCache(
-				fixture, realBuild, "registry-image", atc.Version{"digest": "sha256:nofactory"}, source, nil,
-			)
 
-			fallbackStepper := func(p atc.Plan) exec.Step {
-				step := new(scriptedStep)
-				step.RunStub = func(_ context.Context, s exec.RunState) (bool, error) {
-					if p.Check != nil {
-						s.StoreResult(p.ID, atc.Version{"digest": "sha256:nofactory"})
-					}
-					if p.Get != nil {
-						vol := runtimetest.NewVolume("nofactory-vol")
-						s.ArtifactRepository().RegisterArtifact("image", vol, false)
-						s.StoreResult(p.ID, exec.GetResult{
-							Name:          "image",
-							ResourceCache: fallbackCache,
-						})
-					}
-					return true, nil
-				}
-				return step
+			noopStepper := func(p atc.Plan) exec.Step {
+				Fail("no step may run for an image")
+				return nil
 			}
 
 			resourceConfigFactory = nil
 			resourceCacheFactory = nil
-			td, executedPlans := buildTaskDelegate(fallbackStepper)
+			td, executedPlans := buildTaskDelegate(noopStepper)
 
-			imgSpec, err := td.FetchImage(
+			_, err := td.FetchImage(
 				context.TODO(),
 				atc.ImageResource{Name: "image", Type: "registry-image", Source: source},
-				atc.ResourceTypes{}, false, nil, false,
+				false, nil,
 			)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(*executedPlans).To(HaveLen(2))
-			Expect(imgSpec.ImageURL).To(Equal("docker:///my-org/no-factory@sha256:nofactory"))
-			Expect(imgSpec.ImageArtifact).ToNot(BeNil(), "without factories, always uses plan-based path")
-			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, fallbackCache)).To(Equal(1))
+			Expect(err).To(MatchError("image fetch needs the resource config and resource cache factories"))
+			Expect(*executedPlans).To(BeEmpty())
 		})
 
 		Describe("pinned image versions", func() {
@@ -1246,7 +726,7 @@ var _ = Describe("TaskDelegate", func() {
 						Source:  source,
 						Version: atc.Version{"digest": pinnedDigest},
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1279,7 +759,7 @@ var _ = Describe("TaskDelegate", func() {
 						Source:  atc.Source{"repository": "registry.home/agent-runner"},
 						Version: atc.Version{"digest": pinnedDigest},
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1301,7 +781,7 @@ var _ = Describe("TaskDelegate", func() {
 						Source:  atc.Source{"repository": "registry.home/agent-runner"},
 						Version: atc.Version{"digest": pinnedDigest},
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1327,7 +807,7 @@ var _ = Describe("TaskDelegate", func() {
 						Params:  params,
 						Version: atc.Version{"digest": pinnedDigest},
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1359,7 +839,7 @@ var _ = Describe("TaskDelegate", func() {
 						Type:   "registry-image",
 						Source: source,
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1386,7 +866,7 @@ var _ = Describe("TaskDelegate", func() {
 						Type:   "registry-image",
 						Source: source,
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1421,7 +901,7 @@ var _ = Describe("TaskDelegate", func() {
 						Source:  source,
 						Version: atc.Version{},
 					},
-					atc.ResourceTypes{}, false, nil, false,
+					false, nil,
 				)
 				Expect(err).ToNot(HaveOccurred())
 

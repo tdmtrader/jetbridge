@@ -24,7 +24,7 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 				PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "scan-resource"}}},
 			}},
 			Resources:     atc.ResourceConfigs{{Name: "scan-resource", Type: "some-base-resource-type", Source: atc.Source{"some": "source"}}},
-			ResourceTypes: atc.ResourceTypes{{Name: "scan-type", Type: "some-base-resource-type", Source: atc.Source{"some": "source"}}},
+			ResourceTypes: atc.ResourceTypes{{Name: "scan-type", Type: "registry-image", Source: atc.Source{"repository": "scan"}}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 

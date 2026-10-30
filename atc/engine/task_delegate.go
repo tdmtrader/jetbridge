@@ -21,9 +21,10 @@ func NewTaskDelegate(
 	clock clock.Clock,
 	dbWorkerFactory db.WorkerFactory,
 	lockFactory lock.LockFactory,
+	opts ...DelegateOption,
 ) exec.TaskDelegate {
 	return &taskDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, atc.DisableRedactSecrets),
+		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, atc.DisableRedactSecrets, opts...),
 
 		eventOrigin: event.Origin{ID: event.OriginID(planID)},
 		planID:      planID,
@@ -132,43 +133,18 @@ func (d *taskDelegate) Finished(
 	logger.Info("finished", lager.Data{"exit-status": exitStatus})
 }
 
+// FetchImage resolves a task's image_resource: a registry-image reference
+// the build step delegate pins natively. Nothing runs as a step and no event
+// is emitted for it; the task's own events carry the image it ran in.
 func (d *taskDelegate) FetchImage(
 	ctx context.Context,
 	image atc.ImageResource,
-	types atc.ResourceTypes,
 	privileged bool,
 	stepTags atc.Tags,
-	skipInterval bool,
 ) (runtime.ImageSpec, error) {
 	image.Name = "image"
 
-	getPlan, checkPlan := atc.FetchImagePlan(d.planID, image, types, stepTags, skipInterval, nil)
-
-	if checkPlan != nil {
-		err := d.build.SaveEvent(event.ImageCheck{
-			Time: d.clock.Now().Unix(),
-			Origin: event.Origin{
-				ID: event.OriginID(d.planID),
-			},
-			PublicPlan: checkPlan.Public(),
-		})
-		if err != nil {
-			return runtime.ImageSpec{}, err
-		}
-	}
-
-	err := d.build.SaveEvent(event.ImageGet{
-		Time: d.clock.Now().Unix(),
-		Origin: event.Origin{
-			ID: event.OriginID(d.planID),
-		},
-		PublicPlan: getPlan.Public(),
-	})
-	if err != nil {
-		return runtime.ImageSpec{}, err
-	}
-
-	imageSpec, _, err := d.BuildStepDelegate.FetchImage(ctx, getPlan, checkPlan, privileged)
+	imageSpec, _, err := d.BuildStepDelegate.FetchImage(ctx, atc.FetchImagePlan(d.planID, image, stepTags), privileged)
 	if err != nil {
 		return runtime.ImageSpec{}, err
 	}

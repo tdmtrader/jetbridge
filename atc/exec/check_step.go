@@ -131,7 +131,7 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 		}
 	} else if step.plan.TypeImage.GetPlan != nil {
 		var err error
-		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.CheckPlan, step.plan.TypeImage.Privileged)
+		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.Privileged)
 		if err != nil {
 			return false, err
 		}

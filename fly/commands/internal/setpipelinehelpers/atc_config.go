@@ -71,6 +71,15 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 		return err
 	}
 
+	// The server refuses an image whose type is not registry-image
+	// (atc.ValidateImageType, applied by configvalidate.Validate on save), so
+	// refuse here with the same sentence rather than printing a diff -- or a
+	// clean --dry-run -- for a file SaveConfig will answer with a 400.
+	if err := configvalidate.ValidateImageTypes(newConfig); err != nil {
+		displayhelpers.ShowErrors("Error validating config", []string{err.Error()})
+		return errors.New("configuration invalid")
+	}
+
 	configWarnings, _ := configvalidate.Validate(newConfig)
 	for _, w := range configWarnings {
 		atcConfig.CommandWarnings = append(atcConfig.CommandWarnings, concourse.ConfigWarning{
@@ -84,7 +93,7 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 	// printing a diff -- or a clean --dry-run -- for a file SaveConfig will
 	// answer with a 400.
 	if err := configvalidate.ValidateTemplateDeclaration(atcConfig.PipelineRef, newConfig); err != nil {
-		displayhelpers.ShowErrors("Error loading existing config", []string{err.Error()})
+		displayhelpers.ShowErrors("Error validating config", []string{err.Error()})
 		return errors.New("configuration invalid")
 	}
 

@@ -99,6 +99,12 @@ func (config TaskConfig) Validate() error {
 		errors = append(errors, "missing 'platform'")
 	}
 
+	if config.ImageResource != nil {
+		if err := ValidateImageType(config.ImageResource.Type); err != nil {
+			errors = append(errors, "image_resource: "+err.Error())
+		}
+	}
+
 	errors = append(errors, config.validateInputContainsNames()...)
 	errors = append(errors, config.validateOutputContainsNames()...)
 

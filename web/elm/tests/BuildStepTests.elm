@@ -350,34 +350,6 @@ all =
                     >> given theTaskStepIsExpanded
                     >> when iAmLookingAtTheStepBody
                     >> then_ iSeeATimestamp
-            , test "shows image check sub-step" <|
-                given iVisitABuildWithATaskStep
-                    >> given (thereIsAnImageCheckStep taskStepId)
-                    >> given (thereIsALog imageCheckStepId)
-                    >> given (theStepInitializationIsExpanded taskStepId)
-                    >> given theImageCheckStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            , test "shows image get sub-step" <|
-                given iVisitABuildWithATaskStep
-                    >> given (thereIsAnImageGetStep taskStepId)
-                    >> given (thereIsALog imageGetStepId)
-                    >> given (theStepInitializationIsExpanded taskStepId)
-                    >> given theImageGetStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            , test "initialization toggle gets viewport for tooltip" <|
-                given iVisitABuildWithATaskStep
-                    >> given (thereIsAnImageGetStep taskStepId)
-                    >> given iHoverOverInitializationToggle
-                    >> given timeElapses
-                    >> then_ (itGetsViewportOf initializationToggleID)
-            , test "initialization toggle shows tooltip" <|
-                given iVisitABuildWithATaskStep
-                    >> given (thereIsAnImageGetStep taskStepId)
-                    >> given iHoverOverInitializationToggle
-                    >> given (gotViewportAndElementOf initializationToggleID)
-                    >> then_ (iSeeText "image fetching")
             ]
         , describe "check step"
             [ test "should show resource name" <|
@@ -385,52 +357,6 @@ all =
                     >> given theCheckStepIsExpanded
                     >> when iAmLookingAtTheStepBody
                     >> then_ iSeeTheResourceName
-            , test "shows image check sub-step" <|
-                given iVisitABuildWithACheckStep
-                    >> given (theStepInitializationIsExpanded checkStepId)
-                    >> given (thereIsALog imageCheckStepId)
-                    >> given theImageCheckStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            , test "shows image get sub-step" <|
-                given iVisitABuildWithACheckStep
-                    >> given (theStepInitializationIsExpanded checkStepId)
-                    >> given (thereIsALog imageGetStepId)
-                    >> given theImageGetStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            ]
-        , describe "get step"
-            [ test "shows image check sub-step" <|
-                given iVisitABuildWithAGetStep
-                    >> given (theStepInitializationIsExpanded getStepId)
-                    >> given (thereIsALog imageCheckStepId)
-                    >> given theImageCheckStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            , test "shows image get sub-step" <|
-                given iVisitABuildWithAGetStep
-                    >> given (theStepInitializationIsExpanded getStepId)
-                    >> given (thereIsALog imageGetStepId)
-                    >> given theImageGetStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            ]
-        , describe "put step"
-            [ test "shows image check sub-step" <|
-                given iVisitABuildWithAPutStep
-                    >> given (theStepInitializationIsExpanded putStepId)
-                    >> given (thereIsALog imageCheckStepId)
-                    >> given theImageCheckStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
-            , test "shows image get sub-step" <|
-                given iVisitABuildWithAPutStep
-                    >> given (theStepInitializationIsExpanded putStepId)
-                    >> given (thereIsALog imageGetStepId)
-                    >> given theImageGetStepIsExpanded
-                    >> when iAmLookingAtTheStepBody
-                    >> then_ iSeeTheLogOutput
             ]
         , describe "set-pipeline step"
             [ test "should show pipeline name" <|
@@ -517,12 +443,6 @@ gotViewportAndElementOf domID =
             )
 
 
-iHoverOverInitializationToggle =
-    Tuple.first
-        >> Application.update
-            (Update <| Message.Hover <| Just initializationToggleID)
-
-
 timeElapses =
     Tuple.first
         >> Application.handleDelivery
@@ -534,10 +454,6 @@ timeElapses =
 itGetsViewportOf domID =
     Tuple.second
         >> Common.contains (Effects.GetViewportOf domID)
-
-
-initializationToggleID =
-    Message.StepInitialization "foo"
 
 
 iVisitABuildWithARetryStep =
@@ -673,21 +589,6 @@ theGetStepIsExpanded =
 theTaskStepIsExpanded =
     Tuple.first
         >> Application.update (Update <| Message.Click <| StepHeader taskStepId)
-
-
-theStepInitializationIsExpanded stepId =
-    Tuple.first
-        >> Application.update (Update <| Message.Click <| StepInitialization stepId)
-
-
-theImageCheckStepIsExpanded =
-    Tuple.first
-        >> Application.update (Update <| Message.Click <| StepHeader imageCheckStepId)
-
-
-theImageGetStepIsExpanded =
-    Tuple.first
-        >> Application.update (Update <| Message.Click <| StepHeader imageGetStepId)
 
 
 theSetPipelineStepIsExpanded =
@@ -953,14 +854,6 @@ taskStepId =
     "taskStepId"
 
 
-imageCheckStepId =
-    "imageCheckStepId"
-
-
-imageGetStepId =
-    "imageGetStepId"
-
-
 thePlanContainsASetPipelineStep =
     Tuple.first
         >> Application.handleCallback
@@ -1040,17 +933,6 @@ thePlanContainsACheckStep =
                     ( { id = checkStepId
                       , step =
                             Concourse.BuildStepCheck "resource-name"
-                                (Just
-                                    { check =
-                                        { id = imageCheckStepId
-                                        , step = Concourse.BuildStepCheck "some-check" Nothing
-                                        }
-                                    , get =
-                                        { id = imageGetStepId
-                                        , step = Concourse.BuildStepGet "some-get" Nothing Nothing Nothing
-                                        }
-                                    }
-                                )
                       }
                     , { inputs = []
                       , outputs = []
@@ -1101,17 +983,6 @@ thePlanContainsAGetStep =
                                 "the-git-resource"
                                 (Just "the-git-resource")
                                 (Just (Dict.fromList [ ( "ref", "abc123" ) ]))
-                                (Just
-                                    { check =
-                                        { id = imageCheckStepId
-                                        , step = Concourse.BuildStepCheck "some-check" Nothing
-                                        }
-                                    , get =
-                                        { id = imageGetStepId
-                                        , step = Concourse.BuildStepGet "some-get" Nothing Nothing Nothing
-                                        }
-                                    }
-                                )
                       }
                     , { inputs = []
                       , outputs = []
@@ -1158,17 +1029,6 @@ thePlanContainsAPutStep =
                             Concourse.BuildStepPut
                                 "the-git-resource"
                                 (Just "the-git-resource")
-                                (Just
-                                    { check =
-                                        { id = imageCheckStepId
-                                        , step = Concourse.BuildStepCheck "some-check" Nothing
-                                        }
-                                    , get =
-                                        { id = imageGetStepId
-                                        , step = Concourse.BuildStepGet "some-get" Nothing Nothing Nothing
-                                        }
-                                    }
-                                )
                       }
                     , { inputs = []
                       , outputs = []
@@ -1595,40 +1455,6 @@ thereIsALog stepId =
                                 "the log output"
                                 (Just <| Time.millisToPosix 1000)
                       , url = eventsUrl
-                      }
-                    ]
-            )
-
-
-thereIsAnImageCheckStep stepId =
-    Tuple.first
-        >> Application.handleDelivery
-            (EventsReceived <|
-                Ok
-                    [ { data =
-                            ImageCheck
-                                { source = ""
-                                , id = stepId
-                                }
-                                (Concourse.BuildPlan imageCheckStepId (Concourse.BuildStepCheck "image" Nothing))
-                      , url = "http://localhost:8080/api/v1/builds/1/events"
-                      }
-                    ]
-            )
-
-
-thereIsAnImageGetStep stepId =
-    Tuple.first
-        >> Application.handleDelivery
-            (EventsReceived <|
-                Ok
-                    [ { data =
-                            ImageGet
-                                { source = ""
-                                , id = stepId
-                                }
-                                (Concourse.BuildPlan imageGetStepId (Concourse.BuildStepGet "image" Nothing Nothing Nothing))
-                      , url = "http://localhost:8080/api/v1/builds/1/events"
                       }
                     ]
             )

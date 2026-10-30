@@ -230,20 +230,6 @@ decodeBuildEvent =
                                 (Json.Decode.field "changed" Json.Decode.bool)
                             )
 
-                    "image-check" ->
-                        Json.Decode.field "data"
-                            (Json.Decode.map2 ImageCheck
-                                (Json.Decode.field "origin" decodeOrigin)
-                                (Json.Decode.field "plan" Concourse.decodeBuildPlan)
-                            )
-
-                    "image-get" ->
-                        Json.Decode.field "data"
-                            (Json.Decode.map2 ImageGet
-                                (Json.Decode.field "origin" decodeOrigin)
-                                (Json.Decode.field "plan" Concourse.decodeBuildPlan)
-                            )
-
                     "sidecar" ->
                         Json.Decode.field "data"
                             (Json.Decode.map2 SidecarPlan
@@ -260,8 +246,12 @@ decodeBuildEvent =
                                 )
                             )
 
+                    -- An event kind this page does not know (one a build from
+                    -- before a cut persisted, such as image-check) is carried
+                    -- through and ignored, so the rest of the batch still
+                    -- renders: the envelopes decode as one list.
                     unknown ->
-                        Json.Decode.fail ("unknown event type: " ++ unknown)
+                        Json.Decode.succeed (UnknownEvent unknown)
             )
 
 

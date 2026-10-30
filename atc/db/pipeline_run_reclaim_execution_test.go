@@ -26,7 +26,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 			RunRetention:  &atc.RunRetentionConfig{KeepLast: &keepLast},
 			Jobs:          atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source"}}}}},
 			Resources:     atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
-			ResourceTypes: atc.ResourceTypes{{Name: "custom", Type: "some-base-resource-type", Source: atc.Source{"repository": "custom"}}},
+			ResourceTypes: atc.ResourceTypes{{Name: "custom", Type: "registry-image", Source: atc.Source{"repository": "custom"}}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)

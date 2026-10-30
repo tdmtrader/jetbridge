@@ -16,9 +16,9 @@ var _ = Describe("Skip Image Resource Download", func() {
 	// Without skip_download, registry-image gets behave like any other
 	// resource type and create a get pod.
 	//
-	// Image get plans for custom resource type resolution (FetchImagePlan)
-	// automatically set SkipDownload for registry-image types — no pod is
-	// created for check/step image resolution.
+	// A step's image (a custom type's registry-image reference, a task's
+	// image_resource) is never a get at all: the delegate resolves it natively,
+	// so no pod is created for image resolution either.
 	//
 	// These tests use images already in testDependencyImages (busybox,
 	// alpine, mock-resource) which are pre-loaded into KinD. The native

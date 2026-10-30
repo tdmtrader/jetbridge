@@ -244,16 +244,20 @@ Default mappings:
 
 Source: `atc/worker/jetbridge/config.go` (DefaultResourceTypeImages, MergeResourceTypeImages)
 
-### Direct image references for resource types
+### Resource type images
 
-Resource types can specify a direct container image reference via `image_ref`,
-bypassing check/get plans entirely. Supports `repo:tag` or `repo@sha256:digest`.
+A resource type's image is always a registry-image reference: either a direct
+`image:` (`repo:tag` or `repo@sha256:digest`, the type's pinned image), or
+`type: registry-image` with a `source:` whose digest the web resolves natively
+(lidar for the type's own check, the step delegate on demand). A task's
+`image_resource` follows the same rule. `set-pipeline`, `validate-pipeline`
+and the server refuse a `resource_types` entry or inline `image_resource`
+whose `type:` is anything else (`atc.ValidateImageType`): nothing fetches an
+image through another resource type, and the only pod a check runs is the
+check itself.
 
-This is used internally when resolving resource type images — the K8s runtime
-resolves images to direct references rather than going through the
-check-resource-type → get-resource-type chain that Garden used.
-
-Source: `atc/plan.go` (TypeImage.ImageRef)
+Source: `atc/config.go` (ImageForType, FetchImagePlan, ValidateImageType),
+`atc/engine/build_step_delegate.go` (FetchImage)
 
 ## Health Endpoint
 

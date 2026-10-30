@@ -103,10 +103,9 @@ func (resourceTypes ResourceTypes) Deserialize() atc.ResourceTypes {
 			}
 		}
 
-		// Use the resolved image ref (repo@sha256:digest) if available.
-		// This allows ImageForType to short-circuit and avoid building
-		// nested check/get plans for resource types that have been
-		// resolved via the native registry resolver.
+		// A type lidar has resolved natively carries its image as a
+		// digest-pinned reference; ImageForType hands that straight to the
+		// pod as the type's pinned image.
 		image := t.Image()
 		if image == "" {
 			image = t.ResolvedImage()
@@ -340,7 +339,7 @@ func (r *resourceType) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.I
 		ResourceType: r.name,
 	})
 
-	plan.Check.TypeImage = imagePlanner.ImageForType(plan.ID, r.type_, r.tags, skipInterval && skipIntervalRecursively)
+	plan.Check.TypeImage = imagePlanner.ImageForType(plan.ID, r.type_, r.tags)
 	return plan
 }
 

@@ -115,16 +115,16 @@ var _ = Describe("set-pipeline", func() {
 			ResourceTypes: atc.ResourceTypes{
 				{
 					Name: "some-resource-type",
-					Type: "some-type",
+					Type: "registry-image",
 					Source: atc.Source{
-						"source-config": "some-value",
+						"repository": "registry.example/some-resource-type",
 					},
 				},
 				{
 					Name: "some-other-resource-type",
-					Type: "some-other-type",
+					Type: "registry-image",
 					Source: atc.Source{
-						"source-config": "some-value",
+						"repository": "registry.example/some-other-resource-type",
 					},
 				},
 			},
@@ -837,7 +837,7 @@ this is super secure
 
 				newResourceTypes := make(atc.ResourceTypes, len(changedConfig.ResourceTypes))
 				copy(newResourceTypes, changedConfig.ResourceTypes)
-				newResourceTypes[0].Type = "some-new-type"
+				newResourceTypes[0].Source = atc.Source{"repository": "registry.example/some-new-image"}
 				newResourceTypes[1] = newResourceType
 
 				changedConfig.ResourceTypes = newResourceTypes
@@ -893,8 +893,8 @@ this is super secure
 					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("name: some-new-resource", "green")))
 
 					Eventually(sess).Should(gbytes.Say("resource type some-resource-type has changed"))
-					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("type: some-type", "red")))
-					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("type: some-new-type", "green")))
+					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("  repository: registry.example/some-resource-type", "red")))
+					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("  repository: registry.example/some-new-image", "green")))
 
 					Eventually(sess).Should(gbytes.Say("resource type some-other-resource-type has been removed"))
 					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("name: some-other-resource-type", "red")))
@@ -989,8 +989,8 @@ this is super secure
 					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("name: some-new-resource", "green")))
 
 					Eventually(sess).Should(gbytes.Say("resource type some-resource-type has changed"))
-					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("type: some-type", "red")))
-					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("type: some-new-type", "green")))
+					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("  repository: registry.example/some-resource-type", "red")))
+					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("  repository: registry.example/some-new-image", "green")))
 
 					Eventually(sess).Should(gbytes.Say("resource type some-other-resource-type has been removed"))
 					Eventually(sess.Out.Contents).Should(ContainSubstring(ansi.Color("name: some-other-resource-type", "red")))
@@ -1211,6 +1211,59 @@ this is super secure
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(sess.Err).Should(gbytes.Say("parameter name run is reserved"))
+
+				<-sess.Exited
+				Expect(sess.ExitCode()).To(Equal(1))
+				Expect(sess.Out).NotTo(gbytes.Say("Dry-run mode was set, exiting."))
+			})
+		})
+
+		Context("when a resource type's image is not a registry-image reference", func() {
+			BeforeEach(func() {
+				changedConfig.ResourceTypes = append(changedConfig.ResourceTypes, atc.ResourceType{
+					Name:   "git-backed",
+					Type:   "git",
+					Source: atc.Source{"uri": "https://example.com/repo"},
+				})
+			})
+
+			It("refuses it locally with the server's sentence instead of printing a diff", func() {
+				flyCmd := exec.Command(flyPath, "-t", targetName, "set-pipeline", "-p", "awesome-pipeline", "-c", configFile.Name(), "-d")
+
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(sess.Err).Should(gbytes.Say("resource_types.git-backed: an image declared with type 'git' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'"))
+
+				<-sess.Exited
+				Expect(sess.ExitCode()).To(Equal(1))
+				Expect(sess.Out).NotTo(gbytes.Say("resource type git-backed has been added"))
+				Expect(sess.Out).NotTo(gbytes.Say("Dry-run mode was set, exiting."))
+			})
+		})
+
+		Context("when an inline task's image_resource is not a registry-image reference", func() {
+			BeforeEach(func() {
+				changedConfig.Jobs = append(changedConfig.Jobs, atc.JobConfig{
+					Name: "image-job",
+					PlanSequence: []atc.Step{{Config: &atc.TaskStep{
+						Name: "build",
+						Config: &atc.TaskConfig{
+							Platform:      "linux",
+							ImageResource: &atc.ImageResource{Type: "docker-image", Source: atc.Source{"repository": "busybox"}},
+							Run:           atc.TaskRunConfig{Path: "true"},
+						},
+					}}},
+				})
+			})
+
+			It("refuses it locally with the server's sentence", func() {
+				flyCmd := exec.Command(flyPath, "-t", targetName, "set-pipeline", "-p", "awesome-pipeline", "-c", configFile.Name(), "-d")
+
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(sess.Err).Should(gbytes.Say("jobs.image-job.task\\(build\\).config.image_resource: an image declared with type 'docker-image' is not registry-image"))
 
 				<-sess.Exited
 				Expect(sess.ExitCode()).To(Equal(1))

@@ -56,7 +56,7 @@ func Validate(yamlTemplate templatehelpers.YamlTemplateWithParams, strict bool, 
 	}
 
 	if len(errorMessages) > 0 {
-		displayhelpers.ShowErrors("Error loading existing config", errorMessages)
+		displayhelpers.ShowErrors("Error validating config", errorMessages)
 	}
 
 	if len(errorMessages) > 0 || (strict && len(warnings) > 0) {

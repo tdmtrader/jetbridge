@@ -69,10 +69,12 @@ A check of a v2 run's payload is always a stored build, owned by the run. It
 is collected by the same rules as any other check: a resource keeps its
 scope's last check, and a resource type its newest. An executed check goes
 with its execution evidence, and only once every execution is closed: a check
-produces no run result, so a closed check execution is inert. So is a closed
-get inside the check build, which fetched the check's custom image on a
-resource cache miss. An executed check is also kept while it is its
-resource's newest check. An open execution, and a build a run output start
+produces no run result, so a closed check execution is inert. The store
+also admits collecting a closed get execution inside a check build; nothing
+creates one any more (a check's image is a registry-image reference resolved
+natively, never fetched by a get), but a check build from before that cut may
+still hold one. An executed check is also kept while it is its resource's
+newest check. An open execution, and a build a run output start
 names, is never collected.
 
 ## Pipeline runs

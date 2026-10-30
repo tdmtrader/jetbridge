@@ -43,7 +43,7 @@ func newRunCheckFixtureWithRetention(name string, retention *atc.RunRetentionCon
 		RunRetention:  retention,
 		Jobs:          atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source"}}}}},
 		Resources:     atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
-		ResourceTypes: atc.ResourceTypes{{Name: "custom", Type: "some-base-resource-type", Source: atc.Source{"repository": "custom"}}},
+		ResourceTypes: atc.ResourceTypes{{Name: "custom", Type: "registry-image", Source: atc.Source{"repository": "custom"}}},
 	}, 0, false)
 	Expect(err).NotTo(HaveOccurred())
 	factory := db.NewPipelineRunFactory(dbConn, lockFactory)
@@ -75,8 +75,10 @@ const (
 	executedOpen
 	executedClosed
 	// executedClosedWithImageGet is a closed check whose custom image was
-	// fetched by a get inside the check build, as FetchImage does on a
-	// resource cache miss for an image that is not a registry-image.
+	// fetched by a get inside the check build. Nothing creates such a get
+	// any more (a check's image is a registry-image reference resolved
+	// natively), but a check build from before that cut may hold one, and the
+	// store's collection rules for it are pinned here.
 	executedClosedWithImageGet
 )
 
