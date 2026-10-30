@@ -316,14 +316,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 			if sc.Image == "" || sc.ImageArtifact != "" {
 				continue // skip artifact refs (already resolved) or empty
 			}
-			if strings.Contains(sc.Image, "@sha256:") {
-				continue // already pinned
-			}
-			// Strip Concourse-internal prefixes before parsing so that
-			// parseImageRef sees a bare image reference.
-			bare := atc.StripImageRefPrefix(sc.Image)
-			repo, tag := parseImageRef(bare)
-			digest, err := step.imageResolver.Resolve(ctx, repo, tag, nil)
+			pinned, err := imageresolver.Pin(ctx, step.imageResolver, sc.Image)
 			if err != nil {
 				logger.Info("sidecar-image-resolve-skipped", lager.Data{
 					"sidecar": sc.Name,
@@ -332,7 +325,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 				})
 				continue
 			}
-			containerSpec.Sidecars[i].Image = repo + "@" + digest
+			containerSpec.Sidecars[i].Image = pinned
 		}
 	}
 
@@ -858,17 +851,4 @@ func ensureTrailingSlash(path string) string {
 		return path
 	}
 	return path + "/"
-}
-
-// parseImageRef splits an image reference like "redis:7" or "myrepo/myimage"
-// into repository and tag components. If no tag is specified, defaults to "latest".
-func parseImageRef(image string) (string, string) {
-	// Handle images with ports in registry (e.g. "registry:5000/repo:tag")
-	lastColon := strings.LastIndex(image, ":")
-	lastSlash := strings.LastIndex(image, "/")
-
-	if lastColon > lastSlash && lastColon > 0 {
-		return image[:lastColon], image[lastColon+1:]
-	}
-	return image, "latest"
 }
