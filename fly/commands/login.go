@@ -2,24 +2,18 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/commands/internal/interaction"
 	"github.com/concourse/concourse/fly/pty"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/go-concourse/concourse"
-	semisemanticversion "github.com/cppforlife/go-semi-semantic/version"
-	"github.com/skratchdot/open-golang/open"
 	"golang.org/x/oauth2"
 )
 
@@ -102,38 +96,14 @@ func (command *LoginCommand) Execute(args []string) error {
 	var refreshToken string
 	var oauthClientID string
 
-	version, err := target.Version()
-	if err != nil {
-		return err
-	}
-
-	semver, err := semisemanticversion.NewVersionFromString(version)
-	if err != nil {
-		return err
-	}
-
-	legacySemver, err := semisemanticversion.NewVersionFromString("3.14.1")
-	if err != nil {
-		return err
-	}
-
-	// Legacy auth only applies to real Concourse releases 1.x–3.14.1.
-	// Versions with major 0 are dev/pre-release builds that use modern auth.
-	isLegacy := semver.Compare(legacySemver) <= 0 && !strings.HasPrefix(version, "0.")
-
-	if isLegacy {
-		// Legacy Auth Support
-		tokenType, tokenValue, err = command.legacyAuth(target)
+	if command.Username != "" && command.Password != "" {
+		tokenType, tokenValue, refreshToken, err = command.passwordGrant(client, command.Username, command.Password)
+		oauthClientID = "fly"
 	} else {
-		if command.Username != "" && command.Password != "" {
-			tokenType, tokenValue, refreshToken, err = command.passwordGrant(client, command.Username, command.Password)
-			oauthClientID = "fly"
-		} else {
-			var loginToken *rc.TargetToken
-			loginToken, err = command.renewableBrowserGrant(client)
-			if err == nil {
-				tokenType, tokenValue, refreshToken, oauthClientID = loginToken.Type, loginToken.Value, loginToken.RefreshToken, loginToken.OAuthClientID
-			}
+		var loginToken *rc.TargetToken
+		loginToken, err = command.renewableBrowserGrant(client)
+		if err == nil {
+			tokenType, tokenValue, refreshToken, oauthClientID = loginToken.Type, loginToken.Value, loginToken.RefreshToken, loginToken.OAuthClientID
 		}
 	}
 
@@ -198,55 +168,6 @@ func (command *LoginCommand) passwordGrant(client concourse.Client, username, pa
 	return token.TokenType, token.AccessToken, token.RefreshToken, nil
 }
 
-func listenForTokenCallback(tokenChannel chan string, errorChannel chan error, portChannel chan string, targetUrl string) {
-	s := &http.Server{
-		Addr: "127.0.0.1:0",
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", targetUrl)
-
-			preflightAccessRequest := r.Header.Get("Access-Control-Request-Private-Network")
-			preflightRequestMethod := r.Header.Get("Access-Control-Request-Method")
-
-			if preflightAccessRequest == "true" && preflightRequestMethod == "GET" {
-				w.Header().Set("Access-Control-Allow-Private-Network", "true")
-				return
-			}
-
-			tokenChannel <- r.FormValue("token")
-			if r.Header.Get("Upgrade-Insecure-Requests") != "" {
-				http.Redirect(w, r, fmt.Sprintf("%s/fly_success?noop=true", targetUrl), http.StatusFound)
-			}
-		}),
-	}
-
-	err := listenAndServeWithPort(s, portChannel)
-
-	if err != nil {
-		errorChannel <- err
-	}
-}
-
-func listenAndServeWithPort(srv *http.Server, portChannel chan string) error {
-	addr := srv.Addr
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		return err
-	}
-
-	portChannel <- port
-
-	return srv.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
-}
-
-type tcpKeepAliveListener struct {
-	*net.TCPListener
-}
-
 func waitForTokenInput(prg *tea.Program, tokenChannel chan string, errorChannel chan error) {
 	fmt.Println()
 
@@ -281,192 +202,6 @@ func (command *LoginCommand) saveTarget(url string, token *rc.TargetToken, caCer
 	fmt.Println("\rtarget saved\r")
 
 	return nil
-}
-
-func (command *LoginCommand) legacyAuth(target rc.Target) (string, string, error) {
-
-	httpClient := target.Client().HTTPClient()
-
-	authResponse, err := httpClient.Get(target.URL() + "/api/v1/teams/" + target.Team().Name() + "/auth/methods")
-	if err != nil {
-		return "", "", err
-	}
-
-	type authMethod struct {
-		Type        string `json:"type"`
-		DisplayName string `json:"display_name"`
-		AuthURL     string `json:"auth_url"`
-	}
-
-	defer authResponse.Body.Close()
-
-	var authMethods []authMethod
-	json.NewDecoder(authResponse.Body).Decode(&authMethods)
-
-	var chosenMethod authMethod
-
-	if command.Username != "" || command.Password != "" {
-		for _, method := range authMethods {
-			if method.Type == "basic" {
-				chosenMethod = method
-				break
-			}
-		}
-
-		if chosenMethod.Type == "" {
-			return "", "", errors.New("basic auth is not available")
-		}
-	} else {
-		choices := make([]list.Item, len(authMethods))
-
-		for i, method := range authMethods {
-			choices[i] = interaction.Item{
-				Display: method.DisplayName,
-				Value:   method,
-			}
-		}
-
-		if len(choices) == 0 {
-			chosenMethod = authMethod{
-				Type: "none",
-			}
-		}
-
-		if len(choices) == 1 {
-			chosenMethod = authMethods[0]
-		}
-
-		if len(choices) > 1 {
-			choice, err := interaction.Select("choose an auth method", choices)
-			if err != nil {
-				return "", "", err
-			}
-			if choice == nil {
-				return "", "", nil
-			}
-			method, ok := choice.(authMethod)
-			if !ok {
-				return "", "", errors.New("unknown type returned by selection")
-			}
-			chosenMethod = method
-
-			fmt.Println("")
-		}
-	}
-
-	switch chosenMethod.Type {
-	case "oauth":
-		var tokenStr string
-
-		stdinChannel := make(chan string)
-		tokenChannel := make(chan string)
-		errorChannel := make(chan error)
-		portChannel := make(chan string)
-
-		go listenForTokenCallback(tokenChannel, errorChannel, portChannel, target.Client().URL())
-
-		port := <-portChannel
-
-		theURL := fmt.Sprintf("%s&fly_local_port=%s\n", chosenMethod.AuthURL, port)
-
-		fmt.Println("navigate to the following URL in your browser:\r")
-		fmt.Println("")
-		fmt.Printf("    %s\r\n", theURL)
-
-		if command.OpenBrowser {
-			// try to open the browser window, but don't get all hung up if it
-			// fails, since we already printed about it.
-			_ = open.Start(theURL)
-		}
-
-		prg := interaction.TokenProgram()
-		defer prg.Quit()
-		go waitForTokenInput(prg, stdinChannel, errorChannel)
-
-		select {
-		case tokenStrMsg := <-tokenChannel:
-			tokenStr = tokenStrMsg
-		case tokenStrMsg := <-stdinChannel:
-			tokenStr = tokenStrMsg
-		case errorMsg := <-errorChannel:
-			return "", "", errorMsg
-		}
-
-		segments := strings.SplitN(tokenStr, " ", 2)
-
-		return segments[0], segments[1], nil
-
-	case "basic":
-		var username string
-		if command.Username != "" {
-			username = command.Username
-		} else {
-			u, err := interaction.Input("username", false)
-			if err != nil {
-				return "", "", err
-			}
-			username = u
-		}
-
-		var password string
-		if command.Password != "" {
-			password = command.Password
-		} else {
-			p, err := interaction.Input("password", true)
-			if err != nil {
-				return "", "", err
-			}
-			password = p
-		}
-
-		request, err := http.NewRequest("GET", target.URL()+"/api/v1/teams/"+target.Team().Name()+"/auth/token", nil)
-		if err != nil {
-			return "", "", err
-		}
-		request.SetBasicAuth(username, password)
-
-		tokenResponse, err := httpClient.Do(request)
-		if err != nil {
-			return "", "", err
-		}
-
-		type authToken struct {
-			Type  string `json:"token_type"`
-			Value string `json:"token_value"`
-		}
-
-		defer tokenResponse.Body.Close()
-
-		var token authToken
-		json.NewDecoder(tokenResponse.Body).Decode(&token)
-
-		return token.Type, token.Value, nil
-
-	case "none":
-		request, err := http.NewRequest("GET", target.URL()+"/api/v1/teams/"+target.Team().Name()+"/auth/token", nil)
-		if err != nil {
-			return "", "", err
-		}
-
-		tokenResponse, err := httpClient.Do(request)
-		if err != nil {
-			return "", "", err
-		}
-
-		type authToken struct {
-			Type  string `json:"token_type"`
-			Value string `json:"token_value"`
-		}
-
-		defer tokenResponse.Body.Close()
-
-		var token authToken
-		json.NewDecoder(tokenResponse.Body).Decode(&token)
-
-		return token.Type, token.Value, nil
-	}
-
-	return "", "", nil
 }
 
 func (command *LoginCommand) verifyTeamExists(clientUrl string, token rc.TargetToken, caCert string, clientCertPath string,

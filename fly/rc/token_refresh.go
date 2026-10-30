@@ -47,9 +47,12 @@ func newRefreshingTokenSource(token *TargetToken, name TargetName, api string, b
 	return &refreshingTokenSource{token: &copy, targetName: name, targetAPI: api, base: base}
 }
 
-type legacyTokenSource struct{ token TargetToken }
+// staticTokenSource serves a login that carries no refresh credential (a pasted
+// bearer, or a password grant the issuer answered without one). It cannot renew;
+// once the JWT expires the caller must log in again.
+type staticTokenSource struct{ token TargetToken }
 
-func (s legacyTokenSource) Token() (*oauth2.Token, error) {
+func (s staticTokenSource) Token() (*oauth2.Token, error) {
 	if expiry, err := parseJWTExpiry(s.token.Value); err == nil && !expiry.After(time.Now()) {
 		return nil, errors.New("login expired and has no refresh credential; run fly login again")
 	}
