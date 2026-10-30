@@ -22,8 +22,8 @@ import (
 // same plan admits a run the moment the web node is wired, and the person who
 // has to know is the operator rather than whoever pushed the pipeline. A
 // refusal would put the message in a build log that is world-readable on a
-// public pipeline and would take the step past LogError and RetryError, which
-// are exactly the two things that should see it.
+// public pipeline and would take the step past LogError, which is exactly the
+// thing that should see it.
 func TestUnwiredChildRunAdmitterErrorIsAFault(t *testing.T) {
 	_, err := unwiredChildRunAdmitter{}.AdmitChildRun(context.Background(), exec.ChildRunRequest{})
 	if err == nil {

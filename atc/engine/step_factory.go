@@ -117,9 +117,6 @@ func (factory *coreStepFactory) GetStep(
 	)
 
 	getStep = exec.LogError(getStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		getStep = exec.RetryError(getStep, delegateFactory)
-	}
 	return getStep
 }
 
@@ -142,9 +139,6 @@ func (factory *coreStepFactory) PutStep(
 	)
 
 	putStep = exec.LogError(putStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		putStep = exec.RetryError(putStep, delegateFactory)
-	}
 	return putStep
 }
 
@@ -174,9 +168,6 @@ func (factory *coreStepFactory) CheckStep(
 	)
 
 	checkStep = exec.LogError(checkStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		checkStep = exec.RetryError(checkStep, delegateFactory)
-	}
 	return checkStep
 }
 
@@ -195,9 +186,6 @@ func (factory *coreStepFactory) RunStep(
 	)
 
 	runStep = exec.LogError(runStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		runStep = exec.RetryError(runStep, delegateFactory)
-	}
 	return runStep
 }
 
@@ -233,9 +221,6 @@ func (factory *coreStepFactory) TaskStep(
 	)
 
 	taskStep = exec.LogError(taskStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		taskStep = exec.RetryError(taskStep, delegateFactory)
-	}
 	return taskStep
 }
 
@@ -255,9 +240,6 @@ func (factory *coreStepFactory) SetPipelineStep(
 	)
 
 	spStep = exec.LogError(spStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		spStep = exec.RetryError(spStep, delegateFactory)
-	}
 	return spStep
 }
 
@@ -275,9 +257,6 @@ func (factory *coreStepFactory) RunPipelineStep(
 	)
 
 	rpStep = exec.LogError(rpStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		rpStep = exec.RetryError(rpStep, delegateFactory)
-	}
 	return rpStep
 }
 
@@ -311,8 +290,8 @@ func (factory *coreStepFactory) admitterOrFallback() exec.ChildRunAdmitter {
 // missing port is nothing of the kind: the config is fine, the same plan will
 // admit a run the moment the web node is wired correctly, and the person who
 // has to know is the operator, not whoever pushed the pipeline. So it travels
-// the engine's error path, where LogError and RetryError can see it and where
-// it does not land in a build log that is world-readable on a public pipeline.
+// the engine's error path, where LogError can see it and where it does not
+// land in a build log that is world-readable on a public pipeline.
 //
 // unwired_child_run_admitter_test.go pins the classification, so the code and
 // this comment cannot drift apart again.
@@ -336,9 +315,6 @@ func (factory *coreStepFactory) LoadVarStep(
 	)
 
 	loadVarStep = exec.LogError(loadVarStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		loadVarStep = exec.RetryError(loadVarStep, delegateFactory)
-	}
 	return loadVarStep
 }
 

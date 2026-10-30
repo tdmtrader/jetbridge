@@ -89,45 +89,7 @@ var _ = Describe("ResourceConfig", func() {
 			})
 
 			Context("given a resource", func() {
-				Context("with global resources disabled", func() {
-					BeforeEach(func() {
-						// XXX(check-refactor): make this non-global
-						atc.EnableGlobalResources = false
-					})
-
-					It("finds or creates a unique scope", func() {
-						// create a scope with default resource
-						createdScope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
-						Expect(err).ToNot(HaveOccurred())
-						Expect(createdScope.ResourceID()).ToNot(BeNil())
-						Expect(*createdScope.ResourceID()).To(Equal(defaultResource.ID()))
-						Expect(createdScope.ResourceConfig().ID()).To(Equal(resourceConfig.ID()))
-						seqAfterCreate, err := currentResourceConfigScopesIdSeq()
-						Expect(err).ToNot(HaveOccurred())
-
-						// should find the scope of default resource
-						foundScope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
-						Expect(err).ToNot(HaveOccurred())
-						Expect(foundScope.ID()).To(Equal(createdScope.ID()))
-						seqAfterFind, err := currentResourceConfigScopesIdSeq()
-						Expect(err).ToNot(HaveOccurred())
-						Expect(seqAfterCreate).To(Equal(seqAfterFind))
-
-						// create a new scope with the same resource config but different resource id
-						otherCreatedScope, err := resourceConfig.FindOrCreateScope(intptr(otherResource.ID()))
-						Expect(err).ToNot(HaveOccurred())
-						Expect(otherCreatedScope.ID()).To(Equal(createdScope.ID() + 1))
-						seqAfterOtherCreate, err := currentResourceConfigScopesIdSeq()
-						Expect(err).ToNot(HaveOccurred())
-						Expect(seqAfterOtherCreate).To(Equal(seqAfterCreate + 1))
-					})
-				})
-
-				Context("with global resources enabled", func() {
-					BeforeEach(func() {
-						atc.EnableGlobalResources = true
-					})
-
+				Context("sharing one version history", func() {
 					It("finds or creates a global scope", func() {
 						// create a scope with default resource
 						seqBeforeCreate, err := currentResourceConfigScopesIdSeq()

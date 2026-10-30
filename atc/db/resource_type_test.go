@@ -1224,8 +1224,6 @@ var _ = Describe("ResourceType", func() {
 			var someOtherResourceType db.ResourceType
 
 			BeforeEach(func() {
-				atc.EnableGlobalResources = true
-
 				scenario = dbtest.Setup(
 					builder.WithPipeline(atc.Config{
 						ResourceTypes: atc.ResourceTypes{

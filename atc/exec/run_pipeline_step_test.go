@@ -199,8 +199,8 @@ var _ = Describe("RunPipelineStep", func() {
 	}
 
 	// Everything else is a fault, and a fault errors the step. Erroring is
-	// what the engine's abort and error reporting read, and what LogError and
-	// RetryError wrap; failing the step instead reports a broken platform as a
+	// what the engine's abort and error reporting read, and what LogError
+	// wraps; failing the step instead reports a broken platform as a
 	// pipeline the author wrote wrong, and does it in a build log that is
 	// anonymously readable on a public pipeline.
 	for name, fault := range map[string]error{

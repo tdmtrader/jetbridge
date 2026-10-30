@@ -584,37 +584,6 @@ var _ = Describe("Engine", func() {
 									})
 								})
 
-								Context("when the error is retryable", func() {
-									BeforeEach(func() {
-										fakeStep.RunReturns(false, exec.Retriable{Cause: errors.New("nope")})
-									})
-
-									Context("when this is a check build", func() {
-										BeforeEach(useCheckBuild)
-
-										It("should not retry, thus finishes the build", func() {
-											waitGroup.Wait()
-											Expect(realBuild.Reload()).To(BeTrue())
-											Expect(realBuild.Status()).To(Equal(db.BuildStatusErrored))
-										})
-
-										It("saves an error event with the unwrapped cause", func() {
-											waitGroup.Wait()
-											Expect(recorder.events).To(HaveLen(1))
-											ev := recorder.events[0]
-											Expect(ev.EventType()).To(Equal(event.EventTypeError))
-											Expect(ev.(event.Error).Message).To(Equal("nope"))
-										})
-									})
-
-									Context("when this is a normal build", func() {
-										It("should retry, thus not finishe the build", func() {
-											waitGroup.Wait()
-											Expect(realBuild.Reload()).To(BeTrue())
-											Expect(realBuild.Status()).To(Equal(db.BuildStatusStarted))
-										})
-									})
-								})
 							})
 
 							Context("when the build finishes with cancelled error", func() {

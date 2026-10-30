@@ -143,10 +143,9 @@ func (step *RunPipelineStep) run(ctx context.Context, state RunState, delegate R
 		}
 
 		// Everything else is a fault, and the step errors rather than fails.
-		// That is what puts it in front of exec.LogError and exec.RetryError,
-		// and what lets an aborted build read as aborted: the engine's finish
-		// path tests errors.Is(err, context.Canceled), which a swallowed error
-		// defeats. It is deliberately not written to stderr -- the engine
+		// That is what puts it in front of exec.LogError, and what lets an
+		// aborted build read as aborted: the engine's finish path tests
+		// errors.Is(err, context.Canceled), which a swallowed error defeats. It is deliberately not written to stderr -- the engine
 		// reports an errored step itself, and a build log is anonymously
 		// readable on a public pipeline, which is no place for a driver's
 		// message.

@@ -38,8 +38,8 @@ func (o OnErrorStep) Run(ctx context.Context, state RunState) (bool, error) {
 	}
 	errs = multierror.Append(errs, stepRunErr)
 
-	// for all errors that aren't caused by an Abort or the retry_error's Retriable step, run the hook
-	if !(errors.Is(stepRunErr, context.Canceled) || errors.Is(stepRunErr, Retriable{})) {
+	// for all errors that aren't caused by an Abort, run the hook
+	if !errors.Is(stepRunErr, context.Canceled) {
 		hookCtx, span := tracing.StartSpan(context.Background(), "hook.on_error", nil)
 		_, err := o.hook.Run(hookCtx, state)
 		tracing.End(span, err)

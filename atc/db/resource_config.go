@@ -5,7 +5,6 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
@@ -96,18 +95,12 @@ func findOrCreateResourceConfigScope(
 	resourceConfig ResourceConfig,
 	resourceID *int,
 ) (ResourceConfigScope, error) {
+	// Equivalent resources across pipelines and teams share one version
+	// history: a scope is global unless the base resource type asks for a
+	// unique history per resource.
 	var uniqueResourceID *int
 	if resourceID != nil {
-		var unique bool
-		if !atc.EnableGlobalResources {
-			unique = true
-		} else {
-			if brt := resourceConfig.CreatedByBaseResourceType(); brt != nil {
-				unique = brt.UniqueVersionHistory
-			}
-		}
-
-		if unique {
+		if brt := resourceConfig.CreatedByBaseResourceType(); brt != nil && brt.UniqueVersionHistory {
 			uniqueResourceID = resourceID
 		}
 	}

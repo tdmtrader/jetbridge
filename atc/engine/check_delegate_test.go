@@ -175,6 +175,9 @@ var _ = Describe("CheckDelegate", func() {
 		})
 
 		fixture = useEngineDB()
+		// A worker registers the base resource types, and with them which
+		// ones keep a unique version history per resource.
+		dbtest.Setup(fixture.Builder.WithWorker(dbtest.BaseWorker("engine-worker")))
 		var job db.Job
 		team, pipeline, job, jobBuild = createEngineJobBuild(
 			fixture,
@@ -182,8 +185,10 @@ var _ = Describe("CheckDelegate", func() {
 			atc.PipelineRef{Name: "some-pipeline"},
 			atc.Config{
 				Jobs: atc.JobConfigs{{Name: "some-job"}},
+				// The unique-history base type gives the named resource a scope of
+				// its own; the resource type and prototype share global scopes.
 				Resources: atc.ResourceConfigs{{
-					Name: "some-resource", Type: dbtest.BaseResourceType,
+					Name: "some-resource", Type: dbtest.UniqueBaseResourceType,
 					Source: atc.Source{"some": "source"},
 				}},
 				ResourceTypes: atc.ResourceTypes{{

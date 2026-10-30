@@ -34,8 +34,6 @@ var (
 	externalURL      = "https://example.com"
 	clusterName      = "Test Cluster"
 	featureFlagsJson = ` {
-	"build_rerun": false,
-	"global_resources": false,
 	"resource_causality": false
 }`
 

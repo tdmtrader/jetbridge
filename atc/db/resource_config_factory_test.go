@@ -186,7 +186,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 					Resources: atc.ResourceConfigs{
 						{
 							Name:   "some-resource",
-							Type:   "some-base-resource-type",
+							Type:   "some-unique-base-resource-type",
 							Source: atc.Source{"some": "source"},
 						},
 					},
@@ -199,7 +199,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 			oldScopeID = resource.ResourceConfigScopeID()
 
 			newConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
-				"some-base-resource-type",
+				"some-unique-base-resource-type",
 				atc.Source{"some": "changed-source"},
 				nil,
 			)

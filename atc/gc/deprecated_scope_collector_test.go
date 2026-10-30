@@ -22,12 +22,21 @@ var _ = Describe("DeprecatedScopeCollector", func() {
 	)
 
 	BeforeEach(func() {
+		// Deprecation on a config change operates on a resource's own scope,
+		// which only a base resource type with a unique version history gives
+		// it; a global scope is shared and never deprecated.
 		scenario := dbtest.Setup(
+			builder.WithWorker(atc.Worker{
+				Name: "deprecation-worker",
+				ResourceTypes: []atc.WorkerResourceType{{
+					Type: "some-unique-base-type", Image: "/image", Version: "v1", UniqueVersionHistory: true,
+				}},
+			}),
 			builder.WithPipeline(atc.Config{
 				Resources: atc.ResourceConfigs{
 					{
 						Name: "some-resource",
-						Type: "some-base-type",
+						Type: "some-unique-base-type",
 						Source: atc.Source{
 							"some": "source",
 						},
@@ -54,7 +63,7 @@ var _ = Describe("DeprecatedScopeCollector", func() {
 
 		// Change config to deprecate the old scope
 		newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
-			"some-base-type",
+			"some-unique-base-type",
 			atc.Source{"some": "changed-source"},
 			nil,
 		)

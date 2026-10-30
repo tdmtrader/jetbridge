@@ -1088,8 +1088,6 @@ var _ = Describe("Build", func() {
 		var outputVersion atc.Version
 
 		BeforeEach(func() {
-			atc.EnableGlobalResources = true
-
 			pipelineConfig = atc.Config{
 				Jobs: atc.JobConfigs{
 					{
@@ -1158,10 +1156,6 @@ var _ = Describe("Build", func() {
 				"some-resource",
 			)
 			Expect(err).ToNot(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			atc.EnableGlobalResources = false
 		})
 
 		It("should set the resource's config scope", func() {

@@ -906,17 +906,13 @@ decodeAcrossSubstep =
 type alias FeatureFlags =
     -- The fields must match the names in `atc/feature_flags.go -> FeatureFlags()`.
     -- If a field is deleted on the Go side, it must also be deleted here.
-    { global_resources : Bool
-    , build_rerun : Bool
-    , resource_causality : Bool
+    { resource_causality : Bool
     }
 
 
 defaultFeatureFlags : FeatureFlags
 defaultFeatureFlags =
-    { global_resources = False
-    , build_rerun = False
-    , resource_causality = False
+    { resource_causality = False
     }
 
 

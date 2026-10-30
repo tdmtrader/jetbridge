@@ -378,12 +378,6 @@ func persistResourceListingGraph(fixture *resourceAPIFixture) map[string]db.Reso
 func persistSharedResources(fixture *resourceAPIFixture) atc.ResourcesAndTypes {
 	GinkgoHelper()
 
-	previous := atc.EnableGlobalResources
-	atc.EnableGlobalResources = true
-	DeferCleanup(func() {
-		atc.EnableGlobalResources = previous
-	})
-
 	sharedConfig := atc.Config{
 		Resources: atc.ResourceConfigs{{
 			Name: "shared-resource", Type: dbtest.BaseResourceType,

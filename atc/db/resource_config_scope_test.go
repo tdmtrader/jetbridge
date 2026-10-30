@@ -17,13 +17,16 @@ var _ = Describe("Resource Config Scope", func() {
 	var scenario *dbtest.Scenario
 	var resourceScope db.ResourceConfigScope
 
+	// The unique-history base type gives each resource a scope of its own,
+	// which is what deprecation on a config change operates on; a global
+	// scope is shared and never deprecated.
 	BeforeEach(func() {
 		scenario = dbtest.Setup(
 			builder.WithPipeline(atc.Config{
 				Resources: atc.ResourceConfigs{
 					{
 						Name: "some-resource",
-						Type: "some-base-resource-type",
+						Type: "some-unique-base-resource-type",
 						Source: atc.Source{
 							"some": "source",
 						},
@@ -373,7 +376,7 @@ var _ = Describe("Resource Config Scope", func() {
 
 			// Create a new resource config with different source (simulating a source change)
 			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
-				"some-base-resource-type",
+				"some-unique-base-resource-type",
 				atc.Source{"some": "different-source"},
 				nil,
 			)
@@ -406,7 +409,7 @@ var _ = Describe("Resource Config Scope", func() {
 
 		scopeFor := func(resourceID *int, source string) (db.ResourceConfigScope, error) {
 			rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
-				"some-base-resource-type",
+				"some-unique-base-resource-type",
 				atc.Source{"some": source},
 				nil,
 			)
@@ -429,8 +432,8 @@ var _ = Describe("Resource Config Scope", func() {
 			shared := dbtest.Setup(
 				builder.WithPipeline(atc.Config{
 					Resources: atc.ResourceConfigs{
-						{Name: "r1", Type: "some-base-resource-type", Source: atc.Source{"some": "shared"}},
-						{Name: "r2", Type: "some-base-resource-type", Source: atc.Source{"some": "shared"}},
+						{Name: "r1", Type: "some-unique-base-resource-type", Source: atc.Source{"some": "shared"}},
+						{Name: "r2", Type: "some-unique-base-resource-type", Source: atc.Source{"some": "shared"}},
 					},
 				}),
 			)
@@ -492,7 +495,7 @@ var _ = Describe("Resource Config Scope", func() {
 
 			// Trigger a config change to deprecate the current scope
 			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
-				"some-base-resource-type",
+				"some-unique-base-resource-type",
 				atc.Source{"some": "changed-source"},
 				nil,
 			)
@@ -537,7 +540,7 @@ var _ = Describe("Resource Config Scope", func() {
 
 			// 2. Simulate a config change (new source)
 			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
-				"some-base-resource-type",
+				"some-unique-base-resource-type",
 				atc.Source{"some": "new-source-after-change"},
 				nil,
 			)
@@ -614,7 +617,7 @@ var _ = Describe("Resource Config Scope", func() {
 			// The config changes; the check step points the resource at the new
 			// scope, whose first check saves only the newest version, at check_order 1.
 			newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
-				"some-base-resource-type",
+				"some-unique-base-resource-type",
 				atc.Source{"some": "source-after-change"},
 				nil,
 			)
@@ -703,7 +706,7 @@ var _ = Describe("Resource Config Scope", func() {
 				})).To(Succeed())
 
 				newRC, err := resourceConfigFactory.FindOrCreateResourceConfig(
-					"some-base-resource-type",
+					"some-unique-base-resource-type",
 					atc.Source{"some": "source-after-change"},
 					nil,
 				)
@@ -774,7 +777,7 @@ var _ = Describe("Resource Config Scope", func() {
 					Resources: atc.ResourceConfigs{
 						{
 							Name: "target-resource",
-							Type: "some-base-resource-type",
+							Type: "some-unique-base-resource-type",
 							Source: atc.Source{
 								"some": "other-source",
 							},
@@ -833,7 +836,7 @@ var _ = Describe("Resource Config Scope", func() {
 					Resources: atc.ResourceConfigs{
 						{
 							Name: "target-resource",
-							Type: "some-base-resource-type",
+							Type: "some-unique-base-resource-type",
 							Source: atc.Source{
 								"some": "other-source-2",
 							},

@@ -255,12 +255,6 @@ func (b *engineBuild) Run(ctx context.Context) {
 		}
 
 	case <-done:
-		// Don't retry check build because if a check build drops into endless retry,
-		// there is no way to abort it.
-		if b.build.Name() != db.CheckBuildName && errors.As(runErr, &exec.Retriable{}) {
-			return
-		}
-
 		// An in-memory build only generates a real build id once start to run,
 		// so let's update logger with the latest lager data. A non-panic runErr
 		// on the done path came from a running step (already surfaced by its
@@ -315,10 +309,6 @@ func (b *engineBuild) finish(logger lager.Logger, err error, succeeded bool, fro
 		// build (a check build especially) shows no reason in the UI — the
 		// message would otherwise only exist in the web process log.
 		message := err.Error()
-		var retriable exec.Retriable
-		if errors.As(err, &retriable) {
-			message = retriable.Cause.Error()
-		}
 		if !fromRunningStep || b.build.Name() == db.CheckBuildName {
 			b.buildStepErrored(logger, message)
 		}

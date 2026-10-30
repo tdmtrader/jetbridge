@@ -780,8 +780,6 @@ var _ = Describe("Resource", func() {
 			var someOtherResource db.Resource
 
 			BeforeEach(func() {
-				atc.EnableGlobalResources = true
-
 				scenario = dbtest.Setup(
 					builder.WithPipeline(atc.Config{
 						Resources: atc.ResourceConfigs{
@@ -2236,8 +2234,6 @@ var _ = Describe("Resource", func() {
 		)
 
 		BeforeEach(func() {
-			atc.EnableGlobalResources = true
-
 			scenario = dbtest.Setup(
 				builder.WithPipeline(atc.Config{
 					Resources: atc.ResourceConfigs{
@@ -2363,8 +2359,6 @@ var _ = Describe("Resource", func() {
 		)
 
 		BeforeEach(func() {
-			atc.EnableGlobalResources = true
-
 			scenario = dbtest.Setup(
 				builder.WithPipeline(atc.Config{
 					ResourceTypes: atc.ResourceTypes{
