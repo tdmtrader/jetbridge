@@ -9,6 +9,7 @@ import (
 	concourse "github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -91,7 +92,7 @@ func (r *Registrar) Heartbeat(ctx context.Context) error {
 func (r *Registrar) resourceTypes() []atc.WorkerResourceType {
 	images := r.cfg.ResourceTypeImages
 	if images == nil {
-		images = DefaultResourceTypeImages
+		images = imageresolver.DefaultResourceTypeImages
 	}
 
 	var types []atc.WorkerResourceType

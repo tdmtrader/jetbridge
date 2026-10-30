@@ -11,6 +11,7 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
@@ -53,7 +54,7 @@ func runGitResource(w WorkerReady, kind, request string) (GitResourceOutcome, er
 	if kind != "get" && kind != "put" && kind != "check" || request != "valid" && request != "invalid" {
 		return out, fmt.Errorf("unknown Git resource case %q %q", kind, request)
 	}
-	w.Config.ResourceTypeImages = jetbridge.MergeResourceTypeImages([]string{"git=" + gitResourceImage})
+	w.Config.ResourceTypeImages = imageresolver.MergeResourceTypeImages([]string{"git=" + gitResourceImage})
 	w.Config.PodStartupTimeout, w.Config.PodSchedulingTimeout = time.Minute, time.Minute
 	w = w.rebuild()
 	out.Cluster = w

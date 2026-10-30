@@ -9,8 +9,8 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,7 +81,7 @@ func diagnoseLiveScheduling(in LiveTaskPlan, rec *brine.Recorder, startup, sched
 		}
 	}
 	const handle = "unschedulable-handle"
-	image := jetbridge.DefaultResourceTypeImages["git"]
+	image := imageresolver.DefaultResourceTypeImages["git"]
 	if image == "" {
 		return StepOutcome{}, fmt.Errorf("default git resource image is missing")
 	}

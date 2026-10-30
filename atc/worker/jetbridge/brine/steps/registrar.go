@@ -10,6 +10,7 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	concourse "github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -71,7 +72,7 @@ func RegistrarDefinitions() []brine.StepDefinition {
 						overrides = append(overrides, o)
 					}
 				}
-				in.Config.ResourceTypeImages = jetbridge.MergeResourceTypeImages(overrides)
+				in.Config.ResourceTypeImages = imageresolver.MergeResourceTypeImages(overrides)
 				in.Registrar = jetbridge.NewRegistrar(
 					lagertest.NewTestLogger("registrar"), in.Clientset, in.Config, in.DB.WorkerFactory)
 				return in

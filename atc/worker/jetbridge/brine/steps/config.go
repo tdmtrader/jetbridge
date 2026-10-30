@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -204,7 +205,7 @@ func ConfigDefinitions() []brine.StepDefinition {
 			"the built-in defaults were left untouched",
 			func(in ResourceTypeImages) error {
 				for k, v := range in.DefaultsBefore {
-					now, found := jetbridge.DefaultResourceTypeImages[k]
+					now, found := imageresolver.DefaultResourceTypeImages[k]
 					if !found {
 						return fmt.Errorf("default %q disappeared from DefaultResourceTypeImages", k)
 					}
@@ -212,9 +213,9 @@ func ConfigDefinitions() []brine.StepDefinition {
 						return fmt.Errorf("default %q changed from %q to %q — merging mutated the shared map", k, v, now)
 					}
 				}
-				if len(jetbridge.DefaultResourceTypeImages) != len(in.DefaultsBefore) {
+				if len(imageresolver.DefaultResourceTypeImages) != len(in.DefaultsBefore) {
 					return fmt.Errorf("DefaultResourceTypeImages changed size from %d to %d",
-						len(in.DefaultsBefore), len(jetbridge.DefaultResourceTypeImages))
+						len(in.DefaultsBefore), len(imageresolver.DefaultResourceTypeImages))
 				}
 				return nil
 			}),
@@ -222,12 +223,12 @@ func ConfigDefinitions() []brine.StepDefinition {
 }
 
 func mergeImages(overrides []string) (ResourceTypeImages, error) {
-	before := make(map[string]string, len(jetbridge.DefaultResourceTypeImages))
-	for k, v := range jetbridge.DefaultResourceTypeImages {
+	before := make(map[string]string, len(imageresolver.DefaultResourceTypeImages))
+	for k, v := range imageresolver.DefaultResourceTypeImages {
 		before[k] = v
 	}
 	return ResourceTypeImages{
-		Images:         jetbridge.MergeResourceTypeImages(overrides),
+		Images:         imageresolver.MergeResourceTypeImages(overrides),
 		DefaultsBefore: before,
 	}, nil
 }
@@ -247,7 +248,7 @@ func ConfigCompletenessDefinitions() []brine.StepDefinition {
 			"every built-in resource type is still offered",
 			func(in ResourceTypeImages) error {
 				var missing []string
-				for name := range jetbridge.DefaultResourceTypeImages {
+				for name := range imageresolver.DefaultResourceTypeImages {
 					if _, ok := in.Images[name]; !ok {
 						missing = append(missing, name)
 					}
@@ -266,11 +267,11 @@ func ConfigCompletenessDefinitions() []brine.StepDefinition {
 		CheckThat[ResourceTypeImages](
 			"no resource type was invented that nobody configured",
 			func(in ResourceTypeImages) error {
-				expected := len(jetbridge.DefaultResourceTypeImages)
+				expected := len(imageresolver.DefaultResourceTypeImages)
 				if got := len(in.Images); got != expected {
 					var extra []string
 					for name := range in.Images {
-						if _, ok := jetbridge.DefaultResourceTypeImages[name]; !ok {
+						if _, ok := imageresolver.DefaultResourceTypeImages[name]; !ok {
 							extra = append(extra, name)
 						}
 					}

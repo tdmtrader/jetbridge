@@ -334,7 +334,7 @@ var _ = Describe("BuildStepDelegate", func() {
 				It("sets ImageSpec.ResourceType to the custom type name from the get plan", func() {
 					Expect(fetchErr).ToNot(HaveOccurred())
 
-					By("ResourceType is set to the custom type name so resolveImage can map it")
+					By("ResourceType is set to the custom type name so imageresolver.Image can map it")
 					Expect(imageSpec.ResourceType).To(Equal("git-with-ado"))
 				})
 

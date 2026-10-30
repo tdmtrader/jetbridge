@@ -2,8 +2,6 @@ package jetbridge
 
 import (
 	"fmt"
-	"maps"
-	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar/output"
@@ -60,37 +58,6 @@ const (
 // key construction sites are easy to find.
 func ArtifactKey(handle string) string {
 	return handle
-}
-
-// DefaultResourceTypeImages maps base Concourse resource type names to their
-// Docker image references. These are the official Concourse resource type
-// images used when no custom resource type is defined in the pipeline.
-var DefaultResourceTypeImages = map[string]string{
-	"time":           "concourse/time-resource",
-	"registry-image": "concourse/registry-image-resource",
-	"git":            "concourse/git-resource",
-	"s3":             "concourse/s3-resource",
-	"docker-image":   "concourse/docker-image-resource",
-	"pool":           "concourse/pool-resource",
-	"semver":         "concourse/semver-resource",
-	"mock":           "concourse/mock-resource",
-}
-
-// MergeResourceTypeImages returns a new map that starts with a copy of
-// DefaultResourceTypeImages and applies operator overrides on top. Each
-// override entry is "name=image" (e.g. "git=my-registry/git-resource:v2").
-// Entries without an "=" separator are silently skipped.
-func MergeResourceTypeImages(overrides []string) map[string]string {
-	merged := make(map[string]string, len(DefaultResourceTypeImages))
-	maps.Copy(merged, DefaultResourceTypeImages)
-	for _, entry := range overrides {
-		name, image, ok := strings.Cut(entry, "=")
-		if !ok || name == "" || image == "" {
-			continue
-		}
-		merged[name] = image
-	}
-	return merged
 }
 
 // CacheStore values for --kubernetes-cache-store. Controls which backend

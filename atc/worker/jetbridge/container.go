@@ -18,6 +18,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -185,7 +186,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	execMode := c.executor != nil
 	ctx, span := tracing.StartSpan(ctx, "k8s.container.run", tracing.Attrs{
 		"handle":    c.handle,
-		"image":     resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages),
+		"image":     imageresolver.Image(c.containerSpec.ImageSpec.ImageURL, c.containerSpec.ImageSpec.ResourceType, c.config.ResourceTypeImages),
 		"type":      string(c.containerSpec.Type),
 		"namespace": c.config.Namespace,
 		"exec-mode": fmt.Sprintf("%t", execMode),
@@ -537,7 +538,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		}
 	}
 
-	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
+	image := imageresolver.Image(c.containerSpec.ImageSpec.ImageURL, c.containerSpec.ImageSpec.ResourceType, c.config.ResourceTypeImages)
 	if image == "" {
 		typeName := c.containerSpec.ImageSpec.ResourceType
 		if typeName == "" {
@@ -993,33 +994,6 @@ func (c *Container) buildPodAnnotations() map[string]string {
 	}
 
 	return annotations
-}
-
-// resolveImage extracts a Kubernetes-compatible image reference from the
-// ContainerSpec's ImageSpec. Concourse uses prefixed URLs (docker:///, raw:///)
-// while Kubernetes needs bare image references.
-//
-// For base resource types (time, git, registry-image, etc.), the ImageSpec
-// only contains the type name (e.g. "time"). The resourceTypeImages mapping
-// translates these to Docker image references (e.g. "concourse/time-resource").
-func resolveImage(spec runtime.ImageSpec, resourceTypeImages map[string]string) string {
-	image := atc.StripImageRefPrefix(spec.ImageURL)
-
-	if image == "" {
-		image = spec.ResourceType
-	}
-
-	// Map base resource type names to their Docker images.
-	// Fall back to DefaultResourceTypeImages if no custom mapping is provided.
-	mapping := resourceTypeImages
-	if mapping == nil {
-		mapping = DefaultResourceTypeImages
-	}
-	if mapped, ok := mapping[image]; ok {
-		image = mapped
-	}
-
-	return image
 }
 
 // applySecretRefs replaces literal Value entries with ValueFrom.SecretKeyRef

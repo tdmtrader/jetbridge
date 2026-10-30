@@ -12,6 +12,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar"
 	"github.com/jessevdk/go-flags"
@@ -206,7 +207,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 	}
 
 	resourceTypes := map[string]string{}
-	for name, image := range jetbridge.DefaultResourceTypeImages {
+	for name, image := range imageresolver.DefaultResourceTypeImages {
 		resourceTypes[name] = image
 	}
 	resourceTypes["git"] = "registry.example/git:2"

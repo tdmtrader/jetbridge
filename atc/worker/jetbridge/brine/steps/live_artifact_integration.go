@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
@@ -69,7 +70,7 @@ func runLiveArtifactIntegration(in LiveTaskPlan, rec *brine.Recorder, publish bo
 	config := s.runtimeConfig()
 	config.ArtifactDaemonHostPath, config.ArtifactDaemonPort = s.root, int(daemon.port)
 	config.ArtifactDaemonService = liveArtifactDaemonService
-	config.ResourceTypeImages = jetbridge.MergeResourceTypeImages([]string{"git=" + gitResourceImage})
+	config.ResourceTypeImages = imageresolver.MergeResourceTypeImages([]string{"git=" + gitResourceImage})
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 30*time.Second, 30*time.Second
 	w := WorkerReady{DB: in.Database, Namespace: s.cluster.Namespace, Clientset: s.cluster.Clientset, Config: config, DBWorker: dw, TeamID: team.ID(), Ctx: ctx,
 		Executor: s.executor, ProducerExecutor: s.executor, VolumeRepo: in.Database.VolumeRepository,

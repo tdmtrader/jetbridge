@@ -1396,7 +1396,7 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 		}
 	}
 	if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
-		k8sCfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
+		k8sCfg.ResourceTypeImages = imageresolver.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
 	}
 
 	if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {

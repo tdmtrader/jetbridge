@@ -11,6 +11,7 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
@@ -74,7 +75,7 @@ func runLiveS3Put(in LiveTaskPlan, rec *brine.Recorder) (S3PutOutcome, error) {
 	}
 	raw := w.Executor
 	w.Clientset = client
-	w.Config.ResourceTypeImages = jetbridge.MergeResourceTypeImages(nil)
+	w.Config.ResourceTypeImages = imageresolver.MergeResourceTypeImages(nil)
 	w.Config.ResourceTypeImages["s3"] = liveS3ResourceImage
 	w = w.rebuildWith(jetbridge.NewSPDYExecutor(client, trace.config(config)))
 	const handle = "put-multi-input"
