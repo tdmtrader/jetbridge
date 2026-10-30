@@ -5,11 +5,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
-	"github.com/concourse/concourse/atc/scheduler"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -407,9 +404,8 @@ func (example Example) Run() {
 
 	fixture := useSchedulerDB()
 
-	fakeAlgorithm := new(schedulerfakes.FakeAlgorithm)
-	fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
-	buildStarter := scheduler.NewBuildStarter(builds.NewPlanner(atc.NewPlanFactory(0)), fakeAlgorithm)
+	algorithm := &scriptedAlgorithm{mapping: db.InputMapping{}, resolved: true}
+	buildStarter := realBuildStarter(algorithm)
 
 	job, resources := example.persistJob(fixture)
 

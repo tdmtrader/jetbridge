@@ -4,13 +4,11 @@ import (
 	"context"
 	"strconv"
 
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	. "github.com/concourse/concourse/atc/scheduler"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 	"github.com/concourse/concourse/tracing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -21,10 +19,10 @@ import (
 )
 
 var _ = Describe("Scheduler Metrics & Observability", func() {
-	var fakeScheduler *schedulerfakes.FakeBuildScheduler
+	var algorithm *scriptedAlgorithm
 
 	BeforeEach(func() {
-		fakeScheduler = new(schedulerfakes.FakeBuildScheduler)
+		algorithm = &scriptedAlgorithm{mapping: db.InputMapping{}, resolved: true}
 
 		// Drain metric state left by earlier specs in this process.
 		metric.Metrics.JobsScheduling.Max()
@@ -64,7 +62,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 		runner := NewRunner(
 			lagertest.NewTestLogger("test"),
 			jobFactory,
-			fakeScheduler,
+			realScheduler(algorithm),
 			1,
 		)
 		Expect(runner.Run(ctx)).To(Succeed())
@@ -87,9 +85,9 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 			)
 
 			gaugeObserved := make(chan float64, 1)
-			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (ScheduleResult, error) {
+			algorithm.compute = func(context.Context, db.Job, db.InputConfigs) (db.InputMapping, bool, bool, error) {
 				gaugeObserved <- metric.Metrics.JobsScheduling.Max()
-				return ScheduleResult{}, nil
+				return db.InputMapping{}, true, false, nil
 			}
 
 			metric.Metrics.JobsScheduled.Delta()
@@ -113,26 +111,17 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 				"duration-pipeline",
 				"duration-job",
 			)
-			fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
-
 			runAndJoin(ctx, fixture, job, jobFactory)
-			Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
+			Expect(algorithm.callCount()).To(Equal(1))
 		})
 	})
 
 	// MO-04/05: BuildsStarted vs CheckBuildsStarted counters.
 	Describe("BuildsStarted and CheckBuildsStarted metrics", func() {
-		var (
-			buildStarter  BuildStarter
-			fakePlanner   *schedulerfakes.FakeBuildPlanner
-			fakeAlgorithm *schedulerfakes.FakeAlgorithm
-		)
+		var buildStarter BuildStarter
 
 		BeforeEach(func() {
-			fakePlanner = new(schedulerfakes.FakeBuildPlanner)
-			fakeAlgorithm = new(schedulerfakes.FakeAlgorithm)
-			buildStarter = NewBuildStarter(fakePlanner, fakeAlgorithm)
-			fakePlanner.CreateReturns(atc.Plan{}, nil)
+			buildStarter = realBuildStarter(algorithm)
 
 			metric.Metrics.BuildsStarted.Delta()
 			metric.Metrics.CheckBuildsStarted.Delta()
@@ -225,7 +214,6 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 				"traced-pipeline",
 				"traced-job",
 			)
-			fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
 			runAndJoin(ctx, fixture, job, jobFactory)
 
 			spans := exporter.GetSpans()
@@ -267,9 +255,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pending).To(HaveLen(1))
 
-			fakePlanner := new(schedulerfakes.FakeBuildPlanner)
-			fakePlanner.CreateReturns(atc.Plan{}, nil)
-			buildStarter := NewBuildStarter(fakePlanner, new(schedulerfakes.FakeAlgorithm))
+			buildStarter := realBuildStarter(algorithm)
 			_, err = buildStarter.TryStartPendingBuildsForJob(
 				context.Background(),
 				lagertest.NewTestLogger("test"),

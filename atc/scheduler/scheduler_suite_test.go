@@ -10,10 +10,12 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
+	"github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/util"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -31,6 +33,100 @@ func TestScheduler(t *testing.T) {
 var schedulerPostgresRunner postgresrunner.Runner
 
 var _ = postgresrunner.GinkgoRunner(&schedulerPostgresRunner)
+
+// scriptedAlgorithm answers Compute the way a spec dictates and keeps what it
+// was asked. The real algorithm is pinned by its own suite; the scheduler's
+// specs need to choose its answer -- resolved or not, run again, an error, a
+// panic, a hang -- because each is a branch here, and run-again, an error and a
+// panic have no honest fixture in a healthy database.
+type algorithmCompute struct {
+	job    db.Job
+	inputs db.InputConfigs
+}
+
+type scriptedAlgorithm struct {
+	mapping  db.InputMapping
+	resolved bool
+	runAgain bool
+	err      error
+	compute  func(context.Context, db.Job, db.InputConfigs) (db.InputMapping, bool, bool, error)
+
+	mu    sync.Mutex
+	calls []algorithmCompute
+}
+
+func (a *scriptedAlgorithm) Compute(ctx context.Context, job db.Job, inputs db.InputConfigs) (db.InputMapping, bool, bool, error) {
+	a.mu.Lock()
+	a.calls = append(a.calls, algorithmCompute{job: job, inputs: inputs})
+	a.mu.Unlock()
+
+	if a.compute != nil {
+		return a.compute(ctx, job, inputs)
+	}
+	return a.mapping, a.resolved, a.runAgain, a.err
+}
+
+func (a *scriptedAlgorithm) returns(mapping db.InputMapping, resolved, runAgain bool, err error) {
+	a.mapping, a.resolved, a.runAgain, a.err = mapping, resolved, runAgain, err
+}
+
+func (a *scriptedAlgorithm) callCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.calls)
+}
+
+func (a *scriptedAlgorithm) argsForCall(i int) (db.Job, db.InputConfigs) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls[i].job, a.calls[i].inputs
+}
+
+// scheduledJob is the job the scheduler handed the algorithm on its i-th
+// call, which is the job the runner handed the scheduler.
+func (a *scriptedAlgorithm) scheduledJob(i int) db.SchedulerJob {
+	GinkgoHelper()
+	job, _ := a.argsForCall(i)
+	return job.(db.SchedulerJob)
+}
+
+// realBuildStarter is the production starter over the production planner.
+func realBuildStarter(algorithm scheduler.Algorithm) scheduler.BuildStarter {
+	return scheduler.NewBuildStarter(builds.NewPlanner(atc.NewPlanFactory(0)), algorithm)
+}
+
+// realScheduler is the production scheduler over a real starter; only the
+// algorithm is scripted.
+func realScheduler(algorithm scheduler.Algorithm) *scheduler.Scheduler {
+	return &scheduler.Scheduler{Algorithm: algorithm, BuildStarter: realBuildStarter(algorithm)}
+}
+
+// scannedSchedulerJob is the job as the runner's scan hands it to the
+// scheduler: with the resources and resource types its pipeline persisted.
+func scannedSchedulerJob(fixture *schedulerDB, job db.Job) db.SchedulerJob {
+	GinkgoHelper()
+
+	Expect(job.RequestSchedule()).To(Succeed())
+	scanned, err := fixture.JobFactory.JobsToSchedule()
+	Expect(err).NotTo(HaveOccurred())
+	for _, candidate := range scanned {
+		if candidate.ID() == job.ID() {
+			return candidate
+		}
+	}
+	Fail("job was not scanned for scheduling")
+	return db.SchedulerJob{}
+}
+
+// nextBuildOf is the job's current non-finished build, with its plan.
+func nextBuildOf(job db.Job) db.Build {
+	GinkgoHelper()
+
+	_, next, err := job.FinishedAndNextBuild()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(next).NotTo(BeNil())
+	return next
+}
 
 type schedulerDB struct {
 	Conn            db.DbConn

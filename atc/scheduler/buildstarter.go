@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/tracing"
 )
 
-//counterfeiter:generate . BuildStarter
 type BuildStarter interface {
 	TryStartPendingBuildsForJob(
 		ctx context.Context,
@@ -22,7 +21,6 @@ type BuildStarter interface {
 	) (bool, error)
 }
 
-//counterfeiter:generate . BuildPlanner
 type BuildPlanner interface {
 	Create(atc.StepConfig, db.SchedulerResources, atc.ResourceTypes, []db.BuildInput, bool) (atc.Plan, error)
 }

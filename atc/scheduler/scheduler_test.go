@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/scheduler"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 	"github.com/concourse/concourse/tracing"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -84,8 +83,7 @@ func schedulerJobHasNewInputs(job db.Job) bool {
 
 var _ = Describe("Scheduler", func() {
 	var (
-		fakeAlgorithm    *schedulerfakes.FakeAlgorithm
-		fakeBuildStarter *schedulerfakes.FakeBuildStarter
+		algorithm *scriptedAlgorithm
 
 		scheduler *Scheduler
 
@@ -93,13 +91,8 @@ var _ = Describe("Scheduler", func() {
 	)
 
 	BeforeEach(func() {
-		fakeAlgorithm = new(schedulerfakes.FakeAlgorithm)
-		fakeBuildStarter = new(schedulerfakes.FakeBuildStarter)
-
-		scheduler = &Scheduler{
-			Algorithm:    fakeAlgorithm,
-			BuildStarter: fakeBuildStarter,
-		}
+		algorithm = new(scriptedAlgorithm)
+		scheduler = realScheduler(algorithm)
 
 		disaster = errors.New("bad thing")
 	})
@@ -111,6 +104,13 @@ var _ = Describe("Scheduler", func() {
 			Job:       job,
 			Resources: db.SchedulerResources{{Name: "some-resource"}},
 		})
+		return err
+	}
+
+	scheduleJob := func(ctx context.Context, job db.SchedulerJob) error {
+		GinkgoHelper()
+
+		_, err := scheduler.Schedule(ctx, lagertest.NewTestLogger("test"), job)
 		return err
 	}
 
@@ -139,14 +139,14 @@ var _ = Describe("Scheduler", func() {
 			)
 			job = schedulerPipelineJob(pipeline, "some-job-1")
 
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+			algorithm.returns(db.InputMapping{}, true, false, nil)
 		})
 
 		It("computes the inputs for the job it was given", func() {
 			Expect(schedule(context.Background(), job)).To(Succeed())
 
-			Expect(fakeAlgorithm.ComputeCallCount()).To(Equal(1))
-			_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
+			Expect(algorithm.callCount()).To(Equal(1))
+			actualJob, actualInputs := algorithm.argsForCall(0)
 			Expect(actualJob.Name()).To(Equal("some-job-1"))
 			Expect(actualInputs).To(BeNil())
 		})
@@ -160,7 +160,7 @@ var _ = Describe("Scheduler", func() {
 
 			_, err := scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), db.SchedulerJob{Job: counting})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(calls).To(BeZero())
+			Expect(calls).To(Equal(1))
 		})
 
 		It("returns the error when the job inputs fail to fetch", func() {
@@ -169,14 +169,14 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("returns the error when computing the inputs fails", func() {
-			fakeAlgorithm.ComputeReturns(nil, false, false, disaster)
+			algorithm.returns(nil, false, false, disaster)
 
 			err := schedule(context.Background(), job)
 			Expect(err).To(Equal(fmt.Errorf("compute inputs: %w", disaster)))
 		})
 
 		It("requests schedule when the algorithm can run again", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, true, nil)
+			algorithm.returns(db.InputMapping{}, true, true, nil)
 			before, _ := schedulerJobTimestamps(fixture, job.ID())
 
 			Expect(schedule(context.Background(), job)).To(Succeed())
@@ -195,7 +195,7 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("returns the error when requesting schedule fails", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, true, nil)
+			algorithm.returns(db.InputMapping{}, true, true, nil)
 
 			err := schedule(context.Background(), requestScheduleFailsJob{Job: job, err: disaster})
 			Expect(err).To(Equal(fmt.Errorf("request schedule: %w", disaster)))
@@ -211,16 +211,20 @@ var _ = Describe("Scheduler", func() {
 			Expect(err).To(Equal(fmt.Errorf("get next build inputs: %w", disaster)))
 		})
 
-		It("starts the pending builds for the job it was given", func() {
-			fakeBuildStarter.TryStartPendingBuildsForJobReturns(false, disaster)
+		It("starts the job's pending build once the inputs are saved", func() {
+			Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
 
-			Expect(schedule(context.Background(), job)).To(Equal(disaster))
+			Expect(schedule(context.Background(), job)).To(Succeed())
 
-			Expect(fakeBuildStarter.TryStartPendingBuildsForJobCallCount()).To(Equal(1))
-			_, _, actualJob, actualInputs := fakeBuildStarter.TryStartPendingBuildsForJobArgsForCall(0)
-			Expect(actualJob.Name()).To(Equal("some-job-1"))
-			Expect(actualJob.Resources).To(Equal(db.SchedulerResources{{Name: "some-resource"}}))
-			Expect(actualInputs).To(BeNil())
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+			started := nextBuildOf(job)
+			Expect(started.Status()).To(Equal(db.BuildStatusStarted))
+			Expect((*started.PrivatePlan().Do)[0].Task.Name).To(Equal("some-task"))
+		})
+
+		It("returns the build starter's error as it is", func() {
+			err := schedule(context.Background(), pendingBuildsFailsJob{Job: job, err: disaster})
+			Expect(err).To(Equal(fmt.Errorf("get pending builds: %w", disaster)))
 		})
 
 		It("does not create a pending build or mark the job as having new inputs", func() {
@@ -232,15 +236,21 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("leaves the inputs undetermined when the algorithm can not resolve them", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, false, false, nil)
+			Expect(job.EnsurePendingBuildExists(context.Background())).To(Succeed())
+			algorithm.returns(db.InputMapping{}, false, false, nil)
 
 			Expect(schedule(context.Background(), job)).To(Succeed())
 
 			_, satisfiable, err := job.GetFullNextBuildInputs()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(satisfiable).To(BeFalse())
-			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
-			Expect(fakeBuildStarter.TryStartPendingBuildsForJobCallCount()).To(Equal(1))
+
+			// The starter still ran: it scheduled the build, and only then
+			// found its inputs undetermined and left it pending.
+			pending := schedulerPendingBuilds(job)
+			Expect(pending).To(HaveLen(1))
+			Expect(pending[0].IsScheduled()).To(BeTrue())
+			Expect(pending[0].HasPlan()).To(BeFalse())
 		})
 	})
 
@@ -271,7 +281,7 @@ var _ = Describe("Scheduler", func() {
 			}},
 		}
 
-		fakeAlgorithm.ComputeReturns(db.InputMapping{}, false, false, nil)
+		algorithm.returns(db.InputMapping{}, false, false, nil)
 		_, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
 		Expect(err).NotTo(HaveOccurred())
 		pending := schedulerPendingBuilds(job)
@@ -284,9 +294,7 @@ var _ = Describe("Scheduler", func() {
 		mapping := db.InputMapping{
 			"source": schedulerInputResult(versions, scenario.Resource("source"), atc.Version{"ref": "v1"}, true),
 		}
-		fakeAlgorithm.ComputeReturns(mapping, true, false, nil)
-		fakePlanner := new(schedulerfakes.FakeBuildPlanner)
-		scheduler.BuildStarter = NewBuildStarter(fakePlanner, fakeAlgorithm)
+		algorithm.returns(mapping, true, false, nil)
 
 		_, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
 		Expect(err).NotTo(HaveOccurred())
@@ -320,6 +328,19 @@ var _ = Describe("Scheduler", func() {
 			job = scenario.Job("some-job")
 		})
 
+		// scheduleScanned schedules the job as the runner's scan hands it
+		// over -- with its pipeline's resources -- so a build the pass
+		// creates can be planned and started in the same pass. wrap stands
+		// the given job in for the scanned one.
+		scheduleScanned := func(ctx context.Context, wrap db.Job) error {
+			GinkgoHelper()
+
+			scanned := scannedSchedulerJob(fixture, job)
+			scanned.Job = wrap
+			_, err := scheduler.Schedule(ctx, lagertest.NewTestLogger("test"), scanned)
+			return err
+		}
+
 		firstOccurrenceOf := func(resourceName string, version atc.Version) db.InputResult {
 			GinkgoHelper()
 			return schedulerInputResult(versions, scenario.Resource(resourceName), version, true)
@@ -331,11 +352,11 @@ var _ = Describe("Scheduler", func() {
 		}
 
 		It("computes the job's persisted inputs", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{}, true, false, nil)
+			algorithm.returns(db.InputMapping{}, true, false, nil)
 
 			Expect(schedule(context.Background(), job)).To(Succeed())
 
-			_, actualJob, actualInputs := fakeAlgorithm.ComputeArgsForCall(0)
+			actualJob, actualInputs := algorithm.argsForCall(0)
 			Expect(actualJob.Name()).To(Equal("some-job"))
 			Expect(actualInputs).To(ConsistOf(
 				db.InputConfig{Name: "a", ResourceID: scenario.Resource("resource-a").ID(), JobID: job.ID(), Trigger: true},
@@ -345,7 +366,7 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("persists the computed input mapping", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"a": firstOccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
 				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
 			}, true, false, nil)
@@ -369,20 +390,36 @@ var _ = Describe("Scheduler", func() {
 			Expect(persisted["b"].FirstOccurrence).To(BeFalse())
 		})
 
-		It("creates a pending build for a first occurrence of a trigger input", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+		It("creates a build for a first occurrence of a trigger input and starts it with the job's resources and versions", func() {
+			algorithm.returns(db.InputMapping{
 				"a": firstOccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
 				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
+				"c": reoccurrenceOf("resource-c", atc.Version{"ref": "v3"}),
 			}, true, false, nil)
 
-			Expect(schedule(context.Background(), job)).To(Succeed())
+			Expect(scheduleScanned(context.Background(), job)).To(Succeed())
 
-			Expect(schedulerPendingBuilds(job)).To(HaveLen(1))
 			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
+			Expect(schedulerPendingBuilds(job)).To(BeEmpty())
+
+			started := nextBuildOf(job)
+			Expect(started.Status()).To(Equal(db.BuildStatusStarted))
+
+			gets := map[string]atc.GetPlan{}
+			for _, step := range *started.PrivatePlan().Do {
+				gets[step.Get.Name] = *step.Get
+			}
+			Expect(gets).To(HaveLen(3))
+			Expect(gets["a"].Source).To(Equal(atc.Source{"some": "a"}))
+			Expect(*gets["a"].Version).To(Equal(atc.Version{"ref": "v1"}))
+			Expect(gets["b"].Source).To(Equal(atc.Source{"some": "b"}))
+			Expect(*gets["b"].Version).To(Equal(atc.Version{"ref": "v2"}))
+			Expect(gets["c"].Source).To(Equal(atc.Source{"some": "c"}))
+			Expect(*gets["c"].Version).To(Equal(atc.Version{"ref": "v3"}))
 		})
 
 		It("returns the error when creating the pending build fails", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"a": firstOccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
 			}, true, false, nil)
 
@@ -391,7 +428,7 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("marks new inputs without a pending build when no first occurrence triggers", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"a": reoccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
 				"b": firstOccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
 			}, true, false, nil)
@@ -403,7 +440,7 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("returns the error when marking the job as having new inputs fails", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"b": firstOccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
 			}, true, false, nil)
 
@@ -415,7 +452,7 @@ var _ = Describe("Scheduler", func() {
 			Expect(job.SetHasNewInputs(true)).To(Succeed())
 			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
 
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"b": firstOccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
 			}, true, false, nil)
 
@@ -427,7 +464,7 @@ var _ = Describe("Scheduler", func() {
 			Expect(job.SetHasNewInputs(true)).To(Succeed())
 			Expect(schedulerJobHasNewInputs(job)).To(BeTrue())
 
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"a": reoccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
 				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
 			}, true, false, nil)
@@ -438,7 +475,7 @@ var _ = Describe("Scheduler", func() {
 		})
 
 		It("does not clear new inputs the job never had", func() {
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"a": reoccurrenceOf("resource-a", atc.Version{"ref": "v1"}),
 				"b": reoccurrenceOf("resource-b", atc.Version{"ref": "v2"}),
 			}, true, false, nil)
@@ -472,16 +509,16 @@ var _ = Describe("Scheduler", func() {
 
 			versions := schedulerVersionsDB(fixture)
 			job := scenario.Job("some-job")
-			fakeAlgorithm.ComputeReturns(db.InputMapping{
+			algorithm.returns(db.InputMapping{
 				"a": schedulerInputResult(versions, scenario.Resource("resource-a"), atc.Version{"ref": "v1"}, true),
 				"b": schedulerInputResult(versions, scenario.Resource("resource-b"), atc.Version{"ref": "v2"}, false),
 				"c": schedulerInputResult(versions, scenario.Resource("resource-c"), atc.Version{"ref": "v3"}, true),
 			}, true, false, nil)
 
 			schedulerCtx, _ := tracing.StartSpan(context.Background(), "scheduler.Run", nil)
-			Expect(schedule(schedulerCtx, job)).To(Succeed())
+			Expect(scheduleJob(schedulerCtx, scannedSchedulerJob(fixture, job))).To(Succeed())
 
-			Expect(schedulerPendingBuilds(job)).To(HaveLen(1))
+			Expect(nextBuildOf(job).Status()).To(Equal(db.BuildStatusStarted))
 
 			var pendingBuildSpans []tracetest.SpanStub
 			for _, span := range exporter.GetSpans() {

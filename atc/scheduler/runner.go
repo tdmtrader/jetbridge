@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-//counterfeiter:generate . BuildScheduler
 type BuildScheduler interface {
 	Schedule(
 		ctx context.Context,

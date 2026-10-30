@@ -7,14 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	. "github.com/concourse/concourse/atc/scheduler"
-	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -80,6 +78,38 @@ func (job consumeRecordingJob) ConsumeScheduleRequest(observed time.Time) error 
 	return job.Job.ConsumeScheduleRequest(observed)
 }
 
+// closeBeforeConsumeJobFactory hands out jobs whose ConsumeScheduleRequest
+// closes the connection it is about to use, so the scheduling itself succeeds
+// and only the consume fails.
+type closeBeforeConsumeJobFactory struct {
+	db.JobFactory
+	close      func() error
+	closeCalls int
+	closeErr   error
+}
+
+type closeBeforeConsumeJob struct {
+	db.Job
+	factory *closeBeforeConsumeJobFactory
+}
+
+func (job closeBeforeConsumeJob) ConsumeScheduleRequest(observed time.Time) error {
+	job.factory.closeCalls++
+	job.factory.closeErr = job.factory.close()
+	return job.Job.ConsumeScheduleRequest(observed)
+}
+
+func (factory *closeBeforeConsumeJobFactory) JobsToSchedule() (db.SchedulerJobs, error) {
+	jobs, err := factory.JobFactory.JobsToSchedule()
+	if err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		jobs[i].Job = closeBeforeConsumeJob{Job: jobs[i].Job, factory: factory}
+	}
+	return jobs, nil
+}
+
 type consumeRecordingJobFactory struct {
 	db.JobFactory
 	consumed chan<- scheduleConsumption
@@ -109,10 +139,12 @@ func (factory *destroyPipelineAfterScanJobFactory) JobsToSchedule() (db.Schedule
 }
 
 var _ = Describe("Runner", func() {
-	var fakeScheduler *schedulerfakes.FakeBuildScheduler
+	// The scheduler and its build starter are real; what each job's pass
+	// does is dictated through the algorithm, the first thing a pass asks.
+	var algorithm *scriptedAlgorithm
 
 	BeforeEach(func() {
-		fakeScheduler = new(schedulerfakes.FakeBuildScheduler)
+		algorithm = &scriptedAlgorithm{mapping: db.InputMapping{}, resolved: true}
 	})
 
 	newRunner := func(jobFactory db.JobFactory, maxInFlight uint64) *Runner {
@@ -120,7 +152,7 @@ var _ = Describe("Runner", func() {
 		return NewRunner(
 			lagertest.NewTestLogger("test"),
 			jobFactory,
-			fakeScheduler,
+			realScheduler(algorithm),
 			maxInFlight,
 		)
 	}
@@ -166,7 +198,6 @@ var _ = Describe("Runner", func() {
 		recording := consumeRecordingJobFactory{JobFactory: fixture.JobFactory, consumed: consumed}
 		tracked := observeSchedulerJobFactory(recording)
 		deferObservedFactory(tracked, job.ID())
-		fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
 
 		Expect(newRunner(tracked, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, tracked, job.ID())
@@ -202,7 +233,6 @@ var _ = Describe("Runner", func() {
 
 		tracked := observeSchedulerJobFactory(fixture.JobFactory)
 		deferObservedFactory(tracked, downstream.ID())
-		fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
 		Expect(newRunner(tracked, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, tracked, downstream.ID())
 
@@ -286,16 +316,15 @@ var _ = Describe("Runner", func() {
 		observed := observeSchedulerJobFactory(counted)
 		jobIDs := []int{jobs[0].ID(), jobs[1].ID(), jobs[2].ID()}
 		deferObservedFactory(observed, jobIDs...)
-		fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
 
 		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, jobIDs...)
 
 		Expect(counted.calls).To(Equal(1))
-		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(3))
+		Expect(algorithm.callCount()).To(Equal(3))
 		scheduledResources := map[string]db.SchedulerResources{}
-		for i := 0; i < fakeScheduler.ScheduleCallCount(); i++ {
-			_, _, scheduledJob := fakeScheduler.ScheduleArgsForCall(i)
+		for i := 0; i < algorithm.callCount(); i++ {
+			scheduledJob := algorithm.scheduledJob(i)
 			scheduledResources[scheduledJob.Name()] = scheduledJob.Resources
 		}
 		Expect(scheduledResources).To(MatchAllKeys(Keys{
@@ -349,15 +378,13 @@ var _ = Describe("Runner", func() {
 
 		observed := observeSchedulerJobFactory(fixture.JobFactory)
 		deferObservedFactory(observed, lockedJob.ID(), availableJob.ID())
-		fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
 		Expect(newRunner(observed, 2).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, lockedJob.ID(), availableJob.ID())
 
 		Expect(heldLock.Release()).To(Succeed())
 		released = true
-		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
-		_, _, scheduledJob := fakeScheduler.ScheduleArgsForCall(0)
-		Expect(scheduledJob.ID()).To(Equal(availableJob.ID()))
+		Expect(algorithm.callCount()).To(Equal(1))
+		Expect(algorithm.scheduledJob(0).ID()).To(Equal(availableJob.ID()))
 		persistedLockedRequested, persistedLockedLast := schedulerJobTimestamps(fixture, lockedJob.ID())
 		Expect(persistedLockedRequested).To(Equal(lockedRequested))
 		Expect(persistedLockedLast).To(Equal(lockedLast))
@@ -384,7 +411,7 @@ var _ = Describe("Runner", func() {
 
 		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, job.ID())
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
+		Expect(algorithm.callCount()).To(BeZero())
 		persistedRequested, persistedLast := schedulerJobTimestamps(fixture, job.ID())
 		Expect(persistedRequested).To(Equal(requested))
 		Expect(persistedLast).To(Equal(initialLast))
@@ -397,31 +424,45 @@ var _ = Describe("Runner", func() {
 				fixture,
 				"outcome-team",
 				"outcome-pipeline",
-				atc.Config{Jobs: atc.JobConfigs{{Name: "affected-job"}, {Name: "successful-job"}}},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "affected-job", RawMaxInFlight: 1}, {Name: "successful-job"}}},
 			)
 			affectedJob := schedulerPipelineJob(pipeline, "affected-job")
 			successfulJob := schedulerPipelineJob(pipeline, "successful-job")
+
+			if outcome == "retry" {
+				// A pass asks to be retried when a pending build cannot be
+				// scheduled; max in flight reached is the real cause.
+				Expect(affectedJob.SaveNextInputMapping(nil, true)).To(Succeed())
+				running, err := affectedJob.CreateBuild("test")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(affectedJob.ScheduleBuild(running)).To(BeTrue())
+				started, err := running.Start(atc.Plan{})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(started).To(BeTrue())
+				Expect(affectedJob.EnsurePendingBuildExists(context.Background())).To(Succeed())
+			}
+
 			requestSchedulerJob(fixture, affectedJob)
 			requestSchedulerJob(fixture, successfulJob)
 			affectedRequested, affectedLast := schedulerJobTimestamps(fixture, affectedJob.ID())
 			successfulRequested, _ := schedulerJobTimestamps(fixture, successfulJob.ID())
 
-			fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, job db.SchedulerJob) (ScheduleResult, error) {
+			algorithm.compute = func(_ context.Context, job db.Job, _ db.InputConfigs) (db.InputMapping, bool, bool, error) {
 				if job.Name() == "successful-job" {
-					return ScheduleResult{}, nil
+					return db.InputMapping{}, true, false, nil
 				}
 				if job.Name() != "affected-job" {
-					return ScheduleResult{}, fmt.Errorf("unexpected job %q", job.Name())
+					return nil, false, false, fmt.Errorf("unexpected job %q", job.Name())
 				}
 				switch outcome {
 				case "error":
-					return ScheduleResult{}, errors.New("schedule failed")
+					return nil, false, false, errors.New("compute failed")
 				case "panic":
-					panic("schedule panic")
+					panic("compute panic")
 				case "retry":
-					return ScheduleResult{NeedsRetry: true}, nil
+					return db.InputMapping{}, true, false, nil
 				default:
-					return ScheduleResult{}, fmt.Errorf("unexpected outcome %q", outcome)
+					return nil, false, false, fmt.Errorf("unexpected outcome %q", outcome)
 				}
 			}
 
@@ -470,10 +511,10 @@ var _ = Describe("Runner", func() {
 		unblock := make(chan struct{})
 		var once sync.Once
 		release := func() { once.Do(func() { close(unblock) }) }
-		fakeScheduler.ScheduleStub = func(context.Context, lager.Logger, db.SchedulerJob) (ScheduleResult, error) {
+		algorithm.compute = func(context.Context, db.Job, db.InputConfigs) (db.InputMapping, bool, bool, error) {
 			scheduling <- struct{}{}
 			<-unblock
-			return ScheduleResult{}, nil
+			return db.InputMapping{}, true, false, nil
 		}
 		deferSchedulerCompletions(release, func() []*schedulerJobCompletion {
 			return []*schedulerJobCompletion{completion}
@@ -493,7 +534,7 @@ var _ = Describe("Runner", func() {
 
 		release()
 		waitForSchedulerCompletion(ctx, completion)
-		Expect(fakeScheduler.ScheduleCallCount()).To(Equal(1))
+		Expect(algorithm.callCount()).To(Equal(1))
 		_, lastScheduled := schedulerJobTimestamps(fixture, job.ID())
 		Expect(lastScheduled).To(Equal(requested))
 	})
@@ -522,7 +563,7 @@ var _ = Describe("Runner", func() {
 		waitObservedFactory(ctx, observed, job.ID())
 		Expect(closingFactory.closeCalls).To(Equal(1))
 		Expect(closingFactory.closeErr).NotTo(HaveOccurred())
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
+		Expect(algorithm.callCount()).To(BeZero())
 		persistedRequested, persistedLast := schedulerJobTimestamps(fixture, job.ID())
 		Expect(persistedRequested).To(Equal(requested))
 		Expect(persistedLast).To(Equal(initialLast))
@@ -549,7 +590,7 @@ var _ = Describe("Runner", func() {
 		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, job.ID())
 		Expect(destroyingFactory.destroyErr).NotTo(HaveOccurred())
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
+		Expect(algorithm.callCount()).To(BeZero())
 		_, found, err := pipeline.Job("reload-missing-job")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
@@ -568,20 +609,18 @@ var _ = Describe("Runner", func() {
 		requested, initialLast := schedulerJobTimestamps(fixture, job.ID())
 
 		secondaryConn := schedulerPostgresRunner.OpenConn()
-		closeCalls := 0
-		var closeErr error
-		fakeScheduler.ScheduleStub = func(_ context.Context, _ lager.Logger, _ db.SchedulerJob) (ScheduleResult, error) {
-			closeCalls++
-			closeErr = secondaryConn.Close()
-			return ScheduleResult{}, closeErr
+		closing := &closeBeforeConsumeJobFactory{
+			JobFactory: db.NewJobFactory(secondaryConn, fixture.LockFactory),
+			close:      secondaryConn.Close,
 		}
-		observed := observeSchedulerJobFactory(db.NewJobFactory(secondaryConn, fixture.LockFactory))
+		observed := observeSchedulerJobFactory(closing)
 		deferObservedFactory(observed, job.ID())
 
 		Expect(newRunner(observed, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, observed, job.ID())
-		Expect(closeCalls).To(Equal(1))
-		Expect(closeErr).NotTo(HaveOccurred())
+		Expect(closing.closeCalls).To(Equal(1))
+		Expect(closing.closeErr).NotTo(HaveOccurred())
+		Expect(algorithm.callCount()).To(Equal(1))
 		persistedRequested, persistedLast := schedulerJobTimestamps(fixture, job.ID())
 		Expect(persistedRequested).To(Equal(requested))
 		Expect(persistedLast).To(Equal(initialLast))
@@ -594,6 +633,6 @@ var _ = Describe("Runner", func() {
 
 		err := newRunner(db.NewJobFactory(doomedConn, fixture.LockFactory), 1).Run(ctx)
 		Expect(err).To(MatchError(ContainSubstring("find jobs to schedule")))
-		Expect(fakeScheduler.ScheduleCallCount()).To(BeZero())
+		Expect(algorithm.callCount()).To(BeZero())
 	})
 })
