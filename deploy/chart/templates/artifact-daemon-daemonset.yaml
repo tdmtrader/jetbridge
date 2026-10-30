@@ -103,6 +103,10 @@ spec:
             # certificate all live in the release namespace, and it verifies
             # peers against <service-name>.<namespace>.svc.
             - --namespace={{ .Release.Namespace }}
+            # Where step pods run. The TTL sweep lists this node's step pods
+            # there and spares the directory of one still running; a capture
+            # seal reads the same Pods to see every container terminate.
+            - --pod-terminations-namespace={{ include "concourse.kubernetesNamespace" . }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
             - --resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
@@ -136,7 +140,6 @@ spec:
             - --output-max-content-bytes={{ .Values.artifactDaemon.outputScratch.maxContentBytes | int64 }}
             - --output-max-entries={{ .Values.artifactDaemon.outputScratch.maxEntries | int64 }}
             {{- if $capture }}
-            - --pod-terminations-namespace={{ include "concourse.kubernetesNamespace" . }}
             {{- include "concourse.hangarOutput.namespaceFlagsAt" (dict "root" . "disk" "/etc/concourse/hangar-output-disk") | nindent 12 }}
             {{- end }}
             {{- end }}

@@ -46,14 +46,14 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "concourse.fullname" . }}-artifact-daemon
     namespace: {{ .Release.Namespace }}
-{{- if and (.Values.hangarOutput.executionControl.enabled | default false) (.Values.hangarOutput.enabled | default false) }}
 ---
-# The output facet's capture seal waits for EVERY container of the producing
-# Pod -- init, regular and ephemeral -- to terminate before it reads the tree,
-# so no writer is still writing. It lists this node's Pods (fieldSelector
-# spec.nodeName) in the task namespace, and only there: a namespaced Role, not
-# a cluster-wide read. Read-only: a seal waits for writers to stop and never
-# deletes or changes a Pod to get there.
+# The daemon reads this node's Pods (fieldSelector spec.nodeName) in the task
+# namespace, and only there: a namespaced Role, not a cluster-wide read. Two
+# readers: the TTL sweep lists the step pods still running so a step that
+# outlives --ttl keeps its inputs and live outputs, and the output facet's
+# capture seal waits for EVERY container of the producing Pod -- init, regular
+# and ephemeral -- to terminate before it reads the tree. Read-only: both wait
+# for writers to stop and never delete or change a Pod to get there.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -83,4 +83,3 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "concourse.fullname" . }}-artifact-daemon
     namespace: {{ .Release.Namespace }}
-{{- end }}

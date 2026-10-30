@@ -57,6 +57,7 @@ never when:
 step output ──register──▶ artifact key ──mirror──▶ peers
                              │
                              ├── read refreshes age
+                             ├── a pass that sees the step pod alive refreshes age
                              └── sweeper deletes after TTL (steps only)
 resource cache ──register──▶ content key alias ──probe──▶ local holder or peer
 ```
@@ -70,6 +71,9 @@ resource cache ──register──▶ content key alias ──probe──▶ lo
   peers. Zero disables it; a negative count means every peer.
 - The sweeper deletes expired step directories and their resource-cache
   aliases. Persisted aliases survive daemon restarts subject to that expiry.
+  A step pod still running on the node keeps its directory: the sweep lists
+  this node's step pods by handle label and restarts the TTL of each live
+  one, and a pass that cannot list them deletes no step directory.
 - Cache discovery probes ready local holders; a read can fall back to a peer.
   A cache miss reruns the get. There is no resource-cache object store.
 

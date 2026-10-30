@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,7 +15,10 @@ import (
 // It sweeps two areas:
 //   - /steps/<handle>/ directories: removed if the dir mtime exceeds the TTL.
 //     Reads (resolve, GET) refresh the mtime, so only artifacts nothing has
-//     touched for a full TTL are removed.
+//     touched for a full TTL are removed. A step whose pod is still running on
+//     this node touches nothing while it runs, so the sweep asks the node and
+//     refreshes the mtime itself: the TTL counts from the last pass that saw
+//     the pod alive.
 //   - Legacy flat files under /artifacts/: removed if mtime > TTL
 //
 // It does NOT sweep /caches/ — those are cleaned only by DB-driven GC.
@@ -39,6 +43,15 @@ type Sweeper struct {
 	// thing that decides. Tests may omit it; main always wires the server's
 	// classifier, even when the output plane's routes are disabled.
 	sourceLedger *outputplane.Classifier
+
+	// stepPods is this node's step pod view. Nil (a daemon with no Kubernetes
+	// client) protects no running step; main wires it whenever it can.
+	stepPods StepPods
+}
+
+// SetStepPods wires the node's step pod view. Must be called before Run starts.
+func (s *Sweeper) SetStepPods(pods StepPods) {
+	s.stepPods = pods
 }
 
 // SetSourceLedger wires the output plane's read-only classifier. Must be
@@ -90,6 +103,15 @@ func (s *Sweeper) sweep() {
 	stepsDir := filepath.Join(s.storagePath, "steps")
 	entries, err := os.ReadDir(stepsDir)
 	if err == nil {
+		// One list per pass. A pod view that cannot be read spares every step
+		// directory this pass -- a running step's directory is not worth a
+		// disk's worth of expired ones -- and restarts no clock, so the next
+		// pass that can read it decides on the original mtimes.
+		live, liveErr := s.liveStepPods()
+		if liveErr != nil {
+			logger.Error("step-pods-unavailable", liveErr)
+		}
+		now := time.Now()
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
@@ -99,10 +121,21 @@ func (s *Sweeper) sweep() {
 			if err != nil {
 				continue
 			}
-			if info.ModTime().Before(cutoff) {
-				if s.removeStepDir(logger, handleDir, entry.Name(), cutoff) {
-					removed++
+			if !info.ModTime().Before(cutoff) {
+				continue
+			}
+			if liveErr != nil {
+				continue
+			}
+			if _, running := live[entry.Name()]; running {
+				if err := os.Chtimes(handleDir, now, now); err != nil {
+					logger.Error("failed-to-refresh-running-step-dir", err, lager.Data{"path": handleDir})
 				}
+				logger.Debug("spared-running-step-dir", lager.Data{"path": handleDir})
+				continue
+			}
+			if s.removeStepDir(logger, handleDir, entry.Name(), cutoff) {
+				removed++
 			}
 		}
 	}
@@ -134,6 +167,17 @@ func (s *Sweeper) sweep() {
 	if removed > 0 {
 		logger.Info("completed", lager.Data{"removed": removed})
 	}
+}
+
+// liveStepPods asks the node which step pods are still running. Without a
+// view there are none to spare.
+func (s *Sweeper) liveStepPods() (map[string]struct{}, error) {
+	if s.stepPods == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return s.stepPods.Live(ctx)
 }
 
 // removeStepDir deletes an expired step directory, coordinating with

@@ -75,7 +75,7 @@ type Config struct {
 	// it) or a publish (the upload).
 	SealWait time.Duration
 
-	// PodTerminationsNamespace is the namespace task Pods run in. The daemon
+	// PodTerminationsNamespace is the namespace step pods run in. The daemon
 	// reads Pods there and nowhere else.
 	PodTerminationsNamespace string
 
@@ -112,7 +112,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.DurationVar(&config.SealWait, "capture-seal-wait", time.Hour,
 		"How long one background capture job may run: a seal (the wait for every container of the producing Pod to terminate, and the canonicalization after it) or a publish (the upload). Both are asynchronous -- the control plane polls them -- and one that runs out is started again by the next poll, inside the capture's own deadline. The seal never deletes a Pod to get there.")
 	flags.StringVar(&config.PodTerminationsNamespace, "pod-terminations-namespace", "",
-		"The namespace task Pods run in. A capture seal reads this node's Pods in it, and only in it, to see that every container of the producing Pod has terminated. Required when the output plane reads Pods from Kubernetes.")
+		"The namespace step pods run in. The daemon reads this node's Pods in it, and only in it: a capture seal to see that every container of the producing Pod has terminated, the TTL sweep to spare the step directory of a Pod still running. Required when the output plane reads Pods from Kubernetes.")
 	flags.StringVar(&config.PodTerminationsDir, "pod-terminations-dir", "",
 		"Standalone operation only, with no Kubernetes API to read Pods from: a directory in which a file named after a Pod UID declares that every container of that Pod has terminated. A capture seal waits for it. Ignored when the daemon reads Pods from Kubernetes.")
 	flags.IntVar(&config.PublishConcurrency, "publish-concurrency", 1,

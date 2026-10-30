@@ -228,7 +228,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `kubernetes.namespace` | release namespace | Namespace where task/check pods are created. |
+| `kubernetes.namespace` | release namespace | Namespace where step pods are created. The chart renders the artifact daemon's read-only pods Role there, so the namespace must exist at install time. |
 | `kubernetes.serviceAccount` | `""` (web SA) | ServiceAccount for task pods. |
 | `kubernetes.podStartupTimeout` | `5m` | Max time to wait for pod Running. |
 | `kubernetes.podSchedulingTimeout` | `""` (15m) | Max time a step pod may wait Pending for cluster resources. Resolve capability expiry is derived from effective scheduling + startup + 36m. |

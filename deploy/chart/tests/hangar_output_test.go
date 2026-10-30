@@ -865,15 +865,18 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The capture seal's Pod observation
+// The daemon's Pod observation
 // ---------------------------------------------------------------------------
 
-// A capture seal waits for every container of the producing Pod to terminate,
-// and in-cluster the daemon learns that by listing its own node's Pods
+// The daemon lists its own node's Pods in the task namespace for two readers:
+// the TTL sweep spares the step directory of a pod still running
+// (cmd/artifact-daemon/step_pods.go), and a capture seal waits for every
+// container of the producing Pod to terminate
 // (cmd/artifact-daemon/outputplane/pod_terminations.go). Without get/list on
-// Pods the list is forbidden and no capture ever seals. The grant is read-only
-// and belongs to the output facet alone: a base-only daemon seals nothing.
-func TestTheCaptureSealCanObserveItsNodesPods(t *testing.T) {
+// Pods the list is forbidden: no capture ever seals, and a step that outlives
+// --ttl loses its directory mid-run. The grant is read-only and rendered
+// whenever the daemon is, output facet or not.
+func TestTheDaemonCanObserveItsNodesPods(t *testing.T) {
 	clusterPodVerbs := func(out string) []string {
 		var role rbacv1.ClusterRole
 		decodeNamed(t, out, "ClusterRole", objectNamed(t, out, "ClusterRole", "-"+outputDaemonComponent).name, &role)
@@ -900,37 +903,32 @@ func TestTheCaptureSealCanObserveItsNodesPods(t *testing.T) {
 		return roles
 	}
 
-	out := renderOutput(t)
-	if verbs := clusterPodVerbs(out); len(verbs) != 0 {
-		t.Errorf("the daemon's ClusterRole grants %v on pods; Pod reads are namespaced", verbs)
-	}
-	roles := podRoles(out)
-	if len(roles) != 1 {
-		t.Fatalf("with the output facet the daemon has %d pod Roles, want 1", len(roles))
-	}
-	role := roles[0]
-	if role.Namespace == "" {
-		t.Errorf("the daemon's pod Role names no namespace")
-	}
-	var verbs []string
-	for _, rule := range role.Rules {
-		if slices.Contains(rule.Resources, "pods") && slices.Contains(rule.APIGroups, "") {
-			verbs = append(verbs, rule.Verbs...)
+	for name, out := range map[string]string{"output facet": renderOutput(t), "base control only": renderBaseControl(t), "default": render(t)} {
+		if verbs := clusterPodVerbs(out); len(verbs) != 0 {
+			t.Errorf("%s: the daemon's ClusterRole grants %v on pods; Pod reads are namespaced", name, verbs)
 		}
-	}
-	sort.Strings(verbs)
-	if !slices.Equal(verbs, []string{"get", "list"}) {
-		t.Errorf("the daemon's pod Role grants %v, want exactly get and list: the seal lists its "+
-			"node's Pods and changes none", verbs)
-	}
-	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
-	if !strings.Contains(daemon.body, "--pod-terminations-namespace="+role.Namespace) {
-		t.Errorf("the daemon does not read Pods in the namespace its Role covers (%s)", role.Namespace)
-	}
-
-	for name, out := range map[string]string{"base control only": renderBaseControl(t), "default": render(t)} {
-		if roles := podRoles(out); len(roles) != 0 || len(clusterPodVerbs(out)) != 0 {
-			t.Errorf("%s: the artifact daemon is granted pod reads; it seals no capture", name)
+		roles := podRoles(out)
+		if len(roles) != 1 {
+			t.Fatalf("%s: the daemon has %d pod Roles, want 1: the TTL sweep reads this node's step pods on every daemon", name, len(roles))
+		}
+		role := roles[0]
+		if role.Namespace == "" {
+			t.Errorf("%s: the daemon's pod Role names no namespace", name)
+		}
+		var verbs []string
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.Resources, "pods") && slices.Contains(rule.APIGroups, "") {
+				verbs = append(verbs, rule.Verbs...)
+			}
+		}
+		sort.Strings(verbs)
+		if !slices.Equal(verbs, []string{"get", "list"}) {
+			t.Errorf("%s: the daemon's pod Role grants %v, want exactly get and list: the sweep and the seal "+
+				"list this node's Pods and change none", name, verbs)
+		}
+		daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+		if !strings.Contains(daemon.body, "--pod-terminations-namespace="+role.Namespace) {
+			t.Errorf("%s: the daemon does not read Pods in the namespace its Role covers (%s)", name, role.Namespace)
 		}
 	}
 }

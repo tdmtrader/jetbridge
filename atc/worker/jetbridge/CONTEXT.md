@@ -205,7 +205,8 @@ Another node's artifact daemon.
 **Sweeper**:
 The daemon's TTL reaper of node-local step outputs, including resource-cache
 aliases backed by expired step directories. A step directory the source ledger
-does not answer unmanaged is never swept.
+does not answer unmanaged is never swept, and neither is one whose step pod is
+still running on the node: each pass that sees the pod alive restarts its TTL.
 
 **Containment**:
 The rule that extraction writes and symlink targets stay inside the daemon's

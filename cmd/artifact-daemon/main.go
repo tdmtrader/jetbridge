@@ -243,6 +243,30 @@ func main() {
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
 	sweeper.SetSourceLedger(server.SourceLedger())
+	// The sweep spares the directory of a step whose pod is still running on
+	// this node. It needs the client and the step pod namespace; a daemon with
+	// neither has no pod view, and a step that outlives --ttl is not protected.
+	// A view that is configured is probed once here: a missing pods Role fails
+	// the deploy, as a failed node label does, rather than silently stopping
+	// every step-directory sweep for the life of the daemon.
+	if k8sClient != nil && *nodeName != "" && planeConfig.PodTerminationsNamespace != "" {
+		stepPods := NewNodeStepPods(k8sClient, planeConfig.PodTerminationsNamespace, *nodeName)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := ProbeStepPods(ctx, stepPods)
+		cancel()
+		if err != nil {
+			logger.Error("failed-to-list-step-pods", err)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
+			cleanupCancel()
+			os.Exit(1)
+		}
+		sweeper.SetStepPods(stepPods)
+	} else {
+		logger.Info("sweeper-has-no-step-pod-view", lager.Data{
+			"reason": "needs --node-name and --pod-terminations-namespace; a running step's directory is swept by mtime alone",
+		})
+	}
 
 	// Set up peer resolver for cross-node artifact resolution. It shares the
 	// client built above: peer discovery is one more consumer of the same
