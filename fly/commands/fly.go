@@ -32,8 +32,6 @@ type FlyCommand struct {
 	RenameTeam  RenameTeamCommand  `command:"rename-team"   alias:"rt" description:"Rename a team"`
 	DestroyTeam DestroyTeamCommand `command:"destroy-team"  alias:"dt" description:"Destroy a team and delete all of its data"`
 
-	Checklist ChecklistCommand `command:"checklist" alias:"cl" description:"Print a Checkfile of the given pipeline"`
-
 	Execute ExecuteCommand `command:"execute" alias:"e" description:"Execute a one-off build using local bits"`
 	Watch   WatchCommand   `command:"watch"   alias:"w" description:"Stream a build's output"`
 

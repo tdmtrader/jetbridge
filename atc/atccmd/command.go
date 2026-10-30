@@ -583,7 +583,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		return nil, err
 	}
 
-	logger, reconfigurableSink := cmd.Logger.Logger("atc")
+	logger, _ := cmd.Logger.Logger("atc")
 	if cmd.LogClusterName {
 		logger = logger.WithData(lager.Data{
 			"cluster": cmd.Server.ClusterName,
@@ -724,7 +724,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		clock.NewClock(),
 	)
 
-	members, err := cmd.constructMembers(logger, reconfigurableSink, apiConn, workerConn, backendConn, gcConn, storage, lockFactory, secretManager)
+	members, err := cmd.constructMembers(logger, apiConn, workerConn, backendConn, gcConn, storage, lockFactory, secretManager)
 	if err != nil {
 		return nil, err
 	}
@@ -769,7 +769,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 func (cmd *RunCommand) constructMembers(
 	logger lager.Logger,
-	reconfigurableSink *lager.ReconfigurableSink,
 	apiConn db.DbConn,
 	workerConn db.DbConn,
 	backendConn db.DbConn,
@@ -783,7 +782,7 @@ func (cmd *RunCommand) constructMembers(
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
-	apiMembers, err := cmd.constructAPIMembers(logger, reconfigurableSink, apiConn, workerConn, storage, lockFactory, secretManager, workerCache, checkBuildsChan)
+	apiMembers, err := cmd.constructAPIMembers(logger, apiConn, workerConn, storage, lockFactory, secretManager, workerCache, checkBuildsChan)
 	if err != nil {
 		return nil, err
 	}
@@ -855,7 +854,6 @@ func (cmd *RunCommand) constructMembers(
 
 func (cmd *RunCommand) constructAPIMembers(
 	logger lager.Logger,
-	reconfigurableSink *lager.ReconfigurableSink,
 	dbConn db.DbConn,
 	workerConn db.DbConn,
 	storage storage.Storage,
@@ -936,7 +934,6 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	apiHandler, err := cmd.constructAPIHandler(
 		logger,
-		reconfigurableSink,
 		teamFactory,
 		workerTeamFactory,
 		dbPipelineFactory,
@@ -2499,7 +2496,6 @@ func (cmd *RunCommand) constructTokenVerifier() accessor.TokenVerifier {
 
 func (cmd *RunCommand) constructAPIHandler(
 	logger lager.Logger,
-	reconfigurableSink *lager.ReconfigurableSink,
 	teamFactory db.TeamFactory,
 	workerTeamFactory db.TeamFactory,
 	dbPipelineFactory db.PipelineFactory,
@@ -2581,8 +2577,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		buildserver.NewEventHandler,
 
 		workerPool,
-
-		reconfigurableSink,
 
 		cmd.isTLSEnabled(),
 

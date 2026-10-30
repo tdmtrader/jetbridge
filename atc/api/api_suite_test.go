@@ -31,8 +31,6 @@ import (
 )
 
 var (
-	sink *lager.ReconfigurableSink
-
 	externalURL      = "https://example.com"
 	clusterName      = "Test Cluster"
 	featureFlagsJson = ` {
@@ -150,8 +148,6 @@ var _ = BeforeEach(func() {
 	DeferCleanup(varSourcePool.Close)
 	credsManagers = make(creds.Managers)
 
-	sink = lager.NewReconfigurableSink(lager.NewPrettySink(GinkgoWriter, lager.DEBUG), lager.DEBUG)
-
 	isTLSEnabled = false
 
 	server = newAPIServer(apiDBDeps{})
@@ -253,8 +249,6 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		constructedEventHandler.Construct,
 
 		workerPool,
-
-		sink,
 
 		isTLSEnabled,
 

@@ -29,7 +29,6 @@ const (
 	UnpauseJob     = "UnpauseJob"
 	ScheduleJob    = "ScheduleJob"
 	JobBadge       = "JobBadge"
-	MainJobBadge   = "MainJobBadge"
 
 	ClearTaskCache = "ClearTaskCache"
 
@@ -61,8 +60,6 @@ const (
 	GetDownstreamResourceCausality = "GetDownstreamResourceCausality"
 	GetUpstreamResourceCausality   = "GetUpstreamResourceCausality"
 
-	GetCC = "GetCC"
-
 	ListAllPipelines                = "ListAllPipelines"
 	ListPipelines                   = "ListPipelines"
 	GetPipeline                     = "GetPipeline"
@@ -90,9 +87,6 @@ const (
 	RegisterWorker = "RegisterWorker"
 	ListWorkers    = "ListWorkers"
 	DeleteWorker   = "DeleteWorker"
-
-	SetLogLevel = "SetLogLevel"
-	GetLogLevel = "GetLogLevel"
 
 	DownloadCLI  = "DownloadCLI"
 	GetInfo      = "GetInfo"
@@ -168,7 +162,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause", Method: "PUT", Name: UnpauseJob},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule", Method: "PUT", Name: ScheduleJob},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge", Method: "GET", Name: JobBadge},
-	{Path: "/api/v1/pipelines/:pipeline_name/jobs/:job_name/badge", Method: "GET", Name: MainJobBadge},
 
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache", Method: "DELETE", Name: ClearTaskCache},
 
@@ -225,14 +218,9 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/upstream", Method: "GET", Name: GetUpstreamResourceCausality},
 	// {Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/causality", Method: "GET", Name: GetResourceCausality},
 
-	{Path: "/api/v1/teams/:team_name/cc.xml", Method: "GET", Name: GetCC},
-
 	{Path: "/api/v1/workers", Method: "GET", Name: ListWorkers},
 	{Path: "/api/v1/workers", Method: "POST", Name: RegisterWorker},
 	{Path: "/api/v1/workers/:worker_name", Method: "DELETE", Name: DeleteWorker},
-
-	{Path: "/api/v1/log-level", Method: "GET", Name: GetLogLevel},
-	{Path: "/api/v1/log-level", Method: "PUT", Name: SetLogLevel},
 
 	{Path: "/api/v1/cli", Method: "GET", Name: DownloadCLI},
 	{Path: "/api/v1/info", Method: "GET", Name: GetInfo},

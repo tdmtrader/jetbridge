@@ -87,30 +87,6 @@ jobs:
 		Expect(string(body)).To(ContainSubstring("<svg"))
 	})
 
-	It("returns CCTray XML for pipeline monitoring", func() {
-		cfg := writePipelineFile("cctray.yml", `
-jobs:
-- name: cctray-job
-  plan:
-  - task: pass
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: echo
-        args: ["cctray"]
-`)
-		setAndUnpausePipeline(cfg)
-		triggerJob("cctray-job")
-		sess := waitForBuildAndWatch("cctray-job")
-		Expect(sess.ExitCode()).To(Equal(0))
-
-		By("fetching CCTray XML")
-		status, body := apiGet("/api/v1/teams/main/cc.xml")
-		Expect(status).To(Equal(http.StatusOK))
-		Expect(string(body)).To(ContainSubstring("<Project"))
-	})
-
 	It("supports pagination on builds endpoint", func() {
 		cfg := writePipelineFile("paginate.yml", `
 jobs:

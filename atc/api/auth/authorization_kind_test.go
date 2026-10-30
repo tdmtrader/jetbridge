@@ -34,7 +34,7 @@ var _ = Describe("Authorization kind", func() {
 			atc.UnpausePipeline:    auth.AuthorizationTeam,
 			atc.CreateJobBuild:     auth.AuthorizationTeam,
 			atc.AbortBuild:         auth.AuthorizationBuildWrite,
-			atc.SetLogLevel:        auth.AuthorizationAdmin,
+			atc.SetWall:            auth.AuthorizationAdmin,
 		} {
 			kind, known := auth.AuthorizationKindForAction(action)
 			Expect(known).To(BeTrue(), action)

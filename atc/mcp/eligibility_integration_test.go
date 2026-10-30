@@ -31,7 +31,7 @@ var _ = Describe("MCP account eligibility", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(eligibility).To(Equal(product.AccountTargetCheckRequired), action)
 		}
-		for _, action := range []string{atc.GetConfig, atc.SaveConfig, atc.PausePipeline, atc.AbortBuild, atc.SetLogLevel} {
+		for _, action := range []string{atc.GetConfig, atc.SaveConfig, atc.PausePipeline, atc.AbortBuild, atc.SetWall} {
 			eligibility, err := check(action, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(eligibility).To(Equal(product.AccountIneligible), action)
@@ -61,11 +61,11 @@ var _ = Describe("MCP account eligibility", func() {
 	It("keeps account administration separate from consent and from team ownership", func() {
 		team := createTeam("owners")
 		grantRole(team, accessor.OwnerRole)
-		eligibility, err := check(atc.SetLogLevel, nil)
+		eligibility, err := check(atc.SetWall, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(eligibility).To(Equal(product.AccountIneligible))
 		makeAdmin(team)
-		for _, action := range []string{atc.SaveConfig, atc.SetLogLevel} {
+		for _, action := range []string{atc.SaveConfig, atc.SetWall} {
 			eligibility, err = check(action, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(eligibility).To(Equal(product.AccountTargetCheckRequired))

@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
-	"github.com/concourse/concourse/atc/api/ccserver"
 	"github.com/concourse/concourse/atc/api/cliserver"
 	"github.com/concourse/concourse/atc/api/configserver"
 	"github.com/concourse/concourse/atc/api/containerserver"
@@ -19,7 +18,6 @@ import (
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/landingserver"
-	"github.com/concourse/concourse/atc/api/loglevelserver"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/resourceserver"
@@ -31,7 +29,6 @@ import (
 	"github.com/concourse/concourse/atc/api/workerserver"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/mainredirect"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/tedsuo/rata"
 )
@@ -67,8 +64,6 @@ func NewHandler(
 	eventHandlerFactory buildserver.EventHandlerFactory,
 
 	workerPool Pool,
-
-	sink *lager.ReconfigurableSink,
 
 	isTLSEnabled bool,
 
@@ -110,9 +105,7 @@ func NewHandler(
 		pipelineRunServer.SetServices(runServices[0])
 	}
 	configServer := configserver.NewServer(logger, dbTeamFactory, secretManager)
-	ccServer := ccserver.NewServer(logger, dbTeamFactory, externalURL)
 	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
-	logLevelServer := loglevelserver.NewServer(logger, sink)
 	cliServer := cliserver.NewServer(logger, absCLIDownloadsDir)
 	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
 	volumesServer := volumeserver.NewServer(logger, volumeRepository)
@@ -132,8 +125,6 @@ func NewHandler(
 		atc.GetConfig:             http.HandlerFunc(configServer.GetConfig),
 		atc.SaveConfig:            http.HandlerFunc(configServer.SaveConfig),
 		atc.SaveConfigConditional: http.HandlerFunc(configServer.SaveConfigConditional),
-
-		atc.GetCC: http.HandlerFunc(ccServer.GetCC),
 
 		atc.ListBuilds:          http.HandlerFunc(buildServer.ListBuilds),
 		atc.CreateBuild:         teamHandlerFactory.HandlerFor(buildServer.CreateBuild),
@@ -158,10 +149,6 @@ func NewHandler(
 		atc.UnpauseJob:     pipelineHandlerFactory.HandlerFor(jobServer.UnpauseJob),
 		atc.ScheduleJob:    pipelineHandlerFactory.HandlerFor(jobServer.ScheduleJob),
 		atc.JobBadge:       pipelineHandlerFactory.HandlerFor(jobServer.JobBadge),
-		atc.MainJobBadge: mainredirect.Handler{
-			Routes: atc.Routes,
-			Route:  atc.JobBadge,
-		},
 
 		atc.ClearTaskCache: pipelineHandlerFactory.HandlerFor(jobServer.ClearTaskCache),
 
@@ -220,9 +207,6 @@ func NewHandler(
 		atc.ListWorkers:    http.HandlerFunc(workerServer.ListWorkers),
 		atc.RegisterWorker: http.HandlerFunc(workerServer.RegisterWorker),
 		atc.DeleteWorker:   http.HandlerFunc(workerServer.DeleteWorker),
-
-		atc.SetLogLevel: http.HandlerFunc(logLevelServer.SetMinLevel),
-		atc.GetLogLevel: http.HandlerFunc(logLevelServer.GetMinLevel),
 
 		atc.DownloadCLI:  http.HandlerFunc(cliServer.Download),
 		atc.GetInfo:      http.HandlerFunc(infoServer.Info),
