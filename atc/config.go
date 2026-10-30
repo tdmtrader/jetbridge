@@ -21,7 +21,6 @@ type Config struct {
 	VarSources    VarSourceConfigs    `json:"var_sources,omitempty"`
 	Resources     ResourceConfigs     `json:"resources,omitempty"`
 	ResourceTypes ResourceTypes       `json:"resource_types,omitempty"`
-	Prototypes    Prototypes          `json:"prototypes,omitempty"`
 	Jobs          JobConfigs          `json:"jobs,omitempty"`
 	Display       *DisplayConfig      `json:"display,omitempty"`
 	Template      bool                `json:"template,omitempty"`
@@ -47,6 +46,31 @@ const (
 	CacheScopeNone     = "none"
 )
 
+// removedSections are top-level pipeline sections this fork cut, each with
+// the sentence a pipeline still declaring it is refused with.
+var removedSections = map[string]string{
+	"prototypes": "prototypes: is not a pipeline section; prototypes and the run step were removed",
+}
+
+// RefuseRemovedSections rejects a pipeline payload that still declares a
+// section in removedSections. Both the skeleton in UnmarshalConfig and fly's
+// plain yaml.Unmarshal tolerate unknown top-level keys (YAML anchors live
+// there), so without this the section would be dropped silently and the file
+// would validate as "looks good". It runs on the raw payload so the server
+// and fly refuse the same file with the same sentence.
+func RefuseRemovedSections(payload []byte) error {
+	var sections map[string]any
+	if err := yaml.Unmarshal(payload, &sections); err != nil {
+		return err
+	}
+	for section, reason := range removedSections {
+		if _, declared := sections[section]; declared {
+			return errors.New(reason)
+		}
+	}
+	return nil
+}
+
 func UnmarshalConfig(payload []byte, config any) error {
 	// a 'skeleton' of Config, specifying only the toplevel fields
 	type skeletonConfig struct {
@@ -54,7 +78,6 @@ func UnmarshalConfig(payload []byte, config any) error {
 		VarSources    any `json:"var_sources,omitempty"`
 		Resources     any `json:"resources,omitempty"`
 		ResourceTypes any `json:"resource_types,omitempty"`
-		Prototypes    any `json:"prototypes,omitempty"`
 		Jobs          any `json:"jobs,omitempty"`
 		Display       any `json:"display,omitempty"`
 		Template      any `json:"template,omitempty"`
@@ -66,6 +89,10 @@ func UnmarshalConfig(payload []byte, config any) error {
 	var stripped skeletonConfig
 	err := yaml.Unmarshal(payload, &stripped)
 	if err != nil {
+		return err
+	}
+
+	if err := RefuseRemovedSections(payload); err != nil {
 		return err
 	}
 
@@ -226,17 +253,6 @@ type ResourceType struct {
 	Params     Params      `json:"params,omitempty"`
 }
 
-type Prototype struct {
-	Name       string      `json:"name"`
-	Type       string      `json:"type"`
-	Source     Source      `json:"source"`
-	Defaults   Source      `json:"defaults,omitempty"`
-	Privileged bool        `json:"privileged,omitempty"`
-	CheckEvery *CheckEvery `json:"check_every,omitempty"`
-	Tags       Tags        `json:"tags,omitempty"`
-	Params     Params      `json:"params,omitempty"`
-}
-
 type DisplayConfig struct {
 	BackgroundImage  string `json:"background_image,omitempty"`
 	BackgroundFilter string `json:"background_filter,omitempty"`
@@ -283,18 +299,6 @@ func (c *CheckEvery) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal("")
-}
-
-type Prototypes []Prototype
-
-func (types Prototypes) Lookup(name string) (Prototype, bool) {
-	for _, t := range types {
-		if t.Name == name {
-			return t, true
-		}
-	}
-
-	return Prototype{}, false
 }
 
 type ResourceTypes []ResourceType

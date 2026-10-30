@@ -18,7 +18,6 @@ var _ = Describe("Check Lifecycle", func() {
 		plan                       atc.Plan
 		scopeOfDefaultResource     db.ResourceConfigScope
 		scopeOfDefaultResourceType db.ResourceConfigScope
-		scopeOfDefaultPrototype    db.ResourceConfigScope
 	)
 
 	BeforeEach(func() {
@@ -39,10 +38,6 @@ var _ = Describe("Check Lifecycle", func() {
 		Expect(err).ToNot(HaveOccurred())
 		scopeOfDefaultResourceType, err = resourceConfig.FindOrCreateScope(nil)
 		Expect(err).ToNot(HaveOccurred())
-
-		resourceConfig, err = resourceConfigFactory.FindOrCreateResourceConfig(defaultPrototype.Type(), defaultPrototype.Source(), nil)
-		Expect(err).ToNot(HaveOccurred())
-		scopeOfDefaultPrototype, err = resourceConfig.FindOrCreateScope(nil)
 	})
 
 	Context("DB build", func() {
@@ -112,13 +107,6 @@ var _ = Describe("Check Lifecycle", func() {
 
 			Expect(exists(resourceTypeBuild)).To(BeFalse())
 			Expect(numBuildEventsForCheck(resourceTypeBuild)).To(Equal(0))
-
-			By("creating a new check for the prototype")
-			createFinishedCheck(defaultPrototype, scopeOfDefaultPrototype, plan)
-
-			By("deleting completed checks")
-			err = lifecycle.DeleteCompletedChecks(logger)
-			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("runs check-deletion query in batches", func() {

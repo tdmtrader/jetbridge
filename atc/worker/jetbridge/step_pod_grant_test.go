@@ -48,8 +48,7 @@ var _ = Describe("Step pod grants", func() {
 	pipelineConfig := atc.Config{Jobs: atc.JobConfigs{
 		{Name: "release", PlanSequence: []atc.Step{{Config: &atc.TaskStep{Name: "t", Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}}}}}},
 		{Name: "unit", PlanSequence: []atc.Step{{Config: &atc.TaskStep{Name: "t", Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}}}}}},
-	}, Resources: atc.ResourceConfigs{{Name: "repo", Type: "git", Source: atc.Source{"uri": "https://example.com/repo"}}},
-		Prototypes: atc.Prototypes{{Name: "proto", Type: "registry-image", Source: atc.Source{"repository": "busybox"}}}}
+	}, Resources: atc.ResourceConfigs{{Name: "repo", Type: "git", Source: atc.Source{"uri": "https://example.com/repo"}}}}
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -168,23 +167,6 @@ var _ = Describe("Step pod grants", func() {
 		// The image-fetch get inside a check build: a get container, but the
 		// build is a check, so it owns nothing.
 		Expect(runStep(worker, "check-image-get", metadataFor(check, db.ContainerTypeGet), runtime.ContainerSpec{})).To(Equal(defaultAccount))
-	})
-
-	It("gives a main prototype check build the default, though it has no job and no resource", func() {
-		// A prototype check build is a main pipeline build with no job and no
-		// resource: only its name says it is a check, and without that it would
-		// read as a main one-off.
-		worker := newWorker(database.BuildFactory)
-		prototype, found, err := pipeline.Prototype("proto")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		check, created, err := prototype.CreateBuild(ctx, true, atc.Plan{})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(created).To(BeTrue())
-		Expect(check.JobID()).To(BeZero())
-		Expect(check.ResourceID()).To(BeZero())
-
-		Expect(runStep(worker, "prototype-check-task", metadataFor(check, db.ContainerTypeTask), runtime.ContainerSpec{})).To(Equal(defaultAccount))
 	})
 
 	It("gives an instanced pipeline's job the default, though its names match a grant", func() {

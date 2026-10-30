@@ -177,12 +177,6 @@ func defaultResourceAPIConfig() atc.Config {
 			Tags:       atc.Tags{"resource-type-worker"},
 			Params:     atc.Params{"resource-type-param": "persisted"},
 		}},
-		Prototypes: atc.Prototypes{{
-			Name:   "prototype-name",
-			Type:   dbtest.BaseResourceType,
-			Source: atc.Source{"repository": "prototype"},
-			Tags:   atc.Tags{"prototype-worker"},
-		}},
 	}
 }
 
@@ -940,7 +934,7 @@ var _ = Describe("Resources API", func() {
 		})
 	})
 
-	Describe("manual resource, resource-type, and prototype checks", func() {
+	Describe("manual resource and resource-type checks", func() {
 		BeforeEach(func() {
 			fakeAccess.IsAuthenticatedReturns(true)
 			fakeAccess.IsAuthorizedReturns(true)
@@ -1001,20 +995,11 @@ var _ = Describe("Resources API", func() {
 					expectedCheck.ResourceType = "resource-type-name"
 					expectedCheck.Interval = atc.CheckEvery{Interval: 3 * time.Minute}
 					expectedCheck.Tags = atc.Tags{"resource-type-worker"}
-				case "prototype":
-					Expect(build.ResourceID()).To(BeZero())
-					Expect(build.ResourceTypeID()).To(BeZero())
-					expectedCheck.Name = "prototype-name"
-					expectedCheck.Source = atc.Source{"repository": "prototype"}
-					expectedCheck.Prototype = "prototype-name"
-					expectedCheck.Interval = atc.CheckEvery{Interval: time.Minute}
-					expectedCheck.Tags = atc.Tags{"prototype-worker"}
 				}
 				Expect(privatePlan.Check).To(Equal(&expectedCheck))
 			},
 			Entry("resource", "resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "resource-type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
 		DescribeTable("returns 500 for the explicit check-factory error boundary",
@@ -1035,7 +1020,6 @@ var _ = Describe("Resources API", func() {
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
 		DescribeTable("returns 500 for the impossible manual-check not-created result",
@@ -1056,7 +1040,6 @@ var _ = Describe("Resources API", func() {
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
 		DescribeTable("forwards recursive checking when shallow is false",
@@ -1072,7 +1055,6 @@ var _ = Describe("Resources API", func() {
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
 		DescribeTable("preserves each check handler's missing and authorization statuses",
@@ -1099,11 +1081,6 @@ var _ = Describe("Resources API", func() {
 				"/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check",
 				"/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/missing/check",
 			),
-			Entry(
-				"prototype",
-				"/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check",
-				"/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/missing/check",
-			),
 		)
 
 		DescribeTable("refuses a manual check on a template pipeline",
@@ -1123,7 +1100,6 @@ var _ = Describe("Resources API", func() {
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
 		It("returns 400 for malformed resource-check JSON", func() {
@@ -1141,7 +1117,6 @@ var _ = Describe("Resources API", func() {
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 
 		DescribeTable("returns 500 when resource-type expansion fails after a real checkable lookup",
@@ -1156,7 +1131,6 @@ var _ = Describe("Resources API", func() {
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
 		)
 	})
 

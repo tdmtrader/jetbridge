@@ -149,7 +149,6 @@ var _ = Describe("CheckDelegate", func() {
 		checkBuild    db.Build
 		resource      db.Resource
 		resourceType  db.ResourceType
-		prototype     db.Prototype
 		config        db.ResourceConfig
 		globalScope   db.ResourceConfigScope
 		resourceScope db.ResourceConfigScope
@@ -195,10 +194,6 @@ var _ = Describe("CheckDelegate", func() {
 					Name: "some-resource-type", Type: dbtest.BaseResourceType,
 					Source: atc.Source{"some": "type-source"},
 				}},
-				Prototypes: atc.Prototypes{{
-					Name: "some-prototype", Type: dbtest.BaseResourceType,
-					Source: atc.Source{"some": "prototype-source"},
-				}},
 			},
 			"some-user",
 		)
@@ -210,9 +205,6 @@ var _ = Describe("CheckDelegate", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		resourceType, found, err = pipeline.ResourceType("some-resource-type")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		prototype, found, err = pipeline.Prototype("some-prototype")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 
@@ -260,7 +252,7 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).To(MatchError(ContainSubstring("resource 'missing-resource' deleted")))
 		})
 
-		It("persists resource, resource-type, and prototype scope attachment", func() {
+		It("persists resource and resource-type scope attachment", func() {
 			Expect(newDelegate(jobBuild, atc.CheckPlan{Resource: "some-resource"}).PointToCheckedConfig(resourceScope)).To(Succeed())
 			found, err := resource.Reload()
 			Expect(err).NotTo(HaveOccurred())
@@ -281,12 +273,6 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(resourceType.ResourceConfigScopeID()).To(Equal(globalScope.ID()))
-
-			Expect(newDelegate(jobBuild, atc.CheckPlan{Prototype: "some-prototype"}).PointToCheckedConfig(globalScope)).To(Succeed())
-			found, err = prototype.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(prototype.ResourceConfigScopeID()).To(Equal(globalScope.ID()))
 
 			found, err = pipeline.Reload()
 			Expect(err).NotTo(HaveOccurred())

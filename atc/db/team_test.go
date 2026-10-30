@@ -381,7 +381,6 @@ var _ = Describe("Team", func() {
 		var (
 			resourceContainer      db.CreatingContainer
 			resourceTypeContainer  db.CreatingContainer
-			prototypeContainer     db.CreatingContainer
 			firstContainerCreating db.CreatingContainer
 			scenario               *dbtest.Scenario
 		)
@@ -434,15 +433,6 @@ var _ = Describe("Team", func() {
 								},
 							},
 						},
-						Prototypes: atc.Prototypes{
-							{
-								Name: "some-prototype",
-								Type: "some-base-resource-type",
-								Source: atc.Source{
-									"some-prototype": "source",
-								},
-							},
-						},
 					}),
 					builder.WithWorker(atc.Worker{
 						ResourceTypes: []atc.WorkerResourceType{defaultWorkerResourceType},
@@ -450,7 +440,6 @@ var _ = Describe("Team", func() {
 					}),
 					builder.WithResourceVersions("some-resource"),
 					builder.WithResourceTypeVersions("some-type"),
-					builder.WithPrototypeVersions("some-prototype"),
 				)
 
 				build, err := scenario.Job("some-job").CreateBuild(defaultBuildCreatedBy)
@@ -461,14 +450,13 @@ var _ = Describe("Team", func() {
 
 				resourceContainer = resourceConfigCheckContainer(scenario.Workers[0], scenario.Resource("some-resource").ResourceConfigID())
 				resourceTypeContainer = resourceConfigCheckContainer(scenario.Workers[0], scenario.ResourceType("some-type").ResourceConfigID())
-				prototypeContainer = resourceConfigCheckContainer(scenario.Workers[0], scenario.Prototype("some-prototype").ResourceConfigID())
 			})
 
 			It("finds all the containers", func() {
 				containers, err := scenario.Team.Containers()
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(containers).To(ConsistOf(firstContainerCreating, resourceContainer, resourceTypeContainer, prototypeContainer))
+				Expect(containers).To(ConsistOf(firstContainerCreating, resourceContainer, resourceTypeContainer))
 			})
 
 			It("does not find containers for other teams", func() {
@@ -1843,16 +1831,6 @@ var _ = Describe("Team", func() {
 					},
 				},
 
-				Prototypes: atc.Prototypes{
-					{
-						Name: "some-prototype",
-						Type: "some-type",
-						Source: atc.Source{
-							"source-config": "some-value",
-						},
-					},
-				},
-
 				Jobs: atc.JobConfigs{
 					{
 						Name: "some-job",
@@ -2282,53 +2260,6 @@ var _ = Describe("Team", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			_, found, err := savedPipeline.ResourceType("some-resource-type")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeFalse())
-		})
-
-		It("creates all of the prototypes from the pipeline in the database", func() {
-			savedPipeline, _, err := team.SavePipeline(pipelineRef, config, 0, false)
-			Expect(err).ToNot(HaveOccurred())
-
-			prototype, found, err := savedPipeline.Prototype("some-prototype")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(prototype.Type()).To(Equal("some-type"))
-			Expect(prototype.Source()).To(Equal(atc.Source{
-				"source-config": "some-value",
-			}))
-		})
-
-		It("updates prototype config from the pipeline in the database", func() {
-			pipeline, _, err := team.SavePipeline(pipelineRef, config, 0, false)
-			Expect(err).ToNot(HaveOccurred())
-
-			config.Prototypes[0].Source = atc.Source{
-				"source-other-config": "some-other-value",
-			}
-
-			savedPipeline, _, err := team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
-			Expect(err).ToNot(HaveOccurred())
-
-			prototype, found, err := savedPipeline.Prototype("some-prototype")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(prototype.Type()).To(Equal("some-type"))
-			Expect(prototype.Source()).To(Equal(atc.Source{
-				"source-other-config": "some-other-value",
-			}))
-		})
-
-		It("marks prototype as inactive if it is no longer in config", func() {
-			pipeline, _, err := team.SavePipeline(pipelineRef, config, 0, false)
-			Expect(err).ToNot(HaveOccurred())
-
-			config.Prototypes = atc.Prototypes{}
-
-			savedPipeline, _, err := team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, found, err := savedPipeline.Prototype("some-resource-type")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
 		})

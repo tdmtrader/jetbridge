@@ -57,16 +57,6 @@ var _ = Describe("ValidateConfig", func() {
 				},
 			},
 
-			Prototypes: atc.Prototypes{
-				{
-					Name: "some-prototype",
-					Type: "some-type",
-					Source: atc.Source{
-						"source-config": "some-value",
-					},
-				},
-			},
-
 			Jobs: atc.JobConfigs{
 				{
 					Name:   "some-job",
@@ -175,23 +165,6 @@ var _ = Describe("ValidateConfig", func() {
 			It("returns a warning", func() {
 				Expect(warnings).To(HaveLen(1))
 				Expect(warnings[0].Message).To(ContainSubstring("'_some-resource-type' is not a valid identifier"))
-			})
-		})
-
-		Context("when a prototype has an invalid identifier", func() {
-			BeforeEach(func() {
-				config.Prototypes = append(config.Prototypes, atc.Prototype{
-					Name: "_some-prototype",
-					Type: "some-type",
-					Source: atc.Source{
-						"source-config": "some-value",
-					},
-				})
-			})
-
-			It("returns a warning", func() {
-				Expect(warnings).To(HaveLen(1))
-				Expect(warnings[0].Message).To(ContainSubstring("'_some-prototype' is not a valid identifier"))
 			})
 		})
 
@@ -910,80 +883,6 @@ var _ = Describe("ValidateConfig", func() {
 			})
 		})
 
-	})
-
-	Describe("invalid prototypes", func() {
-		Context("when a prototype has no name", func() {
-			BeforeEach(func() {
-				config.Prototypes = append(config.Prototypes, atc.Prototype{
-					Name: "",
-				})
-			})
-
-			It("returns an error", func() {
-				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("invalid prototypes:"))
-				Expect(errorMessages[0]).To(ContainSubstring("prototypes[1] has no name"))
-			})
-		})
-
-		Context("when a prototype has no type", func() {
-			BeforeEach(func() {
-				config.Prototypes = append(config.Prototypes, atc.Prototype{
-					Name: "bogus-prototype",
-					Type: "",
-				})
-			})
-
-			It("returns an error", func() {
-				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("invalid prototypes:"))
-				Expect(errorMessages[0]).To(ContainSubstring("prototypes.bogus-prototype has no type"))
-			})
-		})
-
-		Context("when a prototype has no name or type", func() {
-			BeforeEach(func() {
-				config.Prototypes = append(config.Prototypes, atc.Prototype{
-					Name: "",
-					Type: "",
-				})
-			})
-
-			It("returns an error describing both errors", func() {
-				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("invalid prototypes:"))
-				Expect(errorMessages[0]).To(ContainSubstring("prototypes[1] has no name"))
-				Expect(errorMessages[0]).To(ContainSubstring("prototypes[1] has no type"))
-			})
-		})
-
-		Context("when two prototypes have the same name", func() {
-			BeforeEach(func() {
-				config.Prototypes = append(config.Prototypes, config.Prototypes...)
-			})
-
-			It("returns an error", func() {
-				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("invalid prototypes:"))
-				Expect(errorMessages[0]).To(ContainSubstring("prototypes[0] and prototypes[1] have the same name ('some-prototype')"))
-			})
-		})
-
-		Context("when a prototype has the same name as a resource type", func() {
-			BeforeEach(func() {
-				config.Prototypes = append(config.Prototypes, atc.Prototype{
-					Name: config.ResourceTypes[0].Name,
-					Type: "some-type",
-				})
-			})
-
-			It("returns an error", func() {
-				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("invalid prototypes:"))
-				Expect(errorMessages[0]).To(ContainSubstring("resource_types[0] and prototypes[1] have the same name ('some-resource-type')"))
-			})
-		})
 	})
 
 	Describe("validating a job", func() {

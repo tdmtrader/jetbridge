@@ -52,6 +52,14 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 		return err
 	}
 
+	// The server refuses a removed section by name (atc.RefuseRemovedSections,
+	// called from UnmarshalConfig); plain yaml.Unmarshal would drop the key and
+	// print a diff -- or a clean --dry-run -- for a file SaveConfig answers
+	// with a 400.
+	if err := atc.RefuseRemovedSections(evaluatedTemplate); err != nil {
+		return err
+	}
+
 	existingConfig, existingConfigVersion, _, err := atcConfig.Team.PipelineConfig(atcConfig.PipelineRef)
 	if err != nil {
 		return err

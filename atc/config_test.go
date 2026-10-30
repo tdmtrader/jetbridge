@@ -63,6 +63,18 @@ jobs:
   plan: []
 `), &config)).To(MatchError(ContainSubstring(`unknown field "typo"`)))
 		})
+
+		It("refuses a prototypes section rather than dropping it with the other unknown top-level keys", func() {
+			var config Config
+			Expect(UnmarshalConfig([]byte(`
+prototypes:
+- name: some-prototype
+  type: registry-image
+jobs:
+- name: entry
+  plan: []
+`), &config)).To(MatchError(ContainSubstring("prototypes: is not a pipeline section")))
+		})
 	})
 
 	Describe("ResourceTypes.ImageForType", func() {

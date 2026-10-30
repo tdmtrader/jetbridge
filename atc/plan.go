@@ -290,10 +290,9 @@ type CheckPlan struct {
 	// version of the config.
 	FromVersion Version `json:"from_version,omitempty"`
 
-	// A pipeline resource, resource type, or prototype to assign the config to.
+	// A pipeline resource or resource type to assign the config to.
 	Resource     string `json:"resource,omitempty"`
 	ResourceType string `json:"resource_type,omitempty"`
-	Prototype    string `json:"prototype,omitempty"`
 
 	// The interval on which to check - if it has not elapsed since the config
 	// was last checked, and the build has not been manually triggered, the check

@@ -37,15 +37,6 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 					},
 				},
 			},
-			Prototypes: atc.Prototypes{
-				{
-					Name: "some-prototype",
-					Type: "some-base-resource-type",
-					Source: atc.Source{
-						"some-prototype": "source",
-					},
-				},
-			},
 		}
 
 		scenario = dbtest.Setup(builder.WithPipeline(pipelineConfig))
@@ -214,70 +205,6 @@ var _ = Describe("ResourceConfigCheckSessionLifecycle", func() {
 				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
 
 				rccsID := findOrCreateSession(scenario.ResourceType("some-type").ResourceConfigID())
-				Expect(rccsID).ToNot(Equal(oldRccsID))
-			})
-		})
-
-		Context("for prototypes", func() {
-			var oldRccsID int
-
-			BeforeEach(func() {
-				By("creating the session")
-				scenario.Run(builder.WithPrototypeVersions("some-prototype"))
-				oldRccsID = findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
-			})
-
-			It("keeps check sessions for active prototypes", func() {
-				By("cleaning up inactive sessions")
-				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
-
-				By("find-or-creating the session again")
-				rccsID := findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
-
-				By("finding the same session as before")
-				Expect(rccsID).To(Equal(oldRccsID))
-			})
-
-			It("removes check sessions for inactive prototypes", func() {
-				prototypes := pipelineConfig.Prototypes
-
-				By("removing the default prototype from the pipeline config")
-				pipelineConfig.Prototypes = atc.Prototypes{}
-				scenario.Run(builder.WithPipeline(pipelineConfig))
-
-				By("cleaning up inactive sessions")
-				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
-
-				By("find-or-creating the session again")
-				pipelineConfig.Prototypes = prototypes
-				scenario.Run(builder.WithPipeline(pipelineConfig))
-				rccsID := findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
-
-				By("having created a new session, as the old one was removed")
-				Expect(rccsID).ToNot(Equal(oldRccsID))
-			})
-
-			It("removes check sessions for resource types in paused pipelines", func() {
-				By("pausing the pipeline")
-				Expect(scenario.Pipeline.Pause("")).To(Succeed())
-
-				By("cleaning up inactive sessions")
-				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
-
-				By("find-or-creating the session again")
-				rccsID := findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
-
-				By("having created a new session, as the old one was removed")
-				Expect(rccsID).ToNot(Equal(oldRccsID))
-			})
-
-			It("removes check sessions for prototypes in template pipelines", func() {
-				_, err := dbConn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, scenario.Pipeline.ID())
-				Expect(err).NotTo(HaveOccurred())
-
-				Expect(lifecycle.CleanInactiveResourceConfigCheckSessions()).To(Succeed())
-
-				rccsID := findOrCreateSession(scenario.Prototype("some-prototype").ResourceConfigID())
 				Expect(rccsID).ToNot(Equal(oldRccsID))
 			})
 		})

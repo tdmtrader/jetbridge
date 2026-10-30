@@ -68,7 +68,6 @@ type Team interface {
 	ListDeprecatedScopes(pipelineRef atc.PipelineRef, resourceName string) ([]atc.DeprecatedScope, error)
 	CheckResource(pipelineRef atc.PipelineRef, resourceName string, version atc.Version, shallow bool) (atc.Build, bool, error)
 	CheckResourceType(pipelineRef atc.PipelineRef, resourceTypeName string, version atc.Version, shallow bool) (atc.Build, bool, error)
-	CheckPrototype(pipelineRef atc.PipelineRef, prototypeName string, version atc.Version, shallow bool) (atc.Build, bool, error)
 	DisableResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int) (bool, error)
 	EnableResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int) (bool, error)
 	ClearResourceCache(pipelineRef atc.PipelineRef, ResourceName string, version atc.Version) (int64, error)

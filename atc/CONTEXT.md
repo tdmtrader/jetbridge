@@ -28,8 +28,8 @@ _Avoid_: run (reserved for a pipeline run), execution
 
 **Step**:
 One element of a build plan (get, put, task, set_pipeline, load_var,
-`run_pipeline`, which admits a pipeline run on the build's own team, the
-prototype `run` step, and the composition steps around them).
+`run_pipeline`, which admits a pipeline run on the build's own team, and the
+composition steps around them).
 _Avoid_: node
 
 **Resource**:

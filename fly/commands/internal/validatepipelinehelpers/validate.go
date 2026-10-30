@@ -19,6 +19,13 @@ func Validate(yamlTemplate templatehelpers.YamlTemplateWithParams, strict bool, 
 		return err
 	}
 
+	// The server refuses a removed section by name (atc.RefuseRemovedSections,
+	// called from UnmarshalConfig); plain yaml.Unmarshal would drop the key and
+	// print "looks good" for a file the API answers with a 400.
+	if err := atc.RefuseRemovedSections(evaluatedTemplate); err != nil {
+		return err
+	}
+
 	var unmarshalledTemplate atc.Config
 	if strict {
 		// additionally catches unknown keys

@@ -299,15 +299,11 @@ func (f *pipelineRunFactory) effectiveConfig(tx Tx, template *pipeline, override
 	if err != nil {
 		return atc.Config{}, err
 	}
-	prototypes, err := f.prototypesInTx(tx, template.ID())
-	if err != nil {
-		return atc.Config{}, err
-	}
 	jobConfigs, err := jobs.Configs()
 	if err != nil {
 		return atc.Config{}, err
 	}
-	return atc.Config{Groups: template.Groups(), VarSources: template.VarSources(), Resources: Resources(resources).Configs(), ResourceTypes: resourceTypes.Configs(), Prototypes: prototypes.Configs(), Jobs: jobConfigs, Display: template.Display(), Template: template.Template(), Params: template.Params(), RunRetention: template.RunRetention(), CacheScope: template.CacheScope()}, nil
+	return atc.Config{Groups: template.Groups(), VarSources: template.VarSources(), Resources: Resources(resources).Configs(), ResourceTypes: resourceTypes.Configs(), Jobs: jobConfigs, Display: template.Display(), Template: template.Template(), Params: template.Params(), RunRetention: template.RunRetention(), CacheScope: template.CacheScope()}, nil
 }
 
 func (f *pipelineRunFactory) resourceTypesInTx(tx Tx, pipelineID int) (ResourceTypes, error) {
@@ -320,23 +316,6 @@ func (f *pipelineRunFactory) resourceTypesInTx(tx Tx, pipelineID int) (ResourceT
 	for rows.Next() {
 		value := newEmptyResourceType(f.conn, f.lockFactory)
 		if err := scanResourceType(value, rows); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
-}
-
-func (f *pipelineRunFactory) prototypesInTx(tx Tx, pipelineID int) (Prototypes, error) {
-	rows, err := prototypesQuery.Where(sq.Eq{"pt.pipeline_id": pipelineID}).OrderBy("pt.name").RunWith(tx).Query()
-	if err != nil {
-		return nil, err
-	}
-	defer Close(rows)
-	var values Prototypes
-	for rows.Next() {
-		value := newEmptyPrototype(f.conn, f.lockFactory)
-		if err := scanPrototype(value, rows); err != nil {
 			return nil, err
 		}
 		values = append(values, value)

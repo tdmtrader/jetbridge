@@ -25,7 +25,6 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 			}},
 			Resources:     atc.ResourceConfigs{{Name: "scan-resource", Type: "some-base-resource-type", Source: atc.Source{"some": "source"}}},
 			ResourceTypes: atc.ResourceTypes{{Name: "scan-type", Type: "some-base-resource-type", Source: atc.Source{"some": "source"}}},
-			Prototypes:    atc.Prototypes{{Name: "scan-prototype", Type: "some-base-resource-type", Source: atc.Source{"some": "source"}}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -46,7 +45,7 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 		Expect(runNumber).To(Equal(creation.Run.Number()))
 		Expect(payload.TemplatePipelineID()).To(Equal(template.ID()))
 
-		// resourcesQuery / resourceTypesQuery / prototypesQuery / jobsQuery must
+		// resourcesQuery / resourceTypesQuery / jobsQuery must
 		// still scan cleanly now that the run presentation columns are gone.
 		resources, err := payload.Resources()
 		Expect(err).NotTo(HaveOccurred())
@@ -55,10 +54,6 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 		resourceTypes, err := payload.ResourceTypes()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resourceTypes).To(HaveLen(1))
-
-		prototypes, err := payload.Prototypes()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(prototypes).To(HaveLen(1))
 
 		jobs, err := payload.Jobs()
 		Expect(err).NotTo(HaveOccurred())

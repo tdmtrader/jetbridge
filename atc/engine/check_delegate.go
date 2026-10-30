@@ -113,7 +113,7 @@ func (d *checkDelegate) WaitToRun(ctx context.Context, scope db.ResourceConfigSc
 		if d.plan.IsResourceCheck() {
 			// rate limit periodic resource checks so worker load (plus load on
 			// external services) isn't too spiky. note that we don't rate limit
-			// resource type or prototype checks, because they are created every time a
+			// resource type checks, because they are created every time a
 			// resource is used (rather than periodically).
 			err := d.limiter.Wait(ctx)
 			if err != nil {
@@ -231,18 +231,6 @@ func (d *checkDelegate) PointToCheckedConfig(scope db.ResourceConfigScope) error
 		err = pipeline.SetResourceConfigScopeForResourceType(d.plan.ResourceType, scope)
 		if err != nil {
 			return fmt.Errorf("set resource type scope: %w", err)
-		}
-	}
-
-	if d.plan.Prototype != "" {
-		pipeline, err := d.pipeline()
-		if err != nil {
-			return fmt.Errorf("get pipeline: %w", err)
-		}
-
-		err = pipeline.SetResourceConfigScopeForPrototype(d.plan.Prototype, scope)
-		if err != nil {
-			return fmt.Errorf("set prototype scope: %w", err)
 		}
 	}
 

@@ -2207,8 +2207,7 @@ func (b *build) eventsTable() string {
 		return "check_build_events"
 	}
 	// A run payload has no pipeline_build_events partition of its own, so any
-	// build living in one — including a prototype check, which stamps no run id
-	// on the build row — belongs in the team partition.
+	// build living in one belongs in the team partition.
 	if b.pipelineRunID != 0 || b.payloadPipelineRunID != 0 {
 		return fmt.Sprintf("team_build_events_%d", b.teamID)
 	}
@@ -2247,20 +2246,12 @@ type startedBuildArgs struct {
 	ManuallyTriggered bool
 	SpanContext       SpanContext
 	ExtraValues       map[string]any
-	// NotRunOwned marks a check no Run owns even inside a payload: a
-	// prototype's, which names no resource or resource type for the Run's
-	// check admission to hold it against, and whose events therefore live in
-	// the team partition unstamped.
-	NotRunOwned bool
 }
 
 func createStartedBuild(tx Tx, build *build, args startedBuildArgs) error {
-	var runID int
-	if !args.NotRunOwned {
-		var err error
-		if runID, err = admitRunCheck(tx, args.PipelineID); err != nil {
-			return err
-		}
+	runID, err := admitRunCheck(tx, args.PipelineID)
+	if err != nil {
+		return err
 	}
 
 	spanContext, err := json.Marshal(args.SpanContext)

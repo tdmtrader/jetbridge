@@ -305,12 +305,6 @@ func Validate(c atc.Config) ([]atc.ConfigWarning, []string) {
 	}
 	warnings = append(warnings, resourceTypesWarnings...)
 
-	prototypesWarnings, prototypesErr := validatePrototypes(c, seenTypes)
-	if prototypesErr != nil {
-		errorMessages = append(errorMessages, formatErr("prototypes", prototypesErr))
-	}
-	warnings = append(warnings, prototypesWarnings...)
-
 	varSourcesWarnings, varSourcesErr := validateVarSources(c)
 	if varSourcesErr != nil {
 		errorMessages = append(errorMessages, formatErr("variable sources", varSourcesErr))
@@ -548,43 +542,6 @@ func validateResourceTypeCycles(c atc.Config) []string {
 	}
 
 	return errorMessages
-}
-
-func validatePrototypes(c atc.Config, seenTypes map[string]location) ([]atc.ConfigWarning, error) {
-	var warnings []atc.ConfigWarning
-	var errorMessages []string
-
-	for i, prototype := range c.Prototypes {
-		location := location{section: "prototypes", index: i}
-		identifier := location.Identifier(prototype.Name)
-
-		warning, err := atc.ValidateIdentifier(prototype.Name, identifier)
-		if err != nil {
-			errorMessages = append(errorMessages, err.Error())
-		}
-		if warning != nil {
-			warnings = append(warnings, *warning)
-		}
-
-		if other, exists := seenTypes[prototype.Name]; exists {
-			errorMessages = append(errorMessages,
-				fmt.Sprintf(
-					"%s and %s have the same name ('%s')",
-					other, location, prototype.Name))
-		} else if prototype.Name != "" {
-			seenTypes[prototype.Name] = location
-		}
-
-		if prototype.Name == "" {
-			errorMessages = append(errorMessages, identifier+" has no name")
-		}
-
-		if prototype.Type == "" {
-			errorMessages = append(errorMessages, identifier+" has no type")
-		}
-	}
-
-	return warnings, compositeErr(errorMessages)
 }
 
 func validateResourcesUnused(c atc.Config) []string {

@@ -245,15 +245,6 @@ func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod time.Durati
 		return err
 	}
 
-	usedByPrototypesIds, _, err := sq.
-		Select("resource_config_id").
-		From("prototypes").
-		Where("resource_config_id IS NOT NULL").
-		ToSql()
-	if err != nil {
-		return err
-	}
-
 	// A deprecated scope keeps its old config alive: once the resource is
 	// repointed nothing else references it, and deleting the config would
 	// cascade the scope and its versions away long before the deprecated-scope
@@ -273,7 +264,6 @@ func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod time.Durati
 			usedByResourceCachesIds + " UNION " +
 			usedByResourcesIds + " UNION " +
 			usedByResourceTypesIds + " UNION " +
-			usedByPrototypesIds + " UNION " +
 			usedByDeprecatedScopesIds + ")").
 		Where(sq.Expr(fmt.Sprintf("now() - last_referenced > '%d seconds'::interval", int(gracePeriod.Seconds())))).
 		PlaceholderFormat(sq.Dollar).

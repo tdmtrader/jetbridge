@@ -101,7 +101,6 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.CreateBuild,
 		atc.CheckResource,
 		atc.CheckResourceType,
-		atc.CheckPrototype,
 		atc.CreateJobBuild,
 		atc.RerunJobBuild,
 		atc.CreatePipelineBuild,

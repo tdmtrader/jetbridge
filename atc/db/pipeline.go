@@ -34,7 +34,6 @@ var pipelineObjectTables = []string{
 	"jobs",
 	"resources",
 	"resource_types",
-	"prototypes",
 }
 
 type Pipeline interface {
@@ -88,19 +87,11 @@ type Pipeline interface {
 	ResourceByID(id int) (Resource, bool, error)
 	Resources() (Resources, error)
 
-	// XXX(prototypes): with resource prototypes, we probably need a method to
-	// get all the prototypes AND resource types, since a resource's parent
-	// could be either.
-
 	ResourceTypes() (ResourceTypes, error)
 	ResourceType(name string) (ResourceType, bool, error)
 
-	Prototypes() (Prototypes, error)
-	Prototype(name string) (Prototype, bool, error)
-
 	SetResourceConfigScopeForResource(name string, scope ResourceConfigScope) error
 	SetResourceConfigScopeForResourceType(name string, scope ResourceConfigScope) error
-	SetResourceConfigScopeForPrototype(name string, scope ResourceConfigScope) error
 
 	Job(name string) (Job, bool, error)
 	Jobs() (Jobs, error)
@@ -283,11 +274,6 @@ func (p *pipeline) Config() (atc.Config, error) {
 		return atc.Config{}, fmt.Errorf("failed to get resources-types: %w", err)
 	}
 
-	prototypes, err := p.Prototypes()
-	if err != nil {
-		return atc.Config{}, fmt.Errorf("failed to get prototypes: %w", err)
-	}
-
 	jobConfigs, err := jobs.Configs()
 	if err != nil {
 		return atc.Config{}, fmt.Errorf("failed to get job configs: %w", err)
@@ -298,7 +284,6 @@ func (p *pipeline) Config() (atc.Config, error) {
 		VarSources:    p.VarSources(),
 		Resources:     resources.Configs(),
 		ResourceTypes: resourceTypes.Configs(),
-		Prototypes:    prototypes.Configs(),
 		Jobs:          jobConfigs,
 		Display:       p.Display(),
 		Template:      p.Template(),
@@ -589,58 +574,6 @@ func (p *pipeline) resourceType(where map[string]any) (ResourceType, bool, error
 	}
 
 	return resourceType, true, nil
-}
-
-func (p *pipeline) Prototypes() (Prototypes, error) {
-	rows, err := prototypesQuery.
-		Where(sq.Eq{"pt.pipeline_id": p.id}).
-		OrderBy("pt.name").
-		RunWith(p.conn).
-		Query()
-	if err != nil {
-		return nil, err
-	}
-	defer Close(rows)
-
-	prototypes := Prototypes{}
-
-	for rows.Next() {
-		prototype := newEmptyPrototype(p.conn, p.lockFactory)
-		err := scanPrototype(prototype, rows)
-		if err != nil {
-			return nil, err
-		}
-
-		prototypes = append(prototypes, prototype)
-	}
-
-	return prototypes, nil
-}
-
-func (p *pipeline) Prototype(name string) (Prototype, bool, error) {
-	return p.prototype(sq.Eq{
-		"pt.pipeline_id": p.id,
-		"pt.name":        name,
-	})
-}
-
-func (p *pipeline) prototype(where map[string]any) (Prototype, bool, error) {
-	row := prototypesQuery.
-		Where(where).
-		RunWith(p.conn).
-		QueryRow()
-
-	prototype := newEmptyPrototype(p.conn, p.lockFactory)
-	err := scanPrototype(prototype, row)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, false, nil
-		}
-
-		return nil, false, err
-	}
-
-	return prototype, true, nil
 }
 
 func (p *pipeline) Job(name string) (Job, bool, error) {
@@ -1180,13 +1113,6 @@ func (p *pipeline) SetResourceConfigScopeForResourceType(name string, scope Reso
 		"name":        name,
 	})
 	return err
-}
-
-func (p *pipeline) SetResourceConfigScopeForPrototype(name string, scope ResourceConfigScope) error {
-	return setResourceConfigScopeForPrototype(p.conn, scope, sq.Eq{
-		"pipeline_id": p.id,
-		"name":        name,
-	})
 }
 
 // The SELECT query orders the jobs for updating to prevent deadlocking.

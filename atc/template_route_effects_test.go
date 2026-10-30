@@ -42,7 +42,6 @@ var templateRouteEffects = map[string][]string{
 		atc.GetPipelineRunResult,
 	},
 	"refuses-work": {
-		atc.CheckPrototype,
 		atc.CheckResource,
 		atc.CheckResourceType,
 		atc.CheckResourceWebHook,

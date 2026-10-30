@@ -148,7 +148,7 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 	// XXX(check-refactor): we should remove scopes as soon as it's safe to do
 	// so, i.e. global resources is on by default. i think this can be done when
 	// time resource becomes time var source (resolving thundering herd problem)
-	// and IAM is handled via var source prototypes (resolving unintentionally
+	// and IAM is handled by var sources (resolving unintentionally
 	// shared history problem)
 	scope, err := delegate.FindOrCreateScope(resourceConfig)
 	if err != nil {

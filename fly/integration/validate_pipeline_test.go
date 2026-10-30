@@ -28,6 +28,18 @@ var _ = Describe("validate-pipeline", func() {
 		Entry("Conjur", "conjur"),
 	)
 
+	It("refuses a removed prototypes section with the server's sentence", func() {
+		// This fails if fly's plain yaml.Unmarshal drops the key and prints
+		// "looks good" for a file the API refuses with a 400.
+		config := filepath.Join(GinkgoT().TempDir(), "pipeline.yml")
+		Expect(os.WriteFile(config, []byte("prototypes:\n- name: some-prototype\n  type: registry-image\njobs:\n- name: entry\n  plan: []\n"), 0600)).To(Succeed())
+		sess, err := gexec.Start(exec.Command(flyPath, "validate-pipeline", "-c", config), GinkgoWriter, GinkgoWriter)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(sess).Should(gexec.Exit(1))
+		Expect(sess.Err).To(gbytes.Say("prototypes: is not a pipeline section; prototypes and the run step were removed"))
+		Expect(sess.Out).NotTo(gbytes.Say("looks good"))
+	})
+
 	It("returns valid on valid configuration", func() {
 		flyCmd := exec.Command(
 			flyPath,
