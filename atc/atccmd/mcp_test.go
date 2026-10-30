@@ -19,7 +19,7 @@ func TestMCPDoesNotConsumeOrClearWebLogin(t *testing.T) {
 		apiAuthorization = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusUnauthorized)
 	})
-	handler := cmd.constructHTTPHandler(lager.NewLogger("mcp-mount-test"), other, other, other, other, other, token.NewMiddleware(false))
+	handler := cmd.constructHTTPHandler(lager.NewLogger("mcp-mount-test"), other, other, other, other, token.NewMiddleware(false))
 	for _, path := range []string{"/api/v1/mcp", "/mcp/oauth/grants", "/.well-known/oauth-protected-resource/api/v1/mcp"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.AddCookie(&http.Cookie{Name: "skymarshal_auth", Value: "browser-login"})

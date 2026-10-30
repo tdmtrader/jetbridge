@@ -67,7 +67,6 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/dexserver"
-	"github.com/concourse/concourse/skymarshal/legacyserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 	"github.com/concourse/concourse/skymarshal/skyserver"
 	"github.com/concourse/concourse/skymarshal/storage"
@@ -1054,14 +1053,6 @@ func (cmd *RunCommand) constructAPIMembers(
 		return nil, err
 	}
 
-	legacyHandler, err := cmd.constructLegacyHandler(
-		logger,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
 	if err := cmd.constructMCPHandler(logger, dbConn, httpClient, apiHandler, accessFactory); err != nil {
 		return nil, err
 	}
@@ -1096,11 +1087,6 @@ func (cmd *RunCommand) constructAPIMembers(
 				externalHost:  cmd.ExternalURL.URL.Host,
 				baseHandler:   skyHandler,
 			},
-			tlsRedirectHandler{
-				matchHostname: cmd.ExternalURL.URL.Hostname(),
-				externalHost:  cmd.ExternalURL.URL.Host,
-				baseHandler:   legacyHandler,
-			},
 			middleware,
 		)
 
@@ -1110,7 +1096,6 @@ func (cmd *RunCommand) constructAPIMembers(
 			apiHandler,
 			authHandler,
 			skyHandler,
-			legacyHandler,
 			middleware,
 		)
 	} else {
@@ -1120,7 +1105,6 @@ func (cmd *RunCommand) constructAPIMembers(
 			apiHandler,
 			authHandler,
 			skyHandler,
-			legacyHandler,
 			middleware,
 		)
 	}
@@ -2478,7 +2462,6 @@ func (cmd *RunCommand) constructHTTPHandler(
 	apiHandler http.Handler,
 	authHandler http.Handler,
 	skyHandler http.Handler,
-	legacyHandler http.Handler,
 	middleware token.Middleware,
 ) http.Handler {
 
@@ -2492,9 +2475,6 @@ func (cmd *RunCommand) constructHTTPHandler(
 	webMux.Handle("/api/v2/", csrfHandler)
 	webMux.Handle("/sky/issuer/", authHandler)
 	webMux.Handle("/sky/", skyHandler)
-	webMux.Handle("/auth/", legacyHandler)
-	webMux.Handle("/login", legacyHandler)
-	webMux.Handle("/logout", legacyHandler)
 	webMux.Handle("/.well-known/", apiHandler)
 	webMux.Handle("/", webHandler)
 
@@ -2520,14 +2500,6 @@ func (cmd *RunCommand) constructHTTPHandler(
 			Handler: routes,
 		},
 	}
-}
-
-func (cmd *RunCommand) constructLegacyHandler(
-	logger lager.Logger,
-) (http.Handler, error) {
-	return legacyserver.NewLegacyServer(&legacyserver.LegacyConfig{
-		Logger: logger.Session("legacy"),
-	})
 }
 
 func (cmd *RunCommand) constructAuthHandler(
