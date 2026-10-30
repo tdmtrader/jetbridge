@@ -1,60 +1,33 @@
 package jetbridge
 
 import (
-	"bytes"
+	"fmt"
 	"io"
-	"sync"
+
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/runtime"
 )
 
-// Serialize main command writes with all sidecars falling back to build stdout.
-type serializedLogWriter struct {
-	mu     sync.Mutex
-	writer io.Writer
-}
-
-func (w *serializedLogWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.writer.Write(p)
-}
-
-// Preserve line boundaries across network reads without buffering an unbounded
-// line or holding an unterminated message until the sidecar exits.
-type prefixedLogWriter struct {
-	writer    io.Writer
-	prefix    string
-	lineStart bool
-}
-
-func (w *prefixedLogWriter) Write(p []byte) (int, error) {
-	consumed := 0
-	for len(p) > 0 {
-		end := bytes.IndexByte(p, '\n')
-		if end < 0 {
-			end = len(p)
-		} else {
-			end++
-		}
-		part := p[:end]
-		prefixLen := 0
-		if w.lineStart {
-			prefixLen = len(w.prefix)
-			part = append([]byte(w.prefix), part...)
-		}
-		n, err := w.writer.Write(part)
-		if n < len(part) && err == nil {
-			err = io.ErrShortWrite
-		}
-		used := max(0, n-prefixLen)
-		consumed += used
-		if err != nil {
-			return consumed, err
-		}
-		w.lineStart = p[end-1] == '\n'
-		p = p[end:]
+// sidecarLogWriters pairs every declared sidecar with the writer the engine
+// handed the step for it, in ProcessIO.SidecarWriters.
+//
+// The engine makes one per declared sidecar (atc/exec TaskStep.buildProcessIO),
+// and each emits Log events under the sidecar's own plan ID, which is how fly
+// watch and the web tell whose lines they are. There is no second place for a
+// sidecar's output to go: the "[name] "-prefixed fallback into the step's
+// stdout was a second mechanism for the one job, and a step that declares a
+// sidecar it has no writer for is a caller bug this names rather than hides.
+func sidecarLogWriters(sidecars []atc.SidecarConfig, pio runtime.ProcessIO) (map[string]io.Writer, error) {
+	if len(sidecars) == 0 {
+		return nil, nil
 	}
-	return consumed, nil
-}
-func copyPrefixedLogs(dst io.Writer, src io.Reader, prefix string) {
-	io.Copy(&prefixedLogWriter{writer: dst, prefix: prefix, lineStart: true}, src)
+	writers := make(map[string]io.Writer, len(sidecars))
+	for _, sc := range sidecars {
+		w := pio.SidecarWriters[sc.Name]
+		if w == nil {
+			return nil, fmt.Errorf("sidecar %q has no log writer: the step declared it without one", sc.Name)
+		}
+		writers[sc.Name] = w
+	}
+	return writers, nil
 }

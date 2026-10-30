@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"github.com/concourse/concourse/atc"
+	"io"
 	"testing"
 	"time"
 
@@ -277,7 +278,8 @@ echo "$out" | grep -qE '40[13]' || { echo "unexpected API failure: $out"; exit 9
 `
 	var stdout bytes.Buffer
 	process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", script}},
-		runtime.ProcessIO{Stdout: &stdout, Stderr: &stdout})
+		runtime.ProcessIO{Stdout: &stdout, Stderr: &stdout,
+			SidecarWriters: map[string]io.Writer{"probe": io.Discard}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

@@ -120,35 +120,44 @@ var _ = Describe("Restored runtime contracts", func() {
 	})
 
 	Describe("[SC-07] Sidecar log streaming routing (direct mode)", func() {
-		DescribeTable("retains the log request on both writer paths",
-			func(handle string, sidecar atc.SidecarConfig, dedicated bool) {
-				container := createContainer(handle, runtime.ContainerSpec{
-					Dir:      "/workdir",
-					Sidecars: []atc.SidecarConfig{sidecar},
-				})
-				processIO := runtime.ProcessIO{Stdout: new(bytes.Buffer)}
-				if dedicated {
-					processIO.SidecarWriters = map[string]io.Writer{sidecar.Name: new(bytes.Buffer)}
-				}
-				process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, processIO)
-				Expect(err).ToNot(HaveOccurred())
-				waitForPod(process, handle, corev1.PodSucceeded)
+		It("[SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name", func() {
+			sidecar := atc.SidecarConfig{Name: "postgres", Image: "postgres:15"}
+			container := createContainer("sc07-dedicated-handle", runtime.ContainerSpec{
+				Dir:      "/workdir",
+				Sidecars: []atc.SidecarConfig{sidecar},
+			})
+			processIO := runtime.ProcessIO{
+				Stdout:         new(bytes.Buffer),
+				SidecarWriters: map[string]io.Writer{sidecar.Name: new(bytes.Buffer)},
+			}
+			process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, processIO)
+			Expect(err).ToNot(HaveOccurred())
+			waitForPod(process, "sc07-dedicated-handle", corev1.PodSucceeded)
 
-				// Preserve the original, weak observation: any GetLogs request.
-				// This does not prove a particular sidecar or output destination.
-				var logRequested bool
-				for _, action := range clientset.Actions() {
-					if action.GetVerb() == "get" && action.GetSubresource() == "log" {
-						logRequested = true
-						break
-					}
+			// Preserve the original, weak observation: any GetLogs request.
+			// This does not prove a particular sidecar or output destination.
+			var logRequested bool
+			for _, action := range clientset.Actions() {
+				if action.GetVerb() == "get" && action.GetSubresource() == "log" {
+					logRequested = true
+					break
 				}
-				Expect(logRequested).To(BeTrue(), "expected GetLogs on the sidecar writer path (dedicated=%v)", dedicated)
-			},
-			Entry("[SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name",
-				"sc07-dedicated-handle", atc.SidecarConfig{Name: "postgres", Image: "postgres:15"}, true),
-			Entry("[SC-07] when SidecarWriters is empty, GetLogs is still requested for the sidecar (prefix fallback path)",
-				"sc07-prefix-handle", atc.SidecarConfig{Name: "redis", Image: "redis:7"}, false),
-		)
+			}
+			Expect(logRequested).To(BeTrue(), "expected GetLogs on the sidecar writer path")
+		})
+
+		// The "[name] "-prefixed fallback into stdout is gone: the engine makes
+		// a writer per declared sidecar, so a step with a Stdout and a sidecar
+		// it has no writer for is refused by Wait, naming the sidecar.
+		It("[SC-07] when SidecarWriters lacks a declared sidecar, Wait refuses and names it", func() {
+			container := createContainer("sc07-no-writer-handle", runtime.ContainerSpec{
+				Dir:      "/workdir",
+				Sidecars: []atc.SidecarConfig{{Name: "redis", Image: "redis:7"}},
+			})
+			process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{Stdout: new(bytes.Buffer)})
+			Expect(err).ToNot(HaveOccurred())
+			_, err = process.Wait(ctx)
+			Expect(err).To(MatchError(ContainSubstring(`sidecar "redis" has no log writer`)))
+		})
 	})
 })

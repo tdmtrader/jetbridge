@@ -336,8 +336,8 @@ type ProcessIO struct {
 	Stderr io.Writer
 
 	// SidecarWriters maps sidecar container names to their dedicated log
-	// writers. When present, sidecar logs are streamed to the per-sidecar
-	// writer instead of being prefixed and merged into Stdout.
+	// writers, one per declared sidecar. Sidecar logs go nowhere else: a
+	// step with a Stdout and a declared sidecar missing here is refused.
 	SidecarWriters map[string]io.Writer
 }
 

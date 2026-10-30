@@ -22,6 +22,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -291,7 +292,8 @@ var _ = Describe("Integration", func() {
 			Args: []string{"-c", "npm test"},
 			Dir:  "/tmp/build/workdir/my-app",
 		}, runtime.ProcessIO{
-			Stdout: stdout,
+			Stdout:         stdout,
+			SidecarWriters: map[string]io.Writer{"postgres": new(bytes.Buffer)},
 		})
 		Expect(err).ToNot(HaveOccurred())
 

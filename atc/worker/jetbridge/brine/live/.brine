@@ -8,6 +8,7 @@ budgets:
   undefined: 0
   # See ../.brine: counted out of ../features/live/*.feature on 2026-09-19:
   # 134; 133 after the gzip-only stream codec cut removed the artifact-handoff
-  # "s2" Example row. Intentional removals need a record in
-  # ../features/README.md.
-  scenarios_min: 133
+  # "s2" Example row; 131 after the sidecar-logs "fallback" rows went with the
+  # prefixed-stdout fallback (both 2026-10-30). Intentional removals need a
+  # record in ../features/README.md.
+  scenarios_min: 131

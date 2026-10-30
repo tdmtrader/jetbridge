@@ -1,18 +1,16 @@
 package jetbridge
 
-// A sidecar's logs have to go somewhere a person can read them. When the
-// engine hands the step a per-sidecar event writer, they go there, unlabelled,
-// because fly watch already knows whose lines those are. When it does not --
-// every caller that predates per-sidecar writers, and every step whose
-// delegate does not supply one -- they fall back to the step's own stdout,
-// where they share a stream with the command's output and need a "[name] "
-// prefix to be attributable at all.
+// A sidecar's logs go to the per-sidecar event writer the engine hands the
+// step, unlabelled, because fly watch already knows whose lines those are.
+// There is no other place for them: a step that wants output (has a Stdout)
+// and declares a sidecar it has no writer for is refused by Wait, naming the
+// sidecar, rather than having the lines folded into the command's stdout
+// under a "[name] " prefix as the removed fallback did.
 //
-// behavioral_runtime_spec_restored_test.go's SC-07 pins that routing for the
-// direct Process path, and on the weakest possible observation: that some
-// GetLogs request happened. The exec path (execProcess.Wait, which is what
-// every task/get/put/check step actually runs) had no local test at all. This
-// one asserts the bytes and the destination, not just the request.
+// behavioral_runtime_spec_restored_test.go's SC-07 pins the same routing for
+// the direct Process path. The exec path (execProcess.Wait, which is what
+// every task/get/put/check step actually runs) is pinned here on the bytes and
+// the destination, not just the request.
 
 import (
 	"bytes"
@@ -93,13 +91,13 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-func TestExecProcessRoutesSidecarLogsToStdoutWhenThereIsNoDedicatedWriter(t *testing.T) {
+func TestExecProcessStreamsSidecarLogsToTheirDedicatedWriters(t *testing.T) {
 	const namespace = "sidecar-ns"
 	const podName = "sidecar-pod"
 	const sidecarName = "redis"
 	const mainLine = "main command output\n"
 
-	runWait := func(t *testing.T, processIO runtime.ProcessIO) (*fake.Clientset, runtime.ProcessResult) {
+	runWait := func(t *testing.T, processIO runtime.ProcessIO) (*fake.Clientset, runtime.ProcessResult, error) {
 		t.Helper()
 		clientset := fake.NewSimpleClientset(sidecarPausePod(podName, namespace, sidecarName))
 		config := NewConfig(namespace, "")
@@ -121,43 +119,23 @@ func TestExecProcessRoutesSidecarLogsToStdoutWhenThereIsNoDedicatedWriter(t *tes
 			processIO, nil)
 
 		result, err := process.Wait(context.Background())
-		if err != nil {
-			t.Fatalf("Wait() = %v, want no error", err)
-		}
-		return clientset, result
+		return clientset, result, err
 	}
-
-	t.Run("with no dedicated writer the sidecar falls back to stdout under its prefix", func(t *testing.T) {
-		stdout := &lockedBuffer{}
-		clientset, result := runWait(t, runtime.ProcessIO{Stdout: stdout, Stderr: &bytes.Buffer{}})
-
-		if result.ExitStatus != 0 {
-			t.Fatalf("ExitStatus = %d, want 0", result.ExitStatus)
-		}
-		got := stdout.String()
-		want := "[" + sidecarName + "] " + fakeSidecarLogBody
-		if !strings.Contains(got, want) {
-			t.Errorf("stdout = %q, want it to carry the sidecar's log under %q", got, want)
-		}
-		if !strings.Contains(got, mainLine) {
-			t.Errorf("stdout = %q, want it to still carry the command's own output %q", got, mainLine)
-		}
-		// The command's own output must not be labelled as the sidecar's.
-		if strings.Contains(got, "["+sidecarName+"] "+mainLine) {
-			t.Errorf("stdout = %q: the command's output was prefixed as the sidecar's", got)
-		}
-		assertSidecarLogsRequested(t, clientset, sidecarName)
-	})
 
 	t.Run("with a dedicated writer the sidecar goes there, unprefixed, and not to stdout", func(t *testing.T) {
 		stdout := &lockedBuffer{}
 		dedicated := &lockedBuffer{}
-		clientset, _ := runWait(t, runtime.ProcessIO{
+		clientset, result, err := runWait(t, runtime.ProcessIO{
 			Stdout:         stdout,
 			Stderr:         &bytes.Buffer{},
 			SidecarWriters: map[string]io.Writer{sidecarName: dedicated},
 		})
-
+		if err != nil {
+			t.Fatalf("Wait() = %v, want no error", err)
+		}
+		if result.ExitStatus != 0 {
+			t.Fatalf("ExitStatus = %d, want 0", result.ExitStatus)
+		}
 		if got := dedicated.String(); got != fakeSidecarLogBody {
 			t.Errorf("dedicated sidecar writer = %q, want %q with no prefix", got, fakeSidecarLogBody)
 		}
@@ -170,11 +148,32 @@ func TestExecProcessRoutesSidecarLogsToStdoutWhenThereIsNoDedicatedWriter(t *tes
 		assertSidecarLogsRequested(t, clientset, sidecarName)
 	})
 
-	// The fallback is a fallback, not an unconditional read: a step with no
-	// stdout and no dedicated writer has nowhere to put the lines and must not
-	// go asking for them.
-	t.Run("with neither writer the sidecar's logs are not streamed at all", func(t *testing.T) {
-		clientset, _ := runWait(t, runtime.ProcessIO{Stderr: &bytes.Buffer{}})
+	// The removed fallback would have folded the sidecar's lines into stdout
+	// here. A step that wants output and declared a sidecar it has no writer
+	// for is a caller bug, named before anything runs.
+	t.Run("with a stdout but no writer for the sidecar Wait refuses, naming it", func(t *testing.T) {
+		stdout := &lockedBuffer{}
+		clientset, _, err := runWait(t, runtime.ProcessIO{Stdout: stdout, Stderr: &bytes.Buffer{}})
+		if err == nil || !strings.Contains(err.Error(), `sidecar "`+sidecarName+`" has no log writer`) {
+			t.Fatalf("Wait() = %v, want an error naming the sidecar without a writer", err)
+		}
+		if got := stdout.String(); got != "" {
+			t.Errorf("stdout = %q, want nothing: the step did not run", got)
+		}
+		for _, action := range clientset.Actions() {
+			if action.GetVerb() == "get" && action.GetSubresource() == "log" {
+				t.Fatalf("logs were requested with nowhere to write them: %#v", action)
+			}
+		}
+	})
+
+	// A step with no stdout has asked for no output at all, and nothing is
+	// streamed for its sidecars either; it needs no writers.
+	t.Run("with no stdout the sidecar's logs are not streamed at all", func(t *testing.T) {
+		clientset, _, err := runWait(t, runtime.ProcessIO{Stderr: &bytes.Buffer{}})
+		if err != nil {
+			t.Fatalf("Wait() = %v, want no error", err)
+		}
 		for _, action := range clientset.Actions() {
 			if action.GetVerb() == "get" && action.GetSubresource() == "log" {
 				t.Fatalf("logs were requested with nowhere to write them: %#v", action)

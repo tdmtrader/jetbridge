@@ -81,13 +81,19 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		err           error
 	}
 
+	sidecarWriters, err := p.sidecarLogWriters()
+	if err != nil {
+		spanErr = err
+		return runtime.ProcessResult{}, err
+	}
+
 	// Stream Pod logs to ProcessIO.Stdout in the background. The log
 	// stream follows the container and closes automatically when it
 	// terminates, so it won't block beyond the Pod's lifetime.
 	logDone := make(chan struct{})
 	go func() {
 		defer close(logDone)
-		p.streamLogs(ctx)
+		p.streamLogs(ctx, sidecarWriters)
 	}()
 
 	waitCh := make(chan result, 1)
@@ -225,13 +231,22 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 	}
 }
 
+// sidecarLogWriters pairs each declared sidecar with the writer the engine
+// handed this step for it. See sidecarLogWriters in sidecar_logs.go for the
+// rule; a step with no Stdout streams nothing and needs none.
+func (p *Process) sidecarLogWriters() (map[string]io.Writer, error) {
+	if p.processIO.Stdout == nil || p.container == nil {
+		return nil, nil
+	}
+	return sidecarLogWriters(p.container.containerSpec.Sidecars, p.processIO)
+}
+
 // streamLogs streams the Pod's container logs. The main container logs go to
-// ProcessIO.Stdout directly. Sidecar container logs are sent to their
-// dedicated writer in ProcessIO.SidecarWriters (one per sidecar), which emits
-// Log events with the sidecar's own plan ID as origin. If no dedicated writer
-// exists, sidecar logs fall back to the legacy [name]-prefixed output on
-// Stdout. If no Stdout writer is configured, this is a no-op.
-func (p *Process) streamLogs(ctx context.Context) {
+// ProcessIO.Stdout directly. Each sidecar's logs go to its dedicated writer
+// in ProcessIO.SidecarWriters, which emits Log events with the sidecar's own
+// plan ID as origin; sidecarWriters is that map, already checked complete. If
+// no Stdout writer is configured, this is a no-op.
+func (p *Process) streamLogs(ctx context.Context, sidecarWriters map[string]io.Writer) {
 	if p.processIO.Stdout == nil {
 		return
 	}
@@ -245,23 +260,12 @@ func (p *Process) streamLogs(ctx context.Context) {
 	// streaming to finish so all output is captured" — was only true of the
 	// main container.
 	var sidecars sync.WaitGroup
-	if p.container != nil {
-		for _, sc := range p.container.containerSpec.Sidecars {
-			sidecars.Add(1)
-			if w, ok := p.processIO.SidecarWriters[sc.Name]; ok {
-				// Dedicated writer: stream directly to the per-sidecar event writer.
-				go func(name string, w io.Writer) {
-					defer sidecars.Done()
-					p.streamContainerLogsDirect(ctx, name, w)
-				}(sc.Name, w)
-			} else {
-				// Fallback: prefix sidecar output into shared stdout.
-				go func(name string) {
-					defer sidecars.Done()
-					p.streamContainerLogsPrefixed(ctx, name)
-				}(sc.Name)
-			}
-		}
+	for name, w := range sidecarWriters {
+		sidecars.Add(1)
+		go func(name string, w io.Writer) {
+			defer sidecars.Done()
+			p.streamContainerLogsDirect(ctx, name, w)
+		}(name, w)
 	}
 
 	// Stream main container logs directly (no prefix).
@@ -297,35 +301,9 @@ func waitWithGrace(wg *sync.WaitGroup, grace time.Duration) bool {
 	}
 }
 
-// streamContainerLogsPrefixed streams logs from a named container, prefixing
-// each line with [containerName]. Legacy fallback for sidecar containers when
-// no dedicated writer is available.
-func (p *Process) streamContainerLogsPrefixed(ctx context.Context, containerName string) {
-	prefix := fmt.Sprintf("[%s] ", containerName)
-	for {
-		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
-			Follow:    true,
-			Container: containerName,
-		})
-
-		stream, err := req.Stream(ctx)
-		if err == nil {
-			p.copyWithPrefix(stream, prefix)
-			stream.Close()
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(logStreamRetryDelay):
-		}
-	}
-}
-
 // streamContainerLogsDirect streams logs from a named container directly to
-// the given writer without any prefix. Used for sidecar containers with
-// dedicated per-sidecar event writers.
+// the given writer. Used for the main container and for sidecar containers
+// with their dedicated per-sidecar event writers.
 func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName string, w io.Writer) {
 	for {
 		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
@@ -356,28 +334,6 @@ func (p *Process) streamContainerLogsDirect(ctx context.Context, containerName s
 // ProcessIO.Stdout without any prefix.
 func (p *Process) streamContainerLogsMain(ctx context.Context, containerName string) {
 	p.streamContainerLogsDirect(ctx, containerName, p.processIO.Stdout)
-}
-
-// copyWithPrefix reads lines from r and writes them to stdout with a prefix.
-func (p *Process) copyWithPrefix(r io.Reader, prefix string) {
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			// Split into lines and prefix each one.
-			lines := strings.Split(string(buf[:n]), "\n")
-			for i, line := range lines {
-				if i == len(lines)-1 && line == "" {
-					// Trailing empty string from split — don't prefix.
-					continue
-				}
-				fmt.Fprintf(p.processIO.Stdout, "%s%s\n", prefix, line)
-			}
-		}
-		if err != nil {
-			return
-		}
-	}
 }
 
 // terminalWaitingReasons is the set of container waiting reasons that indicate
@@ -925,38 +881,31 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	// Inputs are already in the pod: the fetch init containers staged them
 	// before the main container started.
 
-	// Stream sidecar container logs in parallel with the exec command. A
-	// sidecar with a dedicated per-sidecar event writer streams to it, so fly
-	// watch can render it on its own; one without falls back to the step's
-	// stdout under a "[name] " prefix, the same way the direct Process path
-	// does. Main output and fallback sidecars then share a writer, which
-	// need not be concurrency-safe, so it is serialized here. The WaitGroup
+	// Stream sidecar container logs in parallel with the exec command. Each
+	// sidecar streams to its dedicated per-sidecar event writer, so fly watch
+	// renders it on its own; the engine makes one per declared sidecar, and a
+	// step that wants output (has a Stdout) but lacks one is refused here
+	// rather than given a second place for the lines to go. The WaitGroup
 	// ensures all sidecar log streams finish before we return (preventing
 	// log loss); the cancel ends any still following when we do.
-	var stdout io.Writer
-	if p.processIO.Stdout != nil {
-		stdout = &serializedLogWriter{writer: p.processIO.Stdout}
+	var stdout io.Writer = p.processIO.Stdout
+	var sidecarWriters map[string]io.Writer
+	if stdout != nil && p.container != nil {
+		sidecarWriters, retErr = sidecarLogWriters(p.container.containerSpec.Sidecars, p.processIO)
+		if retErr != nil {
+			spanErr = retErr
+			return runtime.ProcessResult{}, retErr
+		}
 	}
 	sidecarCtx, cancelSidecars := context.WithCancel(ctx)
 	defer cancelSidecars()
 	var sidecarWg sync.WaitGroup
-	if p.container != nil {
-		for _, sc := range p.container.containerSpec.Sidecars {
-			writer := p.processIO.SidecarWriters[sc.Name]
-			prefix := ""
-			if writer == nil {
-				writer = stdout
-				prefix = fmt.Sprintf("[%s] ", sc.Name)
-			}
-			if writer == nil {
-				continue
-			}
-			sidecarWg.Add(1)
-			go func(name, prefix string, writer io.Writer) {
-				defer sidecarWg.Done()
-				p.streamSidecarLogs(sidecarCtx, name, writer, prefix)
-			}(sc.Name, prefix, writer)
-		}
+	for name, writer := range sidecarWriters {
+		sidecarWg.Add(1)
+		go func(name string, writer io.Writer) {
+			defer sidecarWg.Done()
+			p.streamSidecarLogs(sidecarCtx, name, writer)
+		}(name, writer)
 	}
 
 	// Build the command: [path, arg1, arg2, ...]
@@ -1674,10 +1623,10 @@ func (p *execProcess) fetchPodNodeName(ctx context.Context) string {
 	return pod.Spec.NodeName
 }
 
-// streamSidecarLogs streams logs from a sidecar container to the given writer
-// using the K8s log API. Retries until the container is ready or the context
-// is cancelled.
-func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName string, w io.Writer, prefix string) {
+// streamSidecarLogs streams logs from a sidecar container to its dedicated
+// writer using the K8s log API. Retries until the container is ready or the
+// context is cancelled.
+func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName string, w io.Writer) {
 	for {
 		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
 			Follow:    true,
@@ -1686,11 +1635,7 @@ func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName strin
 
 		stream, err := req.Stream(ctx)
 		if err == nil {
-			if prefix == "" {
-				io.Copy(w, stream)
-			} else {
-				copyPrefixedLogs(w, stream, prefix)
-			}
+			io.Copy(w, stream)
 			stream.Close()
 			return
 		}

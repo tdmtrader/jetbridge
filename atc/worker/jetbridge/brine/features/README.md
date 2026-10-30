@@ -18,6 +18,20 @@ live case leaves; the live floor moves 134 -> 133. The `raw` and `gzip` rows
 still show the handoff with and without the codec, and the fault rows are
 unchanged.
 
+## Removed rows 2026-10-30: the sidecar-logs "fallback" routing (live tier)
+
+The runtime no longer folds a sidecar's logs into the step's stdout under a
+`[name] ` prefix when `ProcessIO.SidecarWriters` has no entry for it: the
+engine makes one writer per declared sidecar, so a step with a Stdout and a
+sidecar it has no writer for is refused by `Wait`, naming the sidecar. The
+two `fallback` rows of live/sidecar-logs.feature's outline pinned the cut
+behaviour and leave (2 expanded cases); the two `dedicated` rows stay and
+the outline's routing column goes with them, so the step reads
+"a task with sidecar output in {string} mode". The live floor moves
+133 -> 131 (134 -> 132 counted against core; the s2 row above also left). The Go side is pinned in `process_sidecar_writers_test.go` (exec
+path), `sidecar_logs_test.go` (the writer rule) and SC-07 in
+`behavioral_runtime_spec_restored_test.go` (direct path).
+
 ## Rewritten scenario 2026-10-30: the file-valued alias in daemon-containment
 
 The artifact daemon no longer serves a file at an artifact key (the "legacy

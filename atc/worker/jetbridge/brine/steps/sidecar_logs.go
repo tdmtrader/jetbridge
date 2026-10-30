@@ -21,23 +21,18 @@ import (
 
 type SidecarPlan struct {
 	Database JetbridgeDB
-	Routing  string
 	Mode     string
 }
 type SidecarLogs struct {
-	Routing, Mode, Stdout, Dedicated, Expected string
-	namespace                                  string
-	trace                                      *execObservation
+	Mode, Stdout, Dedicated, Expected string
+	namespace                         string
+	trace                             *execObservation
 }
 
 func SidecarLogDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-		brine.DefineMapUsing[brine.Empty, SidecarPlan]("a task with {string} sidecar output in {string} mode", []string{"jetbridge-db"}, func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (SidecarPlan, error) {
-			routing, ok := p.GetString(0)
-			if !ok || (routing != "dedicated" && routing != "fallback") {
-				return SidecarPlan{}, fmt.Errorf("sidecar routing must be dedicated or fallback")
-			}
-			mode, ok := p.GetString(1)
+		brine.DefineMapUsing[brine.Empty, SidecarPlan]("a task with sidecar output in {string} mode", []string{"jetbridge-db"}, func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (SidecarPlan, error) {
+			mode, ok := p.GetString(0)
 			if !ok || (mode != "exec" && mode != "direct") {
 				return SidecarPlan{}, fmt.Errorf("sidecar mode must be exec or direct")
 			}
@@ -45,9 +40,12 @@ func SidecarLogDefinitions() []brine.StepDefinition {
 			if !ok {
 				return SidecarPlan{}, fmt.Errorf("missing real database")
 			}
-			return SidecarPlan{Database: database, Routing: routing, Mode: mode}, nil
+			return SidecarPlan{Database: database, Mode: mode}, nil
 		}),
 		brine.DefineMap[SidecarPlan, SidecarLogs]("the task and its sidecar execute on Kubernetes", func(in SidecarPlan, _ brine.Params, rec *brine.Recorder) (SidecarLogs, error) { return in.run(rec) }),
+		// The sidecar's bytes, including its empty line and unterminated
+		// final line, arrive on its own writer exactly; the step's stdout
+		// carries the command's output and nothing of the sidecar's.
 		CheckThat[SidecarLogs]("every sidecar line reaches the intended build stream", func(in SidecarLogs) error {
 			if err := in.requireRuntimeLogRequest(); err != nil {
 				return err
@@ -56,21 +54,8 @@ func SidecarLogDefinitions() []brine.StepDefinition {
 				return fmt.Errorf("main output missing or duplicated: %q", in.Stdout)
 			}
 			rest := strings.Replace(in.Stdout, "main-only\n", "", 1)
-			if in.Routing == "dedicated" {
-				if in.Dedicated != in.Expected || rest != "" {
-					return fmt.Errorf("dedicated sidecar routing: own=%q main=%q, want own=%q and no sidecar bytes in main", in.Dedicated, in.Stdout, in.Expected)
-				}
-			} else {
-				// The payload includes an empty line and an unterminated final line.
-				want := "[helper] " + strings.ReplaceAll(in.Expected, "\n", "\n[helper] ")
-				// The direct compatibility formatter adds a final newline; the
-				// production exec formatter preserves the unterminated tail.
-				if in.Mode == "direct" {
-					want += "\n"
-				}
-				if rest != want || in.Dedicated != "" {
-					return fmt.Errorf("fallback sidecar routing: main=%q, want main command plus %q", in.Stdout, want)
-				}
+			if in.Dedicated != in.Expected || rest != "" {
+				return fmt.Errorf("sidecar routing: own=%q main=%q, want own=%q and no sidecar bytes in main", in.Dedicated, in.Stdout, in.Expected)
 			}
 			return nil
 		}),
@@ -129,10 +114,7 @@ func (in SidecarPlan) run(rec *brine.Recorder) (SidecarLogs, error) {
 		return SidecarLogs{}, err
 	}
 	stdout, stderr, sidecar := new(liveLogBuffer), new(liveLogBuffer), new(liveLogBuffer)
-	pio := runtime.ProcessIO{Stdout: stdout, Stderr: stderr}
-	if in.Routing == "dedicated" {
-		pio.SidecarWriters = map[string]io.Writer{"helper": sidecar}
-	}
+	pio := runtime.ProcessIO{Stdout: stdout, Stderr: stderr, SidecarWriters: map[string]io.Writer{"helper": sidecar}}
 	process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "printf 'main-only\n'"}}, pio)
 	if err != nil {
 		return SidecarLogs{}, err
@@ -149,12 +131,12 @@ func (in SidecarPlan) run(rec *brine.Recorder) (SidecarLogs, error) {
 	if err != nil {
 		return SidecarLogs{}, err
 	}
-	fmt.Printf("sidecar source mode=%s routing=%s pod=%s uid=%s node=%s\n", in.Mode, in.Routing, pod.Name, pod.UID, pod.Spec.NodeName)
+	fmt.Printf("sidecar source mode=%s pod=%s uid=%s node=%s\n", in.Mode, pod.Name, pod.UID, pod.Spec.NodeName)
 	result, err := process.Wait(ctx)
 	if err != nil || result.ExitStatus != 0 || stderr.String() != "" {
 		return SidecarLogs{}, fmt.Errorf("real main task failed: exit=%d error=%v stderr=%q", result.ExitStatus, err, stderr.String())
 	}
-	return SidecarLogs{Routing: in.Routing, Mode: in.Mode, Stdout: stdout.String(), Dedicated: sidecar.String(), Expected: expected, namespace: cluster.Namespace, trace: trace}, nil
+	return SidecarLogs{Mode: in.Mode, Stdout: stdout.String(), Dedicated: sidecar.String(), Expected: expected, namespace: cluster.Namespace, trace: trace}, nil
 }
 
 func observeSidecarSource(ctx context.Context, cluster liveKubernetes, handle, expected string, direct bool) (*corev1.Pod, error) {
