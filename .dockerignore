@@ -1,6 +1,5 @@
 .git
 .dockerignore
-Dockerfile
 node_modules
 web/wats/node_modules
 web/elm/elm-stuff
