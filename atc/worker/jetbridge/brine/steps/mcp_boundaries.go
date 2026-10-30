@@ -7,41 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	jetbridgemcp "github.com/concourse/concourse/atc/mcp"
-	"github.com/concourse/concourse/atc/policy"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-// The decision is the fixture boundary; production policy input construction,
-// identity, filtering and enforcement run through the real API wrappers.
-type mcpDenyPolicy struct {
-	mu     sync.Mutex
-	inputs []policy.PolicyCheckInput
-}
-
-func (*mcpDenyPolicy) ShouldCheckHttpMethod(string) bool    { return false }
-func (*mcpDenyPolicy) ShouldCheckAction(action string) bool { return action == atc.GetPipeline }
-func (*mcpDenyPolicy) ShouldSkipAction(string) bool         { return false }
-func (p *mcpDenyPolicy) Check(input policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.inputs = append(p.inputs, input)
-	return mcpBlockedPolicy{}, nil
-}
-
-type mcpBlockedPolicy struct{}
-
-func (mcpBlockedPolicy) Allowed() bool     { return false }
-func (mcpBlockedPolicy) ShouldBlock() bool { return true }
-func (mcpBlockedPolicy) Messages() []string {
-	return []string{"pipeline reads denied by acceptance policy"}
-}
 
 func (s *MCPScenario) apiRequest(team string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, s.Fixture.URL+"/api/v1/teams/"+team+"/pipelines/private", nil)
@@ -102,8 +75,6 @@ func MCPBoundaryDefinitions() []brine.StepDefinition {
 			case "custom role":
 				user = "viewer"
 				s.Fixture.CustomRoles = map[string]string{atc.GetPipeline: accessor.OwnerRole}
-			case "policy":
-				s.Fixture.Policy = &mcpDenyPolicy{}
 			default:
 				return s, fmt.Errorf("unknown authorization boundary %q", boundary)
 			}
@@ -131,19 +102,6 @@ func MCPBoundaryDefinitions() []brine.StepDefinition {
 			}
 			if !result.IsError {
 				return fmt.Errorf("MCP bypassed the %s restriction", s.Boundary)
-			}
-			if s.Boundary == "policy" {
-				checker := s.Fixture.Policy.(*mcpDenyPolicy)
-				checker.mu.Lock()
-				defer checker.mu.Unlock()
-				if len(checker.inputs) < 2 {
-					return errors.New("API and MCP did not both consult the policy")
-				}
-				for _, input := range checker.inputs {
-					if input.Action != atc.GetPipeline || input.User != "owner" || input.Team != "auth-team" || input.Pipeline != "private" || len(input.Roles) == 0 {
-						return errors.New("policy did not receive the authenticated action, user, team, pipeline and roles")
-					}
-				}
 			}
 			return nil
 		}),

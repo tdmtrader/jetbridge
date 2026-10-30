@@ -33,7 +33,6 @@ import (
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
-	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/compression"
@@ -52,7 +51,6 @@ import (
 	"github.com/concourse/concourse/atc/mcp"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/pauser"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/scheduler"
@@ -92,7 +90,6 @@ import (
 	_ "github.com/concourse/concourse/atc/metric/emitter"
 
 	// dynamically registered policy checkers
-	_ "github.com/concourse/concourse/atc/policy/opa"
 
 	// dynamically registered credential managers
 	_ "github.com/concourse/concourse/atc/creds/dummy"
@@ -268,10 +265,6 @@ type RunCommand struct {
 	} `group:"Metrics & Diagnostics"`
 
 	Tracing tracing.Config `group:"Tracing" namespace:"tracing"`
-
-	PolicyCheckers struct {
-		Filter policy.Filter
-	} `group:"Policy Checking"`
 
 	Server struct {
 		XFrameOptions           string `long:"x-frame-options" default:"deny" description:"The value to set for the X-Frame-Options header."`
@@ -504,9 +497,8 @@ func (cmd *Migration) migrateToLatestVersion() error {
 
 func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 	var (
-		metricsGroup      *flags.Group
-		policyChecksGroup *flags.Group
-		credsGroup        *flags.Group
+		metricsGroup *flags.Group
+		credsGroup   *flags.Group
 	)
 
 	groups := commandFlags.Groups()
@@ -521,11 +513,7 @@ func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 			metricsGroup = group
 		}
 
-		if policyChecksGroup == nil && group.ShortDescription == "Policy Checking" {
-			policyChecksGroup = group
-		}
-
-		if metricsGroup != nil && credsGroup != nil && policyChecksGroup != nil {
+		if metricsGroup != nil && credsGroup != nil {
 			break
 		}
 
@@ -534,10 +522,6 @@ func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 
 	if metricsGroup == nil {
 		panic("could not find Metrics & Diagnostics group for registering emitters")
-	}
-
-	if policyChecksGroup == nil {
-		panic("could not find Policy Checking group for registering policy checkers")
 	}
 
 	if credsGroup == nil {
@@ -552,8 +536,6 @@ func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 	cmd.CredentialManagers = managerConfigs
 
 	metric.Metrics.WireEmitters(metricsGroup)
-
-	policy.WireCheckers(policyChecksGroup)
 }
 
 func (cmd *RunCommand) Execute(args []string) error {
@@ -815,17 +797,12 @@ func (cmd *RunCommand) constructMembers(
 		}()
 	}
 
-	policyChecker, err := policy.Initialize(logger, cmd.Server.ClusterName, concourse.Version, cmd.PolicyCheckers.Filter)
-	if err != nil {
-		return nil, err
-	}
-
 	workerCache, err := db.NewWorkerCache(logger.Session("worker-cache"), backendConn, 1*time.Minute)
 	if err != nil {
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
-	apiMembers, err := cmd.constructAPIMembers(logger, reconfigurableSink, apiConn, workerConn, storage, lockFactory, secretManager, policyChecker, workerCache, checkBuildsChan)
+	apiMembers, err := cmd.constructAPIMembers(logger, reconfigurableSink, apiConn, workerConn, storage, lockFactory, secretManager, workerCache, checkBuildsChan)
 	if err != nil {
 		return nil, err
 	}
@@ -903,7 +880,6 @@ func (cmd *RunCommand) constructAPIMembers(
 	storage storage.Storage,
 	lockFactory lock.LockFactory,
 	secretManager creds.Secrets,
-	policyChecker policy.Checker,
 	workerCache *db.WorkerCache,
 	checkBuildsChan chan db.Build,
 ) ([]grouper.Member, error) {
@@ -999,7 +975,6 @@ func (cmd *RunCommand) constructAPIMembers(
 		credsManagers,
 		accessFactory,
 		dbWall,
-		policyChecker,
 		dbSigningKeyFactory,
 		dbConn,
 	)
@@ -2589,7 +2564,6 @@ func (cmd *RunCommand) constructAPIHandler(
 	credsManagers creds.Managers,
 	accessFactory accessor.AccessFactory,
 	dbWall db.Wall,
-	policyChecker policy.Checker,
 	dbSigningKeyFactory db.SigningKeyFactory,
 	dbConn db.DbConn,
 ) (http.Handler, error) {
@@ -2612,7 +2586,6 @@ func (cmd *RunCommand) constructAPIHandler(
 			wrappa.NewConcurrentRequestPolicy(cmd.ConcurrentRequestLimits),
 		),
 		wrappa.NewAPIMetricsWrappa(logger),
-		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(policyChecker)),
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,

@@ -38,13 +38,11 @@ import (
 	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
-	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/api/teamserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/encryption"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
@@ -84,7 +82,6 @@ type AuthFixture struct {
 	Verifier     accessor.TokenVerifier
 	MCPConn      db.DbConn
 	CustomRoles  map[string]string
-	Policy       policy.Checker
 	ResultReader pipelinerunserver.ResultReader
 	RunServices  pipelinerunserver.Services
 
@@ -287,10 +284,6 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 	configs := configserver.NewServer(logger, f.DB.TeamFactory, noop.Noop{})
 	teams := teamserver.NewServer(logger, f.DB.TeamFactory, f.URL)
 	users := usersserver.NewServer(logger, db.NewUserFactory(f.DB.Conn))
-	checker := f.Policy
-	if checker == nil {
-		checker = policy.NoopChecker{}
-	}
 	handlers := rata.Handlers{
 		atc.GetPipeline:           scoped.HandlerFor(pipelines.GetPipeline),
 		atc.UnpausePipeline:       scoped.HandlerFor(pipelines.UnpausePipeline),
@@ -325,7 +318,6 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 	handlers[atc.GetPipelineRun] = scoped.HandlerFor(runServer.GetPipelineRun)
 	handlers[atc.CancelPipelineRun] = scoped.HandlerFor(runServer.CancelPipelineRun)
 	wrapper := wrappa.MultiWrappa{
-		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(checker)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(f.DB.TeamFactory)),
 		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(f.DB.TeamFactory), auth.NewCheckBuildReadAccessHandlerFactory(f.DB.BuildFactory), auth.NewCheckBuildWriteAccessHandlerFactory(f.DB.BuildFactory), nil),
 		wrappa.NewAccessorWrappa(logger, accessor.NewAccessFactory(verifier, f.DB.TeamFactory, "", nil, displayUserID), f.CustomRoles),

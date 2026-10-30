@@ -20,7 +20,7 @@ and commands such as `execute` combine several API operations.
 
 | Surface | Current implementation | Evidence |
 | --- | --- | --- |
-| HTTP API | Named routes, scoped handlers, per-action role checks and policy checks | `atc/routes.go:130`, `atc/api/handler.go:121`, `atc/atccmd/command.go:2354` |
+| HTTP API | Named routes, scoped handlers, per-action role checks | `atc/routes.go:130`, `atc/api/handler.go:121`, `atc/atccmd/command.go:2354` |
 | Go client | Typed `Client` and `Team` interfaces consumed by fly; broad coverage but no completeness guarantee | `go-concourse/concourse/client.go:12`, `go-concourse/concourse/team.go:10` |
 | Fly CLI | Typed human-facing commands plus authenticated `fly curl` for arbitrary API requests | `fly/commands/fly.go:7`, `fly/commands/curl.go:21` |
 | Web UI | Independently maintained Elm endpoint types and effects calling HTTP | `web/elm/src/Api/Endpoints.elm:18`, `web/elm/src/Api.elm:36`, `web/elm/src/Message/Effects.elm:236` |
@@ -100,7 +100,7 @@ loads the actual build, and checks its associated teams
 (`atc/api/auth/check_build_write_access_handler.go:45`). Calling the bare
 handler or database method would skip those protections.
 
-The API composition includes external policy checks, authorization, archived
+The API composition includes authorization, archived
 pipeline restrictions, role-aware identity construction
 (`atc/atccmd/command.go:2354`, `atc/api/accessor/handler.go:47`). An MCP adapter
 must preserve those decisions for each underlying operation, including custom
@@ -145,8 +145,7 @@ required adapters and stale mappings; avoid asserting a fixed action count.
 For representative reads, writes and destructive operations, test the same
 principal, target and arguments through each adapter and compare both allowed
 behavior and denial behavior. Include cross-team build IDs, viewer/operator
-roles, custom-role overrides, archived pipelines, and configured external
-policy checks. These directly target the failure that caused the earlier MCP
+roles, custom-role overrides and archived pipelines. These directly target the failure that caused the earlier MCP
 surface to be removed.
 
 No tests were run for this documentation-only audit. Authentication/token

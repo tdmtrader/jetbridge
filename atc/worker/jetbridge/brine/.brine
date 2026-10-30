@@ -27,8 +27,9 @@ budgets:
   undefined: 0
   # De-enrolment guard: expanded scenario count, not Scenario declarations.
   # Parsed features/*.feature on 2026-10-09: 921 (1058 before C11's 137 removals);
-  # 920 after C13 removed the run-definition down-migration scenario.
+  # 920 after C13 removed the run-definition down-migration scenario; 919 after
+  # the OPA policy checker cut removed the mcp-auth "policy" boundary row.
   # Pin the current corpus; additions may leave headroom above this floor until
   # the next recount. Raise with each batch; intentional removals need a record.
   # C11's removal counts and coverage trade are recorded in features/README.md.
-  scenarios_min: 920
+  scenarios_min: 919

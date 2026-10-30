@@ -32,9 +32,7 @@ and must be pruned independently.
 
 **Tool listing establishes operation eligibility, not authority over every possible
 argument.** Team/pipeline/instance, build-output visibility, payload
-policy and operation preconditions remain execution checks. There is no existing
-targetless external-policy entitlement API. Do not probe policy with empty targets
-or interpret an advisory denial as a blocking rule.
+policy and operation preconditions remain execution checks.
 
 At execution, select the exact operation, recheck its independent consent, and use
 the existing fully authorized API boundary with authenticated trusted claims.
@@ -157,8 +155,8 @@ be evaluated later; the current stateless transport does not require them.
 Use one operation definition for resource family, stable ID, description,
 input/output schemas, exact API action and consent, and effect/retry semantics.
 Every definition must bind to a complete adapter. Generate the executable union and
-capability explanations from it. Reuse the role hierarchy and policy enforcement
-already owned by the API; do not build a second policy interpreter for discovery.
+capability explanations from it. Reuse the role hierarchy already owned by
+the API; do not build a second authorization interpreter for discovery.
 
 Implementation order:
 
@@ -176,8 +174,7 @@ Implementation order:
 
 The repository audit identifies these existing integration points: AccessFactory
 and effective roles in `atc/api/accessor/`; authorization kinds in
-`atc/wrappa/api_auth_wrappa.go`; concrete policy requests and blocking/advisory
-semantics in `atc/api/policychecker/`; current consent dispatch in `atc/mcp/`.
+`atc/wrappa/api_auth_wrappa.go`; current consent dispatch in `atc/mcp/`.
 Build metadata and build logs, team update and team creation, and ordinary versus
 check-container execution retain their different checks.
 

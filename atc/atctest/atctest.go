@@ -47,12 +47,10 @@ import (
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
-	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/atc/runs"
@@ -259,7 +257,6 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 	wrapper := wrappa.MultiWrappa{
 		wrappa.NewConcurrentRequestLimitsWrappa(logger, wrappa.NewConcurrentRequestPolicy(nil)),
 		wrappa.NewAPIMetricsWrappa(logger),
-		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(policy.NoopChecker{})),
 		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(p.teams), auth.NewCheckBuildReadAccessHandlerFactory(p.builds),
 			auth.NewCheckBuildWriteAccessHandlerFactory(p.builds), auth.NewCheckWorkerTeamAccessHandlerFactory(workers)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(p.teams)),

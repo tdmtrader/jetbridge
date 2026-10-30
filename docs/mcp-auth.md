@@ -263,7 +263,7 @@ the same explicit tool error, never an empty success. Registered operations reta
 `request_new_consent`, `contact_admin` and `contact_operator` recovery. If both
 account authority and consent are missing, it reports both and prioritizes
 `contact_admin`. Disabled operations suggest operator action without requesting
-broader consent. An available branch still requires target/role/policy checks at
+broader consent. An available branch still requires target/role checks at
 execution; discovery is not authorization. Refresh cannot broaden consent. An
 access-service outage is a temporary error, not an impossibility or a reason to
 request privileges. Absence and disabled-operation diagnostics need no access lookup.

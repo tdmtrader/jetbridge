@@ -217,6 +217,10 @@ database itself.
 
 ## Policy
 
+> Superseded 2026-10-30: the OPA policy checker was removed from the binary,
+> and with it `CheckRunPipelinePolicy` and `RunPipelinePolicyData`. The step
+> no longer screens the admission; what follows is the design as shipped.
+
 `atc.CreatePipelineRun` over HTTP is screened by the policy-check wrappa. This
 step reaches no route, so it asks the checker itself, through
 `RunPipelineStepDelegate.CheckRunPipelinePolicy` — the same shape

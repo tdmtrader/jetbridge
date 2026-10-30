@@ -75,7 +75,6 @@ Feature: Scoped and renewable MCP authorization
       | boundary    |
       | foreign team |
       | custom role  |
-      | policy       |
 
   Scenario: API and MCP expose the same pipeline status
     Given an authentication server with a private pipeline

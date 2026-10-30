@@ -16,10 +16,10 @@ import (
 	"github.com/concourse/concourse/atc/runs"
 )
 
-// These handlers own bodies the policy check never parses
-// (atc.RequestBodyIsSensitive). So nothing upstream has called ParseForm, and
-// a handler that reads a route parameter out of r.Form sees nothing -- or, for
-// a form-encoded body, sees whatever the caller put there first.
+// These handlers own bodies no middleware parses: nothing upstream has called
+// ParseForm, and a handler that reads a route parameter out of r.Form sees
+// nothing -- or, for a form-encoded body, sees whatever the caller put there
+// first.
 
 type bodyAdmitter struct {
 	runs.Admitter

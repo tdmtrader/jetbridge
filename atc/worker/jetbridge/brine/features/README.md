@@ -8,6 +8,14 @@ The vocabulary guards require every step definition to be used, every scenario
 step to resolve, and no step line to match two definitions. The active-corpus
 guard also requires runnable features in the local and live tiers.
 
+## Removed row 2026-10-30: the "policy" authorization boundary
+
+The OPA policy checker (`atc/policy`, `atc/api/policychecker`, the
+`--opa-url` flags) is gone, so the `policy` row of mcp-auth.feature's
+"MCP preserves the API's authorization boundaries" outline has nothing to
+pin. One expanded case leaves; the floor moves 920 -> 919. The foreign-team
+and custom-role rows still show MCP denying what the API denies.
+
 ## Removed families 2026-10-09 and what still covers them
 
 C11 removes nine feature files: GC caches (19 expanded cases), containers (10),
