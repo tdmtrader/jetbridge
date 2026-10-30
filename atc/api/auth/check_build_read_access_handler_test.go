@@ -90,7 +90,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		// fails the blank one, so the action has to be a route that has one.
 		handler = accessor.NewHandler(
 			logger, atc.GetBuild, innerHandler, realAccessFactory(),
-			realAuditor(), map[string]string{},
+			map[string]string{},
 		)
 
 		server = httptest.NewServer(handler)

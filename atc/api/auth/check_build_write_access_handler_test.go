@@ -56,7 +56,6 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 			atc.AbortBuild,
 			innerHandler,
 			realAccessFactory(),
-			realAuditor(),
 			map[string]string{},
 		)
 

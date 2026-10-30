@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/configserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/policy"
 	"github.com/concourse/concourse/atc/wrappa"
 	. "github.com/onsi/ginkgo/v2"
@@ -40,7 +39,7 @@ func (p configPolicyResult) ShouldBlock() bool  { return true }
 func (p configPolicyResult) Messages() []string { return []string{"fixture policy denial"} }
 
 var _ = Describe("Conditional config API authority", func() {
-	It("shares roles, policy payload and audit identity while returning committed receipts", func() {
+	It("shares roles and policy payload while returning committed receipts", func() {
 		team := createTeam("strict-team")
 		grantRole(team, accessor.MemberRole)
 		log := lagertest.NewTestLogger("strict-api")
@@ -49,7 +48,7 @@ var _ = Describe("Conditional config API authority", func() {
 		wraps := wrappa.MultiWrappa{
 			wrappa.NewPolicyCheckWrappa(log, policychecker.NewApiPolicyChecker(checker)),
 			wrappa.NewAPIAuthWrappa(nil, nil, nil, nil),
-			wrappa.NewAccessorWrappa(log, realAccessFactory(), auditor.NewAuditor(true, true, true, true, true, true, true, true, true, log), map[string]string{atc.SaveConfig: accessor.OwnerRole}),
+			wrappa.NewAccessorWrappa(log, realAccessFactory(), map[string]string{atc.SaveConfig: accessor.OwnerRole}),
 		}
 		handlers := wraps.Wrap(rata.Handlers{atc.SaveConfig: http.HandlerFunc(configs.SaveConfig), atc.SaveConfigConditional: http.HandlerFunc(configs.SaveConfigConditional)})
 		routes := rata.Routes{}
@@ -87,8 +86,6 @@ var _ = Describe("Conditional config API authority", func() {
 		Expect(checker.inputs[0].Pipeline).To(Equal("deploy"))
 		Expect(checker.inputs[0].HttpMethod).To(Equal("PUT"))
 		Expect(checker.inputs[0].Data).NotTo(BeNil())
-		Expect(string(log.Buffer().Contents())).To(ContainSubstring(`"action":"SaveConfig"`))
-		Expect(string(log.Buffer().Contents())).NotTo(ContainSubstring(`"action":"SaveConfigConditional"`))
 		conflict := call("0")
 		Expect(conflict.Code).To(Equal(http.StatusConflict))
 		var envelope atc.SaveConfigResponse

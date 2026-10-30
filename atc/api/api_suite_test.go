@@ -21,7 +21,6 @@ import (
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/hangarserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
@@ -195,32 +194,8 @@ type apiDBDeps struct {
 
 // auditedAction is the action the accessor handler labels every request with.
 // Production labels each route with its own action; here one handler fronts
-// the whole API, so it has to be an action the auditor routes -- the auditor
-// panics on one it does not know -- and a system action is the category the
-// audit flag below turns on.
+// the whole API.
 const auditedAction = atc.GetInfo
-
-// newAuditor returns the auditor production wires in, with the one category
-// auditedAction falls into switched on so that Audit actually logs.
-func newAuditor() auditor.Auditor {
-	return auditingACopy{
-		Auditor: auditor.NewAuditor(false, false, false, false, false, true, false, false, false, logger),
-	}
-}
-
-// auditingACopy hands the auditor its own copy of the request. Auditing parses
-// the request form and net/http caches that parse; production audits from
-// inside the router, after the router has appended the route's parameters to
-// the query, while the accessor handler here fronts the router. Auditing the
-// original would freeze a parameterless parse that every routed handler would
-// then read `:build_id` and friends out of.
-type auditingACopy struct {
-	auditor.Auditor
-}
-
-func (a auditingACopy) Audit(action string, userName string, r *http.Request) {
-	a.Auditor.Audit(action, userName, r.Clone(r.Context()))
-}
 
 // newAPIServer builds the full API handler over deps and serves it. The
 // accessor, policy checker and event handler stay fake: none of them is a
@@ -310,7 +285,6 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		auditedAction,
 		handler,
 		fakeAccessor,
-		newAuditor(),
 		map[string]string{},
 	)
 

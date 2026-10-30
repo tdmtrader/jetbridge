@@ -46,7 +46,6 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 			atc.DeleteWorker,
 			innerHandler,
 			realAccessFactory(),
-			realAuditor(),
 			map[string]string{},
 		)
 

@@ -7,7 +7,6 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/auditor"
 )
 
 const accessorContextKey atc.ContextKey = "accessor"
@@ -23,7 +22,6 @@ func NewHandler(
 	action string,
 	handler http.Handler,
 	accessFactory AccessFactory,
-	auditor auditor.Auditor,
 	customRoles map[string]string,
 ) http.Handler {
 	return &accessorHandler{
@@ -31,7 +29,6 @@ func NewHandler(
 		handler:       handler,
 		accessFactory: accessFactory,
 		action:        atc.CanonicalAction(action),
-		auditor:       auditor,
 		customRoles:   customRoles,
 	}
 }
@@ -41,7 +38,6 @@ type accessorHandler struct {
 	action        string
 	handler       http.Handler
 	accessFactory AccessFactory
-	auditor       auditor.Auditor
 	customRoles   map[string]string
 }
 
@@ -56,11 +52,8 @@ func (h *accessorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims := acc.Claims()
-
 	ctx = context.WithValue(ctx, accessorContextKey, acc)
 
-	h.auditor.Audit(h.action, claims.UserName, r)
 	h.handler.ServeHTTP(w, r.WithContext(ctx))
 }
 

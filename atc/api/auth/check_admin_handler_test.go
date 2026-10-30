@@ -48,7 +48,6 @@ var _ = Describe("CheckAdminHandler", func() {
 			atc.ListActiveUsersSince,
 			innerHandler,
 			realAccessFactory(),
-			realAuditor(),
 			map[string]string{},
 		))
 

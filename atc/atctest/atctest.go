@@ -48,7 +48,6 @@ import (
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
@@ -265,7 +264,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 			auth.NewCheckBuildWriteAccessHandlerFactory(p.builds), auth.NewCheckWorkerTeamAccessHandlerFactory(workers)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(p.teams)),
 		wrappa.NewConcourseVersionWrappa(concourse.Version),
-		wrappa.NewAccessorWrappa(logger, access, auditor.NewAuditor(false, false, false, false, false, false, false, false, false, logger), nil),
+		wrappa.NewAccessorWrappa(logger, access, nil),
 		wrappa.NewCompressionWrappa(logger),
 	}
 	services, err := p.runServices(displayUserID)

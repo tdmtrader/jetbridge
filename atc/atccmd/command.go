@@ -34,7 +34,6 @@ import (
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/compression"
@@ -311,18 +310,6 @@ type RunCommand struct {
 
 	DefaultCpuRequest    *int    `long:"default-task-cpu-request" description:"Default CPU request (shares) per task for Burstable QoS"`
 	DefaultMemoryRequest *string `long:"default-task-memory-request" description:"Default memory request per task for Burstable QoS"`
-
-	Auditor struct {
-		EnableBuildAuditLog     bool `long:"enable-build-auditing" description:"Enable auditing for all api requests connected to builds."`
-		EnableContainerAuditLog bool `long:"enable-container-auditing" description:"Enable auditing for all api requests connected to containers."`
-		EnableJobAuditLog       bool `long:"enable-job-auditing" description:"Enable auditing for all api requests connected to jobs."`
-		EnablePipelineAuditLog  bool `long:"enable-pipeline-auditing" description:"Enable auditing for all api requests connected to pipelines."`
-		EnableResourceAuditLog  bool `long:"enable-resource-auditing" description:"Enable auditing for all api requests connected to resources."`
-		EnableSystemAuditLog    bool `long:"enable-system-auditing" description:"Enable auditing for all api requests connected to system transactions."`
-		EnableTeamAuditLog      bool `long:"enable-team-auditing" description:"Enable auditing for all api requests connected to teams."`
-		EnableWorkerAuditLog    bool `long:"enable-worker-auditing" description:"Enable auditing for all api requests connected to workers."`
-		EnableVolumeAuditLog    bool `long:"enable-volume-auditing" description:"Enable auditing for all api requests connected to volumes."`
-	}
 
 	Syslog struct {
 		Hostname  string   `long:"syslog-hostname" description:"Client hostname with which the build logs will be sent to the syslog server." default:"atc-syslog-drainer"`
@@ -2651,19 +2638,6 @@ func (cmd *RunCommand) constructAPIHandler(
 
 	rejectArchivedHandlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(teamFactory)
 
-	aud := auditor.NewAuditor(
-		cmd.Auditor.EnableBuildAuditLog,
-		cmd.Auditor.EnableContainerAuditLog,
-		cmd.Auditor.EnableJobAuditLog,
-		cmd.Auditor.EnablePipelineAuditLog,
-		cmd.Auditor.EnableResourceAuditLog,
-		cmd.Auditor.EnableSystemAuditLog,
-		cmd.Auditor.EnableTeamAuditLog,
-		cmd.Auditor.EnableWorkerAuditLog,
-		cmd.Auditor.EnableVolumeAuditLog,
-		logger,
-	)
-
 	customRoles, err := cmd.loadCustomRoles()
 	if err != nil {
 		return nil, err
@@ -2687,7 +2661,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		wrappa.NewAccessorWrappa(
 			logger,
 			accessFactory,
-			aud,
 			customRoles,
 		),
 		wrappa.NewCompressionWrappa(logger),

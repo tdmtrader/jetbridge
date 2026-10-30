@@ -81,8 +81,7 @@ func (c *checker) Check(action string, acc accessor.Access, req *http.Request) (
 }
 
 // Credentials, input bearers, uploads and operational text belong only to
-// their authorized handlers (atc.RequestBodyIsSensitive, the declaration the
-// auditor shares). Policy still checks the caller, route and action, without
+// their authorized handlers (atc.RequestBodyIsSensitive). Policy still checks the caller, route and action, without
 // reading these bodies or exposing them to a remote policy service and its
 // logs.
 func policyIncludesRequestBody(action string) bool {

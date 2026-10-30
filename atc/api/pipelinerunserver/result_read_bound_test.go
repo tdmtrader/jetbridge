@@ -71,7 +71,7 @@ func TestResultReadsAreBoundedAndRefusedWhenSaturated(t *testing.T) {
 	server.SetServices(Services{Results: results})
 	handler := server.GetPipelineRunResult(template{})
 
-	api := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), atc.GetPipelineRunResult, handler, memberAccess{}, silentAuditor{}, nil))
+	api := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), atc.GetPipelineRunResult, handler, memberAccess{}, nil))
 	defer api.Close()
 	client := api.Client()
 	client.Timeout = 10 * time.Second

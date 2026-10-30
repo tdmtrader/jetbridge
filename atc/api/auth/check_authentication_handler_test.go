@@ -65,7 +65,6 @@ var _ = Describe("AuthenticationHandler", func() {
 				atc.GetUser,
 				innerHandler,
 				realAccessFactory(),
-				realAuditor(),
 				map[string]string{},
 			))
 		})
@@ -122,7 +121,6 @@ var _ = Describe("AuthenticationHandler", func() {
 				atc.GetSigningKeys,
 				innerHandler,
 				realAccessFactory(),
-				realAuditor(),
 				map[string]string{},
 			))
 		})

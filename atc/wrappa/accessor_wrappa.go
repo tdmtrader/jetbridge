@@ -3,20 +3,17 @@ package wrappa
 import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/tedsuo/rata"
 )
 
 func NewAccessorWrappa(
 	logger lager.Logger,
 	accessFactory accessor.AccessFactory,
-	auditor auditor.Auditor,
 	customRoles map[string]string,
 ) *accessorWrappa {
 	return &accessorWrappa{
 		logger:        logger,
 		accessFactory: accessFactory,
-		auditor:       auditor,
 		customRoles:   customRoles,
 	}
 }
@@ -24,7 +21,6 @@ func NewAccessorWrappa(
 type accessorWrappa struct {
 	logger        lager.Logger
 	accessFactory accessor.AccessFactory
-	auditor       auditor.Auditor
 	customRoles   map[string]string
 }
 
@@ -37,7 +33,6 @@ func (w *accessorWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			name,
 			handler,
 			w.accessFactory,
-			w.auditor,
 			w.customRoles,
 		)
 	}

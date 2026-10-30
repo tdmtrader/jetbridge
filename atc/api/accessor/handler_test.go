@@ -7,10 +7,8 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
-	"github.com/concourse/concourse/atc/auditor"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -38,34 +36,12 @@ func (f *recordingAccessFactory) Create(req *http.Request, role string) (accesso
 	return access, nil
 }
 
-// recordingAuditor keeps what the handler audited, then hands it to the real
-// auditor. The real one writes a log line and returns nothing, so the request
-// the handler audited is otherwise unobservable.
-type recordingAuditor struct {
-	auditor.Auditor
-
-	audited []auditedEvent
-}
-
-type auditedEvent struct {
-	action   string
-	userName string
-	request  *http.Request
-}
-
-func (a *recordingAuditor) Audit(action string, userName string, r *http.Request) {
-	a.audited = append(a.audited, auditedEvent{action, userName, r})
-
-	a.Auditor.Audit(action, userName, r)
-}
-
 var _ = Describe("Handler", func() {
 
 	var (
 		logger        lager.Logger
 		fixture       *realTeamFixture
 		accessFactory *recordingAccessFactory
-		auditRecorder *recordingAuditor
 
 		servedRequests []*http.Request
 
@@ -89,13 +65,6 @@ var _ = Describe("Handler", func() {
 				nil,
 			),
 		}
-		auditRecorder = &recordingAuditor{
-			Auditor: auditor.NewAuditor(
-				true, true, true, true, true, true, true, true, true,
-				lagertest.NewTestLogger("audit"),
-			),
-		}
-
 		servedRequests = nil
 
 		action = atc.GetUser
@@ -116,7 +85,6 @@ var _ = Describe("Handler", func() {
 				servedRequests = append(servedRequests, r)
 			}),
 			accessFactory,
-			auditRecorder,
 			customRoles,
 		)
 
@@ -182,13 +150,6 @@ var _ = Describe("Handler", func() {
 				r.Header.Set("Authorization", "bearer some-token")
 			})
 
-			It("audits the event", func() {
-				Expect(auditRecorder.audited).To(HaveLen(1))
-				Expect(auditRecorder.audited[0].action).To(Equal(atc.GetUser))
-				Expect(auditRecorder.audited[0].userName).To(Equal("some-user"))
-				Expect(auditRecorder.audited[0].request).To(BeIdenticalTo(r))
-			})
-
 			It("invokes the handler", func() {
 				Expect(servedRequests).To(HaveLen(1))
 				Expect(accessor.GetAccessor(servedRequests[0])).To(BeIdenticalTo(accessFactory.accesses[0]))
@@ -207,13 +168,6 @@ var _ = Describe("Handler", func() {
 		})
 
 		Context("when the request is not authenticated", func() {
-			It("audits the anonymous request", func() {
-				Expect(auditRecorder.audited).To(HaveLen(1))
-				Expect(auditRecorder.audited[0].action).To(Equal(atc.GetUser))
-				Expect(auditRecorder.audited[0].userName).To(Equal(""))
-				Expect(auditRecorder.audited[0].request).To(BeIdenticalTo(r))
-			})
-
 			It("invokes the handler", func() {
 				Expect(servedRequests).To(HaveLen(1))
 				Expect(accessor.GetAccessor(servedRequests[0])).To(BeIdenticalTo(accessFactory.accesses[0]))

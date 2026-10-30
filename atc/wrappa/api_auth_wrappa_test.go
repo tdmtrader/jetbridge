@@ -56,7 +56,7 @@ var _ = Describe("APIAuthWrappa", func() {
 				query.Set(":team_name", "team")
 				query.Set(":pipeline_name", "template")
 				req.URL.RawQuery = query.Encode()
-				accessor.NewHandler(lager.NewLogger("test"), action, wrapped[action], accessFactory, authRouteAuditor{}, nil).ServeHTTP(httptest.NewRecorder(), req)
+				accessor.NewHandler(lager.NewLogger("test"), action, wrapped[action], accessFactory, nil).ServeHTTP(httptest.NewRecorder(), req)
 			}
 
 			Expect(teamFactory.findNames).To(Equal([]string{"team", "team"}))
@@ -81,7 +81,7 @@ var _ = Describe("APIAuthWrappa", func() {
 			query := req.URL.Query()
 			query.Set(":team_name", "team")
 			req.URL.RawQuery = query.Encode()
-			accessor.NewHandler(lager.NewLogger("test"), atc.CreatePipelineRunV2, wrapped[atc.CreatePipelineRunV2], accessFactory, authRouteAuditor{}, nil).ServeHTTP(httptest.NewRecorder(), req)
+			accessor.NewHandler(lager.NewLogger("test"), atc.CreatePipelineRunV2, wrapped[atc.CreatePipelineRunV2], accessFactory, nil).ServeHTTP(httptest.NewRecorder(), req)
 
 			Expect(served).To(BeTrue())
 			_, role := accessFactory.CreateArgsForCall(0)
@@ -160,7 +160,3 @@ type authRoutePipeline struct {
 }
 
 func (p *authRoutePipeline) Public() bool { return p.public }
-
-type authRouteAuditor struct{}
-
-func (authRouteAuditor) Audit(string, string, *http.Request) {}

@@ -52,7 +52,6 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 			atc.GetPipeline,
 			innerHandler,
 			realAccessFactory(),
-			realAuditor(),
 			map[string]string{},
 		)
 

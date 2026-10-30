@@ -12,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -101,7 +100,6 @@ var _ = Describe("Pipeline presenter matrix", func() {
 				atc.GetPipeline,
 				pipelineserver.NewServer(lagertest.NewTestLogger("test"), teamFactory, nil, "").GetPipeline(pipeline),
 				accessFactory,
-				auditor.NewAuditor(false, false, false, false, false, false, false, false, false, lagertest.NewTestLogger("audit")),
 				customRoles,
 			).ServeHTTP(response, request)
 			Expect(response.Code).To(Equal(200))
@@ -164,7 +162,6 @@ var _ = Describe("Pipeline presenter matrix", func() {
 					tc.action,
 					tc.handler,
 					accessFactory,
-					auditor.NewAuditor(false, false, false, false, false, false, false, false, false, lagertest.NewTestLogger("audit")),
 					map[string]string{atc.CreatePipelineRunV2: accessor.OperatorRole},
 				).ServeHTTP(response, tc.request)
 				Expect(response.Code).To(Equal(http.StatusOK))

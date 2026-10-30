@@ -41,7 +41,6 @@ import (
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/api/teamserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
-	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/encryption"
@@ -329,8 +328,7 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(checker)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(f.DB.TeamFactory)),
 		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(f.DB.TeamFactory), auth.NewCheckBuildReadAccessHandlerFactory(f.DB.BuildFactory), auth.NewCheckBuildWriteAccessHandlerFactory(f.DB.BuildFactory), nil),
-		wrappa.NewAccessorWrappa(logger, accessor.NewAccessFactory(verifier, f.DB.TeamFactory, "", nil, displayUserID),
-			auditor.NewAuditor(true, true, true, true, true, true, true, true, true, logger), f.CustomRoles),
+		wrappa.NewAccessorWrappa(logger, accessor.NewAccessFactory(verifier, f.DB.TeamFactory, "", nil, displayUserID), f.CustomRoles),
 	}
 	var routes rata.Routes
 	for _, route := range atc.Routes {

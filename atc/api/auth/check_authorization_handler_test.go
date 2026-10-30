@@ -50,7 +50,6 @@ var _ = Describe("CheckAuthorizationHandler", func() {
 			atc.ListPipelines,
 			innerHandler,
 			realAccessFactory(),
-			realAuditor(),
 			map[string]string{},
 		))
 

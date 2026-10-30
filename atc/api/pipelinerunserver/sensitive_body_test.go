@@ -16,7 +16,7 @@ import (
 	"github.com/concourse/concourse/atc/runs"
 )
 
-// These handlers own bodies the auditor and policy check never parse
+// These handlers own bodies the policy check never parses
 // (atc.RequestBodyIsSensitive). So nothing upstream has called ParseForm, and
 // a handler that reads a route parameter out of r.Form sees nothing -- or, for
 // a form-encoded body, sees whatever the caller put there first.
@@ -66,16 +66,12 @@ func (memberAccess) Create(*http.Request, string) (accessor.Access, error) {
 	}, accessor.MemberRole, "aud", []string{"concourse-worker"}, []db.Team{memberTeam{}}, nil), nil
 }
 
-type silentAuditor struct{}
-
-func (silentAuditor) Audit(string, string, *http.Request) {}
-
 // serveSensitive serves over a real connection: the handlers set a read
 // deadline, which a ResponseRecorder does not support.
 func serveSensitive(t *testing.T, action string, handler http.Handler, request *http.Request) *http.Response {
 	t.Helper()
 
-	server := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), action, handler, memberAccess{}, silentAuditor{}, nil))
+	server := httptest.NewServer(accessor.NewHandler(lagertest.NewTestLogger("test"), action, handler, memberAccess{}, nil))
 	t.Cleanup(server.Close)
 	target, err := url.Parse(server.URL + request.URL.RequestURI())
 	if err != nil {

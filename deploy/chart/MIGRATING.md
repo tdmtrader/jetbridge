@@ -16,7 +16,7 @@ is `hangarOutput.webEnabled` alone (see the values migration below). This upgrad
 does not require GCS unless the installation separately enables the output
 plane.
 It does not change global resource sharing, rerun policy, credential providers,
-auditing, or optional infrastructure.
+or optional infrastructure.
 
 ## Values migration
 
