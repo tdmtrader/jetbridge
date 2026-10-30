@@ -138,8 +138,11 @@ func (r *RemoteArtifact) daemon(rec *brine.Recorder) (*jetbridge.DaemonSetVolume
 		}
 	}
 	if r.ServerError {
-		// A real unreadable legacy file shadows the registered alias. Both
-		// pods drop DAC_OVERRIDE; the production daemon produces the 500.
+		// A file planted at the key shadows the registered alias. An artifact
+		// is a directory, so the production artifact daemon reports the file as a
+		// store fault (500) rather than serving or missing it. The chmod is
+		// belt and braces: both pods drop DAC_OVERRIDE, so even a daemon that
+		// still served files could not have read this one.
 		archive, err := plainTarOfOneFile(r.FileName, r.Content)
 		if err != nil {
 			return nil, err

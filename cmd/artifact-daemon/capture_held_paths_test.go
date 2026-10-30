@@ -232,31 +232,6 @@ func TestStreamInWillNotReplaceACaptureHeldSourceAndStillReplacesAnUnheldOne(t *
 	stillThere(t, storage, heldIncarnation())
 }
 
-// The ordinary PUT renames a temp file over its key. Under a held source that
-// is a replacement of the producer's bytes with no ticket and no record.
-func TestPutWillNotWriteIntoACaptureHeldSourceAndStillWritesElsewhere(t *testing.T) {
-	server, storage := capturedServer(t)
-	handler := server.Handler()
-
-	put := func(key string) int {
-		request := httptest.NewRequest(http.MethodPut, "/artifacts/"+key,
-			strings.NewReader("somebody else's bytes"))
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, request)
-
-		return recorder.Code
-	}
-
-	if code := put("steps/unheld-handle/out/artifact.txt"); code != http.StatusCreated {
-		t.Fatalf("an unheld PUT answered %d", code)
-	}
-
-	if code := put("steps/" + heldIncarnation() + "/artifact.txt"); code != http.StatusConflict {
-		t.Errorf("a PUT into a capture-held source answered %d", code)
-	}
-	stillThere(t, storage, heldIncarnation())
-}
-
 // Resolve copies an artifact INTO a caller-named destination, clearing whatever
 // is there first. The destination is caller-supplied, contained in the store,
 // and nothing stopped it naming a held source.
@@ -462,16 +437,11 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	throughLink := "/artifacts/steps/unheld-handle/out/link/" +
 		heldMarkerName
 	for _, method := range []string{
-		http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete,
+		http.MethodGet, http.MethodHead, http.MethodDelete,
 	} {
 		if code := do(method, throughLink, []byte("garbage")); code < 400 || code > 499 {
 			t.Errorf("%s of the hold record through a within-root symlink answered %d", method, code)
 		}
-	}
-	// A record that does not exist yet, so a refusal cannot be "no such file".
-	if code := do(http.MethodPut, "/artifacts/steps/unheld-handle/out/link/source-planted.json",
-		[]byte("garbage")); code < 400 || code > 499 {
-		t.Errorf("a NEW control record written through the symlink answered %d", code)
 	}
 	// And the link itself is not deletable through the API either: the key
 	// names it, and the resolved path is the control directory.
@@ -492,7 +462,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 		{"the directory, folded", "/artifacts/" + strings.ToUpper(outputplane.ControlDirName)},
 	} {
 		for _, method := range []string{
-			http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete,
+			http.MethodGet, http.MethodHead, http.MethodDelete,
 		} {
 			code := do(method, row.target, []byte("not a control record"))
 			if code < 400 || code > 499 {

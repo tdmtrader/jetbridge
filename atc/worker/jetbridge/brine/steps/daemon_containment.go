@@ -443,10 +443,13 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Sweeps the four per-artifact verbs. os.Root refuses "." for Remove
-		// and RemoveAll ONLY — Root.Stat(".") and Root.Open(".") succeed and
-		// enumerate the whole store — so a check on DELETE alone would stay
-		// green against a daemon that had lost the rule everywhere else.
+		// Sweeps the three per-artifact verbs: GET, HEAD and DELETE. Bytes
+		// come in through PUT /stream-in/ alone, so PUT /artifacts/ is not a
+		// route and the mux answers 405 before any handler could lose a rule.
+		// os.Root refuses "." for Remove and RemoveAll ONLY — Root.Stat(".")
+		// and Root.Open(".") succeed and enumerate the whole store — so a
+		// check on DELETE alone would stay green against a daemon that had
+		// lost the rule everywhere else.
 		brine.DefineMap[ContainedDaemon, ContainedDaemon](
 			"the ATC sends every per-artifact verb for the percent-encoded artifact key {string}",
 			func(in ContainedDaemon, p brine.Params, _ *brine.Recorder) (ContainedDaemon, error) {
@@ -456,7 +459,7 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 					return in, err
 				}
 				in.Probes = nil
-				for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete} {
+				for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
 					status, body, err := in.do(method, "/artifacts/"+encodeTraversal(key), []byte("x"), "")
 					if err != nil {
 						return in, fmt.Errorf("%s %q: %w", method, key, err)
@@ -799,15 +802,20 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				return in.Body, nil
 			}),
 
-		CheckString[ContainedDaemon]("the answer's bytes are {string}",
+		// A served artifact is a tar of a directory, so the permission beside
+		// a refusal is read as containment, not equality: the file's bytes are
+		// in the stream, the archive framing around them is not the point.
+		CheckContains[ContainedDaemon]("the answer contains {string}",
 			"the bytes the daemon served",
 			func(in ContainedDaemon) (string, error) {
 				if in.Err != nil {
 					return "", fmt.Errorf("no answer at all: %v", in.Err)
 				}
+				if in.Status < 200 || in.Status >= 300 {
+					return "", fmt.Errorf("expected a served artifact, the artifact daemon answered %d", in.Status)
+				}
 				return in.Body, nil
-			},
-			func(in ContainedDaemon) string { return fmt.Sprintf("status %d", in.Status) }),
+			}),
 
 		// The arbitrary-read assertion. A status alone does not carry it: a
 		// daemon that served the file with a 404 would still have leaked it.

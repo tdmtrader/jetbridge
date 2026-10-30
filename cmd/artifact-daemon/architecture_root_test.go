@@ -166,9 +166,14 @@ func TestArchitecture_NoAmbientWriteThroughAJoinedKey(t *testing.T) {
 	// have been silently excused by an entry written before the regression
 	// existed. An exemption is only legitimate once the scan actually flags the
 	// thing.
-	known := map[string]string{
-		"sweeper.go:Sweeper.sweep": "joins are CONSTANT suffixes (steps, artifacts) and os.ReadDir-derived names — no untrusted input reaches them. The second half of this reason has since changed and is updated rather than left standing: it used to say the read/sweep guard made migrating ScanHostPath a coin flip whose losing side was SILENT. The registry-relative track settled that — the sweeper's entry.Name() and stepHandle now derive the same key by construction, asserted in registry_relative_test.go — so what keeps this exempt is only the first clause. A liveness check catches a stale KEY; nothing catches a stale REASON.",
-	}
+	//
+	// Empty since the sweeper's flat-file sweep was cut: Sweeper.sweep still
+	// joins constant suffixes onto the storage path, but its only ambient
+	// mutation was the os.Remove of a flat file under artifacts/, and that
+	// went with the files. Step directories are removed in removeStepDir,
+	// which the scanner does not flag. The next entry here must be one the
+	// scan flagged first.
+	known := map[string]string{}
 
 	mutating := map[string]bool{
 		"Create": true, "CreateTemp": true, "MkdirAll": true, "Mkdir": true,

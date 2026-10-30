@@ -1045,6 +1045,7 @@ const (
 	reasonCapability     = "capability"
 	reasonArchive        = "archive"
 	reasonNotFound       = "not_found"
+	reasonNotDirectory   = "not_directory"
 	reasonClientCert     = "client_cert"
 
 	// The output plane's hold. This daemon has no output-bucket credential and

@@ -18,6 +18,22 @@ live case leaves; the live floor moves 134 -> 133. The `raw` and `gzip` rows
 still show the handoff with and without the codec, and the fault rows are
 unchanged.
 
+## Rewritten scenario 2026-10-30: the file-valued alias in daemon-containment
+
+The artifact daemon no longer serves a file at an artifact key (the "legacy
+tar file" branch of GET), takes no `PUT /artifacts/` and sweeps no flat files
+under `artifacts/`: an artifact is a directory, bytes come in through
+`PUT /stream-in/` alone. The daemon-containment scenario "An alias to a path
+outside the storage root is refused, and never reaches the alias store"
+registered `vol-file` at a stored tar file and read its bytes back, which
+exercised the cut branch. It is rewritten, not removed: the non-vacuous
+alias is now a directory (`vol-dir`), a file-valued alias is asserted refused
+with "is not a directory" and absent from the alias store, and the served
+answer is read as a tar containing the file's bytes. The step
+"the answer's bytes are" went with the byte-equal read; "the answer contains"
+replaces it. The per-artifact verb sweep is GET, HEAD and DELETE. Scenario
+count unchanged; the local floor stays 919.
+
 ## Removed row 2026-10-30: the "policy" authorization boundary
 
 The OPA policy checker (`atc/policy`, `atc/api/policychecker`, the

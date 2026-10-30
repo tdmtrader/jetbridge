@@ -44,7 +44,7 @@ func (r Route) Pattern() string {
 	return r.Method + " " + r.Path
 }
 
-// The route table. Fifteen routes, the same fifteen the daemon's mux
+// The route table. Fourteen routes, the same fourteen the artifact daemon's mux
 // registers, because it registers them from here. The output plane's routes
 // (the input publication in, the managed read out) are outputplane.Patterns,
 // mounted beside these.
@@ -55,7 +55,6 @@ var (
 	Metrics      = Route{Method: http.MethodGet, Path: "/metrics", MTLSExempt: true}
 
 	GetArtifact    = Route{Method: http.MethodGet, Path: ArtifactsPrefix}
-	PutArtifact    = Route{Method: http.MethodPut, Path: ArtifactsPrefix}
 	DeleteArtifact = Route{Method: http.MethodDelete, Path: ArtifactsPrefix}
 	HeadArtifact   = Route{Method: http.MethodHead, Path: ArtifactsPrefix}
 	Register       = Route{Method: http.MethodPost, Path: "/register"}
@@ -70,7 +69,7 @@ var (
 func Routes() []Route {
 	return []Route{
 		Healthz, ResolveBatch, CaptureHeld, Metrics,
-		GetArtifact, PutArtifact, DeleteArtifact, HeadArtifact,
+		GetArtifact, DeleteArtifact, HeadArtifact,
 		Register, Mirror, StreamIn,
 		HeadResourceCache, GetResourceCache,
 	}

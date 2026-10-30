@@ -12,16 +12,13 @@ import (
 )
 
 // Sweeper periodically removes expired artifacts from the hostPath storage.
-// It sweeps two areas:
-//   - /steps/<handle>/ directories: removed if the dir mtime exceeds the TTL.
-//     Reads (resolve, GET) refresh the mtime, so only artifacts nothing has
-//     touched for a full TTL are removed. A step whose pod is still running on
-//     this node touches nothing while it runs, so the sweep asks the node and
-//     refreshes the mtime itself: the TTL counts from the last pass that saw
-//     the pod alive.
-//   - Legacy flat files under /artifacts/: removed if mtime > TTL
-//
-// It does NOT sweep /caches/ — those are cleaned only by DB-driven GC.
+// It sweeps /steps/<handle>/ directories: removed if the dir mtime exceeds the
+// TTL. Reads (resolve, GET) refresh the mtime, so only artifacts nothing has
+// touched for a full TTL are removed. A step whose pod is still running on
+// this node touches nothing while it runs, so the sweep asks the node and
+// refreshes the mtime itself: the TTL counts from the last pass that saw the
+// pod alive. Nothing else under the storage root is swept: a step directory
+// is the only thing the artifact daemon stores with a lifetime of its own.
 type Sweeper struct {
 	logger      lager.Logger
 	storagePath string
@@ -136,30 +133,6 @@ func (s *Sweeper) sweep() {
 			}
 			if s.removeStepDir(logger, handleDir, entry.Name(), cutoff) {
 				removed++
-			}
-		}
-	}
-
-	// Sweep legacy flat files under /artifacts/ (backward compat).
-	// Skip /steps/ and /caches/ subdirectories.
-	artifactsDir := filepath.Join(s.storagePath, "artifacts")
-	legacyEntries, err := os.ReadDir(artifactsDir)
-	if err == nil {
-		for _, entry := range legacyEntries {
-			if entry.IsDir() {
-				continue // skip steps/, caches/, and other subdirs
-			}
-			filePath := filepath.Join(artifactsDir, entry.Name())
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().Before(cutoff) {
-				if err := os.Remove(filePath); err != nil {
-					logger.Error("failed-to-remove", err, lager.Data{"path": filePath})
-				} else {
-					removed++
-				}
 			}
 		}
 	}

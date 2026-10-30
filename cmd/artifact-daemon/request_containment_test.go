@@ -430,16 +430,13 @@ func TestRequestContainment_ThreeSegmentKeysAccepted(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	for _, key := range []string{
-		"build-42-output.tar",
+		"build-42-output",
 		"steps/build-99",
 		"steps/build-42/result",
-		"caches/job-42/build-abc.tar",
+		"caches/job-42/build-abc",
 	} {
-		full := filepath.Join(storagePath, key)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+		// An artifact is a directory; the key's SHAPE is what is under test.
+		if err := os.MkdirAll(filepath.Join(storagePath, key), 0o755); err != nil {
 			t.Fatal(err)
 		}
 
@@ -782,7 +779,7 @@ func TestRequestContainment_AliasStoreIsNotAddressable(t *testing.T) {
 	sentinel := filepath.Join(storagePath, "aliases.json")
 	os.WriteFile(sentinel, []byte(`{"legit":"data"}`), 0o644)
 
-	for _, m := range []string{http.MethodGet, http.MethodDelete, http.MethodPut} {
+	for _, m := range []string{http.MethodGet, http.MethodDelete} {
 		req, err := http.NewRequest(m, ts.URL+"/artifacts/aliases.json", bytes.NewReader([]byte("x")))
 		if err != nil {
 			t.Fatal(err)
@@ -849,7 +846,7 @@ func TestRequestContainment_DotRefusedOnEveryVerb(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete} {
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
 		req, err := http.NewRequest(m, ts.URL+"/artifacts/%2e", bytes.NewReader([]byte("x")))
 		if err != nil {
 			t.Fatal(err)
@@ -884,7 +881,7 @@ func TestRequestContainment_DotRefusedOnEveryVerb(t *testing.T) {
 
 	// Zero-case: an ordinary key still works on each verb.
 	for _, m := range []string{http.MethodGet, http.MethodHead} {
-		req, _ := http.NewRequest(m, ts.URL+"/artifacts/steps/keep/out/f.txt", nil)
+		req, _ := http.NewRequest(m, ts.URL+"/artifacts/steps/keep/out", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -971,32 +968,54 @@ func TestRequestContainment_StructuralNamesRefusedOnEveryVerb(t *testing.T) {
 	})
 }
 
-// B1 regression — a FILE-valued registry alias must still be served.
-//
-// Phase 2 migrated GET's directory branch to use the alias path and left the
-// file branch opening s.root.Open(key) — the key that did not exist, which is
-// why the fallback ran. Result: 500 on a request that should succeed. Nothing
-// caught it because no test registered an alias to a file.
-func TestRequestContainment_FileValuedRegistryAliasIsServed(t *testing.T) {
-	ts, storagePath := setupServer(t)
+// An artifact is a directory, and an alias is a second name for one. A
+// FILE-valued alias is refused at /register -- accepted, it would make GET a
+// raw file server for anything under the root -- and the refusal names the
+// reason, so it cannot be mistaken for a containment or not-found answer. The
+// registry must not learn the name either: this handler once persisted before
+// it finished validating. (The brine scenario in daemon-containment.feature
+// asserts the same against the alias store on disk of the real binary.)
+func TestRequestContainment_FileValuedRegistryAliasIsRefused(t *testing.T) {
+	ts, storagePath, server := setupServerWithRegistry(t)
 
-	legacy := filepath.Join(storagePath, "legacy")
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
+	out := filepath.Join(storagePath, "steps", "kept", "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	blob := filepath.Join(legacy, "blob.tar")
-	if err := os.WriteFile(blob, []byte("LEGACY-BYTES"), 0o644); err != nil {
+	blob := filepath.Join(out, "blob.tar")
+	if err := os.WriteFile(blob, []byte("FILE-BYTES"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	body, _ := json.Marshal(map[string]string{"key": "vol-file", "local_path": blob})
-	reg, err := http.Post(ts.URL+"/register", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+	register := func(key, localPath string) (int, string) {
+		body, _ := json.Marshal(map[string]string{"key": key, "local_path": localPath})
+		resp, err := http.Post(ts.URL+"/register", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		got, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(got)
 	}
-	reg.Body.Close()
-	if reg.StatusCode != http.StatusCreated {
-		t.Fatalf("register -> %d, want 201", reg.StatusCode)
+
+	// The permission beside the refusal: the directory the file lives in is
+	// an ordinary alias target.
+	if code, body := register("vol-dir", out); code != http.StatusCreated {
+		t.Fatalf("register a directory-valued alias -> %d, want 201 (body %q)", code, body)
+	}
+	code, body := register("vol-file", blob)
+	if code != http.StatusBadRequest {
+		t.Fatalf("register a file-valued alias -> %d, want 400 (body %q)", code, body)
+	}
+	if !strings.Contains(body, "is not a directory") {
+		t.Errorf("the refusal does not say why: %q", body)
+	}
+
+	if _, found := server.Registry().Lookup("vol-dir"); !found {
+		t.Errorf("the accepted alias is missing from the registry")
+	}
+	if rel, found := server.Registry().Lookup("vol-file"); found {
+		t.Errorf("the refused alias reached the registry as %q", rel)
 	}
 
 	resp, err := http.Get(ts.URL + "/artifacts/vol-file")
@@ -1005,11 +1024,56 @@ func TestRequestContainment_FileValuedRegistryAliasIsServed(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	got, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET a file-valued alias -> %d, want 200 (body %q)", resp.StatusCode, got)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET the refused alias -> %d, want 404 (body %q)", resp.StatusCode, got)
 	}
-	if !bytes.Contains(got, []byte("LEGACY-BYTES")) {
-		t.Errorf("alias served wrong content: %q", got)
+	if bytes.Contains(got, []byte("FILE-BYTES")) {
+		t.Errorf("the refused alias was served anyway: %q", got)
+	}
+}
+
+// A file that exists at a key is not an artifact the artifact daemon can serve: no
+// route creates one, so it was planted or the store is damaged. GET and HEAD
+// report it as the daemon's fault, not as a miss that sends the caller to a
+// peer for bytes the daemon has decided not to serve.
+func TestRequestContainment_FileAtAKeyIsAStoreFaultNotAMiss(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	out := filepath.Join(storagePath, "steps", "planted", "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "blob.tar"), []byte("PLANTED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, m := range []string{http.MethodGet, http.MethodHead} {
+		req, err := http.NewRequest(m, ts.URL+"/artifacts/steps/planted/out/blob.tar", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Errorf("%s a file at a key -> %d, want 500 (body %q)", m, resp.StatusCode, got)
+		}
+		if bytes.Contains(got, []byte("PLANTED")) {
+			t.Errorf("%s served the planted file's bytes: %q", m, got)
+		}
+	}
+
+	// The directory the file lives in is still an artifact.
+	resp, err := http.Get(ts.URL + "/artifacts/steps/planted/out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET the directory -> %d, want 200", resp.StatusCode)
 	}
 }
 

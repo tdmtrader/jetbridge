@@ -93,38 +93,37 @@ func TestAC3_RegisterRefusesAnOutOfRootLocalPath(t *testing.T) {
 // can appear without the daemon being involved — which is why validating at
 // registration is not enough.
 //
-// THE SWAPPED TARGET IS A FILE, and that is load-bearing. Swapping in a symlink
-// to a DIRECTORY passes with every defence removed, because filepath.WalkDir
-// does not descend a symlinked root — it stages an escape the code path cannot
-// perform. A symlink to a file reaches os.Open, which follows it.
-//
-// This proves the DISJUNCTION: deleting lookupRegistry's use-time check leaves
-// it green, and so does reverting every handle-backed read. Only losing both
-// fails it.
+// The swapped target is a DIRECTORY, because an artifact is one: the artifact daemon
+// serves nothing else, so a symlink to a file reaches no read at all. The
+// directory read goes through the root handle, which refuses an escaping
+// link on its own, so the status pins what this test is really about:
+// lookupRegistry's use-time check evicts the swapped alias, and the answer is
+// a 404 -- not a 500 from the handle refusing a path the registry still
+// believed in. Deleting the use-time check turns the 404 into a 500 and
+// reddens this; the no-bytes assertion is the floor beneath it.
 func TestAC2_SwappedAliasTargetIsNeverRead(t *testing.T) {
 	const secret = "SECRET-OUTSIDE-THE-STORE"
 	const contained = "legitimately-contained-content"
 
-	// setup registers a legitimate alias to a real file inside the store and
-	// returns the base URL plus a swap function that replaces that file with a
-	// symlink pointing out of the store.
+	// setup registers a legitimate alias to a real directory inside the store
+	// and returns the base URL plus a swap function that replaces that
+	// directory with a symlink pointing out of the store.
 	setup := func(t *testing.T) (base string, swap func()) {
 		t.Helper()
 		ts, storagePath, server := setupServerWithRegistry(t)
 
 		outside := t.TempDir()
-		outsideFile := filepath.Join(outside, "data")
-		if err := os.WriteFile(outsideFile, []byte(secret), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(outside, "data"), []byte(secret), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
-		// A real file, registered legitimately: at this moment the alias is
-		// contained and would pass any registration-time check.
+		// A real directory, registered legitimately: at this moment the alias
+		// is contained and would pass any registration-time check.
 		target := filepath.Join(storagePath, "caches", "rc-42")
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(target, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(target, []byte(contained), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(target, "data"), []byte(contained), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := server.Registry().RegisterAlias("rc-42", target); err != nil {
@@ -134,10 +133,10 @@ func TestAC2_SwappedAliasTargetIsNeverRead(t *testing.T) {
 		return ts.URL, func() {
 			// What a task container can do through the hostPath mount without
 			// the daemon being involved.
-			if err := os.Remove(target); err != nil {
+			if err := os.RemoveAll(target); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(outsideFile, target); err != nil {
+			if err := os.Symlink(outside, target); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -178,6 +177,9 @@ func TestAC2_SwappedAliasTargetIsNeverRead(t *testing.T) {
 			got := body(t, resp)
 			if bytes.Contains(got, []byte(secret)) {
 				t.Fatalf("content from outside the storage root was served (status %d)", resp.StatusCode)
+			}
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("a swapped alias answered %d, want 404: the use-time check evicts it", resp.StatusCode)
 			}
 		})
 

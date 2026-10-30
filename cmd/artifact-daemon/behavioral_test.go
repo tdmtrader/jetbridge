@@ -154,34 +154,6 @@ func TestGetDirectory_SymlinksPreserved(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DA-02: GET file artifact content type
-// ---------------------------------------------------------------------------
-
-func TestGetFile_ContentType(t *testing.T) {
-	ts, _ := setupServer(t)
-
-	// PUT a file artifact.
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/ct-test.tar", strings.NewReader("file-data"))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("PUT: %v", err)
-	}
-	resp.Body.Close()
-
-	// GET and check Content-Type.
-	resp, err = http.Get(ts.URL + "/artifacts/ct-test.tar")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/octet-stream" {
-		t.Errorf("expected Content-Type application/octet-stream, got %q", ct)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // DA-07: POST /register edge cases
 // ---------------------------------------------------------------------------
 

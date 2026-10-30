@@ -11,23 +11,28 @@ import (
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
 
-func TestSweeper_RemovesExpiredArtifacts(t *testing.T) {
+// The sweep takes step directories and nothing else. A file under the root --
+// however old -- is not the sweeper's to remove: nothing the artifact daemon serves is
+// a file, so one that is there was planted or is the store's own record.
+func TestSweeper_RemovesExpiredStepDirectoriesAndLeavesFilesAlone(t *testing.T) {
 	storagePath := t.TempDir()
+	expired := expiredStepDir(t, storagePath, "expired-handle")
+
+	fresh := filepath.Join(storagePath, "steps", "fresh-handle")
+	if err := os.MkdirAll(fresh, 0755); err != nil {
+		t.Fatal(err)
+	}
+
 	artifactsDir := filepath.Join(storagePath, "artifacts")
 	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-
-	// Create an old file (mtime set to 3 hours ago)
 	oldFile := filepath.Join(artifactsDir, "old.tar")
 	if err := os.WriteFile(oldFile, []byte("old"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	os.Chtimes(oldFile, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour))
-
-	// Create a fresh file
-	freshFile := filepath.Join(artifactsDir, "fresh.tar")
-	if err := os.WriteFile(freshFile, []byte("fresh"), 0644); err != nil {
+	old := time.Now().Add(-3 * time.Hour)
+	if err := os.Chtimes(oldFile, old, old); err != nil {
 		t.Fatal(err)
 	}
 
@@ -36,34 +41,14 @@ func TestSweeper_RemovesExpiredArtifacts(t *testing.T) {
 
 	sweeper.SweepOnce()
 
-	// Old file should be gone
-	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
-		t.Error("expected old file to be removed")
+	if _, err := os.Stat(expired); !os.IsNotExist(err) {
+		t.Errorf("the expired step directory was not removed (err=%v)", err)
 	}
-
-	// Fresh file should remain
-	if _, err := os.Stat(freshFile); err != nil {
-		t.Error("expected fresh file to still exist")
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("the fresh step directory was removed: %v", err)
 	}
-}
-
-func TestSweeper_RemovesExpiredLegacyFlatFiles(t *testing.T) {
-	storagePath := t.TempDir()
-	artifactsDir := filepath.Join(storagePath, "artifacts")
-	os.MkdirAll(artifactsDir, 0755)
-
-	// Old legacy tar file at the top level of /artifacts/
-	oldFile := filepath.Join(artifactsDir, "legacy.tar")
-	os.WriteFile(oldFile, []byte("data"), 0644)
-	os.Chtimes(oldFile, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour))
-
-	logger := lagertest.NewTestLogger("sweeper")
-	sweeper := daemon.NewSweeper(logger, storagePath, 2*time.Hour, 5*time.Minute, nil)
-
-	sweeper.SweepOnce()
-
-	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
-		t.Error("expected expired legacy flat file to be removed")
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Errorf("a file under the root was swept; the sweep takes step directories only: %v", err)
 	}
 }
 

@@ -82,19 +82,9 @@ func TestSweeper_SparesTheDirectoryOfAStepWhosePodIsStillRunning(t *testing.T) {
 
 // When the node cannot be asked, no step directory is destroyed on this pass,
 // and none has its clock restarted either: the next pass that can ask decides.
-// Legacy flat files have no pod and are swept as before.
 func TestSweeper_SparesEveryStepDirectoryWhenThePodViewFails(t *testing.T) {
 	storagePath := t.TempDir()
 	expired := expiredStepDir(t, storagePath, "unknown-handle")
-	legacy := filepath.Join(storagePath, "artifacts", "legacy.tar")
-	if err := os.MkdirAll(filepath.Dir(legacy), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacy, []byte("data"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-3 * time.Hour)
-	_ = os.Chtimes(legacy, old, old)
 
 	untouched, err := os.Stat(expired)
 	if err != nil {
@@ -114,9 +104,6 @@ func TestSweeper_SparesEveryStepDirectoryWhenThePodViewFails(t *testing.T) {
 	}
 	if !info.ModTime().Equal(untouched.ModTime()) {
 		t.Errorf("the spared directory's mtime was changed to %v; a failed pod view must not restart its TTL", info.ModTime())
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Errorf("the legacy flat file was not removed (err=%v)", err)
 	}
 }
 

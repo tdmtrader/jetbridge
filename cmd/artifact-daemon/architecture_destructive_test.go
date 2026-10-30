@@ -95,15 +95,6 @@ var destructiveInventory = map[string]struct {
 	"artifact-daemon/server.go | Server.handleStreamIn | stepsRoot.RemoveAll(tmpName)": {1, admission{
 		why: "removes the temp directory this call just created, on every error path.",
 	}},
-	"artifact-daemon/server.go | Server.handlePutArtifact | s.root.Rename(tmpKey)": {1, admission{
-		guard:           "refuseIfCaptureHeld",
-		ledgerGuard:     "refuseControlDirectory",
-		ledgerGuardedIn: "validateRequestKey",
-		why:             "the ordinary PUT replaces the bytes at its key.",
-	}},
-	"artifact-daemon/server.go | Server.handlePutArtifact | s.root.Remove(tmpKey)": {4, admission{
-		why: "removes the temp file this call just created, on each error path.",
-	}},
 	"artifact-daemon/server.go | Server.copyArtifact | parent.RemoveAll(base)": {1, admission{
 		guard: "refuseIfCaptureHeldPath", guardedIn: "Server.resolveOne",
 		ledgerGuard:     "refuseControlDirectory",
@@ -145,10 +136,6 @@ var destructiveInventory = map[string]struct {
 		guard: "sourceLedger",
 		why: "the TTL sweep. Nothing refreshes a held source's mtime, so this is the path a " +
 			"source waiting to be sealed is most likely to meet.",
-	}},
-	"artifact-daemon/sweeper.go | Sweeper.sweep | os.Remove(filePath)": {1, admission{
-		why: "legacy flat files directly under artifacts/. A capture's step directory is a directory " +
-			"under steps/ and can never appear here; the loop skips every subdirectory.",
 	}},
 	"artifact-daemon/alias_store.go | AliasStore.Save | os.Rename(tmpPath)": {1, admission{
 		why: "replaces the alias store's own file. It is this daemon's record, not a source.",

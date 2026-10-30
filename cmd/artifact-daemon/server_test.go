@@ -29,6 +29,24 @@ func setupServer(t *testing.T) (*httptest.Server, string) {
 	return ts, storagePath
 }
 
+// /artifacts/ takes GET, HEAD and DELETE. Bytes come in through PUT /stream-in/
+// alone: a second write route was a second mechanism for one job, and the
+// mux answers for it so nothing in the handler has to.
+func TestPutArtifacts_IsNotARoute(t *testing.T) {
+	ts, _ := setupServer(t)
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/steps/build-1/out", strings.NewReader("data"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("PUT /artifacts/: expected 405, got %d", resp.StatusCode)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	ts, _ := setupServer(t)
 
@@ -40,63 +58,6 @@ func TestHealthz(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
-	}
-}
-
-func TestPutAndGetArtifact(t *testing.T) {
-	ts, _ := setupServer(t)
-
-	content := "hello artifact"
-
-	// PUT
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/build-42-output.tar", strings.NewReader(content))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("PUT failed: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("PUT: expected 201, got %d", resp.StatusCode)
-	}
-
-	// GET
-	resp, err = http.Get(ts.URL + "/artifacts/build-42-output.tar")
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("GET: expected 200, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != content {
-		t.Errorf("GET body: expected %q, got %q", content, string(body))
-	}
-}
-
-func TestHeadArtifactExists(t *testing.T) {
-	ts, _ := setupServer(t)
-
-	// PUT first
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/exists.tar", strings.NewReader("data"))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("PUT failed: %v", err)
-	}
-	resp.Body.Close()
-
-	// HEAD existing
-	req, _ = http.NewRequest(http.MethodHead, ts.URL+"/artifacts/exists.tar", nil)
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("HEAD failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("HEAD existing: expected 200, got %d", resp.StatusCode)
 	}
 }
 
@@ -116,19 +77,20 @@ func TestHeadArtifactMissing(t *testing.T) {
 }
 
 func TestDeleteArtifact(t *testing.T) {
-	ts, _ := setupServer(t)
+	ts, storagePath := setupServer(t)
 
-	// PUT first
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/to-delete.tar", strings.NewReader("data"))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("PUT failed: %v", err)
+	// A step directory on disk, the way a step pod leaves one.
+	dir := filepath.Join(storagePath, "steps", "to-delete", "out")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	resp.Body.Close()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// DELETE
-	req, _ = http.NewRequest(http.MethodDelete, ts.URL+"/artifacts/to-delete.tar", nil)
-	resp, err = http.DefaultClient.Do(req)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/artifacts/steps/to-delete/out", nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE failed: %v", err)
 	}
@@ -139,7 +101,7 @@ func TestDeleteArtifact(t *testing.T) {
 	}
 
 	// GET should now 404
-	resp, err = http.Get(ts.URL + "/artifacts/to-delete.tar")
+	resp, err = http.Get(ts.URL + "/artifacts/steps/to-delete/out")
 	if err != nil {
 		t.Fatalf("GET after DELETE failed: %v", err)
 	}
@@ -164,42 +126,6 @@ func TestGetMissingArtifact(t *testing.T) {
 	}
 }
 
-func TestNestedKeys(t *testing.T) {
-	ts, storagePath := setupServer(t)
-
-	content := "nested artifact data"
-
-	// PUT with nested key
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/caches/job-42/build-abc.tar", strings.NewReader(content))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("PUT nested failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("PUT nested: expected 201, got %d", resp.StatusCode)
-	}
-
-	// Verify subdirectories were created on disk
-	expectedPath := filepath.Join(storagePath, "caches", "job-42", "build-abc.tar")
-	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
-		t.Errorf("nested key did not create subdirectories: %s not found", expectedPath)
-	}
-
-	// GET should return the data
-	resp, err = http.Get(ts.URL + "/artifacts/caches/job-42/build-abc.tar")
-	if err != nil {
-		t.Fatalf("GET nested failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != content {
-		t.Errorf("GET nested: expected %q, got %q", content, string(body))
-	}
-}
-
 func TestDeleteMissingArtifact(t *testing.T) {
 	ts, _ := setupServer(t)
 
@@ -213,28 +139,6 @@ func TestDeleteMissingArtifact(t *testing.T) {
 	// DELETE on missing key should be idempotent (204)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("DELETE missing: expected 204, got %d", resp.StatusCode)
-	}
-}
-
-func TestPutStoresAtCorrectPath(t *testing.T) {
-	ts, storagePath := setupServer(t)
-
-	content := "file content"
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/my-key.tar", strings.NewReader(content))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("PUT failed: %v", err)
-	}
-	resp.Body.Close()
-
-	// Verify file exists on disk at the right location
-	expectedPath := filepath.Join(storagePath, "my-key.tar")
-	data, err := os.ReadFile(expectedPath)
-	if err != nil {
-		t.Fatalf("file not found at %s: %v", expectedPath, err)
-	}
-	if string(data) != content {
-		t.Errorf("file content: expected %q, got %q", content, string(data))
 	}
 }
 
@@ -1055,43 +959,6 @@ func TestStreamIn_InFlightUpload_NotVisibleAtFinalPath(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Errorf("expected 'hello', got %q", string(data))
-	}
-}
-
-// PUT /artifacts/ writes through a temp file + rename so an in-flight or
-// failed upload never exposes a truncated file at the final path.
-func TestPutArtifact_TruncatedUpload_LeavesNoPartialFile(t *testing.T) {
-	ts, storagePath := setupServer(t)
-
-	pr, pw := io.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/artifacts/broken.tar", pr)
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			resp.Body.Close()
-		}
-	}()
-
-	// Write part of the body, then stall with the connection open. The
-	// handler is now mid-copy; the final path must not exist yet.
-	if _, err := pw.Write([]byte("partial")); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(300 * time.Millisecond)
-
-	finalPath := filepath.Join(storagePath, "broken.tar")
-	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
-		t.Errorf("broken.tar visible during in-flight upload, stat err: %v", err)
-	}
-
-	// Kill the upload mid-body; no partial file may remain.
-	pw.CloseWithError(io.ErrUnexpectedEOF)
-	<-done
-
-	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
-		t.Errorf("expected no broken.tar after failed upload, stat err: %v", err)
 	}
 }
 

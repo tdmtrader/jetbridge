@@ -9,12 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -160,9 +158,9 @@ func (s *Server) acquireDest(ctx context.Context, dest string) (func(), error) {
 const maxConcurrentBatchResolves = 4
 
 // maxJSONBodyBytes caps the JSON control-plane bodies. Deliberately NOT applied
-// to PUT /stream-in/ or PUT /artifacts/, which stream whole artifacts: every
-// mirror push and ATC upload goes through those, and a cap there would break
-// artifact delivery outright.
+// to PUT /stream-in/, which streams whole artifacts: every mirror push and ATC
+// upload goes through it, and a cap there would break artifact delivery
+// outright.
 const maxJSONBodyBytes = 1 << 20
 
 // NewServer creates a new artifact-daemon server.
@@ -229,8 +227,8 @@ func (s *Server) SourceLedger() *outputplane.Classifier {
 }
 
 // stepHandle returns the guard key for a location: the {handle} segment for
-// anything under steps/, or the location itself for non-steps entries (legacy
-// flat files) so they still get a consistent per-location lock.
+// anything under steps/, or the location itself for a registered location
+// elsewhere under the root, so it still gets a consistent per-location lock.
 //
 // The key MUST be identical to the sweeper's, which is entry.Name() — a bare
 // handle — or the two stop excluding each other and the sweeper deletes a
@@ -356,7 +354,6 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	}
 
 	handle(artifactwire.GetArtifact, s.handleGetArtifact)
-	handle(artifactwire.PutArtifact, s.handlePutArtifact)
 	handle(artifactwire.DeleteArtifact, s.handleDeleteArtifact)
 	handle(artifactwire.HeadArtifact, s.handleHeadArtifact)
 	handle(artifactwire.Register, s.handleRegister)
@@ -506,10 +503,10 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// production path today and cross-node it comes through here. What closes
 	// it is that the alias key is `ArtifactKey(vol.Handle())`, the OUTPUT
 	// volume's handle verbatim, and no production route creates a literal
-	// there: handleStreamIn and PUT /artifacts/ are both mTLS-protected and are
-	// driven at INPUT volume handles, which are different volumes with
-	// different handles. The shadow needs a literal at the alias key and
-	// nothing makes one.
+	// there: handleStreamIn, the one route that writes under a key, is
+	// mTLS-protected and is driven at INPUT volume handles, which are different
+	// volumes with different handles. The shadow needs a literal at the alias
+	// key and nothing makes one.
 	//
 	// If that ever stops being true -- a route that writes at an output volume
 	// handle, or an alias keyed on something a caller can also name -- the fix
@@ -532,48 +529,37 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An artifact is a directory: stream-in extracts one, a step pod writes
+	// one, and /register accepts nothing else. A file at the location is not an
+	// artifact the artifact daemon can serve -- it was planted, or the store is damaged
+	// -- and that is the daemon's fault to report, not a miss for the caller to
+	// go looking elsewhere for.
+	if !info.IsDir() {
+		s.logger.Error("artifact-location-is-not-a-directory", errNotADirectory, lager.Data{"rel": string(loc)})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	// Hold the read guard while serving so the sweeper cannot delete the
 	// directory mid-stream. Released via defer: the tar-abort path panics.
 	release := s.guard.BeginRead(s.stepHandle(loc))
 	defer release()
 	s.touchStepDir(loc)
 
-	// Directory: tar on-the-fly and stream.
-	if info.IsDir() {
-		w.Header().Set("Content-Type", "application/x-tar")
-		if err := s.tarDirectory(w, loc); err != nil {
-			s.logger.Error("failed-to-tar-artifact", err, lager.Data{"rel": string(loc)})
-			// The 200 header and part of the body are already out; abort
-			// the connection so the client sees a hard failure instead of
-			// a clean-looking truncated tar.
-			panic(http.ErrAbortHandler)
-		}
-		return
-	}
-
-	// File: serve as-is (backward compat for legacy tar files).
-	//
-	// Open by KEY through the handle normally. When the registry fallback
-	// substituted an alias path, open THAT instead — the key is the one that
-	// did not exist, which is why we fell back, and opening it returns a 500 on
-	// a request that should succeed. The directory branch above already uses
-	// `path` for exactly this reason; migrating one branch and not the other is
-	// how this broke.
-	//
-	f, err := s.root.Open(osName(loc))
-	if err != nil {
-		s.logger.Error("failed-to-open-artifact", err, lager.Data{"rel": string(loc)})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
-	w.Header().Set("Content-Type", "application/octet-stream")
-	if _, err := io.Copy(w, f); err != nil {
-		s.logger.Error("failed-to-stream-artifact", err, lager.Data{"rel": string(loc)})
+	w.Header().Set("Content-Type", "application/x-tar")
+	if err := s.tarDirectory(w, loc); err != nil {
+		s.logger.Error("failed-to-tar-artifact", err, lager.Data{"rel": string(loc)})
+		// The 200 header and part of the body are already out; abort
+		// the connection so the client sees a hard failure instead of
+		// a clean-looking truncated tar.
 		panic(http.ErrAbortHandler)
 	}
 }
+
+// errNotADirectory is the one reason a location that exists is still not an
+// artifact. /register refuses it at the door; GET and HEAD report it as the
+// store's fault when they meet it anyway.
+var errNotADirectory = errors.New("is not a directory")
 
 // tarDirectory writes a tar archive of the directory to w. Any error —
 // including a file changing or disappearing mid-walk — is returned so the
@@ -593,75 +579,6 @@ func (s *Server) touchStepDir(rel RelKey) {
 	}
 	now := time.Now()
 	_ = s.root.Chtimes(path.Join("steps", segments[1]), now, now)
-}
-
-func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
-	key, err := s.artifactKey(r)
-	if err != nil {
-		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
-		return
-	}
-	absPath := filepath.Join(s.storagePath, key)
-
-	// The output plane's hold, before anything is created or replaced. A PUT
-	// under a held source would replace the producer's bytes with no record
-	// that it happened.
-	if class, err := s.refuseIfCaptureHeld(RelKey(key)); err != nil {
-		s.captureRefusal(w, r, RelKey(key), class, err)
-		return
-	}
-
-	if dir := path.Dir(key); dir != "." {
-		if err := s.root.MkdirAll(dir, 0755); err != nil {
-			s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": absPath})
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Write through a temp file + rename: GET serves whatever exists at the
-	// final path, so an in-flight or failed upload must never be visible
-	// there as a truncated artifact.
-	// os.Root has no CreateTemp, so the temp name is made in the same
-	// hand-rolled way as mkdirTempIn and opened through the handle.
-	tmpKey := path.Join(path.Dir(key), ".put-tmp-"+strconv.FormatUint(rand.Uint64(), 36))
-	f, err := s.root.OpenFile(tmpKey, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		s.logger.Error("failed-to-create-artifact", err, lager.Data{"path": absPath})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if _, err := io.Copy(f, r.Body); err != nil {
-		f.Close()
-		s.root.Remove(tmpKey)
-		s.logger.Error("failed-to-write-artifact", err, lager.Data{"path": absPath})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if err := f.Close(); err != nil {
-		s.root.Remove(tmpKey)
-		s.logger.Error("failed-to-close-artifact", err, lager.Data{"path": absPath})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	// CreateTemp uses 0600; artifacts are served to any authenticated reader.
-	if err := s.root.Chmod(tmpKey, 0644); err != nil {
-		s.root.Remove(tmpKey)
-		s.logger.Error("failed-to-chmod-artifact", err, lager.Data{"path": absPath})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := s.root.Rename(tmpKey, key); err != nil {
-		s.root.Remove(tmpKey)
-		s.logger.Error("failed-to-rename-artifact", err, lager.Data{"path": absPath})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
 }
 
 // captureRefusal answers a destructive request the output plane's ledger
@@ -987,18 +904,25 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 	// Check filesystem first, then fall back to registry aliases. Both stats go
 	// through the root handle now that the registry value is a location under
 	// the same root.
-	if _, err := s.root.Stat(osName(loc)); err != nil {
+	info, err := s.root.Stat(osName(loc))
+	if err != nil && os.IsNotExist(err) {
+		if regLoc, found := s.lookupRegistryAlias(r); found {
+			loc = regLoc
+			info, err = s.root.Stat(osName(loc))
+		}
+	}
+	if err != nil {
 		if os.IsNotExist(err) {
-			if regLoc, found := s.lookupRegistryAlias(r); found {
-				if _, err := s.root.Stat(osName(regLoc)); err == nil {
-					w.WriteHeader(http.StatusOK)
-					return
-				}
-			}
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"key": key})
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// The same rule GET applies: only a directory is an artifact.
+	if !info.IsDir() {
+		s.logger.Error("artifact-location-is-not-a-directory", errNotADirectory, lager.Data{"rel": string(loc)})
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -1086,8 +1010,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate that the path exists on disk.
-	if _, err := os.Stat(req.LocalPath); err != nil {
+	// Validate that the path exists on disk, and is a directory: an alias is a
+	// second name for an artifact, and an artifact is a directory. A file-valued
+	// alias would make GET a raw file server for anything under the root.
+	info, err := os.Stat(req.LocalPath)
+	if err != nil {
 		if os.IsNotExist(err) {
 			s.logger.Info("register-path-not-found", lager.Data{"key": req.Key, "path": req.LocalPath})
 			s.refuse(w, r, http.StatusNotFound, reasonNotFound, fmt.Errorf("path not found: %s", req.LocalPath))
@@ -1095,6 +1022,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Error("register-stat-error", err, lager.Data{"key": req.Key, "path": req.LocalPath})
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !info.IsDir() {
+		s.refuse(w, r, http.StatusBadRequest, reasonNotDirectory, fmt.Errorf("path %s %w", req.LocalPath, errNotADirectory))
 		return
 	}
 
@@ -1106,7 +1037,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.ReadOnly {
 		register = s.registry.RegisterReadOnlyAlias
 	}
-	_, err := register(req.Key, req.LocalPath)
+	_, err = register(req.Key, req.LocalPath)
 	if err != nil {
 		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
 		// Two different refusals with two different statuses. An uncontained
@@ -1567,33 +1498,23 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("X-Node-Name", s.nodeName)
 	}
 
+	// The same rule as handleGetArtifact: a resource cache is a directory.
+	if !info.IsDir() {
+		s.logger.Error("resource-cache-location-is-not-a-directory", errNotADirectory, lager.Data{"key": key, "rel": string(loc)})
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	// Same guard discipline as handleGetArtifact: no sweeps mid-stream.
 	release := s.guard.BeginRead(s.stepHandle(loc))
 	defer release()
 	s.touchStepDir(loc)
 
-	if info.IsDir() {
-		w.Header().Set("Content-Type", "application/x-tar")
-		if err := s.tarDirectory(w, loc); err != nil {
-			s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "rel": string(loc)})
-			// Headers already sent; abort so the peer sees a hard failure
-			// rather than a clean-looking truncated tar.
-			panic(http.ErrAbortHandler)
-		}
-		return
-	}
-
-	f, err := s.root.Open(osName(loc))
-	if err != nil {
-		s.logger.Error("resource-cache-open-error", err, lager.Data{"key": key, "rel": string(loc)})
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
-	w.Header().Set("Content-Type", "application/octet-stream")
-	if _, err := io.Copy(w, f); err != nil {
-		s.logger.Error("failed-to-stream-resource-cache", err, lager.Data{"key": key, "rel": string(loc)})
+	w.Header().Set("Content-Type", "application/x-tar")
+	if err := s.tarDirectory(w, loc); err != nil {
+		s.logger.Error("failed-to-tar-resource-cache", err, lager.Data{"key": key, "rel": string(loc)})
+		// Headers already sent; abort so the peer sees a hard failure
+		// rather than a clean-looking truncated tar.
 		panic(http.ErrAbortHandler)
 	}
 }

@@ -131,29 +131,32 @@ Feature: What the artifact daemon refuses
   # /register takes an ABSOLUTE path chosen by the caller rather than a key
   # the daemon joins, so it is a different validator with the same job. An
   # accepted alias to a path outside the root is an arbitrary read of the
-  # node: GET /artifacts/<key> then serves any file the daemon can open.
+  # node: GET /artifacts/<key> then serves whatever the artifact daemon can open there.
   #
   # The alias-store assertion is the part that is easy to leave out and
   # expensive to lose. This handler used to persist the alias BEFORE it
   # finished validating, so a 400 left a poisoned entry in aliases.json that
   # was reloaded at the next boot — the refusal was undone by a restart. It
   # is asserted against the file on disk, not the in-memory registry, because
-  # that is where the defect lived. Registering "vol-file" first is what makes
-  # it non-vacuous: the file exists and names one alias, and the refused one
+  # that is where the defect lived. Registering "vol-dir" first is what makes
+  # it non-vacuous: the file exists and names one alias, and each refused one
   # is absent from it.
   #
-  # "vol-file" also carries a regression of its own. When GET's directory
-  # branch moved to the alias path and the file branch was left opening the
-  # key — the key that did not exist, which is why the fallback ran — a
-  # file-valued alias started 500ing. No test had ever registered an alias to
-  # a file.
-  Scenario: An alias to a path outside the storage root is refused, and never reaches the alias store
+  # An artifact is a directory and an alias is a second name for one, so an
+  # alias to a FILE is refused the same way, and says so. Accepted, it would
+  # have made GET a raw file server for anything under the root; the artifact daemon
+  # used to serve exactly that, as the "legacy tar file" branch.
+  Scenario: An alias to a path outside the storage root, or to a file, is refused and never reaches the alias store
     Given a real artifact daemon guarding its storage root
     And a directory outside that root holding a file that reads "original"
-    And the store holds a file "legacy/blob.tar" reading "LEGACY-BYTES"
-    When the ATC registers "vol-file" as living at the stored path "legacy/blob.tar"
+    And the store holds a file "steps/kept/out/data.txt" reading "KEPT-BYTES"
+    When the ATC registers "vol-dir" as living at the stored path "steps/kept/out"
     Then the daemon replies with 201
-    And the alias store on disk names "vol-file"
+    And the alias store on disk names "vol-dir"
+    When the ATC registers "vol-file" as living at the stored path "steps/kept/out/data.txt"
+    Then the daemon replies with 400
+    And the refusal says "is not a directory"
+    And the alias store on disk does not name "vol-file"
     When the ATC registers "pwn" as living at the file outside the storage root
     Then the daemon replies with 400
     And the refusal says "resolves outside the storage root"
@@ -162,8 +165,11 @@ Feature: What the artifact daemon refuses
     Then the daemon replies with 404
     And the answer does not contain "original"
     When the ATC sends "GET" for the artifact key "vol-file"
+    Then the daemon replies with 404
+    And the answer does not contain "KEPT-BYTES"
+    When the ATC sends "GET" for the artifact key "vol-dir"
     Then the daemon replies with 200
-    And the answer's bytes are "LEGACY-BYTES"
+    And the answer contains "KEPT-BYTES"
 
   # /resolve-batch is the mTLS-EXEMPT endpoint — reachable with no client
   # certificate at all — and it takes a destination the caller chose. An
@@ -502,14 +508,14 @@ Feature: What the artifact daemon refuses
     And the store holds a file "steps/rc/f" reading "ok"
     When the ATC registers "alias1" as living at the stored path "steps/a1/d"
     Then the daemon replies with 201
-    When the ATC registers "rc-9" as living at the stored path "steps/rc/f"
+    When the ATC registers "rc-9" as living at the stored path "steps/rc"
     Then the daemon replies with 201
     When the ATC asks it to resolve "alias1" into the stored destination "resolved/before"
     Then the daemon replies with 200
     And the store's file "resolved/before/payload.txt" reads "PAYLOAD"
     When the ATC asks for the resource cache "rc-9"
     Then the daemon replies with 200
-    And the answer's bytes are "ok"
+    And the answer contains "ok"
     When the ATC asks whether the daemon holds the resource cache "rc-9"
     Then the daemon replies with 200
     When the path behind "alias1" is swapped for a link to the directory outside the root

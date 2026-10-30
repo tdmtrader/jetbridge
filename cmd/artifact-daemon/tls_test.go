@@ -250,7 +250,6 @@ func TestTLS_ProtectedPaths_RejectWithoutClientCert(t *testing.T) {
 		path   string
 	}{
 		{"GET", "/artifacts/steps/build-1/out"},
-		{"PUT", "/artifacts/test-key"},
 		{"DELETE", "/artifacts/test-key"},
 		{"HEAD", "/artifacts/steps/build-1/out"},
 		{"POST", "/register"},
