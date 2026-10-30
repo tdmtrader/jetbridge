@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
-	"github.com/concourse/concourse/atc/db/lock/lockfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -180,85 +179,68 @@ var _ = Describe("Locks", func() {
 			})
 		})
 
-		Context("when two locks are being acquired at the same time", func() {
-			var fakeLockDB *lockfakes.FakeLockDB
-			var acquiredLock2 chan struct{}
-			var lock2Err error
-			var lock2Acquired bool
-			var fakeLockFactory lock.LockFactory
+		// The database is asked only after the factory's own registry and
+		// mutex have let a caller through, so callers racing on one factory
+		// are serialized there: a second attempt made while the first is
+		// still in flight sees the id registered and never reaches Postgres,
+		// which would happily grant the same session the same advisory lock
+		// twice.
+		Context("when several callers race for the same lock on one factory", func() {
+			It("grants it to exactly one of them", func() {
+				const callers = 8
 
-			BeforeEach(func() {
-				fakeLockDB = new(lockfakes.FakeLockDB)
-				fakeLockFactory = lock.NewTestLockFactory(fakeLockDB)
-				acquiredLock2 = make(chan struct{})
+				var wg sync.WaitGroup
+				wg.Add(callers)
+				start := make(chan struct{})
+				acquiredLocks := make(chan lock.Lock, callers)
+				errs := make(chan error, callers)
 
-				called := false
-				readyToAcquire := make(chan struct{})
-
-				fakeLockDB.AcquireStub = func(id lock.LockID) (bool, error) {
-					if !called {
-						called = true
-
-						go func() {
-							close(readyToAcquire)
-							_, lock2Acquired, lock2Err = fakeLockFactory.Acquire(logger, id)
-							close(acquiredLock2)
-						}()
-
-						<-readyToAcquire
-					}
-
-					return true, nil
+				for i := 0; i < callers; i++ {
+					go func() {
+						defer wg.Done()
+						<-start
+						l, acquired, err := lockFactory.Acquire(logger, lock.LockID{57})
+						if err != nil {
+							errs <- err
+							return
+						}
+						if acquired {
+							acquiredLocks <- l
+						}
+					}()
 				}
-			})
 
-			It("only acquires one of the locks", func() {
-				_, acquired, err := fakeLockFactory.Acquire(logger, lock.LockID{57})
+				close(start)
+				wg.Wait()
+				close(acquiredLocks)
+				close(errs)
+
+				Expect(errs).To(BeEmpty())
+				Expect(acquiredLocks).To(HaveLen(1))
+				dbLock = <-acquiredLocks
+			})
+		})
+
+		// Advisory locks are session-scoped and re-entrant within a session,
+		// so the registry is what tells two holders apart. A second factory
+		// over the same connections has its own registry, and Postgres lets
+		// the same session take the lock again: both acquire. Production
+		// hands every factory its own connections, which is why this is a
+		// property of the registry and not a defect.
+		Context("when two factories share one database session", func() {
+			It("lets each of them acquire the same lock", func() {
+				sharedFactory := lock.NewLockFactory(lockConns, fakeLogFunc, fakeLogFunc)
+
+				var acquired bool
+				var err error
+				dbLock, acquired, err = lockFactory.Acquire(logger, lock.LockID{57})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(acquired).To(BeTrue())
 
-				<-acquiredLock2
-
-				Expect(lock2Err).NotTo(HaveOccurred())
-				Expect(lock2Acquired).To(BeFalse())
-			})
-
-			Context("when locks are being created on different lock factory (different db conn)", func() {
-				var fakeLockFactory2 lock.LockFactory
-
-				BeforeEach(func() {
-					fakeLockFactory2 = lock.NewTestLockFactory(fakeLockDB)
-
-					called := false
-					readyToAcquire := make(chan struct{})
-
-					fakeLockDB.AcquireStub = func(id lock.LockID) (bool, error) {
-						if !called {
-							called = true
-
-							go func() {
-								close(readyToAcquire)
-								_, lock2Acquired, lock2Err = fakeLockFactory2.Acquire(logger, id)
-								close(acquiredLock2)
-							}()
-
-							<-readyToAcquire
-						}
-
-						return true, nil
-					}
-				})
-
-				It("allows to acquire both locks", func() {
-					_, acquired, err := fakeLockFactory.Acquire(logger, lock.LockID{57})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(acquired).To(BeTrue())
-
-					<-acquiredLock2
-
-					Expect(lock2Err).NotTo(HaveOccurred())
-					Expect(lock2Acquired).To(BeTrue())
-				})
+				sharedLock, acquired, err := sharedFactory.Acquire(logger, lock.LockID{57})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(acquired).To(BeTrue())
+				Expect(sharedLock.Release()).To(Succeed())
 			})
 		})
 	})
