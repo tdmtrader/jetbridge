@@ -79,8 +79,6 @@ import (
 	"github.com/tedsuo/ifrit/http_server"
 	"github.com/tedsuo/ifrit/sigmon"
 	"go.yaml.in/yaml/v3"
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/oauth2"
 	"golang.org/x/time/rate"
 	"k8s.io/client-go/kubernetes"
@@ -166,11 +164,6 @@ type RunCommand struct {
 	TLSCert     flag.File `long:"tls-cert"      description:"File containing an SSL certificate."`
 	TLSKey      flag.File `long:"tls-key"       description:"File containing an RSA private key, used to encrypt HTTPS traffic."`
 	TLSCaCert   flag.File `long:"tls-ca-cert"   description:"File containing the client CA certificate, enables mTLS"`
-
-	LetsEncrypt struct {
-		Enable  bool     `long:"enable-lets-encrypt"   description:"Automatically configure TLS certificates via Let's Encrypt/ACME."`
-		ACMEURL flag.URL `long:"lets-encrypt-acme-url" description:"URL of the ACME CA directory endpoint." default:"https://acme-v02.api.letsencrypt.org/directory"`
-	} `group:"Let's Encrypt Configuration"`
 
 	ExternalURL   flag.URL `long:"external-url" description:"URL used to reach any ATC from the outside world."`
 	OIDCIssuerURL flag.URL `long:"oidc-issuer-url" description:"URL to use as the OIDC issuer for IDToken generation. If not set, defaults to external-url. Must be publicly accessible for cloud provider OIDC verification."`
@@ -1063,7 +1056,7 @@ func (cmd *RunCommand) constructAPIMembers(
 	}
 
 	if httpsHandler != nil {
-		tlsConfig, err := cmd.tlsConfig(logger, dbConn)
+		tlsConfig, err := cmd.tlsConfig(logger)
 		if err != nil {
 			return nil, err
 		}
@@ -1893,19 +1886,17 @@ func (cmd *RunCommand) skyHttpClient() (*http.Client, error) {
 			return nil, err
 		}
 
-		if !cmd.LetsEncrypt.Enable {
-			cert, err := tls.LoadX509KeyPair(string(cmd.TLSCert), string(cmd.TLSKey))
-			if err != nil {
-				return nil, err
-			}
-
-			x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
-			if err != nil {
-				return nil, err
-			}
-
-			certpool.AddCert(x509Cert)
+		cert, err := tls.LoadX509KeyPair(string(cmd.TLSCert), string(cmd.TLSKey))
+		if err != nil {
+			return nil, err
 		}
+
+		x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return nil, err
+		}
+
+		certpool.AddCert(x509Cert)
 
 		httpClient.Transport = &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
@@ -1943,7 +1934,7 @@ func (tripper mitmRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	return tripper.RoundTripper.RoundTrip(req)
 }
 
-func (cmd *RunCommand) tlsConfig(logger lager.Logger, dbConn db.DbConn) (*tls.Config, error) {
+func (cmd *RunCommand) tlsConfig(logger lager.Logger) (*tls.Config, error) {
 	tlsConfig := atc.DefaultTLSConfig()
 
 	if cmd.isTLSEnabled() {
@@ -1962,29 +1953,12 @@ func (cmd *RunCommand) tlsConfig(logger lager.Logger, dbConn db.DbConn) (*tls.Co
 			tlsConfig.ClientCAs = clientCertPool
 		}
 
-		if cmd.LetsEncrypt.Enable {
-			tlsLogger.Debug("using-autocert-manager")
-
-			cache, err := newDbCache(dbConn)
-			if err != nil {
-				return nil, err
-			}
-			m := autocert.Manager{
-				Prompt:     autocert.AcceptTOS,
-				Cache:      cache,
-				HostPolicy: autocert.HostWhitelist(cmd.ExternalURL.URL.Hostname()),
-				Client:     &acme.Client{DirectoryURL: cmd.LetsEncrypt.ACMEURL.String()},
-			}
-			tlsConfig.NextProtos = append(tlsConfig.NextProtos, acme.ALPNProto)
-			tlsConfig.GetCertificate = m.GetCertificate
-		} else {
-			tlsLogger.Debug("loading-tls-certs")
-			cert, err := tls.LoadX509KeyPair(string(cmd.TLSCert), string(cmd.TLSKey))
-			if err != nil {
-				return nil, err
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
+		tlsLogger.Debug("loading-tls-certs")
+		cert, err := tls.LoadX509KeyPair(string(cmd.TLSCert), string(cmd.TLSKey))
+		if err != nil {
+			return nil, err
 		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 	return tlsConfig, nil
 }
@@ -2077,17 +2051,10 @@ func (cmd *RunCommand) validate() error {
 
 	switch {
 	case cmd.TLSBindPort == 0:
-		if cmd.TLSCert != "" || cmd.TLSKey != "" || cmd.LetsEncrypt.Enable {
-			errs = multierror.Append(
-				errs,
-				errors.New("must specify --tls-bind-port to use TLS"),
-			)
-		}
-	case cmd.LetsEncrypt.Enable:
 		if cmd.TLSCert != "" || cmd.TLSKey != "" {
 			errs = multierror.Append(
 				errs,
-				errors.New("cannot specify --enable-lets-encrypt if --tls-cert or --tls-key are set"),
+				errors.New("must specify --tls-bind-port to use TLS"),
 			)
 		}
 	case cmd.TLSCert != "" && cmd.TLSKey != "":
@@ -2100,7 +2067,7 @@ func (cmd *RunCommand) validate() error {
 	default:
 		errs = multierror.Append(
 			errs,
-			errors.New("must specify --tls-cert and --tls-key, or --enable-lets-encrypt to use TLS"),
+			errors.New("must specify --tls-cert and --tls-key to use TLS"),
 		)
 	}
 

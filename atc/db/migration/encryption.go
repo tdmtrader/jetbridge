@@ -15,7 +15,6 @@ var encryptedColumns = []encryptedColumn{
 	{"resource_types", "config", "id", false},
 	{"prototypes", "config", "id", false},
 	{"builds", "private_plan", "id", false},
-	{"cert_cache", "cert", "domain", false},
 	{"pipelines", "var_sources", "id", false},
 	{"pipeline_run_definitions", "config", "run_id", true},
 	{"mcp_oauth_state", "data", "id", true},
