@@ -205,12 +205,14 @@ func checkLiveGitGet(in ExecRun) error {
 	if !in.Ok || finishes[0].ExitStatus != 0 || finishes[0].Version["ref"] != g.first {
 		return fmt.Errorf("get finish did not preserve pinned Git commit %s: ok=%t finish=%+v", g.first, in.Ok, finishes[0])
 	}
-	refs, err := in.core.cachedVersions()
+	// The build also retains the pinned image's cache; cachedVersions leaves
+	// it out and checks it, so this is the Git step's own cache alone.
+	refs, err := in.core.cachedVersions(gitResourceImage)
 	if err != nil {
 		return err
 	}
 	if len(refs) != 1 || refs[0] != g.first {
-		return fmt.Errorf("build cache refs %v, want only %s", refs, g.first)
+		return fmt.Errorf("build Git cache refs %v, want only %s", refs, g.first)
 	}
 	if !found || artifact == nil || fromCache {
 		return fmt.Errorf("Git artifact missing, nil or falsely cached: found=%t nil=%t fromCache=%t", found, artifact == nil, fromCache)

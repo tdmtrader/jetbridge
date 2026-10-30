@@ -153,12 +153,14 @@ func checkTimeWorkflow(in ExecRun) error {
 		if len(gets) != 1 || gets[0].ExitStatus != 0 || !reflect.DeepEqual(gets[0].Version, result.Version) {
 			return fmt.Errorf("get did not select the put's actual timestamp: put=%v get=%v", result.Version, gets)
 		}
-		caches, err := in.core.resourceCacheVersions()
+		// The build also retains the pinned image's cache; stepCacheVersions
+		// leaves it out and checks it, so this is the time step's own cache alone.
+		caches, err := in.core.stepCacheVersions(timeResourceImage)
 		if err != nil {
 			return err
 		}
 		if len(caches) != 1 || !reflect.DeepEqual(caches[0], result.Version) {
-			return fmt.Errorf("build cache did not retain the put's actual timestamp: %v", caches)
+			return fmt.Errorf("build time cache did not retain the put's actual timestamp: %v", caches)
 		}
 		artifact, cached, found := in.core.State.ArtifactRepository().ArtifactFor(execbuild.ArtifactName("some-resource"))
 		if !found || artifact == nil || cached {

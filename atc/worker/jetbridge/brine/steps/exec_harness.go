@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"code.cloudfoundry.org/clock"
@@ -165,10 +166,11 @@ func (c *execCore) finishes(eventType atc.EventType) ([]execFinish, error) {
 	return finishes, nil
 }
 
-// cachedVersions are the versions of every resource cache this build holds a
-// use on.
-func (c *execCore) cachedVersions() ([]string, error) {
-	versions, err := c.resourceCacheVersions()
+// cachedVersions are the versions of the resource caches this build holds a
+// use on for steps of the resource type pinned to imageRef: the step's own
+// caches, never the pinned image's. See stepCacheVersions.
+func (c *execCore) cachedVersions(imageRef string) ([]string, error) {
+	versions, err := c.stepCacheVersions(imageRef)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +181,19 @@ func (c *execCore) cachedVersions() ([]string, error) {
 	return refs, nil
 }
 
-func (c *execCore) resourceCacheVersions() ([]atc.Version, error) {
+// stepCacheVersions are the versions of the resource caches this build holds
+// a use on for steps whose type is pinned to imageRef.
+//
+// A get, put or check of a type declared with a direct image: creates its
+// resource config and cache under a parent cache, the pinned image: a
+// registry-image get of that exact reference (db.PinnedImage; see
+// atc/CONTEXT.md "Pinned image" and docs/architecture/core-model.md). The
+// build holds a use on that parent too, by design, so a build with one such
+// step retains two caches. Only the caches created under the pinned image are
+// the step's own and carry the step's version; the pinned image's cache is
+// checked for being exactly that and left out of the result. Any other cache
+// the build uses is an error.
+func (c *execCore) stepCacheVersions(imageRef string) ([]atc.Version, error) {
 	rows, err := c.DB.Conn.Query(
 		`SELECT resource_cache_id FROM resource_cache_uses WHERE build_id = $1`,
 		c.Build.ID(),
@@ -202,7 +216,9 @@ func (c *execCore) resourceCacheVersions() ([]atc.Version, error) {
 	}
 	rows.Close()
 
-	refs := make([]atc.Version, 0, len(ids))
+	pinnedType, _, pinnedVersion := db.PinnedImage(imageRef)
+	pinnedImages := 0
+	versions := make([]atc.Version, 0, len(ids))
 	for _, id := range ids {
 		cache, found, err := c.Caches.FindResourceCacheByID(id)
 		if err != nil {
@@ -211,9 +227,24 @@ func (c *execCore) resourceCacheVersions() ([]atc.Version, error) {
 		if !found {
 			return nil, fmt.Errorf("the build uses resource cache %d, which does not exist", id)
 		}
-		refs = append(refs, cache.Version())
+		config := cache.ResourceConfig()
+		if parent := config.CreatedByResourceCache(); parent != nil {
+			if !reflect.DeepEqual(parent.Version(), pinnedVersion) {
+				return nil, fmt.Errorf("resource cache %d (version %v) was created under %v, not the pinned image %v of %s", id, cache.Version(), parent.Version(), pinnedVersion, imageRef)
+			}
+			versions = append(versions, cache.Version())
+			continue
+		}
+		base := config.CreatedByBaseResourceType()
+		if base == nil || base.Name != pinnedType || !reflect.DeepEqual(cache.Version(), pinnedVersion) {
+			return nil, fmt.Errorf("resource cache %d (version %v) is neither a cache of the type pinned to %s nor that pinned image %v", id, cache.Version(), imageRef, pinnedVersion)
+		}
+		pinnedImages++
 	}
-	return refs, nil
+	if pinnedImages != 1 {
+		return nil, fmt.Errorf("the build holds %d uses on the pinned image %v of %s, want exactly one", pinnedImages, pinnedVersion, imageRef)
+	}
+	return versions, nil
 }
 
 // artifactNames are what the next step in the build would be able to see.
