@@ -10,6 +10,5 @@ Feature: Artifact handoff through real tasks and the node daemon
       | file              | content           | encoding | fault            | outcome                                               |
       | result.json       | built ok          | raw      | none             | exact artifact delivered                              |
       | nested/result.txt | nested build data | gzip     | none             | exact artifact delivered                              |
-      | deep/tree/out.txt | packed build data | s2       | none             | exact artifact delivered                              |
       | result.json       | built ok          | raw      | write-refused    | stream into returned input volume: stream in via exec: |
       | result.json       | built ok          | raw      | producer-offline | artifact unavailable on its producer node or any peer           |

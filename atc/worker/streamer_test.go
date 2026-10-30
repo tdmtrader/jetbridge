@@ -30,7 +30,7 @@ func (a *fakeArtifact) Source() string { return "fake-worker" }
 func (a *fakeArtifact) StreamOut(_ context.Context, _ string, enc compression.Compression) (io.ReadCloser, error) {
 	rawReader := io.NopCloser(bytes.NewReader(a.tarData))
 
-	if enc == nil || enc.Encoding() == compression.RawEncoding {
+	if enc == nil {
 		return rawReader, nil
 	}
 
@@ -149,7 +149,7 @@ func (a *httpArtifact) StreamOut(ctx context.Context, _ string, enc compression.
 		return nil, err
 	}
 
-	if enc == nil || enc.Encoding() == compression.RawEncoding {
+	if enc == nil {
 		return resp.Body, nil
 	}
 

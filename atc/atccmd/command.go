@@ -196,8 +196,6 @@ type RunCommand struct {
 	MaxChecksPerSecond                  int           `long:"max-checks-per-second" description:"Maximum number of checks that can be started per second. If not specified, this will be calculated as (# of resources)/(resource checking interval). -1 value will remove this maximum limit of checks per second."`
 	PausePipelinesAfter                 int           `long:"pause-pipelines-after" default:"0" description:"The number of days after which a pipeline will be automatically paused if none of its jobs have run in more than the given number of days. A value of zero disables this component."`
 
-	StreamingArtifactsCompression string `long:"streaming-artifacts-compression" default:"gzip" choice:"gzip" choice:"zstd" choice:"s2" choice:"raw" description:"Compression algorithm for internal streaming."`
-
 	Kubernetes struct {
 		Namespace                          string        `long:"kubernetes-namespace"              description:"Kubernetes namespace in which to run task Pods. When set, enables the K8s execution backend."`
 		Kubeconfig                         string        `long:"kubernetes-kubeconfig"             description:"Path to kubeconfig file for K8s backend. If empty, in-cluster configuration is used."`
@@ -1284,21 +1282,8 @@ func (cmd *RunCommand) jetbridgeComponents(logger lager.Logger, dbConn db.DbConn
 	return components, nil
 }
 
-func (cmd *RunCommand) compression() compression.Compression {
-	switch cmd.StreamingArtifactsCompression {
-	case "zstd":
-		return compression.NewZstdCompression()
-	case "s2":
-		return compression.NewS2Compression()
-	case "raw":
-		return compression.NewNoCompression()
-	default:
-		return compression.NewGzipCompression()
-	}
-}
-
 func (cmd *RunCommand) streamer() worker.Streamer {
-	return worker.NewStreamer(cmd.compression())
+	return worker.NewStreamer(compression.NewGzipCompression())
 }
 
 // The shared clientset's client-side rate limit: three times client-go's

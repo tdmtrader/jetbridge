@@ -6,5 +6,8 @@ contract: 5
 features: ../features/live/*.feature
 budgets:
   undefined: 0
-  # See ../.brine: counted out of ../features/live/*.feature on 2026-09-19.
-  scenarios_min: 134
+  # See ../.brine: counted out of ../features/live/*.feature on 2026-09-19:
+  # 134; 133 after the gzip-only stream codec cut removed the artifact-handoff
+  # "s2" Example row. Intentional removals need a record in
+  # ../features/README.md.
+  scenarios_min: 133

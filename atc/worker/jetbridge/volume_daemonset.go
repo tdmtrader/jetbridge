@@ -81,8 +81,8 @@ func (v *DaemonSetVolume) DBVolume() db.CreatedVolume {
 // source node, optionally extracting a sub-path. The response body is a tar
 // stream that the caller must close.
 //
-// When enc is non-nil and not RawEncoding, the raw tar from the daemon is
-// piped through a compressor before being returned. This satisfies the
+// When enc is non-nil, the raw tar from the daemon is piped through a
+// compressor before being returned. This satisfies the
 // runtime.Artifact contract which requires StreamOut to return a compressed
 // stream when compression is requested (e.g., Streamer.StreamFile expects
 // gzip-wrapped tar).
@@ -106,7 +106,7 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 		return nil, err
 	}
 
-	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
+	needsCompression := enc != nil
 	subPath := tarSubPath(path)
 	needsFilter := subPath != ""
 
@@ -126,7 +126,7 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 		var compressor io.WriteCloser
 
 		if needsCompression {
-			compressor = newCompressWriter(pw, enc.Encoding())
+			compressor = newCompressWriter(pw)
 			dest = compressor
 		}
 

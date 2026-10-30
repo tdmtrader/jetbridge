@@ -76,8 +76,6 @@ func handoff(in LiveTaskPlan, rec *brine.Recorder, name, content, encoding, faul
 	case "raw":
 	case "gzip":
 		enc = compression.NewGzipCompression()
-	case "s2":
-		enc = compression.NewS2Compression()
 	default:
 		return out, fmt.Errorf("unknown handoff encoding %q", encoding)
 	}

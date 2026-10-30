@@ -21,24 +21,4 @@ var _ = Describe("Compression", func() {
 			Expect(comp.Encoding()).To(Equal(compression.GzipEncoding))
 		})
 	})
-
-	Describe("Zstd", func() {
-		BeforeEach(func() {
-			comp = compression.NewZstdCompression()
-		})
-
-		It("returns zstd", func() {
-			Expect(comp.Encoding()).To(Equal(compression.ZstdEncoding))
-		})
-	})
-
-	Describe("S2", func() {
-		BeforeEach(func() {
-			comp = compression.NewS2Compression()
-		})
-
-		It("returns s2", func() {
-			Expect(comp.Encoding()).To(Equal(compression.S2Encoding))
-		})
-	})
 })

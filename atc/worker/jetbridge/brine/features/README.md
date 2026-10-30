@@ -8,6 +8,16 @@ The vocabulary guards require every step definition to be used, every scenario
 step to resolve, and no step line to match two definitions. The active-corpus
 guard also requires runnable features in the local and live tiers.
 
+## Removed row 2026-10-30: the "s2" artifact-handoff encoding
+
+gzip is the one stream codec (`atc/compression` keeps only gzip; the
+`--streaming-artifacts-compression` choice is gone), so the `s2` row of
+live/artifact-handoff.feature's "Artifact handoff delivers exact files or
+reports the transfer failure" outline has no codec to exercise. One expanded
+live case leaves; the live floor moves 134 -> 133. The `raw` and `gzip` rows
+still show the handoff with and without the codec, and the fault rows are
+unchanged.
+
 ## Removed row 2026-10-30: the "policy" authorization boundary
 
 The OPA policy checker (`atc/policy`, `atc/api/policychecker`, the

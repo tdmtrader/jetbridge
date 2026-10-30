@@ -14,8 +14,6 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	"github.com/klauspost/compress/gzip"
-	"github.com/klauspost/compress/s2"
-	"github.com/klauspost/compress/zstd"
 )
 
 // Compile-time check that Volume satisfies runtime.Volume.
@@ -176,7 +174,7 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 	// before feeding it to tar. The Streamer sends compressed tar streams
 	// and expects StreamIn to decompress them.
 	actualReader := reader
-	if enc != nil && enc.Encoding() != compression.RawEncoding {
+	if enc != nil {
 		rc, ok := reader.(io.ReadCloser)
 		if !ok {
 			rc = io.NopCloser(reader)
@@ -210,8 +208,8 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 }
 
 // StreamOut extracts data from the Pod by exec-ing `tar cf -` at the target path.
-// When compression is non-nil and not raw, the tar stream is compressed before
-// being returned to the caller. This satisfies the runtime.Artifact contract
+// When compression is non-nil, the tar stream is compressed before being
+// returned to the caller. This satisfies the runtime.Artifact contract
 // which requires StreamOut to return a compressed tar stream.
 //
 // DEPRECATED FOR ARTIFACT READS. This method execs into the pod the volume is
@@ -258,14 +256,14 @@ func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Com
 
 	pr, pw := io.Pipe()
 
-	needsCompression := enc != nil && enc.Encoding() != compression.RawEncoding
+	needsCompression := enc != nil
 
 	go func() {
 		var tarDest io.Writer = pw
 		var compressor io.WriteCloser
 
 		if needsCompression {
-			compressor = newCompressWriter(pw, enc.Encoding())
+			compressor = newCompressWriter(pw)
 			tarDest = compressor
 		}
 
@@ -292,22 +290,10 @@ func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Com
 	return pr, nil
 }
 
-// newCompressWriter creates a compressing io.WriteCloser for the given encoding.
-func newCompressWriter(w io.Writer, encoding compression.Encoding) io.WriteCloser {
-	switch encoding {
-	case compression.ZstdEncoding:
-		enc, err := zstd.NewWriter(w)
-		if err != nil {
-			// zstd.NewWriter only errors on invalid options; safe to panic.
-			panic(fmt.Sprintf("zstd.NewWriter: %v", err))
-		}
-		return enc
-	case compression.S2Encoding:
-		return s2.NewWriter(w)
-	default:
-		// Default to gzip for GzipEncoding and any unknown encoding.
-		return gzip.NewWriter(w)
-	}
+// newCompressWriter wraps w in the one stream codec, gzip, which is what the
+// Streamer's compression.Compression decodes on the other side.
+func newCompressWriter(w io.Writer) io.WriteCloser {
+	return gzip.NewWriter(w)
 }
 
 func (v *Volume) resolvedPath(path string) string {
