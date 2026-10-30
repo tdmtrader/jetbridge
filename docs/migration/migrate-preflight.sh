@@ -29,8 +29,9 @@ v8.0.1:1765921815
 #
 # Must equal the highest migration in atc/db/migration/migrations. This script
 # runs on an operator's laptop against a live database before an upgrade, so it
-# cannot ask the binary; TestPreflightTargetsTheHeadMigration keeps it honest.
-JETBRIDGE_VERSION=1789793163
+# cannot ask the binary; the "migrate-preflight.sh targets the head migration"
+# spec in atc/db/migration/legacy_upgrade_test.go keeps it honest.
+JETBRIDGE_VERSION=1789793164
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

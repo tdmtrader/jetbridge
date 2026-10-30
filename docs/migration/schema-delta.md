@@ -16,11 +16,11 @@ image and encryption key; upstream downs remain unchanged.
 | v7.14.3 (last v7.x) | `1746768931` | 148 |
 | v8.0.0 | `1765921815` | 150 |
 | v8.0.1 | `1765921815` | 150 |
-| JetBridge HEAD | `1789793163` | 209 |
+| JetBridge HEAD | `1789793164` | 210 |
 
 ## Migration Gap by Source Version
 
-### From v7.14.3 to JetBridge HEAD (62 migrations)
+### From v7.14.3 to JetBridge HEAD (63 migrations)
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
@@ -37,7 +37,7 @@ image and encryption key; upstream downs remain unchanged.
 | `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
 | `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
 
-### From v8.0.1 to JetBridge HEAD (60 migrations — JetBridge-only)
+### From v8.0.1 to JetBridge HEAD (61 migrations — JetBridge-only)
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
@@ -52,13 +52,13 @@ image and encryption key; upstream downs remain unchanged.
 | `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
 | `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
 
-Migrations `1773105510` through `1789793163` (50 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
+Migrations `1773105510` through `1789793164` (51 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
 
-### From v8.0.0 to JetBridge HEAD (60 migrations)
+### From v8.0.0 to JetBridge HEAD (61 migrations)
 
 Same as v8.0.1 — v8.0.0 and v8.0.1 share identical migration sets.
 
-### From v7.0.0 to JetBridge HEAD (85 migrations)
+### From v7.0.0 to JetBridge HEAD (86 migrations)
 
 In addition to the 12 listed above, v7.0.0 users must apply 24 intermediate migrations covering:
 - Job/pipeline cascade deletes and ordering indexes
