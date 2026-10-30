@@ -5,7 +5,6 @@ const (
 	ComponentBuildTracker               = "tracker"
 	ComponentLidarScanner               = "scanner"
 	ComponentBuildReaper                = "reaper"
-	ComponentSyslogDrainer              = "drainer"
 	ComponentCollectorAccessTokens      = "collector_access_tokens"
 	ComponentCollectorArtifacts         = "collector_artifacts"
 	ComponentCollectorBuilds            = "collector_builds"

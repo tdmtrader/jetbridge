@@ -452,6 +452,7 @@ func insertV713FixtureData(db *sql.DB) {
 func insertBuild(db *sql.DB, id int, name string, jobID, teamID, pipelineID int, status string) {
 	completed := status == "succeeded" || status == "failed" || status == "errored" || status == "aborted"
 	aborted := status == "aborted"
+	// drained belongs to the v7 fixture schema this inserts into; migration 1789793162 drops it.
 	mustExec(db, fmt.Sprintf(
 		`INSERT INTO builds(id, name, job_id, team_id, status, scheduled, inputs_ready, create_time, pipeline_id, schema, private_plan, public_plan, drained, aborted, completed)
 		 VALUES(%d, '%s', %d, %d, '%s', true, true, now(), %d, 'exec.v2', '{}', '{}', false, %t, %t)`,

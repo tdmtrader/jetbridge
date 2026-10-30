@@ -201,55 +201,6 @@ var _ = Describe("Build", func() {
 		})
 	})
 
-	Describe("SyslogTag", func() {
-		var build db.Build
-
-		var originID event.OriginID = "some-origin"
-		var tag string
-
-		JustBeforeEach(func() {
-			tag = build.SyslogTag(originID)
-		})
-
-		Context("for a one-off build", func() {
-			BeforeEach(func() {
-				var err error
-				build, err = team.CreateOneOffBuild()
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("includes build and team info", func() {
-				Expect(tag).To(Equal(fmt.Sprintf("%s/%d/%s", team.Name(), build.ID(), originID)))
-			})
-		})
-
-		Context("for a job build", func() {
-			BeforeEach(func() {
-				var err error
-				build, err = defaultJob.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("includes build, team, pipeline, and job info", func() {
-				Expect(tag).To(Equal(fmt.Sprintf("%s/%s/%s/%s/%s", defaultJob.TeamName(), defaultJob.PipelineName(), defaultJob.Name(), build.Name(), originID)))
-			})
-		})
-
-		Context("for a resource build", func() {
-			BeforeEach(func() {
-				var err error
-				var created bool
-				build, created, err = defaultResource.CreateBuild(context.TODO(), false, atc.Plan{})
-				Expect(err).ToNot(HaveOccurred())
-				Expect(created).To(BeTrue())
-			})
-
-			It("includes build, team, and pipeline", func() {
-				Expect(tag).To(Equal(fmt.Sprintf("%s/%s/%s/%d/%s", defaultResource.TeamName(), defaultResource.PipelineName(), defaultResource.Name(), build.ID(), originID)))
-			})
-		})
-	})
-
 	Describe("TracingAttrs", func() {
 		var build db.Build
 
@@ -326,25 +277,6 @@ var _ = Describe("Build", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(build.Status()).To(Equal(db.BuildStatusStarted))
-		})
-	})
-
-	Describe("Drain", func() {
-		It("defaults drain to false in the beginning", func() {
-			Expect(build.IsDrained()).To(BeFalse())
-		})
-
-		It("has drain set to true after a drain and a reload", func() {
-			err := build.SetDrained(true)
-			Expect(err).NotTo(HaveOccurred())
-
-			drained := build.IsDrained()
-			Expect(drained).To(BeTrue())
-
-			_, err = build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			drained = build.IsDrained()
-			Expect(drained).To(BeTrue())
 		})
 	})
 

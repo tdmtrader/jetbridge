@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -82,7 +80,6 @@ func (b *inMemoryCheckBuildForApi) Status() BuildStatus  { return b.status }
 func (b *inMemoryCheckBuildForApi) CreatedBy() *string   { return nil }
 func (b *inMemoryCheckBuildForApi) Schema() string       { return schema }
 func (b *inMemoryCheckBuildForApi) IsRunning() bool      { return b.status == BuildStatusStarted }
-func (b *inMemoryCheckBuildForApi) IsDrained() bool      { return false }
 func (b *inMemoryCheckBuildForApi) PipelineInstanceVars() atc.InstanceVars {
 	return b.checkable.PipelineInstanceVars()
 }
@@ -623,24 +620,6 @@ func (b *inMemoryCheckBuild) initDbStuff(tx Tx) error {
 	return nil
 }
 
-func (b *inMemoryCheckBuild) SyslogTag(origin event.OriginID) string {
-	segments := []string{b.TeamName()}
-
-	if b.PipelineID() != 0 {
-		segments = append(segments, b.PipelineName())
-	}
-
-	if b.ResourceID() != 0 {
-		segments = append(segments, b.ResourceName(), strconv.Itoa(b.id))
-	} else {
-		segments = append(segments, strconv.Itoa(b.id))
-	}
-
-	segments = append(segments, origin.String())
-
-	return strings.Join(segments, "/")
-}
-
 // As in-memory builds should only be check builds, the following functions
 // should never been called, so return false value and errors for them.
 
@@ -649,9 +628,6 @@ func (b *inMemoryCheckBuild) IsAborted() bool   { return false }
 func (b *inMemoryCheckBuild) IsCompleted() bool { return false }
 func (b *inMemoryCheckBuild) InputsReady() bool { return false }
 
-func (b *inMemoryCheckBuild) SetDrained(bool) error {
-	return errors.New("not implemented for in memory build")
-}
 func (b *inMemoryCheckBuild) Delete() (bool, error) {
 	return false, errors.New("not implemented for in memory build")
 }

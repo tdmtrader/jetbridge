@@ -252,17 +252,6 @@ var _ = Describe("Component Notifications", func() {
 			Expect(started).To(BeTrue())
 		})
 
-		Describe("build.Finish notifies SyslogDrainer", func() {
-			It("notifies the drainer", func() {
-				received := listenFor(atc.ComponentSyslogDrainer)
-
-				err := build.Finish(db.BuildStatusSucceeded)
-				Expect(err).NotTo(HaveOccurred())
-
-				Expect(received()).To(BeTrue(), "expected drainer notification after build.Finish")
-			})
-		})
-
 		Describe("build.Finish notifies BuildReaper", func() {
 			It("notifies the reaper", func() {
 				received := listenFor(atc.ComponentBuildReaper)

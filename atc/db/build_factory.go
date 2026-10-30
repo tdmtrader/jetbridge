@@ -55,7 +55,6 @@ type BuildForAPI interface {
 	RerunNumber() int
 	CreatedBy() *string
 
-	IsDrained() bool
 	IsRunning() bool
 
 	Artifacts() ([]WorkerArtifact, error)
@@ -76,7 +75,6 @@ type BuildFactory interface {
 
 	Build(int) (Build, bool, error)
 	GetAllStartedBuilds() ([]Build, error)
-	GetDrainableBuilds() ([]Build, error)
 
 	// TODO: move to BuildLifecycle, new interface (see WorkerLifecycle)
 	MarkNonInterceptibleBuilds() error
@@ -206,18 +204,6 @@ func (f *buildFactory) constructBuildFilter() sq.Or {
 			sq.Expr(fmt.Sprintf("now() - end_time > '%d seconds'::interval", int(f.failedGracePeriod.Seconds()))))
 	}
 	return buildFilter
-}
-
-func (f *buildFactory) GetDrainableBuilds() ([]Build, error) {
-	query := buildsQuery.Where(
-		sq.Eq{
-			"b.completed":        true,
-			"b.drained":          false,
-			"b.resource_id":      nil,
-			"b.resource_type_id": nil,
-		})
-
-	return getBuilds(query, f.conn, f.lockFactory)
 }
 
 func (f *buildFactory) GetAllStartedBuilds() ([]Build, error) {

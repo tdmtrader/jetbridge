@@ -13,7 +13,6 @@ type buildLogCollector struct {
 	pipelineFactory             db.PipelineFactory
 	pipelineLifecycle           db.PipelineLifecycle
 	batchSize                   int
-	drainerConfigured           bool
 	buildLogRetentionCalculator *BuildLogRetentionCalculator
 }
 
@@ -22,13 +21,11 @@ func NewBuildLogCollector(
 	pipelineLifecycle db.PipelineLifecycle,
 	batchSize int,
 	buildLogRetentionCalculator *BuildLogRetentionCalculator,
-	drainerConfigured bool,
 ) *buildLogCollector {
 	return &buildLogCollector{
 		pipelineFactory:             pipelineFactory,
 		pipelineLifecycle:           pipelineLifecycle,
 		batchSize:                   batchSize,
-		drainerConfigured:           drainerConfigured,
 		buildLogRetentionCalculator: buildLogRetentionCalculator,
 	}
 }
@@ -147,14 +144,6 @@ func (br *buildLogCollector) reapLogsOfJob(
 		if build.IsRunning() {
 			firstLoggedBuildID = build.ID()
 			continue
-		}
-
-		// Before a build is drained, it should not be reaped.
-		if br.drainerConfigured {
-			if !build.IsDrained() {
-				firstLoggedBuildID = build.ID()
-				continue
-			}
 		}
 
 		maxBuildsRetained := retainedBuilds >= logRetention.Builds

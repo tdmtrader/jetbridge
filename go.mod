@@ -49,10 +49,8 @@ require (
 	github.com/pkg/term v1.2.0-beta.2.0.20211217091447-1a4a3b719465
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/prometheus/client_golang v1.23.2
-	github.com/racksec/srslog v0.0.0-20180709174129-a4725f04ec91
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
-	github.com/square/certstrap v1.3.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tedsuo/ifrit v0.0.0-20230516164442-7862c310ad26
 	github.com/tedsuo/rata v1.0.1-0.20170830210128-07d200713958
@@ -264,7 +262,6 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
-	go.step.sm/crypto v0.67.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
 	google.golang.org/genproto v0.0.0-20260519071638-aa98bba5eb94 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect

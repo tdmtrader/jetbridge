@@ -16,11 +16,11 @@ image and encryption key; upstream downs remain unchanged.
 | v7.14.3 (last v7.x) | `1746768931` | 148 |
 | v8.0.0 | `1765921815` | 150 |
 | v8.0.1 | `1765921815` | 150 |
-| JetBridge HEAD | `1789793161` | 207 |
+| JetBridge HEAD | `1789793162` | 208 |
 
 ## Migration Gap by Source Version
 
-### From v7.14.3 to JetBridge HEAD (60 migrations)
+### From v7.14.3 to JetBridge HEAD (61 migrations)
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
@@ -52,9 +52,9 @@ image and encryption key; upstream downs remain unchanged.
 | `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
 | `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
 
-Migrations `1773105510` through `1789793161` (48 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
+Migrations `1773105510` through `1789793162` (49 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
 
-### From v8.0.0 to JetBridge HEAD (58 migrations)
+### From v8.0.0 to JetBridge HEAD (59 migrations)
 
 Same as v8.0.1 — v8.0.0 and v8.0.1 share identical migration sets.
 

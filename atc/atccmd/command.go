@@ -57,7 +57,6 @@ import (
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/algorithm"
-	"github.com/concourse/concourse/atc/syslog"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -310,13 +309,6 @@ type RunCommand struct {
 
 	DefaultCpuRequest    *int    `long:"default-task-cpu-request" description:"Default CPU request (shares) per task for Burstable QoS"`
 	DefaultMemoryRequest *string `long:"default-task-memory-request" description:"Default memory request per task for Burstable QoS"`
-
-	Syslog struct {
-		Hostname  string   `long:"syslog-hostname" description:"Client hostname with which the build logs will be sent to the syslog server." default:"atc-syslog-drainer"`
-		Address   string   `long:"syslog-address" description:"Remote syslog server address with port (Example: 0.0.0.0:514)."`
-		Transport string   `long:"syslog-transport" description:"Transport protocol for syslog messages (Currently supporting tcp, udp & tls)."`
-		CACerts   []string `long:"syslog-ca-cert"              description:"Paths to PEM-encoded CA cert files to use to verify the Syslog server SSL cert."`
-	} ` group:"Syslog Drainer Configuration"`
 
 	Auth struct {
 		AuthFlags     skycmd.AuthFlags
@@ -1135,15 +1127,6 @@ func (cmd *RunCommand) backendComponents(
 	checkBuildsChan chan db.Build,
 ) ([]RunnableComponent, error) {
 
-	if cmd.Syslog.Address != "" && cmd.Syslog.Transport == "" {
-		return nil, errors.New("syslog Drainer is misconfigured, cannot configure a drainer without a transport")
-	}
-
-	syslogDrainConfigured := true
-	if cmd.Syslog.Address == "" {
-		syslogDrainConfigured = false
-	}
-
 	teamFactory := db.NewTeamFactory(dbConn, lockFactory)
 
 	dbResourceCacheFactory := db.NewResourceCacheFactory(dbConn, lockFactory)
@@ -1269,7 +1252,6 @@ func (cmd *RunCommand) backendComponents(
 					cmd.DefaultDaysToRetainBuildLogs,
 					cmd.MaxDaysToRetainBuildLogs,
 				),
-				syslogDrainConfigured,
 			),
 		},
 		{
@@ -1304,21 +1286,6 @@ func (cmd *RunCommand) backendComponents(
 	components = append(components, cmd.runComponents(dbConn)...)
 	if landingQueue, ok := cmd.landingQueueComponent(logger, dbConn); ok {
 		components = append(components, landingQueue)
-	}
-
-	if syslogDrainConfigured {
-		components = append(components, RunnableComponent{
-			Component: atc.Component{
-				Name: atc.ComponentSyslogDrainer,
-			},
-			Runnable: syslog.NewDrainer(
-				cmd.Syslog.Transport,
-				cmd.Syslog.Address,
-				cmd.Syslog.Hostname,
-				cmd.Syslog.CACerts,
-				dbBuildFactory,
-			),
-		})
 	}
 
 	return components, err

@@ -305,8 +305,6 @@ var _ = Describe("Pipeline run reclamation", func() {
 		completed := time.Now().Add(-time.Hour)
 		victim := newReclaimRun(template, &completed)
 		newReclaimRun(template, &completed)
-		_, err := dbConn.Exec(`UPDATE builds SET drained = true WHERE id = $1`, victim.buildID)
-		Expect(err).NotTo(HaveOccurred())
 		var checkID int
 		Expect(dbConn.QueryRow(`
 			INSERT INTO builds(name, status, team_id, pipeline_id)
@@ -322,18 +320,16 @@ var _ = Describe("Pipeline run reclamation", func() {
 		var runID int
 		var runName, runKey string
 		var teamID int
-		var drained bool
 		Expect(dbConn.QueryRow(`
-			SELECT job_id, pipeline_id, pipeline_run_id, run_job_name, run_job_key, team_id, drained
+			SELECT job_id, pipeline_id, pipeline_run_id, run_job_name, run_job_key, team_id
 			FROM builds WHERE id = $1
-		`, victim.buildID).Scan(&jobID, &pipelineID, &runID, &runName, &runKey, &teamID, &drained)).To(Succeed())
+		`, victim.buildID).Scan(&jobID, &pipelineID, &runID, &runName, &runKey, &teamID)).To(Succeed())
 		Expect(jobID.Valid).To(BeFalse())
 		Expect(pipelineID.Valid).To(BeFalse())
 		Expect(runID).To(Equal(victim.run.ID()))
 		Expect(runName).To(Equal("entry"))
 		Expect(runKey).To(Equal("entry"))
 		Expect(teamID).To(Equal(defaultTeam.ID()))
-		Expect(drained).To(BeTrue())
 		var checkExists bool
 		Expect(dbConn.QueryRow(`SELECT EXISTS (SELECT 1 FROM builds WHERE id = $1)`, checkID).Scan(&checkExists)).To(Succeed())
 		Expect(checkExists).To(BeFalse(), "disposable non-stamped checks follow the payload cascade")

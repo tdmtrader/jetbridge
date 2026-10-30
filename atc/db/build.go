@@ -10,7 +10,6 @@ import (
 	"maps"
 	"math"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgerrcode"
@@ -101,7 +100,6 @@ var buildsQuery = psql.Select(`
 		b.run_job_key,
 		t.name,
 		b.nonce,
-		b.drained,
 		b.aborted,
 		b.completed,
 		b.inputs_ready,
@@ -175,8 +173,6 @@ type Build interface {
 	LagerData() lager.Data
 	TracingAttrs() tracing.Attrs
 
-	SyslogTag(event.OriginID) string
-
 	Reload() (bool, error)
 
 	ResourcesChecked() (bool, error)
@@ -213,9 +209,6 @@ type Build interface {
 	IsAborted() bool
 	IsAbortedInDB() (bool, error)
 	AbortSignal() (signal *NotifySignal, unlisten func(), err error)
-
-	IsDrained() bool
-	SetDrained(bool) error
 
 	SpanContext() propagation.TextMapCarrier
 
@@ -280,7 +273,6 @@ type build struct {
 	endTime    time.Time
 	reapTime   time.Time
 
-	drained   bool
 	aborted   bool
 	completed bool
 
@@ -303,28 +295,6 @@ type ResourceNotFoundInPipeline struct {
 
 func (r ResourceNotFoundInPipeline) Error() string {
 	return fmt.Sprintf("resource %s not found in pipeline %s", r.Resource, r.Pipeline)
-}
-
-// SyslogTag returns a string to be set as a tag on syslog events pertaining to
-// the build.
-func (b *build) SyslogTag(origin event.OriginID) string {
-	segments := []string{b.teamName}
-
-	if b.pipelineID != 0 {
-		segments = append(segments, b.pipelineName)
-	}
-
-	if b.jobID != 0 {
-		segments = append(segments, b.jobName, b.name)
-	} else if b.resourceID != 0 {
-		segments = append(segments, b.resourceName, strconv.Itoa(b.id))
-	} else {
-		segments = append(segments, strconv.Itoa(b.id))
-	}
-
-	segments = append(segments, origin.String())
-
-	return strings.Join(segments, "/")
 }
 
 // LagerData returns attributes which are to be emitted in logs pertaining to
@@ -399,7 +369,6 @@ func (b *build) ReapTime() time.Time              { return b.reapTime }
 func (b *build) Comment() string                  { return b.comment }
 func (b *build) Status() BuildStatus              { return b.status }
 func (b *build) IsScheduled() bool                { return b.scheduled }
-func (b *build) IsDrained() bool                  { return b.drained }
 func (b *build) IsRunning() bool                  { return !b.completed }
 func (b *build) IsAborted() bool                  { return b.aborted }
 func (b *build) IsCompleted() bool                { return b.completed }
@@ -990,7 +959,6 @@ WITH RECURSIVE pipelines_to_archive AS (
 	}
 
 	b.conn.Bus().Notify(atc.ComponentBuildReaper)
-	b.conn.Bus().Notify(atc.ComponentSyslogDrainer)
 	b.conn.Bus().Notify(atc.ComponentCollectorBuilds)
 	b.conn.Bus().Notify(atc.ComponentCollectorResourceCacheUses)
 	b.conn.Bus().Notify(atc.ComponentCollectorResourceCaches)
@@ -1025,19 +993,6 @@ func (b *build) Variables(logger lager.Logger, globalSecrets creds.Secrets, varS
 	}
 
 	return pipeline.Variables(logger, globalSecrets, varSourcePool, params)
-}
-
-func (b *build) SetDrained(drained bool) error {
-	_, err := psql.Update("builds").
-		Set("drained", drained).
-		Where(sq.Eq{"id": b.id}).
-		RunWith(b.conn).
-		Exec()
-
-	if err == nil {
-		b.drained = drained
-	}
-	return err
 }
 
 func (b *build) Delete() (bool, error) {
@@ -2087,7 +2042,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		schema, privatePlan, jobName, resourceName, pipelineName, publicPlan, rerunOfName sql.NullString
 		createTime, startTime, endTime, reapTime                                          sql.NullTime
 		nonce, spanContext, createdBy                                                     sql.NullString
-		drained, aborted, completed                                                       bool
+		aborted, completed                                                                bool
 		status                                                                            string
 		pipelineInstanceVars, comment, templatePipelineName, runJobName, runJobKey        sql.NullString
 		templateCacheScope                                                                sql.NullString
@@ -2126,7 +2081,6 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&runJobKey,
 		&b.teamName,
 		&nonce,
-		&drained,
 		&aborted,
 		&completed,
 		&b.inputsReady,
@@ -2163,7 +2117,6 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	b.startTime = startTime.Time
 	b.endTime = endTime.Time
 	b.reapTime = reapTime.Time
-	b.drained = drained
 	b.aborted = aborted
 	b.completed = completed
 	b.rerunOf = int(rerunOf.Int64)
