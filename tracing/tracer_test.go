@@ -71,16 +71,6 @@ var _ = Describe("Tracer", func() {
 			tracing.Configured = false
 		})
 
-		It("configures tracing if jaeger flags are provided", func() {
-			c := tracing.Config{
-				Jaeger: tracing.Jaeger{
-					Endpoint: "http://jaeger:14268/api/traces",
-				},
-			}
-			c.Prepare()
-			Expect(tracing.Configured).To(BeTrue())
-		})
-
 		It("configures tracing if otlp flags are provided", func() {
 			c := tracing.Config{
 				OTLP: tracing.OTLP{

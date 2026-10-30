@@ -335,7 +335,7 @@ Source: `atc/atccmd/command.go` (RunCommand.GC struct)
 
 ### OpenTelemetry Tracing Flags
 
-Tracing supports four backends. Only one can be active at a time (first configured wins).
+Traces are exported over OTLP; tracing is on when `--tracing-otlp-address` is set.
 
 **Common flags:**
 
@@ -344,34 +344,13 @@ Tracing supports four backends. Only one can be active at a time (first configur
 | `--tracing-service-name` | `concourse-web` | Service name in traces. |
 | `--tracing-attribute` | (none) | Key:value attributes on all traces. Repeatable. |
 
-**OTLP (recommended):**
+**OTLP:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tracing-otlp-address` | (none) | OTLP gRPC endpoint (e.g. `tempo.monitoring.svc:4317`). |
 | `--tracing-otlp-header` | (none) | Headers on OTLP requests. Repeatable. |
 | `--tracing-otlp-use-tls` | `false` | Use TLS for OTLP connection. |
-
-**Jaeger:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--tracing-jaeger-endpoint` | (none) | Jaeger HTTP thrift collector URL. |
-| `--tracing-jaeger-tags` | (none) | Key:value tags on Jaeger spans. Repeatable. |
-| `--tracing-jaeger-service` | `web` | Jaeger service name. |
-
-**Honeycomb:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--tracing-honeycomb-api-key` | (none) | Honeycomb API key. |
-| `--tracing-honeycomb-dataset` | (none) | Honeycomb dataset name. |
-
-**Stackdriver:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--tracing-stackdriver-projectid` | (none) | GCP project ID for Cloud Trace. |
 
 **Sampling:**
 
@@ -380,7 +359,7 @@ Tracing supports four backends. Only one can be active at a time (first configur
 | `--tracing-sampling-strategy` | `always` | Strategy: `always`, `never`, `probability`. |
 | `--tracing-sampling-rate` | `1.0` | Sampling rate for `probability` strategy (0.0 to 1.0). |
 
-Source: `tracing/tracer.go`, `tracing/otlp.go`, `tracing/jaeger.go`, `tracing/honeycomb.go`, `tracing/sampling.go`
+Source: `tracing/tracer.go`, `tracing/otlp.go`, `tracing/sampling.go`
 
 ## Deployment
 

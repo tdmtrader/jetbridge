@@ -5,7 +5,7 @@ set -e -u
 cd $(dirname $0)/..
 
 args=(-f docker-compose.yml)
-core=(prometheus jaeger)
+core=(prometheus)
 
 for f in "${core[@]}"; do
   args+=(-f "hack/overrides/$f.yml")

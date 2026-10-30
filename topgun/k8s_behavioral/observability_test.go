@@ -11,8 +11,8 @@ import (
 var _ = Describe("Observability", func() {
 
 	It("emits OpenTelemetry traces for builds", func() {
-		// Requires Concourse configured with CONCOURSE_TRACING_JAEGER_ENDPOINT
-		// or CONCOURSE_TRACING_OTLP_ADDRESS. Test validates build succeeds
+		// Requires Concourse configured with CONCOURSE_TRACING_OTLP_ADDRESS.
+		// Test validates build succeeds
 		// and that tracing configuration doesn't break normal operation.
 		cfg := writePipelineFile("otel.yml", `
 jobs:

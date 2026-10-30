@@ -6,7 +6,6 @@ require (
 	cloud.google.com/go/storage v1.64.0
 	code.cloudfoundry.org/clock v1.57.0
 	code.cloudfoundry.org/lager/v3 v3.57.0
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.30.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b
 	github.com/cenkalti/backoff/v5 v5.0.3
@@ -62,7 +61,6 @@ require (
 	go.etcd.io/bbolt v1.4.3
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
 	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/exporters/jaeger v1.17.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.41.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.39.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.41.0
@@ -83,7 +81,6 @@ require (
 )
 
 require (
-	cloud.google.com/go/trace v1.16.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/beevik/etree v1.6.0 // indirect

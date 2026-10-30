@@ -1,7 +1,6 @@
 package algorithm_test
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"testing"
@@ -9,7 +8,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit"
-	"go.opentelemetry.io/otel/exporters/jaeger"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -26,8 +24,6 @@ var (
 	teamFactory db.TeamFactory
 
 	dbConn db.DbConn
-
-	exporter *jaeger.Exporter
 )
 
 func TestAlgorithm(t *testing.T) {
@@ -36,14 +32,12 @@ func TestAlgorithm(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	jaegerURL := os.Getenv("JAEGER_URL")
+	otlpAddress := os.Getenv("OTLP_ADDRESS")
 
-	if jaegerURL != "" {
+	if otlpAddress != "" {
 		c := tracing.Config{
-			Jaeger: tracing.Jaeger{
-				Endpoint: jaegerURL + "/api/traces",
-				Service:  "algorithm_test",
-			},
+			ServiceName: "algorithm_test",
+			OTLP:        tracing.OTLP{Address: otlpAddress},
 		}
 
 		err := c.Prepare()
@@ -76,8 +70,4 @@ var _ = AfterEach(func() {
 
 var _ = AfterSuite(func() {
 	postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner, &dbProcess)
-
-	if exporter != nil {
-		exporter.Shutdown(context.Background())
-	}
 })

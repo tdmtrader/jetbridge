@@ -23,35 +23,21 @@ type Config struct {
 	//TODO: set default value in resective cmd package (web, worker)
 	ServiceName string            `long:"service-name"  description:"service name to attach to traces as metadata" default:"concourse-web"`
 	Attributes  map[string]string `long:"attribute"  description:"attributes to attach to traces as metadata"`
-	Honeycomb   Honeycomb
-	Jaeger      Jaeger
-	Stackdriver Stackdriver
 	OTLP        OTLP
 	Sampling    SamplingConfig `group:"Sampling" namespace:"sampling"`
 }
 
 func (c Config) Prepare() error {
-	var provider trace.TracerProvider
-	var err error
-
-	switch {
-	case c.Honeycomb.IsConfigured():
-		provider, err = c.traceProvider(c.Honeycomb.Exporter)
-	case c.Jaeger.IsConfigured():
-		provider, err = c.traceProvider(c.Jaeger.Exporter)
-	case c.OTLP.IsConfigured():
-		provider, err = c.traceProvider(c.OTLP.Exporter)
-	case c.Stackdriver.IsConfigured():
-		provider, err = c.traceProvider(c.Stackdriver.Exporter)
+	if !c.OTLP.IsConfigured() {
+		return nil
 	}
+
+	provider, err := c.traceProvider(c.OTLP.Exporter)
 	if err != nil {
 		return err
 	}
 
-	if provider != nil {
-		ConfigureTraceProvider(provider)
-	}
-
+	ConfigureTraceProvider(provider)
 	return nil
 }
 
