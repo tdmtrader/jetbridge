@@ -19,8 +19,6 @@ import (
 // The types on the request are core's own: atc for the plan's values and
 // atc/runs for admission's, which is core importing core. See
 // docs/superpowers/specs/2026-09-08-run-pipeline-step-design.md.
-//
-//counterfeiter:generate . ChildRunAdmitter
 type ChildRunAdmitter interface {
 	AdmitChildRun(context.Context, ChildRunRequest) (ChildRun, error)
 }

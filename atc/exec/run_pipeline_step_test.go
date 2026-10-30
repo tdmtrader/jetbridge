@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
-	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/concourse/vars"
 )
@@ -36,6 +35,23 @@ func (digestConflictRefusal) Error() string {
 
 func (digestConflictRefusal) AdmissionRefusal() {}
 
+// scriptedAdmitter answers every admission the same way and keeps the requests.
+//
+// The only production admitter is atc/agent/composition, which this package may
+// not import -- the boundary architecture_test.go defends -- so the port is
+// stood in for here. The step's whole contract with it is the request it sends
+// and what it does with the answer, which is all this records.
+type scriptedAdmitter struct {
+	run      exec.ChildRun
+	err      error
+	requests []exec.ChildRunRequest
+}
+
+func (a *scriptedAdmitter) AdmitChildRun(_ context.Context, request exec.ChildRunRequest) (exec.ChildRun, error) {
+	a.requests = append(a.requests, request)
+	return a.run, a.err
+}
+
 var _ = Describe("RunPipelineStep", func() {
 	var (
 		ctx        context.Context
@@ -48,7 +64,7 @@ var _ = Describe("RunPipelineStep", func() {
 		currentJob      db.Job
 		realBuild       db.Build
 
-		fakeAdmitter    *execfakes.FakeChildRunAdmitter
+		scriptedPort    *scriptedAdmitter
 		delegateFactory exec.RunPipelineStepDelegateFactory
 
 		state exec.RunState
@@ -84,8 +100,7 @@ var _ = Describe("RunPipelineStep", func() {
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{})
 		state.AddLocalVar("source-ref", "deadbeef", false)
 
-		fakeAdmitter = new(execfakes.FakeChildRunAdmitter)
-		fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{RunID: 42, Number: 7}, nil)
+		scriptedPort = &scriptedAdmitter{run: exec.ChildRun{RunID: 42, Number: 7}}
 
 		delegateFactory = runPipelineStepDelegateFactory(func(state exec.RunState) exec.RunPipelineStepDelegate {
 			return engine.NewRunPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock())
@@ -119,7 +134,7 @@ var _ = Describe("RunPipelineStep", func() {
 			*rpPlan,
 			stepMetadata,
 			delegateFactory,
-			fakeAdmitter,
+			scriptedPort,
 		)
 
 		stepOk, stepErr = rpStep.Run(ctx, state)
@@ -127,9 +142,8 @@ var _ = Describe("RunPipelineStep", func() {
 
 	admittedRequest := func() exec.ChildRunRequest {
 		GinkgoHelper()
-		Expect(fakeAdmitter.AdmitChildRunCallCount()).To(Equal(1))
-		_, request := fakeAdmitter.AdmitChildRunArgsForCall(0)
-		return request
+		Expect(scriptedPort.requests).To(HaveLen(1))
+		return scriptedPort.requests[0]
 	}
 
 	Describe("a run the call admitted", func() {
@@ -153,7 +167,7 @@ var _ = Describe("RunPipelineStep", func() {
 
 	Describe("a run the call re-attached to", func() {
 		BeforeEach(func() {
-			fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{RunID: 42, Number: 7, Replayed: true}, nil)
+			scriptedPort.run = exec.ChildRun{RunID: 42, Number: 7, Replayed: true}
 		})
 
 		It("says it re-attached rather than admitted", func() {
@@ -181,7 +195,7 @@ var _ = Describe("RunPipelineStep", func() {
 	} {
 		Context("when the port refuses: "+name, func() {
 			BeforeEach(func() {
-				fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{}, refusal)
+				scriptedPort.run, scriptedPort.err = exec.ChildRun{}, refusal
 			})
 
 			It("fails the step with the refusal on stderr, and does not error it", func() {
@@ -214,7 +228,7 @@ var _ = Describe("RunPipelineStep", func() {
 	} {
 		Context("when the admission faults: "+name, func() {
 			BeforeEach(func() {
-				fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{}, fault)
+				scriptedPort.run, scriptedPort.err = exec.ChildRun{}, fault
 			})
 
 			It("errors the step, and writes nothing to the build log", func() {
@@ -239,7 +253,7 @@ var _ = Describe("RunPipelineStep", func() {
 	// error the step swallowed can never reach it.
 	Context("when the build is aborted during the admission", func() {
 		BeforeEach(func() {
-			fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{}, context.Canceled)
+			scriptedPort.run, scriptedPort.err = exec.ChildRun{}, context.Canceled
 		})
 
 		It("returns the cancellation, intact enough for the engine to read", func() {
@@ -320,8 +334,7 @@ var _ = Describe("RunPipelineStep", func() {
 		// is a different call.
 		digestFor := func(plan atc.RunPipelinePlan, localVars map[string]any) string {
 			GinkgoHelper()
-			admitter := new(execfakes.FakeChildRunAdmitter)
-			admitter.AdmitChildRunReturns(exec.ChildRun{RunID: 42, Number: 7}, nil)
+			admitter := &scriptedAdmitter{run: exec.ChildRun{RunID: 42, Number: 7}}
 
 			digestState := exec.NewRunState(noopStepper, vars.StaticVariables{})
 			for name, value := range localVars {
@@ -338,8 +351,7 @@ var _ = Describe("RunPipelineStep", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ok).To(BeTrue())
 
-			_, request := admitter.AdmitChildRunArgsForCall(0)
-			return request.InputDigest
+			return admitter.requests[0].InputDigest
 		}
 
 		localVars := map[string]any{"source-ref": "deadbeef"}
@@ -416,7 +428,7 @@ var _ = Describe("RunPipelineStep", func() {
 		It("errors the step and admits nothing", func() {
 			Expect(stepErr).To(HaveOccurred())
 			Expect(stepOk).To(BeFalse())
-			Expect(fakeAdmitter.AdmitChildRunCallCount()).To(BeZero())
+			Expect(scriptedPort.requests).To(BeEmpty())
 		})
 	})
 
