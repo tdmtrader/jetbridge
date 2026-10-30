@@ -6,24 +6,11 @@ import (
 	"strconv"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/tracing"
 )
-
-type BuildStarter interface {
-	TryStartPendingBuildsForJob(
-		ctx context.Context,
-		logger lager.Logger,
-		job db.SchedulerJob,
-		inputs db.InputConfigs,
-	) (bool, error)
-}
-
-type BuildPlanner interface {
-	Create(atc.StepConfig, db.SchedulerResources, atc.ResourceTypes, []db.BuildInput, bool) (atc.Plan, error)
-}
 
 type Build interface {
 	db.Build
@@ -32,22 +19,24 @@ type Build interface {
 	BuildInputs(context.Context) ([]db.BuildInput, bool, error)
 }
 
+// BuildStarter starts a job's pending builds: it schedules each one, determines
+// its inputs, plans it and starts it, in the order they are pending.
+type BuildStarter struct {
+	planner   builds.Planner
+	algorithm Algorithm
+}
+
 func NewBuildStarter(
-	planner BuildPlanner,
+	planner builds.Planner,
 	algorithm Algorithm,
-) BuildStarter {
-	return &buildStarter{
+) *BuildStarter {
+	return &BuildStarter{
 		planner:   planner,
 		algorithm: algorithm,
 	}
 }
 
-type buildStarter struct {
-	planner   BuildPlanner
-	algorithm Algorithm
-}
-
-func (s *buildStarter) TryStartPendingBuildsForJob(
+func (s *BuildStarter) TryStartPendingBuildsForJob(
 	ctx context.Context,
 	logger lager.Logger,
 	job db.SchedulerJob,
@@ -96,7 +85,7 @@ func (s *buildStarter) TryStartPendingBuildsForJob(
 	return needsRetry, nil
 }
 
-func (s *buildStarter) constructBuilds(job db.Job, jobInputs db.InputConfigs, builds []db.Build) []Build {
+func (s *BuildStarter) constructBuilds(job db.Job, jobInputs db.InputConfigs, builds []db.Build) []Build {
 	var buildsToSchedule []Build
 
 	for _, nextPendingBuild := range builds {
@@ -128,7 +117,7 @@ type startResults struct {
 	inputsDetermined       bool
 }
 
-func (s *buildStarter) tryStartNextPendingBuild(
+func (s *BuildStarter) tryStartNextPendingBuild(
 	ctx context.Context,
 	logger lager.Logger,
 	nextPendingBuild Build,

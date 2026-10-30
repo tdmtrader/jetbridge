@@ -20,7 +20,7 @@ type Algorithm interface {
 
 type Scheduler struct {
 	Algorithm    Algorithm
-	BuildStarter BuildStarter
+	BuildStarter *BuildStarter
 }
 
 type ScheduleResult struct {

@@ -118,7 +118,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 
 	// MO-04/05: BuildsStarted vs CheckBuildsStarted counters.
 	Describe("BuildsStarted and CheckBuildsStarted metrics", func() {
-		var buildStarter BuildStarter
+		var buildStarter *BuildStarter
 
 		BeforeEach(func() {
 			buildStarter = realBuildStarter(algorithm)

@@ -14,24 +14,16 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-type BuildScheduler interface {
-	Schedule(
-		ctx context.Context,
-		logger lager.Logger,
-		job db.SchedulerJob,
-	) (ScheduleResult, error)
-}
-
 type Runner struct {
 	logger     lager.Logger
 	jobFactory db.JobFactory
-	scheduler  BuildScheduler
+	scheduler  *Scheduler
 
 	guardJobScheduling chan struct{}
 	running            *sync.Map
 }
 
-func NewRunner(logger lager.Logger, jobFactory db.JobFactory, scheduler BuildScheduler, maxJobs uint64) *Runner {
+func NewRunner(logger lager.Logger, jobFactory db.JobFactory, scheduler *Scheduler, maxJobs uint64) *Runner {
 	return &Runner{
 		logger:     logger,
 		jobFactory: jobFactory,

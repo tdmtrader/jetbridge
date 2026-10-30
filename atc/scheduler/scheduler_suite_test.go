@@ -91,7 +91,7 @@ func (a *scriptedAlgorithm) scheduledJob(i int) db.SchedulerJob {
 }
 
 // realBuildStarter is the production starter over the production planner.
-func realBuildStarter(algorithm scheduler.Algorithm) scheduler.BuildStarter {
+func realBuildStarter(algorithm scheduler.Algorithm) *scheduler.BuildStarter {
 	return scheduler.NewBuildStarter(builds.NewPlanner(atc.NewPlanFactory(0)), algorithm)
 }
 

@@ -87,7 +87,7 @@ var _ = Describe("BuildStarter", func() {
 		disaster = errors.New("bad thing")
 	})
 
-	realStarter := func() scheduler.BuildStarter {
+	realStarter := func() *scheduler.BuildStarter {
 		return realBuildStarter(algorithm)
 	}
 
@@ -102,7 +102,7 @@ var _ = Describe("BuildStarter", func() {
 		return *(*plan.Do)[0].Task
 	}
 
-	tryStart := func(starter scheduler.BuildStarter, job db.SchedulerJob, inputs db.InputConfigs) (bool, error) {
+	tryStart := func(starter *scheduler.BuildStarter, job db.SchedulerJob, inputs db.InputConfigs) (bool, error) {
 		return starter.TryStartPendingBuildsForJob(
 			context.Background(),
 			lagertest.NewTestLogger("test"),
