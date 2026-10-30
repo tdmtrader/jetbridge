@@ -137,7 +137,7 @@ func requestRunCheck(in RunOutputStart, kind string) (RunCheckAdmission, error) 
 	case "scanner":
 		queue := make(chan db.Build, 1)
 		factory := db.NewCheckFactory(in.DB.Conn, in.DB.LockFactory, queue, util.NewSequenceGenerator(0))
-		out.Build, _, out.Err = factory.TryCreateCheck(context.Background(), resource, nil, nil, true, false, false)
+		out.Build, _, out.Err = factory.TryCreateCheck(context.Background(), resource, nil, nil, true, false)
 		if len(queue) > 0 && out.Build != nil && out.Build.ID() != 0 {
 			return out, fmt.Errorf("durable check was also enqueued in memory")
 		}

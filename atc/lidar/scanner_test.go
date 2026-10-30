@@ -160,7 +160,6 @@ var _ = Describe("Scanner", func() {
 		Expect(call.resourceTypes).To(BeNil())
 		Expect(call.from).To(BeNil())
 		Expect(call.manuallyTriggered).To(BeFalse())
-		Expect(call.skipIntervalRecursively).To(BeFalse())
 		Expect(call.toDB).To(BeFalse())
 
 		build := drainLidarCheckBuilds(fixture, 1)[0]
@@ -263,7 +262,6 @@ var _ = Describe("Scanner", func() {
 		Expect(call.resourceTypes).To(BeNil())
 		Expect(call.from).To(Equal(version))
 		Expect(call.manuallyTriggered).To(BeFalse())
-		Expect(call.skipIntervalRecursively).To(BeFalse())
 		Expect(call.toDB).To(BeFalse())
 		build := drainLidarCheckBuilds(fixture, 1)[0]
 		Expect(build.ResourceID()).To(Equal(resource.ID()))
@@ -1112,7 +1110,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		// A manual check whose build errored before it reached a scope leaves
 		// the resource's in-memory check build behind.
 		_, created, err := fixture.CheckFactory.TryCreateCheck(
-			context.Background(), resource, db.ResourceTypes{}, nil, true, false, false,
+			context.Background(), resource, db.ResourceTypes{}, nil, true, false,
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
@@ -1321,7 +1319,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 
 		_, created, err := fixture.CheckFactory.TryCreateCheck(
 			lagerctx.NewContext(context.Background(), lagertest.NewTestLogger("pre-create")),
-			resource, nil, nil, false, false, false,
+			resource, nil, nil, false, false,
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())

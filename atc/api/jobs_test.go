@@ -197,15 +197,14 @@ func (job rerunErrorJob) RerunBuild(db.Build, string) (db.Build, error) {
 }
 
 type recordingJobsCheckCall struct {
-	checkable               db.Checkable
-	resourceTypes           db.ResourceTypes
-	from                    atc.Version
-	manuallyTriggered       bool
-	skipIntervalRecursively bool
-	toDB                    bool
-	build                   db.Build
-	created                 bool
-	err                     error
+	checkable         db.Checkable
+	resourceTypes     db.ResourceTypes
+	from              atc.Version
+	manuallyTriggered bool
+	toDB              bool
+	build             db.Build
+	created           bool
+	err               error
 }
 
 type recordingJobsCheckFactory struct {
@@ -220,19 +219,17 @@ func (factory *recordingJobsCheckFactory) TryCreateCheck(
 	resourceTypes db.ResourceTypes,
 	from atc.Version,
 	manuallyTriggered bool,
-	skipIntervalRecursively bool,
 	toDB bool,
 ) (db.Build, bool, error) {
 	build, created, err := factory.CheckFactory.TryCreateCheck(
 		ctx, checkable, resourceTypes, from,
-		manuallyTriggered, skipIntervalRecursively, toDB,
+		manuallyTriggered, toDB,
 	)
 	factory.mu.Lock()
 	factory.calls = append(factory.calls, recordingJobsCheckCall{
 		checkable: checkable, resourceTypes: resourceTypes, from: from,
-		manuallyTriggered:       manuallyTriggered,
-		skipIntervalRecursively: skipIntervalRecursively,
-		toDB:                    toDB, build: build, created: created, err: err,
+		manuallyTriggered: manuallyTriggered,
+		toDB:              toDB, build: build, created: created, err: err,
 	})
 	factory.mu.Unlock()
 	return build, created, err
@@ -1633,7 +1630,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(call.resourceTypes[0].Name()).To(Equal("some-type"))
 			Expect(call.from).To(Equal(pinnedVersion))
 			Expect(call.manuallyTriggered).To(BeTrue())
-			Expect(call.skipIntervalRecursively).To(BeTrue())
 			Expect(call.toDB).To(BeTrue())
 			Expect(call.build).NotTo(BeNil())
 			Expect(call.created).To(BeTrue())

@@ -97,12 +97,11 @@ func (pipeline resourceAPIPipeline) ResourceTypes() (db.ResourceTypes, error) {
 }
 
 type resourceAPICheckCall struct {
-	checkable               db.Checkable
-	resourceTypes           db.ResourceTypes
-	from                    atc.Version
-	manuallyTriggered       bool
-	skipIntervalRecursively bool
-	toDB                    bool
+	checkable         db.Checkable
+	resourceTypes     db.ResourceTypes
+	from              atc.Version
+	manuallyTriggered bool
+	toDB              bool
 }
 
 // resourceAPICheckFactory normally delegates to the real CheckFactory. Its two
@@ -123,15 +122,13 @@ func (factory *resourceAPICheckFactory) TryCreateCheck(
 	resourceTypes db.ResourceTypes,
 	from atc.Version,
 	manuallyTriggered bool,
-	skipIntervalRecursively bool,
 	toDB bool,
 ) (db.Build, bool, error) {
 	factory.mu.Lock()
 	factory.calls = append(factory.calls, resourceAPICheckCall{
 		checkable: checkable, resourceTypes: resourceTypes, from: from,
-		manuallyTriggered:       manuallyTriggered,
-		skipIntervalRecursively: skipIntervalRecursively,
-		toDB:                    toDB,
+		manuallyTriggered: manuallyTriggered,
+		toDB:              toDB,
 	})
 	notCreated, configuredErr := factory.notCreated, factory.err
 	factory.mu.Unlock()
@@ -147,7 +144,7 @@ func (factory *resourceAPICheckFactory) TryCreateCheck(
 	}
 	return factory.CheckFactory.TryCreateCheck(
 		ctx, checkable, resourceTypes, from,
-		manuallyTriggered, skipIntervalRecursively, toDB,
+		manuallyTriggered, toDB,
 	)
 }
 
@@ -947,7 +944,7 @@ var _ = Describe("Resources API", func() {
 				from := atc.Version{"ref": kind + "-from"}
 				response := requestResourceAPI(
 					fixture, http.MethodPost, path,
-					resourceAPIJSONBody(atc.CheckRequestBody{From: from, Shallow: true}),
+					resourceAPIJSONBody(atc.CheckRequestBody{From: from}),
 				)
 				Expect(response.StatusCode).To(Equal(http.StatusCreated))
 				presented := decodeResourceAPIResponse[atc.Build](response)
@@ -960,7 +957,6 @@ var _ = Describe("Resources API", func() {
 				call := calls[0]
 				Expect(call.from).To(Equal(from))
 				Expect(call.manuallyTriggered).To(BeTrue())
-				Expect(call.skipIntervalRecursively).To(BeFalse())
 				Expect(call.toDB).To(BeTrue())
 				Expect(call.checkable.Name()).To(Equal(kind + "-name"))
 
@@ -1037,21 +1033,6 @@ var _ = Describe("Resources API", func() {
 				var builds int
 				Expect(fixture.database.Conn.QueryRow(`SELECT count(*) FROM builds`).Scan(&builds)).To(Succeed())
 				Expect(builds).To(BeZero())
-			},
-			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
-			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
-		)
-
-		DescribeTable("forwards recursive checking when shallow is false",
-			func(path string) {
-				factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
-				fixture.database.Deps.checkFactory = factory
-				response := requestResourceAPI(
-					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
-				)
-				Expect(response.StatusCode).To(Equal(http.StatusCreated))
-				Expect(factory.Calls()).To(HaveLen(1))
-				Expect(factory.Calls()[0].skipIntervalRecursively).To(BeTrue())
 			},
 			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
 			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
@@ -1155,7 +1136,6 @@ var _ = Describe("Resources API", func() {
 			Expect(calls).To(HaveLen(1))
 			Expect(calls[0].from).To(BeNil())
 			Expect(calls[0].manuallyTriggered).To(BeTrue())
-			Expect(calls[0].skipIntervalRecursively).To(BeFalse())
 			Expect(calls[0].toDB).To(BeTrue())
 		})
 

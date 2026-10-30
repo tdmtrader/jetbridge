@@ -38,7 +38,7 @@ var _ = Describe("check-resource-type", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-					ghttp.VerifyJSON(`{"from":{"ref":"fake-ref"},"shallow":false}`),
+					ghttp.VerifyJSON(`{"from":{"ref":"fake-ref"}}`),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, build),
 				),
 			)
@@ -63,7 +63,7 @@ var _ = Describe("check-resource-type", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-					ghttp.VerifyJSON(`{"from":null,"shallow":false}`),
+					ghttp.VerifyJSON(`{"from":null}`),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, build),
 				),
 			)
@@ -94,7 +94,7 @@ var _ = Describe("check-resource-type", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-					ghttp.VerifyJSON(`{"from":null,"shallow":false}`),
+					ghttp.VerifyJSON(`{"from":null}`),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, build),
 				),
 				BuildEventsHandler(123, streaming, events),
@@ -115,32 +115,6 @@ var _ = Describe("check-resource-type", func() {
 		})
 	})
 
-	Context("when specifying the --shallow flag", func() {
-		BeforeEach(func() {
-			atcServer.AppendHandlers(
-				ghttp.CombineHandlers(
-					ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-					ghttp.VerifyJSON(`{"from":null,"shallow":true}`),
-					ghttp.RespondWithJSONEncoded(http.StatusOK, build),
-				),
-			)
-		})
-
-		It("sends correct check resource request to ATC", func() {
-			Expect(func() {
-				flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--shallow", "-a")
-				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-				Expect(err).NotTo(HaveOccurred())
-
-				Eventually(sess).Should(gexec.Exit(0))
-
-				Eventually(sess.Out).Should(gbytes.Say("checking mypipeline/branch:master/myresource in build 123"))
-			}).To(Change(func() int {
-				return len(atcServer.ReceivedRequests())
-			}).By(2))
-		})
-	})
-
 	Context("when pipeline or resource-type is not found", func() {
 		BeforeEach(func() {
 			atcServer.AppendHandlers(
@@ -152,7 +126,7 @@ var _ = Describe("check-resource-type", func() {
 		})
 
 		It("fails with error", func() {
-			flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--shallow")
+			flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -173,7 +147,7 @@ var _ = Describe("check-resource-type", func() {
 		})
 
 		It("outputs error in response body", func() {
-			flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--shallow")
+			flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -212,7 +186,7 @@ var _ = Describe("check-resource-type", func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-						ghttp.VerifyJSON(`{"from":{"ref":"fake-ref"},"shallow":false}`),
+						ghttp.VerifyJSON(`{"from":{"ref":"fake-ref"}}`),
 						ghttp.RespondWithJSONEncoded(http.StatusOK, build),
 					),
 				)
@@ -237,7 +211,7 @@ var _ = Describe("check-resource-type", func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-						ghttp.VerifyJSON(`{"from":null,"shallow":false}`),
+						ghttp.VerifyJSON(`{"from":null}`),
 						ghttp.RespondWithJSONEncoded(http.StatusOK, build),
 					),
 				)
@@ -268,7 +242,7 @@ var _ = Describe("check-resource-type", func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-						ghttp.VerifyJSON(`{"from":null,"shallow":false}`),
+						ghttp.VerifyJSON(`{"from":null}`),
 						ghttp.RespondWithJSONEncoded(http.StatusOK, build),
 					),
 					BuildEventsHandler(123, streaming, events),
@@ -289,32 +263,6 @@ var _ = Describe("check-resource-type", func() {
 			})
 		})
 
-		Context("when specifying the --shallow flag", func() {
-			BeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("POST", expectedURL, expectedQueryParams),
-						ghttp.VerifyJSON(`{"from":null,"shallow":true}`),
-						ghttp.RespondWithJSONEncoded(http.StatusOK, build),
-					),
-				)
-			})
-
-			It("sends correct check resource request to ATC", func() {
-				Expect(func() {
-					flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--shallow", "-a", "--team", team)
-					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-					Expect(err).NotTo(HaveOccurred())
-
-					Eventually(sess).Should(gexec.Exit(0))
-
-					Eventually(sess.Out).Should(gbytes.Say("checking mypipeline/branch:master/myresource in build 123"))
-				}).To(Change(func() int {
-					return len(atcServer.ReceivedRequests())
-				}).By(3))
-			})
-		})
-
 		Context("when pipeline or resource-type is not found", func() {
 			BeforeEach(func() {
 				atcServer.AppendHandlers(
@@ -326,7 +274,7 @@ var _ = Describe("check-resource-type", func() {
 			})
 
 			It("fails with error", func() {
-				flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--shallow", "--team", team)
+				flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--team", team)
 				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -347,7 +295,7 @@ var _ = Describe("check-resource-type", func() {
 			})
 
 			It("outputs error in response body", func() {
-				flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--shallow", "--team", team)
+				flyCmd = exec.Command(flyPath, "-t", targetName, "check-resource-type", "-r", "mypipeline/branch:master/myresource", "--team", team)
 				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 				Expect(err).NotTo(HaveOccurred())
 

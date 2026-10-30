@@ -55,7 +55,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 		var executed, collected []db.Build
 		var newestTypeCheck db.Build
 		for _, checkable := range []db.Checkable{resource, resourceTypes[0]} {
-			check, created, err := checkFactory.TryCreateCheck(ctx, checkable, resourceTypes, nil, true, false, false)
+			check, created, err := checkFactory.TryCreateCheck(ctx, checkable, resourceTypes, nil, true, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(created).To(BeTrue())
 			Expect(check.ID()).NotTo(BeZero(), "Run checks must use persisted builds")
@@ -98,7 +98,7 @@ var _ = Describe("Pipeline run reclamation with durable executions", func() {
 					newestTypeCheck, _ = f.check(checkable, executedClosedWithImageGet)
 					continue
 				}
-				check, created, err := checkFactory.TryCreateCheck(ctx, checkable, resourceTypes, nil, true, false, false)
+				check, created, err := checkFactory.TryCreateCheck(ctx, checkable, resourceTypes, nil, true, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(created).To(BeTrue())
 				Expect(check.SaveEvent(event.Log{Payload: "unexecuted check output"})).To(Succeed())

@@ -65,7 +65,6 @@ func (s *Server) CheckResourceType(dbPipeline db.Pipeline) http.Handler {
 			dbResourceTypes,
 			reqBody.From,
 			true,
-			!reqBody.Shallow,
 			true,
 		)
 		if err != nil {

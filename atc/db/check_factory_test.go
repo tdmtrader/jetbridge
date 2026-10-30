@@ -151,7 +151,7 @@ var _ = Describe("CheckFactory", func() {
 
 		Context("when it is run on a resource", func() {
 			JustBeforeEach(func() {
-				build, created, err = checkFactory.TryCreateCheck(context.TODO(), checkResource, checkResourceTypes, fromVersion, manuallyTriggered, false, toDb)
+				build, created, err = checkFactory.TryCreateCheck(context.TODO(), checkResource, checkResourceTypes, fromVersion, manuallyTriggered, toDb)
 			})
 
 			Context("when the resource parent type is not a custom type", func() {
@@ -208,7 +208,7 @@ var _ = Describe("CheckFactory", func() {
 					It("numbers the build from the factory's sequence generator", func() {
 						Expect(build.RunStateID()).To(Equal("in-memory-check-build:1"))
 
-						next, _, err := checkFactory.TryCreateCheck(context.TODO(), checkResource, checkResourceTypes, fromVersion, true, false, false)
+						next, _, err := checkFactory.TryCreateCheck(context.TODO(), checkResource, checkResourceTypes, fromVersion, true, false)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(next.RunStateID()).To(Equal("in-memory-check-build:2"))
 					})
@@ -227,7 +227,7 @@ var _ = Describe("CheckFactory", func() {
 							scopeResource(checkResource)
 
 							firstBuild, firstCreated, firstErr := checkFactory.TryCreateCheck(
-								context.TODO(), checkResource, checkResourceTypes, fromVersion, false, false, false)
+								context.TODO(), checkResource, checkResourceTypes, fromVersion, false, false)
 							Expect(firstErr).NotTo(HaveOccurred())
 							Expect(firstCreated).To(BeTrue())
 							Expect(firstBuild).NotTo(BeNil())
@@ -489,7 +489,7 @@ var _ = Describe("CheckFactory", func() {
 
 		Context("when it is run for a resource type", func() {
 			JustBeforeEach(func() {
-				build, created, err = checkFactory.TryCreateCheck(context.TODO(), checkResourceType, checkResourceTypes, fromVersion, manuallyTriggered, false, toDb)
+				build, created, err = checkFactory.TryCreateCheck(context.TODO(), checkResourceType, checkResourceTypes, fromVersion, manuallyTriggered, toDb)
 			})
 
 			Context("when build is created in db", func() {
@@ -549,7 +549,7 @@ var _ = Describe("CheckFactory", func() {
 						Expect(err).To(HaveOccurred())
 
 						_, retryCreated, retryErr := checkFactory.TryCreateCheck(
-							context.TODO(), checkResourceType, checkResourceTypes, fromVersion, false, false, false)
+							context.TODO(), checkResourceType, checkResourceTypes, fromVersion, false, false)
 						Expect(retryErr).To(MatchError(ContainSubstring("resource type not supporting in-memory check build")))
 						Expect(retryCreated).To(BeFalse())
 					})

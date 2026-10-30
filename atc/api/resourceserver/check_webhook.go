@@ -89,7 +89,6 @@ func (s *Server) CheckResourceWebHook(dbPipeline db.Pipeline) http.Handler {
 			dbResourceTypes,
 			nil,
 			true,
-			false,
 			true,
 		)
 		if err != nil {
