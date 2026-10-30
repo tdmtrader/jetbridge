@@ -15,7 +15,6 @@ import (
 
 const supportedSchema = "exec.v2"
 
-//counterfeiter:generate . CoreStepFactory
 type CoreStepFactory interface {
 	GetStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	PutStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step

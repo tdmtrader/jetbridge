@@ -2,23 +2,96 @@ package engine_test
 
 import (
 	"net/url"
+	"sync"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/engine"
-	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/exec"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// recordingCoreStepFactory records what the stepper factory asked of the core
+// factory and hands back the step scripted for that kind, or an identity step.
+//
+// The stepper factory is a dispatcher: its whole output is which core
+// constructor it calls, with which plan and which metadata, and the real
+// constructors fold those into unexported fields of steps that need a worker
+// pool to run. Recording the call is the only way to see the dispatch.
+type coreStepCall struct {
+	plan              atc.Plan
+	stepMetadata      exec.StepMetadata
+	containerMetadata db.ContainerMetadata
+}
+
+type recordingCoreStepFactory struct {
+	mu    sync.Mutex
+	calls map[string][]coreStepCall
+	steps map[string]exec.Step
+}
+
+func (f *recordingCoreStepFactory) record(kind string, plan atc.Plan, stepMetadata exec.StepMetadata, containerMetadata db.ContainerMetadata) exec.Step {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.calls == nil {
+		f.calls = map[string][]coreStepCall{}
+	}
+	f.calls[kind] = append(f.calls[kind], coreStepCall{plan, stepMetadata, containerMetadata})
+	if step, ok := f.steps[kind]; ok {
+		return step
+	}
+	return exec.IdentityStep{}
+}
+
+func (f *recordingCoreStepFactory) callCount(kind string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls[kind])
+}
+
+func (f *recordingCoreStepFactory) argsForCall(kind string, i int) (atc.Plan, exec.StepMetadata, db.ContainerMetadata) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := f.calls[kind][i]
+	return call.plan, call.stepMetadata, call.containerMetadata
+}
+
+func (f *recordingCoreStepFactory) GetStep(p atc.Plan, s exec.StepMetadata, c db.ContainerMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("get", p, s, c)
+}
+func (f *recordingCoreStepFactory) PutStep(p atc.Plan, s exec.StepMetadata, c db.ContainerMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("put", p, s, c)
+}
+func (f *recordingCoreStepFactory) TaskStep(p atc.Plan, s exec.StepMetadata, c db.ContainerMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("task", p, s, c)
+}
+func (f *recordingCoreStepFactory) CheckStep(p atc.Plan, s exec.StepMetadata, c db.ContainerMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("check", p, s, c)
+}
+func (f *recordingCoreStepFactory) SetPipelineStep(p atc.Plan, s exec.StepMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("set_pipeline", p, s, db.ContainerMetadata{})
+}
+func (f *recordingCoreStepFactory) RunPipelineStep(p atc.Plan, s exec.StepMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("run_pipeline", p, s, db.ContainerMetadata{})
+}
+func (f *recordingCoreStepFactory) LoadVarStep(p atc.Plan, s exec.StepMetadata, _ engine.DelegateFactory) exec.Step {
+	return f.record("load_var", p, s, db.ContainerMetadata{})
+}
+func (f *recordingCoreStepFactory) ArtifactInputStep(p atc.Plan, _ db.Build) exec.Step {
+	return f.record("artifact_input", p, exec.StepMetadata{}, db.ContainerMetadata{})
+}
+func (f *recordingCoreStepFactory) ArtifactOutputStep(p atc.Plan, _ db.Build) exec.Step {
+	return f.record("artifact_output", p, exec.StepMetadata{}, db.ContainerMetadata{})
+}
 
 var _ = Describe("Builder", func() {
 
 	Describe("BuildStep", func() {
 
 		var (
-			fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
-			fixture             *engineDBFixture
+			recordedCoreSteps *recordingCoreStepFactory
+			fixture           *engineDBFixture
 
 			planFactory    atc.PlanFactory
 			stepperFactory engine.StepperFactory
@@ -26,10 +99,10 @@ var _ = Describe("Builder", func() {
 
 		BeforeEach(func() {
 			fixture = useEngineDB()
-			fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
+			recordedCoreSteps = new(recordingCoreStepFactory)
 
 			stepperFactory = engine.NewStepperFactory(
-				fakeCoreStepFactory,
+				recordedCoreSteps,
 				"http://example.com",
 				newCheckRateLimiter(),
 				fixture.WorkerFactory,
@@ -149,7 +222,7 @@ var _ = Describe("Builder", func() {
 
 					Context("constructing outputs", func() {
 						It("constructs the put correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.PutStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("put", 0)
 							Expect(plan).To(Equal(putPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -164,7 +237,7 @@ var _ = Describe("Builder", func() {
 								BuildName:            build.Name(),
 							}))
 
-							plan, stepMetadata, containerMetadata, _ = fakeCoreStepFactory.PutStepArgsForCall(1)
+							plan, stepMetadata, containerMetadata = recordedCoreSteps.argsForCall("put", 1)
 							Expect(plan).To(Equal(otherPutPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -227,7 +300,7 @@ var _ = Describe("Builder", func() {
 
 					Context("constructing outputs", func() {
 						It("constructs the put correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.PutStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("put", 0)
 							Expect(plan).To(Equal(putPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -242,7 +315,7 @@ var _ = Describe("Builder", func() {
 								BuildName:            build.Name(),
 							}))
 
-							plan, stepMetadata, containerMetadata, _ = fakeCoreStepFactory.PutStepArgsForCall(1)
+							plan, stepMetadata, containerMetadata = recordedCoreSteps.argsForCall("put", 1)
 							Expect(plan).To(Equal(otherPutPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -319,7 +392,7 @@ var _ = Describe("Builder", func() {
 					})
 
 					It("constructs the first get correctly", func() {
-						plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.GetStepArgsForCall(0)
+						plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("get", 0)
 						expectedPlan := getPlan
 						expectedPlan.Attempts = []int{1}
 						Expect(plan).To(Equal(expectedPlan))
@@ -339,7 +412,7 @@ var _ = Describe("Builder", func() {
 					})
 
 					It("constructs the second get correctly", func() {
-						plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.GetStepArgsForCall(1)
+						plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("get", 1)
 						expectedPlan := getPlan
 						expectedPlan.Attempts = []int{3}
 						Expect(plan).To(Equal(expectedPlan))
@@ -363,7 +436,7 @@ var _ = Describe("Builder", func() {
 					})
 
 					It("constructs nested steps correctly", func() {
-						plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+						plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("task", 0)
 						expectedPlan := taskPlan
 						expectedPlan.Attempts = []int{2, 1}
 						Expect(plan).To(Equal(expectedPlan))
@@ -381,7 +454,7 @@ var _ = Describe("Builder", func() {
 							Attempt:              "2.1",
 						}))
 
-						plan, stepMetadata, containerMetadata, _ = fakeCoreStepFactory.TaskStepArgsForCall(1)
+						plan, stepMetadata, containerMetadata = recordedCoreSteps.argsForCall("task", 1)
 						expectedPlan = taskPlan
 						expectedPlan.Attempts = []int{2, 2}
 						Expect(plan).To(Equal(expectedPlan))
@@ -450,17 +523,17 @@ var _ = Describe("Builder", func() {
 					})
 
 					It("constructs nested steps correctly", func() {
-						Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(6))
+						Expect(recordedCoreSteps.callCount("task")).To(Equal(6))
 
-						_, _, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+						_, _, containerMetadata := recordedCoreSteps.argsForCall("task", 0)
 						Expect(containerMetadata.Attempt).To(Equal("1"))
-						_, _, containerMetadata, _ = fakeCoreStepFactory.TaskStepArgsForCall(1)
+						_, _, containerMetadata = recordedCoreSteps.argsForCall("task", 1)
 						Expect(containerMetadata.Attempt).To(Equal("1"))
-						_, _, containerMetadata, _ = fakeCoreStepFactory.TaskStepArgsForCall(2)
+						_, _, containerMetadata = recordedCoreSteps.argsForCall("task", 2)
 						Expect(containerMetadata.Attempt).To(Equal("1"))
-						_, _, containerMetadata, _ = fakeCoreStepFactory.TaskStepArgsForCall(3)
+						_, _, containerMetadata = recordedCoreSteps.argsForCall("task", 3)
 						Expect(containerMetadata.Attempt).To(Equal("1"))
-						_, _, containerMetadata, _ = fakeCoreStepFactory.TaskStepArgsForCall(4)
+						_, _, containerMetadata = recordedCoreSteps.argsForCall("task", 4)
 						Expect(containerMetadata.Attempt).To(Equal("1"))
 					})
 				})
@@ -481,7 +554,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs inputs correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.GetStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("get", 0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -509,7 +582,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs tasks correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("task", 0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -537,7 +610,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs set_pipeline correctly", func() {
-							plan, stepMetadata, _ := fakeCoreStepFactory.SetPipelineStepArgsForCall(0)
+							plan, stepMetadata, _ := recordedCoreSteps.argsForCall("set_pipeline", 0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 						})
@@ -552,7 +625,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs run_pipeline correctly", func() {
-							plan, stepMetadata, _ := fakeCoreStepFactory.RunPipelineStepArgsForCall(0)
+							plan, stepMetadata, _ := recordedCoreSteps.argsForCall("run_pipeline", 0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 						})
@@ -567,7 +640,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs load_var correctly", func() {
-							plan, stepMetadata, _ := fakeCoreStepFactory.LoadVarStepArgsForCall(0)
+							plan, stepMetadata, _ := recordedCoreSteps.argsForCall("load_var", 0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 						})
@@ -581,7 +654,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the step correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.CheckStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("check", 0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -632,7 +705,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the put correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.PutStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("put", 0)
 							Expect(plan).To(Equal(putPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -649,7 +722,7 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the dependent get correctly", func() {
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.GetStepArgsForCall(0)
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("get", 0)
 							Expect(plan).To(Equal(dependentGetPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -714,8 +787,8 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the step correctly", func() {
-							Expect(fakeCoreStepFactory.GetStepCallCount()).To(Equal(1))
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.GetStepArgsForCall(0)
+							Expect(recordedCoreSteps.callCount("get")).To(Equal(1))
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("get", 0)
 							Expect(plan).To(Equal(inputPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -732,8 +805,8 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the completion hook correctly", func() {
-							Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(4))
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(2)
+							Expect(recordedCoreSteps.callCount("task")).To(Equal(4))
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("task", 2)
 							Expect(plan).To(Equal(completionTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -750,8 +823,8 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the failure hook correctly", func() {
-							Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(4))
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+							Expect(recordedCoreSteps.callCount("task")).To(Equal(4))
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("task", 0)
 							Expect(plan).To(Equal(failureTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -768,8 +841,8 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the success hook correctly", func() {
-							Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(4))
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(1)
+							Expect(recordedCoreSteps.callCount("task")).To(Equal(4))
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("task", 1)
 							Expect(plan).To(Equal(successTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -786,8 +859,8 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("constructs the next step correctly", func() {
-							Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(4))
-							plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.TaskStepArgsForCall(3)
+							Expect(recordedCoreSteps.callCount("task")).To(Equal(4))
+							plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("task", 3)
 							Expect(plan).To(Equal(nextTaskPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 							Expect(containerMetadata).To(Equal(db.ContainerMetadata{
@@ -819,8 +892,8 @@ var _ = Describe("Builder", func() {
 					})
 
 					It("constructs the step correctly", func() {
-						Expect(fakeCoreStepFactory.GetStepCallCount()).To(Equal(1))
-						plan, stepMetadata, containerMetadata, _ := fakeCoreStepFactory.GetStepArgsForCall(0)
+						Expect(recordedCoreSteps.callCount("get")).To(Equal(1))
+						plan, stepMetadata, containerMetadata := recordedCoreSteps.argsForCall("get", 0)
 						Expect(plan).To(Equal(inputPlan))
 						Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
 						Expect(containerMetadata).To(Equal(db.ContainerMetadata{

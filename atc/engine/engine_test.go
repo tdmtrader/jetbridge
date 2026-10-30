@@ -19,7 +19,6 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	. "github.com/concourse/concourse/atc/engine"
-	"github.com/concourse/concourse/atc/engine/enginefakes"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/vars"
@@ -131,18 +130,18 @@ func (factory *countingStepperFactory) StepperForBuild(build db.Build) (exec.Ste
 
 var _ = Describe("Engine", func() {
 	var (
-		fakeCoreStepFactory *enginefakes.FakeCoreStepFactory
-		stepperFactory      *countingStepperFactory
+		recordedCoreSteps *recordingCoreStepFactory
+		stepperFactory    *countingStepperFactory
 
 		globalSecrets creds.Secrets
 		varSourcePool creds.VarSourcePool
 	)
 
 	BeforeEach(func() {
-		fakeCoreStepFactory = new(enginefakes.FakeCoreStepFactory)
+		recordedCoreSteps = new(recordingCoreStepFactory)
 		stepperFactory = &countingStepperFactory{
 			StepperFactory: NewStepperFactory(
-				fakeCoreStepFactory,
+				recordedCoreSteps,
 				"http://example.com",
 				newCheckRateLimiter(),
 				nil,
@@ -324,7 +323,7 @@ var _ = Describe("Engine", func() {
 
 						BeforeEach(func() {
 							fakeStep = new(scriptedStep)
-							fakeCoreStepFactory.LoadVarStepReturns(fakeStep)
+							recordedCoreSteps.steps = map[string]exec.Step{"load_var": fakeStep}
 						})
 
 						It("releases the lock", func() {
@@ -339,8 +338,8 @@ var _ = Describe("Engine", func() {
 
 						It("constructs a step from the build's plan", func() {
 							waitGroup.Wait()
-							Expect(fakeCoreStepFactory.LoadVarStepCallCount()).To(Equal(1))
-							stepPlan, _, _ := fakeCoreStepFactory.LoadVarStepArgsForCall(0)
+							Expect(recordedCoreSteps.callCount("load_var")).To(Equal(1))
+							stepPlan, _, _ := recordedCoreSteps.argsForCall("load_var", 0)
 							Expect(stepPlan).To(Equal(plan))
 							Expect(stepPlan).To(Equal(realBuild.PrivatePlan()))
 						})
