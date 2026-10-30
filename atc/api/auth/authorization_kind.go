@@ -121,7 +121,6 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.UnpinResource,
 		atc.SetPinCommentOnResource,
 		atc.GetConfig,
-		atc.GetVersionsDB,
 		atc.ListJobInputs,
 		atc.OrderPipelines,
 		atc.OrderPipelinesWithinGroup,

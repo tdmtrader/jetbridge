@@ -108,7 +108,6 @@ var templateRouteEffects = map[string][]string{
 		atc.GetTeam,
 		atc.GetUpstreamResourceCausality,
 		atc.GetUser,
-		atc.GetVersionsDB,
 		atc.GetWall,
 		atc.HijackContainer,
 		atc.JobBadge,

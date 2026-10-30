@@ -208,7 +208,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
 	gr, err := gzip.NewReader(dbFile)
 	Expect(err).ToNot(HaveOccurred())
 
-	var debugDB atc.DebugVersionsDB
+	var debugDB versionsDBFixture
 	err = func(ctx context.Context) error {
 		_, span = tracing.StartSpan(ctx, "Decode", tracing.Attrs{})
 		defer span.End()

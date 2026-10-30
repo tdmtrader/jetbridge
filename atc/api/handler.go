@@ -184,7 +184,6 @@ func NewHandler(
 		atc.UnpausePipeline:                 pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
 		atc.ExposePipeline:                  pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
 		atc.HidePipeline:                    pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
-		atc.GetVersionsDB:                   pipelineHandlerFactory.HandlerFor(pipelineServer.GetVersionsDB),
 		atc.RenamePipeline:                  teamHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
 		atc.ListPipelineBuilds:              pipelineHandlerFactory.HandlerFor(pipelineServer.ListPipelineBuilds),
 		atc.CreatePipelineBuild:             pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),

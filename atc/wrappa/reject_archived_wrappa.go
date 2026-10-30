@@ -119,7 +119,6 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ClearWall,
 			atc.DeletePipeline,
 			atc.GetCC,
-			atc.GetVersionsDB,
 			atc.ListJobInputs,
 			atc.OrderPipelines,
 			atc.OrderPipelinesWithinGroup,
