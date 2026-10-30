@@ -33,7 +33,6 @@ all =
         , initRunPipeline
         , initLoadVar
         , initCheck
-        , initRun
         , initGet
         , initPut
         , initAggregate
@@ -210,30 +209,6 @@ initCheck =
         [ test "the tree" <|
             \_ ->
                 Expect.equal (Models.Check "some-id") tree
-        , test "the step" <|
-            \_ ->
-                assertSteps [ someStep "some-id" step Models.StepStatePending ] steps
-        ]
-
-
-initRun : Test
-initRun =
-    let
-        step =
-            BuildStepRun "some-message"
-
-        { tree, steps } =
-            StepTree.init Nothing
-                Routes.HighlightNothing
-                emptyResources
-                { id = "some-id"
-                , step = step
-                }
-    in
-    describe "init with Run"
-        [ test "the tree" <|
-            \_ ->
-                Expect.equal (Models.Run "some-id") tree
         , test "the step" <|
             \_ ->
                 assertSteps [ someStep "some-id" step Models.StepStatePending ] steps

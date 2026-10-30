@@ -411,9 +411,6 @@ mapBuildPlan fn plan =
                         Just { check, get } ->
                             mapBuildPlan fn check ++ mapBuildPlan fn get
 
-                BuildStepRun _ ->
-                    []
-
                 BuildStepArtifactOutput _ ->
                     []
 
@@ -481,7 +478,6 @@ type BuildStep
     | BuildStepArtifactInput StepName
     | BuildStepCheck StepName (Maybe ImageBuildPlans)
     | BuildStepGet StepName (Maybe ResourceName) (Maybe Version) (Maybe ImageBuildPlans)
-    | BuildStepRun StepName
     | BuildStepArtifactOutput StepName
     | BuildStepPut StepName (Maybe ResourceName) (Maybe ImageBuildPlans)
     | BuildStepAggregate (Array BuildPlan)
@@ -645,8 +641,6 @@ decodeBuildPlan =
                     lazy (\_ -> decodeBuildStepCheck)
                 , Json.Decode.field "get" <|
                     lazy (\_ -> decodeBuildStepGet)
-                , Json.Decode.field "run" <|
-                    lazy (\_ -> decodeBuildStepRun)
                 , Json.Decode.field "artifact_input" <|
                     lazy (\_ -> decodeBuildStepArtifactInput)
                 , Json.Decode.field "put" <|
@@ -716,12 +710,6 @@ decodeBuildStepGet =
         |> andMap (Json.Decode.maybe <| Json.Decode.field "resource" Json.Decode.string)
         |> andMap (Json.Decode.maybe <| Json.Decode.field "version" decodeVersion)
         |> andMap (Json.Decode.maybe decodeImageBuildPlans)
-
-
-decodeBuildStepRun : Json.Decode.Decoder BuildStep
-decodeBuildStepRun =
-    Json.Decode.succeed BuildStepRun
-        |> andMap (Json.Decode.field "message" Json.Decode.string)
 
 
 decodeBuildStepCheck : Json.Decode.Decoder BuildStep

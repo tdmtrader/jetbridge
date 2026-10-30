@@ -21,7 +21,6 @@ func (planner Planner) Create(
 	planConfig atc.StepConfig,
 	resources db.SchedulerResources,
 	resourceTypes atc.ResourceTypes,
-	prototypes atc.Prototypes,
 	inputs []db.BuildInput,
 	manuallyTriggered bool,
 ) (atc.Plan, error) {
@@ -30,7 +29,6 @@ func (planner Planner) Create(
 
 		resources:         resources,
 		resourceTypes:     resourceTypes,
-		prototypes:        prototypes,
 		inputs:            inputs,
 		manuallyTriggered: manuallyTriggered,
 	}
@@ -48,7 +46,6 @@ type planVisitor struct {
 
 	resources         db.SchedulerResources
 	resourceTypes     atc.ResourceTypes
-	prototypes        atc.Prototypes
 	inputs            []db.BuildInput
 	manuallyTriggered bool
 
@@ -78,28 +75,6 @@ func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 
 		ResourceTypes:     visitor.resourceTypes,
 		CheckSkipInterval: visitor.manuallyTriggered,
-	})
-
-	return nil
-}
-
-func (visitor *planVisitor) VisitRun(step *atc.RunStep) error {
-	prototype, found := visitor.prototypes.Lookup(step.Type)
-	if !found {
-		return UnknownPrototypeError{step.Type}
-	}
-
-	object := prototype.Defaults.Merge(atc.Source(step.Params))
-
-	visitor.plan = visitor.planFactory.NewPlan(atc.RunPlan{
-		Message:    step.Message,
-		Type:       step.Type,
-		Object:     atc.Params(object),
-		Privileged: step.Privileged,
-		Tags:       step.Tags,
-		Limits:     step.Limits,
-		Requests:   step.Requests,
-		Timeout:    step.Timeout,
 	})
 
 	return nil

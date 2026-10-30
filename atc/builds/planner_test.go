@@ -64,20 +64,6 @@ var defaultResourceTypes = atc.ResourceTypes{
 	},
 }
 
-var prototypes = atc.Prototypes{
-	{
-		Name: "some-prototype",
-		Type: "some-base-resource-type",
-		Source: atc.Source{
-			"some": "prototype-source",
-		},
-		Defaults: atc.Source{
-			"default-key":       "default-value",
-			"other-default-key": "other-default-value",
-		},
-	},
-}
-
 var baseResourceTypeDefaults = map[string]atc.Source{
 	"some-base-resource-type": {"default-key": "default-value"},
 }
@@ -1494,50 +1480,6 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
-		Title: "run step",
-
-		Config: &atc.RunStep{
-			Message: "some-message",
-			Type:    "some-prototype",
-			Params: atc.Params{
-				"some-param":        "some-val",
-				"other-default-key": "override-defaults",
-			},
-			Privileged: true,
-			Tags:       atc.Tags{"tag-1", "tag-2"},
-			Limits: &atc.ContainerLimits{
-				CPU:    newCPULimit(456),
-				Memory: newMemoryLimit(2048),
-			},
-			Timeout: "1h",
-		},
-
-		PlanJSON: `{
-			"id": "(unique)",
-			"run": {
-				"message": "some-message",
-				"type": "some-prototype",
-				"object": {
-					"some-param": "some-val",
-					"default-key": "default-value",
-					"other-default-key": "override-defaults"
-				},
-				"privileged": true,
-				"tags": ["tag-1", "tag-2"],
-				"container_limits": {"cpu": 456, "memory": 2048},
-				"timeout": "1h"
-			}
-		}`,
-	},
-	{
-		Title: "run step with unknown prototype",
-		Config: &atc.RunStep{
-			Message: "some-message",
-			Type:    "bogus-prototype",
-		},
-		Err: builds.UnknownPrototypeError{Prototype: "bogus-prototype"},
-	},
-	{
 		Title: "set_pipeline step",
 
 		Config: &atc.SetPipelineStep{
@@ -2026,7 +1968,7 @@ func (test PlannerTest) Run(s *PlannerSuite) {
 	if test.OverwriteResourceTypes != nil {
 		resourceTypes = test.OverwriteResourceTypes
 	}
-	actualPlan, actualErr := factory.Create(test.Config, resources, resourceTypes, prototypes, test.Inputs, test.ManuallyTriggered)
+	actualPlan, actualErr := factory.Create(test.Config, resources, resourceTypes, test.Inputs, test.ManuallyTriggered)
 
 	if test.Err != nil {
 		s.Equal(test.Err, actualErr)

@@ -17,7 +17,6 @@ func (plan *Plan) Public() *json.RawMessage {
 		Put            *json.RawMessage `json:"put,omitempty"`
 		Check          *json.RawMessage `json:"check,omitempty"`
 		Task           *json.RawMessage `json:"task,omitempty"`
-		Run            *json.RawMessage `json:"run,omitempty"`
 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
 		RunPipeline    *json.RawMessage `json:"run_pipeline,omitempty"`
 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
@@ -63,10 +62,6 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.Task != nil {
 		public.Task = plan.Task.Public()
-	}
-
-	if plan.Run != nil {
-		public.Run = plan.Run.Public()
 	}
 
 	if plan.SetPipeline != nil {
@@ -300,18 +295,6 @@ func (plan TaskPlan) Public() *json.RawMessage {
 		Name:       plan.Name,
 		Privileged: plan.Privileged,
 		Hermetic:   plan.Hermetic,
-	})
-}
-
-func (plan RunPlan) Public() *json.RawMessage {
-	return enc(struct {
-		Message    string `json:"message"`
-		Type       string `json:"type"`
-		Privileged bool   `json:"privileged"`
-	}{
-		Message:    plan.Message,
-		Type:       plan.Type,
-		Privileged: plan.Privileged,
 	})
 }
 

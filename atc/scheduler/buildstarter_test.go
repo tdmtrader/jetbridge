@@ -210,7 +210,7 @@ var _ = Describe("BuildStarter", func() {
 			Expect(needsReschedule).To(BeFalse())
 
 			Expect(fakePlanner.CreateCallCount()).To(Equal(1))
-			_, _, _, _, _, manuallyTriggered := fakePlanner.CreateArgsForCall(0)
+			_, _, _, _, manuallyTriggered := fakePlanner.CreateArgsForCall(0)
 			Expect(manuallyTriggered).To(BeTrue())
 
 			startedBuild := reloadStarterBuild(fixture, manualBuild.ID())
@@ -673,13 +673,11 @@ var _ = Describe("BuildStarter", func() {
 
 			resources := db.SchedulerResources{{Name: "some-resource"}}
 			resourceTypes := atc.ResourceTypes{{Name: "some-resource-type"}}
-			prototypes := atc.Prototypes{{Name: "some-prototype"}}
 
 			_, err := tryStart(plannedStarter(), db.SchedulerJob{
 				Job:           job,
 				Resources:     resources,
 				ResourceTypes: resourceTypes,
-				Prototypes:    prototypes,
 			}, db.InputConfigs{})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -687,11 +685,10 @@ var _ = Describe("BuildStarter", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakePlanner.CreateCallCount()).To(Equal(1))
-			planConfig, actualResources, actualResourceTypes, actualPrototypes, actualInputs, manuallyTriggered := fakePlanner.CreateArgsForCall(0)
+			planConfig, actualResources, actualResourceTypes, actualInputs, manuallyTriggered := fakePlanner.CreateArgsForCall(0)
 			Expect(planConfig).To(Equal(jobConfig.StepConfig()))
 			Expect(actualResources).To(Equal(resources))
 			Expect(actualResourceTypes).To(Equal(resourceTypes))
-			Expect(actualPrototypes).To(Equal(prototypes))
 			Expect(actualInputs).To(BeEmpty())
 			Expect(manuallyTriggered).To(BeFalse())
 			Expect(reloadStarterBuild(fixture, pendingBuild.ID()).Status()).To(Equal(db.BuildStatusStarted))

@@ -8,7 +8,6 @@ type Plan struct {
 	Put         *PutPlan         `json:"put,omitempty"`
 	Check       *CheckPlan       `json:"check,omitempty"`
 	Task        *TaskPlan        `json:"task,omitempty"`
-	Run         *RunPlan         `json:"run,omitempty"`
 	SetPipeline *SetPipelinePlan `json:"set_pipeline,omitempty"`
 	RunPipeline *RunPipelinePlan `json:"run_pipeline,omitempty"`
 	LoadVar     *LoadVarPlan     `json:"load_var,omitempty"`
@@ -378,35 +377,6 @@ type TaskPlan struct {
 	// sidecar container definition files within the build's artifacts, or
 	// inline sidecar configurations.
 	Sidecars []SidecarSource `json:"sidecars,omitempty"`
-}
-
-type RunPlan struct {
-	// The message to run on the prototype.
-	Message string `json:"message"`
-
-	// The prototype name.
-	Type string `json:"type"`
-
-	// Object to provide to the prototype. Result of merging run.params with
-	// prototype.defaults.
-	Object Params `json:"object,omitempty"`
-
-	// Run in 'privileged' mode. What this means depends on the platform, but
-	// typically you expose your workers to more risk by enabling this.
-	Privileged bool `json:"privileged"`
-
-	// Worker tags to influence placement of the container.
-	Tags Tags `json:"tags,omitempty"`
-
-	// Limits to set on the Container
-	Limits *ContainerLimits `json:"container_limits,omitempty"`
-
-	// Requests to set on the Container (independent from limits for Burstable QoS)
-	Requests *ContainerLimits `json:"container_requests,omitempty"`
-
-	// A timeout to enforce on the run step's process. Note that fetching the
-	// prototype's image does not count towards the timeout.
-	Timeout string `json:"timeout,omitempty"`
 }
 
 type SetPipelinePlan struct {

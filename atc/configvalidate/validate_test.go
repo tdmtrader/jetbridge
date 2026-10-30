@@ -104,15 +104,6 @@ var _ = Describe("ValidateConfig", func() {
 							},
 						},
 						{
-							Config: &atc.RunStep{
-								Message: "some-message",
-								Type:    "some-prototype",
-								Params: atc.Params{
-									"some-param": "some-value",
-								},
-							},
-						},
-						{
 							Config: &atc.SetPipelineStep{
 								Name: "some-pipeline",
 								File: "some-file",
@@ -251,11 +242,6 @@ var _ = Describe("ValidateConfig", func() {
 						},
 					},
 					atc.Step{
-						Config: &atc.RunStep{
-							Message: "_run-step",
-						},
-					},
-					atc.Step{
 						Config: &atc.SetPipelineStep{
 							Name: "_set-pipeline-step",
 						},
@@ -275,9 +261,6 @@ var _ = Describe("ValidateConfig", func() {
 				Expect(warnings[2].Message).To(ContainSubstring("'_put-step' is not a valid identifier"))
 				Expect(warnings[3].Message).To(ContainSubstring("'_set-pipeline-step' is not a valid identifier"))
 				Expect(warnings[4].Message).To(ContainSubstring("'_load-var-step' is not a valid identifier"))
-
-				Expect(errorMessages).To(HaveLen(1))
-				Expect(errorMessages[0]).To(ContainSubstring("'_run-step' is not a valid identifier"))
 			})
 		})
 	})
@@ -1432,25 +1415,6 @@ var _ = Describe("ValidateConfig", func() {
 					Expect(errorMessages).To(HaveLen(1))
 					Expect(errorMessages[0]).To(ContainSubstring("invalid jobs:"))
 					Expect(errorMessages[0]).To(ContainSubstring("jobs.some-other-job.plan.do[0].put(some-nonexistent-resource): unknown resource 'some-nonexistent-resource'"))
-				})
-			})
-
-			Context("when a run plan refers to a prototype that does not exist", func() {
-				BeforeEach(func() {
-					job.PlanSequence = append(job.PlanSequence, atc.Step{
-						Config: &atc.RunStep{
-							Message: "some-message",
-							Type:    "some-nonexistent-prototype",
-						},
-					})
-
-					config.Jobs = append(config.Jobs, job)
-				})
-
-				It("returns an error", func() {
-					Expect(errorMessages).To(HaveLen(1))
-					Expect(errorMessages[0]).To(ContainSubstring("invalid jobs:"))
-					Expect(errorMessages[0]).To(ContainSubstring("jobs.some-other-job.plan.do[0].run(some-nonexistent-prototype.some-message): unknown prototype 'some-nonexistent-prototype'"))
 				})
 			})
 

@@ -47,7 +47,6 @@ type StepTree
     = Task StepID
     | Check StepID
     | Get StepID
-    | Run StepID
     | Put StepID
     | SetPipeline StepID
     | RunPipeline StepID
@@ -269,9 +268,6 @@ activeStepIds model tree =
         Get stepId ->
             [ stepId ]
 
-        Run stepId ->
-            [ stepId ]
-
         Put stepId ->
             [ stepId ]
 
@@ -353,9 +349,6 @@ updateTreeNodeAt id fn tree =
             updateSelf stepId
 
         Get stepId ->
-            updateSelf stepId
-
-        Run stepId ->
             updateSelf stepId
 
         Put stepId ->

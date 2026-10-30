@@ -40,7 +40,6 @@ type SchedulerJob struct {
 	Job
 	Resources     SchedulerResources
 	ResourceTypes atc.ResourceTypes
-	Prototypes    atc.Prototypes
 }
 
 type SchedulerResources []SchedulerResource
@@ -119,7 +118,6 @@ func (j *jobFactory) jobsToSchedule(jobIDs []int) (SchedulerJobs, error) {
 
 	var schedulerJobs SchedulerJobs
 	pipelineResourceTypes := make(map[int]ResourceTypes)
-	pipelinePrototypes := make(map[int]Prototypes)
 	for _, job := range jobs {
 		resourceRows, err := tx.Query(`WITH inputs AS (
                 SELECT ji.resource_id from job_inputs ji where ji.job_id = $1
@@ -204,41 +202,10 @@ func (j *jobFactory) jobsToSchedule(jobIDs []int) (SchedulerJobs, error) {
 			pipelineResourceTypes[job.PipelineID()] = resourceTypes
 		}
 
-		prototypes, found := pipelinePrototypes[job.PipelineID()]
-		if !found {
-			prototypeRows, err := prototypesQuery.
-				Where(sq.Eq{"pt.pipeline_id": job.PipelineID()}).
-				OrderBy("pt.name").
-				RunWith(tx).
-				Query()
-			if err != nil {
-				return nil, err
-			}
-			defer Close(prototypeRows)
-
-			for prototypeRows.Next() {
-				prototype := newEmptyPrototype(j.conn, j.lockFactory)
-				err := scanPrototype(prototype, prototypeRows)
-				if err != nil {
-					return nil, err
-				}
-
-				prototypes = append(prototypes, prototype)
-			}
-			if err = prototypeRows.Err(); err != nil {
-				prototypeRows.Close()
-				return nil, err
-			}
-			prototypeRows.Close()
-
-			pipelinePrototypes[job.PipelineID()] = prototypes
-		}
-
 		schedulerJobs = append(schedulerJobs, SchedulerJob{
 			Job:           job,
 			Resources:     schedulerResources,
 			ResourceTypes: resourceTypes.Deserialize(),
-			Prototypes:    prototypes.Configs(),
 		})
 	}
 

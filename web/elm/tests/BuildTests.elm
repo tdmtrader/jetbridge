@@ -2685,21 +2685,6 @@ all =
                                 )
                             >> Tuple.first
 
-                    fetchPlanWithRunStep : () -> Application.Model
-                    fetchPlanWithRunStep =
-                        givenBuildStarted
-                            >> Tuple.first
-                            >> Application.handleCallback
-                                (Callback.PlanAndResourcesFetched 1 <|
-                                    Ok <|
-                                        ( { id = "plan"
-                                          , step = Concourse.BuildStepRun "message"
-                                          }
-                                        , { inputs = [], outputs = [] }
-                                        )
-                                )
-                            >> Tuple.first
-
                     fetchPlanWithTaskStep : () -> Application.Model
                     fetchPlanWithTaskStep =
                         givenBuildStarted
@@ -2972,10 +2957,6 @@ all =
                     fetchPlanWithArtifactInputStep
                         >> Common.queryView
                         >> Query.has getStepLabel
-                , test "run step shows run label" <|
-                    fetchPlanWithRunStep
-                        >> Common.queryView
-                        >> Query.has runStepLabel
                 , test "task step shows task label" <|
                     fetchPlanWithTaskStep
                         >> Common.queryView
@@ -3951,12 +3932,6 @@ testHeaderButton name model { key, index, domID, backgroundColor, hoveredBackgro
 getStepLabel =
     [ style "color" Colors.pending
     , containing [ text "get:" ]
-    ]
-
-
-runStepLabel =
-    [ style "color" Colors.pending
-    , containing [ text "run:" ]
     ]
 
 
