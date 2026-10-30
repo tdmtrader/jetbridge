@@ -476,18 +476,14 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 		} else if delegate.imageResolver != nil {
 			// On-demand resolution: resolve digest via native OCI registry API
 			// call instead of falling back to check+get pods.
-			repo, _ := source["repository"].(string)
-			tag, _ := source["tag"].(string)
-
-			var auth *imageresolver.BasicAuth
-			if username, ok := source["username"].(string); ok && username != "" {
-				password, _ := source["password"].(string)
-				auth = &imageresolver.BasicAuth{Username: username, Password: password}
+			ref, err := imageresolver.ReferenceFromSource(source)
+			if err != nil {
+				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve: %w", err)
 			}
 
-			digest, resolveErr := delegate.imageResolver.Resolve(ctx, repo, tag, auth)
+			digest, resolveErr := ref.Resolve(ctx, delegate.imageResolver)
 			if resolveErr != nil {
-				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", repo, resolveErr)
+				return runtime.ImageSpec{}, nil, fmt.Errorf("on-demand image resolve for %q: %w", ref.Repository, resolveErr)
 			}
 
 			version = atc.Version{"digest": digest}

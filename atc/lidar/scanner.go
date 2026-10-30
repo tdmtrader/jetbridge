@@ -191,22 +191,10 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, r
 		return
 	}
 
-	// Extract repository and tag from source config.
-	repository, _ := source["repository"].(string)
-	if repository == "" {
-		logger.Error("missing-repository-in-source", nil)
+	ref, err := imageresolver.ReferenceFromSource(source)
+	if err != nil {
+		logger.Error("missing-repository-in-source", err)
 		return
-	}
-	tag, _ := source["tag"].(string)
-
-	// Extract basic auth if present.
-	var auth *imageresolver.BasicAuth
-	if username, ok := source["username"].(string); ok && username != "" {
-		password, _ := source["password"].(string)
-		auth = &imageresolver.BasicAuth{
-			Username: username,
-			Password: password,
-		}
 	}
 
 	// Find or create resource config for this resource type.
@@ -246,7 +234,7 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, r
 	// Resolve the digest via registry API. The scope is attached first so a
 	// failed resolve records a failed check end time, and the check interval
 	// gates the retry instead of every scanner pass re-asking the registry.
-	digest, err := s.resolve(ctx, repository, tag, auth, rt.CheckTimeout())
+	digest, err := s.resolve(ctx, ref, rt.CheckTimeout())
 	if err != nil {
 		recordFailedResolve(ctx, logger, scope, err)
 		return
@@ -391,22 +379,10 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, resourceT
 		return
 	}
 
-	// Extract repository and tag from source config.
-	repository, _ := source["repository"].(string)
-	if repository == "" {
-		logger.Error("missing-repository-in-source", nil)
+	ref, err := imageresolver.ReferenceFromSource(source)
+	if err != nil {
+		logger.Error("missing-repository-in-source", err)
 		return
-	}
-	tag, _ := source["tag"].(string)
-
-	// Extract basic auth if present.
-	var auth *imageresolver.BasicAuth
-	if username, ok := source["username"].(string); ok && username != "" {
-		password, _ := source["password"].(string)
-		auth = &imageresolver.BasicAuth{
-			Username: username,
-			Password: password,
-		}
 	}
 
 	resourceConfig, err := s.resourceConfigFactory.FindOrCreateResourceConfig(
@@ -444,7 +420,7 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, resourceT
 	// Resolve the digest via registry API. The scope is attached first so a
 	// failed resolve records a failed check end time, and the check interval
 	// gates the retry instead of every scanner pass re-asking the registry.
-	digest, err := s.resolve(ctx, repository, tag, auth, rs.CheckTimeout())
+	digest, err := s.resolve(ctx, ref, rs.CheckTimeout())
 	if err != nil {
 		recordFailedResolve(ctx, logger, scope, err)
 		return
@@ -507,7 +483,7 @@ var nativeResolveTimeout = time.Minute
 
 // resolve asks the registry for a digest within nativeResolveTimeout, or within
 // the resource's check_timeout when that is shorter.
-func (s *scanner) resolve(ctx context.Context, repository, tag string, auth *imageresolver.BasicAuth, checkTimeout string) (string, error) {
+func (s *scanner) resolve(ctx context.Context, ref imageresolver.Reference, checkTimeout string) (string, error) {
 	timeout := nativeResolveTimeout
 	if d, err := time.ParseDuration(checkTimeout); err == nil && d > 0 && d < timeout {
 		timeout = d
@@ -516,7 +492,7 @@ func (s *scanner) resolve(ctx context.Context, repository, tag string, auth *ima
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return s.resolver.Resolve(ctx, repository, tag, auth)
+	return ref.Resolve(ctx, s.resolver)
 }
 
 // nativeSource returns the source native resolution uses: the checkable's

@@ -2,7 +2,6 @@ package exec
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -361,27 +360,17 @@ func (step *CheckStep) resolveNatively(ctx context.Context, logger lager.Logger,
 	}
 	defer cancel()
 
-	repository, _ := source["repository"].(string)
-	if repository == "" {
-		return nil, errors.New("native check: missing repository in source")
-	}
-	tag, _ := source["tag"].(string)
-
-	var auth *imageresolver.BasicAuth
-	if username, ok := source["username"].(string); ok && username != "" {
-		password, _ := source["password"].(string)
-		auth = &imageresolver.BasicAuth{
-			Username: username,
-			Password: password,
-		}
-	}
-
-	digest, err := step.resolver.Resolve(ctx, repository, tag, auth)
+	ref, err := imageresolver.ReferenceFromSource(source)
 	if err != nil {
-		return nil, attributeStepTimeout(ctx, fmt.Errorf("native check: resolving digest for %s: %w", repository, err))
+		return nil, fmt.Errorf("native check: %w", err)
 	}
 
-	logger.Info("native-check-resolved", lager.Data{"repository": repository, "digest": digest})
+	digest, err := ref.Resolve(ctx, step.resolver)
+	if err != nil {
+		return nil, attributeStepTimeout(ctx, fmt.Errorf("native check: resolving digest for %s: %w", ref.Repository, err))
+	}
+
+	logger.Info("native-check-resolved", lager.Data{"repository": ref.Repository, "digest": digest})
 
 	return []atc.Version{{"digest": digest}}, nil
 }
