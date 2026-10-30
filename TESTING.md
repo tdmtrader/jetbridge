@@ -28,9 +28,8 @@ The disposable tier creates a K3s cluster from inside the suite via `testcontain
 # Uses CONCOURSE_IMAGE env var (default: concourse-local:latest)
 go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
 
-# Fast image rebuild for iteration
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o concourse-linux-arm64 ./cmd/concourse
-docker build -f Dockerfile.local -t concourse-local:latest .
+# Image rebuild for iteration (Dockerfile.build, every binary + frontend)
+./build.sh
 ```
 
 ### K8s behavioral execution

@@ -11,7 +11,6 @@ tags
 # Rebuild with: yarn install && yarn run build
 # web/public/elm.js        # unminified, not committed (1.3MB)
 web/public/main.out.css
-docker-compose.override.yml
 *.coverprofile
 *.coverprofile.*
 *.test
@@ -22,7 +21,6 @@ ci/deployments/*/keys/id_rsa
 ci/deployments/*/keys/id_rsa.pub
 
 hack/vault/init.json
-worker/runtime/integration/sample/sample
 
 # Compiled binaries
 /concourse

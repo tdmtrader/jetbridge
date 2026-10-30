@@ -18,12 +18,11 @@ body:
       description: |
         Provide detailed steps for reproducing the bug. This will make it
         easier to triage and resolve the issue. It would be very helpful if you
-        can reproduce the issue using a locally run Concourse using `docker
-        compose up`.
+        can reproduce the issue on a fresh Helm install of the chart.
 
         Please use https://gist.github.com for large snippets!
       placeholder: |
-        1. First `docker compose up -d` Concourse...
+        1. First install Concourse with `helm install`...
         2. Then...
         3. Finally...
     validations:

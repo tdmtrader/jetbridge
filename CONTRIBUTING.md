@@ -86,8 +86,9 @@ development:
 * [`go`](https://golang.org/dl/) v1.16+
 * [`git`](https://git-scm.com/) v2.11+
 * [`yarn`](https://yarnpkg.com/getting-started/install) v4+
-* [`docker compose`](https://docs.docker.com/compose/install/)
-* [`postgresql`](https://www.postgresql.org/download/)
+* [`postgresql`](https://www.postgresql.org/download/) server binaries on your
+  `PATH` (the tests start their own postmaster)
+* `docker`, `helm` and `kubectl` plus a Kubernetes cluster, to run Concourse
 
 > *Concourse uses Go's module system, so make sure it's **not** cloned under
 > your `$GOPATH`.*
@@ -95,18 +96,24 @@ development:
 
 ## Running Concourse
 
-To build and run Concourse from source, run the following in the root of this
-repo:
+Concourse runs on Kubernetes: steps are pods and artifacts live on a per-node
+daemon, so there is no single-process or `docker compose` stack to bring up.
+Build the image and install the chart as described under *Quick Start* in
+[`README.md`](README.md) and in [`deploy/chart/README.md`](deploy/chart/README.md).
+To iterate on a running cluster, rebuild the image and roll the deployment:
 
 ```sh
-$ yarn install
-$ yarn build
-$ docker compose up -d
+$ ./build.sh                          # concourse-local:latest
+$ ./build.sh my-registry/concourse --push
 ```
 
-Concourse will be running at [localhost:8080](http://localhost:8080).
+`build.sh` runs `Dockerfile.build`, which compiles every binary the chart runs
+and the frontend bundle inside the image build.
 
-### Building `fly` and targeting your local Concourse
+See [`TESTING.md`](TESTING.md) for the test tiers that create a disposable
+cluster for you.
+
+### Building `fly` and targeting your Concourse
 
 To build and install the `fly` CLI from source, run:
 
@@ -119,9 +126,9 @@ on your `$PATH`!
 
 Once `fly` is built, you can get a test pipeline running like this:
 
-**Log in to the locally-running Concourse instance targeted as `dev`:**
+**Log in to your Concourse instance targeted as `dev`:**
 ```sh
-$ fly -t dev login -c http://localhost:8080 -u test -p test
+$ fly -t dev login -c https://your-concourse.example.com -u test -p test
 ```
 
 **Create an example pipeline that runs a hello world job every minute:**
@@ -156,30 +163,10 @@ silly air-traffic-themed names.
 | `/web`          | The Elm source code and other assets for the web UI, which gets built and then embedded into the `concourse` executable and served by the ATC's web server. |
 | `/go-concourse` | A Go client library for using the ATC API, used internally by `fly`. DO NOT try and use this in an external project, you'll end up fighting your `go.mod`. |
 | `/skymarshal`   | Adapts [Dex](https://github.com/dexidp/dex) into an embeddable auth component for the ATC, plus the auth flag specifications for `fly` and `concourse web`. |
-| `/tsa`          | A custom-built SSH server responsible for securely authenticating and registering workers. The other half of `concourse web`. |
-| `/worker`       | The `concourse worker` library code for registering with the TSA, periodically reaping containers/volumes, etc. |
-| `/cmd`          | This is mainly glue code to wire the ATC, TSA, and Garden into the single `concourse` CLI. |
-| `/topgun`       | Another acceptance suite which covers operator-level features and technical aspects of the Concourse runtime using [Bosh](https://bosh.io/) and [K8s](https://kubernetes.io/). Deploys its own Concourse clusters, runs tests against them, and tears them down. Can only be run in CI. |
+| `/cmd`          | This is mainly glue code to wire the ATC and the JetBridge runtime into the single `concourse` CLI. |
+| `/topgun`       | Another acceptance suite which covers operator-level features and technical aspects of the Concourse runtime on [K8s](https://kubernetes.io/). Deploys its own Concourse clusters, runs tests against them, and tears them down. Can only be run in CI. |
 
-### Rebuilding to test your changes
-
-After making any changes, you can try them out by rebuilding and recreating the
-`web` and `worker` containers:
-
-```sh
-$ docker compose up --build -d
-```
-
-This can be run in a separate terminal while the original `docker compose up`
-command is still running.
-
-In certain cases, when a change is done to the underlying development image (e.g. Go upgrade from 1.11 to 1.12), you
-will need to pull the latest version of `concourse/dev` image, so that `web` and `worker` containers can be built locally
-using the fresh image:
-```sh
-$ docker pull concourse/dev
-$ docker compose up --build -d
-```
+### Working on a dependency
 
 If you're working on a dependency that doesn't live under this repository (for instance,
 `dex`), you'll need to update `go.mod` with a `replace` directive with the exact
@@ -197,7 +184,7 @@ $ echo 'replace github.com/concourse/dex => github.com/your-user/dex v0.0.0-2021
   > ./go.mod
 
 # run the usual build
-$ docker compose up --build -d
+$ go build ./...
 ```
 
 ### Working on the web UI
@@ -212,91 +199,8 @@ $ yarn install
 $ yarn build
 ```
 
-When new assets are built locally, they will automatically propagate to the
-`web` container without requiring a restart.
-
-### Debugging with `dlv`
-
-With concourse already running, during local development is possible to attach
-[`dlv`](https://github.com/go-delve/delve) to either the `web` or `worker` instance,
-allowing you to set breakpoints and inspect the current state of either one of those.
-
-To trace a running web instance:
-
-```sh
-$ ./hack/trace web
-```
-
-To trace a running worker instance:
-
-```sh
-$ ./hack/trace worker
-```
-
-To attach IDE debugger to a running instance, you can use the `--listen` flag followed by a port and the dlv will be started in headless mode listening on the specified port.
-
-To debug a running web instance:
-
-```sh
-$ ./hack/trace web --listen 2345
-```
-
-To debug a running worker instance:
-
-```sh
-$ ./hack/trace worker --listen 2345
-```
-
-After this is done, the final step is to connect your IDE to the debugger with the following parameters:
-* host: `localhost`
-* port: `2345`
-
-For GoLand you can do so by going to Run | Edit Configurations… | + | Go Remote and fill in the parameters.
-
-### Running Prometheus locally
-
-Under `./hack/overrides`, a docker-compose override file enhances the
-base `docker-compose.yml` with the [Prometheus] service, bringing with it the
-necessary configuraton for collecting Concourse metrics.
-
-[Prometheus]: https://prometheus.io
-
-
-```sh
-$ docker compose \
-  -f ./docker-compose.yml \
-  -f ./hack/overrides/prometheus.yml \
-  up -d
-```
-
-Now head to http://localhost:9090, and you'll be able to graph `concourse_`
-Prometheus metrics.
-
-### Connecting to Postgres
-
-If you want to poke around the database, you can connect to the `db` node using
-the following parameters:
-
-* host: `localhost`
-* port: `6543`
-* username: `dev`
-* password: (blank)
-* database: `concourse`
-
-A utility script is provided to connect via `psql` (or `pgcli` if installed):
-
-```sh
-$ ./hack/db
-```
-
-To reset the database, you'll need to stop everything and then blow away the
-`db` container:
-
-```sh
-$ docker compose stop
-$ docker compose rm db
-$ docker compose start
-```
+The served bundle is `web/public/elm.min.js`, embedded into the `concourse`
+binary, so rebuild the binary (or the image) after rebuilding the assets.
 
 ### Adding migrations
 
@@ -422,7 +326,7 @@ If you want to run all the unit tests across the entire codebase, use the
 following command, which skips all integration tests and linux-specific tests:
 
 ```sh
-ginkgo -r -p -race -flake-attempts=3 \
+ginkgo -r -p -flake-attempts=3 \
     -skip-package topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 ```
 
@@ -439,7 +343,7 @@ the following to run all the unit tests, including the linux-specific tests:
 ```sh
 cd /src
 go install github.com/onsi/ginkgo/v2/ginkgo
-ginkgo -r -p -race -flake-attempts=3 \
+ginkgo -r -p -flake-attempts=3 \
     -skip-package topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 ```
 
