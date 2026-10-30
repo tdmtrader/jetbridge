@@ -31,9 +31,6 @@ type PrometheusEmitter struct {
 	checkBuildsStarted prometheus.Counter
 	checkBuildsRunning prometheus.Gauge
 
-	concurrentRequestsLimitHit *prometheus.CounterVec
-	concurrentRequests         *prometheus.GaugeVec
-
 	stepsWaiting         *prometheus.GaugeVec
 	stepsWaitingDuration *prometheus.HistogramVec
 
@@ -272,23 +269,6 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		ConstLabels: attributes,
 	})
 	prometheus.MustRegister(checkBuildsRunning)
-
-	concurrentRequestsLimitHit := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   "concourse",
-		Subsystem:   "concurrent_requests",
-		Name:        "limit_hit_total",
-		Help:        "Total number of requests rejected because the server was already serving too many concurrent requests.",
-		ConstLabels: attributes,
-	}, []string{"action"})
-	prometheus.MustRegister(concurrentRequestsLimitHit)
-
-	concurrentRequests := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace:   "concourse",
-		Name:        "concurrent_requests",
-		Help:        "Number of concurrent requests being served by endpoints that have a specified limit of concurrent requests.",
-		ConstLabels: attributes,
-	}, []string{"action"})
-	prometheus.MustRegister(concurrentRequests)
 
 	latestCompletedBuildStatus := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "concourse",
@@ -950,9 +930,6 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		checkBuildsStarted: checkBuildsStarted,
 		checkBuildsRunning: checkBuildsRunning,
 
-		concurrentRequestsLimitHit: concurrentRequestsLimitHit,
-		concurrentRequests:         concurrentRequests,
-
 		latestCompletedBuildStatus: latestCompletedBuildStatus,
 		stepsWaiting:               stepsWaiting,
 		stepsWaitingDuration:       stepsWaitingDuration,
@@ -1071,11 +1048,6 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 		emitter.checkBuildsStarted.Add(event.Value)
 	case "check builds running":
 		emitter.checkBuildsRunning.Set(event.Value)
-	case "concurrent requests limit hit":
-		emitter.concurrentRequestsLimitHit.WithLabelValues(event.Attributes["action"]).Add(event.Value)
-	case "concurrent requests":
-		emitter.concurrentRequests.
-			WithLabelValues(event.Attributes["action"]).Set(event.Value)
 	case "latest completed build status":
 		emitter.latestCompletedBuildStatus.
 			WithLabelValues(

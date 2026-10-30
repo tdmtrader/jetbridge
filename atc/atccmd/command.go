@@ -170,9 +170,8 @@ type RunCommand struct {
 
 	Postgres flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
 
-	ConcurrentRequestLimits   map[wrappa.LimitedRoute]int `long:"concurrent-request-limit" description:"Limit the number of concurrent requests to an API endpoint (Example: ListAllJobs:5)"`
-	APIMaxOpenConnections     int                         `long:"api-max-conns" description:"The maximum number of open connections for the api connection pool." default:"10"`
-	BackendMaxOpenConnections int                         `long:"backend-max-conns" description:"The maximum number of open connections for the backend connection pool." default:"50"`
+	APIMaxOpenConnections     int `long:"api-max-conns" description:"The maximum number of open connections for the api connection pool." default:"10"`
+	BackendMaxOpenConnections int `long:"backend-max-conns" description:"The maximum number of open connections for the backend connection pool." default:"50"`
 
 	CredentialManagement creds.CredentialManagementConfig `group:"Credential Management"`
 	CredentialManagers   creds.Managers
@@ -2532,10 +2531,6 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 
 	apiWrapper := wrappa.MultiWrappa{
-		wrappa.NewConcurrentRequestLimitsWrappa(
-			logger,
-			wrappa.NewConcurrentRequestPolicy(cmd.ConcurrentRequestLimits),
-		),
 		wrappa.NewAPIMetricsWrappa(logger),
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,

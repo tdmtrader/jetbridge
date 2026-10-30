@@ -189,32 +189,6 @@ func tick(logger lager.Logger, m *Monitor) {
 		},
 	)
 
-	for action, gauge := range m.ConcurrentRequests {
-		m.emit(
-			logger.Session("concurrent-requests"),
-			Event{
-				Name:  "concurrent requests",
-				Value: gauge.Max(),
-				Attributes: map[string]string{
-					"action": action,
-				},
-			},
-		)
-	}
-
-	for action, counter := range m.ConcurrentRequestsLimitHit {
-		m.emit(
-			logger.Session("concurrent-requests-limit-hit"),
-			Event{
-				Name:  "concurrent requests limit hit",
-				Value: counter.Delta(),
-				Attributes: map[string]string{
-					"action": action,
-				},
-			},
-		)
-	}
-
 	for labels, gauge := range m.StepsWaiting {
 		stepsWaiting := gauge.Max()
 		m.emit(

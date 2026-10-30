@@ -75,16 +75,4 @@ var _ = Describe("Web Command", func() {
 		Eventually(concourseRunner.Buffer(), "30s", "2s").Should(gbytes.Say("atc.listening"))
 	})
 
-	Context("when CONCOURSE_CONCURRENT_REQUEST_LIMIT is invalid", func() {
-		BeforeEach(func() {
-			concourseCommand.Env = append(concourseCommand.Env, "CONCOURSE_CONCURRENT_REQUEST_LIMIT=InvalidAction:0")
-		})
-
-		It("prints an error and exits", func() {
-			// The default 1s Eventually is shorter than the binary takes to
-			// start under CI load (unit-tests timed out at 1.001s in five
-			// builds on 2026-09-18); use the same budget as "starts atc".
-			Eventually(concourseRunner.Err(), "30s", "2s").Should(gbytes.Say("'InvalidAction' is not a valid action"))
-		})
-	})
 })

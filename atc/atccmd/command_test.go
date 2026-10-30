@@ -2,7 +2,6 @@ package atccmd_test
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,22 +24,6 @@ import (
 type CommandSuite struct {
 	suite.Suite
 	*require.Assertions
-}
-
-func (s *CommandSuite) TestInvalidConcurrentRequestLimitAction() {
-	cmd := &atccmd.RunCommand{}
-	parser := flags.NewParser(cmd, flags.None)
-	_, err := parser.ParseArgs([]string{
-		"--client-secret",
-		"client-secret",
-		"--concurrent-request-limit",
-		fmt.Sprintf("%s:2", atc.GetInfo),
-	})
-
-	s.Contains(
-		err.Error(),
-		fmt.Sprintf("action '%s' is not supported", atc.GetInfo),
-	)
 }
 
 // Two --main-team-local-user flags are two main-team owners, as the chart

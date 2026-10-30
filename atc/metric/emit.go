@@ -80,9 +80,6 @@ type Monitor struct {
 
 	ChecksEnqueued Counter
 
-	ConcurrentRequests         map[string]*Gauge
-	ConcurrentRequestsLimitHit map[string]*Counter
-
 	GetStepCacheHits Counter
 
 	K8sPodStartupDuration Gauge
@@ -93,9 +90,7 @@ var Metrics = NewMonitor()
 
 func NewMonitor() *Monitor {
 	return &Monitor{
-		StepsWaiting:               map[StepsWaitingLabels]*Gauge{},
-		ConcurrentRequests:         map[string]*Gauge{},
-		ConcurrentRequestsLimitHit: map[string]*Counter{},
+		StepsWaiting: map[StepsWaitingLabels]*Gauge{},
 	}
 }
 

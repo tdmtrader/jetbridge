@@ -77,47 +77,6 @@ var _ = Describe("Periodic emission of metrics", func() {
 		})
 	})
 
-	Context("concurrent requests", func() {
-		const action = "ListAllSomething"
-
-		BeforeEach(func() {
-			gauge := &metric.Gauge{}
-			gauge.Set(123)
-
-			counter := &metric.Counter{}
-			counter.IncDelta(10)
-
-			monitor.ConcurrentRequests[action] = gauge
-			monitor.ConcurrentRequestsLimitHit[action] = counter
-		})
-
-		It("emits", func() {
-			Eventually(emitter.Events).Should(
-				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":  Equal("concurrent requests"),
-						"Value": Equal(float64(123)),
-						"Attributes": Equal(map[string]string{
-							"action": action,
-						}),
-					}),
-				),
-			)
-
-			Eventually(emitter.Events).Should(
-				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":  Equal("concurrent requests limit hit"),
-						"Value": Equal(float64(10)),
-						"Attributes": Equal(map[string]string{
-							"action": action,
-						}),
-					}),
-				),
-			)
-		})
-	})
-
 	Context("waiting steps metrics", func() {
 		labels := metric.StepsWaitingLabels{
 			TeamId:   "42",
