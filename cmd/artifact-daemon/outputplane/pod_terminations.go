@@ -45,13 +45,17 @@ func (terminations *nodePodTerminations) Terminated(ctx context.Context, uid exe
 			continue
 		}
 
-		return podTerminated(&pod), nil
+		return PodTerminated(&pod), nil
 	}
 
 	return true, nil
 }
 
-func podTerminated(pod *corev1.Pod) bool {
+// PodTerminated is the one definition of "every writer has stopped" for a Pod:
+// its phase is terminal, or every declared container -- init, regular and
+// ephemeral -- has a terminated state. The capture seal and the daemon's TTL
+// sweep both ask it, so a Pod they disagree about cannot exist.
+func PodTerminated(pod *corev1.Pod) bool {
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 		return true
 	}
