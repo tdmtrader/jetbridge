@@ -147,14 +147,6 @@ const (
 	SingleIncrementV20 OriginV30LocationIncrement = 1
 )
 
-type FinishV10 struct {
-	Time       int64 `json:"time"`
-	ExitStatus int   `json:"exit_status"`
-}
-
-func (FinishV10) EventType() atc.EventType  { return "finish" }
-func (FinishV10) Version() atc.EventVersion { return "1.0" }
-
 type FinishTaskV10 struct {
 	Time       int64     `json:"time"`
 	ExitStatus int       `json:"exit_status"`
@@ -172,10 +164,6 @@ type FinishTaskV20 struct {
 
 func (FinishTaskV20) EventType() atc.EventType  { return "finish-task" }
 func (FinishTaskV20) Version() atc.EventVersion { return "2.0" }
-
-type StartV10 struct {
-	Time int64 `json:"time"`
-}
 
 type FinishGetV10 struct {
 	Origin          OriginV20    `json:"origin"`
@@ -221,9 +209,6 @@ type FinishPutV20 struct {
 func (FinishPutV20) EventType() atc.EventType  { return "finish-put" }
 func (FinishPutV20) Version() atc.EventVersion { return "2.0" }
 
-func (StartV10) EventType() atc.EventType  { return "start" }
-func (StartV10) Version() atc.EventVersion { return "1.0" }
-
 type StartTaskV10 struct {
 	Time   int64     `json:"time"`
 	Origin OriginV20 `json:"origin"`
@@ -239,13 +224,6 @@ type StartTaskV20 struct {
 
 func (StartTaskV20) EventType() atc.EventType  { return "start-task" }
 func (StartTaskV20) Version() atc.EventVersion { return "2.0" }
-
-type InitializeV10 struct {
-	TaskConfig TaskConfig `json:"config"`
-}
-
-func (InitializeV10) EventType() atc.EventType  { return "initialize" }
-func (InitializeV10) Version() atc.EventVersion { return "1.0" }
 
 type InitializeTaskV10 struct {
 	TaskConfig TaskConfig `json:"config"`

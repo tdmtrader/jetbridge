@@ -57,6 +57,9 @@ var _ = Describe("ParseEvent", func() {
 			Expect(parsedEvent).To(BeAssignableToTypeOf(eventType))
 		},
 
+		Entry("Initialize", event.Initialize{}),
+		Entry("Start", event.Start{}),
+		Entry("Finish", event.Finish{}),
 		Entry("InitializeCheck", event.InitializeCheck{}),
 		Entry("InitializeTask", event.InitializeTask{}),
 		Entry("StartTask", event.StartTask{}),
@@ -76,6 +79,7 @@ var _ = Describe("ParseEvent", func() {
 		Entry("ImageCheck", event.ImageCheck{}),
 		Entry("ImageGet", event.ImageGet{}),
 		Entry("AcrossSubsteps", event.AcrossSubsteps{}),
+		Entry("Sidecar", event.Sidecar{}),
 	)
 })
 

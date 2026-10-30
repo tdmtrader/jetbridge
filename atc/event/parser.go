@@ -34,6 +34,9 @@ func RegisterEvent(e atc.Event) {
 }
 
 func init() {
+	RegisterEvent(Initialize{})
+	RegisterEvent(Start{})
+	RegisterEvent(Finish{})
 	RegisterEvent(InitializeCheck{})
 	RegisterEvent(InitializeTask{})
 	RegisterEvent(StartTask{})
@@ -56,9 +59,6 @@ func init() {
 	RegisterEvent(Sidecar{})
 
 	// deprecated:
-	RegisterEvent(InitializeV10{})
-	RegisterEvent(FinishV10{})
-	RegisterEvent(StartV10{})
 	RegisterEvent(InputV10{})
 	RegisterEvent(InputV20{})
 	RegisterEvent(OutputV10{})

@@ -145,8 +145,8 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			persisted := consumeEngineBuildEvent(realBuild, 0)
 			Expect(persisted.EventType()).To(Equal(atc.EventType("finish")))
-			Expect(persisted).To(BeAssignableToTypeOf(event.FinishV10{}))
-			Expect(persisted.(event.FinishV10).ExitStatus).To(Equal(0))
+			Expect(persisted).To(BeAssignableToTypeOf(event.Finish{}))
+			Expect(persisted.(event.Finish).Succeeded).To(BeTrue())
 		})
 	})
 
