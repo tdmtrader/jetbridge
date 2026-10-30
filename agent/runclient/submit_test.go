@@ -328,40 +328,11 @@ func TestSubmitRefusesAReceiptForAnotherSubmission(t *testing.T) {
 	}
 }
 
-func TestLegacyReviewReceiptResumesAsReview(t *testing.T) {
-	p := newPlatform(t, "outcome")
-	ws := newTestWorkspace(t, "first")
-	p.Schedule(t, p.team, testTemplate, "outcome")
-	// A review submitted and ready, then its receipt rewritten in the legacy
-	// review format the current client must still resume.
-	submitted, err := p.client(t).Submit(bounded(t), testWorkload("review"), ws.options(p))
-	if err != nil || !submitted.Ready {
-		t.Fatalf("submission: %+v %v", submitted, err)
-	}
-	fields, _ := readReceipt(t, ws.receipt)
-	legacy, _ := json.Marshal(map[string]any{"version": "review-invocation/v1", "server": p.url, "team": p.team, "template": testTemplate,
-		"input_digest": fields["input_digest"], "invocation_key": "legacy-key", "source_id": fields["source_id"],
-		"run_id": submitted.RunID, "number": submitted.Handle.Number})
-	if err := os.WriteFile(ws.receipt, legacy, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.client(t).Submit(bounded(t), testWorkload("implement"), ws.options(p)); err == nil || !strings.Contains(err.Error(), "another workload") {
-		t.Fatalf("a legacy review receipt resumed as another workload: %v", err)
-	}
-	result, err := p.client(t).Submit(bounded(t), testWorkload("review"), ws.options(p))
-	if err != nil || !result.Ready || result.RunID != submitted.RunID || result.Handle.Number != submitted.Handle.Number {
-		t.Fatalf("legacy review receipt did not resume: %+v %v", result, err)
-	}
-	if uploads, runs := p.counts(t); uploads != 1 || runs != 1 {
-		t.Fatalf("legacy resume repeated admission: uploads=%d runs=%d", uploads, runs)
-	}
-}
-
 func TestReceiptLoadRefusals(t *testing.T) {
 	cases := map[string]string{
 		"unknown version":          `{"version":"other/v1","workload":"review","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k"}`,
 		"current without workload": `{"version":"run-invocation/v1","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k"}`,
-		"legacy with workload":     `{"version":"review-invocation/v1","workload":"implement","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k"}`,
+		"legacy review version":    `{"version":"review-invocation/v1","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k"}`,
 		"unknown field":            `{"version":"run-invocation/v1","workload":"review","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k","bearer":"b"}`,
 		"run without source":       `{"version":"run-invocation/v1","workload":"review","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k","run_id":1,"number":1}`,
 		"run without number":       `{"version":"run-invocation/v1","workload":"review","server":"s","team":"t","template":"p","input_digest":"d","invocation_key":"k","source_id":"x","run_id":1}`,
@@ -379,8 +350,12 @@ func TestReceiptLoadRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer file.Close()
-			if _, found, err := file.Load(); err == nil || found {
+			_, found, err := file.Load()
+			if err == nil || found {
 				t.Fatalf("receipt loaded: %v", err)
+			}
+			if name == "legacy review version" && !strings.Contains(err.Error(), `written by an older jb (version "review-invocation/v1"); delete it or pass a new --receipt`) {
+				t.Fatalf("legacy receipt refusal names neither cause nor remedy: %v", err)
 			}
 		})
 	}

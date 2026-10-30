@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,13 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	receiptVersion = "run-invocation/v1"
-	// A receipt written before the client was shared by more than one
-	// workload. It keeps resuming, as the review submission it always was.
-	legacyReviewReceiptVersion = "review-invocation/v1"
-	legacyReviewWorkload       = "review"
-)
+const receiptVersion = "run-invocation/v1"
 
 // This local submission receipt intentionally has no field capable of holding
 // auth or a grant bearer. A source ID alone permits replay, never new input
@@ -132,9 +127,9 @@ func (f *receiptFile) Close() {
 	f.root.Close()
 }
 
-// Load returns a receipt in the current version. A legacy review receipt is
-// read as the review workload and is rewritten in the current version the next
-// time submission saves progress.
+// Load returns the saved receipt, or found=false when none exists. Only a
+// receipt in the current version with a workload is accepted: one written by
+// an older jb is refused with the remedy, never upgraded in place.
 func (f *receiptFile) Load() (submissionReceipt, bool, error) {
 	var receipt submissionReceipt
 	st, err := f.root.Lstat(f.name)
@@ -160,14 +155,10 @@ func (f *receiptFile) Load() (submissionReceipt, bool, error) {
 	if err := d.Decode(new(any)); err != io.EOF {
 		return receipt, false, errors.New("invalid saved submission receipt")
 	}
-	switch {
-	case receipt.Version == receiptVersion && receipt.Workload != "":
-	case receipt.Version == legacyReviewReceiptVersion && receipt.Workload == "":
-		receipt.Version, receipt.Workload = receiptVersion, legacyReviewWorkload
-	default:
-		return receipt, false, errors.New("incomplete saved submission receipt")
+	if receipt.Version != receiptVersion {
+		return receipt, false, fmt.Errorf("saved submission receipt was written by an older jb (version %q); delete it or pass a new --receipt to submit again", receipt.Version)
 	}
-	if receipt.InvocationKey == "" || receipt.RunID < 0 || receipt.Number < 0 || (receipt.RunID == 0) != (receipt.Number == 0) || (receipt.RunID > 0 && receipt.SourceID == "") {
+	if receipt.Workload == "" || receipt.InvocationKey == "" || receipt.RunID < 0 || receipt.Number < 0 || (receipt.RunID == 0) != (receipt.Number == 0) || (receipt.RunID > 0 && receipt.SourceID == "") {
 		return receipt, false, errors.New("incomplete saved submission receipt")
 	}
 	return receipt, true, nil

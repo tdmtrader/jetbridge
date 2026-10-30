@@ -24,6 +24,18 @@ Running notes for the next release; rewritten into full notes at cut time.
 - An artifact daemon given only one or two of `--tls-cert`, `--tls-key` and `--tls-ca-cert` refuses to start instead of serving plaintext, and one with an unusable `--resolve-capability-key` refuses before it labels its node ready.
 - Note on `timeout:` with `attempts:`: `timeout` is a task field and `attempts` wraps the task, so each attempt gets the full timeout and a timed-out attempt is retried. This is stock Concourse behaviour and unchanged.
 
+### Upstream features removed
+
+A web started with a removed flag fails to parse its command line and does not start; drop the flag from the deployment first.
+
+- `--telemetry-opt-in` (the hidden anonymous version ping to telemetry.concourse-ci.org) is removed.
+- `--enable-lets-encrypt` and `--lets-encrypt-acme-url` are removed with the autocert listener; TLS is served from `--tls-cert`/`--tls-key` only. Migration `1789793163` drops the `cert_cache` table.
+- `GET /api/v1/teams/:team/cc.xml` (CCTray) and `fly checklist` (the Checkman Checkfile over it) are removed.
+- `GET`/`PUT /api/v1/log-level` is removed; the web's level is `--log-level` at start.
+- `GET /api/v1/teams/:team/pipelines/:pipeline/versions-db` (the scheduler debug export) is removed.
+- `GET /api/v1/pipelines/:pipeline/jobs/:job/badge`, the redirect to the main team's badge, is removed; link the team-qualified badge.
+- `jb` no longer upgrades a submission receipt written as `review-invocation/v1`: submit refuses it naming the version and the remedy (delete it or pass a new `--receipt`).
+
 ## CI and build
 
 - `build-image` builds the runtime base (`jetbridge-base:jammy-<hash>`) once per change to its Dockerfile instead of running apt on every build (8ecbf14430).
