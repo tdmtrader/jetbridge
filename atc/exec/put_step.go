@@ -25,6 +25,7 @@ type PutDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 
 	FetchImage(context.Context, atc.Plan, *atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
+	PinnedImage(context.Context, string, bool) (runtime.ImageSpec, db.ResourceCache, error)
 
 	Stdout() io.Writer
 	Stderr() io.Writer
@@ -143,8 +144,11 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 	var imageSpec runtime.ImageSpec
 	var imageResourceCache db.ResourceCache
 	if step.plan.TypeImage.ImageRef != "" {
-		imageSpec.ImageURL = step.plan.TypeImage.ImageRef
-		imageSpec.Privileged = step.plan.TypeImage.Privileged
+		var err error
+		imageSpec, imageResourceCache, err = delegate.PinnedImage(ctx, step.plan.TypeImage.ImageRef, step.plan.TypeImage.Privileged)
+		if err != nil {
+			return false, err
+		}
 	} else if step.plan.TypeImage.GetPlan != nil {
 		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.CheckPlan, step.plan.TypeImage.Privileged)
 		if err != nil {

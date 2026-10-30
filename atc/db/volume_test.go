@@ -532,6 +532,94 @@ var _ = Describe("Volume", func() {
 		})
 	})
 
+	Describe("createdVolume.InitializeResourceCache for an image: resource type", func() {
+		// An image: type registers no base resource type of its own, so the
+		// cache it fetched can only be tied to a worker through the type its
+		// pinned image is a get of: registry-image. db.PinnedImage says so.
+		var build db.Build
+		var scenario *dbtest.Scenario
+
+		cacheOfImageType := func(typeName, imageRef string) db.ResourceCache {
+			resourceType, source, version := db.PinnedImage(imageRef)
+			pinned, err := resourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(build.ID()), resourceType, version, source, nil, nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			cache, err := resourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(build.ID()),
+				typeName,
+				atc.Version{"some": "version"},
+				atc.Source{"some": "source"},
+				atc.Params{"some": "params"},
+				pinned,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			return cache
+		}
+
+		volumeOnWorker := func(worker db.Worker) db.CreatedVolume {
+			creatingContainer, err := worker.CreateContainer(db.NewBuildStepContainerOwner(build.ID(), "some-plan", scenario.Team.ID()), db.ContainerMetadata{
+				Type:     "get",
+				StepName: "some-resource",
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			creatingVolume, err := volumeRepository.CreateContainerVolume(scenario.Team.ID(), worker.Name(), creatingContainer, "some-path")
+			Expect(err).ToNot(HaveOccurred())
+
+			createdVolume, err := creatingVolume.Created()
+			Expect(err).ToNot(HaveOccurred())
+			return createdVolume
+		}
+
+		BeforeEach(func() {
+			scenario = dbtest.Setup(
+				builder.WithTeam("some-team"),
+				builder.WithWorker(atc.Worker{
+					Name: "image-pulling-worker",
+					ResourceTypes: []atc.WorkerResourceType{
+						{Type: "registry-image", Image: "concourse/registry-image-resource", Version: "1.0.0"},
+						{Type: dbtest.BaseResourceType, Image: "/some/image", Version: "1.0.0"},
+					},
+				}),
+			)
+
+			var err error
+			build, err = scenario.Team.CreateOneOffBuild()
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		DescribeTable("initializes the volume as the cache on a worker that registers registry-image",
+			func(typeName string) {
+				resourceCache := cacheOfImageType(typeName, "registry.example/team/tool@sha256:aaa")
+				Expect(resourceCache.BaseResourceType().Name).To(Equal("registry-image"))
+
+				createdVolume := volumeOnWorker(scenario.Workers[0])
+				uwrc, err := createdVolume.InitializeResourceCache(resourceCache)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(uwrc).ToNot(BeNil())
+				Expect(uwrc.WorkerBaseResourceTypeID).ToNot(BeZero())
+				Expect(createdVolume.Type()).To(Equal(db.VolumeTypeResource))
+
+				foundVolume, found, err := volumeRepository.FindResourceCacheVolume(scenario.Workers[0].Name(), resourceCache, time.Now().Add(-time.Minute))
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(foundVolume.Handle()).To(Equal(createdVolume.Handle()))
+			},
+			Entry("under a custom type name no worker registers", "my-custom-type"),
+			Entry("under the name of a base type the worker registers", dbtest.BaseResourceType),
+		)
+
+		It("cannot initialize on a worker that does not register registry-image", func() {
+			scenario.Run(builder.WithBaseWorker())
+			resourceCache := cacheOfImageType("my-custom-type", "registry.example/team/tool@sha256:aaa")
+
+			_, err := volumeOnWorker(scenario.Workers[1]).InitializeResourceCache(resourceCache)
+			Expect(err).To(MatchError(db.ErrWorkerBaseResourceTypeDisappeared))
+		})
+	})
+
 	Describe("createdVolume.InitializeArtifact", func() {
 		var (
 			workerArtifact db.WorkerArtifact

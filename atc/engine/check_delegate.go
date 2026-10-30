@@ -29,9 +29,10 @@ func NewCheckDelegate(
 	clock clock.Clock,
 	limiter RateLimiter,
 	policyChecker policy.Checker,
+	opts ...DelegateOption,
 ) exec.CheckDelegate {
 	return &checkDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, plan.ID, state, clock, policyChecker, atc.DisableRedactSecrets),
+		BuildStepDelegate: NewBuildStepDelegate(build, plan.ID, state, clock, policyChecker, atc.DisableRedactSecrets, opts...),
 
 		build:       build,
 		plan:        plan.Check,

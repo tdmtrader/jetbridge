@@ -161,6 +161,7 @@ var _ = Describe("CheckStep", func() {
 		realPipeline          db.Pipeline
 		delegate              *recordingCheckDelegate
 		delegateFactory       exec.CheckDelegateFactory
+		delegateOpts          []engine.DelegateOption
 		defaultTimeout        time.Duration = 0
 
 		scopeWrapper            func(db.ResourceConfigScope) db.ResourceConfigScope
@@ -236,6 +237,7 @@ var _ = Describe("CheckStep", func() {
 		waitToRunHook = nil
 		pointToCheckedConfigErr = nil
 
+		delegateOpts = nil
 		delegateFactory = checkDelegateFactory(func(state exec.RunState) exec.CheckDelegate {
 			delegate = &recordingCheckDelegate{
 				CheckDelegate: engine.NewCheckDelegate(
@@ -245,6 +247,7 @@ var _ = Describe("CheckStep", func() {
 					clock.NewClock(),
 					db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
 					policy.NoopChecker{},
+					delegateOpts...,
 				),
 				onScope: func(config db.ResourceConfig, scope db.ResourceConfigScope) {
 					resourceConfig = config
@@ -433,6 +436,43 @@ var _ = Describe("CheckStep", func() {
 			})
 
 			Describe("running the check step", func() {
+				Context("when the resource type is declared with a direct image:", func() {
+					BeforeEach(func() {
+						checkPlan.Type = "shared-name"
+						checkPlan.TypeImage = atc.TypeImage{
+							ImageRef: "registry.example/team-a/tool@sha256:aaa",
+						}
+						delegateOpts = []engine.DelegateOption{
+							engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
+						}
+					})
+
+					It("checks in that image", func() {
+						Expect(stepErr).ToNot(HaveOccurred())
+						Expect(chosenContainer.Spec.ImageSpec.ImageURL).To(Equal("registry.example/team-a/tool@sha256:aaa"))
+					})
+
+					It("creates the resource config under the pinned image", func() {
+						pinned := resourceConfig.CreatedByResourceCache()
+						Expect(pinned).ToNot(BeNil())
+						Expect(pinned.Version()).To(Equal(atc.Version{"digest": "sha256:aaa"}))
+						Expect(resourceConfig.OriginBaseResourceType().Name).To(Equal("registry-image"))
+
+						otherType, otherSource, otherVersion := db.PinnedImage("registry.example/team-b/tool@sha256:bbb")
+						otherPinned, err := fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+							db.ForBuild(realBuild.ID()), otherType, otherVersion, otherSource, nil, nil,
+						)
+						Expect(err).NotTo(HaveOccurred())
+						otherImage, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+							"shared-name",
+							atc.Source{"some": "super-secret-source"},
+							otherPinned,
+						)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(otherImage.ID()).NotTo(Equal(resourceConfig.ID()))
+					})
+				})
+
 				Context("when using a custom resource type", func() {
 					var (
 						fetchedImageArtifact *runtimetest.Volume

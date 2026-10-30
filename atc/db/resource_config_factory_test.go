@@ -88,6 +88,91 @@ var _ = Describe("ResourceConfigFactory", func() {
 		})
 	})
 
+	Context("when a resource type is declared with a direct image:", func() {
+		// An image: type's configs are created under the resource cache of the
+		// image it is pinned to (db.PinnedImage), so a base type or another
+		// image: type of the same name, in any team, shares nothing with it.
+		pinnedImageCache := func(imageRef string) db.ResourceCache {
+			resourceType, source, version := db.PinnedImage(imageRef)
+			cache, err := resourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(build.ID()), resourceType, version, source, nil, nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			return cache
+		}
+
+		It("is a different resource config from the base type of the same name", func() {
+			imageType, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "unique-source"},
+				pinnedImageCache("registry.example/one@sha256:aaa"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			baseType, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type",
+				atc.Source{"some": "unique-source"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(imageType.ID()).ToNot(Equal(baseType.ID()))
+			Expect(imageType.CreatedByBaseResourceType()).To(BeNil())
+			Expect(imageType.OriginBaseResourceType().Name).To(Equal("registry-image"))
+			Expect(baseType.OriginBaseResourceType().Name).To(Equal("some-base-resource-type"))
+		})
+
+		It("is a different resource config for each image the same type name is pinned to", func() {
+			teamA, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"shared-name",
+				atc.Source{"some": "unique-source"},
+				pinnedImageCache("registry.example/team-a@sha256:aaa"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			teamB, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"shared-name",
+				atc.Source{"some": "unique-source"},
+				pinnedImageCache("registry.example/team-b@sha256:bbb"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(teamA.ID()).ToNot(Equal(teamB.ID()))
+		})
+
+		It("is the same resource config for the same type name and image", func() {
+			first, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"shared-name",
+				atc.Source{"some": "unique-source"},
+				pinnedImageCache("registry.example/same@sha256:ccc"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			again, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"shared-name",
+				atc.Source{"some": "unique-source"},
+				pinnedImageCache("registry.example/same@sha256:ccc"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(again.ID()).To(Equal(first.ID()))
+		})
+
+		It("registers no base resource type of its own", func() {
+			_, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"shared-name",
+				atc.Source{"some": "unique-source"},
+				pinnedImageCache("registry.example/none@sha256:ddd"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			var count int
+			err = dbConn.QueryRow(`SELECT count(*) FROM base_resource_types WHERE name = 'shared-name' OR name LIKE '%sha256%'`).Scan(&count)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(count).To(BeZero())
+		})
+	})
+
 	Context("when a resource's source changes and its old scope is deprecated", func() {
 		var (
 			oldConfigID int

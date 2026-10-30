@@ -20,9 +20,10 @@ func NewGetDelegate(
 	state exec.RunState,
 	clock clock.Clock,
 	policyChecker policy.Checker,
+	opts ...DelegateOption,
 ) exec.GetDelegate {
 	return &getDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets),
+		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, policyChecker, atc.DisableRedactSecrets, opts...),
 
 		eventOrigin: event.Origin{ID: event.OriginID(planID)},
 		build:       build,

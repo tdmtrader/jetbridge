@@ -803,7 +803,7 @@ func buildSidecarContainers(sidecars []atc.SidecarConfig, mainMounts []corev1.Vo
 
 		c := corev1.Container{
 			Name:            sc.Name,
-			Image:           stripImagePrefix(sc.Image),
+			Image:           atc.StripImageRefPrefix(sc.Image),
 			Command:         sc.Command,
 			Args:            sc.Args,
 			WorkingDir:      workDir,
@@ -1003,7 +1003,7 @@ func (c *Container) buildPodAnnotations() map[string]string {
 // only contains the type name (e.g. "time"). The resourceTypeImages mapping
 // translates these to Docker image references (e.g. "concourse/time-resource").
 func resolveImage(spec runtime.ImageSpec, resourceTypeImages map[string]string) string {
-	image := stripImagePrefix(spec.ImageURL)
+	image := atc.StripImageRefPrefix(spec.ImageURL)
 
 	if image == "" {
 		image = spec.ResourceType
@@ -1019,18 +1019,6 @@ func resolveImage(spec runtime.ImageSpec, resourceTypeImages map[string]string) 
 		image = mapped
 	}
 
-	return image
-}
-
-// stripImagePrefix removes Concourse-internal URL prefixes (docker:///,
-// docker://, raw:///) from an image reference so it can be used directly
-// as a Kubernetes container image.
-func stripImagePrefix(image string) string {
-	for _, prefix := range []string{"docker:///", "docker://", "raw:///"} {
-		if strings.HasPrefix(image, prefix) {
-			return strings.TrimPrefix(image, prefix)
-		}
-	}
 	return image
 }
 

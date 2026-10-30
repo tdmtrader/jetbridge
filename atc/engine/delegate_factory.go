@@ -46,9 +46,7 @@ func (df DelegateFactory) configureDelegate(d any) {
 		bsd = &v.buildStepDelegate
 	}
 	if bsd != nil {
-		bsd.resourceConfigFactory = df.resourceConfigFactory
-		bsd.resourceCacheFactory = df.resourceCacheFactory
-		bsd.imageResolver = df.imageResolver
+		WithResourceFactories(df.resourceConfigFactory, df.resourceCacheFactory, df.imageResolver)(bsd)
 	}
 }
 

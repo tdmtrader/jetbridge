@@ -40,6 +40,13 @@ A versioned external thing a pipeline reads with `get` and writes with
 The image and protocol that knows how to check, get and put one kind of
 resource.
 
+**Pinned image**:
+The image a resource type declared with a direct `image:` runs in, named as
+the resource cache of a `registry-image` get of that exact reference
+(`db.PinnedImage`). The type's resource configs and caches are created under
+it, so the type's identity is its image and never its name alone.
+_Avoid_: image type, direct image (as a noun for the cache)
+
 **Version**:
 One discovered state of a resource, found by a check.
 

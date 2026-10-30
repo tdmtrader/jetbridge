@@ -115,6 +115,7 @@ var _ = Describe("PutStep", func() {
 		dbPipeline      db.Pipeline
 		delegate        *beforeSelectWorkerRecorder
 		delegateFactory exec.PutDelegateFactory
+		delegateOpts    []engine.DelegateOption
 
 		stepper      exec.Stepper
 		imageStepper *imageFetchStepper
@@ -212,9 +213,10 @@ var _ = Describe("PutStep", func() {
 		fakePool = new(scriptedPool)
 		fakePool.FindOrSelectWorkerReturns(chosenWorker, nil)
 
+		delegateOpts = nil
 		delegateFactory = putDelegateFactory(func(state exec.RunState) exec.PutDelegate {
 			delegate = &beforeSelectWorkerRecorder{
-				PutDelegate: engine.NewPutDelegate(dbBuild, planID, state, clock.NewClock(), policy.NoopChecker{}),
+				PutDelegate: engine.NewPutDelegate(dbBuild, planID, state, clock.NewClock(), policy.NoopChecker{}, delegateOpts...),
 			}
 			return delegate
 		})
@@ -555,6 +557,37 @@ var _ = Describe("PutStep", func() {
 					}))
 				})
 			})
+		})
+	})
+
+	Context("when the resource type is declared with a direct image:", func() {
+		BeforeEach(func() {
+			putPlan.TypeImage = atc.TypeImage{
+				ImageRef: "registry.example/team-a/tool@sha256:aaa",
+			}
+			delegateOpts = []engine.DelegateOption{
+				engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
+			}
+		})
+
+		It("puts in that image", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.ImageSpec.ImageURL).To(Equal("registry.example/team-a/tool@sha256:aaa"))
+		})
+
+		It("saves the output under a resource config created under the pinned image", func() {
+			_, outputs, err := dbBuild.Resources()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(outputs).To(HaveLen(1))
+
+			configID := putStepResource().ResourceConfigID()
+			Expect(configID).NotTo(BeZero())
+			config, found, err := fixture.ResourceConfigFactory.FindResourceConfigByID(configID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(config.CreatedByResourceCache()).NotTo(BeNil())
+			Expect(config.CreatedByResourceCache().Version()).To(Equal(atc.Version{"digest": "sha256:aaa"}))
+			Expect(config.OriginBaseResourceType().Name).To(Equal("registry-image"))
 		})
 	})
 

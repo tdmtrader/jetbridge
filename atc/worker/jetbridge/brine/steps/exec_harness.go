@@ -321,7 +321,8 @@ func (b ExecBuild) getStepWithPool(planID atc.PlanID, plan atc.GetPlan, pool exe
 		b.core.DB.LockFactory,
 		b.core.Caches,
 		execGetDelegates(func(state exec.RunState) exec.GetDelegate {
-			return engine.NewGetDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{})
+			return engine.NewGetDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{},
+				engine.WithResourceFactories(nil, b.core.Caches, nil))
 		}),
 		pool,
 		0,
@@ -341,7 +342,8 @@ func (b ExecBuild) putStepWithPool(planID atc.PlanID, plan atc.PutPlan, pool exe
 		},
 		pool,
 		execPutDelegates(func(state exec.RunState) exec.PutDelegate {
-			return engine.NewPutDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{})
+			return engine.NewPutDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{},
+				engine.WithResourceFactories(nil, b.core.Caches, nil))
 		}),
 		0,
 	)

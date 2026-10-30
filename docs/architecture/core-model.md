@@ -20,7 +20,15 @@ Team ─┬─ Pipeline ─┬─ Job ─── Build
 - A **build** belongs to a job, or to a team alone (one-off), or to a
   resource (check). Exactly one of those.
 - A **resource config** is one identity (type plus source) shared by every
-  pipeline resource, resource type and task image that hashes the same.
+  pipeline resource, resource type and task image that hashes the same. A
+  custom type's config is created under the resource cache of its fetched
+  image; a type declared with a direct `image:` is created under the cache of
+  its pinned image (`db.PinnedImage`, a `registry-image` get of that exact
+  reference). So two teams' types of the same name pinned to different images
+  share no config, cache or history, and a type whose image moves (a new
+  digest from lidar's native resolution) starts a fresh history, as a custom
+  type does on a new image version. A reference pinned by tag alone stays one
+  cache as the tag moves, as a moving tag always has.
 - A **resource config scope** owns version history. A resource with private
   history gets a scope of its own; a resource with shared history uses the
   one scope that has no owning resource, and that scope is shared across

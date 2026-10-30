@@ -49,6 +49,25 @@ type buildStepDelegate struct {
 	imageResolver imageresolver.Resolver
 }
 
+// DelegateOption configures a build step delegate beyond its constructor
+// arguments.
+type DelegateOption func(*buildStepDelegate)
+
+// WithResourceFactories gives the delegate the factories it resolves type
+// images with: the metadata-only FetchImage and the pinned image of an image:
+// resource type.
+func WithResourceFactories(
+	resourceConfigFactory db.ResourceConfigFactory,
+	resourceCacheFactory db.ResourceCacheFactory,
+	resolver imageresolver.Resolver,
+) DelegateOption {
+	return func(d *buildStepDelegate) {
+		d.resourceConfigFactory = resourceConfigFactory
+		d.resourceCacheFactory = resourceCacheFactory
+		d.imageResolver = resolver
+	}
+}
+
 func NewBuildStepDelegate(
 	build db.Build,
 	planID atc.PlanID,
@@ -56,8 +75,9 @@ func NewBuildStepDelegate(
 	clock clock.Clock,
 	policyChecker policy.Checker,
 	disableRedactSecrets bool,
+	opts ...DelegateOption,
 ) *buildStepDelegate {
-	return &buildStepDelegate{
+	d := &buildStepDelegate{
 		build:                build,
 		planID:               planID,
 		clock:                clock,
@@ -67,26 +87,44 @@ func NewBuildStepDelegate(
 		policyChecker:        policyChecker,
 		disableRedactSecrets: disableRedactSecrets,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
-// NewBuildStepDelegateWithFactories creates a BuildStepDelegate with resource
-// factories configured for metadata-only FetchImage.
-func NewBuildStepDelegateWithFactories(
-	build db.Build,
-	planID atc.PlanID,
-	state exec.RunState,
-	clock clock.Clock,
-	policyChecker policy.Checker,
-	disableRedactSecrets bool,
-	resourceConfigFactory db.ResourceConfigFactory,
-	resourceCacheFactory db.ResourceCacheFactory,
-	resolver imageresolver.Resolver,
-) exec.BuildStepDelegate {
-	d := NewBuildStepDelegate(build, planID, state, clock, policyChecker, disableRedactSecrets)
-	d.resourceConfigFactory = resourceConfigFactory
-	d.resourceCacheFactory = resourceCacheFactory
-	d.imageResolver = resolver
-	return d
+// PinnedImage is the image of a resource type declared with a direct image:.
+// Nothing is fetched: kubelet pulls the reference. The returned resource cache
+// is the parent every resource config and resource cache of the type is
+// created under (db.PinnedImage), so the type's identity is the image it is
+// pinned to and never its name alone.
+func (delegate *buildStepDelegate) PinnedImage(
+	ctx context.Context,
+	imageRef string,
+	privileged bool,
+) (runtime.ImageSpec, db.ResourceCache, error) {
+	resourceType, source, version := db.PinnedImage(imageRef)
+
+	if delegate.resourceCacheFactory == nil {
+		return runtime.ImageSpec{}, nil, errors.New("pinned image needs a resource cache factory")
+	}
+
+	cache, err := delegate.resourceCacheFactory.FindOrCreateResourceCache(
+		delegate.build.ResourceCacheUser(),
+		resourceType,
+		version,
+		source,
+		nil,
+		nil,
+	)
+	if err != nil {
+		return runtime.ImageSpec{}, nil, fmt.Errorf("create pinned image resource cache: %w", err)
+	}
+
+	return runtime.ImageSpec{
+		ImageURL:   imageRef,
+		Privileged: privileged,
+	}, cache, nil
 }
 
 func (delegate *buildStepDelegate) StartSpan(

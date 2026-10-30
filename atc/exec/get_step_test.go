@@ -145,6 +145,7 @@ var _ = Describe("GetStep", func() {
 
 		delegate        *recordingGetDelegate
 		delegateFactory exec.GetDelegateFactory
+		delegateOpts    []engine.DelegateOption
 
 		lockFactory *recordingLockFactory
 
@@ -252,9 +253,10 @@ var _ = Describe("GetStep", func() {
 		})
 		artifactRepository = runState.ArtifactRepository()
 
+		delegateOpts = nil
 		delegateFactory = getDelegateFactory(func(state exec.RunState) exec.GetDelegate {
 			delegate = &recordingGetDelegate{
-				GetDelegate: engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), policy.NoopChecker{}),
+				GetDelegate: engine.NewGetDelegate(realBuild, planID, state, clock.NewClock(), policy.NoopChecker{}, delegateOpts...),
 			}
 			return delegate
 		})
@@ -1028,6 +1030,77 @@ var _ = Describe("GetStep", func() {
 				imageRef, found := artifactRepository.ImageRefFor(build.ArtifactName("some-name"))
 				Expect(found).To(BeTrue())
 				Expect(imageRef).To(Equal("docker:///us-docker.pkg.dev/my-project/repo/my-image@sha256:customdigest999"))
+			})
+		})
+	})
+
+	Context("when the resource type is declared with a direct image:", func() {
+		BeforeEach(func() {
+			getPlan.Type = "shared-name"
+			getPlan.TypeImage = atc.TypeImage{
+				ImageRef: "registry.example/team-a/tool@sha256:aaa",
+			}
+			delegateOpts = []engine.DelegateOption{
+				engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
+			}
+		})
+
+		It("runs the get in that image", func() {
+			Expect(stepErr).ToNot(HaveOccurred())
+			Expect(chosenContainer.Spec.ImageSpec.ImageURL).To(Equal("registry.example/team-a/tool@sha256:aaa"))
+		})
+
+		It("creates the resource cache under the pinned image, so the type's identity is the image and not its name alone", func() {
+			var result exec.GetResult
+			Expect(runState.Result(planID, &result)).To(BeTrue())
+			cache := result.ResourceCache
+			pinned := cache.ResourceConfig().CreatedByResourceCache()
+			Expect(pinned).ToNot(BeNil())
+			Expect(pinned.Version()).To(Equal(atc.Version{"digest": "sha256:aaa"}))
+			Expect(cache.BaseResourceType().Name).To(Equal("registry-image"))
+
+			// Another team's type of the same name, pinned to another image,
+			// fetching the same version with the same source and params, is a
+			// different resource cache: its content is another image's output.
+			otherType, otherSource, otherVersion := db.PinnedImage("registry.example/team-b/tool@sha256:bbb")
+			otherPinned, err := fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(realBuild.ID()), otherType, otherVersion, otherSource, nil, nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			otherImage, err := fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(realBuild.ID()),
+				"shared-name",
+				cache.Version(),
+				atc.Source{"some": "super-secret-source"},
+				atc.Params{"some": "super-secret-params"},
+				otherPinned,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(otherImage.ID()).NotTo(Equal(cache.ID()))
+			Expect(otherImage.ContentKey()).NotTo(Equal(cache.ContentKey()))
+
+			// Any pipeline pinning the same image under the same type name
+			// shares the cache.
+			sameImage, err := fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(realBuild.ID()),
+				"shared-name",
+				cache.Version(),
+				atc.Source{"some": "super-secret-source"},
+				atc.Params{"some": "super-secret-params"},
+				pinned,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sameImage.ID()).To(Equal(cache.ID()))
+		})
+
+		Context("when the delegate has no resource cache factory", func() {
+			BeforeEach(func() {
+				delegateOpts = nil
+			})
+
+			It("fails rather than fetch under the type's bare name", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("pinned image needs a resource cache factory")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 			})
 		})
 	})

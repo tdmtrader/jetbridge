@@ -666,10 +666,9 @@ var _ = Describe("BuildStepDelegate", func() {
 				}
 
 				parentRunState := exec.NewRunState(stepper, nil)
-				nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+				nativeDelegate = engine.NewBuildStepDelegate(
 					realBuild, planID, parentRunState, fakeClock, policyChecker, false,
-					fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-					nil, // no resolver — tests fallback behavior
+					engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
 				)
 			})
 
@@ -731,12 +730,12 @@ var _ = Describe("BuildStepDelegate", func() {
 						resourceConfig:        wrappedConfig,
 					}
 
-					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+					nativeDelegate = engine.NewBuildStepDelegate(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
 							return new(scriptedStep)
 						}, nil), fakeClock, policyChecker, false,
-						wrappedFactory, fixture.ResourceCacheFactory, fakeResolver,
+						engine.WithResourceFactories(wrappedFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
 
@@ -756,13 +755,12 @@ var _ = Describe("BuildStepDelegate", func() {
 					fakeResolver = new(imageresolvertesting.FakeResolver)
 					fakeResolver.ResolveReturns("sha256:resolved999", nil)
 
-					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
+					nativeDelegate = engine.NewBuildStepDelegate(
 						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
 							runPlans = append(runPlans, p)
 							return new(scriptedStep)
 						}, nil), fakeClock, policyChecker, false,
-						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-						fakeResolver,
+						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
 
@@ -817,12 +815,9 @@ var _ = Describe("BuildStepDelegate", func() {
 					}
 					registryCheckPlan.Check.Source = registryGetPlan.Get.Source
 
-					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
-						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
-							return new(scriptedStep)
-						}, nil), fakeClock, policyChecker, false,
-						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-						fakeResolver,
+					nativeDelegate = engine.NewBuildStepDelegate(
+						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step { return new(scriptedStep) }, nil), fakeClock, policyChecker, false,
+						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
 
@@ -851,12 +846,9 @@ var _ = Describe("BuildStepDelegate", func() {
 					fakeResolver = new(imageresolvertesting.FakeResolver)
 					fakeResolver.ResolveReturns("", fmt.Errorf("registry unreachable"))
 
-					nativeDelegate = engine.NewBuildStepDelegateWithFactories(
-						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
-							return new(scriptedStep)
-						}, nil), fakeClock, policyChecker, false,
-						fixture.ResourceConfigFactory, fixture.ResourceCacheFactory,
-						fakeResolver,
+					nativeDelegate = engine.NewBuildStepDelegate(
+						realBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step { return new(scriptedStep) }, nil), fakeClock, policyChecker, false,
+						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, fakeResolver),
 					)
 				})
 
