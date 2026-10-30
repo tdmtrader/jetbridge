@@ -287,8 +287,6 @@ type RunCommand struct {
 		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
 	} `group:"Garbage Collection" namespace:"gc"`
 
-	TelemetryOptIn bool `long:"telemetry-opt-in" hidden:"true" description:"Enable anonymous concourse version reporting."`
-
 	DefaultBuildLogsToRetain uint64 `long:"default-build-logs-to-retain" description:"Default build logs to retain, 0 means all"`
 	MaxBuildLogsToRetain     uint64 `long:"max-build-logs-to-retain" description:"Maximum build logs to retain, 0 means not specified. Will override values configured in jobs"`
 
@@ -787,16 +785,6 @@ func (cmd *RunCommand) constructMembers(
 	lockFactory lock.LockFactory,
 	secretManager creds.Secrets,
 ) ([]grouper.Member, error) {
-	if cmd.TelemetryOptIn {
-		url := fmt.Sprintf("http://telemetry.concourse-ci.org/?version=%s", concourse.Version)
-		go func() {
-			_, err := http.Get(url)
-			if err != nil {
-				logger.Error("telemetry-version", err)
-			}
-		}()
-	}
-
 	workerCache, err := db.NewWorkerCache(logger.Session("worker-cache"), backendConn, 1*time.Minute)
 	if err != nil {
 		return nil, err
