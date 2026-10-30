@@ -30,6 +30,10 @@ func RegisterEvent(e atc.Event) {
 		events[e.EventType()] = versions
 	}
 
+	if _, taken := versions[e.Version()]; taken {
+		panic(fmt.Sprintf("event %s version %s is already registered", e.EventType(), e.Version()))
+	}
+
 	versions[e.Version()] = unmarshaler(e)
 }
 

@@ -164,37 +164,13 @@ func execBuildEvents(fixture *execDBFixture, build db.Build) []atc.Event {
 	return events
 }
 
-// execBuildEventPayloads reads the raw persisted payloads of one event type.
-// The parser registry maps "initialize", "start" and "finish" to their V10
-// shapes, so fields like Finish.Succeeded only survive at this level.
-func execBuildEventPayloads(fixture *execDBFixture, build db.Build, eventType atc.EventType) []json.RawMessage {
-	GinkgoHelper()
-	rows, err := fixture.Conn.Query(`
-		SELECT payload
-		FROM build_events
-		WHERE build_id = $1 AND type = $2
-		ORDER BY event_id ASC
-	`, build.ID(), string(eventType))
-	Expect(err).NotTo(HaveOccurred())
-	defer func() { Expect(rows.Close()).To(Succeed()) }()
-
-	var payloads []json.RawMessage
-	for rows.Next() {
-		var payload []byte
-		Expect(rows.Scan(&payload)).To(Succeed())
-		payloads = append(payloads, json.RawMessage(payload))
-	}
-	Expect(rows.Err()).NotTo(HaveOccurred())
-	return payloads
-}
-
 func execBuildFinishEvents(fixture *execDBFixture, build db.Build) []event.Finish {
 	GinkgoHelper()
 	var finishes []event.Finish
-	for _, payload := range execBuildEventPayloads(fixture, build, event.EventTypeFinish) {
-		var finish event.Finish
-		Expect(json.Unmarshal(payload, &finish)).To(Succeed())
-		finishes = append(finishes, finish)
+	for _, e := range execBuildEvents(fixture, build) {
+		if finish, ok := e.(event.Finish); ok {
+			finishes = append(finishes, finish)
+		}
 	}
 	return finishes
 }

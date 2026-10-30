@@ -17,9 +17,14 @@ type fakeEvent struct {
 func (fakeEvent) EventType() atc.EventType  { return "fake" }
 func (fakeEvent) Version() atc.EventVersion { return "5.1" }
 
+var _ = BeforeSuite(func() {
+	event.RegisterEvent(fakeEvent{})
+})
+
 var _ = Describe("ParseEvent", func() {
-	BeforeEach(func() {
-		event.RegisterEvent(fakeEvent{})
+
+	It("refuses a second registration of the same type and version", func() {
+		Expect(func() { event.RegisterEvent(fakeEvent{}) }).To(PanicWith("event fake version 5.1 is already registered"))
 	})
 
 	It("can parse an older event type with a compatible major version", func() {
