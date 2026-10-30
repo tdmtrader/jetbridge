@@ -290,15 +290,13 @@ to run the Go tests:
 $ go get github.com/onsi/ginkgo/ginkgo
 ```
 
-We use [Counterfeiter](https://github.com/maxbrunsfeld/counterfeiter) to generate
-fakes for our unit tests. You may need to regenerate fakes if you add or modify an
-interface. You can generate the fakes by running
-
-```sh
-$ go generate ./...
-```
-
-in the directory where the interface is located.
+Unit tests run against real collaborators: a PostgreSQL started by
+`atc/postgresrunner`, real factories over it, and the production objects a
+package composes with. There are no generated fakes. Where a spec has to script
+a collaborator's answer -- a port whose only implementation lives behind an
+architectural boundary, or an algorithm whose failure modes no healthy database
+produces -- write a small double by hand in the spec file that uses it, and say
+in a comment why the real object will not do.
 
 ### Running unit tests
 
