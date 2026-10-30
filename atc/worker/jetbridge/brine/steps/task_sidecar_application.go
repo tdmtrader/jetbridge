@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
@@ -23,6 +24,15 @@ func (in TaskCluster) applicationVolume(pod string) *jetbridge.Volume {
 		in.Namespace, "main", in.application.directory)
 	volume.SetPodName(pod)
 	return volume
+}
+
+// sidecarLogWriters names a writer for every sidecar configureMountedApplication
+// declares, the way the engine does for a task step. Nil when there is none.
+func (in TaskCluster) sidecarLogWriters() map[string]io.Writer {
+	if in.application == nil || !in.application.postgres {
+		return nil
+	}
+	return map[string]io.Writer{"postgres": new(liveLogBuffer)}
 }
 
 func configureMountedApplication(in TaskCluster, handle string, spec *runtime.ContainerSpec) {

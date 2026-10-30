@@ -253,6 +253,11 @@ func runTask(in TaskCluster, handle, script string, container runtime.Container)
 		return TaskOutcome{}, lookupErr
 	}
 	log := new(liveLogBuffer)
+	// One writer per declared sidecar, as the engine hands a task step
+	// (atc/exec TaskStep.buildProcessIO): the runtime refuses a step that
+	// has a Stdout and a sidecar with no writer, and the sidecar's lines are
+	// its own stream, never the build log this scenario reads.
+	sidecarLogs := in.sidecarLogWriters()
 	// Stdin must be nil for the step to be supervised (process.go supervised()).
 	processDir := ""
 	if in.application != nil {
@@ -267,7 +272,7 @@ func runTask(in TaskCluster, handle, script string, container runtime.Container)
 			Path: "/bin/sh",
 			Args: []string{"-c", script},
 		},
-		runtime.ProcessIO{Stdout: log, Stderr: log},
+		runtime.ProcessIO{Stdout: log, Stderr: log, SidecarWriters: sidecarLogs},
 	)
 	if err != nil {
 		return TaskOutcome{}, fmt.Errorf("run task %q: %w", handle, err)
