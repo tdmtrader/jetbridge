@@ -5,7 +5,6 @@ docker-compose.yml
 node_modules
 web/wats/node_modules
 web/elm/elm-stuff
-integration
 
 # Development-track scaffolding and assistant config: never part of a build.
 forge

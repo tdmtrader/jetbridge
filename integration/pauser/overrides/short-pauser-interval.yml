@@ -1,4 +1,0 @@
-services:
-  web:
-    environment:
-      CONCOURSE_PIPELINE_PAUSER_INTERVAL: 10s

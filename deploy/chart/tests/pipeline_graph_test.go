@@ -793,8 +793,10 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
-// TestUnitExclusionsMatchThePipeline pins the two places that decide which
-// packages get tested to the same answer.
+// TestUnitExclusionsMatchThePipeline pins the three places that decide which
+// packages get tested to the same answer: the Makefile, the pipeline's
+// unit-tests job and hack/test-affected.sh, which filters the affected set
+// with one grep -Ev alternation.
 //
 // They drifted once, and silently: the pipeline excluded atc/db, atc/gc,
 // atc/scheduler/algorithm, atc/worker, cmd and skymarshal/dexserver, none of
@@ -845,10 +847,29 @@ func TestUnitExclusionsMatchThePipeline(t *testing.T) {
 		fromPipeline[normalizeExclusion(g[1])] = true
 	}
 
+	affectedScript, err := os.ReadFile(filepath.Join(root, "hack", "test-affected.sh"))
+	if err != nil {
+		t.Fatalf("reading hack/test-affected.sh: %v", err)
+	}
+
+	ev := regexp.MustCompile(`grep -Ev '([^']+)'`).FindSubmatch(affectedScript)
+	if ev == nil {
+		t.Fatal("hack/test-affected.sh no longer filters packages with grep -Ev; " +
+			"this test can no longer find its exclusion list")
+	}
+
+	fromAffected := map[string]bool{}
+	for _, pkg := range strings.Split(string(ev[1]), "|") {
+		fromAffected[normalizeExclusion(pkg)] = true
+	}
+
 	for pkg := range fromMakefile {
 		if !fromPipeline[pkg] {
 			t.Errorf("the Makefile skips %q but the pipeline does not, so CI runs "+
 				"a suite no one runs locally", pkg)
+		}
+		if !fromAffected[pkg] {
+			t.Errorf("the Makefile skips %q but hack/test-affected.sh does not", pkg)
 		}
 	}
 	for pkg := range fromPipeline {
@@ -857,11 +878,17 @@ func TestUnitExclusionsMatchThePipeline(t *testing.T) {
 				"suite passes locally and never runs in CI", pkg)
 		}
 	}
+	for pkg := range fromAffected {
+		if !fromMakefile[pkg] {
+			t.Errorf("hack/test-affected.sh skips %q but the Makefile does not, so "+
+				"an affected-only run misses a suite make test-unit runs", pkg)
+		}
+	}
 }
 
 // normalizeExclusion reduces the two spellings to one. The Makefile writes
-// `./integration` and `fly/integration`; the pipeline writes `/integration` and
-// anchors some entries as `/atc/worker$`.
+// `topgun` and `fly/integration`; the pipeline and hack/test-affected.sh write
+// `/topgun` and may anchor an entry as `/atc/worker$`.
 func normalizeExclusion(pkg string) string {
 	pkg = strings.TrimSpace(pkg)
 	pkg = strings.TrimSuffix(pkg, "$")

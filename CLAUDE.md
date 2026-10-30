@@ -22,7 +22,6 @@ Unit and integration tests start their own PostgreSQL: each runner runs `initdb`
 | `make test-brine-guards` | Brine guard tests (nested `atc/worker/jetbridge/brine` module, no cluster) | ~1 sec | None |
 | `make test-quick` | Unit + Elm + brine guards | ~22 min | PostgreSQL binaries on PATH, yarn |
 | `make test-fly-integration` | Fly CLI against mock ATC (604 specs) | ~30 sec | None |
-| `make test-integration` | ATC integration with real Postgres (30 specs) | ~12 sec | PostgreSQL binaries on PATH |
 | `make test-k8s-integration` | K8s integration via testcontainers K3s | ~23 min | Docker, Helm, kubectl |
 | `make test-k8s-behavioral` | Full K8s behavioral (2 parallel K3s containers, `K8S_PROCS=4` for more) | ~2-3 hrs | Docker, Helm, kubectl |
 | `make test-all` | All tiers in order | ~2.5+ hrs | All of the above |

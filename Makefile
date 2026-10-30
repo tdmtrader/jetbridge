@@ -1,6 +1,6 @@
-.PHONY: test-unit test-elm test-brine-guards test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-elm test-brine-guards test-fly-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
-# Unit tests: all packages except integration/e2e suites (~9 min)
+# Unit tests: all packages except the e2e and nested-module tiers (~9 min)
 # Requires: PostgreSQL running locally
 #
 # This list must match the grep -v chain in the unit-tests job of
@@ -18,7 +18,7 @@
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+		--skip-package=topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 
 # Elm frontend tests (~30 sec)
 # Requires: yarn install (elm-test comes from node_modules)
@@ -36,12 +36,6 @@ test-elm:
 test-fly-integration:
 	@echo "==> Running fly integration tests..."
 	ginkgo -r --keep-going ./fly/integration/
-
-# ATC integration tests (~10 min)
-# Requires: PostgreSQL running locally
-test-integration:
-	@echo "==> Running ATC integration tests..."
-	ginkgo -r --keep-going -p ./atc/integration/
 
 # K8s integration tests (~30 min)
 # Requires: Docker, Helm, kubectl. The cluster is created by
@@ -83,4 +77,4 @@ test-k8s: test-k8s-integration test-k8s-behavioral
 test-quick: test-unit test-elm test-brine-guards
 
 # All tests in order of speed
-test-all: test-unit test-elm test-fly-integration test-integration test-k8s
+test-all: test-unit test-elm test-fly-integration test-k8s

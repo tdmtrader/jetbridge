@@ -160,7 +160,6 @@ silly air-traffic-themed names.
 | `/worker`       | The `concourse worker` library code for registering with the TSA, periodically reaping containers/volumes, etc. |
 | `/cmd`          | This is mainly glue code to wire the ATC, TSA, and Garden into the single `concourse` CLI. |
 | `/topgun`       | Another acceptance suite which covers operator-level features and technical aspects of the Concourse runtime using [Bosh](https://bosh.io/) and [K8s](https://kubernetes.io/). Deploys its own Concourse clusters, runs tests against them, and tears them down. Can only be run in CI. |
-| `/integration`  | Similar to `/topgun`, but spins up Concourse clusters using `docker compose`. Can be run locally on a dev machine. |
 
 ### Rebuilding to test your changes
 
@@ -424,7 +423,7 @@ following command, which skips all integration tests and linux-specific tests:
 
 ```sh
 ginkgo -r -p -race -flake-attempts=3 \
-    -skip-package ./integration,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim
+    -skip-package topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 ```
 
 If you're on a non-linux platform you may want to run the tests using Docker
@@ -441,7 +440,7 @@ the following to run all the unit tests, including the linux-specific tests:
 cd /src
 go install github.com/onsi/ginkgo/v2/ginkgo
 ginkgo -r -p -race -flake-attempts=3 \
-    -skip-package ./integration,topgun
+    -skip-package topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 ```
 
 #### Running elm tests

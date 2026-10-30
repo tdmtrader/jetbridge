@@ -1,4 +1,0 @@
-services:
-  worker:
-    environment:
-      CONCOURSE_NAME: ops-worker

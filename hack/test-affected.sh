@@ -33,7 +33,7 @@ fi
 
 # The same exclusions as `make test-unit` and the pipeline's unit-tests job.
 dirs="$(sed "s#^$(go list -m)#.#" <<<"$affected" \
-  | grep -Ev '/integration|/topgun|/fly/integration|/testhelpers/otel|/atc/worker/jetbridge/brine' || true)"
+  | grep -Ev '/topgun|/fly/integration|/testhelpers/otel|/atc/worker/jetbridge/brine' || true)"
 if [ -z "$dirs" ]; then
   echo "==> nothing affected since $BASE" >&2
   exit 0

@@ -177,7 +177,6 @@ jobs:
           # which walks directories and does reach it. Kept so both lists read
           # the same and the guard test agrees.
           PACKAGES=$(go list ./... \
-            | grep -v /integration \
             | grep -v /topgun \
             | grep -v /fly/integration \
             | grep -v /testhelpers/otel \
