@@ -574,27 +574,6 @@ func TestNoWorkloadSignsAndNoWorkloadVerifies(t *testing.T) {
 	}
 }
 
-// Publication receipts were removed in T3: their values are refused with a
-// message that says so, rather than ignored. (The receipt key's lifetime lived
-// under hangarOutput.activation, which went with the activation walk, and is
-// refused as part of it: TestTheRemovedControllerAndActivationValuesAreRefused.)
-func TestTheRemovedReceiptValuesAreRefused(t *testing.T) {
-	for _, set := range []string{
-		"hangarOutput.receipt.keyID=receipt-7",
-		"hangarOutput.receipt.privateKeySecret=op-receipt-private",
-	} {
-		key := set[:strings.Index(set, "=")]
-		if strings.HasPrefix(key, "hangarOutput.receipt.") {
-			key = "hangarOutput.receipt"
-		}
-		message := renderOutputError(t, set)
-		if !strings.Contains(message, key+" has been removed") ||
-			!strings.Contains(message, "publication receipts were removed") {
-			t.Errorf("%s rendered, or was refused without naming the removal:\n%s", set, message)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Deadlines, grace and leases
 // ---------------------------------------------------------------------------
@@ -1453,28 +1432,6 @@ func TestOnlyTheWebPrincipalIsGrantedObjectDelete(t *testing.T) {
 // The control key is gone
 // ---------------------------------------------------------------------------
 
-// The daemon is trusted over mTLS and signs nothing, so there is no node
-// control key, no key id and no verification ring to configure. Each value
-// is refused naming its removal, not ignored: a values file still setting one
-// would otherwise deploy a node believed to be signing.
-func TestTheControlKeyValuesAreRefused(t *testing.T) {
-	for _, set := range []string{
-		"hangarOutput.executionControl.keySecret=op-control-key",
-		"hangarOutput.executionControl.keyID=control-key-7",
-		"hangarOutput.executionControl.publicKeys[0].epoch=7",
-		"hangarOutput.activationEpoch=7",
-	} {
-		key := set[:strings.Index(set, "=")]
-		if i := strings.Index(key, "["); i >= 0 {
-			key = key[:i]
-		}
-		message := renderOutputError(t, set)
-		if !strings.Contains(message, key+" has been removed") {
-			t.Errorf("%s rendered, or was refused without naming the removal:\n%s", set, message)
-		}
-	}
-}
-
 // The base facet cannot render without the Hangar key: the daemon verifies
 // every warrant with it. With no key Secret named, no daemon TLS Secret to
 // hold hangar.key and no generated key allowed, the refusal names where to
@@ -1650,26 +1607,6 @@ func sortedForbidden(forbidden map[string]string) []string {
 // Two refusals the plane was missing
 // ---------------------------------------------------------------------------
 
-// The output plane cannot schedule a single pod without the artifact daemon.
-//
-// `BuildAffinity` seeds EVERY pod's required node affinity with
-// `concourse.dev/artifact-cache=ready` before it appends the two output labels,
-// and the only thing in the tree that sets that label is the artifact daemon.
-// With the daemon disabled no node ever carries it, so every capture pod -- and
-// every ordinary pod -- sits Pending until its deadline expires, and the failure
-// names a timeout rather than a label. The render succeeded.
-func TestTheOutputPlaneRefusesToRenderWithoutTheArtifactDaemon(t *testing.T) {
-	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
-		"artifactDaemon.enabled=false")...)
-	if !strings.Contains(message, "artifactDaemon.enabled") {
-		t.Errorf("the output plane rendered with the artifact daemon disabled, or was "+
-			"refused by something else:\n%s", message)
-	}
-	if !strings.Contains(message, "has been removed") {
-		t.Errorf("the refusal does not identify the obsolete toggle:\n%s", message)
-	}
-}
-
 // Every duration in this plane is checked at render time, and so is the reclaim
 // batch: zero admits nothing, and a plane that reclaims nothing keeps every
 // published object forever while its status says it reclaims.
@@ -1685,36 +1622,6 @@ func TestTheReclaimAndSweepValuesAreValidated(t *testing.T) {
 		message := renderOutputError(t, bad.set)
 		if !strings.Contains(message, bad.names) {
 			t.Errorf("%s rendered, or was refused by something else:\n%s", bad.set, message)
-		}
-	}
-}
-
-// The values of the deleted controllers, the activation walk and the
-// activation database role are refused by name, each with where its job went,
-// rather than silently ignored -- with the output plane off as well as on, so
-// an operator meets it before anything else.
-func TestTheRemovedControllerAndActivationValuesAreRefused(t *testing.T) {
-	for _, probe := range []struct {
-		set, key, says string
-	}{
-		{"hangarOutput.inventory.interval=1m", "hangarOutput.inventory", "hangarOutput.orphanSweep.interval"},
-		{"hangarOutput.inventory.serviceAccount.annotations.a=b", "hangarOutput.inventory", "serviceAccount.annotations"},
-		{"hangarOutput.reclaimer.deleteTimeout=2m", "hangarOutput.reclaimer", "hangarOutput.reclaim.interval"},
-		{"hangarOutput.reclaimer.serviceAccount.name=x", "hangarOutput.reclaimer", "serviceAccount.annotations"},
-		{"hangarOutput.database.existingSecret=op-activation-db", "hangarOutput.database", "web's own database user"},
-		{"hangarOutput.activation.target=output", "hangarOutput.activation", "hangarOutput.webEnabled"},
-		{"hangarOutput.activation.job.finalize=true", "hangarOutput.activation", "hangar_enabled"},
-		{"hangarOutput.activation.receiptKeyLifetime=43800h", "hangarOutput.activation", "hangar_enabled"},
-		{"hangarBootstrap.database.enabled=true", "hangarBootstrap.database", "hangar_enabled"},
-	} {
-		for name, message := range map[string]string{
-			"plane off": renderHangarError(t, probe.set),
-			"plane on":  renderOutputError(t, probe.set),
-		} {
-			if !strings.Contains(message, probe.key+" has been removed") || !strings.Contains(message, probe.says) {
-				t.Errorf("%s (%s) rendered, or was refused without naming %s's removal and %s:\n%s",
-					probe.set, name, probe.key, probe.says, firstLines(message, 3))
-			}
 		}
 	}
 }

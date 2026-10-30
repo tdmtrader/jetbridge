@@ -61,9 +61,6 @@
       "items": {
         "type": "object"
       }
-    },
-    "removed": {
-      "description": "Removed. The schema still accepts it for one release so the render fails in templates/_validate.tpl with a message naming the replacement."
     }
   },
   "type": "object",
@@ -185,13 +182,6 @@
         "env": {
           "$ref": "#/definitions/openList"
         },
-        "extraArgs": {
-          "$ref": "#/definitions/removed"
-        },
-        "pipelineRunActivationEpoch": {},
-        "enablePipelineRunCreation": {
-          "$ref": "#/definitions/removed"
-        },
         "runInputSigningKeySecret": {
           "type": "string"
         },
@@ -201,10 +191,7 @@
         "runResults": {
           "type": "object",
           "additionalProperties": false,
-          "properties": {
-            "scratchSizeLimit": {},
-            "readConcurrency": {}
-          }
+          "properties": {}
         },
         "extraVolumeMounts": {
           "$ref": "#/definitions/openList"
@@ -451,12 +438,6 @@
       "properties": {
         "create": {
           "type": "boolean"
-        },
-        "brineLive": {
-          "$ref": "#/definitions/removed"
-        },
-        "brineLiveServiceAccount": {
-          "$ref": "#/definitions/removed"
         }
       }
     },
@@ -493,16 +474,10 @@
         }
       }
     },
-    "otelMetrics": {
-      "$ref": "#/definitions/removed"
-    },
     "secrets": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "create": {
-          "$ref": "#/definitions/removed"
-        },
         "signingKeySecret": {
           "type": "string",
           "minLength": 1
@@ -586,9 +561,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": {
-          "$ref": "#/definitions/removed"
-        },
         "port": {
           "$ref": "#/definitions/optionalPort"
         },
@@ -641,43 +613,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "store": {
-              "$ref": "#/definitions/removed"
-            },
-            "bucket": {
-              "$ref": "#/definitions/removed"
-            },
-            "endpoint": {
-              "$ref": "#/definitions/removed"
-            },
-            "prefix": {
-              "$ref": "#/definitions/removed"
-            },
-            "enabled": {
-              "$ref": "#/definitions/removed"
-            },
-            "webEnabled": {
-              "$ref": "#/definitions/removed"
-            },
             "allowGeneratedKey": {},
             "keySecret": {},
-            "scratchPath": {
-              "$ref": "#/definitions/removed"
-            },
-            "scratchSizeLimit": {
-              "$ref": "#/definitions/removed"
-            },
-            "maxContentBytes": {
-              "$ref": "#/definitions/removed"
-            },
-            "maxEntries": {
-              "$ref": "#/definitions/removed"
-            },
             "capabilityTTL": {}
           }
-        },
-        "durable": {
-          "$ref": "#/definitions/removed"
         },
         "serviceName": {
           "type": "string"
@@ -693,9 +632,6 @@
         },
         "tolerations": {
           "$ref": "#/definitions/openList"
-        },
-        "preemption": {
-          "$ref": "#/definitions/removed"
         },
         "mirror": {
           "type": "object",
@@ -720,9 +656,6 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": {
-              "$ref": "#/definitions/removed"
-            },
             "source": {
               "type": "string",
               "enum": [
@@ -741,8 +674,7 @@
           "properties": {
             "existingSecret": {
               "type": "string"
-            },
-            "ttl": {}
+            }
           }
         },
         "networkPolicy": {
@@ -761,13 +693,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {},
-        "secretNames": {},
-        "referencedKeys": {
-          "$ref": "#/definitions/removed"
-        },
-        "database": {
-          "$ref": "#/definitions/removed"
-        }
+        "secretNames": {}
       }
     },
     "hangarOutput": {
@@ -782,68 +708,17 @@
           ]
         },
         "executionControl": {},
-        "capabilityKeySecret": {
-          "$ref": "#/definitions/removed"
-        },
         "enabled": {},
         "webEnabled": {},
         "bucket": {},
         "prefix": {},
         "tenant": {},
-        "activationEpoch": {
-          "$ref": "#/definitions/removed"
-        },
-        "cacheBucket": {
-          "description": "Removed; retained as an open tombstone for the template removal diagnostic."
-        },
-        "strictInputBucket": {
-          "$ref": "#/definitions/removed"
-        },
         "endpoint": {},
         "captureDeadline": {},
-        "sealDeadline": {
-          "$ref": "#/definitions/removed"
-        },
         "publicationGrace": {},
-        "leaseTerm": {
-          "$ref": "#/definitions/removed"
-        },
-        "leaseRenewInterval": {
-          "$ref": "#/definitions/removed"
-        },
         "operationTimeout": {},
-        "receipt": {
-          "$ref": "#/definitions/removed"
-        },
-        "materializationKeySecret": {
-          "$ref": "#/definitions/removed"
-        },
-        "materializationKeyID": {
-          "$ref": "#/definitions/removed"
-        },
         "reclaim": {},
         "orphanSweep": {},
-        "readControlURL": {
-          "$ref": "#/definitions/removed"
-        },
-        "readControlCA": {
-          "$ref": "#/definitions/removed"
-        },
-        "daemon": {
-          "$ref": "#/definitions/removed"
-        },
-        "inventory": {
-          "$ref": "#/definitions/removed"
-        },
-        "reclaimer": {
-          "$ref": "#/definitions/removed"
-        },
-        "database": {
-          "$ref": "#/definitions/removed"
-        },
-        "activation": {
-          "$ref": "#/definitions/removed"
-        },
         "networkPolicy": {}
       }
     },

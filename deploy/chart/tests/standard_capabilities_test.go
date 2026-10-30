@@ -80,16 +80,12 @@ func TestStandardCapabilitiesAreWiredTogether(t *testing.T) {
 
 func TestStandardCapabilityConfigurationFailsClearly(t *testing.T) {
 	for _, tc := range []struct{ setting, want string }{
-		{"artifactDaemon.enabled=true", "artifactDaemon.enabled has been removed"},
-		{"artifactDaemon.enabled=false", "artifactDaemon.enabled has been removed"},
-		{"artifactDaemon.tls.enabled=false", "artifactDaemon.tls.enabled has been removed"},
 		{"artifactDaemon.tls.existingSecret=", "tls.existingSecret is required"},
 		{"artifactDaemon.tls.source=generated", "must be empty"},
 		{"artifactDaemon.tls.source=guess", "artifactDaemon.tls.source"},
 		{"artifactDaemon.resolveCapability.existingSecret=", "resolveCapability.existingSecret is required"},
 		{"mcp.clients=[]", "mcp.clients"},
 		{"web.externalUrl=https://example.com/subpath", "origin URL"},
-		{"web.extraArgs[0]=--cookie-secure", "web.extraArgs has been removed"},
 		{"web.env[0].name=CONCOURSE_ENABLE_MCP", "chart-owned CONCOURSE_ENABLE_MCP"},
 		{"web.env[0].name=CONCOURSE_KUBERNETES_ARTIFACT_DAEMON_TLS_KEY", "chart-owned CONCOURSE_KUBERNETES_ARTIFACT_DAEMON_TLS_KEY"},
 	} {

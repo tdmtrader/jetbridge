@@ -60,13 +60,6 @@ func TestResolveCapabilityFlagsAreAllOrNothing(t *testing.T) {
 			t.Errorf("expected both web and daemon to mount the named Secret; got:\n%s", capabilityLines(out))
 		}
 	})
-
-	t.Run("daemon disabled: obsolete value refused", func(t *testing.T) {
-		out := renderHangarError(t, "artifactDaemon.enabled=false")
-		if !strings.Contains(out, "artifactDaemon.enabled has been removed") {
-			t.Fatalf("obsolete toggle was not rejected: %s", out)
-		}
-	})
 }
 
 func capabilityLines(out string) string {

@@ -143,8 +143,6 @@ func TestHangarRejectsInvalidPrerequisitesAtRender(t *testing.T) {
 		sets []string
 		want string
 	}{
-		{"daemon disabled", withKey("artifactDaemon.enabled=false"), "artifactDaemon.enabled"},
-		{"TLS disabled", withKey("artifactDaemon.tls.enabled=false"), "tls.enabled"},
 		{"zero bytes", withKey("artifactDaemon.outputScratch.maxContentBytes=0"), "artifactDaemon.outputScratch"},
 		{"zero entries", withKey("artifactDaemon.outputScratch.maxEntries=0"), "artifactDaemon.outputScratch"},
 		{"TTL not whole seconds", withKey("artifactDaemon.hangar.capabilityTTL=15m"), "whole seconds"},

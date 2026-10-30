@@ -43,9 +43,9 @@ still set one (`networkPolicy.hermeticEgressTo`) after the chart dropped it.
   includes it on its first line. Hangar's rules stay with Hangar
   (`_hangar-*.tpl`, `hangar-*.yaml`, and the `artifactDaemon.hangar` rules in
   `artifact-daemon-daemonset.yaml`) until its values are reshaped.
-- A removed key stays in the schema as an open type for one release, and
-  the removed-keys table in `_validate.tpl` fails it with
-  "<key> has been removed; <action>". The release after, both entries go.
+- A removed key leaves the schema outright. The closed schema rejects it as
+  an unknown key, naming it (`TestAnUnknownKeyFailsTheRenderNamingIt`), and
+  `deploy/chart/MIGRATING.md` says where the setting went.
 - `deploy/chart/tests/shape_test.go` holds the budget as constants at its
   top, and the guards that enforce it in `unit-tests`:
   - the number of values stays within `maxValues`;
@@ -54,7 +54,6 @@ still set one (`networkPolicy.hermeticEgressTo`) after the chart dropped it.
     `grandfathered`;
   - every key has a typed schema entry;
   - every schema object is closed;
-  - every removed key fails the render naming its removal;
   - a render with no values fails naming what is missing.
 
 ## Exceptions
@@ -135,3 +134,9 @@ capability reduction, not a consequence of the chart's closed values. See
 The branch's merges since 2026-02 are internal; recurring upstream rebases are
 not a rationale for this decision. These backends had recent fork fixes, so
 removal is based on the chosen capability boundary, not presumed inactivity.
+
+Amended 2026-10-30: removed keys no longer get a one-release tombstone. The
+open schema stubs, the removed-keys table in `_validate.tpl` and the
+`removedKeys` guard are gone; a stale key fails the render as an unknown key
+under its closed parent, and MIGRATING.md carries the replacement. The
+tombstone wording in the amendments above is historical.

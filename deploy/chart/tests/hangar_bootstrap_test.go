@@ -316,17 +316,6 @@ func TestTheInventoryHoldsNoSigningKeyAndNoRing(t *testing.T) {
 	}
 }
 
-// Earlier control-key generations have nothing to be kept for: the value is
-// refused naming its removal, not ignored.
-func TestReferencedKeysAreRefused(t *testing.T) {
-	msg := renderHangarError(t, append(append([]string{}, bootstrapSets...),
-		"hangarBootstrap.referencedKeys[0].epoch=1",
-		"hangarBootstrap.referencedKeys[0].controlSecret=op-control-key-e0")...)
-	if !strings.Contains(msg, "hangarBootstrap.referencedKeys has been removed") {
-		t.Errorf("a referencedKeys entry rendered or failed for another reason: %s", firstLines(msg, 3))
-	}
-}
-
 func renderedInventory(t *testing.T, out string) bootstrap.Inventory {
 	t.Helper()
 	var configMap corev1.ConfigMap

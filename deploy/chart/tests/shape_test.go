@@ -27,8 +27,8 @@ import (
 // maxValues is how many values the chart may have. A value is a schema leaf:
 // a property whose type is not object, or an object on openMaps. Inside
 // deferredGroups, whose schema is not yet written out, a value is a
-// values.yaml leaf, with an empty map or list counted as one. Array items and
-// the keys on removedKeys are not values.
+// values.yaml leaf, with an empty map or list counted as one. Array items are
+// not values.
 //
 // The plan's starting figure, 276, counted values.yaml leaves outside the
 // deferred groups too. Under this definition the nine resources, probe and
@@ -156,62 +156,6 @@ var grandfathered = []string{
 	"web.env",
 }
 
-// removedKeys stay in the schema as open types for one release, so the
-// removed-keys table in templates/_validate.tpl can name the replacement.
-// They are not values. One inside a deferred group may stand on its nearest
-// schema ancestor instead, when that ancestor is open: the group's schema is
-// not written out below its top level, and the open ancestor already accepts
-// the key for the release.
-var removedKeys = []string{
-	"otelMetrics",
-	"artifactDaemon.resolveCapability.ttl",
-	"artifactDaemon.durable",
-	"hangarOutput.cacheBucket",
-	"artifactDaemon.enabled",
-	"artifactDaemon.hangar.bucket",
-	"artifactDaemon.hangar.enabled",
-	"artifactDaemon.hangar.endpoint",
-	"artifactDaemon.hangar.maxContentBytes",
-	"artifactDaemon.hangar.maxEntries",
-	"artifactDaemon.hangar.prefix",
-	"artifactDaemon.hangar.scratchPath",
-	"artifactDaemon.hangar.scratchSizeLimit",
-	"artifactDaemon.hangar.store",
-	"artifactDaemon.hangar.webEnabled",
-	"artifactDaemon.preemption",
-	"artifactDaemon.tls.enabled",
-	"hangarBootstrap.database",
-	"hangarBootstrap.referencedKeys",
-	"hangarBootstrap.secretNames.outputCA",
-	"hangarOutput.activation",
-	"hangarOutput.activationEpoch",
-	"web.pipelineRunActivationEpoch",
-	"web.runResults.readConcurrency",
-	"web.runResults.scratchSizeLimit",
-	"hangarOutput.capabilityKeySecret",
-	"hangarOutput.daemon",
-	"hangarOutput.database",
-	"hangarOutput.executionControl.keyID",
-	"hangarOutput.executionControl.keySecret",
-	"hangarOutput.executionControl.publicKeys",
-	"hangarOutput.inventory",
-	"hangarOutput.leaseRenewInterval",
-	"hangarOutput.leaseTerm",
-	"hangarOutput.materializationKeyID",
-	"hangarOutput.materializationKeySecret",
-	"hangarOutput.readControlCA",
-	"hangarOutput.readControlURL",
-	"hangarOutput.receipt",
-	"hangarOutput.reclaimer",
-	"hangarOutput.sealDeadline",
-	"hangarOutput.strictInputBucket",
-	"rbac.brineLive",
-	"rbac.brineLiveServiceAccount",
-	"secrets.create",
-	"web.enablePipelineRunCreation",
-	"web.extraArgs",
-}
-
 // bareRenderNames are the values a render with no values file must name when
 // it fails, so an operator who forgot one is told which.
 var bareRenderNames = []string{
@@ -309,18 +253,6 @@ var shapeGuards = []shapeGuard{
 		},
 	},
 	{
-		name:  "a removed key in a deferred group stands only on an open ancestor",
-		names: "hangarBootstrap.secretNames.outputCA",
-		check: checkSchemaEntries,
-		breakIt: func(t *testing.T, dir string) {
-			editSchema(t, dir, func(schema map[string]any) {
-				schemaProperties(schema, "hangarBootstrap")["secretNames"] = map[string]any{
-					"type": "object", "additionalProperties": false,
-				}
-			})
-		},
-	},
-	{
 		name:  "every object outside openMaps is closed",
 		names: `"service"`,
 		check: checkClosedObjects,
@@ -339,25 +271,6 @@ var shapeGuards = []shapeGuard{
 				grants := schemaProperties(schema, "kubernetes")["stepPodGrants"].(map[string]any)
 				delete(resolveSchema(schema, grants["items"].(map[string]any)), "additionalProperties")
 			})
-		},
-	},
-	{
-		name:  "every removed key fails the render naming its removal",
-		names: "artifactDaemon.durable",
-		check: checkRemovedKeys,
-		breakIt: func(t *testing.T, dir string) {
-			path := filepath.Join(dir, "templates", "_validate.tpl")
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			entry := regexp.MustCompile(`(?m)^\s*\(list "artifactDaemon\.durable" .*\n`)
-			if !entry.Match(raw) {
-				t.Fatal("the removed-keys table has no artifactDaemon.durable entry to delete")
-			}
-			if err := os.WriteFile(path, entry.ReplaceAll(raw, nil), 0o644); err != nil {
-				t.Fatal(err)
-			}
 		},
 	},
 	{
@@ -393,7 +306,7 @@ func countValues(dir string) (int, error) {
 	}
 	count := 0
 	shape.walkSchema(func(path string, node map[string]any, inItems bool) {
-		if inItems || inDeferredGroup(path) || slices.Contains(removedKeys, path) {
+		if inItems || inDeferredGroup(path) {
 			return
 		}
 		if !isObjectSchema(node) || slices.Contains(openMaps, path) {
@@ -442,11 +355,6 @@ func checkBannedKeys(dir string) []string {
 	banned := regexp.MustCompile(`(?i)^(` + strings.Join(bannedKeys, "|") + `)$`)
 	found := map[string]bool{}
 	check := func(path string) {
-		// A removed pass-through stays in the schema for one release only
-		// so its render fails naming the replacement; it is not a value.
-		if slices.Contains(removedKeys, path) {
-			return
-		}
 		if banned.MatchString(path[strings.LastIndex(path, ".")+1:]) {
 			found[path] = true
 		}
@@ -472,8 +380,8 @@ func checkBannedKeys(dir string) []string {
 
 // checkSchemaEntries: every values.yaml key outside openMaps has a schema
 // entry (inside a deferred group, only the keys directly under it), every
-// entry outside deferredGroups has a type unless it is a removed key, and
-// every name on the lists above is in the schema.
+// entry outside deferredGroups has a type, and every name on the lists above
+// is in the schema.
 func checkSchemaEntries(dir string) []string {
 	shape, err := loadShape(dir)
 	if err != nil {
@@ -488,36 +396,19 @@ func checkSchemaEntries(dir string) []string {
 		return !slices.Contains(openMaps, path) && (!inDeferredGroup(path) || slices.Contains(deferredGroups, path))
 	})
 	shape.walkSchema(func(path string, node map[string]any, _ bool) {
-		if !inDeferredGroup(path) && !slices.Contains(removedKeys, path) && !isTyped(shape.schema, node) {
+		if !inDeferredGroup(path) && !isTyped(shape.schema, node) {
 			violations = append(violations, fmt.Sprintf("the schema entry for %s has no type", path))
 		}
 	})
-	for _, list := range [][]string{openMaps, deferredGroups, removedKeys} {
+	for _, list := range [][]string{openMaps, deferredGroups} {
 		for _, path := range list {
 			if _, ok := shape.schemaAt(path); ok {
-				continue
-			}
-			if slices.Contains(removedKeys, path) && inDeferredGroup(path) && shape.openAncestor(path) {
 				continue
 			}
 			violations = append(violations, fmt.Sprintf("%s is listed in shape_test.go but has no schema entry", path))
 		}
 	}
 	return violations
-}
-
-// openAncestor reports whether the nearest schema entry above path accepts
-// keys it does not list, so a removed key under it still validates.
-func (shape chartShape) openAncestor(path string) bool {
-	segments := strings.Split(path, ".")
-	for end := len(segments) - 1; end > 0; end-- {
-		node, ok := shape.schemaAt(strings.Join(segments[:end], "."))
-		if !ok {
-			continue
-		}
-		return node["additionalProperties"] != false && (node["type"] == nil || isObjectSchema(node))
-	}
-	return false
 }
 
 // checkClosedObjects: every object in the schema refuses keys it does not
@@ -540,26 +431,6 @@ func checkClosedObjects(dir string) []string {
 		}
 		closed(path, node)
 	})
-	return violations
-}
-
-// checkRemovedKeys: setting any key on removedKeys fails the render with
-// "<key> has been removed", so the list and the removed-keys table in
-// templates/_validate.tpl name the same keys. It renders with the tests'
-// required values, read relative to the package directory go test runs in.
-func checkRemovedKeys(dir string) []string {
-	var violations []string
-	for _, key := range removedKeys {
-		out, err := exec.Command("helm", "template", "jb", dir,
-			"-f", filepath.Join("testdata", "required-values.yaml"), "--set", key+"=1").CombinedOutput()
-		if err == nil {
-			violations = append(violations, fmt.Sprintf("setting %s rendered; add it to the removed-keys table in templates/_validate.tpl", key))
-			continue
-		}
-		if !strings.Contains(string(out), key+" has been removed") {
-			violations = append(violations, fmt.Sprintf("setting %s failed without saying %q:\n%s", key, key+" has been removed", out))
-		}
-	}
 	return violations
 }
 
@@ -887,14 +758,5 @@ func editValues(t *testing.T, dir string, edit func(map[string]any)) {
 	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// The removed-keys guard sets each key to a scalar; a deployment's old values
-// file sets the removed group's children. That nested form fails the same way.
-func TestARemovedGroupFailsWhenItsChildrenAreSet(t *testing.T) {
-	out := renderHangarError(t, "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=cache")
-	if !strings.Contains(out, "artifactDaemon.durable has been removed") {
-		t.Fatalf("setting artifactDaemon.durable's children did not name its removal:\n%s", out)
 	}
 }
