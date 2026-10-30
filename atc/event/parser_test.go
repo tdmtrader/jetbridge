@@ -50,7 +50,7 @@ var _ = Describe("ParseEvent", func() {
 		}))
 	})
 
-	DescribeTable("should register all non-deprecated events successfully",
+	DescribeTable("registers every event the engine emits",
 		func(eventType atc.Event) {
 			parsedEvent, err := event.ParseEvent(eventType.Version(), eventType.EventType(), []byte("{}"))
 			Expect(err).ToNot(HaveOccurred())
