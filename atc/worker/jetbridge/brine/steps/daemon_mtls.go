@@ -121,13 +121,13 @@ func (p MTLSPlan) serve() (_ *realDaemon, _ string, err error) {
 		if !filepath.IsLocal(key) || key == "." {
 			return nil, "", fmt.Errorf("artifact key must name a local file: %q", key)
 		}
-		path := filepath.Join(daemon.Root, "produced", key)
-		// The daemon's existing file-serving path preserves these exact
-		// bytes. Its directory/tar behavior has separate behavioral cases.
-		if err := writeArtifactFile(path, body); err != nil {
+		// An artifact is a directory: the bytes are its one file, and the
+		// read side takes them back out of the tar the daemon serves.
+		dir := filepath.Join(daemon.Root, "produced", key)
+		if err := writeArtifactFile(filepath.Join(dir, stepOutputFileName), body); err != nil {
 			return nil, "", err
 		}
-		if err := registerDaemonArtifact(p.Ctx, client, daemon.URL, key, path); err != nil {
+		if err := registerDaemonArtifact(p.Ctx, client, daemon.URL, key, dir); err != nil {
 			return nil, "", err
 		}
 	}
@@ -298,7 +298,7 @@ func DaemonMTLSDefinitions() []brine.StepDefinition {
 				if in.Err != nil {
 					return "", fmt.Errorf("the read failed: %s", in.Message)
 				}
-				return string(in.Raw), nil
+				return oneFileInTar(in.Raw)
 			}),
 
 		// Asserts both halves of "loudly": that nothing came back, and that

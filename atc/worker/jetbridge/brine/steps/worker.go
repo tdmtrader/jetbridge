@@ -1437,12 +1437,14 @@ func (w WorkerReady) storeDaemonArtifact(key, body string) error {
 	if w.Daemon == nil {
 		return fmt.Errorf("cannot store artifact %q without a running daemon", key)
 	}
-	// These cases assert exact bytes, not tar encoding. Register a real file.
-	path := filepath.Join(w.Daemon.Root, "outputs", key, "data")
-	if err := writeArtifactFile(path, body); err != nil {
+	// An artifact is a directory: the bytes are its one file, and
+	// readArtifact takes them back out of the tar the daemon serves, so the
+	// cases still assert the bytes rather than the encoding.
+	dir := filepath.Join(w.Daemon.Root, "outputs", key)
+	if err := writeArtifactFile(filepath.Join(dir, stepOutputFileName), body); err != nil {
 		return err
 	}
-	return registerDaemonArtifact(w.Ctx, http.DefaultClient, w.Daemon.URL, key, path)
+	return registerDaemonArtifact(w.Ctx, http.DefaultClient, w.Daemon.URL, key, dir)
 }
 
 // reapPod deletes only the observed UID and verifies API absence. Both
@@ -1546,7 +1548,9 @@ func readArtifact(ctx context.Context, source interface {
 	if err != nil {
 		return "", err
 	}
-	return string(body), nil
+	// The artifact daemon serves a directory as a tar; the artifact's one
+	// file is what the scenario's bytes are.
+	return oneFileInTar(body)
 }
 
 // failureMessage is the half of a "fails saying …" check that a combinator

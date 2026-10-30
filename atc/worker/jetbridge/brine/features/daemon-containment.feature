@@ -301,14 +301,16 @@ Feature: What the artifact daemon refuses
   # The last act is the decoding claim: validation reads the DECODED path, so
   # a benign percent-encoding has to still resolve. Without it, a validator
   # could pass everything above by refusing all encoded input.
+  # Every key names a directory, because an artifact is one: the file each
+  # holds is what makes it a directory on disk.
   Scenario: The keys production actually sends are still accepted
     Given a real artifact daemon guarding its storage root
     And the store holds a file "steps/build-42/out/f.txt" reading "x"
-    And the store holds a file "build-42-output.tar" reading "x"
-    And the store holds a file "steps/build-99" reading "x"
-    And the store holds a file "steps/build-42/result" reading "x"
-    And the store holds a file "caches/job-42/build-abc.tar" reading "x"
-    When the ATC sends "HEAD" for each of the artifact keys "build-42-output.tar, steps/build-99, steps/build-42/result, caches/job-42/build-abc.tar"
+    And the store holds a file "build-42-output/f.txt" reading "x"
+    And the store holds a file "steps/build-99/f.txt" reading "x"
+    And the store holds a file "steps/build-42/result/f.txt" reading "x"
+    And the store holds a file "caches/job-42/build-abc/f.txt" reading "x"
+    When the ATC sends "HEAD" for each of the artifact keys "build-42-output, steps/build-99, steps/build-42/result, caches/job-42/build-abc"
     Then every one of those answers was 200
     When the ATC streams the "ordinary" archive in under each of the keys "café/out, _out/x, -lead/x, .git/x"
     Then every one of those answers was 201

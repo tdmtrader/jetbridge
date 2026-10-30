@@ -429,9 +429,12 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		// --- what the daemon holds ---
 
-		// A flat artifact file, which the daemon serves back byte for byte.
-		// This is the shape that makes "the artifact arrives as ..." an
-		// assertion about pass-through rather than about tar.
+		// An artifact whose only content is the named bytes. An artifact is
+		// a directory -- the artifact daemon registers and serves nothing
+		// else -- so the bytes live in its one file, and "the artifact
+		// arrives as ..." reads that file back out of the tar the daemon
+		// serves: the assertion is still about the bytes making it through,
+		// not about tar.
 		brine.DefineMap[DaemonPlan, DaemonPlan](
 			"it holds the artifact {string} containing {string}",
 			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
@@ -443,11 +446,11 @@ func DaemonDefinitions() []brine.StepDefinition {
 				if err := in.requireDaemon("the artifact " + key); err != nil {
 					return DaemonPlan{}, err
 				}
-				path := in.producedPath(key)
-				if err := in.writeFile(path, content); err != nil {
+				dir := in.producedPath(key)
+				if err := in.writeFile(filepath.Join(dir, stepOutputFileName), content); err != nil {
 					return DaemonPlan{}, err
 				}
-				return in, in.register(key, path)
+				return in, in.register(key, dir)
 			},
 		),
 
@@ -703,13 +706,15 @@ func DaemonDefinitions() []brine.StepDefinition {
 		// Checks
 		// -------------------------------------------------------------------
 
+		// The bytes of the artifact's one file, out of the tar the artifact
+		// daemon serves for its directory.
 		CheckString[DaemonFetch]("the artifact arrives as {string}",
 			"the artifact",
 			func(in DaemonFetch) (string, error) {
 				if in.Err != nil {
 					return "", fmt.Errorf("the read failed: %s", in.Message)
 				}
-				return string(in.Raw), nil
+				return in.oneFile()
 			}),
 
 		CheckThat[DaemonFetch]("the read succeeds",
@@ -970,6 +975,25 @@ func addProducedFile(in DaemonPlan, p brine.Params) (DaemonPlan, error) {
 		return DaemonPlan{}, err
 	}
 	return in, in.register(key, dir)
+}
+
+// oneFile is the content of the artifact's single file, which is what a
+// scenario that said "containing <bytes>" is asking about.
+func (f DaemonFetch) oneFile() (string, error) {
+	if !f.IsTar {
+		return "", fmt.Errorf("the artifact did not arrive as a tar (%d bytes); the artifact daemon serves a directory as one", len(f.Raw))
+	}
+	if len(f.Files) != 1 {
+		names := make([]string, 0, len(f.Files))
+		for name := range f.Files {
+			names = append(names, name)
+		}
+		return "", fmt.Errorf("the archive holds %d files (%v); the scenario described one", len(f.Files), names)
+	}
+	for _, content := range f.Files {
+		return content, nil
+	}
+	return "", nil
 }
 
 // decodeArchive reads what arrived the way a consumer would: gunzip if it is
