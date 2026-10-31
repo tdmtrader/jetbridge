@@ -2510,3 +2510,60 @@ func trackedFiles(t *testing.T) []string {
 	}
 	return files
 }
+
+// atc/imageresolver turns an image reference into a pinned digest for the web,
+// the engine, lidar and the Kubernetes runtime alike. It can serve all of them
+// only while it depends on none of them: one import of atc/db or a runtime
+// package and the resolver joins whichever cycle that package is in. Today it
+// imports `atc` (the shared types) and nothing else in the module.
+func TestTheImageResolverStaysALeaf(t *testing.T) {
+	const resolver = "atc/imageresolver"
+	allowed := map[string]bool{"atc": true}
+
+	graph := loadImportGraph(t)
+	imports, ok := graph.prod[resolver]
+	if !ok {
+		t.Fatalf("%s is not in the import graph; this rule would pass vacuously. "+
+			"If it moved, move the rule with it.", resolver)
+	}
+
+	for _, imp := range imports {
+		if !allowed[imp] {
+			t.Errorf("%s imports %s. The resolver is a leaf every layer imports; "+
+				"pass what it needs in instead of importing it.", resolver, imp)
+		}
+	}
+	for imp := range allowed {
+		if !slices.Contains(imports, imp) {
+			t.Errorf("%s no longer imports %s; drop it from the allowed set so the rule "+
+				"keeps describing the package.", resolver, imp)
+		}
+	}
+}
+
+// Counterfeiter's generated fakes were removed with tools.go and the module
+// requirement; the tree's doubles are real servers and real Postgres now. A
+// go:generate line or a tools import would bring the generator back quietly,
+// so ask the build graph, tests included, whether anything links it.
+func TestNothingDependsOnCounterfeiter(t *testing.T) {
+	out, err := exec.Command("go", "list", "-e", "-deps", "-test", "./...").Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list -deps -test failed: %v\n%s", err, ee.Stderr)
+		}
+		t.Fatalf("go list -deps -test failed: %v", err)
+	}
+
+	deps := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(deps) < 500 {
+		t.Fatalf("go list -deps -test listed only %d packages; the listing failed and "+
+			"this rule would pass vacuously", len(deps))
+	}
+
+	for _, dep := range deps {
+		if strings.Contains(dep, "counterfeiter") {
+			t.Errorf("%s is in the build graph. Counterfeiter fakes were removed; "+
+				"use a real server or real Postgres instead.", dep)
+		}
+	}
+}
