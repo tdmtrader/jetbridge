@@ -22,6 +22,11 @@ func CreateRun(conn db.DbConn, factory db.PipelineRunFactory, ctx context.Contex
 	if err := tx.Commit(); err != nil {
 		return db.RunCreation{}, err
 	}
+	// Best effort, exactly as CreatePipelineRunV2 treats it: the Run is
+	// committed and every component also polls, so a lost wakeup delays the
+	// Run rather than failing its creation. PipelineRunFactory's specs pin
+	// that a creation stays successful when the NOTIFY fails, through this
+	// fixture; the API logs the failure, a fixture has no logger to log to.
 	_ = factory.AfterRunCreated(ctx, creation)
 	return creation, nil
 }

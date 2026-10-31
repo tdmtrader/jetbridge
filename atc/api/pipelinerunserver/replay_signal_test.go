@@ -161,3 +161,32 @@ func TestVersionedRefusalsCarryTheirReasonOnlyAfterAuthorization(t *testing.T) {
 		})
 	}
 }
+
+type unwakeableRunFactory struct{ admittedRunFactory }
+
+func (unwakeableRunFactory) AfterRunCreated(context.Context, db.RunCreation) error {
+	return errors.New("notify failed")
+}
+
+// The wakeup after a committed admission is best effort: the scheduler also
+// polls, so a lost NOTIFY delays the Run rather than losing it. The answer
+// stays 201, and the failure is logged rather than dropped.
+func TestVersionedCreateLogsALostWakeup(t *testing.T) {
+	logger := lagertest.NewTestLogger("test")
+	server := NewServer(logger, unwakeableRunFactory{}, "")
+	server.SetServices(Services{Admitter: replayAdmitter{}, HangarOutput: true})
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v2/teams/t/pipelines/review/runs?:team_name=t&:pipeline_name=review",
+		strings.NewReader(`{"invocation_key":"lost-wakeup"}`))
+	request.Header.Set("Content-Type", "application/json")
+
+	response := serveSensitive(t, atc.CreatePipelineRunV2, server.CreatePipelineRunV2(template{}), request)
+
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusCreated)
+	}
+	logs := logger.Logs()
+	if len(logs) != 1 || logs[0].Message != "test.failed-to-wake-scheduler-for-run" || logs[0].Data["run_id"] != float64(41) || logs[0].Data["error"] != "notify failed" {
+		t.Fatalf("logs = %+v, want one failed-to-wake-scheduler-for-run naming Run 41 and the error", logs)
+	}
+}

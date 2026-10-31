@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/errormap"
@@ -85,7 +86,11 @@ func (s *Server) CreatePipelineRunV2(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		_ = s.runFactory.AfterRunCreated(ctx, db.RunCreation{Run: run, Replayed: replayed})
+		if err := s.runFactory.AfterRunCreated(ctx, db.RunCreation{Run: run, Replayed: replayed}); err != nil {
+			// The scheduler and scanner also poll, so the Run starts late
+			// rather than never; the admission stands either way.
+			s.logger.Error("failed-to-wake-scheduler-for-run", err, lager.Data{"run_id": run.ID()})
+		}
 		// A replay is 200 with the Idempotency-Replayed header and an explicit
 		// outcome, so a caller never has to infer replay from the status alone.
 		status, outcome := http.StatusCreated, atc.RunAdmissionCreated
