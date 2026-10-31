@@ -324,10 +324,6 @@ func (event WorkerTasks) Emit(logger lager.Logger) {
 	)
 }
 
-type VolumesToBeGarbageCollected struct {
-	Volumes int
-}
-
 type CreatingContainersToBeGarbageCollected struct {
 	Containers int
 }
