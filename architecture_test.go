@@ -1,6 +1,7 @@
 package concourse
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -156,8 +158,7 @@ func loadImportGraph(t *testing.T) importGraph {
 
 	// -e so a package that fails to load is reported rather than aborting the
 	// whole listing.
-	cmd := exec.Command("go", "list", "-e", "-json", "./...")
-	out, err := cmd.Output()
+	out, err := goList("-e", "-json", "./...")
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			t.Fatalf("go list failed: %v\n%s", err, ee.Stderr)
@@ -1057,7 +1058,7 @@ func commandRoots(t *testing.T) []string {
 func linksPackage(t *testing.T, root, pkg string) bool {
 	t.Helper()
 
-	out, err := exec.Command("go", "list", "-deps", root).Output()
+	out, err := goList("-deps", root)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			t.Fatalf("go list -deps %s failed: %v\n%s", root, err, ee.Stderr)
@@ -2629,4 +2630,31 @@ func TestOnlyCompositionRootsBuildALagerLogger(t *testing.T) {
 			"logger (logger.Session(...)) instead; a logger built here has no sink or "+
 			"ignores --log-level.", offenders)
 	}
+}
+
+// goList runs `go list` once per distinct argument list for this test
+// process. Several guards ask the toolchain the same question of the same
+// tree (the full -json graph four times, `-deps <root>` once per role per
+// root); each still parses the output and makes its own assertions. No test
+// in this package changes directory or environment, so the arguments are the
+// whole key. A failed listing is not kept, and every caller gets its own copy
+// of the bytes.
+func goList(args ...string) ([]byte, error) {
+	entry, _ := goListResults.LoadOrStore(strings.Join(args, "\x00"), &goListResult{})
+	result := entry.(*goListResult)
+	result.once.Do(func() {
+		result.out, result.err = exec.Command("go", append([]string{"list"}, args...)...).Output()
+	})
+	if result.err != nil {
+		goListResults.CompareAndDelete(strings.Join(args, "\x00"), result)
+	}
+	return bytes.Clone(result.out), result.err
+}
+
+var goListResults sync.Map
+
+type goListResult struct {
+	once sync.Once
+	out  []byte
+	err  error
 }
