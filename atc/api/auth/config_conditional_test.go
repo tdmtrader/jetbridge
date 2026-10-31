@@ -24,7 +24,7 @@ var _ = Describe("Conditional config API authority", func() {
 		log := lagertest.NewTestLogger("strict-api")
 		configs := configserver.NewServer(log, teamFactory, nil)
 		wraps := wrappa.MultiWrappa{
-			wrappa.NewAPIAuthWrappa(nil, nil, nil, nil),
+			wrappa.NewAPIAuthWrappa(nil, nil, nil),
 			wrappa.NewAccessorWrappa(log, realAccessFactory(), map[string]string{atc.SaveConfig: accessor.OwnerRole}),
 		}
 		handlers := wraps.Wrap(rata.Handlers{atc.SaveConfig: http.HandlerFunc(configs.SaveConfig), atc.SaveConfigConditional: http.HandlerFunc(configs.SaveConfigConditional)})

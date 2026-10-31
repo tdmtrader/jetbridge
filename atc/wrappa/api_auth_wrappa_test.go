@@ -20,14 +20,12 @@ var _ = Describe("APIAuthWrappa", func() {
 		checkPipelineAccessHandlerFactory   auth.CheckPipelineAccessHandlerFactory
 		checkBuildReadAccessHandlerFactory  auth.CheckBuildReadAccessHandlerFactory
 		checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory
-		checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory
 	)
 
 	BeforeEach(func() {
 		checkPipelineAccessHandlerFactory = auth.NewCheckPipelineAccessHandlerFactory(nil)
 		checkBuildReadAccessHandlerFactory = auth.NewCheckBuildReadAccessHandlerFactory(nil)
 		checkBuildWriteAccessHandlerFactory = auth.NewCheckBuildWriteAccessHandlerFactory(nil)
-		checkWorkerTeamAccessHandlerFactory = auth.NewCheckWorkerTeamAccessHandlerFactory(nil)
 	})
 
 	Describe("Wrap", func() {
@@ -41,7 +39,6 @@ var _ = Describe("APIAuthWrappa", func() {
 				auth.NewCheckPipelineAccessHandlerFactory(teamFactory),
 				checkBuildReadAccessHandlerFactory,
 				checkBuildWriteAccessHandlerFactory,
-				checkWorkerTeamAccessHandlerFactory,
 			).Wrap(rata.Handlers{
 				atc.ListPipelineRuns: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 				atc.GetPipelineRun:   http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
@@ -71,7 +68,6 @@ var _ = Describe("APIAuthWrappa", func() {
 				checkPipelineAccessHandlerFactory,
 				checkBuildReadAccessHandlerFactory,
 				checkBuildWriteAccessHandlerFactory,
-				checkWorkerTeamAccessHandlerFactory,
 			).Wrap(rata.Handlers{atc.CreatePipelineRunV2: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })})
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			query := req.URL.Query()
@@ -103,7 +99,6 @@ var _ = Describe("APIAuthWrappa", func() {
 					checkPipelineAccessHandlerFactory,
 					checkBuildReadAccessHandlerFactory,
 					checkBuildWriteAccessHandlerFactory,
-					checkWorkerTeamAccessHandlerFactory,
 				).Wrap(inputHandlers)
 			}).NotTo(Panic())
 		})
@@ -119,7 +114,6 @@ var _ = Describe("APIAuthWrappa", func() {
 					checkPipelineAccessHandlerFactory,
 					checkBuildReadAccessHandlerFactory,
 					checkBuildWriteAccessHandlerFactory,
-					checkWorkerTeamAccessHandlerFactory,
 				).Wrap(inputHandlers)
 			}).NotTo(Panic())
 		})

@@ -247,14 +247,11 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 
 	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(deps.buildFactory)
 
-	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(deps.workerFactory)
-
 	apiWrapper := wrappa.MultiWrappa{
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,
 			checkBuildWriteAccessHandlerFactory,
-			checkWorkerTeamAccessHandlerFactory,
 		),
 	}
 

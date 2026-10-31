@@ -319,7 +319,7 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 	handlers[atc.CancelPipelineRun] = scoped.HandlerFor(runServer.CancelPipelineRun)
 	wrapper := wrappa.MultiWrappa{
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(f.DB.TeamFactory)),
-		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(f.DB.TeamFactory), auth.NewCheckBuildReadAccessHandlerFactory(f.DB.BuildFactory), auth.NewCheckBuildWriteAccessHandlerFactory(f.DB.BuildFactory), nil),
+		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(f.DB.TeamFactory), auth.NewCheckBuildReadAccessHandlerFactory(f.DB.BuildFactory), auth.NewCheckBuildWriteAccessHandlerFactory(f.DB.BuildFactory)),
 		wrappa.NewAccessorWrappa(logger, accessor.NewAccessFactory(verifier, f.DB.TeamFactory, "", nil, displayUserID), f.CustomRoles),
 	}
 	var routes rata.Routes

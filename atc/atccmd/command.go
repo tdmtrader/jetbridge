@@ -2371,7 +2371,6 @@ func (cmd *RunCommand) constructAPIHandler(
 	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
 	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
-	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
 
 	rejectArchivedHandlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(teamFactory)
 
@@ -2386,7 +2385,6 @@ func (cmd *RunCommand) constructAPIHandler(
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,
 			checkBuildWriteAccessHandlerFactory,
-			checkWorkerTeamAccessHandlerFactory,
 		),
 		wrappa.NewRejectArchivedWrappa(rejectArchivedHandlerFactory),
 		wrappa.NewConcourseVersionWrappa(concourse.Version),

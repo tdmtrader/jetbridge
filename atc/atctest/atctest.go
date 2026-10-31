@@ -257,7 +257,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 	wrapper := wrappa.MultiWrappa{
 		wrappa.NewAPIMetricsWrappa(logger),
 		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(p.teams), auth.NewCheckBuildReadAccessHandlerFactory(p.builds),
-			auth.NewCheckBuildWriteAccessHandlerFactory(p.builds), auth.NewCheckWorkerTeamAccessHandlerFactory(workers)),
+			auth.NewCheckBuildWriteAccessHandlerFactory(p.builds)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(p.teams)),
 		wrappa.NewConcourseVersionWrappa(concourse.Version),
 		wrappa.NewAccessorWrappa(logger, access, nil),

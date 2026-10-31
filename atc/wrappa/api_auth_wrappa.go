@@ -11,20 +11,17 @@ type APIAuthWrappa struct {
 	checkPipelineAccessHandlerFactory   auth.CheckPipelineAccessHandlerFactory
 	checkBuildReadAccessHandlerFactory  auth.CheckBuildReadAccessHandlerFactory
 	checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory
-	checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory
 }
 
 func NewAPIAuthWrappa(
 	checkPipelineAccessHandlerFactory auth.CheckPipelineAccessHandlerFactory,
 	checkBuildReadAccessHandlerFactory auth.CheckBuildReadAccessHandlerFactory,
 	checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory,
-	checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory,
 ) *APIAuthWrappa {
 	return &APIAuthWrappa{
 		checkPipelineAccessHandlerFactory:   checkPipelineAccessHandlerFactory,
 		checkBuildReadAccessHandlerFactory:  checkBuildReadAccessHandlerFactory,
 		checkBuildWriteAccessHandlerFactory: checkBuildWriteAccessHandlerFactory,
-		checkWorkerTeamAccessHandlerFactory: checkWorkerTeamAccessHandlerFactory,
 	}
 }
 
