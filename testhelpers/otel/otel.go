@@ -252,51 +252,6 @@ func By(text string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Legacy flat-span API (kept for backward compatibility)
-// ---------------------------------------------------------------------------
-
-func emitTestSpan(report ginkgo.SpecReport, pipeline string) {
-	attrs := []attribute.KeyValue{
-		attribute.String("test.name", report.FullText()),
-		attribute.String("test.suite", suiteName),
-		attribute.String("test.state", report.State.String()),
-		attribute.Float64("test.duration_s", report.RunTime.Seconds()),
-		attribute.Int("test.attempt", report.NumAttempts),
-	}
-
-	if pipeline != "" {
-		attrs = append(attrs, attribute.String("concourse.pipeline", pipeline))
-	}
-
-	if report.LeafNodeLocation.FileName != "" {
-		attrs = append(attrs,
-			attribute.String("test.file", report.LeafNodeLocation.FileName),
-			attribute.Int("test.line", report.LeafNodeLocation.LineNumber),
-		)
-	}
-
-	startTime := report.StartTime
-	endTime := startTime.Add(report.RunTime)
-
-	ctx := context.Background()
-	_, span := tracer.Start(ctx, "test.run",
-		trace.WithTimestamp(startTime),
-		trace.WithAttributes(attrs...),
-	)
-
-	if report.State == types.SpecStateFailed || report.State == types.SpecStatePanicked {
-		span.SetStatus(codes.Error, report.Failure.Message)
-		if report.Failure.Message != "" {
-			span.SetAttributes(attribute.String("test.failure", report.Failure.Message))
-		}
-	} else {
-		span.SetStatus(codes.Ok, "")
-	}
-
-	span.End(trace.WithTimestamp(endTime))
-}
-
 func stripScheme(url string) string {
 	for _, prefix := range []string{"https://", "http://"} {
 		if strings.HasPrefix(url, prefix) {
