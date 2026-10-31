@@ -26,7 +26,9 @@ func pageAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 			Limit  int    `json:"limit"`
 			Cursor string `json:"cursor"`
 		}
-		_ = json.Unmarshal(input, &a)
+		if err := decodeArguments(input, &a); err != nil {
+			return nil, err
+		}
 		query := url.Values{"format": {"page"}}
 		path := "/api/v1/pipelines"
 		if a.Limit > 0 {

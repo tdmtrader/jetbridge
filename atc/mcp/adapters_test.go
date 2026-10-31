@@ -88,3 +88,41 @@ func TestOversizeConfigWarningStillValidates(t *testing.T) {
 		}
 	}
 }
+
+// Every bound adapter refuses arguments it cannot decode, naming the field
+// or the JSON problem, and never calls the API with zero values in their place.
+func TestAdaptersRefuseMalformedArguments(t *testing.T) {
+	ctx := context.WithValue(context.Background(), principalKey{}, mcpauth.Principal{})
+	field := map[string]string{
+		"build_get": "build_id", "build_abort": "build_id", "build_logs_read": "build_id",
+		"pipelines_list": "team", "pipeline_get": "team", "pipeline_config_get": "team",
+		"pipeline_config_set": "team", "pipeline_pause": "team", "pipeline_unpause": "team",
+		"builds_list": "team", "job_trigger": "team",
+	}
+	payloads := []struct {
+		name, input string
+		want        func(op string) string
+	}{
+		{"wrong field type", `{"build_id":"seven","team":7}`, func(op string) string { return `"` + field[op] + `"` }},
+		{"truncated JSON", `{"team":`, func(string) string { return "malformed JSON" }},
+		{"not an object", `["main"]`, func(string) string { return "JSON object" }},
+	}
+	calls := 0
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ })
+	for _, op := range boundOperations(api) {
+		if _, ok := field[op.ID]; !ok {
+			t.Errorf("no malformed-argument case for bound operation %s", op.ID)
+			continue
+		}
+		for _, p := range payloads {
+			calls = 0
+			_, err := op.handler(ctx, json.RawMessage(p.input))
+			if err == nil || !strings.HasPrefix(err.Error(), "INVALID_ARGUMENTS: ") || !strings.Contains(err.Error(), p.want(op.ID)) {
+				t.Errorf("%s / %s: want INVALID_ARGUMENTS naming %s, got %v", op.ID, p.name, p.want(op.ID), err)
+			}
+			if calls != 0 {
+				t.Errorf("%s / %s: API called %d times with undecodable arguments", op.ID, p.name, calls)
+			}
+		}
+	}
+}

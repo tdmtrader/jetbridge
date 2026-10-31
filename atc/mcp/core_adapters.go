@@ -35,7 +35,9 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 				Cursor   string `json:"cursor"`
 				MaxBytes int    `json:"max_bytes"`
 			}
-			_ = json.Unmarshal(input, &a)
+			if err := decodeArguments(input, &a); err != nil {
+				return nil, err
+			}
 			query := url.Values{"format": {"json"}}
 			if a.Cursor != "" {
 				query.Set("cursor", a.Cursor)
@@ -71,7 +73,9 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 	case "pipeline_config_get":
 		return func(ctx context.Context, input json.RawMessage) (any, error) {
 			var a pipelineArguments
-			_ = json.Unmarshal(input, &a)
+			if err := decodeArguments(input, &a); err != nil {
+				return nil, err
+			}
 			r, err := apiRequest(ctx, api, "GET", a.path()+"/config", a.query(), nil, nil)
 			if err != nil {
 				return nil, err
@@ -103,7 +107,9 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 				ConfigYAML string `json:"config_yaml"`
 				Version    string `json:"version"`
 			}
-			_ = json.Unmarshal(input, &a)
+			if err := decodeArguments(input, &a); err != nil {
+				return nil, err
+			}
 			headers := http.Header{"Content-Type": {"application/x-yaml"}, atc.ConfigVersionHeader: {a.Version}}
 			r, err := apiRequest(ctx, api, "PUT", a.path()+"/config/conditional", a.query(), bytes.NewBufferString(a.ConfigYAML), headers)
 			if err != nil {
@@ -141,7 +147,9 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 	case "pipeline_pause", "pipeline_unpause":
 		return func(ctx context.Context, input json.RawMessage) (any, error) {
 			var a pipelineArguments
-			_ = json.Unmarshal(input, &a)
+			if err := decodeArguments(input, &a); err != nil {
+				return nil, err
+			}
 			suffix := "pause"
 			if id == "pipeline_unpause" {
 				suffix = "unpause"
@@ -160,7 +168,9 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 			var a struct {
 				BuildID int `json:"build_id"`
 			}
-			_ = json.Unmarshal(input, &a)
+			if err := decodeArguments(input, &a); err != nil {
+				return nil, err
+			}
 			method, path := "GET", "/api/v1/builds/"+strconv.Itoa(a.BuildID)
 			if id == "build_abort" {
 				method = "PUT"
@@ -188,7 +198,9 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 				pipelineArguments
 				Job string `json:"job"`
 			}
-			_ = json.Unmarshal(input, &a)
+			if err := decodeArguments(input, &a); err != nil {
+				return nil, err
+			}
 			r, err := apiRequest(ctx, api, "POST", a.path()+"/jobs/"+url.PathEscape(a.Job)+"/builds", a.query(), nil, nil)
 			if err != nil || ctx.Err() != nil || r.status == 0 || r.status >= 500 {
 				return nil, errors.New("OUTCOME_UNKNOWN: a build may have been created; inspect job builds before any retry")

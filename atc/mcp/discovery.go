@@ -49,7 +49,9 @@ func decodeOperation(resource string, input json.RawMessage, ops []Operation) (O
 			return Operation{}, nil, errors.New("INVALID_ARGUMENTS: arguments do not match the operation schema")
 		}
 		var args map[string]any
-		_ = json.Unmarshal(envelope.Request.Arguments, &args)
+		if err := decodeArguments(envelope.Request.Arguments, &args); err != nil {
+			return Operation{}, nil, err
+		}
 		if v, ok := args["version"].(string); ok {
 			if _, err := atc.ParseConfigVersion(v); err != nil {
 				return Operation{}, nil, errors.New("INVALID_ARGUMENTS: version exceeds 2147483647")
@@ -66,7 +68,9 @@ func decodeOperation(resource string, input json.RawMessage, ops []Operation) (O
 		// JSON Schema integers include 1.0 and 1e3. Normalize these before
 		// typed adapters decode; reject values outside the Go/API integer range.
 		var raw map[string]json.RawMessage
-		_ = json.Unmarshal(envelope.Request.Arguments, &raw)
+		if err := decodeArguments(envelope.Request.Arguments, &raw); err != nil {
+			return Operation{}, nil, err
+		}
 		for _, key := range []string{"build_id", "limit", "max_bytes"} {
 			if value, ok := raw[key]; ok {
 				n, valid := new(big.Rat).SetString(string(value))

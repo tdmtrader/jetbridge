@@ -61,6 +61,9 @@ func NewHandler(auth *mcpauth.Server, api http.Handler, options HandlerOptions) 
 			var method, name string
 			decoded := json.Unmarshal(body, &message) == nil && json.Unmarshal(message["method"], &method) == nil
 			if decoded {
+				// Best effort: this peek only decides whether to challenge for
+				// scope. Undecodable params skip the challenge and the SDK's own
+				// decode refuses the message.
 				_ = json.Unmarshal(message["params"], &params)
 				_ = json.Unmarshal(params["name"], &name)
 			}
@@ -116,7 +119,9 @@ func NewHandler(auth *mcpauth.Server, api http.Handler, options HandlerOptions) 
 				return toolError("INVALID_ARGUMENTS: invalid capability query"), nil
 			}
 			var args explainArgs
-			_ = json.Unmarshal(req.Params.Arguments, &args)
+			if err := decodeArguments(req.Params.Arguments, &args); err != nil {
+				return toolError(err.Error()), nil
+			}
 			result, err := c.explain(ctx, args)
 			if err != nil {
 				return toolError(err.Error()), nil
