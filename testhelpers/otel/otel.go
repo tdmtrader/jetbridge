@@ -121,20 +121,6 @@ func Shutdown() {
 	_ = tracerProvider.Shutdown(ctx)
 }
 
-// IsConfigured returns whether tracing was successfully initialized.
-func IsConfigured() bool {
-	return configured
-}
-
-// Tracer returns the test suite's tracer. Returns a noop tracer if
-// tracing is not configured.
-func Tracer() trace.Tracer {
-	if tracer == nil {
-		return trace.NewNoopTracerProvider().Tracer("noop")
-	}
-	return tracer
-}
-
 // ---------------------------------------------------------------------------
 // Live parent span API (nested spans)
 // ---------------------------------------------------------------------------
@@ -142,7 +128,7 @@ func Tracer() trace.Tracer {
 // StartTestSpan begins a parent "test.run" span for the current test.
 // Call from BeforeEach. The span stays open during the test so that
 // child spans (fly commands, pipeline operations) nest under it.
-// Finalize in ReportAfterEach via FinalizeTestSpan.
+// Finalize in ReportAfterEach via FinalizeTestSpanWithPipeline.
 func StartTestSpan() {
 	if !configured {
 		return
@@ -150,12 +136,6 @@ func StartTestSpan() {
 	mu.Lock()
 	defer mu.Unlock()
 	testCtx, testSpan = tracer.Start(context.Background(), "test.run")
-}
-
-// FinalizeTestSpan ends the parent test.run span with attributes from
-// the Ginkgo spec report. Use as a ReportAfterEach handler.
-func FinalizeTestSpan(report ginkgo.SpecReport) {
-	finalizeTestSpan(report, "")
 }
 
 // FinalizeTestSpanWithPipeline returns a ReportAfterEach handler that
@@ -237,18 +217,6 @@ func StartSpan(name string, attrs ...attribute.KeyValue) func() {
 		mu.Lock()
 		testCtx = parentCtx
 		mu.Unlock()
-	}
-}
-
-// By wraps Ginkgo's By() and adds an OTel span event to the current
-// test span with the step description. Use instead of ginkgo.By() to
-// get timestamped markers in the trace.
-func By(text string) {
-	ginkgo.By(text)
-	mu.Lock()
-	defer mu.Unlock()
-	if configured && testSpan != nil {
-		testSpan.AddEvent(text)
 	}
 }
 
