@@ -2,7 +2,6 @@ package web
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -10,7 +9,6 @@ import (
 	"sync"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc"
 )
 
 type assetCache struct {
@@ -74,13 +72,6 @@ func IndexHandler(logger lager.Logger, publicFS fs.FS, live bool) http.Handler {
 
 		funcs := template.FuncMap{
 			"asset": assets.asset,
-			"jsonMarshal": func(v any) (template.JS, error) {
-				payload, err := json.Marshal(v)
-				if err != nil {
-					return "", err
-				}
-				return template.JS(payload), nil
-			},
 		}
 
 		t, err := template.New("web").Funcs(funcs).ParseFS(publicFS, "index.html")
@@ -91,9 +82,8 @@ func IndexHandler(logger lager.Logger, publicFS fs.FS, live bool) http.Handler {
 		}
 
 		err = t.ExecuteTemplate(w, "index.html", indexTemplateData{
-			CSRFToken:    r.FormValue("csrf_token"),
-			AuthToken:    r.Header.Get("Authorization"),
-			FeatureFlags: atc.FeatureFlags(),
+			CSRFToken: r.FormValue("csrf_token"),
+			AuthToken: r.Header.Get("Authorization"),
 		})
 		if err != nil {
 			log.Error("failed-to-build-template", err)
@@ -104,7 +94,6 @@ func IndexHandler(logger lager.Logger, publicFS fs.FS, live bool) http.Handler {
 }
 
 type indexTemplateData struct {
-	CSRFToken    string
-	AuthToken    string
-	FeatureFlags map[string]bool
+	CSRFToken string
+	AuthToken string
 }

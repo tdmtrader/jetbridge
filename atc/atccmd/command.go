@@ -292,10 +292,6 @@ type RunCommand struct {
 	SystemClaimKey    string   `long:"system-claim-key" default:"aud" description:"The token claim key to use when matching system-claim-values"`
 	SystemClaimValues []string `long:"system-claim-value" default:"concourse-worker" description:"Configure which token requests should be considered 'system' requests."`
 
-	FeatureFlags struct {
-		EnableResourceCausality bool `long:"enable-resource-causality" description:"Enable the resource causality page. Computing causality can be expensive for the database. "`
-	} `group:"Feature Flags"`
-
 	BaseResourceTypeDefaults flag.File `long:"base-resource-type-defaults" description:"Base resource type defaults"`
 
 	DisplayUserIdPerConnector map[string]string `long:"display-user-id-per-connector" description:"Define how to display local user IDs. Format is local:<fieldname>. Valid field names are user_id, name, username and email, where name maps to claims field username, and username maps to claims field preferred username"`
@@ -505,7 +501,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		})
 	}()
 
-	atc.EnableResourceCausality = cmd.FeatureFlags.EnableResourceCausality
 	cmd.publishCheckIntervals(logger)
 	atc.DisableRedactSecrets = cmd.DisableRedactSecrets
 

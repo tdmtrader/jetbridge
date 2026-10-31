@@ -853,9 +853,9 @@ jobs:
 			}
 		})
 
-		// 3.19 — Version causality: /versions/:id/input_to and /output_of
-		It("tracks version causality via API", func() {
-			pipelineFile := writePipelineFile("versions-causality.yml", `
+		// 3.19 — /versions/:id/input_to lists the builds a version fed
+		It("lists the builds a version was input to via API", func() {
+			pipelineFile := writePipelineFile("versions-input-to.yml", `
 resources:
 - name: causal-res
   type: mock
@@ -898,15 +898,16 @@ jobs:
 			}
 			Expect(versionID).ToNot(Equal(0), "should find the injected version")
 
-			By("querying version causality via API")
+			By("querying the version's input_to via API")
 			path := fmt.Sprintf("/api/v1/teams/main/pipelines/%s/resources/causal-res/versions/%d/input_to",
 				pipelineName, versionID)
-			var builds []json.RawMessage
+			var builds []struct {
+				JobName string `json:"job_name"`
+			}
 			apiGetJSON(path, &builds)
 
-			// The response should be a JSON array — may contain the causal-job build or be empty
-			// if causality tracking isn't enabled
-			Expect(builds).ToNot(BeNil(), "response should be a JSON array")
+			Expect(builds).To(HaveLen(1), "the one build that consumed the version")
+			Expect(builds[0].JobName).To(Equal("causal-job"))
 		})
 	})
 })

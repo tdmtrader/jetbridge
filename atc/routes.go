@@ -42,22 +42,20 @@ const (
 	CheckResourceWebHook      = "CheckResourceWebHook"
 	CheckResourceType         = "CheckResourceType"
 
-	ListResourceVersions           = "ListResourceVersions"
-	ClearResourceVersions          = "ClearResourceVersions"
-	CopyResourceVersions           = "CopyResourceVersions"
-	ListDeprecatedScopes           = "ListDeprecatedScopes"
-	ClearResourceTypeVersions      = "ClearResourceTypeVersions"
-	GetResourceVersion             = "GetResourceVersion"
-	EnableResourceVersion          = "EnableResourceVersion"
-	DisableResourceVersion         = "DisableResourceVersion"
-	PinResourceVersion             = "PinResourceVersion"
-	UnpinResource                  = "UnpinResource"
-	SetPinCommentOnResource        = "SetPinCommentOnResource"
-	ListBuildsWithVersionAsInput   = "ListBuildsWithVersionAsInput"
-	ListBuildsWithVersionAsOutput  = "ListBuildsWithVersionAsOutput"
-	ClearResourceCache             = "ClearResourceCache"
-	GetDownstreamResourceCausality = "GetDownstreamResourceCausality"
-	GetUpstreamResourceCausality   = "GetUpstreamResourceCausality"
+	ListResourceVersions          = "ListResourceVersions"
+	ClearResourceVersions         = "ClearResourceVersions"
+	CopyResourceVersions          = "CopyResourceVersions"
+	ListDeprecatedScopes          = "ListDeprecatedScopes"
+	ClearResourceTypeVersions     = "ClearResourceTypeVersions"
+	GetResourceVersion            = "GetResourceVersion"
+	EnableResourceVersion         = "EnableResourceVersion"
+	DisableResourceVersion        = "DisableResourceVersion"
+	PinResourceVersion            = "PinResourceVersion"
+	UnpinResource                 = "UnpinResource"
+	SetPinCommentOnResource       = "SetPinCommentOnResource"
+	ListBuildsWithVersionAsInput  = "ListBuildsWithVersionAsInput"
+	ListBuildsWithVersionAsOutput = "ListBuildsWithVersionAsOutput"
+	ClearResourceCache            = "ClearResourceCache"
 
 	ListAllPipelines                = "ListAllPipelines"
 	ListPipelines                   = "ListPipelines"
@@ -203,9 +201,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/pin_comment", Method: "PUT", Name: SetPinCommentOnResource},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/input_to", Method: "GET", Name: ListBuildsWithVersionAsInput},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/output_of", Method: "GET", Name: ListBuildsWithVersionAsOutput},
-	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/downstream", Method: "GET", Name: GetDownstreamResourceCausality},
-	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/upstream", Method: "GET", Name: GetUpstreamResourceCausality},
-	// {Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/causality", Method: "GET", Name: GetResourceCausality},
 
 	{Path: "/api/v1/cli", Method: "GET", Name: DownloadCLI},
 	{Path: "/api/v1/info", Method: "GET", Name: GetInfo},

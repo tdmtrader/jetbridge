@@ -62,9 +62,9 @@ var _ = Describe("anonymous Run capabilities", func() {
 			Expect(comparableHeaders(afterResponse.Header)).To(Equal(comparableHeaders(beforeResponse.Header)), name)
 		}
 
-		// (i) The whole info body, not only its feature_flags object.
-		// atc.Info has seven top-level fields, and an eighth is the obvious
-		// way to satisfy a narrow reading of this while violating it.
+		// (i) The whole info body. atc.Info has six top-level fields, and a
+		// seventh is the obvious way to satisfy a narrow reading of this
+		// while violating it.
 		Expect(string(after[atc.GetInfo].Body)).To(Equal(string(before[atc.GetInfo].Body)))
 		Expect(before[atc.GetInfo].Status).To(Equal(http.StatusOK))
 

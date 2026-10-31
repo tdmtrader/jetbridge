@@ -15,7 +15,6 @@ func (s *Server) Info(w http.ResponseWriter, r *http.Request) {
 		WorkerVersion:    s.workerVersion,
 		ExternalURL:      s.externalURL,
 		ClusterName:      s.clusterName,
-		FeatureFlags:     atc.FeatureFlags(),
 		JetBridgeVersion: s.jetBridgeVersion,
 		ConcourseVersion: s.concourseVersion,
 	})

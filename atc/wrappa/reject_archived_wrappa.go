@@ -74,8 +74,6 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ListResources,
 			atc.ListResourceTypes,
 			atc.ListResourceVersions,
-			atc.GetDownstreamResourceCausality,
-			atc.GetUpstreamResourceCausality,
 			atc.GetResourceVersion,
 			atc.CreateBuild,
 			atc.GetContainer,

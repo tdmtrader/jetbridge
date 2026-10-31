@@ -48,8 +48,6 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.GetResource,
 		atc.ListBuildsWithVersionAsInput,
 		atc.ListBuildsWithVersionAsOutput,
-		atc.GetDownstreamResourceCausality,
-		atc.GetUpstreamResourceCausality,
 		atc.GetResourceVersion,
 		atc.ListResources,
 		atc.ListResourceTypes,

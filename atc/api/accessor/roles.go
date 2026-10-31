@@ -54,8 +54,6 @@ var DefaultRoles = map[string]string{
 	atc.PinResourceVersion:              OperatorRole,
 	atc.ListBuildsWithVersionAsInput:    ViewerRole,
 	atc.ListBuildsWithVersionAsOutput:   ViewerRole,
-	atc.GetDownstreamResourceCausality:  ViewerRole,
-	atc.GetUpstreamResourceCausality:    ViewerRole,
 	atc.ClearResourceCache:              OperatorRole,
 	atc.CopyResourceVersions:            OperatorRole,
 	atc.ListDeprecatedScopes:            ViewerRole,

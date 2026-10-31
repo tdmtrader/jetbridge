@@ -30,11 +30,8 @@ import (
 )
 
 var (
-	externalURL      = "https://example.com"
-	clusterName      = "Test Cluster"
-	featureFlagsJson = ` {
-	"resource_causality": false
-}`
+	externalURL = "https://example.com"
+	clusterName = "Test Cluster"
 
 	workerRuntime         *apiWorkerRuntime
 	scriptedAccess        *apiAccess
