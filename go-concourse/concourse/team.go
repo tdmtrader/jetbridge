@@ -81,7 +81,6 @@ type Team interface {
 
 	ListContainers(queryList map[string]string) ([]atc.Container, error)
 	GetContainer(id string) (atc.Container, error)
-	ListVolumes() ([]atc.Volume, error)
 	CreateBuild(plan atc.Plan) (atc.Build, error)
 	Builds(page Page) ([]atc.Build, Pagination, error)
 	OrderingPipelines(pipelineNames []string) error

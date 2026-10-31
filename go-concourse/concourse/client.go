@@ -19,8 +19,6 @@ type Client interface {
 	ListBuildArtifacts(buildID string) ([]atc.WorkerArtifact, error)
 	AbortBuild(buildID string) error
 	BuildPlan(buildID int) (atc.PublicBuildPlan, bool, error)
-	SaveWorker(atc.Worker, *time.Duration) (*atc.Worker, error)
-	ListWorkers() ([]atc.Worker, error)
 	GetInfo() (atc.Info, error)
 	GetCLIReader(arch, platform string) (io.ReadCloser, http.Header, error)
 	ListPipelines() ([]atc.Pipeline, error)
