@@ -169,17 +169,6 @@ func newVersionsAPIFixture(ref atc.PipelineRef, config atc.Config) *versionsAPIF
 	}
 }
 
-func (fixture *versionsAPIFixture) updatePipeline(config atc.Config) {
-	GinkgoHelper()
-
-	pipeline, _, err := fixture.team.SavePipeline(
-		fixture.ref, config, fixture.pipeline.ConfigVersion(), false,
-	)
-	Expect(err).NotTo(HaveOccurred())
-	fixture.pipeline = pipeline
-	fixture.scenario.Pipeline = pipeline
-}
-
 func (fixture *versionsAPIFixture) resource(name string) db.Resource {
 	GinkgoHelper()
 
