@@ -157,14 +157,6 @@ func newEmptyResource(conn DbConn, lockFactory lock.LockFactory) *resource {
 	return &resource{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
 }
 
-type ResourceNotFoundError struct {
-	ID int
-}
-
-func (e ResourceNotFoundError) Error() string {
-	return fmt.Sprintf("resource '%d' not found", e.ID)
-}
-
 type Resources []Resource
 
 func (resources Resources) Lookup(name string) (Resource, bool) {
