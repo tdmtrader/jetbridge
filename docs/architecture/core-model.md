@@ -161,8 +161,9 @@ then deletes its executions.
   The purge also releases the Hangar claims the team's runs held, leaving the
   claim rows as Hangar's tombstones.
 - The one narrower exception is check collection: under its own
-  transaction-local allowance it may delete a closed check or image get
-  execution of a completed run check build, whose witnesses go with it.
+  transaction-local allowance it may delete a closed check execution of a
+  completed run check build (or a closed get an older check build left
+  behind fetching its image), whose witnesses go with it.
   Task and put evidence, any job build's evidence, open executions, anything
   a run output start names, and a lone witness are refused.
 - Run retention counts are positive; run status is one of the five.

@@ -278,7 +278,7 @@ from files, interpolated, or checked against secret stores by MCP.
 The shared strict API is
 `PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/config/conditional`, with
 `X-Concourse-Config-Version` in `0..2147483647`. It retains canonical `SaveConfig`
-role, policy and audit authority. A typed HTTP 409 code `config_version_conflict`
+role authority. A typed HTTP 409 code `config_version_conflict`
 distinguishes a precondition failure from other conflicts. The Go client exposes
 `SetPipelineConfigConditional`; fly opts in with `--strict-config-write` and uses
 its fetched version. Existing `/config`, internal saves and default fly behavior

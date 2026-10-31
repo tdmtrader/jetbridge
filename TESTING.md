@@ -55,7 +55,7 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 |------|-------------|---------|
 | Go 1.25+ | All tests | [go.dev](https://go.dev/dl/) |
 | Ginkgo v2 | All Ginkgo suites | `go install github.com/onsi/ginkgo/v2/ginkgo@latest` |
-| PostgreSQL 14+ | Unit, integration tests | `brew install postgresql@14` |
+| PostgreSQL 14+ server binaries on `PATH` | Unit tests (each runner starts its own `postgres`) | `brew install postgresql@14` |
 | Docker | K8s tests | [docker.com](https://www.docker.com/products/docker-desktop/) |
 | Helm | K8s tests | `brew install helm` |
 | kubectl | K8s tests | `brew install kubectl` |
@@ -64,8 +64,8 @@ ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_beh
 
 ### Tests hang or timeout
 
-- **PostgreSQL not running:** Unit and integration tests need Postgres. Check with `pg_isready`.
-- **Port conflicts:** ATC integration tests bind to ports `9090+N`. Kill any conflicting processes.
+- **PostgreSQL binaries missing:** the unit tests start their own `postgres` from `PATH`; check with `command -v initdb postgres`. No running server is needed.
+- **Port conflicts:** the in-process ATC suite (`atc/integration`) binds to ports `9090+N`. Kill any conflicting processes.
 - **K8s tests slow:** K3s container startup takes 2-5 minutes. First run is always slower.
 
 ### Flaky K8s behavioral tests

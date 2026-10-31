@@ -242,7 +242,7 @@ Default mappings:
 | `semver` | `concourse/semver-resource` |
 | `mock` | `concourse/mock-resource` |
 
-Source: `atc/worker/jetbridge/config.go` (DefaultResourceTypeImages, MergeResourceTypeImages)
+Source: `atc/imageresolver/images.go` (DefaultResourceTypeImages, MergeResourceTypeImages)
 
 ### Resource type images
 

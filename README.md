@@ -143,12 +143,9 @@ Key file: [`reaper.go`](atc/worker/jetbridge/reaper.go)
 
 | Test file | Scope |
 |-----------|-------|
-| `*_test.go` (unit) | one per source file above — `container_test.go`, `executor_test.go`, `podname_test.go`, `registrar_test.go`, `storage_daemonset_test.go`, `daemon_client_test.go`, `config_test.go`, `errors_test.go`, `reaper_test.go`, `process_test.go`, `volume_test.go`, `watch_test.go`, `worker_test.go` |
-| `live_e2e_test.go` | End-to-end against a real K8s cluster |
-| `live_sidecar_test.go` | Sidecar injection in a real cluster |
-| `live_sidecar_logstream_test.go` | Log streaming against a real cluster |
-| `podname_integration_test.go` | Pod name generation integration |
-| `artifact_integration_test.go` | Artifact store integration |
+| `*_test.go` (unit) | Ginkgo specs beside the source: pod admission and step pod grants, exec and supervisor recovery, exact executions, the artifact DaemonSet volume, sidecars and their log writers, the reaper and the sweeper |
+| `live_*_test.go` (`-tags live`) | Against the deployed cluster: end-to-end builds, sidecars and their log streams, task caches, Hangar flows, credential managers, resilience and the deployed feature manifest |
+| `behavioral_*_test.go`, `*_restored_test.go` | Behavioural specs restored from the retired Go behavioural suite |
 
 ---
 
@@ -216,6 +213,7 @@ config:
 - BaggageClaim volume manager
 - TSA (SSH-based worker registration)
 - Deprecated CLI flags and stale references
+- Upstream surfaces nothing in the fork consumed: the API audit log, the syslog drainer, the OPA policy check, the telemetry ping, Let's Encrypt, CCTray (`cc.xml`) and `fly checklist`, the runtime log-level route, the scheduler's `versions-db` export, prototypes and the `run:` step, the Jaeger/Honeycomb/Stackdriver trace exporters (OTLP stays), the `global_resources` and `build_rerun` feature flags, and the pre-sky `fly login` flow
 
 ### Unchanged
 
@@ -233,7 +231,7 @@ config:
 - Task step sidecars (inline, file reference, or `image_artifact`)
 - `skip_download` on get steps (resolve version without downloading)
 - Configurable base resource types (`--kubernetes-base-resource-type name=image`)
-- Direct image references for resource types (`image_ref` field)
+- Direct image references for resource types (`image:` on a `resource_types` entry; every image is a registry-image reference)
 - Health endpoint (`GET /api/v1/health`) for K8s probes
 - OpenTelemetry tracing over OTLP
 - Deterministic pod naming
