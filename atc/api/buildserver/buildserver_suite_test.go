@@ -73,21 +73,6 @@ func createBuild(team db.Team) db.Build {
 	return build
 }
 
-// startedBuildForAPI returns the BuildForAPI view of a build started with plan,
-// which is what puts a public plan and a schema on it.
-func startedBuildForAPI(team db.Team, plan atc.Plan) db.BuildForAPI {
-	build := createBuild(team)
-
-	started, err := build.Start(plan)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(started).To(BeTrue())
-
-	forAPI, found, err := buildFactory.BuildForAPI(build.ID())
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	return forAPI
-}
-
 func buildForAPI(build db.Build) db.BuildForAPI {
 	GinkgoHelper()
 
