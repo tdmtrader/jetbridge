@@ -33,6 +33,17 @@ var _ = Describe("set-team", func() {
 		fmt.Fprintf(stdin, "n\r")
 	}
 
+	// interruptAtPrompt sends SIGINT once the confirmation prompt has rendered.
+	// set-team has no signal handler of its own: SIGINT is caught only by the
+	// prompt (bubbletea registers it at the start of Program.Run, before its
+	// first frame, and turns it into ErrInterrupted, so fly exits 1). A SIGINT
+	// that lands any earlier meets the Go runtime's default disposition and the
+	// process dies with 130 -- the race CI hit under -p.
+	interruptAtPrompt := func(sess *gexec.Session) {
+		Eventually(sess.Out).Should(gbytes.Say(`apply team configuration\? \[yN\]`))
+		sess.Interrupt()
+	}
+
 	Context("using a config file", func() {
 		Describe("config validation", func() {
 			Context("unsupported connectors", func() {
@@ -75,7 +86,7 @@ var _ = Describe("set-team", func() {
 
 						Eventually(sess.Out).ShouldNot(gbytes.Say("role viewer:"))
 
-						sess.Interrupt()
+						interruptAtPrompt(sess)
 						Eventually(sess).Should(gexec.Exit(1))
 					})
 				})
@@ -98,8 +109,8 @@ var _ = Describe("set-team", func() {
 
 						Eventually(sess.Out).ShouldNot(gbytes.Say("role viewer:"))
 
-						sess.Interrupt()
-						Eventually(sess).Should(gexec.Exit())
+						interruptAtPrompt(sess)
+						Eventually(sess).Should(gexec.Exit(1))
 					})
 				})
 			})
@@ -135,7 +146,7 @@ var _ = Describe("set-team", func() {
 					Eventually(sess.Out).Should(gbytes.Say("groups:"))
 					Eventually(sess.Out).Should(gbytes.Say("none"))
 
-					sess.Interrupt()
+					interruptAtPrompt(sess)
 					Eventually(sess).Should(gexec.Exit(1))
 				})
 			})
@@ -169,7 +180,7 @@ var _ = Describe("set-team", func() {
 					Eventually(sess.Out).Should(gbytes.Say("groups:"))
 					Eventually(sess.Out).Should(gbytes.Say("none"))
 
-					sess.Interrupt()
+					interruptAtPrompt(sess)
 					Eventually(sess).Should(gexec.Exit(1))
 				})
 			})
@@ -398,7 +409,7 @@ var _ = Describe("set-team", func() {
 					Eventually(sess.Out).Should(gbytes.Say("groups:"))
 					Eventually(sess.Out).Should(gbytes.Say("none"))
 
-					sess.Interrupt()
+					interruptAtPrompt(sess)
 					Eventually(sess).Should(gexec.Exit(1))
 				})
 			})
@@ -419,7 +430,7 @@ var _ = Describe("set-team", func() {
 					Eventually(sess.Out).Should(gbytes.Say("groups:"))
 					Eventually(sess.Out).Should(gbytes.Say("none"))
 
-					sess.Interrupt()
+					interruptAtPrompt(sess)
 					Eventually(sess).Should(gexec.Exit(1))
 				})
 			})
