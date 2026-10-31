@@ -13,12 +13,6 @@ Feature: A Run retains the definition that was actually admitted
     Then the Run still returns its original template and materialized definition
 
   @core-review
-  Scenario: Database encryption rotation preserves the admitted definition
-    Given a Run admitted from a parameterized template
-    When the database encrypts its data and rotates the encryption key
-    Then the Run still returns its original template and materialized definition
-
-  @core-review
   Scenario: A changed definition cannot pass its original attestation
     Given a Run admitted from a parameterized template
     When the stored definition bytes are corrupted

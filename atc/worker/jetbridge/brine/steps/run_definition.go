@@ -2,8 +2,6 @@ package steps
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,13 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
-	"github.com/concourse/concourse/atc/db/encryption"
-	"github.com/concourse/concourse/atc/db/migration"
 )
 
 type RetainedRunDefinition struct {
@@ -73,45 +68,6 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 				return in, fmt.Errorf("the completed payload was not reclaimed")
 			}
 			return in, nil
-		}),
-		brine.DefineMap[RetainedRunDefinition, RetainedRunDefinition]("the database encrypts its data and rotates the encryption key", func(in RetainedRunDefinition, _ brine.Params, _ *brine.Recorder) (RetainedRunDefinition, error) {
-			first, err := definitionEncryptionKey("AES256Key-32Characters1234567890")
-			if err != nil {
-				return in, err
-			}
-			second, err := definitionEncryptionKey("AES256Key-32Characters9564567123")
-			if err != nil {
-				return in, err
-			}
-			sqlConn := in.DB.runner.OpenSingleton()
-			sqlConn.SetMaxOpenConns(4)
-			defer sqlConn.Close()
-			migrator := migration.NewMigrator(lagertest.NewTestLogger("run-definition-encryption"), sqlConn, in.DB.LockFactory)
-			version, err := migrator.SupportedVersion()
-			if err != nil {
-				return in, err
-			}
-			if err := migrator.Migrate(first, nil, version); err != nil {
-				return in, err
-			}
-			if err := migrator.Migrate(second, first, version); err != nil {
-				return in, err
-			}
-			keyed, err := db.NewConn("brine-definition", in.DB.runner.OpenSingleton(), in.DB.runner.DataSourceName(), first, second)
-			if err != nil {
-				return in, err
-			}
-			defer keyed.Close()
-			var nonce *string
-			if err := keyed.QueryRow(`SELECT nonce FROM pipeline_run_definitions WHERE run_id = $1`, in.Creation.Run.ID()).Scan(&nonce); err != nil {
-				return in, err
-			}
-			if nonce == nil {
-				return in, fmt.Errorf("retained definition was left unencrypted")
-			}
-			definition, err := readDefinition(keyed, in)
-			in.Read = &definition
-			return in, err
 		}),
 		brine.DefineMap[RetainedRunDefinition, RetainedRunDefinition]("the stored definition bytes are corrupted", func(in RetainedRunDefinition, _ brine.Params, _ *brine.Recorder) (RetainedRunDefinition, error) {
 			_, err := in.DB.Conn.Exec(`UPDATE pipeline_run_definitions SET config = replace(config, 'hello', 'corrupted') WHERE run_id = $1`, in.Creation.Run.ID())
@@ -244,16 +200,4 @@ func retainedDefinitionFixture(res brine.Resources, rollback bool) (RetainedRunD
 	in.Creation = creation
 	in.Original = atc.RunDefinition{Template: config, Materialized: creation.Config}
 	return in, nil
-}
-
-func definitionEncryptionKey(value string) (*encryption.Key, error) {
-	block, err := aes.NewCipher([]byte(value))
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	return encryption.NewKey(aead), nil
 }

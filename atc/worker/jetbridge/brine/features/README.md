@@ -8,6 +8,21 @@ The vocabulary guards require every step definition to be used, every scenario
 step to resolve, and no step line to match two definitions. The active-corpus
 guard also requires runnable features in the local and live tiers.
 
+## Removed scenario 2026-10-30: database encryption rotation
+
+`--encryption-key` is required and `--old-encryption-key` is gone: there is
+no key rotation and no plaintext mode, and a cluster that needs a different
+key restores from a backup taken under it. run-definition.feature's "Database
+encryption rotation preserves the admitted definition" migrated the database
+twice (plaintext to key one, key one to key two) and read the retained
+definition back under key two; the step "the database encrypts its data and
+rotates the encryption key" left with it. One scenario leaves; the local floor
+moves 919 -> 918. What remains of the guarantee is pinned in Go: the migrator
+refuses a run without a key and encrypts plaintext rows under it
+(`atc/db/migration/encryption_test.go`), and a connection without a key is
+refused (`atc/db.NewConn`). The reclamation and corruption scenarios still
+show the retained definition surviving and refusing.
+
 ## Removed row 2026-10-30: the "s2" artifact-handoff encoding
 
 gzip is the one stream codec (`atc/compression` keeps only gzip; the
