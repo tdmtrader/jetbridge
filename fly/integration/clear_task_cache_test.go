@@ -113,10 +113,17 @@ var _ = Describe("clear-task-cache", func() {
 		})
 
 		Context("when the task step exists", func() {
-			JustBeforeEach(func() {
+			// BeforeEach, not JustBeforeEach: the outer JustBeforeEach starts fly,
+			// and under -n it sends the DELETE at once, before a later
+			// JustBeforeEach could register the handler. The query is read at
+			// request time because "and a cache path is specified" extends
+			// expectedQueryParams in a BeforeEach that runs after this one.
+			BeforeEach(func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("DELETE", expectedURL, strings.Join(expectedQueryParams, "&")),
+						func(w http.ResponseWriter, r *http.Request) {
+							ghttp.VerifyRequest("DELETE", expectedURL, strings.Join(expectedQueryParams, "&"))(w, r)
+						},
 						ghttp.RespondWithJSONEncoded(http.StatusOK, atc.ClearTaskCacheResponse{CachesRemoved: 1}),
 					),
 				)
@@ -161,7 +168,7 @@ var _ = Describe("clear-task-cache", func() {
 				args = append(args, "--team", "other-team")
 			})
 
-			JustBeforeEach(func() {
+			BeforeEach(func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/api/v1/teams/other-team"),
@@ -184,7 +191,7 @@ var _ = Describe("clear-task-cache", func() {
 		})
 
 		Context("and the task step does not exist", func() {
-			JustBeforeEach(func() {
+			BeforeEach(func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("DELETE", expectedURL, strings.Join(expectedQueryParams, "&")),
@@ -201,7 +208,7 @@ var _ = Describe("clear-task-cache", func() {
 		})
 
 		Context("and the api returns an unexpected status code", func() {
-			JustBeforeEach(func() {
+			BeforeEach(func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("DELETE", expectedURL, strings.Join(expectedQueryParams, "&")),
