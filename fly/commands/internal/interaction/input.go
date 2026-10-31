@@ -12,6 +12,10 @@ import (
 
 // Prompts a user to enter a string and returns the entered string
 func Input(prompt string, isSensitive bool) (string, error) {
+	if err := errUnanswerable(prompt); err != nil {
+		return "", err
+	}
+
 	prg := InputProgram(prompt, isSensitive)
 	m, err := prg.Run()
 	if err != nil {

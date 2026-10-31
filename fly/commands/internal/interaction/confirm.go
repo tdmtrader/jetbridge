@@ -14,6 +14,10 @@ import (
 // Asks a user to confirm an action before taking it. Accepts all variants of
 // y/n/yes/no and takes a custom prompt. Defaults to "No".
 func Confirm(prompt string) (bool, error) {
+	if err := errUnanswerable(prompt); err != nil {
+		return false, err
+	}
+
 	i := textinput.New()
 	i.Prompt = fmt.Sprintf("%s [yN]: ", prompt)
 	i.PromptStyle = lipgloss.NewStyle()

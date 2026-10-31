@@ -223,6 +223,21 @@ var _ = Describe("set-team", func() {
 					Eventually(sess).Should(gexec.Exit(1))
 				})
 			})
+
+			Context("when stdin is /dev/null", func() {
+				It("fails clearly without prompting or applying", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess).Should(gexec.Exit(1))
+					Expect(sess.Err).To(gbytes.Say(`cannot prompt "apply team configuration\?": stdin is not a terminal`))
+					Expect(sess.Err).To(gbytes.Say(`--non-interactive`))
+					Expect(sess.Out).NotTo(gbytes.Say(`\[yN\]`))
+					for _, request := range atcServer.ReceivedRequests() {
+						Expect(request.Method).NotTo(Equal(http.MethodPut))
+					}
+				})
+			})
 		})
 
 		Describe("sending", func() {

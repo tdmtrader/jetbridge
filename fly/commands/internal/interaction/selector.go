@@ -34,6 +34,10 @@ func (s selectModel) UserCancelled() bool { return s.UserCancelled() }
 var blankStyle = lipgloss.NewStyle()
 
 func Select(prompt string, items []list.Item) (any, error) {
+	if err := errUnanswerable(prompt); err != nil {
+		return nil, err
+	}
+
 	l := list.New(items, itemDelegate{}, 20, 15)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
