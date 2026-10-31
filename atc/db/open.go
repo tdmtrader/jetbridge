@@ -20,7 +20,7 @@ import (
 
 type DbConn interface {
 	Bus() NotificationsBus
-	EncryptionStrategy() encryption.Strategy
+	EncryptionKey() *encryption.Key
 
 	Ping() error
 	Driver() driver.Driver
@@ -58,12 +58,16 @@ type Tx interface {
 	QueryRowContext(context.Context, string, ...any) squirrel.RowScanner
 	Rollback() error
 	Stmt(*sql.Stmt) *sql.Stmt
-	EncryptionStrategy() encryption.Strategy
+	EncryptionKey() *encryption.Key
 }
 
-func Open(logger lager.Logger, driver, dsn string, newKey, oldKey *encryption.Key, name string, lockFactory lock.LockFactory) (DbConn, error) {
+// Open migrates the database to the current schema under key and returns a
+// connection that reads and writes the encrypted columns with it. Every
+// caller supplies the key: the web is started with --encryption-key, and the
+// test helpers hand in a fixed one.
+func Open(logger lager.Logger, driver, dsn string, key *encryption.Key, name string, lockFactory lock.LockFactory) (DbConn, error) {
 	for {
-		sqlDB, err := migration.NewOpenHelper(logger, driver, dsn, lockFactory, newKey, oldKey).Open()
+		sqlDB, err := migration.NewOpenHelper(logger, driver, dsn, lockFactory, key).Open()
 		if err != nil {
 			if shouldRetry(err) {
 				logger.Error("failed-to-open-db-retrying", err)
@@ -74,11 +78,17 @@ func Open(logger lager.Logger, driver, dsn string, newKey, oldKey *encryption.Ke
 			return nil, err
 		}
 
-		return NewConn(name, sqlDB, dsn, oldKey, newKey)
+		return NewConn(name, sqlDB, dsn, key)
 	}
 }
 
-func NewConn(name string, sqlDB *sql.DB, dsn string, oldKey, newKey *encryption.Key) (DbConn, error) {
+// NewConn refuses a nil key (encryption.ErrNoKey): every row in an encrypted
+// column is ciphertext, so a keyless connection could read none of them.
+func NewConn(name string, sqlDB *sql.DB, dsn string, key *encryption.Key) (DbConn, error) {
+	if key == nil {
+		return nil, encryption.ErrNoKey
+	}
+
 	// only used for the LISTEN/NOTIFY commands
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
@@ -87,18 +97,11 @@ func NewConn(name string, sqlDB *sql.DB, dsn string, oldKey, newKey *encryption.
 
 	listener := NewPgxListener(pool)
 
-	var strategy encryption.Strategy
-	if newKey != nil {
-		strategy = newKey
-	} else {
-		strategy = encryption.NewNoEncryption()
-	}
-
 	return &db{
 		DB: sqlDB,
 
 		bus:        NewNotificationsBus(listener, sqlDB),
-		encryption: strategy,
+		encryption: key,
 		name:       name,
 	}, nil
 }
@@ -111,7 +114,7 @@ type db struct {
 	*sql.DB
 
 	bus        NotificationsBus
-	encryption encryption.Strategy
+	encryption *encryption.Key
 	name       string
 }
 
@@ -123,7 +126,7 @@ func (db *db) Bus() NotificationsBus {
 	return db.bus
 }
 
-func (db *db) EncryptionStrategy() encryption.Strategy {
+func (db *db) EncryptionKey() *encryption.Key {
 	return db.encryption
 }
 
@@ -154,7 +157,7 @@ func (db *db) Begin() (Tx, error) {
 		return nil, err
 	}
 
-	return &dbTx{tx, GlobalConnectionTracker.Track(), db.EncryptionStrategy()}, nil
+	return &dbTx{tx, GlobalConnectionTracker.Track(), db.EncryptionKey()}, nil
 }
 
 func (db *db) Exec(query string, args ...any) (sql.Result, error) {
@@ -184,7 +187,7 @@ func (db *db) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
 		return nil, err
 	}
 
-	return &dbTx{tx, GlobalConnectionTracker.Track(), db.EncryptionStrategy()}, nil
+	return &dbTx{tx, GlobalConnectionTracker.Track(), db.EncryptionKey()}, nil
 }
 
 func (db *db) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -211,8 +214,8 @@ func (db *db) QueryRowContext(ctx context.Context, query string, args ...any) sq
 type dbTx struct {
 	*sql.Tx
 
-	session            ConnectionSession
-	encryptionStrategy encryption.Strategy
+	session       ConnectionSession
+	encryptionKey *encryption.Key
 }
 
 // to conform to squirrel.Runner interface
@@ -234,8 +237,8 @@ func (tx *dbTx) Rollback() error {
 	return tx.Tx.Rollback()
 }
 
-func (tx *dbTx) EncryptionStrategy() encryption.Strategy {
-	return tx.encryptionStrategy
+func (tx *dbTx) EncryptionKey() *encryption.Key {
+	return tx.encryptionKey
 }
 
 // Rollback ignores errors, and should be used with defer.

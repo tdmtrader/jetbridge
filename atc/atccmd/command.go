@@ -171,8 +171,7 @@ type RunCommand struct {
 	CredentialManagement creds.CredentialManagementConfig `group:"Credential Management"`
 	CredentialManagers   creds.Managers
 
-	EncryptionKey    flag.Cipher `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database."`
-	OldEncryptionKey flag.Cipher `long:"old-encryption-key" description:"Encryption key previously used for encrypting sensitive information. If provided without a new key, data is encrypted. If provided with a new key, data is re-encrypted."`
+	EncryptionKey flag.Cipher `long:"encryption-key" required:"true" description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database. Required; every web and every migration run uses the same key, and a cluster that needs a different key restores from a backup taken under it."`
 
 	DebugBindIP   flag.IP `long:"debug-bind-ip"   default:"127.0.0.1" description:"IP address on which to listen for the pprof debugger endpoints."`
 	DebugBindPort uint16  `long:"debug-bind-port" default:"8079"      description:"Port on which to listen for the pprof debugger endpoints."`
@@ -311,8 +310,7 @@ type Migration struct {
 	logger      lager.Logger
 
 	Postgres               flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
-	EncryptionKey          flag.Cipher         `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database."`
-	OldEncryptionKey       flag.Cipher         `long:"old-encryption-key" description:"Encryption key previously used for encrypting sensitive information. If provided without a new key, data is decrypted. If provided with a new key, data is re-encrypted."`
+	EncryptionKey          flag.Cipher         `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database. Required to run migrations."`
 	MigrateToLatestVersion bool                `long:"migrate-to-latest-version" description:"Migrate to the latest migration version and exit"`
 }
 
@@ -344,48 +342,30 @@ func (m *Migration) Execute(args []string) error {
 	if m.MigrateToLatestVersion {
 		return m.migrateToLatestVersion()
 	}
-	if m.OldEncryptionKey.AEAD != nil {
-		return m.rotateEncryptionKey()
-	}
-	return errors.New("must specify one of `--migrate-to-latest-version` or `--old-encryption-key`")
+	return errors.New("must specify `--migrate-to-latest-version`")
 }
 
-func (cmd *Migration) rotateEncryptionKey() error {
-	var newKey *encryption.Key
-	var oldKey *encryption.Key
-
-	if cmd.EncryptionKey.AEAD != nil {
-		newKey = encryption.NewKey(cmd.EncryptionKey.AEAD)
+// encryptionKey is the key the migrate command was started with, or
+// encryption.ErrNoKey naming the flag when it was not.
+func (cmd *Migration) encryptionKey() (*encryption.Key, error) {
+	if cmd.EncryptionKey.AEAD == nil {
+		return nil, fmt.Errorf("--encryption-key is required to run migrations: %w", encryption.ErrNoKey)
 	}
-	if cmd.OldEncryptionKey.AEAD != nil {
-		oldKey = encryption.NewKey(cmd.OldEncryptionKey.AEAD)
-	}
+	return encryption.NewKey(cmd.EncryptionKey.AEAD), nil
+}
 
-	helper := migration.NewOpenHelper(
-		cmd.logger,
-		defaultDriverName,
-		cmd.Postgres.ConnectionString(),
-		cmd.lockFactory,
-		newKey,
-		oldKey,
-	)
-
-	version, err := helper.CurrentVersion()
+func (cmd *Migration) migrateToLatestVersion() error {
+	key, err := cmd.encryptionKey()
 	if err != nil {
 		return err
 	}
 
-	return helper.MigrateToVersion(version)
-}
-
-func (cmd *Migration) migrateToLatestVersion() error {
 	helper := migration.NewOpenHelper(
 		cmd.logger,
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
 		cmd.lockFactory,
-		nil,
-		nil,
+		key,
 	)
 
 	version, err := helper.SupportedVersion()
@@ -1701,20 +1681,11 @@ func (cmd *RunCommand) secretManager(logger lager.Logger) (creds.Secrets, error)
 	return cmd.CredentialManagement.NewSecrets(secretsFactory), nil
 }
 
-func (cmd *RunCommand) newKey() *encryption.Key {
-	var newKey *encryption.Key
-	if cmd.EncryptionKey.AEAD != nil {
-		newKey = encryption.NewKey(cmd.EncryptionKey.AEAD)
-	}
-	return newKey
-}
-
-func (cmd *RunCommand) oldKey() *encryption.Key {
-	var oldKey *encryption.Key
-	if cmd.OldEncryptionKey.AEAD != nil {
-		oldKey = encryption.NewKey(cmd.OldEncryptionKey.AEAD)
-	}
-	return oldKey
+// encryptionKey is the one key this web encrypts and decrypts database
+// columns with. --encryption-key is a required flag, so the AEAD is set by
+// the time Runner is called; validate() names the flag if it is not.
+func (cmd *RunCommand) encryptionKey() *encryption.Key {
+	return encryption.NewKey(cmd.EncryptionKey.AEAD)
 }
 
 func (cmd *RunCommand) constructWebHandler(logger lager.Logger) (http.Handler, error) {
@@ -1923,6 +1894,10 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateEncryptionKey(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	if err := cmd.validateK8sRuntime(); err != nil {
 		errs = multierror.Append(errs, err)
 	}
@@ -1942,6 +1917,16 @@ func (cmd *RunCommand) validate() error {
 	}
 
 	return errs.ErrorOrNil()
+}
+
+// validateEncryptionKey names the flag a web cannot start without. go-flags
+// refuses the command line first (the flag is required); this covers a
+// RunCommand built in code, where no parser ran.
+func (cmd *RunCommand) validateEncryptionKey() error {
+	if cmd.EncryptionKey.AEAD == nil {
+		return fmt.Errorf("--encryption-key is required, the web encrypts sensitive database columns and never stores them in plaintext: %w", encryption.ErrNoKey)
+	}
+	return nil
 }
 
 // validateJobSchedulingMaxInFlight refuses 0. The scheduler sizes its guard on
@@ -2071,7 +2056,7 @@ func (cmd *RunCommand) constructDBConn(
 	connectionName string,
 	lockFactory lock.LockFactory,
 ) (db.DbConn, error) {
-	dbConn, err := db.Open(logger.Session("db"), driverName, cmd.Postgres.ConnectionString(), cmd.newKey(), cmd.oldKey(), connectionName, lockFactory)
+	dbConn, err := db.Open(logger.Session("db"), driverName, cmd.Postgres.ConnectionString(), cmd.encryptionKey(), connectionName, lockFactory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %s", err)
 	}

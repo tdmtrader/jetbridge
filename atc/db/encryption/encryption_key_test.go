@@ -43,6 +43,14 @@ var _ = Describe("Encryption Key", func() {
 			Expect(decryptedText).To(Equal(plaintext))
 		})
 
+		Context("when the row has no nonce", func() {
+			It("reads it as plaintext, which is what a NULL nonce means", func() {
+				decryptedText, err := key.Decrypt("plaintext", nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(decryptedText).To(Equal([]byte("plaintext")))
+			})
+		})
+
 		Context("when encrypting empty text", func() {
 			It("does not error", func() {
 				By("encrypting the plaintext")

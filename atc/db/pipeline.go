@@ -388,7 +388,7 @@ func (p *pipeline) GetBuildsWithVersionAsInput(resourceID, resourceConfigVersion
 	builds := []Build{}
 	for rows.Next() {
 		build := newEmptyBuild(p.conn, p.lockFactory)
-		err = scanBuild(build, rows, p.conn.EncryptionStrategy())
+		err = scanBuild(build, rows, p.conn.EncryptionKey())
 		if err != nil {
 			return nil, err
 		}
@@ -416,7 +416,7 @@ func (p *pipeline) GetBuildsWithVersionAsOutput(resourceID, resourceConfigVersio
 	builds := []Build{}
 	for rows.Next() {
 		build := newEmptyBuild(p.conn, p.lockFactory)
-		err = scanBuild(build, rows, p.conn.EncryptionStrategy())
+		err = scanBuild(build, rows, p.conn.EncryptionKey())
 		if err != nil {
 			return nil, err
 		}
@@ -911,7 +911,7 @@ func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
 		return nil, err
 	}
 
-	encryptedPlan, nonce, err := p.conn.EncryptionStrategy().Encrypt(metadata)
+	encryptedPlan, nonce, err := p.conn.EncryptionKey().Encrypt(metadata)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
+	"github.com/concourse/concourse/atc/postgresrunner"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -48,7 +49,7 @@ var _ = Describe("Migration", func() {
 		It("Runs all the migrations", func() {
 			migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
-			err := migrator.Up(nil, nil)
+			err := migrator.Up(postgresrunner.EncryptionKey())
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
@@ -120,7 +121,7 @@ var _ = Describe("Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(migrations)).To(Equal(1))
 
-				err = migrator.Up(nil, nil)
+				err = migrator.Up(postgresrunner.EncryptionKey())
 				Expect(err).NotTo(HaveOccurred())
 
 				By("Creating the table in the database")
@@ -144,7 +145,7 @@ var _ = Describe("Migration", func() {
 					},
 				})
 
-				err := migrator.Up(nil, nil)
+				err := migrator.Up(postgresrunner.EncryptionKey())
 				Expect(err).NotTo(HaveOccurred())
 
 				By("Not creating the database referenced in the migration")
@@ -168,7 +169,7 @@ var _ = Describe("Migration", func() {
 					},
 				})
 
-				err := migrator.Up(nil, nil)
+				err := migrator.Up(postgresrunner.EncryptionKey())
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -192,7 +193,7 @@ var _ = Describe("Migration", func() {
 						},
 					})
 
-					err := migrator.Up(nil, nil)
+					err := migrator.Up(postgresrunner.EncryptionKey())
 					Expect(err).To(HaveOccurred())
 					Expect(err.Error()).To(ContainSubstring("failed and was rolled back"))
 					ExpectDatabaseMigrationVersionToEqual(migrator, 1000)
@@ -209,10 +210,10 @@ var _ = Describe("Migration", func() {
 					},
 				})
 
-				err := migrator.Up(nil, nil)
+				err := migrator.Up(postgresrunner.EncryptionKey())
 				Expect(err).NotTo(HaveOccurred())
 
-				err = migrator.Up(nil, nil)
+				err = migrator.Up(postgresrunner.EncryptionKey())
 				Expect(err).NotTo(HaveOccurred())
 
 				ExpectDatabaseMigrationVersionToEqual(migrator, 1000)
@@ -257,7 +258,7 @@ var _ = Describe("Migration", func() {
 
 		It("builds a fresh database from the earliest migration", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 			Expect(tableExists("baseline_table")).To(BeTrue())
 			Expect(tableExists("next_table")).To(BeTrue())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
@@ -266,7 +267,7 @@ var _ = Describe("Migration", func() {
 		It("treats a database at or past the baseline as having it", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 			Expect(tableExists("baseline_table")).To(BeFalse())
 			Expect(tableExists("next_table")).To(BeTrue())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
@@ -275,7 +276,7 @@ var _ = Describe("Migration", func() {
 		It("refuses a database older than the baseline, naming the release that can upgrade it", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 999)
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
-			err := migrator.Up(nil, nil)
+			err := migrator.Up(postgresrunner.EncryptionKey())
 			Expect(err).To(MatchError("database is at migration 999, older than this release's baseline migration 1000: upgrade it with " + migration.LastReleaseBeforeBaseline + " first"))
 			Expect(tableExists("baseline_table")).To(BeFalse())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 999)
@@ -285,7 +286,7 @@ var _ = Describe("Migration", func() {
 			func(setup func(), table string, version int) {
 				setup()
 				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
-				err := migrator.Up(nil, nil)
+				err := migrator.Up(postgresrunner.EncryptionKey())
 				Expect(err).To(MatchError(fmt.Sprintf("database records migration %d in %s, which predates this release's baseline migration 1000: upgrade it with %s first", version, table, migration.LastReleaseBeforeBaseline)))
 				Expect(tableExists(table)).To(BeTrue())
 				Expect(tableExists("migrations_history")).To(BeFalse())
@@ -299,13 +300,13 @@ var _ = Describe("Migration", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 			SetupSchemaMigrationsTable(db, 999, false)
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 		})
 
 		It("refuses to migrate to a version older than the baseline", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
-			err := migrator.Migrate(nil, nil, 999)
+			err := migrator.Migrate(postgresrunner.EncryptionKey(), 999)
 			Expect(err).To(MatchError("cannot migrate to 999: it predates this release's baseline migration 1000"))
 			Expect(tableExists("migrations_history")).To(BeFalse())
 		})
@@ -331,19 +332,19 @@ var _ = Describe("Migration", func() {
 
 		It("reverses migrations that have a down", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, forwardOnlyFS())
-			Expect(migrator.Up(nil, nil)).To(Succeed())
-			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
+			Expect(migrator.Migrate(postgresrunner.EncryptionKey(), 1001)).To(Succeed())
 			Expect(tableExists("second_table")).To(BeFalse())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 		})
 
 		It("refuses to reverse a migration without a down before reversing anything", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, forwardOnlyFS())
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 			var historyBefore int
 			Expect(db.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyBefore)).To(Succeed())
 
-			err := migrator.Migrate(nil, nil, 1000)
+			err := migrator.Migrate(postgresrunner.EncryptionKey(), 1000)
 			Expect(err).To(MatchError("migration 1001 is forward-only: restore the pre-upgrade database backup instead"))
 			Expect(tableExists("second_table")).To(BeTrue(), "the reversible migration above it was not reversed either")
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1002)
@@ -357,8 +358,8 @@ var _ = Describe("Migration", func() {
 				"1000_first.up.sql":   &fstest.MapFile{Data: []byte(`CREATE TABLE first_table (id integer);`)},
 				"1000_first.down.sql": &fstest.MapFile{Data: []byte(`DROP TABLE first_table;`)},
 			})
-			Expect(migrator.Up(nil, nil)).To(Succeed())
-			Expect(migrator.Migrate(nil, nil, 0)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
+			Expect(migrator.Migrate(postgresrunner.EncryptionKey(), 0)).To(Succeed())
 			Expect(tableExists("first_table")).To(BeFalse())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 0)
 		})
@@ -376,10 +377,10 @@ var _ = Describe("Migration", func() {
 		It("Downgrades to a given version", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, reversibleFS())
 
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 
-			Expect(migrator.Migrate(nil, nil, 1000)).To(Succeed())
+			Expect(migrator.Migrate(postgresrunner.EncryptionKey(), 1000)).To(Succeed())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1000)
 
 			var columnExists bool
@@ -390,15 +391,15 @@ var _ = Describe("Migration", func() {
 		It("Doesn't fail if already at the requested version", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, reversibleFS())
 
-			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
-			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
+			Expect(migrator.Migrate(postgresrunner.EncryptionKey(), 1001)).To(Succeed())
+			Expect(migrator.Migrate(postgresrunner.EncryptionKey(), 1001)).To(Succeed())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 		})
 
 		It("Locks the database so multiple consumers don't run downgrade at the same time", func() {
 			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, reversibleFS())
 
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 
 			var wg sync.WaitGroup
 			wg.Add(3)
@@ -417,7 +418,7 @@ func TryRunUpAndVerifyResult(db *sql.DB, migrator migration.Migrator, version in
 	defer GinkgoRecover()
 	defer wg.Done()
 
-	err := migrator.Up(nil, nil)
+	err := migrator.Up(postgresrunner.EncryptionKey())
 	Expect(err).NotTo(HaveOccurred())
 
 	ExpectDatabaseMigrationVersionToEqual(migrator, version)
@@ -427,7 +428,7 @@ func TryRunMigrateAndVerifyResult(db *sql.DB, migrator migration.Migrator, versi
 	defer GinkgoRecover()
 	defer wg.Done()
 
-	err := migrator.Migrate(nil, nil, version)
+	err := migrator.Migrate(postgresrunner.EncryptionKey(), version)
 	Expect(err).NotTo(HaveOccurred())
 
 	ExpectDatabaseMigrationVersionToEqual(migrator, version)

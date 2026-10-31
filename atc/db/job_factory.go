@@ -114,7 +114,7 @@ func (j *jobFactory) jobsToSchedule(jobIDs []int) (SchedulerJobs, error) {
 		return nil, err
 	}
 
-	es := j.conn.EncryptionStrategy()
+	es := j.conn.EncryptionKey()
 
 	var schedulerJobs SchedulerJobs
 	pipelineResourceTypes := make(map[int]ResourceTypes)

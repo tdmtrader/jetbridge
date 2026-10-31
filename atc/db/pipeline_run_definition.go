@@ -21,7 +21,7 @@ func retainRunDefinition(tx Tx, runID int, definition atc.RunDefinition) error {
 	if err != nil {
 		return err
 	}
-	config, nonce, err := tx.EncryptionStrategy().Encrypt(payload)
+	config, nonce, err := tx.EncryptionKey().Encrypt(payload)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (f *pipelineRunFactory) Definition(runID int) (atc.RunDefinition, bool, err
 
 type runDefinitionReader interface {
 	QueryRow(string, ...any) sq.RowScanner
-	EncryptionStrategy() encryption.Strategy
+	EncryptionKey() *encryption.Key
 }
 
 func readRunDefinition(reader runDefinitionReader, runID int) (atc.RunDefinition, bool, error) {
@@ -53,7 +53,7 @@ func readRunDefinition(reader runDefinitionReader, runID int) (atc.RunDefinition
 	if err != nil {
 		return atc.RunDefinition{}, false, err
 	}
-	payload, err := reader.EncryptionStrategy().Decrypt(config, nonce)
+	payload, err := reader.EncryptionKey().Decrypt(config, nonce)
 	if err != nil {
 		return atc.RunDefinition{}, false, err
 	}

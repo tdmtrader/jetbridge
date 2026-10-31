@@ -990,7 +990,7 @@ func scanResource(r *resource, row scannable) error {
 		return err
 	}
 
-	es := r.conn.EncryptionStrategy()
+	es := r.conn.EncryptionKey()
 
 	var noncense *string
 	if nonce.Valid {

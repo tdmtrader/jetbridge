@@ -15,6 +15,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
+	"github.com/concourse/concourse/atc/postgresrunner"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -73,24 +74,24 @@ var _ = Describe("Baseline", func() {
 	})
 
 	It("is recorded as the only migration a fresh database ran to reach it", func() {
-		Expect(migrator.Migrate(nil, nil, v801LastMigration)).To(Succeed())
+		Expect(migrator.Migrate(postgresrunner.EncryptionKey(), v801LastMigration)).To(Succeed())
 		ExpectDatabaseMigrationVersionToEqual(migrator, v801LastMigration)
 		expectRowCount(db, "migrations_history", 1)
 	})
 
 	It("refuses a database that stopped at an upstream release before it", func() {
 		SetupMigrationsHistoryTableToExistAtVersion(db, v713LastMigration)
-		err := migrator.Up(nil, nil)
+		err := migrator.Up(postgresrunner.EncryptionKey())
 		Expect(err).To(MatchError(fmt.Sprintf("database is at migration %d, older than this release's baseline migration %d: upgrade it with JetBridge 0.3.1 first", v713LastMigration, v801LastMigration)))
 		ExpectDatabaseMigrationVersionToEqual(migrator, v713LastMigration)
 		expectRowCount(db, "migrations_history", 1)
 	})
 
 	It("keeps upstream 8.0.1 data through the fork migrations", func() {
-		Expect(migrator.Migrate(nil, nil, v801LastMigration)).To(Succeed())
+		Expect(migrator.Migrate(postgresrunner.EncryptionKey(), v801LastMigration)).To(Succeed())
 		insertV801FixtureData(db)
 
-		Expect(migrator.Up(nil, nil)).To(Succeed())
+		Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 		ExpectDatabaseMigrationVersionToEqual(migrator, head)
 
 		expectRowCount(db, "teams", 2)
@@ -106,23 +107,23 @@ var _ = Describe("Baseline", func() {
 	})
 
 	It("is a no-op to migrate again at HEAD", func() {
-		Expect(migrator.Up(nil, nil)).To(Succeed())
+		Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 		mustExec(db, `INSERT INTO teams(id, name) VALUES(1, 'main')`)
-		Expect(migrator.Up(nil, nil)).To(Succeed())
-		Expect(migrator.Migrate(nil, nil, head)).To(Succeed())
+		Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
+		Expect(migrator.Migrate(postgresrunner.EncryptionKey(), head)).To(Succeed())
 		ExpectDatabaseMigrationVersionToEqual(migrator, head)
 		expectRowCount(db, "teams", 1)
 	})
 
 	Describe("the pre-flight script", func() {
 		It("passes against an upstream 8.0.1 database", func() {
-			Expect(migrator.Migrate(nil, nil, v801LastMigration)).To(Succeed())
+			Expect(migrator.Migrate(postgresrunner.EncryptionKey(), v801LastMigration)).To(Succeed())
 			insertV801FixtureData(db)
 			runPreflightAndExpectPass(postgresRunner.DataSourceName())
 		})
 
 		It("passes against a database already at HEAD", func() {
-			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 			runPreflightAndExpectPass(postgresRunner.DataSourceName())
 		})
 

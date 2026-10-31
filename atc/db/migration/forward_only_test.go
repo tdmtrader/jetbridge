@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/concourse/concourse/atc/db/migration"
+	"github.com/concourse/concourse/atc/postgresrunner"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -63,7 +64,7 @@ var _ = Describe("Fork migrations are forward-only", func() {
 		if populated {
 			insertV801FixtureData(database)
 		}
-		Expect(migrator.Up(nil, nil)).To(Succeed())
+		Expect(migrator.Up(postgresrunner.EncryptionKey())).To(Succeed())
 		before := schemaFingerprint(database)
 		dataSnapshot := func() map[string]string {
 			GinkgoHelper()
@@ -79,7 +80,7 @@ var _ = Describe("Fork migrations are forward-only", func() {
 		var historyBefore int
 		Expect(database.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyBefore)).To(Succeed())
 
-		err = migrator.Migrate(nil, nil, v801LastMigration)
+		err = migrator.Migrate(postgresrunner.EncryptionKey(), v801LastMigration)
 		Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf(
 			"migration %d is forward-only: restore the pre-upgrade database backup instead", head))))
 		Expect(schemaFingerprint(database)).To(Equal(before))

@@ -4,6 +4,8 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"database/sql"
+	"fmt"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -11,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
+	"github.com/concourse/concourse/atc/postgresrunner"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -23,6 +26,7 @@ var _ = Describe("Encryption", func() {
 		lockDB      [lock.FactoryCount]*sql.DB
 		lockFactory lock.LockFactory
 		fakeLogFunc = func(logger lager.Logger, id lock.LockID) {}
+		key         *encryption.Key
 	)
 
 	BeforeEach(func() {
@@ -34,6 +38,7 @@ var _ = Describe("Encryption", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		lockFactory = lock.NewLockFactory(lockDB, fakeLogFunc, fakeLogFunc)
+		key = createKey("AES256Key-32Characters1234567890")
 	})
 
 	AfterEach(func() {
@@ -43,150 +48,97 @@ var _ = Describe("Encryption", func() {
 		}
 	})
 
-	Context("starting with unencrypted DB", func() {
-		var (
-			key *encryption.Key
-		)
-		BeforeEach(func() {
-			key = createKey("AES256Key-32Characters1234567890")
-		})
+	It("refuses to migrate without a key", func() {
+		migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
-		It("encrypts the database", func() {
+		Expect(migrator.Up(nil)).To(MatchError(encryption.ErrNoKey))
+	})
+
+	It("runs at a schema version that predates some of the encrypted columns", func() {
+		migrator := migration.NewMigrator(testLogger, db, lockFactory)
+
+		// At the baseline, pipeline_run_definitions and mcp_oauth_state do
+		// not exist yet; the plaintext pass skips what the schema does not have.
+		Expect(migrator.Migrate(key, 1765921815)).To(Succeed())
+	})
+
+	Context("starting with a database that holds plaintext rows", func() {
+		It("encrypts them on the first migration under the key", func() {
 			migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
-			err := migrator.Up(nil, nil)
+			err := migrator.Up(key)
 			Expect(err).ToNot(HaveOccurred())
 
-			insertIntoEncryptedColumn(db, encryption.NewNoEncryption(), "test")
+			insertPlaintextIntoEncryptedColumn(db, "test")
 
-			err = migrator.Up(key, nil)
+			err = migrator.Up(key)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(isEncryptedWith(db, key, "test")).To(BeTrue())
 		})
-
-		It("logs the encryption pass to the caller's logger", func() {
-			Expect(migration.NewMigrator(testLogger, db, lockFactory).Up(nil, nil)).To(Succeed())
-			insertIntoEncryptedColumn(db, encryption.NewNoEncryption(), "test")
-
-			logger := lagertest.NewTestLogger("web")
-			conn, err := migration.NewOpenHelper(logger, "pgx", postgresRunner.DataSourceName(), lockFactory, key, nil).Open()
-			Expect(err).NotTo(HaveOccurred())
-			_ = conn.Close()
-
-			Expect(logger.LogMessages()).To(ContainElement("web.migrations.encrypt.table.encrypted-existing-plaintext-data"))
-		})
 	})
 
-	Context("starting with encrypted DB", func() {
-		var (
-			key1 *encryption.Key
-			key2 *encryption.Key
-		)
+	It("logs the encryption pass to the caller's logger", func() {
+		Expect(migration.NewMigrator(testLogger, db, lockFactory).Up(key)).To(Succeed())
+		insertPlaintextIntoEncryptedColumn(db, "test")
 
-		BeforeEach(func() {
-			key1 = createKey("AES256Key-32Characters1234567890")
-			key2 = createKey("AES256Key-32Characters0987654321")
-		})
+		logger := lagertest.NewTestLogger("web")
+		conn, err := migration.NewOpenHelper(logger, "pgx", postgresRunner.DataSourceName(), lockFactory, key).Open()
+		Expect(err).NotTo(HaveOccurred())
+		_ = conn.Close()
 
-		Context("removing the encryption key", func() {
-			It("decrypts the database", func() {
-				migrator := migration.NewMigrator(testLogger, db, lockFactory)
-
-				err := migrator.Up(key1, nil)
-				Expect(err).ToNot(HaveOccurred())
-
-				insertIntoEncryptedColumn(db, key1, "test")
-
-				err = migrator.Up(nil, key1)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, encryption.NewNoEncryption(), "test")).To(BeTrue())
-			})
-		})
-
-		Context("rotating the encryption key", func() {
-			It("re-encrypts the database with the new key", func() {
-				migrator := migration.NewMigrator(testLogger, db, lockFactory)
-
-				err := migrator.Up(key2, nil)
-				Expect(err).ToNot(HaveOccurred())
-
-				insertIntoEncryptedColumn(db, key2, "test")
-
-				err = migrator.Up(key1, key2)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, key1, "test")).To(BeTrue())
-			})
-		})
+		Expect(logger.LogMessages()).To(ContainElement("web.migrations.encrypt.table.encrypted-existing-plaintext-data"))
 	})
 
-	Context("starting with partially encrypted DB", func() {
-		var (
-			key1     *encryption.Key
-			key2     *encryption.Key
-			migrator migration.Migrator
-		)
+	Context("starting with a partially encrypted database", func() {
+		It("encrypts the plaintext rows and leaves the encrypted ones readable", func() {
+			migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
-		BeforeEach(func() {
-			key1 = createKey("AES256Key-32Characters1234567890")
-			key2 = createKey("AES256Key-32Characters0987654321")
-			migrator = migration.NewMigrator(testLogger, db, lockFactory)
-
-			err := migrator.Up(nil, nil)
+			err := migrator.Up(key)
 			Expect(err).ToNot(HaveOccurred())
 
-			insertIntoEncryptedColumn(db, encryption.NewNoEncryption(), "row1")
-			insertIntoEncryptedColumn(db, key1, "row2")
+			insertPlaintextIntoEncryptedColumn(db, "row1")
+			insertIntoEncryptedColumn(db, key, "row2")
+
+			err = migrator.Up(key)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(isEncryptedWith(db, key, "row1")).To(BeTrue())
+			Expect(isEncryptedWith(db, key, "row2")).To(BeTrue())
 		})
+	})
 
-		Context("adding the encryption key", func() {
-			It("encrypts the database", func() {
-				err = migrator.Up(key1, nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, key1, "row1")).To(BeTrue())
-				Expect(isEncryptedWith(db, key1, "row2")).To(BeTrue())
-			})
-		})
+	Context("starting with a database encrypted under another key", func() {
+		It("cannot read it: a different key means a restore from backup", func() {
+			migrator := migration.NewMigrator(testLogger, db, lockFactory)
+			other := createKey("AES256Key-32Characters0987654321")
 
-		Context("removing the encryption key", func() {
-			It("decrypts the database", func() {
-				err = migrator.Up(nil, key1)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, encryption.NewNoEncryption(), "row1")).To(BeTrue())
-				Expect(isEncryptedWith(db, encryption.NewNoEncryption(), "row2")).To(BeTrue())
-			})
-		})
+			err := migrator.Up(other)
+			Expect(err).ToNot(HaveOccurred())
 
-		Context("rotating the encryption key", func() {
-			It("re-encrypts the database with the new key", func() {
-				err = migrator.Up(key2, key1)
+			insertIntoEncryptedColumn(db, other, "test")
 
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, key2, "row1")).To(BeTrue())
-				Expect(isEncryptedWith(db, key2, "row2")).To(BeTrue())
-			})
-		})
-
-		Context("rotating to the same key", func() {
-			It("doesn't break", func() {
-				err = migrator.Up(key1, key1)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, key1, "row1")).To(BeTrue())
-				Expect(isEncryptedWith(db, key1, "row2")).To(BeTrue())
-			})
+			err = migrator.Up(key)
+			Expect(err).NotTo(HaveOccurred(), "the encrypted row is not plaintext, so the pass leaves it alone")
+			Expect(isEncryptedWith(db, key, "test")).To(BeFalse())
+			Expect(isEncryptedWith(db, other, "test")).To(BeTrue())
 		})
 	})
 })
 
-func insertIntoEncryptedColumn(db *sql.DB, strategy encryption.Strategy, name string) {
+func insertPlaintextIntoEncryptedColumn(db *sql.DB, name string) {
 	GinkgoHelper()
-	ciphertext, nonce, err := strategy.Encrypt([]byte("{}"))
+	_, err := db.Exec(`INSERT INTO teams(name, legacy_auth, nonce) VALUES($1, $2, NULL)`, name, "{}")
+	Expect(err).ToNot(HaveOccurred())
+}
+
+func insertIntoEncryptedColumn(db *sql.DB, key *encryption.Key, name string) {
+	GinkgoHelper()
+	ciphertext, nonce, err := key.Encrypt([]byte("{}"))
 	Expect(err).ToNot(HaveOccurred())
 	_, err = db.Exec(`INSERT INTO teams(name, legacy_auth, nonce) VALUES($1, $2, $3)`, name, ciphertext, nonce)
 	Expect(err).ToNot(HaveOccurred())
 }
 
-func isEncryptedWith(db *sql.DB, strategy encryption.Strategy, name string) bool {
+func isEncryptedWith(db *sql.DB, key *encryption.Key, name string) bool {
 	GinkgoHelper()
 	var (
 		ciphertext string
@@ -196,7 +148,7 @@ func isEncryptedWith(db *sql.DB, strategy encryption.Strategy, name string) bool
 	err := row.Scan(&ciphertext, &nonce)
 	Expect(err).ToNot(HaveOccurred())
 
-	_, err = strategy.Decrypt(ciphertext, nonce)
+	_, err = key.Decrypt(ciphertext, nonce)
 	return err == nil
 }
 
@@ -213,3 +165,41 @@ func createKey(key string) *encryption.Key {
 
 	return encryption.NewKey(aesgcm)
 }
+
+var _ = Describe("Encryption on the test helpers' one-connection pool", func() {
+	// postgresrunner.OpenDB caps the pool at one connection. Reading a
+	// plaintext row and updating it on the same pool used to wait forever
+	// for the connection the cursor held.
+	It("encrypts a plaintext row without deadlocking", func(ctx SpecContext) {
+		db := postgresRunner.OpenDB()
+		defer db.Close()
+
+		_, err := db.Exec(`INSERT INTO teams(name, legacy_auth, nonce) VALUES('one-conn', '{}', NULL)`)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(migration.NewMigrator(testLogger, db, nil).Up(postgresrunner.EncryptionKey())).To(Succeed())
+		Expect(isEncryptedWith(db, postgresrunner.EncryptionKey(), "one-conn")).To(BeTrue())
+	}, SpecTimeout(time.Minute))
+
+	// More plaintext rows than one batch holds, so the pass loops: every row
+	// ends up encrypted and none is visited twice.
+	It("encrypts a column larger than one batch", func(ctx SpecContext) {
+		db := postgresRunner.OpenDB()
+		defer db.Close()
+
+		const rows = 2500
+		_, err := db.Exec(`INSERT INTO teams(name, legacy_auth, nonce)
+			SELECT 'bulk-' || i, '{}', NULL FROM generate_series(1, ` + fmt.Sprint(rows) + `) AS i`)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(migration.NewMigrator(testLogger, db, nil).Up(postgresrunner.EncryptionKey())).To(Succeed())
+
+		var plaintextLeft, encrypted int
+		Expect(db.QueryRow(`SELECT count(*) FROM teams WHERE name LIKE 'bulk-%' AND nonce IS NULL`).Scan(&plaintextLeft)).To(Succeed())
+		Expect(plaintextLeft).To(BeZero())
+		Expect(db.QueryRow(`SELECT count(*) FROM teams WHERE name LIKE 'bulk-%' AND nonce IS NOT NULL`).Scan(&encrypted)).To(Succeed())
+		Expect(encrypted).To(Equal(rows))
+		Expect(isEncryptedWith(db, postgresrunner.EncryptionKey(), "bulk-1")).To(BeTrue())
+		Expect(isEncryptedWith(db, postgresrunner.EncryptionKey(), "bulk-"+fmt.Sprint(rows))).To(BeTrue())
+	}, SpecTimeout(2*time.Minute))
+})

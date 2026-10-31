@@ -1,6 +1,8 @@
 package postgresrunner
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"database/sql"
 	"fmt"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/migration"
 	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -116,14 +119,29 @@ func appendToFile(path string, content string) {
 	Expect(err).ToNot(HaveOccurred())
 }
 
+// EncryptionKey is the one key every test database is opened and migrated
+// under. The web requires --encryption-key, so a connection without a key is
+// refused; the suites share this fixed one the way a cluster's webs share a
+// Secret.
+func EncryptionKey() *encryption.Key {
+	block, err := aes.NewCipher([]byte("AES256Key-32Characters1234567890"))
+	if err != nil {
+		panic(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err)
+	}
+	return encryption.NewKey(aead)
+}
+
 func (runner *Runner) MigrateToVersion(version int) {
 	err := migration.NewOpenHelper(
 		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		runner.DataSourceName(),
 		nil,
-		nil,
-		nil,
+		EncryptionKey(),
 	).MigrateToVersion(version)
 	Expect(err).NotTo(HaveOccurred())
 }
@@ -134,8 +152,7 @@ func (runner *Runner) TryOpenDBAtVersion(version int) (*sql.DB, error) {
 		"pgx",
 		runner.DataSourceName(),
 		nil,
-		nil,
-		nil,
+		EncryptionKey(),
 	).OpenAtVersion(version)
 
 	if err != nil {
@@ -161,8 +178,7 @@ func (runner *Runner) OpenDB() *sql.DB {
 		"pgx",
 		runner.DataSourceName(),
 		nil,
-		nil,
-		nil,
+		EncryptionKey(),
 	).Open()
 	Expect(err).NotTo(HaveOccurred())
 
@@ -183,8 +199,7 @@ func (runner *Runner) openConn(dbName string) db.DbConn {
 		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		runner.dataSourceName(dbName),
-		nil,
-		nil,
+		EncryptionKey(),
 		"postgresrunner",
 		nil,
 	)

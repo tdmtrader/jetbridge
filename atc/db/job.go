@@ -287,7 +287,7 @@ func (j *job) Config() (atc.JobConfig, error) {
 		return *j.config, nil
 	}
 
-	es := j.conn.EncryptionStrategy()
+	es := j.conn.EncryptionKey()
 
 	if j.rawConfig == nil {
 		return atc.JobConfig{}, nil
@@ -661,7 +661,7 @@ func (j *job) Build(name string) (Build, bool, error) {
 
 	build := newEmptyBuild(j.conn, j.lockFactory)
 
-	err := scanBuild(build, row, j.conn.EncryptionStrategy())
+	err := scanBuild(build, row, j.conn.EncryptionKey())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, false, nil
@@ -871,7 +871,7 @@ func (j *job) GetPendingBuilds() ([]Build, error) {
 
 	for rows.Next() {
 		build := newEmptyBuild(j.conn, j.lockFactory)
-		err = scanBuild(build, rows, j.conn.EncryptionStrategy())
+		err = scanBuild(build, rows, j.conn.EncryptionKey())
 		if err != nil {
 			return nil, err
 		}
@@ -1207,7 +1207,7 @@ func (j *job) getRunningBuildsBySerialGroup(tx Tx, serialGroups []string) ([]Bui
 
 	for rows.Next() {
 		build := newEmptyBuild(j.conn, j.lockFactory)
-		err = scanBuild(build, rows, j.conn.EncryptionStrategy())
+		err = scanBuild(build, rows, j.conn.EncryptionKey())
 		if err != nil {
 			return nil, err
 		}
@@ -1238,7 +1238,7 @@ func (j *job) getNextPendingBuildBySerialGroup(tx Tx, serialGroups []string) (Bu
 			LIMIT 1`, params...)
 
 	build := newEmptyBuild(j.conn, j.lockFactory)
-	err = scanBuild(build, row, j.conn.EncryptionStrategy())
+	err = scanBuild(build, row, j.conn.EncryptionKey())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, false, nil
@@ -1342,7 +1342,7 @@ func (j *job) nextBuild(tx Tx) (Build, error) {
 		QueryRow()
 
 	nextBuild := newEmptyBuild(j.conn, j.lockFactory)
-	err := scanBuild(nextBuild, row, j.conn.EncryptionStrategy())
+	err := scanBuild(nextBuild, row, j.conn.EncryptionKey())
 	if err == nil {
 		next = nextBuild
 	} else if err != sql.ErrNoRows {
@@ -1362,7 +1362,7 @@ func (j *job) finishedBuild(tx Tx) (Build, error) {
 		QueryRow()
 
 	finishedBuild := newEmptyBuild(j.conn, j.lockFactory)
-	err := scanBuild(finishedBuild, row, j.conn.EncryptionStrategy())
+	err := scanBuild(finishedBuild, row, j.conn.EncryptionKey())
 	if err == nil {
 		finished = finishedBuild
 	} else if err != sql.ErrNoRows {

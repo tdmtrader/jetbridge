@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/flag/v2"
 	"github.com/jessevdk/go-flags"
@@ -626,4 +627,28 @@ func (s *CommandSuite) TestTheRunCancellationWorkerRunsWithOrWithoutAnOutputPlan
 		s.NotEqual(atc.ComponentRunCancellation, component.Component.Name,
 			"the output plane registers the cancellation worker a second time")
 	}
+}
+
+// The web encrypts sensitive database columns and never stores them in
+// plaintext, so --encryption-key is required: a command line without it is
+// refused before anything runs, naming the flag.
+func (s *CommandSuite) TestEncryptionKeyIsRequired() {
+	cmd := &atccmd.RunCommand{}
+	parser := flags.NewParser(cmd, flags.None)
+	parser.NamespaceDelimiter = "-"
+	_, err := parser.ParseArgs([]string{
+		"--main-team-local-user=admin",
+		"--add-local-user=admin:pw",
+		"--client-secret=secret",
+	})
+	var flagErr *flags.Error
+	s.True(errors.As(err, &flagErr) && flagErr.Type == flags.ErrRequired, "parse: %v", err)
+	s.Contains(err.Error(), "--encryption-key")
+
+	// A RunCommand built in code, with no parser to check required flags,
+	// is refused by validate() with the same flag named.
+	s.Nil(cmd.EncryptionKey.AEAD)
+	_, err = cmd.Runner(nil)
+	s.ErrorIs(err, encryption.ErrNoKey)
+	s.Contains(err.Error(), "--encryption-key")
 }
