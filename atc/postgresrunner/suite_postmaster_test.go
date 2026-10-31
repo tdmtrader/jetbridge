@@ -54,6 +54,18 @@ var _ = Describe("one postmaster per suite", func() {
 		Expect(count).To(BeZero(), "a row one process writes must not reach another's database")
 	})
 
+	It("gives every process the connection budget a postmaster of its own had", func() {
+		suiteRunner.CreateTestDBFromTemplate()
+		DeferCleanup(suiteRunner.DropTestDB)
+		conn := suiteRunner.OpenSingleton()
+		DeferCleanup(conn.Close)
+
+		var maxConnections int
+		Expect(conn.QueryRow("SELECT setting::int FROM pg_settings WHERE name = 'max_connections'").Scan(&maxConnections)).To(Succeed())
+		suiteConfig, _ := GinkgoConfiguration()
+		Expect(maxConnections).To(Equal(100 * suiteConfig.ParallelTotal))
+	})
+
 	It("lets one process drop its database while another holds its own open", func() {
 		other := another()
 		other.CreateTestDBFromTemplate()

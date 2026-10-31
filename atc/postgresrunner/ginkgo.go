@@ -63,7 +63,7 @@ type suitePostmaster struct {
 
 func startSuitePostmaster() []byte {
 	var runner Runner
-	InitializeRunnerForGinkgo(&runner, &suiteProcess)
+	initializeRunner(&runner, &suiteProcess, parallelTotal())
 	suiteParent = os.Getppid()
 
 	handoff, err := json.Marshal(suitePostmaster{Port: runner.Port, FileCopy: runner.fileCopy})
@@ -76,6 +76,11 @@ func joinSuitePostmaster(runner *Runner, handoff []byte) {
 	Expect(json.Unmarshal(handoff, &postmaster)).To(Succeed())
 
 	*runner = postmaster.runner(GinkgoParallelProcess())
+}
+
+func parallelTotal() int {
+	suiteConfig, _ := GinkgoConfiguration()
+	return suiteConfig.ParallelTotal
 }
 
 // runner is the given process's view of the postmaster.
@@ -113,8 +118,15 @@ func stopSuitePostmasterIfOrphaned() {
 }
 
 func InitializeRunnerForGinkgo(runner *Runner, dbProcess *ifrit.Process) {
+	initializeRunner(runner, dbProcess, 1)
+}
+
+// initializeRunner starts a postmaster for the given number of Ginkgo
+// processes and migrates its template.
+func initializeRunner(runner *Runner, dbProcess *ifrit.Process, processes int) {
 	*runner = Runner{
-		Port: PickPort(),
+		Port:      PickPort(),
+		processes: processes,
 	}
 	*dbProcess = ifrit.Invoke(*runner)
 	runner.InitializeTestDBTemplate()

@@ -28,6 +28,10 @@ type Runner struct {
 
 	fileCopy bool
 
+	// processes is how many Ginkgo processes share the postmaster; each gets
+	// the connection budget a postmaster of its own would have had.
+	processes int
+
 	// dbName is the database this runner clones, opens and drops. Empty means
 	// "testdb", the one database of a runner that owns its postmaster; the
 	// processes of a GinkgoRunner suite share one postmaster and each name
@@ -110,6 +114,12 @@ synchronous_commit = off
 full_page_writes = off
 random_page_cost = 1.1
 `)
+
+	// PostgreSQL's default of 100 connections was each process's budget when
+	// each ran its own postmaster; a suite with a whole web in every process
+	// (atc/integration) needs it per process, not shared.
+	appendToFile(filepath.Join(tmpdir, "postgresql.conf"),
+		fmt.Sprintf("max_connections = %d\n", 100*max(runner.processes, 1)))
 
 	ginkgoRunner := &ginkgomon_v2.Runner{
 		Name:          "postgres",
