@@ -226,7 +226,7 @@ func (command *HijackCommand) Execute([]string) error {
 		if exeNotFound && someShell {
 			spec.Path = "sh"
 			os.Stderr.WriteString("\rCouldn't find \"bash\" on container, retrying with \"sh\"\n\r")
-			result, exeNotFound, err = h.Hijack(ctx, team.Name(), chosenContainer.ID, spec, io)
+			result, _, err = h.Hijack(ctx, team.Name(), chosenContainer.ID, spec, io)
 		}
 		return result, err
 	}()

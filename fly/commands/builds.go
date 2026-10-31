@@ -88,12 +88,12 @@ func (command *BuildsCommand) getBuilds(builds []atc.Build, currentTeam concours
 		for _, team := range teams {
 			var teamBuilds []atc.Build
 			if command.pipelineFlag() {
-				teamBuilds, err = command.validatePipelineBuilds(builds, team, page)
+				teamBuilds, err = command.validatePipelineBuilds(team, page)
 				if err != nil {
 					return nil, err
 				}
 			} else if command.jobFlag() {
-				teamBuilds, err = command.validateJobBuilds(builds, team, page)
+				teamBuilds, err = command.validateJobBuilds(team, page)
 				if err != nil {
 					return nil, err
 				}
@@ -111,12 +111,12 @@ func (command *BuildsCommand) getBuilds(builds []atc.Build, currentTeam concours
 		builds = newestBuildsFirst(builds, command.Count)
 	} else {
 		if command.pipelineFlag() {
-			builds, err = command.validatePipelineBuilds(builds, currentTeam, page)
+			builds, err = command.validatePipelineBuilds(currentTeam, page)
 			if err != nil {
 				return nil, err
 			}
 		} else if command.jobFlag() {
-			builds, err = command.validateJobBuilds(builds, currentTeam, page)
+			builds, err = command.validateJobBuilds(currentTeam, page)
 			if err != nil {
 				return nil, err
 			}
@@ -176,13 +176,8 @@ func (command *BuildsCommand) validateCurrentTeam(teams []concourse.Team, curren
 	return teams
 }
 
-func (command *BuildsCommand) validateJobBuilds(builds []atc.Build, currentTeam concourse.Team, page concourse.Page) ([]atc.Build, error) {
-	var (
-		err   error
-		found bool
-	)
-
-	builds, _, found, err = currentTeam.JobBuilds(
+func (command *BuildsCommand) validateJobBuilds(currentTeam concourse.Team, page concourse.Page) ([]atc.Build, error) {
+	builds, _, found, err := currentTeam.JobBuilds(
 		command.Job.PipelineRef,
 		command.Job.JobName,
 		page,
@@ -196,7 +191,7 @@ func (command *BuildsCommand) validateJobBuilds(builds []atc.Build, currentTeam 
 	return builds, err
 }
 
-func (command *BuildsCommand) validatePipelineBuilds(builds []atc.Build, currentTeam concourse.Team, page concourse.Page) ([]atc.Build, error) {
+func (command *BuildsCommand) validatePipelineBuilds(currentTeam concourse.Team, page concourse.Page) ([]atc.Build, error) {
 	_, err := command.Pipeline.Validate()
 	if err != nil {
 		return nil, err
