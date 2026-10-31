@@ -174,14 +174,6 @@ non-task operations (implicit get after put, skip_download, fly execute uploads,
   JetBridge never sends (pod/container lifecycle issue).
 - **Duration**: ~1.2s (after external kill)
 
-### Resource Checking: tracks version causality via API
-- **File**: `resource_checking_test.go:846`
-- **Failure**: Version causality tracking via the API doesn't return expected
-  relationships. The `resource_causality` feature flag is disabled.
-- **Cause**: Feature flag `resource_causality` is `false` in the Helm deployment.
-  Test should skip when the feature flag is disabled.
-- **Duration**: ~20s
-
 ---
 
 ## Previously Fixed Issues (Test Quality)

@@ -67,7 +67,6 @@ not a dedicated typed command.
 | Create/list numbered pipeline runs | Yes | `run-pipeline`, `runs` | Yes | `atc/routes.go:164`, `fly/commands/fly.go:64`, `web/elm/src/Message/Effects.elm:236` |
 | Fetch one numbered run | Yes; typed Go client too | No dedicated detail command; via curl | Yes | `atc/routes.go:166`, `go-concourse/concourse/pipeline_runs.go:60`, `fly/commands/runs.go:26`, `web/elm/src/Message/Effects.elm:239` |
 | Set a build comment | Yes; typed Go client too | No registered comment command or production fly caller; via curl | Yes | `atc/routes.go:144`, `go-concourse/concourse/builds.go:77`, `fly/commands/fly.go:7`, `web/elm/src/Message/Effects.elm:471` |
-| Inspect resource-version upstream/downstream causality | Yes | No dedicated command; via curl | Yes | `atc/routes.go:207`, `fly/commands/fly.go:67`, `web/elm/src/Message/Effects.elm:421` |
 | Change server log level | Yes | No dedicated command; via curl | No endpoint/effect found | `atc/routes.go:218`, `fly/commands/fly.go:7`, `web/elm/src/Api/Endpoints.elm:18` |
 | Validate/format pipeline without saving | No standalone API route | Local commands | No endpoint/effect found | `fly/commands/validate_pipeline.go:34`, `fly/commands/format_pipeline.go:18`, `atc/routes.go:130` |
 | Capture/render a review bundle and retrieve its schema | No public API | Local `jb review` commands | No endpoint/effect found | `cmd/jb/main.go:28`, `agent/review/README.md:3` |
