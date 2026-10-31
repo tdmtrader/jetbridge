@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3"
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -20,7 +19,6 @@ var (
 	lockFactory    lock.LockFactory
 )
 
-var logger = lagertest.NewTestLogger("dummy")
 var ctx = context.Background()
 
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
