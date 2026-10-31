@@ -141,3 +141,28 @@ for the typed source, since its web.env range already emits the other.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The web settings the chart renders as environment variables, one row each:
+[variable, the value that sets it, the rendered value or "" when unset]. The
+web container renders every set row; an empty one keeps the binary's default.
+*/}}
+{{- define "concourse.web.settingsEnv" -}}
+{{- $web := .Values.web -}}
+{{- $attempts := "" -}}
+{{- if $web.secretRetry.attempts -}}
+{{- $attempts = int $web.secretRetry.attempts | toString -}}
+{{- end -}}
+{{- list
+  (list "CONCOURSE_AUTH_DURATION" "web.authDuration" $web.authDuration)
+  (list "SSL_CERT_FILE" "web.caCertFile" $web.caCertFile)
+  (list "CONCOURSE_RESOURCE_CHECKING_INTERVAL" "web.checks.interval" $web.checks.interval)
+  (list "CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL" "web.checks.resourceTypeInterval" $web.checks.resourceTypeInterval)
+  (list "CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL" "web.checks.webhookInterval" $web.checks.webhookInterval)
+  (list "CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT" "web.checks.timeout" $web.checks.timeout)
+  (list "CONCOURSE_GC_ONE_OFF_GRACE_PERIOD" "web.gc.oneOffGracePeriod" $web.gc.oneOffGracePeriod)
+  (list "CONCOURSE_GC_MISSING_GRACE_PERIOD" "web.gc.missingGracePeriod" $web.gc.missingGracePeriod)
+  (list "CONCOURSE_SECRET_RETRY_ATTEMPTS" "web.secretRetry.attempts" $attempts)
+  (list "CONCOURSE_SECRET_RETRY_INTERVAL" "web.secretRetry.interval" $web.secretRetry.interval)
+  | toJson -}}
+{{- end -}}

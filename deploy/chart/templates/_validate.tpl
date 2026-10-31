@@ -44,6 +44,36 @@ template first, so these rules run before anything else in the chart.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /*
+  Each web setting with a typed value renders its own variable, so a web.env
+  entry naming the same variable would hand the container two values.
+*/ -}}
+{{- $settings := include "concourse.web.settingsEnv" . | fromJsonArray -}}
+{{- range .Values.web.env -}}
+{{- $name := .name -}}
+{{- range $settings -}}
+{{- if and (eq $name (index . 0)) (index . 2) -}}
+{{- fail (printf "web.env sets %s, which %s now renders; drop the web.env entry" $name (index . 1)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  SSL_CERT_FILE names a file in the container, and only an extra volume
+  mount brings one in: a path outside every mount names a file that is not
+  there, and the web's outbound HTTPS then trusts nothing.
+*/ -}}
+{{- with .Values.web.caCertFile -}}
+{{- $file := . -}}
+{{- $mounted := false -}}
+{{- range $.Values.web.extraVolumeMounts -}}
+{{- if hasPrefix (printf "%s/" (trimSuffix "/" (toString .mountPath))) $file -}}
+{{- $mounted = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $mounted -}}
+{{- fail (printf "web.caCertFile %s lies under no web.extraVolumeMounts mountPath; mount the CA bundle (e.g. a ConfigMap in web.extraVolumes) and name the file inside it" $file) -}}
+{{- end -}}
+{{- end -}}
 {{- if and (not .Values.postgresql.enabled) (empty .Values.postgresql.host) -}}
 {{- fail "postgresql.host is required when postgresql.enabled=false" -}}
 {{- end -}}

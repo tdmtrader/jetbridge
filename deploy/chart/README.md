@@ -192,7 +192,17 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.backendMaxConns` | `50` | Backend connection pool max (per replica). |
 | `web.terminationGracePeriodSeconds` | `120` | Graceful shutdown timeout. |
 | `web.resources` | 100m/256Mi req, 2/2Gi limit | CPU/memory resources. |
-| `web.env` | `[]` | Extra env vars (supports `value` and `valueFrom`). |
+| `web.authDuration` | `""` | Access token lifetime (Go duration; empty keeps the binary's 24h). Rendered as `CONCOURSE_AUTH_DURATION`. |
+| `web.caCertFile` | `""` | Path of a PEM CA bundle the web trusts for outbound HTTPS, under a `web.extraVolumeMounts` mountPath (the render fails otherwise). Rendered as `SSL_CERT_FILE`. |
+| `web.checks.interval` | `""` | Interval between resource checks (default 1m). `CONCOURSE_RESOURCE_CHECKING_INTERVAL`. |
+| `web.checks.resourceTypeInterval` | `""` | Interval between resource type checks (default 1m). `CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL`. |
+| `web.checks.webhookInterval` | `""` | Interval between checks of a resource with a webhook (default 1m). `CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL`. |
+| `web.checks.timeout` | `""` | Time limit on one check (default 1h). `CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT`. |
+| `web.gc.oneOffGracePeriod` | `""` | How long a finished one-off build's step pods are kept (default 5m). `CONCOURSE_GC_ONE_OFF_GRACE_PERIOD`. |
+| `web.gc.missingGracePeriod` | `""` | How long a container or volume may be missing before it is reaped (default 5m). `CONCOURSE_GC_MISSING_GRACE_PERIOD`. |
+| `web.secretRetry.attempts` | `0` | Attempts at a credential lookup that fails retryably (0 keeps the binary's 5). `CONCOURSE_SECRET_RETRY_ATTEMPTS`. |
+| `web.secretRetry.interval` | `""` | Wait between those attempts (default 1s). `CONCOURSE_SECRET_RETRY_INTERVAL`. |
+| `web.env` | `[]` | **Deprecated; removed in the next chart change.** Every setting it carried has a typed value above ([MIGRATING.md](MIGRATING.md#webenv-becomes-typed-values-2026-10-31)). |
 | `web.extraVolumeMounts` | `[]` | Additional volume mounts (e.g. CA bundles). |
 | `web.extraVolumes` | `[]` | Additional volumes for the web pod. |
 | `web.nodeSelector` | `{}` | Node selector for the web pod. |

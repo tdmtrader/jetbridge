@@ -5,31 +5,34 @@ package concourse_test
 
 import (
 	"os"
+	"regexp"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/atc/atccmd"
 	flags "github.com/jessevdk/go-flags"
 	"github.com/vito/twentythousandtonnesofcrudeoil"
-	"sigs.k8s.io/yaml"
 )
 
-// concourseHomeFixture is the chart test's copy of concourse.home's values. Its
-// web.env is the one place a deployment hands the web flags by environment
-// name rather than through a typed chart value.
-const concourseHomeFixture = "deploy/chart/tests/testdata/concourse-home-rollout.yaml"
+// webTemplates are the chart templates that name the web container's
+// environment: the Deployment and the helper that tabulates the typed web
+// settings (concourse.web.settingsEnv).
+var webTemplates = []string{
+	"deploy/chart/templates/web-deployment.yaml",
+	"deploy/chart/templates/_helpers.tpl",
+}
 
 // go-flags ignores an environment variable no option claims, silently. So when
-// a flag is removed, the CONCOURSE_* name a deployment sets for it keeps
-// rendering, keeps reaching the pod, and does nothing: concourse.home carried
-// six such names (CONCOURSE_ENABLE_GLOBAL_RESOURCES, CONCOURSE_GC_INTERVAL,
-// CONCOURSE_BUILD_TRACKER_INTERVAL, ...) for months after their flags went.
+// a flag is removed, a CONCOURSE_* name rendered for it keeps reaching the pod
+// and does nothing: concourse.home carried six such names
+// (CONCOURSE_ENABLE_GLOBAL_RESOURCES, CONCOURSE_GC_INTERVAL,
+// CONCOURSE_BUILD_TRACKER_INTERVAL, ...) for months after their flags went,
+// through the web.env pass-through its typed values replaced.
 //
-// The rule: every CONCOURSE_* name in the fixture's web.env is the environment
-// name of a `concourse web` option. Removing a flag now fails here until the
-// fixture -- and the home-infra values it mirrors -- drop the name too.
-func TestEveryConcourseEnvVarTheFixtureSetsIsAWebFlag(t *testing.T) {
+// The rule: every CONCOURSE_* name the chart's web templates render is the
+// environment name of a `concourse web` option. Removing a flag now fails here
+// until the chart value that renders it goes too.
+func TestEveryConcourseEnvVarTheChartRendersIsAWebFlag(t *testing.T) {
 	declared := webFlagEnvNames(t)
 
 	// A parser that registered nothing would make every name unknown and the
@@ -41,20 +44,19 @@ func TestEveryConcourseEnvVarTheFixtureSetsIsAWebFlag(t *testing.T) {
 	}
 	for _, known := range []string{"CONCOURSE_PEER_ADDRESS", "CONCOURSE_ENCRYPTION_KEY", "CONCOURSE_RESOURCE_CHECKING_INTERVAL"} {
 		if !declared[known] {
-			t.Errorf("%s is not among the derived names; the derivation is wrong, not the fixture", known)
+			t.Errorf("%s is not among the derived names; the derivation is wrong, not the chart", known)
 		}
 	}
 
-	names := fixtureWebEnvNames(t)
-	if len(names) == 0 {
-		t.Fatalf("%s sets no CONCOURSE_* name in web.env; this rule would pass vacuously", concourseHomeFixture)
+	names := chartWebEnvNames(t)
+	if len(names) < 10 {
+		t.Fatalf("%v name only %d CONCOURSE_* variables; the scan lost the templates", webTemplates, len(names))
 	}
 
 	for _, name := range names {
 		if !declared[name] {
-			t.Errorf("%s sets web.env %s, but no `concourse web` flag reads it. go-flags ignores "+
-				"an unknown environment variable, so the setting does nothing. Drop it from the "+
-				"fixture and from home-infra apps/concourse.yaml.", concourseHomeFixture, name)
+			t.Errorf("the chart renders %s onto the web, but no `concourse web` flag reads it. go-flags ignores "+
+				"an unknown environment variable, so the setting does nothing. Remove the value that renders it.", name)
 		}
 	}
 }
@@ -108,30 +110,25 @@ func webFlagEnvNames(t *testing.T) map[string]bool {
 	return names
 }
 
-func fixtureWebEnvNames(t *testing.T) []string {
+// chartWebEnvNames returns every CONCOURSE_* name webTemplates spell out.
+func chartWebEnvNames(t *testing.T) []string {
 	t.Helper()
 
-	raw, err := os.ReadFile(concourseHomeFixture)
-	if err != nil {
-		t.Fatalf("reading %s: %v", concourseHomeFixture, err)
-	}
-
-	var values struct {
-		Web struct {
-			Env []struct {
-				Name string `json:"name"`
-			} `json:"env"`
-		} `json:"web"`
-	}
-	if err := yaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("decoding %s: %v", concourseHomeFixture, err)
+	name := regexp.MustCompile(`CONCOURSE_[A-Z0-9_]*[A-Z0-9]`)
+	seen := map[string]bool{}
+	for _, path := range webTemplates {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, match := range name.FindAllString(string(raw), -1) {
+			seen[match] = true
+		}
 	}
 
 	var names []string
-	for _, e := range values.Web.Env {
-		if strings.HasPrefix(e.Name, "CONCOURSE_") {
-			names = append(names, e.Name)
-		}
+	for match := range seen {
+		names = append(names, match)
 	}
 	sort.Strings(names)
 

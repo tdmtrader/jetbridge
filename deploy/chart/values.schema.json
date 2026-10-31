@@ -126,6 +126,56 @@
             "fatal"
           ]
         },
+        "authDuration": {
+          "$ref": "#/definitions/optionalGoDuration"
+        },
+        "caCertFile": {
+          "type": "string",
+          "pattern": "^(/.*[^/])?$"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interval": {
+              "$ref": "#/definitions/optionalGoDuration"
+            },
+            "resourceTypeInterval": {
+              "$ref": "#/definitions/optionalGoDuration"
+            },
+            "webhookInterval": {
+              "$ref": "#/definitions/optionalGoDuration"
+            },
+            "timeout": {
+              "$ref": "#/definitions/optionalGoDuration"
+            }
+          }
+        },
+        "gc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "oneOffGracePeriod": {
+              "$ref": "#/definitions/optionalGoDuration"
+            },
+            "missingGracePeriod": {
+              "$ref": "#/definitions/optionalGoDuration"
+            }
+          }
+        },
+        "secretRetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "interval": {
+              "$ref": "#/definitions/optionalGoDuration"
+            }
+          }
+        },
         "localUsers": {
           "type": "string",
           "minLength": 1

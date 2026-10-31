@@ -246,3 +246,52 @@ run encrypts them itself, and nothing has to be run on the previous release
 first. A database encrypted under a key that is lost cannot be recovered: the
 backup and its Secret version travel together
 ([runbook](../../docs/migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure)).
+
+## web.env becomes typed values (2026-10-31)
+
+`web.env` was the pass-through ADR-0008 bans: it handed the web whatever
+environment the operator typed, past every check. Every setting a deployment
+passed through it now has a typed value, and the chart removes `web.env` in
+two steps:
+
+1. This chart adds the typed values. `web.env` still renders, but an entry
+   naming a variable whose typed value is also set fails the render naming
+   the value, and a `CONCOURSE_ENCRYPTION_KEY` entry is still accepted in
+   place of `secrets.encryptionKeySecret`.
+2. The next chart change removes `web.env`. The closed schema then rejects
+   it as an unknown key under `web`, naming `env`, and
+   the `CONCOURSE_ENCRYPTION_KEY` alternative goes with it:
+   `secrets.encryptionKeySecret` is the one source of the key.
+
+| `web.env` entry | Typed value |
+| --- | --- |
+| `CONCOURSE_ENCRYPTION_KEY` from a Secret | `secrets.encryptionKeySecret: <Secret name>`; the key must be under `encryption-key` (copy it to that key first if it is elsewhere). Rendered on the web and on `migrate-db`, as before. |
+| `SSL_CERT_FILE` | `web.caCertFile: <path>`. Keep the `web.extraVolumes` / `web.extraVolumeMounts` entry that mounts the bundle; the path must lie under its mountPath. |
+| `CONCOURSE_AUTH_DURATION` | `web.authDuration` |
+| `CONCOURSE_RESOURCE_CHECKING_INTERVAL` | `web.checks.interval` |
+| `CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL` | `web.checks.resourceTypeInterval` |
+| `CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL` | `web.checks.webhookInterval` |
+| `CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT` | `web.checks.timeout` |
+| `CONCOURSE_GC_ONE_OFF_GRACE_PERIOD` | `web.gc.oneOffGracePeriod` |
+| `CONCOURSE_GC_MISSING_GRACE_PERIOD` | `web.gc.missingGracePeriod` |
+| `CONCOURSE_SECRET_RETRY_ATTEMPTS` | `web.secretRetry.attempts` (an integer) |
+| `CONCOURSE_SECRET_RETRY_INTERVAL` | `web.secretRetry.interval` |
+| `CONCOURSE_COOKIE_SECURE` | Nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://`, which it is wherever users reach the UI over HTTPS, a TLS-terminating proxy included. |
+| `CONCOURSE_EMIT_TO_LOGS` | No chart value. The chart offers Prometheus (`metrics.enabled`); the Lager emitter remains a binary flag only. |
+| Any name no `concourse web` flag reads (`CONCOURSE_GC_INTERVAL`, `CONCOURSE_BUILD_TRACKER_INTERVAL`, `CONCOURSE_DB_NOTIFICATION_BUS_QUEUE_SIZE`, ...) | Drop it; it never did anything. |
+| Any other `CONCOURSE_*` name | No chart value: the setting is the binary's default. A setting deployments need to vary gets a typed value, a schema entry and room under `maxValues` (ADR-0008). |
+
+Each typed value is empty by default and then renders nothing, so the binary
+keeps its default; durations are Go durations, checked by the schema.
+
+Rollout order. Move a deployment's values while `web.env` still renders:
+take step 1, then replace every `web.env` entry with its typed value in one
+values change, before step 2 reaches the deployment. A GitOps deployment that
+tracks the chart's branch (Argo `targetRevision: core`, as concourse.home does)
+must apply its values change before step 2 lands on that branch: once it has,
+a values file that still sets `web.env` fails to render (unknown key) and the
+Application stops syncing until the values change. For concourse.home: land
+step 1, apply the home-infra values change, confirm the Application synced
+with an unchanged web environment (the rendered `env` lists of `concourse-web`
+and `migrate-db` match the previous ones, order aside), and only then land
+step 2.

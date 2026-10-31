@@ -32,6 +32,53 @@ web:
   # -- Log level: debug, info, error
   logLevel: info
 
+  # -- How long an access token lives before a login must renew it (Go
+  # duration, e.g. 720h). Empty keeps the binary's default, 24h. Rendered as
+  # CONCOURSE_AUTH_DURATION.
+  authDuration: ""
+
+  # -- Path, inside the web container, of a PEM CA bundle the web trusts for
+  # its outbound HTTPS in place of the system roots, e.g. its own issuer's CA
+  # for MCP sign-in behind a private CA. The file must lie under the mountPath
+  # of a web.extraVolumeMounts entry, which brings it in (typically from a
+  # ConfigMap in web.extraVolumes). Empty keeps the system roots. Rendered as
+  # SSL_CERT_FILE.
+  caCertFile: ""
+
+  # -- Resource checking (Go durations). Empty keeps the binary's default.
+  checks:
+    # -- Interval between checks of a resource (default 1m). Rendered as
+    # CONCOURSE_RESOURCE_CHECKING_INTERVAL.
+    interval: ""
+    # -- Interval between checks of a resource type (default 1m). Rendered as
+    # CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL.
+    resourceTypeInterval: ""
+    # -- Interval between checks of a resource that has a webhook (default
+    # 1m). Rendered as CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL.
+    webhookInterval: ""
+    # -- Time limit on one check (default 1h). Rendered as
+    # CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT.
+    timeout: ""
+
+  # -- Garbage collection grace periods (Go durations). Empty keeps the
+  # binary's default.
+  gc:
+    # -- How long a finished one-off build's step pods are kept (default 5m).
+    # Rendered as CONCOURSE_GC_ONE_OFF_GRACE_PERIOD.
+    oneOffGracePeriod: ""
+    # -- How long a container or volume may be missing from its worker before
+    # it is reaped (default 5m). Rendered as CONCOURSE_GC_MISSING_GRACE_PERIOD.
+    missingGracePeriod: ""
+
+  # -- Retries of a credential lookup that fails with a retryable error.
+  secretRetry:
+    # -- How many attempts in all; 0 keeps the binary's default, 5. Rendered
+    # as CONCOURSE_SECRET_RETRY_ATTEMPTS.
+    attempts: 0
+    # -- Wait between attempts (Go duration); empty keeps the binary's
+    # default, 1s. Rendered as CONCOURSE_SECRET_RETRY_INTERVAL.
+    interval: ""
+
   # -- Required. Local user credentials. Comma-separated "user:password"
   # pairs, e.g. "admin:s3cret,ci:token". The chart emits one --add-local-user
   # flag per pair (Concourse's CLI flag does not itself split on commas).
@@ -102,13 +149,11 @@ web:
     # -- Key in the Secret for the TLS private key
     keyFilename: tls.key
 
-  # -- Additional environment variables for the web container.
-  # Supports both literal values and valueFrom (secretKeyRef, configMapKeyRef):
-  #   - name: CONCOURSE_AUTH_DURATION
-  #     value: 72h
-  # A CONCOURSE_ENCRYPTION_KEY entry here is accepted in place of
-  # secrets.encryptionKeySecret for deployments that predate that value; new
-  # deployments set the value.
+  # -- Deprecated, and removed in the next chart change (ADR-0008 bans the
+  # pass-through): every setting it carried has a typed value above
+  # (deploy/chart/MIGRATING.md maps each name). An entry naming a variable a
+  # set typed value renders fails the render. A CONCOURSE_ENCRYPTION_KEY entry
+  # is still accepted in place of secrets.encryptionKeySecret until then.
   env: []
 
 

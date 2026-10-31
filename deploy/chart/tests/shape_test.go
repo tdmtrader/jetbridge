@@ -73,7 +73,12 @@ import (
 // Removing the resource-cache bucket leaves 189.
 // C7 removes the Run epoch and the two fixed result-read settings.
 // Removing the never-read kubernetes.imageRegistryPrefix leaves 185.
-const maxValues = 185
+// 2026-10-31: the count was 163, not 185; the removals since the extraArgs
+// cut did not all lower the cap. Typing the ten settings concourse.home
+// passed through web.env (web.authDuration, web.caCertFile, web.checks' four,
+// web.gc's two, web.secretRetry's two) adds ten, leaving 173 while web.env
+// stays for one release.
+const maxValues = 173
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -492,6 +497,11 @@ func TestAValueTheCodeDoesNotAcceptFailsTheRender(t *testing.T) {
 		"artifactDaemon.metrics.port=banana",
 		"serviceMonitor.interval=30",
 		"cacheStore=pvc",
+		"web.authDuration=banana",
+		"web.checks.interval=banana",
+		"web.gc.missingGracePeriod=5",
+		"web.secretRetry.attempts=-1",
+		"web.caCertFile=relative/bundle.crt",
 	} {
 		t.Run(setting, func(t *testing.T) {
 			out := strings.ReplaceAll(renderHangarError(t, setting), "/", ".")

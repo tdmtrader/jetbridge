@@ -33,32 +33,19 @@ web:
     limits:
       cpu: 500m
       memory: 1Gi
-  env:
-  - name: CONCOURSE_ENCRYPTION_KEY
-    valueFrom:
-      secretKeyRef:
-        name: placeholder-secret
-        key: placeholder-key
-  - name: SSL_CERT_FILE
-    value: placeholder
-  - name: CONCOURSE_AUTH_DURATION
-    value: placeholder
-  - name: CONCOURSE_SECRET_RETRY_ATTEMPTS
-    value: placeholder
-  - name: CONCOURSE_SECRET_RETRY_INTERVAL
-    value: placeholder
-  - name: CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT
-    value: placeholder
-  - name: CONCOURSE_RESOURCE_CHECKING_INTERVAL
-    value: placeholder
-  - name: CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL
-    value: placeholder
-  - name: CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL
-    value: placeholder
-  - name: CONCOURSE_GC_ONE_OFF_GRACE_PERIOD
-    value: placeholder
-  - name: CONCOURSE_GC_MISSING_GRACE_PERIOD
-    value: placeholder
+  authDuration: 720h
+  caCertFile: "/etc/concourse/home-ca/placeholder.crt"
+  checks:
+    interval: 1m
+    resourceTypeInterval: 1m
+    webhookInterval: 1m
+    timeout: 1h
+  gc:
+    oneOffGracePeriod: 5m
+    missingGracePeriod: 5m
+  secretRetry:
+    attempts: 5
+    interval: 1s
 mcp:
   clients:
   - client_id: test-client
@@ -106,6 +93,7 @@ tracing:
   otlpAddress: tempo.example:4317
 secrets:
   signingKeySecret: placeholder-signing-key
+  encryptionKeySecret: placeholder-encryption-key
 cacheStore: hostpath
 cacheHostPath: "/var/cache/concourse"
 artifactDaemon:
