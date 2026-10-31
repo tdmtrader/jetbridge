@@ -8,10 +8,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
-type BaseResourceTypeNotFoundError struct {
-	Name string
-}
-
 type ResourceConfig interface {
 	ID() int
 	LastReferenced() time.Time
