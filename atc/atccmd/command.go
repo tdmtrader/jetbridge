@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,7 +36,6 @@ import (
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/exec"
@@ -1284,13 +1282,6 @@ func (cmd *RunCommand) secretManager(logger lager.Logger) (creds.Secrets, error)
 	return cmd.CredentialManagement.NewSecrets(secretsFactory), nil
 }
 
-// encryptionKey is the one key this web encrypts and decrypts database
-// columns with. --encryption-key is a required flag, so the AEAD is set by
-// the time Runner is called; validate() names the flag if it is not.
-func (cmd *RunCommand) encryptionKey() *encryption.Key {
-	return encryption.NewKey(cmd.EncryptionKey.AEAD)
-}
-
 func (cmd *RunCommand) constructWebHandler(logger lager.Logger) (http.Handler, error) {
 	webHandler, err := web.NewHandler(logger, cmd.WebPublicDir.Path())
 	if err != nil {
@@ -1425,56 +1416,6 @@ func (cmd *RunCommand) configureMetrics(logger lager.Logger) error {
 	}
 
 	return metric.Metrics.Initialize(logger.Session("metrics"), host, cmd.Metrics.Attributes, cmd.Metrics.BufferSize)
-}
-
-func (cmd *RunCommand) constructDBConn(
-	driverName string,
-	logger lager.Logger,
-	maxConns int,
-	idleConns int,
-	connectionName string,
-	lockFactory lock.LockFactory,
-) (db.DbConn, error) {
-	dbConn, err := db.Open(logger.Session("db"), driverName, cmd.Postgres.ConnectionString(), cmd.encryptionKey(), connectionName, lockFactory)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %s", err)
-	}
-
-	// Instrument with Metrics
-	dbConn = metric.CountQueries(dbConn)
-	metric.Metrics.Databases = append(metric.Metrics.Databases, dbConn)
-
-	// Instrument with Logging
-	if cmd.LogDBQueries {
-		dbConn = db.Log(logger.Session("log-dbconn"), dbConn)
-	}
-
-	// Prepare
-	dbConn.SetMaxOpenConns(maxConns)
-	dbConn.SetMaxIdleConns(idleConns)
-
-	return dbConn, nil
-}
-
-type Closer interface {
-	Close() error
-}
-
-func constructLockConns(driverName, connectionString string) ([lock.FactoryCount]*sql.DB, error) {
-	conns := [lock.FactoryCount]*sql.DB{}
-	for i := range lock.FactoryCount {
-		dbConn, err := sql.Open(driverName, connectionString)
-		if err != nil {
-			return conns, err
-		}
-
-		dbConn.SetMaxOpenConns(1)
-		dbConn.SetMaxIdleConns(1)
-		dbConn.SetConnMaxLifetime(0)
-
-		conns[i] = dbConn
-	}
-	return conns, nil
 }
 
 func (cmd *RunCommand) configureAuthForDefaultTeam(teamFactory db.TeamFactory) error {
