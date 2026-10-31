@@ -75,7 +75,6 @@ func newLiveKubernetesBounded(ctx context.Context, rec *brine.Recorder, podLimit
 	})
 	liveNamespaces.sweepStaleOnce(ctx, client)
 	fmt.Printf("created owned live namespace %s (%s)\n", ns.Name, ns.UID)
-	q := resource.MustParse
 	cpu := *resource.NewMilliQuantity(1000*nodes, resource.DecimalSI)
 	memory := *resource.NewQuantity(nodes*512<<20, resource.BinarySI)
 	scratch := *resource.NewQuantity(nodes*256<<20, resource.BinarySI)
@@ -87,14 +86,27 @@ func newLiveKubernetesBounded(ctx context.Context, rec *brine.Recorder, podLimit
 	if err != nil {
 		return liveKubernetes{}, err
 	}
+	defaults := liveContainerDefaults()
 	_, err = client.CoreV1().LimitRanges(ns.Name).Create(ctx, &corev1.LimitRange{ObjectMeta: metav1.ObjectMeta{Name: "bounded-containers"}, Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{Type: corev1.LimitTypeContainer,
-		Default:        corev1.ResourceList{corev1.ResourceCPU: q("250m"), corev1.ResourceMemory: q("64Mi"), corev1.ResourceEphemeralStorage: q("64Mi")},
-		DefaultRequest: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("32Mi"), corev1.ResourceEphemeralStorage: q("32Mi")},
+		Default: defaults.Limits, DefaultRequest: defaults.Requests,
 	}}}}, metav1.CreateOptions{})
 	if err != nil {
 		return liveKubernetes{}, err
 	}
 	return liveKubernetes{Clientset: client, Config: cfg, Namespace: ns.Name, Marker: string(ns.UID)}, nil
+}
+
+// liveContainerDefaults is what the owned namespace's LimitRange fills into a
+// container that declares no resources. A fixture pod created right after the
+// namespace states them itself: the LimitRanger admission plugin reads a
+// cache that can lag the just-created LimitRange, and the quota then refuses
+// the pod for lacking limits.
+func liveContainerDefaults() corev1.ResourceRequirements {
+	q := resource.MustParse
+	return corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: q("250m"), corev1.ResourceMemory: q("64Mi"), corev1.ResourceEphemeralStorage: q("64Mi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("32Mi"), corev1.ResourceEphemeralStorage: q("32Mi")},
+	}
 }
 
 // Shared live runtime setup and observation for tasks and interception.
