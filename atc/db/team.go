@@ -611,16 +611,6 @@ func savePipelineWithOptions(
 		return 0, false, err
 	}
 
-	varSourcesPayload, err := json.Marshal(config.VarSources)
-	if err != nil {
-		return 0, false, err
-	}
-
-	encryptedVarSourcesPayload, nonce, err := tx.EncryptionStrategy().Encrypt(varSourcesPayload)
-	if err != nil {
-		return 0, false, err
-	}
-
 	displayPayload, err := json.Marshal(config.Display)
 	if err != nil {
 		return 0, false, err
@@ -631,9 +621,7 @@ func savePipelineWithOptions(
 		values := map[string]any{
 			"name":            pipelineRef.Name,
 			"groups":          groupsPayload,
-			"var_sources":     encryptedVarSourcesPayload,
 			"display":         displayPayload,
-			"nonce":           nonce,
 			"version":         sq.Expr("nextval('config_version_seq')"),
 			"paused":          initiallyPaused,
 			"last_updated":    sq.Expr("now()"),
@@ -690,9 +678,7 @@ func savePipelineWithOptions(
 		q := psql.Update("pipelines").
 			Set("archived", false).
 			Set("groups", groupsPayload).
-			Set("var_sources", encryptedVarSourcesPayload).
 			Set("display", displayPayload).
-			Set("nonce", nonce).
 			Set("version", sq.Expr("nextval('config_version_seq')")).
 			Set("last_updated", sq.Expr("now()")).
 			Set("parent_job_id", jobID).
@@ -1521,10 +1507,7 @@ func scanPipeline(p *pipeline, scan scannable) error {
 	p.runNumber = 0
 	var (
 		groups               sql.NullString
-		varSources           sql.NullString
 		display              sql.NullString
-		nonce                sql.NullString
-		nonceStr             *string
 		lastUpdated          sql.NullTime
 		parentJobID          sql.NullInt64
 		parentBuildID        sql.NullInt64
@@ -1540,7 +1523,7 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		runNumber            sql.NullInt64
 		templatePipelineName sql.NullString
 	)
-	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &cacheScope, &p.lastRunNumber, &pipelineRunID, &templatePipelineID, &runNumber, &templatePipelineName)
+	err := scan.Scan(&p.id, &p.name, &groups, &display, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &cacheScope, &p.lastRunNumber, &pipelineRunID, &templatePipelineID, &runNumber, &templatePipelineName)
 	if err != nil {
 		return err
 	}
@@ -1583,10 +1566,6 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		p.groups = pipelineGroups
 	}
 
-	if nonce.Valid {
-		nonceStr = &nonce.String
-	}
-
 	if display.Valid {
 		var displayConfig *atc.DisplayConfig
 		err = json.Unmarshal([]byte(display.String), &displayConfig)
@@ -1595,20 +1574,6 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		}
 
 		p.display = displayConfig
-	}
-
-	if varSources.Valid {
-		var pipelineVarSources atc.VarSourceConfigs
-		decryptedVarSource, err := p.conn.EncryptionStrategy().Decrypt(varSources.String, nonceStr)
-		if err != nil {
-			return err
-		}
-		err = json.Unmarshal([]byte(decryptedVarSource), &pipelineVarSources)
-		if err != nil {
-			return err
-		}
-
-		p.varSources = pipelineVarSources
 	}
 
 	if instanceVars.Valid {

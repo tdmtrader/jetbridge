@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
-
-	"github.com/concourse/concourse/vars"
 )
 
 const ConfigVersionHeader = "X-Concourse-Config-Version"
@@ -18,7 +15,6 @@ const DefaultTeamName = "main"
 
 type Config struct {
 	Groups        GroupConfigs        `json:"groups,omitempty"`
-	VarSources    VarSourceConfigs    `json:"var_sources,omitempty"`
 	Resources     ResourceConfigs     `json:"resources,omitempty"`
 	ResourceTypes ResourceTypes       `json:"resource_types,omitempty"`
 	Jobs          JobConfigs          `json:"jobs,omitempty"`
@@ -49,7 +45,8 @@ const (
 // removedSections are top-level pipeline sections this fork cut, each with
 // the sentence a pipeline still declaring it is refused with.
 var removedSections = map[string]string{
-	"prototypes": "prototypes: is not a pipeline section; prototypes and the run step were removed",
+	"prototypes":  "prototypes: is not a pipeline section; prototypes and the run step were removed",
+	"var_sources": "var_sources: is not a pipeline section; pipeline-scoped credential managers were removed, so ((vars)) resolve only through the cluster's credential manager",
 }
 
 // RefuseRemovedSections rejects a pipeline payload that still declares a
@@ -75,7 +72,6 @@ func UnmarshalConfig(payload []byte, config any) error {
 	// a 'skeleton' of Config, specifying only the toplevel fields
 	type skeletonConfig struct {
 		Groups        any `json:"groups,omitempty"`
-		VarSources    any `json:"var_sources,omitempty"`
 		Resources     any `json:"resources,omitempty"`
 		ResourceTypes any `json:"resource_types,omitempty"`
 		Jobs          any `json:"jobs,omitempty"`
@@ -123,107 +119,6 @@ func (groups GroupConfigs) Lookup(name string) (GroupConfig, int, bool) {
 	}
 
 	return GroupConfig{}, -1, false
-}
-
-type VarSourceConfig struct {
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Config any    `json:"config"`
-}
-
-type VarSourceConfigs []VarSourceConfig
-
-func (c VarSourceConfigs) Lookup(name string) (VarSourceConfig, bool) {
-	for _, cm := range c {
-		if cm.Name == name {
-			return cm, true
-		}
-	}
-
-	return VarSourceConfig{}, false
-}
-
-type pendingVarSource struct {
-	vs   VarSourceConfig
-	deps []string
-}
-
-func (c VarSourceConfigs) OrderByDependency() (VarSourceConfigs, error) {
-	ordered := VarSourceConfigs{}
-	pending := []pendingVarSource{}
-	added := map[string]any{}
-
-	for _, vs := range c {
-		b, err := yaml.Marshal(vs.Config)
-		if err != nil {
-			return nil, err
-		}
-
-		template := vars.NewTemplate(b)
-		varNames := template.ExtraVarNames()
-
-		dependencies := []string{}
-		for _, varName := range varNames {
-			parts := strings.Split(varName, ":")
-			if len(parts) > 1 {
-				dependencies = append(dependencies, parts[0])
-			}
-		}
-
-		if len(dependencies) == 0 {
-			// If no dependency, add the var source to ordered list.
-			ordered = append(ordered, vs)
-			added[vs.Name] = true
-		} else {
-			// If there are some dependencies, then check if dependencies have
-			// already been added to ordered list, if yes, then add it; otherwise
-			// add it to a pending list.
-			miss := false
-			for _, dep := range dependencies {
-				if added[dep] == nil {
-					miss = true
-					break
-				}
-			}
-			if !miss {
-				ordered = append(ordered, vs)
-				added[vs.Name] = true
-			} else {
-				pending = append(pending, pendingVarSource{vs, dependencies})
-				continue
-			}
-		}
-
-		// Once a var_source is added to ordered list, check if any pending
-		// var_source can be added to ordered list.
-		left := []pendingVarSource{}
-		for _, pendingVs := range pending {
-			miss := false
-			for _, dep := range pendingVs.deps {
-				if added[dep] == nil {
-					miss = true
-					break
-				}
-			}
-			if !miss {
-				ordered = append(ordered, pendingVs.vs)
-				added[pendingVs.vs.Name] = true
-			} else {
-				left = append(left, pendingVs)
-			}
-		}
-		pending = left
-	}
-
-	if len(pending) > 0 {
-		names := []string{}
-		for _, vs := range pending {
-			names = append(names, vs.vs.Name)
-		}
-		return nil, fmt.Errorf("could not resolve inter-dependent var sources: %s", strings.Join(names, ", "))
-	}
-
-	return ordered, nil
 }
 
 type ResourceConfig struct {

@@ -8,14 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"code.cloudfoundry.org/clock"
-
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/dummy"
+	"github.com/concourse/concourse/atc/creds/credstest"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/imageresolver"
@@ -85,7 +82,7 @@ var _ = Describe("Scanner", func() {
 	)
 
 	newScanner := func(factory db.CheckFactory, maxConcurrency int) Scanner {
-		return lidar.NewScanner(factory, atc.NewPlanFactory(0), maxConcurrency, nil, nil, nil, nil)
+		return lidar.NewScanner(factory, atc.NewPlanFactory(0), maxConcurrency, nil, nil, nil)
 	}
 
 	It("returns the real-backed enumeration failure", func() {
@@ -406,7 +403,7 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 	) error {
 		GinkgoHelper()
 		return lidar.NewScanner(
-			factory, atc.NewPlanFactory(0), 10, resolver, resourceConfigFactory, &dummy.Secrets{}, nil,
+			factory, atc.NewPlanFactory(0), 10, resolver, resourceConfigFactory, &credstest.Secrets{},
 		).Run(lagerctx.NewContext(context.Background(), logger))
 	}
 
@@ -827,7 +824,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 	) error {
 		GinkgoHelper()
 		return lidar.NewScanner(
-			factory, atc.NewPlanFactory(0), 10, resolver, resourceConfigFactory, &dummy.Secrets{}, nil,
+			factory, atc.NewPlanFactory(0), 10, resolver, resourceConfigFactory, &credstest.Secrets{},
 		).Run(lagerctx.NewContext(context.Background(), logger))
 	}
 
@@ -1184,7 +1181,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		ran := make(chan error, 1)
 		go func() {
 			ran <- lidar.NewScanner(
-				fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory, &dummy.Secrets{}, nil,
+				fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory, &credstest.Secrets{},
 			).Run(ctx)
 		}()
 		Eventually(resolving).WithTimeout(5 * time.Second).Should(BeClosed())
@@ -1416,7 +1413,7 @@ func runNativeScanner(fixture *lidarDB, logger *lagertest.TestLogger) <-chan err
 	go func() {
 		ran <- lidar.NewScanner(
 			fixture.CheckFactory, atc.NewPlanFactory(0), 10,
-			imageresolver.NewResolver(nil), fixture.ResourceConfigFactory, &dummy.Secrets{}, nil,
+			imageresolver.NewResolver(nil), fixture.ResourceConfigFactory, &credstest.Secrets{},
 		).Run(lagerctx.NewContext(context.Background(), logger))
 	}()
 	return ran
@@ -1442,16 +1439,16 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 	}
 	// The global credential manager, keyed under the team and pipeline the
 	// check build would look them up under.
-	globalSecrets := &dummy.Secrets{StaticVariables: vars.StaticVariables{
+	globalSecrets := &credstest.Secrets{StaticVariables: vars.StaticVariables{
 		teamName + "/" + pipelineName + "/repo": "registry.example.com/team/app",
 		teamName + "/user":                      "robot",
 		"secret":                                "s3cret",
 	}}
 
-	runScanner := func(fixture *lidarDB, resolver *imageresolvertesting.FakeResolver, pool creds.VarSourcePool, logger *lagertest.TestLogger) {
+	runScanner := func(fixture *lidarDB, resolver *imageresolvertesting.FakeResolver, logger *lagertest.TestLogger) {
 		GinkgoHelper()
 		Expect(lidar.NewScanner(
-			fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory, globalSecrets, pool,
+			fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory, globalSecrets,
 		).Run(lagerctx.NewContext(context.Background(), logger))).To(Succeed())
 	}
 
@@ -1474,7 +1471,7 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 		resolver := new(imageresolvertesting.FakeResolver)
 		resolver.ResolveReturns("sha256:evaluated", nil)
 
-		runScanner(fixture, resolver, nil, lagertest.NewTestLogger("test"))
+		runScanner(fixture, resolver, lagertest.NewTestLogger("test"))
 		expectEvaluatedResolve(resolver)
 
 		// The resource config is the one a check step builds from the
@@ -1488,31 +1485,6 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 		expectLidarLatestVersion(resolvedLidarResourceScope(fixture, resource), atc.Version{"digest": "sha256:evaluated"})
 	})
 
-	It("resolves a resource type with its source evaluated through the pipeline's var_source", func() {
-		fixture := useLidarDB()
-		pool := creds.NewVarSourcePool(lagertest.NewTestLogger("pool"), creds.CredentialManagementConfig{}, time.Minute, time.Second, clock.NewClock())
-		DeferCleanup(pool.Close)
-		config := atc.ResourceType{Name: "var-type", Type: "registry-image", Source: atc.Source{
-			"repository": "((store:repo))",
-			"tag":        "latest",
-			"username":   "((store:user))",
-			"password":   "((store:secret))",
-		}}
-		_, pipeline := persistLidarPipeline(fixture, teamName, pipelineName, atc.Config{
-			VarSources: atc.VarSourceConfigs{{Name: "store", Type: "dummy", Config: map[string]any{
-				"vars": map[string]any{"repo": "registry.example.com/team/app", "user": "robot", "secret": "s3cret"},
-			}}},
-			ResourceTypes: atc.ResourceTypes{config},
-		})
-		resolver := new(imageresolvertesting.FakeResolver)
-		resolver.ResolveReturns("sha256:evaluated", nil)
-
-		runScanner(fixture, resolver, pool, lagertest.NewTestLogger("test"))
-		expectEvaluatedResolve(resolver)
-		resourceType := lidarPipelineResourceType(pipeline, config.Name)
-		expectLidarLatestVersion(resolvedLidarResourceTypeScope(fixture, resourceType), atc.Version{"digest": "sha256:evaluated"})
-	})
-
 	It("plans a check and get for a resolved resource type whose repository holds a ((var)), instead of an image ref with the placeholder", func() {
 		fixture := useLidarDB()
 		config := atc.ResourceType{Name: "var-type", Type: "registry-image", Source: varSource}
@@ -1522,7 +1494,7 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 		resolver := new(imageresolvertesting.FakeResolver)
 		resolver.ResolveReturns("sha256:evaluated", nil)
 
-		runScanner(fixture, resolver, nil, lagertest.NewTestLogger("test"))
+		runScanner(fixture, resolver, lagertest.NewTestLogger("test"))
 		expectEvaluatedResolve(resolver)
 
 		resourceTypes, err := pipeline.ResourceTypes()
@@ -1556,7 +1528,7 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 		resolver := new(imageresolvertesting.FakeResolver)
 		logger := lagertest.NewTestLogger("test")
 
-		runScanner(fixture, resolver, nil, logger)
+		runScanner(fixture, resolver, logger)
 		Expect(resolver.ResolveCallCount()).To(BeZero())
 		Expect(loggedAt(logger.Logs(), lager.ERROR, "failed-to-evaluate-source")).To(BeTrue())
 		resource := lidarPipelineResource(pipeline, config.Name)
@@ -1572,7 +1544,7 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 	It("keeps the check interval for a resource checked once because its var was undefined, once the var evaluates", func() {
 		fixture := useLidarDB()
 		lateVariables := vars.StaticVariables{}
-		secrets := &dummy.Secrets{StaticVariables: lateVariables}
+		secrets := &credstest.Secrets{StaticVariables: lateVariables}
 		config := atc.ResourceConfig{
 			Name:       "var-image",
 			Type:       "registry-image",
@@ -1586,7 +1558,7 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 		scan := func() {
 			GinkgoHelper()
 			Expect(lidar.NewScanner(
-				fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory, secrets, nil,
+				fixture.CheckFactory, atc.NewPlanFactory(0), 10, resolver, fixture.ResourceConfigFactory, secrets,
 			).Run(lagerctx.NewContext(context.Background(), lagertest.NewTestLogger("test")))).To(Succeed())
 		}
 

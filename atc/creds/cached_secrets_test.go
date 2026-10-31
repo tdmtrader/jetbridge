@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/dummy"
+	"github.com/concourse/concourse/atc/creds/credstest"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -59,13 +59,13 @@ func (secrets alreadyExpiredSecrets) Get(secretPath string) (any, *time.Time, bo
 
 var _ = Describe("Caching of secrets", func() {
 
-	var underlyingSecrets *dummy.Secrets
+	var underlyingSecrets *credstest.Secrets
 	var secretManager *countingSecrets
 	var cacheConfig creds.SecretCacheConfig
 	var cachedSecretManager *creds.CachedSecrets
 
 	BeforeEach(func() {
-		underlyingSecrets = &dummy.Secrets{StaticVariables: vars.StaticVariables{"foo": "value"}}
+		underlyingSecrets = &credstest.Secrets{StaticVariables: vars.StaticVariables{"foo": "value"}}
 		secretManager = &countingSecrets{Secrets: underlyingSecrets}
 		cacheConfig = creds.SecretCacheConfig{
 			Duration:         400 * time.Millisecond,

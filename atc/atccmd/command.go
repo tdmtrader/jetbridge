@@ -90,7 +90,6 @@ import (
 	// dynamically registered policy checkers
 
 	// dynamically registered credential managers
-	_ "github.com/concourse/concourse/atc/creds/dummy"
 	_ "github.com/concourse/concourse/atc/creds/kubernetes"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -118,8 +117,6 @@ type RunCommand struct {
 	artifactResolveCapabilityKey []byte
 
 	Logger flag.Lager
-
-	varSourcePool creds.VarSourcePool
 
 	// customRoles is loaded during validation and reused by the API so the
 	// security check and enforcement always operate on the same mapping. It is
@@ -265,7 +262,6 @@ type RunCommand struct {
 		MissingGracePeriod         time.Duration `long:"missing-grace-period" default:"5m" description:"Period after which to reap containers and volumes that were created but went missing from the worker."`
 		HijackGracePeriod          time.Duration `long:"hijack-grace-period" default:"5m" description:"Period after which hijacked containers will be garbage collected"`
 		FailedGracePeriod          time.Duration `long:"failed-grace-period" default:"120h" description:"Period after which failed containers will be garbage collected"`
-		VarSourceRecyclePeriod     time.Duration `long:"var-source-recycle-period" default:"5m" description:"Period after which to reap var_sources that are not used."`
 		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
 	} `group:"Garbage Collection" namespace:"gc"`
 
@@ -614,14 +610,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		return nil, err
 	}
 
-	cmd.varSourcePool = creds.NewVarSourcePool(
-		logger.Session("var-source-pool"),
-		cmd.CredentialManagement,
-		cmd.GC.VarSourceRecyclePeriod,
-		1*time.Minute,
-		clock.NewClock(),
-	)
-
 	members, err := cmd.constructMembers(logger, apiConn, workerConn, backendConn, gcConn, storage, lockFactory, secretManager)
 	if err != nil {
 		return nil, err
@@ -656,7 +644,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		for _, closer := range lockConns {
 			closer.Close()
 		}
-		cmd.varSourcePool.Close()
 		if cmd.hangarOutputStoreClose != nil {
 			_ = cmd.hangarOutputStoreClose()
 		}
@@ -1050,7 +1037,6 @@ func (cmd *RunCommand) backendComponents(
 				imgResolver,
 				dbResourceConfigFactory,
 				secretManager,
-				cmd.varSourcePool,
 			),
 		},
 		{
@@ -2195,7 +2181,6 @@ func (cmd *RunCommand) constructEngine(
 			resolver,
 		),
 		secretManager,
-		cmd.varSourcePool,
 	)
 }
 
@@ -2445,7 +2430,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		concourse.JetBridgeVersion,
 		concourse.ConcourseVersion,
 		secretManager,
-		cmd.varSourcePool,
 		credsManagers,
 		containerserver.NewInterceptTimeoutFactory(cmd.InterceptIdleTimeout),
 		time.Minute,

@@ -507,23 +507,13 @@ func (b *inMemoryCheckBuild) saveEvent(tx Tx, event atc.Event) error {
 	return err
 }
 
-func (b *inMemoryCheckBuild) Variables(logger lager.Logger, secrets creds.Secrets, varSourcePool creds.VarSourcePool) (vars.Variables, error) {
-	pipeline, found, err := b.Pipeline()
-	if err != nil {
-		return nil, fmt.Errorf("failed to find pipeline: %w", err)
-	}
-	if !found {
-		return nil, errors.New("pipeline not found")
-	}
-
-	context := creds.SecretLookupParams{
+func (b *inMemoryCheckBuild) Variables(secrets creds.Secrets) vars.Variables {
+	return creds.NewVariables(secrets, creds.SecretLookupParams{
 		Team:         b.TeamName(),
 		Pipeline:     b.PipelineName(),
 		InstanceVars: b.PipelineInstanceVars(),
 		Job:          b.JobName(),
-	}
-
-	return pipeline.Variables(logger, secrets, varSourcePool, context)
+	}, false)
 }
 
 func (b *inMemoryCheckBuild) SaveEvent(ev atc.Event) error {

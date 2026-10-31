@@ -22,7 +22,6 @@ import (
 func NewEngine(
 	stepperFactory StepperFactory,
 	secrets creds.Secrets,
-	varSourcePool creds.VarSourcePool,
 ) Engine {
 	return Engine{
 		stepperFactory: stepperFactory,
@@ -31,7 +30,6 @@ func NewEngine(
 		waitGroup:      new(sync.WaitGroup),
 
 		globalSecrets: secrets,
-		varSourcePool: varSourcePool,
 	}
 }
 
@@ -42,7 +40,6 @@ type Engine struct {
 	waitGroup      *sync.WaitGroup
 
 	globalSecrets creds.Secrets
-	varSourcePool creds.VarSourcePool
 }
 
 func (engine Engine) Drain(ctx context.Context) {
@@ -63,7 +60,6 @@ func (engine Engine) NewBuild(build db.Build) builds.Runnable {
 		build,
 		engine.stepperFactory,
 		engine.globalSecrets,
-		engine.varSourcePool,
 		engine.release,
 		engine.trackedStates,
 		engine.waitGroup,
@@ -74,7 +70,6 @@ func NewBuild(
 	build db.Build,
 	builder StepperFactory,
 	globalSecrets creds.Secrets,
-	varSourcePool creds.VarSourcePool,
 	release chan bool,
 	trackedStates *sync.Map,
 	waitGroup *sync.WaitGroup,
@@ -84,7 +79,6 @@ func NewBuild(
 		builder: builder,
 
 		globalSecrets: globalSecrets,
-		varSourcePool: varSourcePool,
 
 		release:       release,
 		trackedStates: trackedStates,
@@ -97,7 +91,6 @@ type engineBuild struct {
 	builder StepperFactory
 
 	globalSecrets creds.Secrets
-	varSourcePool creds.VarSourcePool
 
 	release       chan bool
 	trackedStates *sync.Map
@@ -159,17 +152,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 
 	logger.Info("running")
 
-	state, err := b.runState(logger, stepper)
-	if err != nil {
-		logger.Error("failed-to-create-run-state", err)
-
-		// Fails the build if fetching the pipeline variables fails, as these errors
-		// are unrecoverable - e.g. if pipeline var_sources is wrong. finish
-		// emits the error event (no step ran, so nothing else will).
-		b.finish(logger.Session("finish"), err, false, false)
-
-		return
-	}
+	state := b.runState(stepper)
 	defer b.clearRunState()
 
 	abortSignal, unlisten, err := b.build.AbortSignal()
@@ -388,18 +371,14 @@ func (b *engineBuild) trackFinished(logger lager.Logger) {
 	}
 }
 
-func (b *engineBuild) runState(logger lager.Logger, stepper exec.Stepper) (exec.RunState, error) {
+func (b *engineBuild) runState(stepper exec.Stepper) exec.RunState {
 	id := b.build.RunStateID()
 	existingState, ok := b.trackedStates.Load(id)
 	if ok {
-		return existingState.(exec.RunState), nil
+		return existingState.(exec.RunState)
 	}
-	credVars, err := b.build.Variables(logger, b.globalSecrets, b.varSourcePool)
-	if err != nil {
-		return nil, err
-	}
-	state, _ := b.trackedStates.LoadOrStore(id, exec.NewRunState(stepper, credVars))
-	return state.(exec.RunState), nil
+	state, _ := b.trackedStates.LoadOrStore(id, exec.NewRunState(stepper, b.build.Variables(b.globalSecrets)))
+	return state.(exec.RunState)
 }
 
 func (b *engineBuild) clearRunState() {

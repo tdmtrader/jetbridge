@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/clock/fakeclock"
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
@@ -41,7 +40,6 @@ var (
 	scriptedAccess        *apiAccess
 	scriptedAccessFactory *staticAccessFactory
 	secretManager         creds.Secrets
-	varSourcePool         creds.VarSourcePool
 	credsManagers         creds.Managers
 	interceptTimeout      *observingInterceptTimeout
 	isTLSEnabled          bool
@@ -193,14 +191,6 @@ var _ = BeforeEach(func() {
 	logger = lagertest.NewTestLogger("api")
 
 	secretManager = noop.Noop{}
-	varSourcePool = creds.NewVarSourcePool(
-		logger.Session("var-source-pool"),
-		creds.CredentialManagementConfig{},
-		5*time.Minute,
-		time.Minute,
-		clock.NewClock(),
-	)
-	DeferCleanup(varSourcePool.Close)
 	credsManagers = make(creds.Managers)
 
 	isTLSEnabled = false
@@ -311,7 +301,6 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		"0.1.0-test",
 		"8.0.1-test",
 		secretManager,
-		varSourcePool,
 		credsManagers,
 		interceptTimeout,
 		time.Second,

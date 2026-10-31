@@ -2,7 +2,7 @@ package creds_test
 
 import (
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/dummy"
+	"github.com/concourse/concourse/atc/creds/credstest"
 	"github.com/concourse/concourse/vars"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,16 +15,13 @@ var _ = Describe("VariableLookupFromSecrets", func() {
 	)
 
 	BeforeEach(func() {
-		secrets := dummy.NewSecretsFactory([]dummy.VarFlag{
-			{
-				Name: "a",
-				Value: map[string]any{
-					"b": map[any]any{
-						"c": "foo",
-					},
+		secrets := &credstest.Secrets{StaticVariables: vars.StaticVariables{
+			"a": map[string]any{
+				"b": map[any]any{
+					"c": "foo",
 				},
 			},
-		}).NewSecrets()
+		}}
 		variables = creds.NewVariables(secrets, creds.SecretLookupParams{Team: "team", Pipeline: "pipeline"}, true)
 	})
 

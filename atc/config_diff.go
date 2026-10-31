@@ -91,21 +91,6 @@ func (index GroupIndex) FindEquivalentWithOrder(obj any) (any, int, bool) {
 	return GroupConfigs(index).Lookup(name(obj))
 }
 
-type VarSourceIndex VarSourceConfigs
-
-func (index VarSourceIndex) Slice() []any {
-	slice := make([]any, len(index))
-	for i, object := range index {
-		slice[i] = object
-	}
-
-	return slice
-}
-
-func (index VarSourceIndex) FindEquivalent(obj any) (any, bool) {
-	return VarSourceConfigs(index).Lookup(name(obj))
-}
-
 type JobIndex JobConfigs
 
 func (index JobIndex) Slice() []any {
@@ -394,16 +379,6 @@ func (c Config) Diff(out io.Writer, newConfig Config) bool {
 
 		for _, diff := range groupDiffs {
 			diff.Render(indent, "group")
-		}
-	}
-
-	varSourceDiffs := diffIndices(VarSourceIndex(c.VarSources), VarSourceIndex(newConfig.VarSources))
-	if len(varSourceDiffs) > 0 {
-		diffExists = true
-		fmt.Fprintln(out, "variable source:")
-
-		for _, diff := range varSourceDiffs {
-			diff.Render(indent, "variable source")
 		}
 	}
 

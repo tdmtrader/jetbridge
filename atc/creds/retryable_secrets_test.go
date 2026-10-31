@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/dummy"
+	"github.com/concourse/concourse/atc/creds/credstest"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,7 +28,7 @@ func (secrets *flakySecrets) Get(secretPath string) (any, *time.Time, bool, erro
 
 func makeFlakySecretManager(numberOfFails int) creds.Secrets {
 	return &flakySecrets{
-		Secrets: &dummy.Secrets{StaticVariables: vars.StaticVariables{"team/pipeline/somevar": "received value"}},
+		Secrets: &credstest.Secrets{StaticVariables: vars.StaticVariables{"team/pipeline/somevar": "received value"}},
 		fails:   numberOfFails,
 	}
 }

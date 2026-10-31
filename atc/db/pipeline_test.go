@@ -5,11 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"code.cloudfoundry.org/clock"
-	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/db/dbtest"
-	"github.com/concourse/concourse/vars"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -39,15 +35,6 @@ var _ = Describe("Pipeline", func() {
 					Name:      "some-group",
 					Jobs:      []string{"job-1", "job-2"},
 					Resources: []string{"some-resource", "some-other-resource"},
-				},
-			},
-			VarSources: atc.VarSourceConfigs{
-				{
-					Name: "some-var-source",
-					Type: "dummy",
-					Config: map[string]any{
-						"vars": map[string]any{"pk": "pv"},
-					},
 				},
 			},
 			Display: &atc.DisplayConfig{
@@ -1695,108 +1682,6 @@ var _ = Describe("Pipeline", func() {
 		})
 	})
 
-	Describe("Variables", func() {
-		var (
-			globalSecrets *countingSecrets
-			pool          creds.VarSourcePool
-
-			pvars vars.Variables
-			err   error
-		)
-
-		BeforeEach(func() {
-			credentialManagement := creds.CredentialManagementConfig{
-				RetryConfig: creds.SecretRetryConfig{
-					Attempts: 5,
-					Interval: time.Second,
-				},
-				CacheConfig: creds.SecretCacheConfig{
-					Enabled:          true,
-					Duration:         time.Minute,
-					DurationNotFound: time.Minute,
-					PurgeInterval:    time.Minute * 10,
-				},
-			}
-			pool = creds.NewVarSourcePool(logger, credentialManagement, 1*time.Minute, 1*time.Second, clock.NewClock())
-		})
-
-		AfterEach(func() {
-			pool.Close()
-		})
-
-		JustBeforeEach(func() {
-			globalSecrets = &countingSecrets{
-				Secrets: &dummy.Secrets{StaticVariables: vars.StaticVariables{"gk": "gv"}},
-			}
-
-			params := creds.SecretLookupParams{
-				Team:         pipeline.TeamName(),
-				Pipeline:     pipeline.Name(),
-				InstanceVars: pipeline.InstanceVars(),
-			}
-
-			pvars, err = pipeline.Variables(logger, globalSecrets, pool, params)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("should get var from pipeline var source", func() {
-			v, found, err := pvars.Get(vars.Reference{Source: "some-var-source", Path: "pk"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(v.(string)).To(Equal("pv"))
-		})
-
-		It("should not get pipeline var 'pk' without specifying var_source name", func() {
-			_, found, err := pvars.Get(vars.Reference{Path: "pk"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeFalse())
-		})
-
-		It("should not get from global secrets if found in the pipeline var source", func() {
-			pvars.Get(vars.Reference{Source: "some-var-source", Path: "pk"})
-			Expect(globalSecrets.getCount).To(Equal(0))
-		})
-
-		It("should get var from global var source", func() {
-			v, found, err := pvars.Get(vars.Reference{Path: "gk"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(v.(string)).To(Equal("gv"))
-		})
-
-		It("should not get var 'foo'", func() {
-			_, found, err := pvars.Get(vars.Reference{Path: "foo"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeFalse())
-		})
-
-		Context("with the second var_source", func() {
-			BeforeEach(func() {
-				pipelineConfig.VarSources = append(pipelineConfig.VarSources, atc.VarSourceConfig{
-					Name: "second-var-source",
-					Type: "dummy",
-					Config: map[string]any{
-						"vars": map[string]any{"pk": "((some-var-source:pk))"},
-					},
-				})
-
-				var created bool
-				pipeline, created, err = team.SavePipeline(atc.PipelineRef{Name: "fake-pipeline"}, pipelineConfig, pipeline.ConfigVersion(), false)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(created).To(BeFalse())
-			})
-
-			// The second var source is configured with vars that needs to be interpolated
-			// from "some-var-source".
-			It("should get pipeline var 'pk' from the second var_source", func() {
-				v, found, err := pvars.Get(vars.Reference{Source: "second-var-source", Path: "pk"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(v.(string)).To(Equal("pv"))
-			})
-		})
-	})
-
 	Describe("SetParentIDs", func() {
 		It("sets the parent_job_id and parent_build_id fields", func() {
 			jobID := 123
@@ -1852,17 +1737,4 @@ var _ = Describe("Pipeline", func() {
 
 func intptr(i int) *int {
 	return &i
-}
-
-// countingSecrets wraps a real secret manager to record how many lookups reach
-// it. A secret manager has no way to report that on its own.
-type countingSecrets struct {
-	creds.Secrets
-
-	getCount int
-}
-
-func (s *countingSecrets) Get(path string) (any, *time.Time, bool, error) {
-	s.getCount++
-	return s.Secrets.Get(path)
 }

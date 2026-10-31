@@ -27,7 +27,3 @@ func (factory *kubernetesManagerFactory) AddConfig(group *flags.Group) creds.Man
 
 	return manager
 }
-
-func (factory *kubernetesManagerFactory) NewInstance(config any) (creds.Manager, error) {
-	return &KubernetesManager{}, nil
-}

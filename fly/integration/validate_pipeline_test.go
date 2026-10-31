@@ -13,20 +13,15 @@ import (
 )
 
 var _ = Describe("validate-pipeline", func() {
-	DescribeTable("rejects retired var_sources", func(sourceType string) {
+	It("refuses a removed var_sources section with the server's sentence", func() {
 		config := filepath.Join(GinkgoT().TempDir(), "pipeline.yml")
-		Expect(os.WriteFile(config, []byte("var_sources:\n- name: retired\n  type: "+sourceType+"\n  config: {}\njobs: []\n"), 0600)).To(Succeed())
+		Expect(os.WriteFile(config, []byte("var_sources:\n- name: retired\n  type: vault\n  config: {}\njobs: []\n"), 0600)).To(Succeed())
 		sess, err := gexec.Start(exec.Command(flyPath, "validate-pipeline", "-c", config), GinkgoWriter, GinkgoWriter)
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess).Should(gexec.Exit(1))
-		Expect(sess.Err).To(gbytes.Say("unsupported credential manager type: " + sourceType))
-	},
-		Entry("Vault", "vault"),
-		Entry("CredHub", "credhub"),
-		Entry("SSM", "ssm"),
-		Entry("Secrets Manager", "secretsmanager"),
-		Entry("Conjur", "conjur"),
-	)
+		Expect(sess.Err).To(gbytes.Say("var_sources: is not a pipeline section; pipeline-scoped credential managers were removed"))
+		Expect(sess.Out).NotTo(gbytes.Say("looks good"))
+	})
 
 	It("refuses a removed prototypes section with the server's sentence", func() {
 		// This fails if fly's plain yaml.Unmarshal drops the key and prints
@@ -232,17 +227,4 @@ jobs:
 		})
 	})
 
-	It("returns valid on a pipeline that contains var_sources", func() {
-		flyCmd := exec.Command(
-			flyPath,
-			"validate-pipeline",
-			"-c", "fixtures/var_sources_pipeline.yml",
-		)
-
-		sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-		Expect(err).NotTo(HaveOccurred())
-
-		<-sess.Exited
-		Expect(sess.ExitCode()).To(Equal(0))
-	})
 })

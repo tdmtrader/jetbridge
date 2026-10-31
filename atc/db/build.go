@@ -185,7 +185,7 @@ type Build interface {
 	Start(atc.Plan) (bool, error)
 	Finish(BuildStatus) error
 
-	Variables(lager.Logger, creds.Secrets, creds.VarSourcePool) (vars.Variables, error)
+	Variables(creds.Secrets) vars.Variables
 
 	SetComment(string) error
 	SetInterceptible(bool) error
@@ -969,30 +969,16 @@ WITH RECURSIVE pipelines_to_archive AS (
 	return nil
 }
 
-// Variables creates variables for this build. If the build is a one-off build, it
-// just uses the global secrets manager. If it belongs to a pipeline, it combines
-// the global secrets manager with the pipeline's var_sources.
-func (b *build) Variables(logger lager.Logger, globalSecrets creds.Secrets, varSourcePool creds.VarSourcePool) (vars.Variables, error) {
-	params := creds.SecretLookupParams{
+// Variables looks this build's ((vars)) up in the global credential manager,
+// under the build's team and pipeline. A one-off build has no pipeline, so
+// only its team prefixes the lookup.
+func (b *build) Variables(globalSecrets creds.Secrets) vars.Variables {
+	return creds.NewVariables(globalSecrets, creds.SecretLookupParams{
 		Team:         b.teamName,
 		Pipeline:     b.pipelineName,
 		InstanceVars: b.pipelineInstanceVars,
 		Job:          b.jobName,
-	}
-
-	// "fly execute" generated build will have no pipeline.
-	if b.pipelineID == 0 {
-		return creds.NewVariables(globalSecrets, params, false), nil
-	}
-	pipeline, found, err := b.Pipeline()
-	if err != nil {
-		return nil, fmt.Errorf("failed to find pipeline: %w", err)
-	}
-	if !found {
-		return nil, errors.New("pipeline not found")
-	}
-
-	return pipeline.Variables(logger, globalSecrets, varSourcePool, params)
+	}, false)
 }
 
 func (b *build) Delete() (bool, error) {
