@@ -320,12 +320,12 @@ one package is running at a time (the `ginkgo` default). The `go test` default
 is to run each package in parallel, so tests that allocate ports for test
 servers and such will collide with each other.
 
-If you want to run all the unit tests across the entire codebase, use the
-following command, which skips all integration tests and linux-specific tests:
+If you want to run all the unit tests across the entire codebase, run
+`make test-unit`. It runs `hack/unit-tests.sh`, which holds the list of
+excluded packages (the integration tiers) and is also what CI runs:
 
 ```sh
-ginkgo -r -p -flake-attempts=3 \
-    -skip-package topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+make test-unit
 ```
 
 If you're on a non-linux platform you may want to run the tests using Docker
@@ -341,8 +341,7 @@ the following to run all the unit tests, including the linux-specific tests:
 ```sh
 cd /src
 go install github.com/onsi/ginkgo/v2/ginkgo
-ginkgo -r -p -flake-attempts=3 \
-    -skip-package topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+hack/unit-tests.sh
 ```
 
 #### Running elm tests

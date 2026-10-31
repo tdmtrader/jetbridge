@@ -1,24 +1,13 @@
 .PHONY: test-unit test-elm test-brine-guards test-fly-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
-# Unit tests: all packages except the e2e and nested-module tiers (~9 min)
-# Requires: PostgreSQL running locally
+# Unit tests: every package except the excluded tiers (~9 min)
+# Requires: PostgreSQL binaries on PATH (the suites start their own postmaster)
 #
-# This list must match the grep -v chain in the unit-tests job of
-# deploy/concourse-pipeline.yml. TestUnitExclusionsMatchThePipeline enforces it:
-# a package excluded there and not here is one that passes locally and never
-# runs in CI, which is how 52k lines of tests went unrun.
-#
-# atc/worker/jetbridge/brine is skipped for a different reason than the rest.
-# It is a nested module, so the pipeline's `go list ./...` never names it and
-# its entry in the grep chain is a no-op -- but ginkgo -r walks DIRECTORIES,
-# not modules, so without this entry the root run descends into it and fails
-# on prerequisites only the brine job has (a brine binary on PATH, .build/
-# busybox, otelcol). The brine job owns that tier; test-brine-guards below
-# owns the part that needs nothing.
+# The package and exclusion lists live in hack/unit-tests.sh, which the
+# pipeline's unit-tests job runs too (with --ci). Change them there.
 test-unit:
 	@echo "==> Running unit tests..."
-	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
+	hack/unit-tests.sh
 
 # Elm frontend tests (~30 sec)
 # Requires: yarn install (elm-test comes from node_modules)

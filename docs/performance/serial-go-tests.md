@@ -88,6 +88,9 @@ sources are unchanged.
 
 ## Reproduction
 
+The `--skip-package` lists below are the unit-tier exclusions as they stood
+when this was measured; the current list is `EXCLUDED` in `hack/unit-tests.sh`.
+
 Use the same source revision, toolchain and PostgreSQL version on both sides.
 Run from each checkout:
 

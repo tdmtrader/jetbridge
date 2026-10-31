@@ -465,6 +465,19 @@ func TestPipelineTaskScriptsAreValidShell(t *testing.T) {
 	t.Logf("parsed %d task scripts", checked)
 }
 
+// The unit-tests task's script is a file, not a YAML string, so the check
+// above never sees it -- and it runs only after build-and-vet, under the
+// runner's /bin/sh. Parse it the same way.
+func TestUnitTestsScriptIsValidShell(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("no sh on PATH: %v", err)
+	}
+	out, err := exec.Command("sh", "-n", filepath.Join(repoRoot(t), "hack", "unit-tests.sh")).CombinedOutput()
+	if err != nil {
+		t.Errorf("hack/unit-tests.sh is not valid shell:\n%s", strings.TrimSpace(string(out)))
+	}
+}
+
 // A Concourse task runs until it exits or a human aborts it. There is no
 // implicit ceiling, and concourse-pipeline.yml's jobs share serial groups --
 // self-upgrade shares one with every test job -- so a task that hangs does not
@@ -793,81 +806,60 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
-// TestUnitExclusionsMatchThePipeline pins the two places that decide which
-// packages get tested to the same answer: the Makefile and the pipeline's
-// unit-tests job.
+// TestOneUnitExclusionList holds the unit tier to one definition:
+// hack/unit-tests.sh. `make test-unit` and the pipeline's unit-tests job both
+// run it, so neither may carry a package list of its own.
 //
-// They drifted once, and silently: the pipeline excluded atc/db, atc/gc,
-// atc/scheduler/algorithm, atc/worker, cmd and skymarshal/dexserver, none of
-// which the Makefile skipped. That is 52k lines of tests which passed on every
-// developer machine and ran in CI exactly never. A commit claiming to have
-// aligned the lists removed one entry and left six, because nothing checked.
-//
-// Neither list is authoritative -- the test only requires that they agree.
-func TestUnitExclusionsMatchThePipeline(t *testing.T) {
+// There used to be two lists, the Makefile's and the job's, and they drifted
+// silently: the pipeline excluded atc/db, atc/gc, atc/scheduler/algorithm,
+// atc/worker, cmd and skymarshal/dexserver, none of which the Makefile
+// skipped. That is 52k lines of tests which passed on every developer machine
+// and ran in CI exactly never.
+func TestOneUnitExclusionList(t *testing.T) {
 	root := repoRoot(t)
-
-	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
-	if err != nil {
-		t.Fatalf("reading the Makefile: %v", err)
+	read := func(rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v", rel, err)
+		}
+		return string(b)
 	}
 
-	skip := regexp.MustCompile(`--skip-package=([^\s\\]+)`).FindSubmatch(makefile)
-	if skip == nil {
-		t.Fatal("the Makefile's test-unit target no longer passes --skip-package; " +
-			"this test can no longer find the exclusion list")
+	list := regexp.MustCompile(`(?m)^EXCLUDED="([^"]+)"$`).FindStringSubmatch(read("hack/unit-tests.sh"))
+	if list == nil {
+		t.Fatal(`hack/unit-tests.sh no longer sets EXCLUDED="..."; this test can no longer find the exclusion list`)
+	}
+	if len(strings.Fields(list[1])) == 0 {
+		t.Fatal("hack/unit-tests.sh sets an empty EXCLUDED; the unit tier would walk into topgun and the nested brine module")
 	}
 
-	fromMakefile := map[string]bool{}
-	for _, pkg := range strings.Split(string(skip[1]), ",") {
-		fromMakefile[normalizeExclusion(pkg)] = true
+	recipe := regexp.MustCompile(`(?m)^test-unit:\n((?:\t.*\n)+)`).FindStringSubmatch(read("Makefile"))
+	switch {
+	case recipe == nil:
+		t.Error("the Makefile has no test-unit target")
+	case !strings.Contains(recipe[1], "hack/unit-tests.sh"):
+		t.Errorf("the Makefile's test-unit target does not run hack/unit-tests.sh:\n%s", recipe[1])
+	case strings.Contains(recipe[1], "--skip-package"):
+		t.Errorf("the Makefile's test-unit target carries its own --skip-package list:\n%s", recipe[1])
 	}
 
-	pipeline, err := os.ReadFile(filepath.Join(root, "deploy", "concourse-pipeline.yml"))
-	if err != nil {
-		t.Fatalf("reading the pipeline: %v", err)
-	}
-
-	// Comments in this file discuss exclusions in prose, and `#` opens a
-	// comment in both YAML and the embedded shell, so strip them before
-	// matching or the prose counts as configuration.
-	script := stripShellComments(string(pipeline))
-
-	// `)` closes the surrounding $(...) on the last entry and is shell syntax,
-	// not part of the package path.
-	greps := regexp.MustCompile(`grep -v '?([^\s'\\)]+)'?`).FindAllStringSubmatch(script, -1)
-	if len(greps) == 0 {
-		t.Fatal("deploy/concourse-pipeline.yml no longer filters packages with " +
-			"grep -v; this test can no longer find the exclusion list")
-	}
-
-	fromPipeline := map[string]bool{}
-	for _, g := range greps {
-		fromPipeline[normalizeExclusion(g[1])] = true
-	}
-
-	for pkg := range fromMakefile {
-		if !fromPipeline[pkg] {
-			t.Errorf("the Makefile skips %q but the pipeline does not, so CI runs "+
-				"a suite no one runs locally", pkg)
+	var jobScript string
+	for _, job := range loadPipeline(t, filepath.Join(root, "deploy", "concourse-pipeline.yml")).Jobs {
+		for _, step := range flattenPlan(job.Plan) {
+			if step.Task == "unit-tests" && len(step.Config.Run.Args) > 0 {
+				jobScript = stripShellComments(step.Config.Run.Args[len(step.Config.Run.Args)-1])
+			}
 		}
 	}
-	for pkg := range fromPipeline {
-		if !fromMakefile[pkg] {
-			t.Errorf("the pipeline skips %q but the Makefile does not, so that "+
-				"suite passes locally and never runs in CI", pkg)
-		}
+	switch {
+	case jobScript == "":
+		t.Error("deploy/concourse-pipeline.yml has no unit-tests task script")
+	case !strings.Contains(jobScript, "hack/unit-tests.sh --ci"):
+		t.Errorf("the pipeline's unit-tests task does not run hack/unit-tests.sh --ci:\n%s", jobScript)
+	case strings.Contains(jobScript, "go list") || strings.Contains(jobScript, "grep -v"):
+		t.Errorf("the pipeline's unit-tests task selects packages itself again:\n%s", jobScript)
 	}
-}
-
-// normalizeExclusion reduces the two spellings to one. The Makefile writes
-// `topgun` and `fly/integration`; the pipeline writes `/topgun` and may anchor
-// an entry as `/atc/worker$`.
-func normalizeExclusion(pkg string) string {
-	pkg = strings.TrimSpace(pkg)
-	pkg = strings.TrimSuffix(pkg, "$")
-	pkg = strings.TrimPrefix(pkg, "./")
-	return strings.TrimPrefix(pkg, "/")
 }
 
 // TestThePipelineKeepsTheHangarWorkloadsOnWebsImage holds stores T7: the
