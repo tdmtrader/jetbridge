@@ -13,9 +13,9 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 
 Core pipeline syntax, `fly`, the web UI, resource types and the REST API retain
 the Concourse interface. Authentication is local-only; Kubernetes Secrets is
-the production credential backend, and pipeline `var_sources` support `dummy`
-and `idtoken`. See [migration guidance](deploy/chart/MIGRATING.md) for removed
-auth connectors, credential managers and metric emitters.
+the only credential backend; pipelines have no `var_sources`. See
+[migration guidance](deploy/chart/MIGRATING.md) for removed auth connectors,
+credential managers and metric emitters.
 
 ---
 

@@ -231,15 +231,7 @@ ORDER BY ordinal_position;
 -- Should NOT include: interval, last_ran, paused
 ```
 
-### 5.5 Signing Keys Table
-
-```sql
--- New table should exist (empty until first JetBridge boot)
-SELECT count(*) FROM signing_keys;
--- Expected: 0 rows (populated on first boot)
-```
-
-### 5.6 Trigger Verification
+### 5.5 Trigger Verification
 
 ```sql
 -- Verify simplified triggers are in place
@@ -254,7 +246,7 @@ SELECT to_regprocedure('notify_container_event()'); -- Expected: NULL
 -- Should NOT see: workers_upsert_or_delete_trigger, containers_insert_or_delete_trigger
 ```
 
-### 5.7 Spot-Check Sample Data
+### 5.6 Spot-Check Sample Data
 
 ```sql
 -- Verify a sample of builds have intact data
@@ -346,8 +338,7 @@ concourse web \
 1. **Migration check:** JetBridge verifies the database is at the expected version. If you used `concourse migrate`, this is a no-op.
 2. **Component initialization:** All components (scheduler, tracker, scanner, etc.) start running.
 3. **Synthetic worker registration:** the registrar (component `k8s_worker_registrar`) creates the one worker record for the namespace.
-4. **Signing keys:** A new signing key is generated and stored in the `signing_keys` table.
-5. **Pipeline resumption:** Existing pipelines resume executing. Resources begin checking.
+4. **Pipeline resumption:** Existing pipelines resume executing. Resources begin checking.
 
 ### Expected Log Output
 

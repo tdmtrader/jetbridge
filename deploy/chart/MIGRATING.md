@@ -191,10 +191,12 @@ replace external team membership with local users before upgrading.
 
 Kubernetes Secrets is the retained production secret backend. Vault, CredHub,
 AWS SSM, AWS Secrets Manager and Conjur managers and their flags/environment
-configuration are removed from both binaries. Dummy, noop and ID-token support
-remain; pipeline `var_sources` support only `dummy` and `idtoken`. Kubernetes is
-not a pipeline var_source replacement: move secret lookups into the global
-Kubernetes credential manager deliberately. Generic variable resolution remains.
+configuration are removed from both binaries. The dummy and ID-token managers
+and pipeline `var_sources` followed in 0.3.2: `set-pipeline` and
+`fly validate-pipeline` refuse a pipeline that declares `var_sources:`. Move
+secret lookups into the global Kubernetes credential manager, where a `((var))`
+resolves under the pipeline's team and pipeline. Generic variable resolution
+remains.
 
 Before rollout, inventory saved pipeline configurations through the decrypting
 application API (`fly get-pipeline`) and team auth through the team API. Do not

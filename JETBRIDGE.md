@@ -328,7 +328,6 @@ Source: `atc/atccmd/command.go` (RunCommand.Kubernetes struct)
 | `--gc-missing-grace-period` | `5m` | Grace period for containers that went missing from the worker. |
 | `--gc-hijack-grace-period` | `5m` | Grace period before GC of hijacked containers. |
 | `--gc-failed-grace-period` | `120h` | Grace period before GC of failed containers. |
-| `--gc-var-source-recycle-period` | `5m` | Interval for reaping unused credential/var sources. |
 
 Source: `atc/atccmd/command.go` (RunCommand.GC struct)
 
