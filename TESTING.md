@@ -5,7 +5,9 @@ See [CLAUDE.md’s Running Tests section](CLAUDE.md#running-tests) for test tier
 ## Disposable K3s and deployed-cluster acceptance
 
 In CI the disposable K3s tier is the `k8s-e2e` pipeline (`deploy/k8s-e2e-pipeline.yml`): `build-kind-runner`
-→ `k8s-integration-tests` → `k8s-behavioral-tests`, on a 24 h timer and on every `core` commit.
+→ `hangar-generated-pod-contract` → `k8s-behavioral-tests`, on a 24 h timer and on every `core` commit.
+The other contract jobs (`hangar-disk-store-contract`, `hangar-cluster-contract`,
+`run-cancellation-kubelet`) hang off `build-kind-runner` and gate nothing.
 The jetbridge pipeline's `k8s-live-tests` job is a different thing: the `-tags live` suites in
 `atc/worker/jetbridge`, which run after `self-upgrade` against the cluster's *deployed* artifact
 daemon (hostPath, node-IP dialing, mTLS SANs, capability key) as a post-upgrade acceptance check.
@@ -22,13 +24,11 @@ every `dockerd` started inside a pod (the DinD builders and the in-task daemon h
 `fs.inotify.max_user_instances` must be raised from Ubuntu's 128 (home-infra pins 1024) or the
 kubelet fails every follow-logs stream, which is how testcontainers waits for K3s to be ready.
 
-The disposable tier creates a K3s cluster from inside the suite via `testcontainers-go/modules/k3s`, then deploys Concourse via Helm.
+The behavioral suite creates its K3s clusters from inside the suite via `testcontainers-go/modules/k3s`, then deploys Concourse via Helm.
 
 ```bash
-# Uses CONCOURSE_IMAGE env var (default: concourse-local:latest)
-go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m
-
-# Image rebuild for iteration (Dockerfile.build, every binary + frontend)
+# Image rebuild for iteration (Dockerfile.build, every binary + frontend).
+# The suite loads CONCOURSE_IMAGE (default: concourse-local:latest).
 ./build.sh
 ```
 

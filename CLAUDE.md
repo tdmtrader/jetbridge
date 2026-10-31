@@ -22,14 +22,13 @@ Unit and integration tests start their own PostgreSQL: each runner runs `initdb`
 | `make test-brine-guards` | Brine guard tests (nested `atc/worker/jetbridge/brine` module, no cluster) | ~1 sec | None |
 | `make test-quick` | Unit + Elm + brine guards | ~22 min | PostgreSQL binaries on PATH, yarn |
 | `make test-fly-integration` | Fly CLI against mock ATC (601 specs) | ~30 sec | None |
-| `make test-k8s-integration` | K8s integration via testcontainers K3s | ~23 min | Docker, Helm, kubectl |
 | `make test-k8s-behavioral` | Full K8s behavioral (2 parallel K3s containers, `K8S_PROCS=4` for more) | ~2-3 hrs | Docker, Helm, kubectl |
 | `make test-all` | All tiers in order | ~2.5+ hrs | All of the above |
 
-The K8s tiers create their cluster from inside the suite via
+The K8s behavioral tier creates its clusters from inside the suite via
 `testcontainers-go/modules/k3s`. There is no `kind` binary involved anywhere —
-the tree has zero `sigs.k8s.io/kind` imports. Neither tier is viable on macOS
-(containerd-in-Docker is unstable under Colima at any memory size), so run them
+the tree has zero `sigs.k8s.io/kind` imports. It is not viable on macOS
+(containerd-in-Docker is unstable under Colima at any memory size), so run it
 in CI.
 
 ### Running a Single Package

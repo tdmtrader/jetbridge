@@ -379,14 +379,11 @@ avoid it.
 
 ### Running Kubernetes tests
 
-The Kubernetes runtime has two end-to-end suites, both run against an
-ephemeral K3s cluster provisioned via testcontainers (Docker is the only
-cluster prerequisite):
+The Kubernetes runtime's end-to-end suite runs against ephemeral K3s
+clusters provisioned via testcontainers (Docker is the only cluster
+prerequisite):
 
 ```bash
-# integration suite (topgun/k8s/integration/)
-make test-k8s-integration
-
 # full behavioral suite (topgun/k8s_behavioral/)
 make test-k8s-behavioral
 ```
