@@ -4,7 +4,7 @@ set -e -u
 
 cd "$(dirname "$0")/.."
 
-# Generate an editable up and a forward-only down with this checkout's generator.
+# Generate an editable up (migrations are forward-only) with this checkout's generator.
 migration_cli="$(go env GOPATH)/bin/migrate"
 go build -tags 'postgres' -o "$migration_cli" ./db/migration/cli
 

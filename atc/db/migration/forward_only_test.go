@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/concourse/concourse/atc/db/migration"
 	. "github.com/onsi/ginkgo/v2"
@@ -41,30 +40,22 @@ func schemaFingerprint(database *sql.DB) []string {
 }
 
 var _ = Describe("Fork migrations are forward-only", func() {
-	It("embeds an explicit failing down for every SQL migration after the upstream boundary", func() {
+	It("carries no down for any migration after the upstream boundary", func() {
 		migrations, err := migration.NewMigrator(nil, nil).Migrations()
 		Expect(err).NotTo(HaveOccurred())
-		ups, downs := map[int]bool{}, map[int]bool{}
+		ups := 0
 		for _, m := range migrations {
-			if m.Version <= v801LastMigration || m.Strategy != migration.SQLMigration {
+			if m.Version <= v801LastMigration {
 				continue
 			}
-			if m.Direction == "up" {
-				ups[m.Version] = true
-				continue
-			}
-			downs[m.Version] = true
-			Expect(strings.TrimSpace(m.Statements)).To(Equal(fmt.Sprintf(
-				"DO $$ BEGIN RAISE EXCEPTION 'migration %d is forward-only: restore the pre-upgrade database backup instead'; END $$;", m.Version)), m.Name)
+			Expect(m.Direction).To(Equal("up"), "%s: a fork migration is forward-only, so it has no down", m.Name)
+			ups++
 		}
-		Expect(ups).NotTo(BeEmpty())
-		Expect(downs).To(Equal(ups), "every fork SQL up must have its failing down")
+		Expect(ups).NotTo(BeZero())
 	})
 
 	DescribeTable("refuses HEAD to the upstream boundary without changing schema, data or effective version", func(populated bool) {
 		database := postgresRunner.OpenDBAtVersion(v801LastMigration)
-		// Failure history is recorded outside the failing migration transaction.
-		database.SetMaxOpenConns(2)
 		DeferCleanup(func() { Expect(database.Close()).To(Succeed()) })
 		migrator := migration.NewMigrator(database, nil)
 		head, err := migrator.SupportedVersion()
@@ -94,11 +85,9 @@ var _ = Describe("Fork migrations are forward-only", func() {
 		Expect(schemaFingerprint(database)).To(Equal(before))
 		ExpectDatabaseMigrationVersionToEqual(migrator, head)
 		Expect(dataSnapshot()).To(Equal(dataBefore))
-		var historyAfter, failed int
+		var historyAfter int
 		Expect(database.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyAfter)).To(Succeed())
-		Expect(historyAfter).To(Equal(historyBefore + 1))
-		Expect(database.QueryRow("SELECT count(*) FROM migrations_history WHERE version=$1 AND direction='down' AND status='failed' AND NOT dirty", head).Scan(&failed)).To(Succeed())
-		Expect(failed).To(Equal(1))
+		Expect(historyAfter).To(Equal(historyBefore), "a refused downgrade starts nothing, so it records nothing")
 		Expect(database.Close()).To(Succeed())
 		database = postgresRunner.OpenDBAtVersion(head)
 		Expect(dataSnapshot()).To(Equal(dataBefore))

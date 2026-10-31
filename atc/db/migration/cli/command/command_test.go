@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -34,7 +33,7 @@ var _ = Describe("Migration CLI", func() {
 
 		Context("sql migrations", func() {
 
-			It("generates up and down migration files", func() {
+			It("generates only an up migration file", func() {
 				command = cmd.NewGenerateCommand(migrationDir, migrationName, "sql")
 				sqlMigrationPattern := "^(\\d+)_(.*).(down|up).sql$"
 
@@ -43,17 +42,14 @@ var _ = Describe("Migration CLI", func() {
 
 				ExpectGeneratedFilesToMatchSpecification(migrationDir, sqlMigrationPattern,
 					migrationName, func(migrationID, direction string, actualFileContents string) {
-						if direction == "up" {
-							Expect(actualFileContents).To(BeEmpty())
-						} else {
-							Expect(actualFileContents).To(Equal(fmt.Sprintf("DO $$ BEGIN RAISE EXCEPTION 'migration %s is forward-only: restore the pre-upgrade database backup instead'; END $$;\n", migrationID)))
-						}
+						Expect(direction).To(Equal("up"))
+						Expect(actualFileContents).To(BeEmpty())
 					})
 			})
 		})
 
 		Context("go migration", func() {
-			It("generates up and down migration files", func() {
+			It("generates only an up migration file", func() {
 				command = cmd.NewGenerateCommand(migrationDir, migrationName, "go")
 				goMigrationPattern := "^(\\d+)_(.*).(down|up).go$"
 
@@ -64,15 +60,9 @@ var _ = Describe("Migration CLI", func() {
 					migrationName, func(migrationID, direction string, actualFileContents string) {
 						_, err := parser.ParseFile(token.NewFileSet(), "", actualFileContents, parser.AllErrors)
 						Expect(err).NotTo(HaveOccurred())
-						if direction == "up" {
-							Expect(actualFileContents).To(ContainSubstring("func Up_%s() error", migrationID))
-							Expect(actualFileContents).To(ContainSubstring("return nil"))
-						} else {
-							Expect(actualFileContents).To(ContainSubstring("func Down_%s() error", migrationID))
-							Expect(actualFileContents).To(ContainSubstring(`import "errors"`))
-							Expect(actualFileContents).To(ContainSubstring(`return errors.New("migration %s is forward-only: restore the pre-upgrade database backup instead")`, migrationID))
-							Expect(actualFileContents).NotTo(ContainSubstring("return nil"))
-						}
+						Expect(direction).To(Equal("up"))
+						Expect(actualFileContents).To(ContainSubstring("func Up_%s() error", migrationID))
+						Expect(actualFileContents).To(ContainSubstring("return nil"))
 					})
 			})
 
@@ -103,5 +93,5 @@ func ExpectGeneratedFilesToMatchSpecification(migrationDir, fileNamePattern, mig
 		checkContents(matches[1], matches[3], string(fileContents))
 		migrationFilesCount++
 	}
-	Expect(migrationFilesCount).To(Equal(2))
+	Expect(migrationFilesCount).To(Equal(1))
 }

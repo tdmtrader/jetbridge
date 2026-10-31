@@ -116,8 +116,17 @@ var _ = Describe("Migration", func() {
 		Context("old schema_migrations table exist", func() {
 			var dirty bool
 
+			// schemaMigrationsEraFS holds the migration a schema_migrations
+			// database records, and one to apply after it.
+			schemaMigrationsEraFS := func() fstest.MapFS {
+				return fstest.MapFS{
+					"1000_recorded.up.sql": &fstest.MapFile{Data: []byte(`SELECT 1;`)},
+					"1001_next.up.sql":     &fstest.MapFile{Data: []byte(`SELECT 1;`)},
+				}
+			}
+
 			JustBeforeEach(func() {
-				SetupSchemaMigrationsTable(db, 8878, dirty)
+				SetupSchemaMigrationsTable(db, 1000, dirty)
 			})
 
 			Context("dirty state is true", func() {
@@ -148,7 +157,7 @@ var _ = Describe("Migration", func() {
 
 				It("populate migrations_history table with starting version from schema_migrations table", func() {
 					startTime := time.Now()
-					migrator := migration.NewMigrator(db, lockFactory)
+					migrator := migration.NewMigratorForMigrations(db, lockFactory, schemaMigrationsEraFS())
 
 					err = migrator.Up(nil, nil)
 					Expect(err).NotTo(HaveOccurred())
@@ -161,7 +170,7 @@ var _ = Describe("Migration", func() {
 						direction string
 					)
 					err = db.QueryRow("SELECT * from migrations_history ORDER BY tstamp ASC LIMIT 1").Scan(&version, &timeStamp, &direction, &status, &isDirty)
-					Expect(version).To(Equal(8878))
+					Expect(version).To(Equal(1000))
 					Expect(isDirty).To(BeFalse())
 					Expect(timeStamp.Time.After(startTime)).To(Equal(true))
 					Expect(direction).To(Equal("up"))
@@ -170,15 +179,15 @@ var _ = Describe("Migration", func() {
 
 				Context("when the migrations_history table already exists", func() {
 					It("does not repopulate the migrations_history table", func() {
-						SetupMigrationsHistoryTableToExistAtVersion(db, 8878)
+						SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 						startTime := time.Now()
-						migrator := migration.NewMigrator(db, lockFactory)
+						migrator := migration.NewMigratorForMigrations(db, lockFactory, schemaMigrationsEraFS())
 
 						err = migrator.Up(nil, nil)
 						Expect(err).NotTo(HaveOccurred())
 
 						var timeStamp sql.NullTime
-						rows, err := db.Query("SELECT tstamp FROM migrations_history WHERE version=8878")
+						rows, err := db.Query("SELECT tstamp FROM migrations_history WHERE version=1000")
 						Expect(err).NotTo(HaveOccurred())
 						var numRows = 0
 						for rows.Next() {
@@ -371,6 +380,117 @@ var _ = Describe("Migration", func() {
 				By("updating the schema migrations table")
 				ExpectDatabaseMigrationVersionToEqual(migrator, 1516643303)
 			})
+		})
+	})
+
+	Context("Baseline", func() {
+		baselineFS := func() fstest.MapFS {
+			return fstest.MapFS{
+				"1000_baseline.up.sql": &fstest.MapFile{Data: []byte(`CREATE TABLE baseline_table (id integer);`)},
+				"1001_next.up.sql":     &fstest.MapFile{Data: []byte(`CREATE TABLE next_table (id integer);`)},
+			}
+		}
+
+		tableExists := func(name string) bool {
+			GinkgoHelper()
+			var exists bool
+			Expect(db.QueryRow("SELECT to_regclass($1) IS NOT NULL", name).Scan(&exists)).To(Succeed())
+			return exists
+		}
+
+		It("builds a fresh database from the earliest migration", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(tableExists("baseline_table")).To(BeTrue())
+			Expect(tableExists("next_table")).To(BeTrue())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
+		})
+
+		It("treats a database at or past the baseline as having it", func() {
+			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(tableExists("baseline_table")).To(BeFalse())
+			Expect(tableExists("next_table")).To(BeTrue())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
+		})
+
+		It("refuses a database older than the baseline, naming the release that can upgrade it", func() {
+			SetupMigrationsHistoryTableToExistAtVersion(db, 999)
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			err := migrator.Up(nil, nil)
+			Expect(err).To(MatchError("database is at migration 999, older than this release's baseline migration 1000: upgrade it with " + migration.LastReleaseBeforeBaseline + " first"))
+			Expect(tableExists("baseline_table")).To(BeFalse())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 999)
+		})
+
+		It("refuses a schema_migrations database older than the baseline without converting it", func() {
+			SetupSchemaMigrationsTable(db, 999, false)
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			err := migrator.Up(nil, nil)
+			Expect(err).To(MatchError(ContainSubstring("database is at migration 999, older than this release's baseline migration 1000")))
+			Expect(tableExists("migrations_history")).To(BeFalse())
+			Expect(tableExists("baseline_table")).To(BeFalse())
+		})
+
+		It("refuses to migrate to a version older than the baseline", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			err := migrator.Migrate(nil, nil, 999)
+			Expect(err).To(MatchError("cannot migrate to 999: it predates this release's baseline migration 1000"))
+			Expect(tableExists("migrations_history")).To(BeFalse())
+		})
+	})
+
+	Context("Forward-only migrations", func() {
+		forwardOnlyFS := func() fstest.MapFS {
+			return fstest.MapFS{
+				"1000_first.up.sql":    &fstest.MapFile{Data: []byte(`CREATE TABLE first_table (id integer);`)},
+				"1000_first.down.sql":  &fstest.MapFile{Data: []byte(`DROP TABLE first_table;`)},
+				"1001_one_way.up.sql":  &fstest.MapFile{Data: []byte(`CREATE TABLE one_way_table (id integer);`)},
+				"1002_second.up.sql":   &fstest.MapFile{Data: []byte(`CREATE TABLE second_table (id integer);`)},
+				"1002_second.down.sql": &fstest.MapFile{Data: []byte(`DROP TABLE second_table;`)},
+			}
+		}
+
+		tableExists := func(name string) bool {
+			GinkgoHelper()
+			var exists bool
+			Expect(db.QueryRow("SELECT to_regclass($1) IS NOT NULL", name).Scan(&exists)).To(Succeed())
+			return exists
+		}
+
+		It("reverses migrations that have a down", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, forwardOnlyFS())
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
+			Expect(tableExists("second_table")).To(BeFalse())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
+		})
+
+		It("refuses to reverse a migration without a down before reversing anything", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, forwardOnlyFS())
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			var historyBefore int
+			Expect(db.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyBefore)).To(Succeed())
+
+			err := migrator.Migrate(nil, nil, 1000)
+			Expect(err).To(MatchError("migration 1001 is forward-only: restore the pre-upgrade database backup instead"))
+			Expect(tableExists("second_table")).To(BeTrue(), "the reversible migration above it was not reversed either")
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1002)
+			var historyAfter int
+			Expect(db.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyAfter)).To(Succeed())
+			Expect(historyAfter).To(Equal(historyBefore))
+		})
+
+		It("reports no version once the earliest migration is reversed", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+				"1000_first.up.sql":   &fstest.MapFile{Data: []byte(`CREATE TABLE first_table (id integer);`)},
+				"1000_first.down.sql": &fstest.MapFile{Data: []byte(`DROP TABLE first_table;`)},
+			})
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			Expect(migrator.Migrate(nil, nil, 0)).To(Succeed())
+			Expect(tableExists("first_table")).To(BeFalse())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 0)
 		})
 	})
 

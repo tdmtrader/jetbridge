@@ -251,23 +251,44 @@ func (helper *migrator) CurrentVersion() (int, error) {
 		}
 		return -1, err
 	}
+	if direction != "down" {
+		return currentVersion, nil
+	}
+
+	// A passed down leaves the database at the version before it. That is the
+	// nearest migration this binary carries below it or, when it carries none
+	// (the down reversed its baseline or something older), the nearest version
+	// the history recorded as applied.
 	migrations, err := helper.Migrations()
 	if err != nil {
 		return -1, err
 	}
-	versions := []int{migrations[0].Version}
+	previous := 0
 	for _, m := range migrations {
-		if m.Version > versions[len(versions)-1] {
-			versions = append(versions, m.Version)
+		if m.Version < currentVersion {
+			previous = m.Version
 		}
 	}
-	for i, version := range versions {
-		if currentVersion == version && direction == "down" {
-			currentVersion = versions[i-1]
-			break
+	if previous == 0 {
+		err = helper.db.QueryRow("SELECT coalesce(max(version), 0) FROM migrations_history WHERE version < $1 AND direction = 'up' AND status = 'passed'", currentVersion).Scan(&previous)
+		if err != nil {
+			return -1, err
 		}
 	}
-	return currentVersion, nil
+	return previous, nil
+}
+
+// LastReleaseBeforeBaseline is the last release that carries the migrations
+// the baseline replaced, and so the one that can bring an older database up to
+// it.
+const LastReleaseBeforeBaseline = "JetBridge 0.3.1"
+
+func belowBaseline(version, baseline int) error {
+	return fmt.Errorf("database is at migration %d, older than this release's baseline migration %d: upgrade it with %s first", version, baseline, LastReleaseBeforeBaseline)
+}
+
+func forwardOnly(version int) error {
+	return fmt.Errorf("migration %d is forward-only: restore the pre-upgrade database backup instead", version)
 }
 
 func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) error {
@@ -282,6 +303,20 @@ func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) e
 		strategy = encryption.NewNoEncryption()
 	}
 
+	migrations, err := helper.Migrations()
+	if err != nil {
+		return err
+	}
+	if len(migrations) == 0 {
+		return errors.New("no migrations")
+	}
+	// The earliest migration is the baseline: it builds the schema from
+	// nothing, and nothing older than it can be applied or reversed to.
+	baseline := migrations[0].Version
+	if toVersion > 0 && toVersion < baseline {
+		return fmt.Errorf("cannot migrate to %d: it predates this release's baseline migration %d", toVersion, baseline)
+	}
+
 	lock, err := helper.acquireLock()
 	if err != nil {
 		return err
@@ -294,6 +329,9 @@ func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) e
 	existingDBVersion, err := helper.migrateFromSchemaMigrations()
 	if err != nil {
 		return err
+	}
+	if existingDBVersion > 0 && existingDBVersion < baseline {
+		return belowBaseline(existingDBVersion, baseline)
 	}
 
 	_, err = helper.db.Exec("CREATE TABLE IF NOT EXISTS migrations_history (version bigint, tstamp timestamp with time zone, direction varchar, status varchar, dirty boolean)")
@@ -320,10 +358,8 @@ func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) e
 	if err != nil {
 		return err
 	}
-
-	migrations, err := helper.Migrations()
-	if err != nil {
-		return err
+	if currentVersion > 0 && currentVersion < baseline {
+		return belowBaseline(currentVersion, baseline)
 	}
 
 	if currentVersion <= toVersion {
@@ -336,13 +372,30 @@ func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) e
 			}
 		}
 	} else {
+		// A migration without a down is forward-only. Refuse before reversing
+		// anything, so a refused downgrade leaves the schema where it was.
+		downs := map[int]migration{}
+		for _, m := range migrations {
+			if m.Direction == "down" {
+				downs[m.Version] = m
+			}
+		}
+		var reversals []migration
 		for i := len(migrations) - 1; i >= 0; i-- {
-			if currentVersion >= migrations[i].Version && migrations[i].Version > toVersion && migrations[i].Direction == "down" {
-				err = helper.runMigration(migrations[i], strategy)
-				if err != nil {
-					return err
-				}
-
+			m := migrations[i]
+			if m.Direction != "up" || m.Version > currentVersion || m.Version <= toVersion {
+				continue
+			}
+			down, ok := downs[m.Version]
+			if !ok {
+				return forwardOnly(m.Version)
+			}
+			reversals = append(reversals, down)
+		}
+		for _, down := range reversals {
+			err = helper.runMigration(down, strategy)
+			if err != nil {
+				return err
 			}
 		}
 
