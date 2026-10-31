@@ -133,31 +133,6 @@ func (builder Builder) WithWorker(worker atc.Worker) SetupFunc {
 	}
 }
 
-func (builder Builder) createContainer(workerName string, owner db.ContainerOwner, metadata db.ContainerMetadata) (db.CreatingContainer, error) {
-	worker, found, err := builder.WorkerFactory.GetWorker(workerName)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, fmt.Errorf("worker does not exist: %s", workerName)
-	}
-
-	container, err := worker.CreateContainer(owner, metadata)
-	if err != nil {
-		return nil, err
-	}
-
-	return container, nil
-}
-
-func (builder Builder) createVolume(teamID int, workerName string, volumeType db.VolumeType, handle string) (db.CreatingVolume, error) {
-	if handle == "" {
-		return builder.VolumeRepo.CreateVolume(teamID, workerName, volumeType)
-	}
-
-	return builder.VolumeRepo.CreateVolumeWithHandle(handle, teamID, workerName, volumeType)
-}
-
 func (builder Builder) WithPipeline(config atc.Config) SetupFunc {
 	return func(scenario *Scenario) error {
 		if scenario.Team == nil {
