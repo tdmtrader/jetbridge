@@ -84,20 +84,6 @@ func closedJetbridgeCloneConn() db.DbConn {
 	return conn
 }
 
-// closedConnWorker loads a persisted worker over its own connection and then
-// closes it, so every statement the worker issues fails the way a lost
-// database connection does.
-func closedConnWorker(name string) db.Worker {
-	GinkgoHelper()
-	conn := postgresRunner.OpenConn()
-	factory := db.NewWorkerFactory(conn, db.NewStaticWorkerCache(lagertest.NewTestLogger("jetbridge-closed-conn"), conn, 0))
-	worker, found, err := factory.GetWorker(name)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	Expect(conn.Close()).To(Succeed())
-	return worker
-}
-
 func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
 	_, err := database.WorkerFactory.SaveWorker(atc.Worker{
 		Name: name, Platform: "linux", Version: "1.2.3",
@@ -270,20 +256,4 @@ func (f *fakeExecExecutor) ExecInPod(
 		_, _ = stdout.Write(execStdout)
 	}
 	return nil
-}
-
-// expectPersistedContainer lived in podname_integration_test.go until that
-// suite was retired under the brine migration; secret_env_test.go is the
-// remaining consumer.
-func expectPersistedContainer(database jetbridgeDB, workerName, handle string) {
-	GinkgoHelper()
-	persistedWorker, found, err := database.WorkerFactory.GetWorker(workerName)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-
-	creating, created, err := persistedWorker.FindContainer(db.NewFixedHandleContainerOwner(handle))
-	Expect(err).NotTo(HaveOccurred())
-	Expect(creating).To(BeNil())
-	Expect(created).NotTo(BeNil())
-	Expect(created.Handle()).To(Equal(handle))
 }
