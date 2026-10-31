@@ -23,9 +23,7 @@ import (
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
 	"github.com/concourse/concourse/atc/api/teamserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
-	"github.com/concourse/concourse/atc/api/volumeserver"
 	"github.com/concourse/concourse/atc/api/wallserver"
-	"github.com/concourse/concourse/atc/api/workerserver"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/wrappa"
@@ -51,8 +49,6 @@ func NewHandler(
 	dbJobFactory db.JobFactory,
 	dbResourceFactory db.ResourceFactory,
 	dbWorkerFactory db.WorkerFactory,
-	workerTeamFactory db.TeamFactory,
-	volumeRepository db.VolumeRepository,
 	dbBuildFactory db.BuildFactory,
 	dbCheckFactory db.CheckFactory,
 	dbResourceConfigFactory db.ResourceConfigFactory,
@@ -101,10 +97,8 @@ func NewHandler(
 		pipelineRunServer.SetServices(runServices[0])
 	}
 	configServer := configserver.NewServer(logger, dbTeamFactory, secretManager)
-	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
 	cliServer := cliserver.NewServer(logger, absCLIDownloadsDir)
 	containerServer := containerserver.NewServer(logger, workerPool, interceptTimeoutFactory, interceptUpdateInterval, clock)
-	volumesServer := volumeserver.NewServer(logger, volumeRepository)
 	teamServer := teamserver.NewServer(logger, dbTeamFactory, externalURL)
 	landingServer := landingserver.NewServer(logger, dbLandingQueueFactory)
 	infoServer := infoserver.NewServer(logger, version, workerVersion, externalURL, clusterName, credsManagers, jetBridgeVersion, concourseVersion, dbPinger, dbWorkerFactory)
@@ -195,10 +189,6 @@ func NewHandler(
 		atc.GetDownstreamResourceCausality: pipelineHandlerFactory.HandlerFor(versionServer.GetDownstreamResourceCausality),
 		atc.GetUpstreamResourceCausality:   pipelineHandlerFactory.HandlerFor(versionServer.GetUpstreamResourceCausality),
 
-		atc.ListWorkers:    http.HandlerFunc(workerServer.ListWorkers),
-		atc.RegisterWorker: http.HandlerFunc(workerServer.RegisterWorker),
-		atc.DeleteWorker:   http.HandlerFunc(workerServer.DeleteWorker),
-
 		atc.DownloadCLI:  http.HandlerFunc(cliServer.Download),
 		atc.GetInfo:      http.HandlerFunc(infoServer.Info),
 		atc.GetInfoCreds: http.HandlerFunc(infoServer.Creds),
@@ -210,8 +200,6 @@ func NewHandler(
 		atc.ListContainers:  teamHandlerFactory.HandlerFor(containerServer.ListContainers),
 		atc.GetContainer:    teamHandlerFactory.HandlerFor(containerServer.GetContainer),
 		atc.HijackContainer: teamHandlerFactory.HandlerFor(containerServer.HijackContainer),
-
-		atc.ListVolumes: teamHandlerFactory.HandlerFor(volumesServer.ListVolumes),
 
 		atc.ListTeams:       http.HandlerFunc(teamServer.ListTeams),
 		atc.GetTeam:         teamHandlerFactory.HandlerFor(teamServer.GetTeam),

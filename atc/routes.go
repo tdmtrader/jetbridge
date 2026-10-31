@@ -83,10 +83,6 @@ const (
 	GetPipelineRun                  = "GetPipelineRun"
 	GetPipelineRunResult            = "GetPipelineRunResult"
 
-	RegisterWorker = "RegisterWorker"
-	ListWorkers    = "ListWorkers"
-	DeleteWorker   = "DeleteWorker"
-
 	DownloadCLI  = "DownloadCLI"
 	GetInfo      = "GetInfo"
 	GetInfoCreds = "GetInfoCreds"
@@ -95,8 +91,6 @@ const (
 	ListContainers  = "ListContainers"
 	GetContainer    = "GetContainer"
 	HijackContainer = "HijackContainer"
-
-	ListVolumes = "ListVolumes"
 
 	ListTeams      = "ListTeams"
 	GetTeam        = "GetTeam"
@@ -213,10 +207,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_config_version_id/upstream", Method: "GET", Name: GetUpstreamResourceCausality},
 	// {Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/causality", Method: "GET", Name: GetResourceCausality},
 
-	{Path: "/api/v1/workers", Method: "GET", Name: ListWorkers},
-	{Path: "/api/v1/workers", Method: "POST", Name: RegisterWorker},
-	{Path: "/api/v1/workers/:worker_name", Method: "DELETE", Name: DeleteWorker},
-
 	{Path: "/api/v1/cli", Method: "GET", Name: DownloadCLI},
 	{Path: "/api/v1/info", Method: "GET", Name: GetInfo},
 	{Path: "/api/v1/info/creds", Method: "GET", Name: GetInfoCreds},
@@ -232,8 +222,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/containers", Method: "GET", Name: ListContainers},
 	{Path: "/api/v1/teams/:team_name/containers/:id", Method: "GET", Name: GetContainer},
 	{Path: "/api/v1/teams/:team_name/containers/:id/hijack", Method: "GET", Name: HijackContainer},
-
-	{Path: "/api/v1/teams/:team_name/volumes", Method: "GET", Name: ListVolumes},
 
 	{Path: "/api/v1/teams", Method: "GET", Name: ListTeams},
 	{Path: "/api/v1/teams/:team_name", Method: "GET", Name: GetTeam},

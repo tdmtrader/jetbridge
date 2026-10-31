@@ -217,7 +217,6 @@ type apiDBDeps struct {
 	jobFactory            db.JobFactory
 	resourceFactory       db.ResourceFactory
 	workerFactory         db.WorkerFactory
-	workerTeamFactory     db.TeamFactory
 	volumeRepository      db.VolumeRepository
 	buildFactory          db.BuildFactory
 	checkFactory          db.CheckFactory
@@ -278,8 +277,6 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		deps.jobFactory,
 		deps.resourceFactory,
 		deps.workerFactory,
-		deps.workerTeamFactory,
-		deps.volumeRepository,
 		deps.buildFactory,
 		deps.checkFactory,
 		deps.resourceConfigFactory,

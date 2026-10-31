@@ -86,7 +86,6 @@ func useRealDB() *realDB {
 		jobFactory:            db.NewJobFactory(conn, lockFactory),
 		resourceFactory:       db.NewResourceFactory(conn, lockFactory),
 		workerFactory:         db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0)),
-		workerTeamFactory:     teamFactory,
 		volumeRepository:      db.NewVolumeRepository(conn),
 		buildFactory:          db.NewBuildFactory(conn, lockFactory, 0, time.Hour),
 		checkFactory:          checkFactory,

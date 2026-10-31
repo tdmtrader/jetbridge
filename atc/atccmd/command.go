@@ -754,7 +754,6 @@ func (cmd *RunCommand) constructAPIMembers(
 	}
 
 	teamFactory := db.NewTeamFactory(dbConn, lockFactory)
-	workerTeamFactory := db.NewTeamFactory(workerConn, lockFactory)
 
 	_, err = teamFactory.CreateDefaultTeamIfNotExists()
 	if err != nil {
@@ -819,13 +818,11 @@ func (cmd *RunCommand) constructAPIMembers(
 	apiHandler, err := cmd.constructAPIHandler(
 		logger,
 		teamFactory,
-		workerTeamFactory,
 		dbPipelineFactory,
 		dbPipelineRunFactory,
 		dbJobFactory,
 		dbResourceFactory,
 		dbWorkerFactory,
-		dbVolumeRepository,
 		dbContainerRepository,
 		gcContainerDestroyer,
 		dbBuildFactory,
@@ -2347,13 +2344,11 @@ func (cmd *RunCommand) constructTokenVerifier() accessor.TokenVerifier {
 func (cmd *RunCommand) constructAPIHandler(
 	logger lager.Logger,
 	teamFactory db.TeamFactory,
-	workerTeamFactory db.TeamFactory,
 	dbPipelineFactory db.PipelineFactory,
 	dbPipelineRunFactory db.PipelineRunFactory,
 	dbJobFactory db.JobFactory,
 	dbResourceFactory db.ResourceFactory,
 	dbWorkerFactory db.WorkerFactory,
-	dbVolumeRepository db.VolumeRepository,
 	dbContainerRepository db.ContainerRepository,
 	gcContainerDestroyer gc.Destroyer,
 	dbBuildFactory db.BuildFactory,
@@ -2408,8 +2403,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		dbJobFactory,
 		dbResourceFactory,
 		dbWorkerFactory,
-		workerTeamFactory,
-		dbVolumeRepository,
 		dbBuildFactory,
 		dbCheckFactory,
 		resourceConfigFactory,

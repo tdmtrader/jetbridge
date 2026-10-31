@@ -55,10 +55,7 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.ListResourceTypes,
 		atc.ListResourceVersions:
 		return AuthorizationPipelineRead, true
-	case atc.ListWorkers,
-		atc.RegisterWorker,
-		atc.DeleteWorker,
-		atc.GetUser:
+	case atc.GetUser:
 		return AuthorizationAuthenticated, true
 	case atc.DownloadCLI,
 		atc.CheckResourceWebHook,
@@ -95,7 +92,6 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.ListContainers,
 		atc.GetContainer,
 		atc.HijackContainer,
-		atc.ListVolumes,
 		atc.CreateBuild,
 		atc.CheckResource,
 		atc.CheckResourceType,
