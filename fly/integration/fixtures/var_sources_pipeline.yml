@@ -6,11 +6,6 @@ var_sources:
     vars:
       k1: v1
 
-- name: some-idtoken
-  type: idtoken
-  config:
-    audience: ["example.com"]
-
 resources:
 - name: some-resource
   type: some-type
@@ -18,7 +13,6 @@ resources:
     private_key: ((vs-dummy:large-string-param))
     config-a: ((vs-dummy:param-a))
     config-b: ((vs-dummy:param-b))
-    config-c: ((some-idtoken:token))
 
 jobs:
 - name: some-job

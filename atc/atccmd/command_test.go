@@ -264,8 +264,7 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsNoDaemonTLSAtAll() {
 // A flag with no reader is worse than no flag: --help advertises a default
 // (--gc-interval 30s) that the binary does not honour, and an operator who
 // tunes it sees no change and no error. GC components run at the hardcoded
-// defaultComponentInterval; the idtoken signing-key lifecycler reads only its
-// rotation and grace periods.
+// defaultComponentInterval.
 func (s *CommandSuite) TestOrphanedIntervalFlagsRemoved() {
 	cmd := &atccmd.ATCCommand{}
 	parser := flags.NewParser(cmd, flags.Default)
@@ -277,7 +276,7 @@ func (s *CommandSuite) TestOrphanedIntervalFlagsRemoved() {
 	for flag, why := range map[string]string{
 		"gc-interval":                "GC components run at the hardcoded default component interval",
 		"gc-check-recycle-period":    "nothing reads it; the checks collector takes no period",
-		"signing-key-check-interval": "the signing key lifecycler reads only rotation and grace periods",
+		"signing-key-check-interval": "the signing key lifecycler left with the idtoken credential manager",
 	} {
 		s.Nil(runCmd.FindOptionByLongName(flag), "--%s should not exist: %s", flag, why)
 	}

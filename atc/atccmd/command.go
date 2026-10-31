@@ -91,7 +91,6 @@ import (
 
 	// dynamically registered credential managers
 	_ "github.com/concourse/concourse/atc/creds/dummy"
-	"github.com/concourse/concourse/atc/creds/idtoken"
 	_ "github.com/concourse/concourse/atc/creds/kubernetes"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -165,8 +164,7 @@ type RunCommand struct {
 	TLSKey      flag.File `long:"tls-key"       description:"File containing an RSA private key, used to encrypt HTTPS traffic."`
 	TLSCaCert   flag.File `long:"tls-ca-cert"   description:"File containing the client CA certificate, enables mTLS"`
 
-	ExternalURL   flag.URL `long:"external-url" description:"URL used to reach any ATC from the outside world."`
-	OIDCIssuerURL flag.URL `long:"oidc-issuer-url" description:"URL to use as the OIDC issuer for IDToken generation. If not set, defaults to external-url. Must be publicly accessible for cloud provider OIDC verification."`
+	ExternalURL flag.URL `long:"external-url" description:"URL used to reach any ATC from the outside world."`
 
 	Postgres flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
 
@@ -175,11 +173,6 @@ type RunCommand struct {
 
 	CredentialManagement creds.CredentialManagementConfig `group:"Credential Management"`
 	CredentialManagers   creds.Managers
-
-	SigningKey struct {
-		RotationPeriod time.Duration `long:"rotation-period" default:"168h" description:"After which time a new signing key for the idtoken secrets provider should be generated. 0 turns off generation of new keys"`
-		GracePeriod    time.Duration `long:"grace-period" default:"24h" description:"How long a key should still be published for the idtoken secrets provider after a new key has been generated"`
-	} `group:"Pipeline Identity Tokens" namespace:"signing-key"`
 
 	EncryptionKey    flag.Cipher `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database."`
 	OldEncryptionKey flag.Cipher `long:"old-encryption-key" description:"Encryption key previously used for encrypting sensitive information. If provided without a new key, data is encrypted. If provided with a new key, data is re-encrypted."`
@@ -616,15 +609,6 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		return nil, err
 	}
 
-	issuer := cmd.ExternalURL.String()
-	if cmd.OIDCIssuerURL.String() != "" {
-		issuer = cmd.OIDCIssuerURL.String()
-	}
-
-	idtoken.UpdateGlobalManagerFactory(func(f *idtoken.ManagerFactory) {
-		f.SetIssuer(issuer)
-	})
-
 	secretManager, err := cmd.secretManager(logger)
 	if err != nil {
 		return nil, err
@@ -1002,7 +986,6 @@ func (cmd *RunCommand) backendComponents(
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
-	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 
@@ -1117,22 +1100,7 @@ func (cmd *RunCommand) backendComponents(
 				),
 			),
 		},
-		{
-			Component: atc.Component{
-				Name: atc.ComponentSigningKeyLifecycler,
-			},
-			Runnable: &idtoken.SigningKeyLifecycler{
-				Logger:              logger.Session(atc.ComponentSigningKeyLifecycler),
-				DBSigningKeyFactory: dbSigningKeyFactory,
-				KeyRotationPeriod:   cmd.SigningKey.RotationPeriod,
-				KeyGracePeriod:      cmd.SigningKey.GracePeriod,
-			},
-		},
 	}
-
-	idtoken.UpdateGlobalManagerFactory(func(f *idtoken.ManagerFactory) {
-		f.SetSigningKeyFactory(dbSigningKeyFactory)
-	})
 
 	k8sComponents, err := cmd.jetbridgeComponents(logger, dbConn, dbWorkerFactory, dbBuildFactory)
 	if err != nil {
