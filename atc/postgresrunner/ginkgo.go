@@ -31,7 +31,7 @@ type none struct{}
 // It used to be a plain BeforeSuite, which runs in every process: under
 // `ginkgo -p --procs=6` atc/db ran initdb and every migration six times before
 // its first spec, and held six postmasters -- six of macOS's 32 SysV shared
-// memory segments, each left behind by a killed run.
+// memory segments, each one left behind when its process is killed outright.
 //
 // The suite's one SynchronizedBeforeSuite and SynchronizedAfterSuite are
 // these; a suite with setup of its own does it in BeforeEach, in its Test
