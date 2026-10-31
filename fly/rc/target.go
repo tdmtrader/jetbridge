@@ -515,22 +515,6 @@ func loadClientCertificate(clientCertificateLocation string, clientKeyLocation s
 	return cert, nil
 }
 
-func basicAuthHttpClient(
-	username string,
-	password string,
-	insecure bool,
-	caCertPool *x509.CertPool,
-	clientCertificate []tls.Certificate,
-) *http.Client {
-	return &http.Client{
-		Transport: basicAuthTransport{
-			username: username,
-			password: password,
-			base:     transport(insecure, caCertPool, clientCertificate),
-		},
-	}
-}
-
 func transport(insecure bool, caCertPool *x509.CertPool, clientCertificate []tls.Certificate) http.RoundTripper {
 	var transport http.RoundTripper = &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -545,16 +529,4 @@ func transport(insecure bool, caCertPool *x509.CertPool, clientCertificate []tls
 	}
 
 	return transport
-}
-
-type basicAuthTransport struct {
-	username string
-	password string
-
-	base http.RoundTripper
-}
-
-func (t basicAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r.SetBasicAuth(t.username, t.password)
-	return t.base.RoundTrip(r)
 }
