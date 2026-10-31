@@ -55,15 +55,9 @@ web:
     value: placeholder
   - name: CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL
     value: placeholder
-  - name: CONCOURSE_GC_INTERVAL
-    value: placeholder
   - name: CONCOURSE_GC_ONE_OFF_GRACE_PERIOD
     value: placeholder
   - name: CONCOURSE_GC_MISSING_GRACE_PERIOD
-    value: placeholder
-  - name: CONCOURSE_BUILD_TRACKER_INTERVAL
-    value: placeholder
-  - name: CONCOURSE_DB_NOTIFICATION_BUS_QUEUE_SIZE
     value: placeholder
 mcp:
   clients:
