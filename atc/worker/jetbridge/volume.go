@@ -226,7 +226,7 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 // This method remains only to satisfy the runtime.Volume interface and to
 // support unit tests that exercise the exec path directly. It MUST NOT be
 // reached in production after Phase 3 of the above track, and the startup
-// validation in atc/atccmd/command.go (validateK8sRuntime) enforces the
+// validation in atc/atccmd/run_flags.go (validateK8sRuntime) enforces the
 // DaemonSet configuration that guarantees the correct routing.
 func (v *Volume) StreamOut(ctx context.Context, path string, enc compression.Compression) (io.ReadCloser, error) {
 	if v.executor == nil {

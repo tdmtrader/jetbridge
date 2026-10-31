@@ -18,7 +18,7 @@ list of core packages, and only the web composition root may import them.
 Removing the context leaves core compiling once the composition root's three
 touches are cut: `atc/atccmd/child_run_admitter.go`, the MCP mount in
 `atc/atccmd/mcp.go`, and `validateMCPDisabledOperations` in
-`atc/atccmd/command.go`.
+`atc/atccmd/run_flags.go`.
 
 ## MCP authorization
 

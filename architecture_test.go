@@ -111,7 +111,7 @@ var wiringPoints = map[string]string{
 		"nowhere else. See docs/superpowers/specs/2026-09-08-run-pipeline-step-design.md. " +
 		"It is also where the web composition root mounts the MCP handler on " +
 		"the paths MCP owns, beside the web handler rather than around it, in " +
-		"atc/atccmd/command.go; the adapter behind it cannot fetch data " +
+		"atc/atccmd/wiring_api.go; the adapter behind it cannot fetch data " +
 		"directly or bypass API authorization and auditing.",
 }
 

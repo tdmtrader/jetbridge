@@ -318,7 +318,7 @@ Kubernetes flags are optional.
 | `--kubernetes-image-registry-secret` | (none) | K8s Secret (type `kubernetes.io/dockerconfigjson`) for registry auth. Auto-added to every pod. |
 | `--kubernetes-base-resource-type` | (none) | Override base resource type images. Format: `name=image`. Repeatable. Merges with defaults. |
 
-Source: `atc/atccmd/command.go` (RunCommand.Kubernetes struct)
+Source: `atc/atccmd/run_flags.go` (RunCommand.Kubernetes struct)
 
 ### Garbage Collection Flags
 
@@ -329,7 +329,7 @@ Source: `atc/atccmd/command.go` (RunCommand.Kubernetes struct)
 | `--gc-hijack-grace-period` | `5m` | Grace period before GC of hijacked containers. |
 | `--gc-failed-grace-period` | `120h` | Grace period before GC of failed containers. |
 
-Source: `atc/atccmd/command.go` (RunCommand.GC struct)
+Source: `atc/atccmd/run_flags.go` (RunCommand.GC struct)
 
 ### OpenTelemetry Tracing Flags
 
@@ -611,5 +611,5 @@ kubectl -n concourse exec deploy/concourse-jetbridge-web -- df -h /concourse/cac
 | `atc/worker/jetbridge/worker.go` | Worker interface implementation |
 | `atc/sidecar.go` | Sidecar type definitions, parsing, validation |
 | `atc/api/infoserver/health.go` | Health endpoint implementation |
-| `atc/atccmd/command.go` | All CLI flags (lines 108-279) |
+| `atc/atccmd/run_flags.go` | All CLI flags (the RunCommand struct) |
 | `tracing/` | OTel tracing configuration |

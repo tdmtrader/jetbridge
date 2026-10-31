@@ -43,7 +43,7 @@ production emits `/artifacts/steps/{key}`.
 ## Kubernetes runtime
 
 **Production steps always run through `execProcess`; `Process`/`newProcess` is a
-test-only fallback.** `atc/atccmd/command.go` wires `K8sExecutor` unconditionally and
+test-only fallback.** `atc/atccmd/wiring_jetbridge.go` wires `K8sExecutor` unconditionally and
 `atc/worker/factory.go` is the only non-test `SetExecutor` caller, so the fallback never
 fires — which makes `Process.Wait`'s delete-pod-on-cancel branch dead code. Read
 `execProcess` when reasoning about pod lifecycle; `process.go` declares `Process` first
