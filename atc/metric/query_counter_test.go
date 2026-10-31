@@ -14,7 +14,7 @@ var _ = Describe("Counting Database Queries", func() {
 	BeforeEach(func() {
 		useEmptyTestDB()
 
-		countingConn = metric.CountQueries(openTestConn("underlying"))
+		countingConn = metric.InstrumentDB(openTestConn("underlying"))
 
 		metric.Metrics.DatabaseQueries.Delta()
 	})
@@ -27,7 +27,7 @@ var _ = Describe("Counting Database Queries", func() {
 	})
 
 	It("returns the errors from the underlying connection", func() {
-		brokenConn := metric.CountQueries(closedTestConn())
+		brokenConn := metric.InstrumentDB(closedTestConn())
 
 		Expect(brokenConn.Ping()).To(MatchError(ContainSubstring("database is closed")))
 

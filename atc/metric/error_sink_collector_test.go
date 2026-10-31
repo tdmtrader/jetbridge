@@ -8,23 +8,18 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("ErrorSinkCollector", func() {
-	var (
-		errorSinkCollector metric.ErrorSinkCollector
-		emitter            *recordingEmitter
-		monitor            *metric.Monitor
-	)
+var _ = Describe("ErrorSink", func() {
+	var emitter *recordingEmitter
 
 	BeforeEach(func() {
-		monitor, emitter = monitorWithRecorder()
-		errorSinkCollector = metric.NewErrorSinkCollector(testLogger, monitor)
+		emitter = captureMetrics()
 	})
 
 	Context("Log", func() {
 		var log lager.LogFormat
 
 		JustBeforeEach(func() {
-			errorSinkCollector.Log(log)
+			metric.ErrorSink{}.Log(log)
 		})
 
 		Context("with message of level ERROR", func() {
@@ -38,20 +33,6 @@ var _ = Describe("ErrorSinkCollector", func() {
 			It("emits with the message in the tags", func() {
 				Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
 				Expect(emitter.Events()[0].Attributes).To(HaveKeyWithValue("message", "err-msg"))
-			})
-
-			Context("with error being from failed emission", func() {
-				BeforeEach(func() {
-					log = lager.LogFormat{
-						Message:  "message",
-						LogLevel: lager.ERROR,
-						Error:    metric.ErrFailedToEmit,
-					}
-				})
-
-				It("doesn't emit", func() {
-					Consistently(emitter.EventCount).Should(BeNumerically("==", 0))
-				})
 			})
 		})
 

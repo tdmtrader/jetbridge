@@ -29,7 +29,7 @@ func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
 	// exactly the pass whose cost is otherwise invisible.
 	start := r.now()
 	defer func() {
-		metric.PipelineRunReclaimDuration{Duration: r.now().Sub(start)}.Emit(logger)
+		metric.PipelineRunReclaimDuration(r.now().Sub(start))
 	}()
 	if err := r.lifecycle.ReleaseExpiredInputUploads(ctx, pipelineRunReclaimBatchSize); err != nil {
 		return err
@@ -44,7 +44,7 @@ func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	metric.PipelineRunReclaimBacklog{Runs: backlog}.Emit(logger)
+	metric.PipelineRunReclaimBacklog(backlog)
 
 	ids, err := r.lifecycle.ReclaimCandidateRunIDs(pipelineRunReclaimBatchSize)
 	if err != nil {

@@ -27,9 +27,7 @@ func (b *buildCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.BuildCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCBuildCollectorDuration(time.Since(start))
 	}()
 
 	logger.Debug("start")

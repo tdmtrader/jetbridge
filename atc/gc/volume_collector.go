@@ -34,9 +34,7 @@ func (vc *volumeCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.VolumeCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCVolumeCollectorDuration(time.Since(start))
 	}()
 
 	var errs error
@@ -75,9 +73,7 @@ func (vc *volumeCollector) cleanupFailedVolumes(logger lager.Logger) error {
 		})
 	}
 
-	metric.FailedVolumesToBeGarbageCollected{
-		Volumes: failedVolumesLen,
-	}.Emit(logger)
+	metric.FailedVolumesToBeGarbageCollected(failedVolumesLen)
 
 	return nil
 }
@@ -95,9 +91,7 @@ func (vc *volumeCollector) markOrphanedVolumesAsDestroying(logger lager.Logger) 
 		})
 	}
 
-	metric.CreatedVolumesToBeGarbageCollected{
-		Volumes: len(orphanedVolumesHandles),
-	}.Emit(logger)
+	metric.CreatedVolumesToBeGarbageCollected(len(orphanedVolumesHandles))
 
 	for _, orphanedVolume := range orphanedVolumesHandles {
 		// queue

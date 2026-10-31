@@ -27,9 +27,7 @@ func (a *artifactCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.ArtifactCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCArtifactCollectorDuration(time.Since(start))
 	}()
 
 	return a.artifactLifecycle.RemoveExpiredArtifacts()

@@ -25,20 +25,18 @@ func driveEveryMetric() {
 
 	// Database: queries counted through the instrumented connection, and one
 	// open-connection gauge per pool.
-	conn := metric.CountQueries(openTestConn("snapshot"))
+	conn := metric.InstrumentDB(openTestConn("snapshot"))
 	_, err := conn.Exec("SELECT 1")
 	Expect(err).NotTo(HaveOccurred())
-	metric.Metrics.Databases = append(metric.Metrics.Databases, conn)
 
 	// Error logs, through the lager sink.
-	sink := metric.NewErrorSinkCollector(logger, metric.Metrics)
-	sink.Log(lager.LogFormat{LogLevel: lager.ERROR, Message: "snapshot-error"})
+	metric.ErrorSink{}.Log(lager.LogFormat{LogLevel: lager.ERROR, Message: "snapshot-error"})
 
 	// Locks.
 	metric.LogLockAcquired(logger, lock.LockID{lock.LockTypeBatch})
 
 	// HTTP response times.
-	server := httptest.NewServer(metric.WrapHandler(logger, metric.Metrics, "Snapshot", http.NotFoundHandler()))
+	server := httptest.NewServer(metric.WrapHandler("Snapshot", http.NotFoundHandler()))
 	res, err := http.Get(server.URL + "/snapshot")
 	Expect(err).NotTo(HaveOccurred())
 	res.Body.Close()
@@ -62,62 +60,44 @@ func driveEveryMetric() {
 	metric.Metrics.K8sPodStartupDuration.Set(1500)
 	metric.Metrics.K8sImagePullFailures.Inc()
 
-	metric.SchedulingJobDuration{
-		PipelineName: "pipeline",
-		JobName:      "job",
-		JobID:        1,
-		Duration:     time.Second,
-	}.Emit(logger)
-
-	metric.StepsWaitingDuration{
-		Labels:   metric.StepsWaitingLabels{TeamId: "1", TeamName: "main", Type: "task"},
-		Duration: time.Second,
-	}.Emit(logger)
-
-	metric.JobStatus{
-		Status:       "failed",
-		JobName:      "job",
-		PipelineName: "pipeline",
-		TeamName:     "main",
-	}.Emit(logger)
-
-	metric.BuildFinished{Build: snapshotBuild{}}.Emit(logger)
+	metric.JobSchedulingDuration("pipeline", "job", 1, time.Second)
+	metric.StepWaited("1", "main", "task", time.Second)
+	metric.LatestCompletedBuildStatus("main", "pipeline", "job", "failed")
+	metric.BuildFinished(snapshotBuild{})
 
 	// Workers.
-	metric.WorkersState{
-		WorkerStateByName: map[string]db.WorkerState{"worker": db.WorkerStateRunning},
-	}.Emit(logger, metric.Metrics)
+	metric.WorkersRegistered(map[string]db.WorkerState{"worker": db.WorkerStateRunning})
 
 	// Garbage collection.
-	metric.BuildCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.WorkerCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.ResourceCacheUseCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.ResourceConfigCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.DeprecatedScopeCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.ResourceCacheCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.TaskCacheCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.ResourceConfigCheckSessionCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.ArtifactCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.ContainerCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.VolumeCollectorDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.PipelineRunReclaimDuration{Duration: time.Millisecond}.Emit(logger)
-	metric.PipelineRunReclaimBacklog{Runs: 3}.Emit(logger)
-	metric.CreatingContainersToBeGarbageCollected{Containers: 1}.Emit(logger)
-	metric.CreatedContainersToBeGarbageCollected{Containers: 1}.Emit(logger)
-	metric.DestroyingContainersToBeGarbageCollected{Containers: 1}.Emit(logger)
-	metric.FailedContainersToBeGarbageCollected{Containers: 1}.Emit(logger)
-	metric.CreatedVolumesToBeGarbageCollected{Volumes: 1}.Emit(logger)
-	metric.DestroyingVolumesToBeGarbageCollected{Volumes: 1}.Emit(logger)
-	metric.FailedVolumesToBeGarbageCollected{Volumes: 1}.Emit(logger)
+	metric.GCBuildCollectorDuration(time.Millisecond)
+	metric.GCWorkerCollectorDuration(time.Millisecond)
+	metric.GCResourceCacheUseCollectorDuration(time.Millisecond)
+	metric.GCResourceConfigCollectorDuration(time.Millisecond)
+	metric.GCDeprecatedScopeCollectorDuration(time.Millisecond)
+	metric.GCResourceCacheCollectorDuration(time.Millisecond)
+	metric.GCTaskCacheCollectorDuration(time.Millisecond)
+	metric.GCResourceConfigCheckSessionCollectorDuration(time.Millisecond)
+	metric.GCArtifactCollectorDuration(time.Millisecond)
+	metric.GCContainerCollectorDuration(time.Millisecond)
+	metric.GCVolumeCollectorDuration(time.Millisecond)
+	metric.PipelineRunReclaimDuration(time.Millisecond)
+	metric.PipelineRunReclaimBacklog(3)
+	metric.CreatingContainersToBeGarbageCollected(1)
+	metric.CreatedContainersToBeGarbageCollected(1)
+	metric.DestroyingContainersToBeGarbageCollected(1)
+	metric.FailedContainersToBeGarbageCollected(1)
+	metric.CreatedVolumesToBeGarbageCollected(1)
+	metric.DestroyingVolumesToBeGarbageCollected(1)
+	metric.FailedVolumesToBeGarbageCollected(1)
 
 	// The Hangar output plane.
-	metric.HangarOutputStatus{Status: metric.HangarOutputSnapshot{
+	metric.HangarOutputStatus(metric.HangarOutputSnapshot{
 		Enabled:    true,
 		Violations: map[string]int{"missing_object": 0},
-	}}.Emit(logger)
-	metric.HangarOutputReclaimPass{Reclaimed: 1}.Emit(logger)
-	metric.HangarOutputOrphanSweep{Objects: map[string]int{"orphan": 1}}.Emit(logger)
-	metric.HangarOutputOrphanSweep{Objects: map[string]int{"orphan": 0}, Failed: true}.Emit(logger)
+	})
+	metric.HangarOutputReclaimPass(1, 0, 0)
+	metric.HangarOutputOrphanSweep(map[string]int{"orphan": 1}, false, false)
+	metric.HangarOutputOrphanSweep(map[string]int{"orphan": 0}, true, false)
 
 	// One periodic tick publishes the sampled tallies and the pool gauges.
 	process := ifrit.Invoke(metric.PeriodicallyEmit(logger, metric.Metrics, 50*time.Millisecond))

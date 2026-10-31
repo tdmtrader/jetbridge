@@ -12,17 +12,14 @@ import (
 
 var _ = Describe("Metrics", func() {
 	Describe("worker state metric", func() {
-		var (
-			emitter *recordingEmitter
-			monitor *metric.Monitor
-		)
+		var emitter *recordingEmitter
 
 		BeforeEach(func() {
-			monitor, emitter = monitorWithRecorder()
+			emitter = captureMetrics()
 		})
 
 		It("emits a value for every state", func() {
-			givenNoWorkers().Emit(testLogger, monitor)
+			metric.WorkersRegistered(givenNoWorkers())
 
 			waitForEvents(emitter)
 
@@ -33,8 +30,7 @@ var _ = Describe("Metrics", func() {
 		})
 
 		It("correctly emits the number of running workers", func() {
-			givenOneWorkerWithState(db.WorkerStateRunning).
-				Emit(testLogger, monitor)
+			metric.WorkersRegistered(givenOneWorkerWithState(db.WorkerStateRunning))
 
 			waitForEvents(emitter)
 
@@ -57,16 +53,12 @@ func eventWithState(emitter *recordingEmitter, state db.WorkerState) metric.Even
 	return metric.Event{}
 }
 
-func givenNoWorkers() metric.WorkersState {
-	return metric.WorkersState{
-		WorkerStateByName: make(map[string]db.WorkerState),
-	}
+func givenNoWorkers() map[string]db.WorkerState {
+	return map[string]db.WorkerState{}
 }
 
-func givenOneWorkerWithState(state db.WorkerState) metric.WorkersState {
-	workersState := givenNoWorkers()
-	workersState.WorkerStateByName["my-worker"] = state
-	return workersState
+func givenOneWorkerWithState(state db.WorkerState) map[string]db.WorkerState {
+	return map[string]db.WorkerState{"my-worker": state}
 }
 
 func waitForEvents(emitter *recordingEmitter) {

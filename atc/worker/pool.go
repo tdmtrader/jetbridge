@@ -34,11 +34,6 @@ func (pool Pool) FindOrSelectWorker(
 	logger := lagerctx.FromContext(ctx)
 
 	started := time.Now()
-	labels := metric.StepsWaitingLabels{
-		TeamId:   strconv.Itoa(workerSpec.TeamID),
-		TeamName: containerSpec.TeamName,
-		Type:     string(containerSpec.Type),
-	}
 
 	worker, err := pool.findOrSelectWorker(logger, owner, workerSpec)
 	if err != nil {
@@ -48,11 +43,7 @@ func (pool Pool) FindOrSelectWorker(
 		return nil, ErrNoWorkers
 	}
 
-	elapsed := time.Since(started)
-	metric.StepsWaitingDuration{
-		Labels:   labels,
-		Duration: elapsed,
-	}.Emit(logger)
+	metric.StepWaited(strconv.Itoa(workerSpec.TeamID), containerSpec.TeamName, string(containerSpec.Type), time.Since(started))
 
 	return pool.factory.NewWorker(logger, worker), nil
 }

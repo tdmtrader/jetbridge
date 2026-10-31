@@ -152,12 +152,7 @@ func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.Sc
 		}
 	}
 
-	metric.SchedulingJobDuration{
-		PipelineName: job.PipelineName(),
-		JobName:      job.Name(),
-		JobID:        job.ID(),
-		Duration:     time.Since(jStart),
-	}.Emit(logger)
+	metric.JobSchedulingDuration(job.PipelineName(), job.Name(), job.ID(), time.Since(jStart))
 
 	return nil
 }

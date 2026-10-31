@@ -7,10 +7,12 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-func CountQueries(conn db.DbConn) db.DbConn {
-	return &countingConn{
-		DbConn: conn,
-	}
+// InstrumentDB counts every query made through conn and publishes its open
+// connections on each periodic tick.
+func InstrumentDB(conn db.DbConn) db.DbConn {
+	instrumented := &countingConn{DbConn: conn}
+	Metrics.Databases = append(Metrics.Databases, instrumented)
+	return instrumented
 }
 
 type countingConn struct {

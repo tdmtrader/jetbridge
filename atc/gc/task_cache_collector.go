@@ -28,9 +28,7 @@ func (rcc *taskCacheCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.TaskCacheCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCTaskCacheCollectorDuration(time.Since(start))
 	}()
 
 	deletedCacheIDs, err := rcc.cacheLifecycle.CleanUpInvalidTaskCaches()

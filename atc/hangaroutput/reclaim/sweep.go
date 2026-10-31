@@ -112,7 +112,7 @@ func (sweep *Sweep) Run(ctx context.Context) error {
 	default:
 		logger.Info("hangar-output-orphan-sweep", data)
 	}
-	metric.HangarOutputOrphanSweep{Objects: counts, Failed: err != nil, Skipped: err == nil && !sweep.judged}.Emit(logger)
+	metric.HangarOutputOrphanSweep(counts, err != nil, err == nil && !sweep.judged)
 	return err
 }
 

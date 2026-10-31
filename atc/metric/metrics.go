@@ -11,434 +11,118 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-type JobStatusLabels struct {
-	JobName      string
-	TeamName     string
-	PipelineName string
-}
+var nopLogger = lager.NewLogger("metric")
 
-type StepsWaitingLabels struct {
-	TeamId   string
-	TeamName string
-	Type     string
-}
-
-type StepsWaitingDuration struct {
-	Labels   StepsWaitingLabels
-	Duration time.Duration
-}
-
-func (event StepsWaitingDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("steps-waiting-duration"),
-		Event{
-			Name:  "steps waiting duration",
-			Value: event.Duration.Seconds(),
-			Attributes: map[string]string{
-				"teamId":   event.Labels.TeamId,
-				"teamName": event.Labels.TeamName,
-				"type":     event.Labels.Type,
-			},
+// StepWaited records how long a step waited for a worker.
+func StepWaited(teamID, teamName, stepType string, waited time.Duration) {
+	Metrics.emit(nopLogger, Event{
+		Name:  "steps waiting duration",
+		Value: waited.Seconds(),
+		Attributes: map[string]string{
+			"teamId":   teamID,
+			"teamName": teamName,
+			"type":     stepType,
 		},
-	)
+	})
 }
 
-type BuildCollectorDuration struct {
-	Duration time.Duration
+func emitMs(name string, duration time.Duration) {
+	Metrics.emit(nopLogger, Event{Name: name, Value: ms(duration)})
 }
 
-func (event BuildCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-build-collector-duration"),
-		Event{
-			Name:  "gc: build collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
+// The garbage collectors' pass durations.
+func GCBuildCollectorDuration(d time.Duration) { emitMs("gc: build collector duration (ms)", d) }
+func GCWorkerCollectorDuration(d time.Duration) {
+	emitMs("gc: worker collector duration (ms)", d)
 }
-
-type WorkerCollectorDuration struct {
-	Duration time.Duration
+func GCResourceCacheUseCollectorDuration(d time.Duration) {
+	emitMs("gc: resource cache use collector duration (ms)", d)
 }
-
-func (event WorkerCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-worker-collector-duration"),
-		Event{
-			Name:  "gc: worker collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
+func GCResourceConfigCollectorDuration(d time.Duration) {
+	emitMs("gc: resource config collector duration (ms)", d)
 }
-
-type ResourceCacheUseCollectorDuration struct {
-	Duration time.Duration
+func GCDeprecatedScopeCollectorDuration(d time.Duration) {
+	emitMs("gc: deprecated scope collector duration (ms)", d)
 }
-
-func (event ResourceCacheUseCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-resource-cache-use-collector-duration"),
-		Event{
-			Name:  "gc: resource cache use collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
+func GCResourceCacheCollectorDuration(d time.Duration) {
+	emitMs("gc: resource cache collector duration (ms)", d)
 }
-
-type ResourceConfigCollectorDuration struct {
-	Duration time.Duration
+func GCTaskCacheCollectorDuration(d time.Duration) {
+	emitMs("gc: task cache collector duration (ms)", d)
 }
-
-func (event ResourceConfigCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-resource-config-collector-duration"),
-		Event{
-			Name:  "gc: resource config collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
+func GCResourceConfigCheckSessionCollectorDuration(d time.Duration) {
+	emitMs("gc: resource config check session collector duration (ms)", d)
 }
-
-type DeprecatedScopeCollectorDuration struct {
-	Duration time.Duration
+func GCArtifactCollectorDuration(d time.Duration) {
+	emitMs("gc: artifact collector duration (ms)", d)
 }
-
-func (event DeprecatedScopeCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-deprecated-scope-collector-duration"),
-		Event{
-			Name:  "gc: deprecated scope collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
+func GCContainerCollectorDuration(d time.Duration) {
+	emitMs("gc: container collector duration (ms)", d)
 }
-
-type ResourceCacheCollectorDuration struct {
-	Duration time.Duration
-}
-
-func (event ResourceCacheCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-resource-cache-collector-duration"),
-		Event{
-			Name:  "gc: resource cache collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
-}
-
-type TaskCacheCollectorDuration struct {
-	Duration time.Duration
-}
-
-func (event TaskCacheCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-task-cache-collector-duration"),
-		Event{
-			Name:  "gc: task cache collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
-}
-
-type ResourceConfigCheckSessionCollectorDuration struct {
-	Duration time.Duration
-}
-
-func (event ResourceConfigCheckSessionCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-resource-config-check-session-collector-duration"),
-		Event{
-			Name:  "gc: resource config check session collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
-}
-
-type ArtifactCollectorDuration struct {
-	Duration time.Duration
-}
-
-func (event ArtifactCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-artifact-collector-duration"),
-		Event{
-			Name:  "gc: artifact collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
-}
-
-type ContainerCollectorDuration struct {
-	Duration time.Duration
-}
-
-func (event ContainerCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-container-collector-duration"),
-		Event{
-			Name:  "gc: container collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
-}
-
-type VolumeCollectorDuration struct {
-	Duration time.Duration
-}
-
-func (event VolumeCollectorDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-volume-collector-duration"),
-		Event{
-			Name:  "gc: volume collector duration (ms)",
-			Value: ms(event.Duration),
-		},
-	)
-}
+func GCVolumeCollectorDuration(d time.Duration) { emitMs("gc: volume collector duration (ms)", d) }
 
 // PipelineRunReclaimBacklog is the number of pipeline runs eligible for
 // reclamation at the start of a reclaimer pass, counted without the batch
 // bound. Read it against the batch size: a backlog that stays above the batch
 // pass after pass is a reclaimer that will never catch up, and every run in it
 // is a payload pipeline, its jobs and its build rows still on disk.
-type PipelineRunReclaimBacklog struct {
-	Runs int
-}
-
-func (event PipelineRunReclaimBacklog) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("pipeline-run-reclaim-backlog"),
-		Event{
-			Name:  "pipeline run reclaim backlog",
-			Value: float64(event.Runs),
-		},
-	)
+func PipelineRunReclaimBacklog(runs int) {
+	Metrics.emit(nopLogger, Event{Name: "pipeline run reclaim backlog", Value: float64(runs)})
 }
 
 // PipelineRunReclaimDuration is how long one reclaimer pass took, batch
 // included. It is per-batch rather than per-run so that it stays comparable
 // with the component's own interval: a pass that outlasts the interval is the
 // other half of the backlog story.
-type PipelineRunReclaimDuration struct {
-	Duration time.Duration
+func PipelineRunReclaimDuration(d time.Duration) {
+	emitMs("gc: pipeline run reclaim duration (ms)", d)
 }
 
-func (event PipelineRunReclaimDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("pipeline-run-reclaim-duration"),
-		Event{
-			Name:  "gc: pipeline run reclaim duration (ms)",
-			Value: ms(event.Duration),
+// JobSchedulingDuration records one scheduling pass over a job.
+func JobSchedulingDuration(pipeline, job string, jobID int, d time.Duration) {
+	Metrics.emit(nopLogger, Event{
+		Name:  "scheduling: job duration (ms)",
+		Value: ms(d),
+		Attributes: map[string]string{
+			"pipeline": pipeline,
+			"job":      job,
+			"job_id":   strconv.Itoa(jobID),
 		},
-	)
+	})
 }
 
-type SchedulingJobDuration struct {
-	PipelineName string
-	JobName      string
-	JobID        int
-	Duration     time.Duration
+func emitCount(name string, count int) {
+	Metrics.emit(nopLogger, Event{Name: name, Value: float64(count), Attributes: map[string]string{}})
 }
 
-func (event SchedulingJobDuration) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("job-scheduling-duration"),
-		Event{
-			Name:  "scheduling: job duration (ms)",
-			Value: ms(event.Duration),
-			Attributes: map[string]string{
-				"pipeline": event.PipelineName,
-				"job":      event.JobName,
-				"job_id":   strconv.Itoa(event.JobID),
-			},
-		},
-	)
+// What one garbage collection pass found to delete.
+func CreatingContainersToBeGarbageCollected(n int) {
+	emitCount("creating containers to be garbage collected", n)
+}
+func CreatedContainersToBeGarbageCollected(n int) {
+	emitCount("created containers to be garbage collected", n)
+}
+func DestroyingContainersToBeGarbageCollected(n int) {
+	emitCount("destroying containers to be garbage collected", n)
+}
+func FailedContainersToBeGarbageCollected(n int) {
+	emitCount("failed containers to be garbage collected", n)
+}
+func CreatedVolumesToBeGarbageCollected(n int) {
+	emitCount("created volumes to be garbage collected", n)
+}
+func DestroyingVolumesToBeGarbageCollected(n int) {
+	emitCount("destroying volumes to be garbage collected", n)
+}
+func FailedVolumesToBeGarbageCollected(n int) {
+	emitCount("failed volumes to be garbage collected", n)
 }
 
-type WorkerContainers struct {
-	WorkerName string
-	Platform   string
-	Containers int
-	TeamName   string
-	Tags       []string
-}
-
-func (event WorkerContainers) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("worker-containers"),
-		Event{
-			Name:  "worker containers",
-			Value: float64(event.Containers),
-			Attributes: map[string]string{
-				"worker":    event.WorkerName,
-				"platform":  event.Platform,
-				"team_name": event.TeamName,
-				"tags":      strings.Join(event.Tags[:], "/"),
-			},
-		},
-	)
-}
-
-type WorkerVolumes struct {
-	WorkerName string
-	Platform   string
-	Volumes    int
-	TeamName   string
-	Tags       []string
-}
-
-func (event WorkerVolumes) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("worker-volumes"),
-		Event{
-			Name:  "worker volumes",
-			Value: float64(event.Volumes),
-			Attributes: map[string]string{
-				"worker":    event.WorkerName,
-				"platform":  event.Platform,
-				"team_name": event.TeamName,
-				"tags":      strings.Join(event.Tags[:], "/"),
-			},
-		},
-	)
-}
-
-type WorkerTasks struct {
-	WorkerName string
-	Platform   string
-	Tasks      int
-}
-
-func (event WorkerTasks) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("worker-tasks"),
-		Event{
-			Name:  "worker tasks",
-			Value: float64(event.Tasks),
-			Attributes: map[string]string{
-				"worker":   event.WorkerName,
-				"platform": event.Platform,
-			},
-		},
-	)
-}
-
-type CreatingContainersToBeGarbageCollected struct {
-	Containers int
-}
-
-func (event CreatingContainersToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-creating-containers-for-deletion"),
-		Event{
-			Name:       "creating containers to be garbage collected",
-			Value:      float64(event.Containers),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type CreatedContainersToBeGarbageCollected struct {
-	Containers int
-}
-
-func (event CreatedContainersToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-created-containers-for-deletion"),
-		Event{
-			Name:       "created containers to be garbage collected",
-			Value:      float64(event.Containers),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type DestroyingContainersToBeGarbageCollected struct {
-	Containers int
-}
-
-func (event DestroyingContainersToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-destroying-containers-for-deletion"),
-		Event{
-			Name:       "destroying containers to be garbage collected",
-			Value:      float64(event.Containers),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type FailedContainersToBeGarbageCollected struct {
-	Containers int
-}
-
-func (event FailedContainersToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-failed-containers-for-deletion"),
-		Event{
-			Name:       "failed containers to be garbage collected",
-			Value:      float64(event.Containers),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type CreatedVolumesToBeGarbageCollected struct {
-	Volumes int
-}
-
-func (event CreatedVolumesToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-created-volumes-for-deletion"),
-		Event{
-			Name:       "created volumes to be garbage collected",
-			Value:      float64(event.Volumes),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type DestroyingVolumesToBeGarbageCollected struct {
-	Volumes int
-}
-
-func (event DestroyingVolumesToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-destroying-volumes-for-deletion"),
-		Event{
-			Name:       "destroying volumes to be garbage collected",
-			Value:      float64(event.Volumes),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type FailedVolumesToBeGarbageCollected struct {
-	Volumes int
-}
-
-func (event FailedVolumesToBeGarbageCollected) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("gc-found-failed-volumes-for-deletion"),
-		Event{
-			Name:       "failed volumes to be garbage collected",
-			Value:      float64(event.Volumes),
-			Attributes: map[string]string{},
-		},
-	)
-}
-
-type JobStatus struct {
-	Status       string
-	JobName      string
-	PipelineName string
-	TeamName     string
-}
-
-func (event JobStatus) Emit(logger lager.Logger) {
+// LatestCompletedBuildStatus records a job's latest completed build. Only the
+// four terminal statuses are published.
+func LatestCompletedBuildStatus(team, pipeline, job, status string) {
 	var value int
-	switch event.Status {
+	switch status {
 	case "succeeded":
 		value = 0
 	case "failed":
@@ -451,59 +135,44 @@ func (event JobStatus) Emit(logger lager.Logger) {
 		return
 	}
 
-	Metrics.emit(
-		logger.Session("latest-completed-build-status"),
-		Event{
-			Name:  "latest completed build status",
-			Value: float64(value),
-			Attributes: map[string]string{
-				"jobName":      event.JobName,
-				"pipelineName": event.PipelineName,
-				"teamName":     event.TeamName,
-			},
+	Metrics.emit(nopLogger, Event{
+		Name:  "latest completed build status",
+		Value: float64(value),
+		Attributes: map[string]string{
+			"jobName":      job,
+			"pipelineName": pipeline,
+			"teamName":     team,
 		},
-	)
+	})
 }
 
-type BuildStarted struct {
-	Build db.Build
+// BuildStarted records a started pipeline build.
+func BuildStarted(build db.Build) {
+	Metrics.emit(nopLogger, Event{
+		Name:       "build started",
+		Value:      float64(build.ID()),
+		Attributes: build.TracingAttrs(),
+	})
 }
 
-func (event BuildStarted) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("build-started"),
-		Event{
-			Name:       "build started",
-			Value:      float64(event.Build.ID()),
-			Attributes: event.Build.TracingAttrs(),
-		},
-	)
-}
+// BuildFinished records a finished pipeline build.
+func BuildFinished(build db.Build) {
+	attrs := build.TracingAttrs()
+	attrs["build_status"] = build.Status().String()
 
-type BuildFinished struct {
-	Build db.Build
-}
-
-func (event BuildFinished) Emit(logger lager.Logger) {
-	attrs := event.Build.TracingAttrs()
-	attrs["build_status"] = event.Build.Status().String()
-
-	duration := event.Build.EndTime().Sub(event.Build.StartTime())
+	duration := build.EndTime().Sub(build.StartTime())
 
 	var traceID string
-	if sc := event.Build.SpanContext(); sc != nil {
+	if sc := build.SpanContext(); sc != nil {
 		traceID = extractTraceID(sc.Get("traceparent"))
 	}
 
-	Metrics.emit(
-		logger.Session("build-finished"),
-		Event{
-			Name:       "build finished",
-			Value:      ms(duration),
-			Attributes: attrs,
-			TraceID:    traceID,
-		},
-	)
+	Metrics.emit(nopLogger, Event{
+		Name:       "build finished",
+		Value:      ms(duration),
+		Attributes: attrs,
+		TraceID:    traceID,
+	})
 }
 
 // extractTraceID parses the trace ID from a W3C traceparent header.
@@ -520,48 +189,25 @@ func ms(duration time.Duration) float64 {
 	return float64(duration) / 1000000
 }
 
-type ErrorLog struct {
-	Message string
-	Value   int
+func errorLogged(message string) {
+	Metrics.emit(nopLogger, Event{
+		Name:       "error log",
+		Value:      1,
+		Attributes: map[string]string{"message": message},
+	})
 }
 
-func (e ErrorLog) Emit(logger lager.Logger, m *Monitor) {
-	m.emit(
-		logger.Session("error-log"),
-		Event{
-			Name:  "error log",
-			Value: float64(e.Value),
-			Attributes: map[string]string{
-				"message": e.Message,
-			},
+func httpResponded(route, method string, status int, duration time.Duration, traceID string) {
+	Metrics.emit(nopLogger, Event{
+		Name:  "http response time",
+		Value: ms(duration),
+		Attributes: map[string]string{
+			"route":  route,
+			"method": method,
+			"status": strconv.Itoa(status),
 		},
-	)
-}
-
-type HTTPResponseTime struct {
-	Route      string
-	Path       string
-	Method     string
-	StatusCode int
-	Duration   time.Duration
-	TraceID    string
-}
-
-func (event HTTPResponseTime) Emit(logger lager.Logger, m *Monitor) {
-	m.emit(
-		logger.Session("http-response-time"),
-		Event{
-			Name:  "http response time",
-			Value: ms(event.Duration),
-			Attributes: map[string]string{
-				"route":  event.Route,
-				"path":   event.Path,
-				"method": event.Method,
-				"status": strconv.Itoa(event.StatusCode),
-			},
-			TraceID: event.TraceID,
-		},
-	)
+		TraceID: traceID,
+	})
 }
 
 var lockTypeNames = map[int]string{
@@ -578,87 +224,46 @@ var lockTypeNames = map[int]string{
 	lock.LockTypeVolumeStreaming:            "VolumeStreaming",
 }
 
-type LockAcquired struct {
-	LockType string
-}
-
-func (event LockAcquired) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("lock-acquired"),
-		Event{
-			Name:  "lock held",
-			Value: 1,
-			Attributes: map[string]string{
-				"type": event.LockType,
-			},
-		},
-	)
-}
-
-type LockReleased struct {
-	LockType string
-}
-
-func (event LockReleased) Emit(logger lager.Logger) {
-	Metrics.emit(
-		logger.Session("lock-released"),
-		Event{
-			Name:  "lock held",
-			Value: 0,
-			Attributes: map[string]string{
-				"type": event.LockType,
-			},
-		},
-	)
-}
-
 func LogLockAcquired(logger lager.Logger, lockID lock.LockID) {
 	logger.Debug("acquired")
-
-	if len(lockID) == 0 {
-		return
-	}
-
-	if lockType, ok := lockTypeNames[lockID[0]]; ok {
-		LockAcquired{LockType: lockType}.Emit(logger)
-	}
+	lockHeld(lockID, 1)
 }
 
 func LogLockReleased(logger lager.Logger, lockID lock.LockID) {
 	logger.Debug("released")
+	lockHeld(lockID, 0)
+}
 
+func lockHeld(lockID lock.LockID, value float64) {
 	if len(lockID) == 0 {
 		return
 	}
 
 	if lockType, ok := lockTypeNames[lockID[0]]; ok {
-		LockReleased{LockType: lockType}.Emit(logger)
+		Metrics.emit(nopLogger, Event{
+			Name:       "lock held",
+			Value:      value,
+			Attributes: map[string]string{"type": lockType},
+		})
 	}
 }
 
-type WorkersState struct {
-	WorkerStateByName map[string]db.WorkerState
-}
-
-func (event WorkersState) Emit(logger lager.Logger, m *Monitor) {
+// WorkersRegistered records how many workers the database holds in each
+// state, zeroes included.
+func WorkersRegistered(stateByName map[string]db.WorkerState) {
 	for _, state := range db.AllWorkerStates() {
 		count := 0
-		for _, workerState := range event.WorkerStateByName {
+		for _, workerState := range stateByName {
 			if workerState == state {
 				count += 1
 			}
 		}
 
-		m.emit(
-			logger.Session("worker-state"),
-			Event{
-				Name:  "worker state",
-				Value: float64(count),
-				Attributes: map[string]string{
-					"state": string(state),
-				},
-			},
-		)
+		Metrics.emit(nopLogger, Event{
+			Name:       "worker state",
+			Value:      float64(count),
+			Attributes: map[string]string{"state": string(state)},
+		})
 	}
 }
 
@@ -693,44 +298,36 @@ type HangarOutputSnapshot struct {
 	Residue int
 }
 
-// HangarOutputStatus is the event one status pass emits.
-type HangarOutputStatus struct {
-	Status HangarOutputSnapshot
-}
-
-func (event HangarOutputStatus) Emit(logger lager.Logger) {
-	session := logger.Session("hangar-output-status")
-
-	Metrics.emit(session, Event{
+// HangarOutputStatus publishes one status pass.
+func HangarOutputStatus(status HangarOutputSnapshot) {
+	Metrics.emit(nopLogger, Event{
 		Name:  "hangar output enabled",
-		Value: boolValue(event.Status.Enabled),
+		Value: boolValue(status.Enabled),
 	})
-	Metrics.emit(session, Event{
-		Name:  "hangar output at risk",
-		Value: boolValue(event.Status.AtRisk),
-		Attributes: map[string]string{
-			"reasons": event.Status.Reasons,
-		},
+	Metrics.emit(nopLogger, Event{
+		Name:       "hangar output at risk",
+		Value:      boolValue(status.AtRisk),
+		Attributes: map[string]string{"reasons": status.Reasons},
 	})
-	for violation, count := range event.Status.Violations {
-		Metrics.emit(session, Event{
+	for violation, count := range status.Violations {
+		Metrics.emit(nopLogger, Event{
 			Name:       "hangar output policy violations",
 			Value:      float64(count),
 			Attributes: map[string]string{"violation": violation},
 		})
 	}
 	for name, value := range map[string]int{
-		"live_generations":        event.Status.LiveGenerations,
-		"nonterminal_captures":    event.Status.NonterminalCaptures,
-		"pending_captures":        event.Status.PendingCaptures,
-		"publishing_captures":     event.Status.PublishingCaptures,
-		"unreleased_captures":     event.Status.UnreleasedCaptures,
-		"unacknowledged_releases": event.Status.UnacknowledgedReleases,
-		"open_claims":             event.Status.OpenClaims,
-		"open_integrity_findings": event.Status.OpenIntegrityFindings,
-		"residue":                 event.Status.Residue,
+		"live_generations":        status.LiveGenerations,
+		"nonterminal_captures":    status.NonterminalCaptures,
+		"pending_captures":        status.PendingCaptures,
+		"publishing_captures":     status.PublishingCaptures,
+		"unreleased_captures":     status.UnreleasedCaptures,
+		"unacknowledged_releases": status.UnacknowledgedReleases,
+		"open_claims":             status.OpenClaims,
+		"open_integrity_findings": status.OpenIntegrityFindings,
+		"residue":                 status.Residue,
 	} {
-		Metrics.emit(session, Event{
+		Metrics.emit(nopLogger, Event{
 			Name:       "hangar output plane inventory",
 			Value:      float64(value),
 			Attributes: map[string]string{"kind": name},
@@ -741,21 +338,13 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 // HangarOutputReclaimPass is what one web reclaim pass did: generations it
 // reclaimed, generations it deferred to a later pass (claimed or captured
 // between the query and the lock), and deletes that did not answer.
-type HangarOutputReclaimPass struct {
-	Reclaimed int
-	Deferred  int
-	Failed    int
-}
-
-func (event HangarOutputReclaimPass) Emit(logger lager.Logger) {
-	session := logger.Session("hangar-output-reclaim")
-
+func HangarOutputReclaimPass(reclaimed, deferred, failed int) {
 	for outcome, value := range map[string]int{
-		"reclaimed": event.Reclaimed,
-		"deferred":  event.Deferred,
-		"failed":    event.Failed,
+		"reclaimed": reclaimed,
+		"deferred":  deferred,
+		"failed":    failed,
 	} {
-		Metrics.emit(session, Event{
+		Metrics.emit(nopLogger, Event{
 			Name:       "hangar output reclaim generations",
 			Value:      float64(value),
 			Attributes: map[string]string{"outcome": outcome},
@@ -764,37 +353,26 @@ func (event HangarOutputReclaimPass) Emit(logger lager.Logger) {
 }
 
 // HangarOutputOrphanSweep is one orphan sweep's count of listed objects per
-// class: the one it deleted and every class it left alone.
-type HangarOutputOrphanSweep struct {
-	Objects map[string]int
-
-	// Failed is a pass that stopped on an error -- a list, a judgement or a
-	// delete. It counts as a failure and not as a completed pass.
-	Failed bool
-
-	// Skipped is a pass that judged nothing because the shared deletion lock
-	// was held elsewhere. It is neither a completed pass nor a failure.
-	Skipped bool
-}
-
-func (event HangarOutputOrphanSweep) Emit(logger lager.Logger) {
-	session := logger.Session("hangar-output-orphan-sweep")
-
-	for class, value := range event.Objects {
-		Metrics.emit(session, Event{
+// class: the one it deleted and every class it left alone. A failed pass
+// stopped on an error -- a list, a judgement or a delete -- and counts as a
+// failure rather than a completed pass; a skipped pass judged nothing because
+// the shared deletion lock was held elsewhere, and is neither.
+func HangarOutputOrphanSweep(objects map[string]int, failed, skipped bool) {
+	for class, value := range objects {
+		Metrics.emit(nopLogger, Event{
 			Name:       "hangar output orphan sweep objects",
 			Value:      float64(value),
 			Attributes: map[string]string{"class": class},
 		})
 	}
-	if event.Skipped {
+	if skipped {
 		return
 	}
 	name := "hangar output orphan sweep passes"
-	if event.Failed {
+	if failed {
 		name = "hangar output orphan sweep failures"
 	}
-	Metrics.emit(session, Event{Name: name, Value: 1})
+	Metrics.emit(nopLogger, Event{Name: name, Value: 1})
 }
 
 func boolValue(value bool) float64 {
@@ -803,12 +381,4 @@ func boolValue(value bool) float64 {
 	}
 
 	return 0
-}
-
-func boolAttribute(value bool) string {
-	if value {
-		return "true"
-	}
-
-	return "false"
 }

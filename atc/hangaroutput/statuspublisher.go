@@ -46,7 +46,7 @@ func (publisher *StatusPublisher) Run(ctx context.Context) error {
 		return err
 	}
 
-	metric.HangarOutputStatus{Status: statusEvent(status)}.Emit(logger)
+	metric.HangarOutputStatus(statusEvent(status))
 
 	return nil
 }

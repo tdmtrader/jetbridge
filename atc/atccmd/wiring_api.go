@@ -265,7 +265,7 @@ func (cmd *RunCommand) constructWebHandler(logger lager.Logger) (http.Handler, e
 	if err != nil {
 		return nil, err
 	}
-	return metric.WrapHandler(logger, metric.Metrics, "web", webHandler), nil
+	return metric.WrapHandler("web", webHandler), nil
 }
 
 func (cmd *RunCommand) skyHttpClient() (*http.Client, error) {
@@ -576,7 +576,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 
 	apiWrapper := wrappa.MultiWrappa{
-		wrappa.NewAPIMetricsWrappa(logger),
+		wrappa.NewAPIMetricsWrappa(),
 		wrappa.NewAPIAuthWrappa(
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,

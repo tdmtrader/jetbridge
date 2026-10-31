@@ -42,9 +42,7 @@ func (c *containerCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.ContainerCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCContainerCollectorDuration(time.Since(start))
 	}()
 
 	var errs error
@@ -90,9 +88,7 @@ func (c *containerCollector) markFailedContainersAsDestroying(logger lager.Logge
 		})
 	}
 
-	metric.FailedContainersToBeGarbageCollected{
-		Containers: numFailedContainers,
-	}.Emit(logger)
+	metric.FailedContainersToBeGarbageCollected(numFailedContainers)
 
 	return nil
 }
@@ -118,17 +114,11 @@ func (c *containerCollector) cleanupOrphanedContainers(logger lager.Logger) erro
 		})
 	}
 
-	metric.CreatingContainersToBeGarbageCollected{
-		Containers: len(creatingContainers),
-	}.Emit(logger)
+	metric.CreatingContainersToBeGarbageCollected(len(creatingContainers))
 
-	metric.CreatedContainersToBeGarbageCollected{
-		Containers: len(createdContainers),
-	}.Emit(logger)
+	metric.CreatedContainersToBeGarbageCollected(len(createdContainers))
 
-	metric.DestroyingContainersToBeGarbageCollected{
-		Containers: len(destroyingContainers),
-	}.Emit(logger)
+	metric.DestroyingContainersToBeGarbageCollected(len(destroyingContainers))
 
 	for _, createdContainer := range createdContainers {
 

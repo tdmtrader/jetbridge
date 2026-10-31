@@ -189,22 +189,6 @@ func tick(logger lager.Logger, m *Monitor) {
 		},
 	)
 
-	for labels, gauge := range m.StepsWaiting {
-		stepsWaiting := gauge.Max()
-		m.emit(
-			logger.Session("steps-waiting"),
-			Event{
-				Name:  "steps waiting",
-				Value: stepsWaiting,
-				Attributes: map[string]string{
-					"teamId":   labels.TeamId,
-					"teamName": labels.TeamName,
-					"type":     labels.Type,
-				},
-			},
-		)
-	}
-
 	checksFinishedWithError := m.ChecksFinishedWithError.Delta()
 	m.emit(
 		logger.Session("checks-finished-with-error"),

@@ -28,9 +28,7 @@ func (wc *workerCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.WorkerCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCWorkerCollectorDuration(time.Since(start))
 	}()
 
 	affected, err := wc.workerLifecycle.DeleteUnresponsiveEphemeralWorkers()
@@ -48,9 +46,7 @@ func (wc *workerCollector) Run(ctx context.Context) error {
 	if err != nil {
 		logger.Error("failed-to-get-workers-states-for-metrics", err)
 	} else {
-		metric.WorkersState{
-			WorkerStateByName: workerStateByName,
-		}.Emit(logger, metric.Metrics)
+		metric.WorkersRegistered(workerStateByName)
 	}
 
 	return nil

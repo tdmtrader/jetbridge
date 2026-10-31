@@ -39,8 +39,7 @@ func (cmd *RunCommand) constructDBConn(
 	}
 
 	// Instrument with Metrics
-	dbConn = metric.CountQueries(dbConn)
-	metric.Metrics.Databases = append(metric.Metrics.Databases, dbConn)
+	dbConn = metric.InstrumentDB(dbConn)
 
 	// Instrument with Logging
 	if cmd.LogDBQueries {

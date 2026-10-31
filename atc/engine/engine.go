@@ -333,20 +333,13 @@ func (b *engineBuild) saveStatus(logger lager.Logger, status atc.BuildStatus) {
 		return
 	}
 	if b.build.ID() >= id {
-		metric.JobStatus{
-			Status:       status.String(),
-			JobName:      job.Name(),
-			PipelineName: job.PipelineName(),
-			TeamName:     job.TeamName(),
-		}.Emit(logger)
+		metric.LatestCompletedBuildStatus(job.TeamName(), job.PipelineName(), job.Name(), status.String())
 	}
 }
 
 func (b *engineBuild) trackStarted(logger lager.Logger) {
 	if b.build.Name() != db.CheckBuildName {
-		metric.BuildStarted{
-			Build: b.build,
-		}.Emit(logger)
+		metric.BuildStarted(b.build)
 	}
 }
 
@@ -364,9 +357,7 @@ func (b *engineBuild) trackFinished(logger lager.Logger) {
 
 	if !b.build.IsRunning() {
 		if b.build.Name() != db.CheckBuildName {
-			metric.BuildFinished{
-				Build: b.build,
-			}.Emit(logger)
+			metric.BuildFinished(b.build)
 		}
 	}
 }

@@ -158,8 +158,7 @@ func deleteTimeout(configured time.Duration) time.Duration {
 func (pass *Pass) Run(ctx context.Context) error {
 	_, err := exclusively(ctx, pass.Locker, func() error {
 		reclaimed, deferred, failed, err := pass.Reclaim(ctx)
-		metric.HangarOutputReclaimPass{Reclaimed: reclaimed, Deferred: deferred, Failed: failed}.
-			Emit(lagerctx.FromContext(ctx))
+		metric.HangarOutputReclaimPass(reclaimed, deferred, failed)
 		return err
 	})
 	return err

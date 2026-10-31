@@ -27,9 +27,7 @@ func (rcc *resourceCacheCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.ResourceCacheCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCResourceCacheCollectorDuration(time.Since(start))
 	}()
 
 	err := rcc.cacheLifecycle.CleanUpInvalidCaches(logger)

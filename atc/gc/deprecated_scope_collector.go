@@ -32,9 +32,7 @@ func (dsc *deprecatedScopeCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.DeprecatedScopeCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCDeprecatedScopeCollectorDuration(time.Since(start))
 	}()
 
 	_, err := dsc.conn.Exec(`

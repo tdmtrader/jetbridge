@@ -63,3 +63,18 @@ func monitorWithRecorder() (*metric.Monitor, *recordingEmitter) {
 
 	return monitor, emitter
 }
+
+// captureMetrics swaps the process-wide Monitor for a recording one and
+// restores it when the spec ends, because the emit functions write to that
+// global.
+func captureMetrics() *recordingEmitter {
+	GinkgoHelper()
+
+	monitor, emitter := monitorWithRecorder()
+
+	previous := metric.Metrics
+	metric.Metrics = monitor
+	DeferCleanup(func() { metric.Metrics = previous })
+
+	return emitter
+}

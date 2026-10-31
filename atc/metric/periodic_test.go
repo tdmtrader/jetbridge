@@ -76,34 +76,4 @@ var _ = Describe("Periodic emission of metrics", func() {
 			)
 		})
 	})
-
-	Context("waiting steps metrics", func() {
-		labels := metric.StepsWaitingLabels{
-			TeamId:   "42",
-			TeamName: "teamdev",
-			Type:     "task",
-		}
-
-		BeforeEach(func() {
-			gauge := &metric.Gauge{}
-			gauge.Set(123)
-			monitor.StepsWaiting[labels] = gauge
-		})
-
-		It("emits", func() {
-			Eventually(emitter.Events).Should(
-				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":  Equal("steps waiting"),
-						"Value": Equal(float64(123)),
-						"Attributes": Equal(map[string]string{
-							"teamId":   labels.TeamId,
-							"teamName": labels.TeamName,
-							"type":     labels.Type,
-						}),
-					}),
-				),
-			)
-		})
-	})
 })

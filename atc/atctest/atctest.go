@@ -255,7 +255,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 	access := accessor.NewAccessFactory(verifier, p.teams, "", nil, displayUserID)
 	workers := db.NewWorkerFactory(p.conn, db.NewStaticWorkerCache(logger, p.conn, 0))
 	wrapper := wrappa.MultiWrappa{
-		wrappa.NewAPIMetricsWrappa(logger),
+		wrappa.NewAPIMetricsWrappa(),
 		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(p.teams), auth.NewCheckBuildReadAccessHandlerFactory(p.builds),
 			auth.NewCheckBuildWriteAccessHandlerFactory(p.builds)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(p.teams)),

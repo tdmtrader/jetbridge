@@ -62,9 +62,6 @@ type Monitor struct {
 	CheckBuildsStarted Counter
 	CheckBuildsRunning Gauge
 
-	JobStatuses  map[JobStatusLabels]*Gauge
-	StepsWaiting map[StepsWaitingLabels]*Gauge
-
 	// When global resource is not enabled, ChecksStarted should equal to CheckBuildsStarted.
 	// But with global resource enabled, ChecksStarted measures how many checks really run.
 	// For example, there are 10 resources having exact same config, so they belong to the same
@@ -89,9 +86,7 @@ type Monitor struct {
 var Metrics = NewMonitor()
 
 func NewMonitor() *Monitor {
-	return &Monitor{
-		StepsWaiting: map[StepsWaitingLabels]*Gauge{},
-	}
+	return &Monitor{}
 }
 
 func (m *Monitor) RegisterEmitter(factory emitterFactory) {

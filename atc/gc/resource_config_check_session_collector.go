@@ -30,9 +30,7 @@ func (rccsc *resourceConfigCheckSessionCollector) Run(ctx context.Context) error
 
 	start := time.Now()
 	defer func() {
-		metric.ResourceConfigCheckSessionCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCResourceConfigCheckSessionCollectorDuration(time.Since(start))
 	}()
 
 	var errs error

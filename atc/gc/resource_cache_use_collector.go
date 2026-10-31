@@ -28,9 +28,7 @@ func (rcuc *resourceCacheUseCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.ResourceCacheUseCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCResourceCacheUseCollectorDuration(time.Since(start))
 	}()
 
 	var errs error

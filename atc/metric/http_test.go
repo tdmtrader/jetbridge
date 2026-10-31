@@ -25,20 +25,12 @@ var _ = Describe("MetricsHandler", func() {
 	var (
 		ts      *httptest.Server
 		emitter *recordingEmitter
-		monitor *Monitor
 	)
 
 	BeforeEach(func() {
-		monitor, emitter = monitorWithRecorder()
+		emitter = captureMetrics()
 
-		ts = httptest.NewServer(
-			WrapHandler(
-				testLogger,
-				monitor,
-				"ApiEndpoint",
-				http.HandlerFunc(noopHandler),
-			),
-		)
+		ts = httptest.NewServer(WrapHandler("ApiEndpoint", http.HandlerFunc(noopHandler)))
 	})
 
 	AfterEach(func() {
@@ -64,7 +56,6 @@ var _ = Describe("MetricsHandler", func() {
 			Expect(event.Attributes).To(HaveKeyWithValue("status", "404"))
 			Expect(event.Attributes).To(HaveKeyWithValue("method", "GET"))
 			Expect(event.Attributes).To(HaveKeyWithValue("route", "ApiEndpoint"))
-			Expect(event.Attributes).To(HaveKeyWithValue("path", "/"))
 		})
 
 		Context("to endpoint that returns success statuses", func() {
@@ -75,10 +66,6 @@ var _ = Describe("MetricsHandler", func() {
 			It("captures error code", func() {
 				Expect(event.Attributes).To(HaveKeyWithValue("status", "200"))
 			})
-
-			It("captures route", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("path", "/success"))
-			})
 		})
 
 		Context("to faulty endpoint", func() {
@@ -88,10 +75,6 @@ var _ = Describe("MetricsHandler", func() {
 
 			It("captures error code", func() {
 				Expect(event.Attributes).To(HaveKeyWithValue("status", "500"))
-			})
-
-			It("captures route", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("path", "/failure"))
 			})
 		})
 	})

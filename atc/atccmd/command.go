@@ -154,11 +154,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 	// Register the sink that collects error metrics
 	if cmd.Metrics.CaptureErrorMetrics {
-		errorSinkCollector := metric.NewErrorSinkCollector(
-			logger,
-			metric.Metrics,
-		)
-		logger.RegisterSink(&errorSinkCollector)
+		logger.RegisterSink(metric.ErrorSink{})
 	}
 
 	err = cmd.Tracing.Prepare()

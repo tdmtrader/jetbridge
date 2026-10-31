@@ -32,9 +32,7 @@ func (rcuc *resourceConfigCollector) Run(ctx context.Context) error {
 
 	start := time.Now()
 	defer func() {
-		metric.ResourceConfigCollectorDuration{
-			Duration: time.Since(start),
-		}.Emit(logger)
+		metric.GCResourceConfigCollectorDuration(time.Since(start))
 	}()
 
 	return rcuc.configFactory.CleanUnreferencedConfigs(rcuc.gracePeriod)
