@@ -137,7 +137,7 @@ func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, r
 				"the output bucket", output.ErrInfrastructure, key)
 		}
 
-		return output.PublishedObject{}, translate(err, key)
+		return output.PublishedObject{}, translate(err)
 	}
 
 	object, err := publisher.classify(attrs, reservation, size)
@@ -160,7 +160,7 @@ func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, 
 				output.ErrInfrastructure, key, cause)
 		}
 
-		return output.PublishedObject{}, translate(err, key)
+		return output.PublishedObject{}, translate(err)
 	}
 
 	object, err := publisher.classify(attrs, reservation, size)
@@ -192,7 +192,7 @@ func (publisher *Publisher) verifyExact(ctx context.Context, key string, reserva
 
 	attrs, err := publisher.store.StatExact(ctx, publisher.namespace.Bucket(), key, generation)
 	if err != nil {
-		return output.PublishedObject{}, translate(err, key)
+		return output.PublishedObject{}, translate(err)
 	}
 
 	return publisher.classify(attrs, reservation, size)
@@ -304,7 +304,7 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 
 	attrs, err := publisher.store.StatExact(ctx, publisher.namespace.Bucket(), key, ref.Generation)
 	if err != nil {
-		return output.PublishedObject{}, translate(err, key)
+		return output.PublishedObject{}, translate(err)
 	}
 
 	// sizeUnknown, and deliberately: a stat of an already-registered ref is
@@ -339,7 +339,7 @@ func (publisher *Publisher) StatCurrentObject(ctx context.Context, digest hangar
 
 	attrs, err := publisher.store.StatCurrent(ctx, publisher.namespace.Bucket(), key)
 	if err != nil {
-		return output.PublishedObject{}, translate(err, key)
+		return output.PublishedObject{}, translate(err)
 	}
 
 	return publisher.classify(attrs, output.ObjectMarker{Digest: digest}, sizeUnknown)
@@ -372,7 +372,7 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 
 	body, err := publisher.store.OpenExact(ctx, publisher.namespace.Bucket(), key, ref.Generation)
 	if err != nil {
-		return nil, output.PublishedObject{}, translate(err, key)
+		return nil, output.PublishedObject{}, translate(err)
 	}
 
 	return body, object, nil
@@ -384,17 +384,14 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 // miss, and the way that rule is broken is by a helper that turns "not there"
 // into a nil error and an empty value.
 //
-// It takes the key and DELIBERATELY DOES NOT PUT IT IN THE MESSAGE. The
+// It is DELIBERATELY NOT GIVEN THE KEY. The
 // bucket, the prefix, the opaque scope and the object key are server-derived
 // and never cross the boundary in either direction: this
 // plane refuses a request that names one, and it must not answer with one
 // either. It did -- the exact stat of an object that was not there answered
 // with the whole key, prefix and derived scope included -- which told a caller
-// that had just been refused for naming a key exactly what the key was.
-//
-// The parameter stays because dropping it would make the next person add it
-// back at the call site by hand. `_ = key` is the whole point: it is the fact
-// that this function knows the key and says nothing about it.
+// that had just been refused for naming a key exactly what the key was. A
+// function that never receives the key cannot format it; do not add it back.
 //
 // What is lost is real, and it is the cost of that rule. A node operator
 // reading a "not found" no longer sees which object. What they do have is the
@@ -404,9 +401,7 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 // The vendor error text goes for the same reason: a GCS error names the bucket
 // and the object in prose, so forwarding %v forwards the key by another route.
 // The classification above is what a caller can act on; the text was never it.
-func translate(err error, key string) error {
-	_ = key
-
+func translate(err error) error {
 	switch {
 	case err == nil:
 		return nil
