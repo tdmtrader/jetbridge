@@ -2,8 +2,6 @@ package topgun
 
 import (
 	"encoding/json"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -18,12 +16,6 @@ type FlyCli struct {
 	Bin    string
 	Target string
 	Home   string
-}
-
-type Container struct {
-	Type  string `json:"type"`
-	State string `json:"state"`
-	Id    string `json:"id"`
 }
 
 type Pipeline struct {
@@ -68,27 +60,6 @@ func (f *FlyCli) Run(argv ...string) {
 
 func (f *FlyCli) Start(argv ...string) *gexec.Session {
 	return Start([]string{"HOME=" + f.Home}, f.Bin, append([]string{"-t", f.Target}, argv...)...)
-}
-
-func (f *FlyCli) StartWithEnv(env []string, argv ...string) *gexec.Session {
-	return Start(append([]string{"HOME=" + f.Home}, env...), f.Bin, append([]string{"-t", f.Target}, argv...)...)
-}
-
-func (f *FlyCli) SpawnInteractive(stdin io.Reader, argv ...string) *gexec.Session {
-	return SpawnInteractive(stdin, []string{"HOME=" + f.Home}, f.Bin, append([]string{"-t", f.Target}, argv...)...)
-}
-
-func (f *FlyCli) GetContainers() []Container {
-	var containers = []Container{}
-
-	sess := f.Start("containers", "--json")
-	<-sess.Exited
-	Expect(sess.ExitCode()).To(BeZero())
-
-	err := json.Unmarshal(sess.Out.Contents(), &containers)
-	Expect(err).ToNot(HaveOccurred())
-
-	return containers
 }
 
 func (f *FlyCli) GetPipelines() []Pipeline {
@@ -138,24 +109,4 @@ func BuildBinary() string {
 	Expect(err).ToNot(HaveOccurred())
 
 	return flyBinPath
-}
-
-func RequestCredsInfo(webUrl, token string) ([]byte, error) {
-	request, err := http.NewRequest("GET", webUrl+"/api/v1/info/creds", nil)
-	Expect(err).ToNot(HaveOccurred())
-
-	reqHeader := http.Header{}
-	reqHeader.Set("Authorization", "Bearer "+token)
-
-	request.Header = reqHeader
-
-	client := &http.Client{}
-	resp, err := client.Do(request)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(resp.StatusCode).To(Equal(200))
-
-	body, err := io.ReadAll(resp.Body)
-	Expect(err).NotTo(HaveOccurred())
-
-	return body, err
 }

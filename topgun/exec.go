@@ -2,7 +2,6 @@ package topgun
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,22 +26,6 @@ func Start(env []string, command string, argv ...string) *gexec.Session {
 	session, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
 	Expect(err).ToNot(HaveOccurred())
 
-	return session
-}
-
-func SpawnInteractive(stdin io.Reader, env []string, command string, argv ...string) *gexec.Session {
-	timestampedBy("interactively running: " + command + " " + strings.Join(argv, " "))
-
-	cmd := exec.Command(command, argv...)
-	cwd, err := os.Getwd()
-	Expect(err).ToNot(HaveOccurred())
-	cmd.Dir = filepath.Join(cwd, "..")
-	cmd.Stdin = stdin
-	// Inherit the parent process environment, then apply overrides.
-	cmd.Env = mergeEnv(os.Environ(), env)
-
-	session, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
-	Expect(err).ToNot(HaveOccurred())
 	return session
 }
 
