@@ -2,7 +2,6 @@ module Data exposing
     ( build
     , dashboardPipeline
     , elementPosition
-    , featureFlags
     , flags
     , httpForbidden
     , httpInternalServerError
@@ -607,11 +606,6 @@ leftClickEvent =
             ]
 
 
-featureFlags : Concourse.FeatureFlags
-featureFlags =
-    Concourse.defaultFeatureFlags
-
-
 flags : Application.Flags
 flags =
     { turbulenceImgSrc = ""
@@ -619,5 +613,4 @@ flags =
     , csrfToken = "csrf_token"
     , authToken = "some_auth_token"
     , pipelineRunningKeyframes = "pipeline-running"
-    , featureFlags = featureFlags
     }

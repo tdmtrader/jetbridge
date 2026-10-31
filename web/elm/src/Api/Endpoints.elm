@@ -77,9 +77,7 @@ type ResourceEndpoint
 type ResourceVersionEndpoint
     = BaseResourceVersion
     | ResourceVersionInputTo
-    | DownstreamCausality
     | ResourceVersionOutputOf
-    | UpstreamCasuality
     | PinResourceVersion
     | EnableResourceVersion
     | DisableResourceVersion
@@ -325,12 +323,6 @@ resourceVersionEndpoint endpoint =
 
         DisableResourceVersion ->
             [ "disable" ]
-
-        DownstreamCausality ->
-            [ "downstream" ]
-
-        UpstreamCasuality ->
-            [ "upstream" ]
     , []
     )
 

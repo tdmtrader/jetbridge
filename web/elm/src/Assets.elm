@@ -74,8 +74,6 @@ type ComponentType
     = PipelineComponent
     | JobComponent
     | ResourceComponent
-    | DownstreamCausalityComponent
-    | UpstreamCausalityComponent
 
 
 type CircleOutlineIcon
@@ -196,12 +194,6 @@ toPath asset =
 
                         ResourceComponent ->
                             "resource"
-
-                        DownstreamCausalityComponent ->
-                            "causality-downstream"
-
-                        UpstreamCausalityComponent ->
-                            "causality-upstream"
             in
             basePath ++ [ "ic-breadcrumb-" ++ imageName ++ ".svg" ]
 

@@ -2,8 +2,8 @@ port module Message.Effects exposing
     ( Effect(..)
     , PipelineRunCallback(..)
     , PipelineRunRequest
-    , pipelinesSectionName
     , pipelineRunRequest
+    , pipelinesSectionName
     , renderPipeline
     , renderSvgIcon
     , runEffect
@@ -59,9 +59,6 @@ import Views.Styles
 
 
 port renderPipeline : ( Json.Encode.Value, Json.Encode.Value ) -> Cmd msg
-
-
-port renderCausality : String -> Cmd msg
 
 
 port pinTeamNames : StickyHeaderConfig -> Cmd msg
@@ -145,9 +142,7 @@ type Effect
     | FetchClusterInfo
     | FetchWall
     | FetchInputTo Concourse.VersionedResourceIdentifier
-    | FetchDownstreamCausality Concourse.VersionedResourceIdentifier
     | FetchOutputOf Concourse.VersionedResourceIdentifier
-    | FetchUpstreamCausality Concourse.VersionedResourceIdentifier
     | FetchAllTeams
     | FetchUser
     | FetchBuild Float Int
@@ -170,7 +165,6 @@ type Effect
     | UnpauseJob Concourse.JobIdentifier
     | ResetPipelineFocus
     | RenderPipeline (List Concourse.Job) (List Concourse.Resource)
-    | RenderCausality String
     | RedirectToLogin
     | LoadExternal String
     | NavigateTo String
@@ -224,10 +218,14 @@ type alias VersionId =
     Concourse.VersionedResourceIdentifier
 
 
-type PipelineRunCallback = PipelineRunsFetchedCallback | PipelineRunFetchedCallback | PipelineRunCreatedCallback
+type PipelineRunCallback
+    = PipelineRunsFetchedCallback
+    | PipelineRunFetchedCallback
+    | PipelineRunCreatedCallback
 
 
-type alias PipelineRunRequest = { endpoint : Endpoints.Endpoint, method : String, page : Maybe Page, body : Maybe Json.Encode.Value, callback : PipelineRunCallback }
+type alias PipelineRunRequest =
+    { endpoint : Endpoints.Endpoint, method : String, page : Maybe Page, body : Maybe Json.Encode.Value, callback : PipelineRunCallback }
 
 
 pipelineRunRequest : Effect -> Maybe PipelineRunRequest
@@ -249,7 +247,9 @@ pipelineRunRequest effect =
 runEffect : Effect -> Navigation.Key -> Concourse.CSRFToken -> Cmd Callback
 runEffect effect key csrfToken =
     case pipelineRunRequest effect of
-        Just request -> runPipelineRunRequest request csrfToken
+        Just request ->
+            runPipelineRunRequest request csrfToken
+
         Nothing ->
             runNonPipelineRunEffect effect key csrfToken
 
@@ -262,7 +262,8 @@ runPipelineRunRequest request csrfToken =
                 Just page ->
                     Api.paginatedGet request.endpoint request.page [] PipelineRun.decodePipelineRun |> Api.request |> Task.map (\runs -> ( page, runs )) |> Task.attempt PipelineRunsFetched
 
-                Nothing -> Cmd.none
+                Nothing ->
+                    Cmd.none
 
         ( "GET", PipelineRunFetchedCallback ) ->
             Api.get request.endpoint |> Api.expectJson PipelineRun.decodePipelineRun |> Api.request |> Task.attempt PipelineRunFetched
@@ -272,9 +273,11 @@ runPipelineRunRequest request csrfToken =
                 Just body ->
                     Api.post request.endpoint csrfToken |> Api.withJsonBody body |> Api.expectJson PipelineRun.decodePipelineRun |> Api.request |> Task.attempt PipelineRunCreated
 
-                Nothing -> Cmd.none
+                Nothing ->
+                    Cmd.none
 
-        _ -> Cmd.none
+        _ ->
+            Cmd.none
 
 
 runNonPipelineRunEffect : Effect -> Navigation.Key -> Concourse.CSRFToken -> Cmd Callback
@@ -418,14 +421,6 @@ runNonPipelineRunEffect effect key csrfToken =
                 |> Task.map (\b -> ( id, b ))
                 |> Task.attempt InputToFetched
 
-        FetchDownstreamCausality id ->
-            Api.get
-                (Endpoints.DownstreamCausality |> Endpoints.ResourceVersion id)
-                |> Api.expectJson Concourse.decodeCausality
-                |> Api.request
-                |> Task.map (\b -> ( Concourse.Downstream, Just b ))
-                |> Task.attempt CausalityFetched
-
         FetchOutputOf id ->
             Api.get
                 (Endpoints.ResourceVersionOutputOf |> Endpoints.ResourceVersion id)
@@ -433,14 +428,6 @@ runNonPipelineRunEffect effect key csrfToken =
                 |> Api.request
                 |> Task.map (\b -> ( id, b ))
                 |> Task.attempt OutputOfFetched
-
-        FetchUpstreamCausality id ->
-            Api.get
-                (Endpoints.UpstreamCasuality |> Endpoints.ResourceVersion id)
-                |> Api.expectJson Concourse.decodeCausality
-                |> Api.request
-                |> Task.map (\b -> ( Concourse.Upstream, Just b ))
-                |> Task.attempt CausalityFetched
 
         FetchAllTeams ->
             Api.get Endpoints.TeamsList
@@ -514,9 +501,6 @@ runNonPipelineRunEffect effect key csrfToken =
 
         ResetPipelineFocus ->
             resetPipelineFocus ()
-
-        RenderCausality dot ->
-            renderCausality dot
 
         RenderPipeline jobs resources ->
             renderPipeline
@@ -1040,12 +1024,6 @@ toHtmlID domId =
 
         PreviousPageButton ->
             "previous-page"
-
-        InputsTo id ->
-            "view-all-inputs-" ++ String.fromInt id.versionID
-
-        OutputsOf id ->
-            "view-all-outputs" ++ String.fromInt id.versionID
 
         _ ->
             ""

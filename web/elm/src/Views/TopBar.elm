@@ -173,28 +173,6 @@ breadcrumbs session route =
             Routes.Dashboard _ ->
                 ( [ clusterNameBreadcrumb session ], False, False )
 
-            Routes.Causality { id, direction, version, groups } ->
-                case lookupPipeline (byPipelineId id) session of
-                    Nothing ->
-                        runPipelineBreadcrumbs session
-                            id
-                            [ breadcrumbSeparator
-                            , resourceBreadcrumb <| Concourse.resourceIdFromVersionedResourceId id
-                            , breadcrumbSeparator
-                            , causalityBreadCrumb id direction (Maybe.withDefault Dict.empty version)
-                            ]
-
-                    Just pipeline ->
-                        ( pipelineBreadcrumbs session pipeline groups
-                            ++ [ breadcrumbSeparator
-                               , resourceBreadcrumb <| Concourse.resourceIdFromVersionedResourceId id
-                               , breadcrumbSeparator
-                               , causalityBreadCrumb id direction (Maybe.withDefault Dict.empty version)
-                               ]
-                        , pipeline.paused
-                        , pipeline.archived
-                        )
-
             Routes.DownloadFly ->
                 ( [ clusterNameBreadcrumb session ], False, False )
 
@@ -279,12 +257,13 @@ pipelineBreadcrumbs session pipeline groups =
     )
         ++ [ pipelineBreadcrumb inInstanceGroup pipeline groups ]
 
+
 {-| A run payload pipeline is deliberately excluded from cluster-wide pipeline
 lists server-side -- atc/db/pipeline_factory.go AllPipelines and atc/db/team.go
 Pipelines both require `p.pipeline_run_id IS NULL`, and /api/v1/pipelines is the
 only source of session.pipelines -- so `lookupPipeline` can never resolve it and
 every page nested inside a run would otherwise render an empty breadcrumb bar.
-Fall back to the base template's row, which *is* listed, and name the run
+Fall back to the base template's row, which _is_ listed, and name the run
 explicitly, producing the same `template / run #N / ...` chain the run page
 itself renders.
 
@@ -423,40 +402,6 @@ resourceBreadcrumb resource isLastBreadcrumb =
                 , heightPx = 17
                 }
             , name = resource.resourceName
-            }
-        )
-
-
-causalityBreadCrumb : Concourse.VersionedResourceIdentifier -> Concourse.CausalityDirection -> Concourse.Version -> Bool -> Html Message
-causalityBreadCrumb rv direction version isLastBreadcrumb =
-    let
-        component =
-            case direction of
-                Concourse.Downstream ->
-                    Assets.DownstreamCausalityComponent
-
-                Concourse.Upstream ->
-                    Assets.UpstreamCausalityComponent
-
-        name =
-            String.join "," <| Concourse.versionQuery version
-    in
-    Html.a
-        ([ id "breadcrumb-causality"
-         , href <|
-            Routes.toString <|
-                Routes.resourceRoute (Concourse.resourceIdFromVersionedResourceId rv) (Just version)
-         ]
-            ++ Styles.breadcrumbItem True isLastBreadcrumb
-        )
-        (breadcrumbComponent
-            isLastBreadcrumb
-            { icon =
-                { component = component
-                , widthPx = 32
-                , heightPx = 17
-                }
-            , name = name
             }
         )
 

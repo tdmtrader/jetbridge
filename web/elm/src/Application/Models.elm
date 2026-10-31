@@ -13,7 +13,6 @@ type alias Session =
         , version : String
         , jetbridgeVersion : String
         , concourseVersion : String
-        , featureFlags : Concourse.FeatureFlags
         , turbulenceImgSrc : String
         , notFoundImgSrc : String
         , csrfToken : Concourse.CSRFToken

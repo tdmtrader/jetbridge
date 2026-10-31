@@ -458,7 +458,6 @@ session =
     , version = ""
     , jetbridgeVersion = ""
     , concourseVersion = ""
-    , featureFlags = Data.featureFlags
     , turbulenceImgSrc = ""
     , notFoundImgSrc = ""
     , csrfToken = ""

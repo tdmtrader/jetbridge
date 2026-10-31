@@ -1149,22 +1149,6 @@ tooltip model session =
                 , containerAttrs = Nothing
                 }
 
-        HoverState.Tooltip (InputsTo _) _ ->
-            Just
-                { body = Html.text "view all downstream builds and resources"
-                , attachPosition = { direction = Tooltip.Bottom, alignment = Tooltip.End }
-                , arrow = Just 5
-                , containerAttrs = Nothing
-                }
-
-        HoverState.Tooltip (OutputsOf _) _ ->
-            Just
-                { body = Html.text "view all upstream builds and resources"
-                , attachPosition = { direction = Tooltip.Bottom, alignment = Tooltip.End }
-                , arrow = Just 5
-                , containerAttrs = Nothing
-                }
-
         HoverState.Tooltip (UserDisplayName username) _ ->
             Login.tooltip username
 
@@ -1224,7 +1208,6 @@ body :
         , pipelines : WebData (List Concourse.Pipeline)
         , hovered : HoverState.HoverState
         , timeZone : Time.Zone
-        , featureFlags : Concourse.FeatureFlags
     }
     -> Model
     -> Html Message
@@ -1748,7 +1731,6 @@ isPipelineArchived session id =
 viewVersionedResources :
     { a
         | pipelines : WebData (List Concourse.Pipeline)
-        , featureFlags : Concourse.FeatureFlags
     }
     ->
         { b
@@ -1764,17 +1746,16 @@ viewVersionedResources session model =
     in
     model
         |> versions
-        |> List.map (\v -> viewVersionedResource { version = v, archived = archived, causalityEnabled = session.featureFlags.resource_causality })
+        |> List.map (\v -> viewVersionedResource { version = v, archived = archived })
         |> Html.ul [ class "list list-collapsable list-enableDisable resource-versions" ]
 
 
 viewVersionedResource :
     { version : VersionPresenter
     , archived : Bool
-    , causalityEnabled : Bool
     }
     -> Html Message
-viewVersionedResource { version, archived, causalityEnabled } =
+viewVersionedResource { version, archived } =
     Html.li
         (case ( version.pinState, version.enabled ) of
             ( Disabled, _ ) ->
@@ -1821,7 +1802,6 @@ viewVersionedResource { version, archived, causalityEnabled } =
                         , outputOf = version.outputOf
                         , versionId = version.id
                         , metadata = version.metadata
-                        , causalityEnabled = causalityEnabled
                         }
                     ]
 
@@ -1837,16 +1817,15 @@ viewVersionBody :
         , outputOf : List Concourse.Build
         , versionId : Concourse.VersionedResourceIdentifier
         , metadata : Concourse.Metadata
-        , causalityEnabled : Bool
     }
     -> Html Message
-viewVersionBody { inputTo, outputOf, versionId, metadata, causalityEnabled } =
+viewVersionBody { inputTo, outputOf, versionId, metadata } =
     Html.div
         [ style "display" "flex"
         , style "padding" "5px 10px"
         ]
-        [ viewInputsOrOutputs causalityEnabled Concourse.Downstream versionId inputTo
-        , viewInputsOrOutputs causalityEnabled Concourse.Upstream versionId outputOf
+        [ viewInputsOrOutputs "inputs to" inputTo
+        , viewInputsOrOutputs "outputs of" outputOf
         , Html.div [ class "vri metadata-container" ]
             [ Html.div [ class "list-collapsable-title" ] [ Html.text "metadata" ]
             , viewMetadata metadata
@@ -1974,62 +1953,16 @@ viewVersion attrs version =
         |> DictView.view attrs
 
 
-viewInputsOrOutputs : Bool -> Concourse.CausalityDirection -> Concourse.VersionedResourceIdentifier -> List Concourse.Build -> Html Message
-viewInputsOrOutputs causalityEnabled direction versionId builds =
+viewInputsOrOutputs : String -> List Concourse.Build -> Html Message
+viewInputsOrOutputs title builds =
     Html.div [ class "vri" ] <|
         List.concat
             [ [ Html.div
                     [ style "line-height" "25px" ]
-                    [ viewCausalityButton causalityEnabled direction versionId ]
+                    [ Html.text title ]
               ]
             , viewBuilds <| listToMap builds
             ]
-
-
-viewCausalityButton : Bool -> Concourse.CausalityDirection -> Concourse.VersionedResourceIdentifier -> Html Message
-viewCausalityButton enabled dir versionId =
-    let
-        link =
-            Routes.Causality
-                { id = versionId
-                , direction = dir
-                , version = Nothing
-                , groups = []
-                }
-
-        ( domID, text ) =
-            case dir of
-                Concourse.Downstream ->
-                    ( InputsTo versionId, "inputs to" )
-
-                Concourse.Upstream ->
-                    ( OutputsOf versionId, "outputs of" )
-
-        eventHandlers =
-            [ onMouseOver <| Hover <| Just domID
-            , onMouseOut <| Hover Nothing
-            , onClick <| GoToRoute link
-            ]
-    in
-    if enabled then
-        Html.div
-            [ style "line-height" "25px"
-            , style "display" "flex"
-            , style "justify-content" "space-between"
-            ]
-            [ Html.text text
-            , Html.a
-                ([ href (Routes.toString link)
-                 , id (toHtmlID <| domID)
-                 ]
-                    ++ eventHandlers
-                    ++ Resource.Styles.causalityButton
-                )
-                [ Html.text "view all" ]
-            ]
-
-    else
-        Html.text text
 
 
 viewMetadata : Concourse.Metadata -> Html Message

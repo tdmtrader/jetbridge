@@ -15,7 +15,6 @@ import Application.Models exposing (Session)
 import Build.Build as Build
 import Build.Header.Models
 import Build.Models
-import Causality.Causality as Causality
 import Dashboard.Dashboard as Dashboard
 import Dashboard.Models
 import DownloadFly.DownloadFly as DownloadFly
@@ -50,7 +49,6 @@ type Model
     | NotFoundModel NotFound.Model.Model
     | DashboardModel Dashboard.Models.Model
     | FlySuccessModel FlySuccess.Models.Model
-    | CausalityModel Causality.Model
     | DownloadFlyModel DownloadFly.Model.Model
 
 
@@ -124,18 +122,6 @@ init session route =
                 session.route
                 |> Tuple.mapFirst DownloadFlyModel
 
-        Routes.Causality { id, direction } ->
-            if session.featureFlags.resource_causality then
-                Causality.init
-                    { versionId = id
-                    , direction = direction
-                    }
-                    |> Tuple.mapFirst CausalityModel
-
-            else
-                NotFound.init { notFoundImgSrc = session.notFoundImgSrc, route = session.route }
-                    |> Tuple.mapFirst NotFoundModel
-
 
 handleNotFound : Session -> ET Model
 handleNotFound session ( model, effects ) =
@@ -169,9 +155,6 @@ getUpdateMessage model =
         PipelineRunsModel mdl ->
             PipelineRuns.getUpdateMessage mdl
 
-        CausalityModel mdl ->
-            Causality.getUpdateMessage mdl
-
         _ ->
             UpdateMsg.AOK
 
@@ -182,12 +165,11 @@ genericUpdate :
     -> ET Resource.Models.Model
     -> ET Pipeline.Model
     -> ET Dashboard.Models.Model
-    -> ET Causality.Model
     -> ET NotFound.Model.Model
     -> ET FlySuccess.Models.Model
     -> ET DownloadFly.Model.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fNF fFS dFly ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -208,10 +190,6 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly ( model, effects )
         DashboardModel dashboardModel ->
             fDash ( dashboardModel, effects )
                 |> Tuple.mapFirst DashboardModel
-
-        CausalityModel causalityModel ->
-            fCaus ( causalityModel, effects )
-                |> Tuple.mapFirst CausalityModel
 
         FlySuccessModel flySuccessModel ->
             fFS ( flySuccessModel, effects )
@@ -248,7 +226,6 @@ handleCallback callback session =
         (Resource.handleCallback callback session)
         (Pipeline.handleCallback callback)
         (Dashboard.handleCallback callback)
-        (Causality.handleCallback callback)
         identity
         identity
         identity
@@ -256,7 +233,6 @@ handleCallback callback session =
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
-                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -294,7 +270,6 @@ handleDelivery session delivery =
         (Resource.handleDelivery session delivery)
         (Pipeline.handleDelivery delivery)
         (Dashboard.handleDelivery session delivery)
-        (Causality.handleDelivery delivery)
         (NotFound.handleDelivery delivery)
         (FlySuccess.handleDelivery delivery)
         (DownloadFly.handleDelivery delivery)
@@ -309,7 +284,6 @@ update session msg =
         (Login.update msg >> Resource.update msg)
         (Login.update msg >> Pipeline.update msg)
         (Login.update msg >> Dashboard.update session msg)
-        (Login.update msg >> Causality.update msg)
         (Login.update msg)
         (Login.update msg >> FlySuccess.update msg)
         (Login.update msg >> DownloadFly.update msg)
@@ -328,24 +302,8 @@ handleGoToRoute route ( a, effs ) =
     ( a, effs ++ [ NavigateTo <| Routes.toString route ] )
 
 
-urlUpdate : Session -> Routes.Transition -> ET Model
-urlUpdate session routes =
-    case ( session.featureFlags.resource_causality, routes.to ) of
-        ( False, Routes.Causality _ ) ->
-            -- If the feature flag is disabled, you can't navigate to the
-            -- causality page
-            handleNotFound session
-
-        _ ->
-            urlUpdateValid routes
-
-
-
--- urlUpdateValid should be invoked only when we know the page can be navigated to
-
-
-urlUpdateValid : Routes.Transition -> ET Model
-urlUpdateValid routes =
+urlUpdate : Routes.Transition -> ET Model
+urlUpdate routes =
     genericUpdate
         (case routes.to of
             Routes.Build { id, highlight } ->
@@ -404,16 +362,6 @@ urlUpdateValid routes =
         (case routes.to of
             Routes.Dashboard f ->
                 Dashboard.changeRoute f
-
-            _ ->
-                identity
-        )
-        (case routes.to of
-            Routes.Causality { id, direction } ->
-                Causality.changeToVersionedResource
-                    { versionId = id
-                    , direction = direction
-                    }
 
             _ ->
                 identity
@@ -479,11 +427,6 @@ view ({ userState } as session) mdl =
             , DownloadFly.view session model
             )
 
-        CausalityModel model ->
-            ( Causality.documentTitle model
-            , Causality.view session model
-            )
-
 
 tooltip : Model -> Session -> Maybe Tooltip.Tooltip
 tooltip mdl =
@@ -515,9 +458,6 @@ tooltip mdl =
         DownloadFlyModel model ->
             DownloadFly.tooltip model
 
-        CausalityModel model ->
-            Causality.tooltip model
-
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -548,6 +488,3 @@ subscriptions mdl =
 
         DownloadFlyModel _ ->
             DownloadFly.subscriptions
-
-        CausalityModel _ ->
-            Causality.subscriptions

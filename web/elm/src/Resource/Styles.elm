@@ -1,6 +1,5 @@
 module Resource.Styles exposing
     ( body
-    , causalityButton
     , checkBarStatus
     , checkButton
     , checkButtonIcon
@@ -435,12 +434,4 @@ checkButtonIcon isHighlighted =
 
         else
             "0.5"
-    ]
-
-
-causalityButton : List (Html.Attribute msg)
-causalityButton =
-    [ style "padding-left" "5px"
-    , style "padding-right" "5px"
-    , style "background-color" Colors.sectionHeader
     ]

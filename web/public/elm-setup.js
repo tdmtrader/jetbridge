@@ -1,5 +1,4 @@
 const renderingModulePromise = import('./index.mjs');
-const causalityModulePromise = import('./causality.mjs');
 
 const node = document.getElementById("elm-app-embed");
 if (node === null) {
@@ -390,13 +389,6 @@ app.ports.rawHttpRequest.subscribe(function(url) {
 
 app.ports.renderSvgIcon.subscribe(function(icon, id) {
   renderingModulePromise.then(({addIcon}) => addIcon(icon, (typeof id !== 'undefined') ? id : icon));
-});
-
-app.ports.renderCausality.subscribe(function(dot) {
-  causalityModulePromise.then(({renderCausality}) =>
-    // elm 0.17 bug, see https://github.com/elm-lang/core/issues/595
-    setTimeout(() => renderCausality(dot), 0)
-  );
 });
 
 app.ports.getHostname.subscribe(function () {

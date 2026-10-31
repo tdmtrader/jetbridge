@@ -700,7 +700,6 @@ sampleSession =
     , userState = UserState.UserStateLoggedOut
     , clusterName = ""
     , version = ""
-    , featureFlags = Concourse.defaultFeatureFlags
     , route =
         Routes.OneOffBuild
             { id = 1

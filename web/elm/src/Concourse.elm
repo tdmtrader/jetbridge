@@ -14,15 +14,8 @@ module Concourse exposing
     , BuildResourcesOutput
     , BuildStep(..)
     , CSRFToken
-    , Causality
-    , CausalityBuild
-    , CausalityDirection(..)
-    , CausalityJob
-    , CausalityResource
-    , CausalityResourceVersion
     , ClusterInfo
     , DatabaseID
-    , FeatureFlags
     , HookedPlan
     , InstanceGroupIdentifier
     , InstanceVars
@@ -35,13 +28,13 @@ module Concourse exposing
     , JsonValue(..)
     , Metadata
     , MetadataField
+    , ParamSchema
+    , ParamType(..)
     , Pipeline
     , PipelineGroup
     , PipelineGrouping(..)
     , PipelineIdentifier
     , PipelineName
-    , ParamSchema
-    , ParamType(..)
     , Resource
     , ResourceIdentifier
     , Team
@@ -59,7 +52,6 @@ module Concourse exposing
     , decodeBuildPlanResponse
     , decodeBuildPrep
     , decodeBuildResources
-    , decodeCausality
     , decodeInfo
     , decodeInstanceGroupId
     , decodeInstanceVars
@@ -74,7 +66,6 @@ module Concourse exposing
     , decodeVersion
     , decodeVersionedResource
     , decodeWall
-    , defaultFeatureFlags
     , emptyBuildResources
     , encodeBuild
     , encodeInstanceGroupId
@@ -863,19 +854,6 @@ decodeAcrossSubstep =
 -- Info
 
 
-type alias FeatureFlags =
-    -- The fields must match the names in `atc/feature_flags.go -> FeatureFlags()`.
-    -- If a field is deleted on the Go side, it must also be deleted here.
-    { resource_causality : Bool
-    }
-
-
-defaultFeatureFlags : FeatureFlags
-defaultFeatureFlags =
-    { resource_causality = False
-    }
-
-
 type alias ClusterInfo =
     { version : String
     , clusterName : String
@@ -1107,8 +1085,11 @@ type alias Pipeline =
 
 isRunPayload : Pipeline -> Bool
 isRunPayload pipeline =
-    pipeline.template == Just False
-        && pipeline.runNumber /= Nothing
+    pipeline.template
+        == Just False
+        && pipeline.runNumber
+        /= Nothing
+
 
 {-| A run payload pipeline is stored as `(<template name>, {"run": N})` -- see
 atc/db/pipeline_run_factory.go:146, which materialises the child ref as
@@ -1135,10 +1116,15 @@ runNumberFromInstanceVars vars =
             Nothing
 
 
-type ParamType = StringParam | NumberParam | BoolParam | EnumParam
+type ParamType
+    = StringParam
+    | NumberParam
+    | BoolParam
+    | EnumParam
 
 
-type alias ParamSchema = { name : String, type_ : ParamType, required : Bool, default : Maybe JsonValue, values : List JsonValue, description : Maybe String }
+type alias ParamSchema =
+    { name : String, type_ : ParamType, required : Bool, default : Maybe JsonValue, values : List JsonValue, description : Maybe String }
 
 
 type alias PipelineGroup =
@@ -1152,21 +1138,21 @@ encodePipeline : Pipeline -> Json.Encode.Value
 encodePipeline pipeline =
     Json.Encode.object
         ([ ( "id", pipeline.id |> Json.Encode.int )
-        , ( "name", pipeline.name |> Json.Encode.string )
-        , ( "instance_vars", pipeline.instanceVars |> encodeInstanceVars )
-        , ( "paused", pipeline.paused |> Json.Encode.bool )
-        , ( "archived", pipeline.archived |> Json.Encode.bool )
-        , ( "public", pipeline.public |> Json.Encode.bool )
-        , ( "team_name", pipeline.teamName |> Json.Encode.string )
-        , ( "groups", pipeline.groups |> Json.Encode.list encodePipelineGroup )
-        , ( "last_updated", (secondsFromDate >> Json.Encode.int) pipeline.lastUpdatedAt )
-        , ( "display"
-          , Json.Encode.object
+         , ( "name", pipeline.name |> Json.Encode.string )
+         , ( "instance_vars", pipeline.instanceVars |> encodeInstanceVars )
+         , ( "paused", pipeline.paused |> Json.Encode.bool )
+         , ( "archived", pipeline.archived |> Json.Encode.bool )
+         , ( "public", pipeline.public |> Json.Encode.bool )
+         , ( "team_name", pipeline.teamName |> Json.Encode.string )
+         , ( "groups", pipeline.groups |> Json.Encode.list encodePipelineGroup )
+         , ( "last_updated", (secondsFromDate >> Json.Encode.int) pipeline.lastUpdatedAt )
+         , ( "display"
+           , Json.Encode.object
                 [ ( "background_image", pipeline.backgroundImage |> Json.Encode.Extra.maybe Json.Encode.string )
                 , ( "background_filter", pipeline.backgroundFilter |> Json.Encode.Extra.maybe Json.Encode.string )
                 ]
-          )
-        ]
+           )
+         ]
             ++ encodePipelineRunFields pipeline
         )
 
@@ -1178,12 +1164,13 @@ encodePipelineRunFields pipeline =
             []
 
         Just isTemplate ->
-            ( "template", Json.Encode.bool isTemplate ) ::
-                (if isTemplate then
-                    [ ( "params_schema", Json.Encode.list encodeParamSchema pipeline.paramsSchema ), ( "last_run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.lastRunNumber ), ( "can_create_run", Json.Encode.bool pipeline.canCreateRun ) ]
-                 else
-                    [ ( "run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.runNumber ), ( "run_template_ref", Json.Encode.Extra.maybe encodePipelineIdentifier pipeline.runTemplateRef ) ]
-                )
+            ( "template", Json.Encode.bool isTemplate )
+                :: (if isTemplate then
+                        [ ( "params_schema", Json.Encode.list encodeParamSchema pipeline.paramsSchema ), ( "last_run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.lastRunNumber ), ( "can_create_run", Json.Encode.bool pipeline.canCreateRun ) ]
+
+                    else
+                        [ ( "run_number", Json.Encode.Extra.maybe Json.Encode.int pipeline.runNumber ), ( "run_template_ref", Json.Encode.Extra.maybe encodePipelineIdentifier pipeline.runTemplateRef ) ]
+                   )
 
 
 encodeParamSchema : ParamSchema -> Json.Encode.Value
@@ -1195,10 +1182,17 @@ encodeParamType : ParamType -> Json.Encode.Value
 encodeParamType paramType =
     Json.Encode.string <|
         case paramType of
-            StringParam -> "string"
-            NumberParam -> "number"
-            BoolParam -> "bool"
-            EnumParam -> "enum"
+            StringParam ->
+                "string"
+
+            NumberParam ->
+                "number"
+
+            BoolParam ->
+                "bool"
+
+            EnumParam ->
+                "enum"
 
 
 decodePipeline : Json.Decode.Decoder Pipeline
@@ -1242,11 +1236,20 @@ decodeParamType =
         |> Json.Decode.andThen
             (\paramType ->
                 case paramType of
-                    "string" -> Json.Decode.succeed StringParam
-                    "number" -> Json.Decode.succeed NumberParam
-                    "bool" -> Json.Decode.succeed BoolParam
-                    "enum" -> Json.Decode.succeed EnumParam
-                    unknown -> Json.Decode.fail <| "unknown parameter type: " ++ unknown
+                    "string" ->
+                        Json.Decode.succeed StringParam
+
+                    "number" ->
+                        Json.Decode.succeed NumberParam
+
+                    "bool" ->
+                        Json.Decode.succeed BoolParam
+
+                    "enum" ->
+                        Json.Decode.succeed EnumParam
+
+                    unknown ->
+                        Json.Decode.fail <| "unknown parameter type: " ++ unknown
             )
 
 
@@ -1407,101 +1410,6 @@ decodeVersionedResource =
         |> andMap (Json.Decode.field "version" decodeVersion)
         |> andMap (defaultTo [] (Json.Decode.field "metadata" decodeMetadata))
         |> andMap (Json.Decode.field "enabled" Json.Decode.bool)
-
-
-
--- Causality
-
-
-type CausalityDirection
-    = Downstream
-    | Upstream
-
-
-type alias CausalityJob =
-    { id : Int
-    , name : String
-    , buildIds : List Int
-    }
-
-
-type alias CausalityBuild =
-    { id : Int
-    , name : String
-    , jobId : Int
-    , status : BuildStatus
-    , resourceVersionIds : List Int
-    }
-
-
-type alias CausalityResource =
-    { id : Int
-    , name : String
-    , resourceVersionIds : List Int
-    }
-
-
-type alias CausalityResourceVersion =
-    { id : Int
-    , version : Version
-    , resourceId : Int
-    , buildIds : List Int
-    }
-
-
-type alias Causality =
-    { jobs : List CausalityJob
-    , builds : List CausalityBuild
-    , resources : List CausalityResource
-    , resourceVersions : List CausalityResourceVersion
-    }
-
-
-decodeCausalityJob : Json.Decode.Decoder CausalityJob
-decodeCausalityJob =
-    Json.Decode.succeed CausalityJob
-        |> andMap (Json.Decode.field "id" Json.Decode.int)
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
-        |> andMap
-            (defaultTo []
-                (Json.Decode.field "build_ids" <| Json.Decode.list Json.Decode.int)
-            )
-
-
-decodeCausalityBuild : Json.Decode.Decoder CausalityBuild
-decodeCausalityBuild =
-    Json.Decode.succeed CausalityBuild
-        |> andMap (Json.Decode.field "id" Json.Decode.int)
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
-        |> andMap (Json.Decode.field "job_id" Json.Decode.int)
-        |> andMap (Json.Decode.field "status" decodeBuildStatus)
-        |> andMap (defaultTo [] <| Json.Decode.field "resource_version_ids" <| Json.Decode.list Json.Decode.int)
-
-
-decodeCausalityResource : Json.Decode.Decoder CausalityResource
-decodeCausalityResource =
-    Json.Decode.succeed CausalityResource
-        |> andMap (Json.Decode.field "id" Json.Decode.int)
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
-        |> andMap (defaultTo [] <| Json.Decode.field "version_ids" <| Json.Decode.list Json.Decode.int)
-
-
-decodeCausalityResourceVersion : Json.Decode.Decoder CausalityResourceVersion
-decodeCausalityResourceVersion =
-    Json.Decode.succeed CausalityResourceVersion
-        |> andMap (Json.Decode.field "id" Json.Decode.int)
-        |> andMap (Json.Decode.field "version" decodeVersion)
-        |> andMap (Json.Decode.field "resource_id" Json.Decode.int)
-        |> andMap (defaultTo [] <| Json.Decode.field "build_ids" <| Json.Decode.list Json.Decode.int)
-
-
-decodeCausality : Json.Decode.Decoder Causality
-decodeCausality =
-    Json.Decode.succeed Causality
-        |> andMap (Json.Decode.field "jobs" <| Json.Decode.list decodeCausalityJob)
-        |> andMap (Json.Decode.field "builds" <| Json.Decode.list decodeCausalityBuild)
-        |> andMap (Json.Decode.field "resources" <| Json.Decode.list decodeCausalityResource)
-        |> andMap (Json.Decode.field "resource_versions" <| Json.Decode.list decodeCausalityResourceVersion)
 
 
 type alias Version =

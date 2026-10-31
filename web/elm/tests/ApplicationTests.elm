@@ -199,22 +199,6 @@ all =
                                     }
                             )
                         |> Tuple.first
-                        |> Application.handleDelivery
-                            (RouteChanged <|
-                                Routes.Causality
-                                    { id =
-                                        { teamName = "t"
-                                        , pipelineName = "p"
-                                        , pipelineInstanceVars = Dict.empty
-                                        , resourceName = "r"
-                                        , versionID = 1
-                                        }
-                                    , direction = Concourse.Downstream
-                                    , version = Nothing
-                                    , groups = []
-                                    }
-                            )
-                        |> Tuple.first
                         |> Common.queryView
                         |> Query.find [ id "top-bar-app" ]
                         |> Query.has

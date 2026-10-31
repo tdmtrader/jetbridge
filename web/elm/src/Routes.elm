@@ -57,7 +57,6 @@ type Route
     | Dashboard { searchType : SearchType, dashboardView : DashboardView }
     | FlySuccess Bool (Maybe Int)
       -- the version field is really only used as a hack to populate the breadcrumbs, it's not actually used by anyhting else
-    | Causality { id : Concourse.VersionedResourceIdentifier, direction : Concourse.CausalityDirection, version : Maybe Concourse.Version, groups : List String }
     | DownloadFly
 
 
@@ -351,41 +350,6 @@ downloadFly =
     map (always DownloadFly) (s "download-fly")
 
 
-causality : Parser ((InstanceVars -> Route) -> a) a
-causality =
-    let
-        causalityHelper direction { teamName, pipelineName } resourceName versionId =
-            \iv ->
-                Causality
-                    { id =
-                        { teamName = teamName
-                        , pipelineName = pipelineName
-                        , pipelineInstanceVars = iv
-                        , resourceName = resourceName
-                        , versionID = versionId
-                        }
-                    , direction = direction
-                    , version = Nothing
-                    , groups = []
-                    }
-
-        baseRoute dir =
-            map (causalityHelper dir)
-                (pipelineIdentifier
-                    </> s "resources"
-                    </> string
-                    </> s "causality"
-                    </> int
-                )
-    in
-    oneOf
-        [ baseRoute Concourse.Upstream
-            </> s "upstream"
-        , baseRoute Concourse.Downstream
-            </> s "downstream"
-        ]
-
-
 
 -- route utils
 
@@ -522,7 +486,6 @@ sitemap =
         , build
         , oneOffBuild
         , flySuccess
-        , causality
         , downloadFly
         ]
 
@@ -619,22 +582,6 @@ toString route =
                     )
                 |> RouteBuilder.build
 
-        Causality { id, direction } ->
-            let
-                path =
-                    case direction of
-                        Concourse.Downstream ->
-                            "downstream"
-
-                        Concourse.Upstream ->
-                            "upstream"
-            in
-            pipelineIdBuilder id
-                |> appendPath [ "resources", id.resourceName ]
-                |> appendPath [ "causality", String.fromInt id.versionID ]
-                |> appendPath [ path ]
-                |> RouteBuilder.build
-
         DownloadFly ->
             ( [ "download-fly" ], [] )
                 |> RouteBuilder.build
@@ -718,9 +665,6 @@ getGroups route =
         Pipeline { groups } ->
             groups
 
-        Causality { groups } ->
-            groups
-
         OneOffBuild _ ->
             []
 
@@ -754,9 +698,6 @@ withGroups groups route =
 
         Pipeline params ->
             Pipeline { params | groups = groups }
-
-        Causality params ->
-            Causality { params | groups = groups }
 
         OneOffBuild _ ->
             route

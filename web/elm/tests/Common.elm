@@ -120,7 +120,6 @@ pipelineRunningKeyframes =
 type alias InitCustomOpts =
     { query : Maybe String
     , fragment : Maybe String
-    , featureFlags : Concourse.FeatureFlags
     }
 
 
@@ -128,17 +127,12 @@ initCustomOpts : InitCustomOpts
 initCustomOpts =
     { query = Nothing
     , fragment = Nothing
-    , featureFlags = Data.featureFlags
     }
 
 
 initCustom : InitCustomOpts -> String -> Application.Model
-initCustom { query, featureFlags } path =
-    let
-        flags =
-            Data.flags
-    in
-    Application.init { flags | featureFlags = featureFlags }
+initCustom { query } path =
+    Application.init Data.flags
         { protocol = Url.Http
         , host = ""
         , port_ = Nothing

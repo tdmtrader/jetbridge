@@ -280,94 +280,6 @@ all =
                     |> queryView
                     |> Query.find (versionSelector version)
                     |> Query.has [ text "some-build" ]
-        , describe "when causality is enabled" <|
-            let
-                featureFlags =
-                    Data.featureFlags
-
-                whenItsEnabled =
-                    Common.initCustom { initCustomOpts | featureFlags = { featureFlags | resource_causality = True } }
-                        resourcePath
-                        |> givenResourceIsNotPinned
-                        |> givenVersionsWithoutPagination
-                        |> update
-                            (Message.Message.Click <|
-                                Message.Message.VersionHeader versionID
-                            )
-                        |> Tuple.first
-                        |> givenVersionsWithoutPagination
-            in
-            [ test "'Inputs To' links to causality page" <|
-                \_ ->
-                    whenItsEnabled
-                        |> queryView
-                        |> Query.find (inputsOutputsSelector "inputs to")
-                        |> Query.has
-                            [ Common.routeHref <|
-                                Routes.Causality
-                                    { id = versionID
-                                    , direction = Concourse.Downstream
-                                    , version = Nothing
-                                    , groups = []
-                                    }
-                            ]
-            , test "'Outputs Of' links to causality page" <|
-                \_ ->
-                    whenItsEnabled
-                        |> queryView
-                        |> Query.find (inputsOutputsSelector "outputs of")
-                        |> Query.has
-                            [ Common.routeHref <|
-                                Routes.Causality
-                                    { id = versionID
-                                    , direction = Concourse.Upstream
-                                    , version = Nothing
-                                    , groups = []
-                                    }
-                            ]
-            ]
-        , describe "when causality is disabled" <|
-            let
-                whenItsDisabled =
-                    init
-                        |> givenResourceIsNotPinned
-                        |> givenVersionsWithoutPagination
-                        |> update
-                            (Message.Message.Click <|
-                                Message.Message.VersionHeader versionID
-                            )
-                        |> Tuple.first
-                        |> givenVersionsWithoutPagination
-            in
-            [ test "'Inputs To' links to causality page" <|
-                \_ ->
-                    whenItsDisabled
-                        |> queryView
-                        |> Query.find (inputsOutputsSelector "inputs to")
-                        |> Query.hasNot
-                            [ Common.routeHref <|
-                                Routes.Causality
-                                    { id = versionID
-                                    , direction = Concourse.Downstream
-                                    , version = Nothing
-                                    , groups = []
-                                    }
-                            ]
-            , test "'Outputs Of' links to causality page" <|
-                \_ ->
-                    whenItsDisabled
-                        |> queryView
-                        |> Query.find (inputsOutputsSelector "outputs of")
-                        |> Query.hasNot
-                            [ Common.routeHref <|
-                                Routes.Causality
-                                    { id = versionID
-                                    , direction = Concourse.Upstream
-                                    , version = Nothing
-                                    , groups = []
-                                    }
-                            ]
-            ]
         , describe "when the url contains a version" <|
             let
                 initWithVersion =
@@ -3501,16 +3413,6 @@ all =
                     init
                         |> givenVersionsWithPagination
                         |> expectTooltip PreviousPageButton "view previous page"
-            , test "view all inputs to" <|
-                \_ ->
-                    init
-                        |> givenVersionsWithPagination
-                        |> expectTooltip (InputsTo versionID) "view all downstream builds and resources"
-            , test "view all outputs of" <|
-                \_ ->
-                    init
-                        |> givenVersionsWithPagination
-                        |> expectTooltip (OutputsOf versionID) "view all upstream builds and resources"
             ]
         ]
 
@@ -3834,11 +3736,6 @@ versionSelector v =
     anyVersionSelector ++ [ containing [ text v ] ]
 
 
-inputsOutputsSelector : String -> List Selector
-inputsOutputsSelector t =
-    [ class "vri", containing [ text t ] ]
-
-
 anyVersionSelector : List Selector
 anyVersionSelector =
     [ tag "li" ]
@@ -4004,7 +3901,6 @@ session =
     , version = ""
     , jetbridgeVersion = ""
     , concourseVersion = ""
-    , featureFlags = Data.featureFlags
     , turbulenceImgSrc = Data.flags.turbulenceImgSrc
     , notFoundImgSrc = Data.flags.notFoundImgSrc
     , csrfToken = Data.flags.csrfToken
