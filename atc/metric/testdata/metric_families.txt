@@ -1,0 +1,203 @@
+concourse_builds_aborted_total counter
+  help: Total number of Concourse builds aborted.
+  labels: cluster invalid_label
+concourse_builds_check_aborted_total counter
+  help: Total number of Concourse check builds aborted.
+  labels: cluster invalid_label
+concourse_builds_check_errored_total counter
+  help: Total number of Concourse check builds errored.
+  labels: cluster invalid_label
+concourse_builds_check_failed_total counter
+  help: Total number of Concourse check builds failed.
+  labels: cluster invalid_label
+concourse_builds_check_finished_total counter
+  help: Total number of Concourse check builds finished.
+  labels: cluster invalid_label
+concourse_builds_check_running gauge
+  help: Number of Concourse check builds currently running.
+  labels: cluster invalid_label
+concourse_builds_check_started_total counter
+  help: Total number of Concourse check builds started.
+  labels: cluster invalid_label
+concourse_builds_check_succeeded_total counter
+  help: Total number of Concourse check builds succeeded.
+  labels: cluster invalid_label
+concourse_builds_duration_seconds histogram
+  help: Build time in seconds
+  labels: cluster invalid_label job pipeline team
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_builds_errored_total counter
+  help: Total number of Concourse builds errored.
+  labels: cluster invalid_label
+concourse_builds_failed_total counter
+  help: Total number of Concourse builds failed.
+  labels: cluster invalid_label
+concourse_builds_finished counter
+  help: Count of builds finished across various dimensions.
+  labels: cluster invalid_label job pipeline status team
+concourse_builds_finished_total counter
+  help: Total number of Concourse builds finished.
+  labels: cluster invalid_label
+concourse_builds_latest_completed_build_status gauge
+  help: Status of Latest Completed Build. 0=Success, 1=Failed, 2=Aborted, 3=Errored.
+  labels: cluster invalid_label jobName pipelineName teamName
+concourse_builds_running gauge
+  help: Number of Concourse builds currently running.
+  labels: cluster invalid_label
+concourse_builds_started_total counter
+  help: Total number of Concourse builds started.
+  labels: cluster invalid_label
+concourse_builds_succeeded_total counter
+  help: Total number of Concourse builds succeeded.
+  labels: cluster invalid_label
+concourse_caches_get_step_cache_hits counter
+  help: Total number of get steps that hit caches
+  labels: cluster invalid_label
+concourse_db_connections gauge
+  help: Current number of concourse database connections
+  labels: cluster dbname invalid_label
+concourse_db_queries_total counter
+  help: Total number of database Concourse database queries
+  labels: cluster invalid_label
+concourse_error_logs counter
+  help: Number of error logged
+  labels: cluster invalid_label message
+concourse_gc_created_containers_to_be_garbage_collected counter
+  help: Created Containers being garbage collected
+  labels: cluster invalid_label
+concourse_gc_created_volumes_to_be_garbage_collected counter
+  help: Created Volumes being garbage collected
+  labels: cluster invalid_label
+concourse_gc_creating_containers_to_be_garbage_collected counter
+  help: Creating Containers being garbage collected
+  labels: cluster invalid_label
+concourse_gc_destroying_containers_to_be_garbage_collected counter
+  help: Destorying Containers being garbage collected
+  labels: cluster invalid_label
+concourse_gc_destroying_volumes_to_be_garbage_collected counter
+  help: Destroying Volumes being garbage collected
+  labels: cluster invalid_label
+concourse_gc_failed_containers_to_be_garbage_collected counter
+  help: Failed Containers being garbage collected
+  labels: cluster invalid_label
+concourse_gc_failed_volumes_to_be_garbage_collected counter
+  help: Failed Volumes being garbage collected
+  labels: cluster invalid_label
+concourse_gc_gc_artifact_collector_duration histogram
+  help: Duration of gc artifact collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_build_collector_duration histogram
+  help: Duration of gc build collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_container_collector_duration histogram
+  help: Duration of gc container collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_deprecated_scope_collector_duration histogram
+  help: Duration of gc deprecated scope collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_resource_cache_collector_duration histogram
+  help: Duration of gc resource cache collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_resource_cache_use_collector_duration histogram
+  help: Duration of gc resource cache use collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_resource_config_check_session_collector_duration histogram
+  help: Duration of gc resource config check session collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_resource_config_collector_duration histogram
+  help: Duration of gc resource config collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_task_cache_collector_duration histogram
+  help: Duration of gc task cache collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_volume_collector_duration histogram
+  help: Duration of gc volume collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_gc_worker_collector_duration histogram
+  help: Duration of gc worker collector (ms)
+  labels: cluster invalid_label
+  buckets: 1 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_gc_pipeline_run_reclaim_backlog gauge
+  help: Pipeline runs currently eligible for reclamation
+  labels: cluster invalid_label
+concourse_gc_pipeline_run_reclaim_duration histogram
+  help: Duration of one pipeline run reclaimer pass (ms)
+  labels: cluster invalid_label
+  buckets: 1 10 50 100 250 500 1000 2500 5000 10000 30000 60000 120000 +Inf
+concourse_hangar_output_at_risk gauge
+  help: 1 while unresolved Hangar storage integrity findings block admission, with the classes that put it there
+  labels: cluster invalid_label reasons
+concourse_hangar_output_enabled gauge
+  help: 1 while the Hangar output plane is in service (hangar_enabled); admission refuses while it is 0
+  labels: cluster invalid_label
+concourse_hangar_output_orphan_sweep_failures_total counter
+  help: Orphan sweeps that stopped on an error: a list, a judgement or a delete
+  labels: cluster invalid_label
+concourse_hangar_output_orphan_sweep_objects gauge
+  help: Objects the last orphan sweep listed, by class: the orphans it deleted and every class it left alone
+  labels: class cluster invalid_label
+concourse_hangar_output_orphan_sweep_passes_total counter
+  help: Completed orphan sweeps; a counter that stops moving is a sweep that stopped
+  labels: cluster invalid_label
+concourse_hangar_output_plane_inventory gauge
+  help: What the Hangar output plane is holding: live generations, captures by state, open claims, open integrity findings, and the residue a drain waits on
+  labels: cluster invalid_label kind
+concourse_hangar_output_policy_violations gauge
+  help: Open, unreconciled Hangar runtime storage integrity findings by class
+  labels: cluster invalid_label violation
+concourse_hangar_output_reclaim_generations_total counter
+  help: Generations the web's reclaim pass reclaimed, deferred to a later pass, or failed to delete
+  labels: cluster invalid_label outcome
+concourse_http_responses_duration_seconds histogram
+  help: Response time in seconds
+  labels: cluster invalid_label method route status
+  buckets: 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10 +Inf
+concourse_jobs_scheduled_total counter
+  help: Total number of Concourse jobs scheduled.
+  labels: cluster invalid_label
+concourse_jobs_scheduling gauge
+  help: Number of Concourse jobs currently being scheduled.
+  labels: cluster invalid_label
+concourse_jobs_schedulingDuration histogram
+  help: Duration of jobs being scheduled in milliseconds
+  labels: cluster invalid_label job job_id pipeline
+  buckets: 30 60 180 300 600 900 1200 1800 2700 3600 7200 18000 36000 +Inf
+concourse_k8s_image_pull_failures_total counter
+  help: Number of K8s image pull failures (ImagePullBackOff, ErrImagePull).
+  labels: cluster invalid_label
+concourse_k8s_pod_startup_duration_milliseconds histogram
+  help: Time from pod creation to Running state in milliseconds.
+  labels: cluster invalid_label
+  buckets: 500 1000 2000 5000 10000 30000 60000 120000 +Inf
+concourse_lidar_checks_enqueued_total counter
+  help: Total number of checks enqueued
+  labels: cluster invalid_label
+concourse_lidar_checks_finished_total counter
+  help: Total number of checks finished.
+  labels: cluster invalid_label status
+concourse_lidar_checks_started_total counter
+  help: Total number of checks started. With global resource enabled, a check build may not really run a check, thus total checks started should be less than total check builds started.
+  labels: cluster invalid_label
+concourse_locks_held gauge
+  help: Database locks held
+  labels: cluster invalid_label type
+concourse_steps_wait_duration histogram
+  help: Elapsed time waiting for execution
+  labels: cluster invalid_label platform teamId teamName type workerTags
+  buckets: 10 30 60 120 300 600 1800 2400 3000 3600 +Inf
+concourse_volumes_orphaned_volumes_to_be_deleted counter
+  help: Number of orphaned volumes to be garbage collected.
+  labels: cluster invalid_label
+concourse_workers_registered gauge
+  help: Number of workers per state as seen by the database
+  labels: cluster invalid_label state
