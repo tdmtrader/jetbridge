@@ -9,5 +9,3 @@ func FeatureFlags() map[string]bool {
 		"resource_causality": EnableResourceCausality,
 	}
 }
-
-var DisableRedactSecrets bool
