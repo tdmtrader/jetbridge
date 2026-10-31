@@ -3,13 +3,11 @@ package accessor_test
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -115,43 +113,6 @@ func (fixture *realTeamFixture) persistTeam(team atc.Team, admin bool) db.Team {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
 	return persistedTeam
-}
-
-// persistRoleTeam reloads the newly created row so authorization observes the
-// JSON auth stored in PostgreSQL rather than the atc.Team input value.
-func persistRoleTeam(teamFactory db.TeamFactory, name, role, userID string) db.Team {
-	GinkgoHelper()
-
-	auth := atc.TeamAuth{
-		role: {"users": {fmt.Sprintf("test:%s", userID)}},
-	}
-	_, err := teamFactory.CreateTeam(atc.Team{Name: name, Auth: auth})
-	Expect(err).NotTo(HaveOccurred())
-
-	team, found, err := teamFactory.FindTeam(name)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(found).To(BeTrue())
-	return team
-}
-
-func accessForPersistedRole(teamFactory db.TeamFactory, requiredRole, teamName, actualRole, userID string) accessor.Access {
-	GinkgoHelper()
-
-	team := persistRoleTeam(teamFactory, teamName, actualRole, userID)
-	return accessor.NewAccessor(verificationForUser(userID), requiredRole, "sub", []string{"system"}, []db.Team{team}, nil)
-}
-
-func verificationForUser(userID string) accessor.Verification {
-	return accessor.Verification{
-		HasToken:     true,
-		IsTokenValid: true,
-		RawClaims: map[string]any{
-			"federated_claims": map[string]any{
-				"connector_id": "test",
-				"user_id":      userID,
-			},
-		},
-	}
 }
 
 func TestAccessor(t *testing.T) {
