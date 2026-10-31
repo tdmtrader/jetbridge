@@ -571,37 +571,6 @@ func (builder Builder) WithJobBuild(assign *db.Build, jobName string, inputs Job
 	}
 }
 
-func (builder Builder) WithJobBuildContainer(assign *db.CreatingContainer, jobName string, workerName string, teamID int) SetupFunc {
-	return func(scenario *Scenario) error {
-		if len(scenario.Workers) == 0 {
-			return errors.New("no workers set in scenario")
-		}
-
-		var build db.Build
-		scenario.Run(builder.WithJobBuild(&build, jobName, nil, nil))
-
-		owner := db.NewBuildStepContainerOwner(build.ID(), "123", teamID)
-
-		worker, found, err := builder.WorkerFactory.GetWorker(workerName)
-		if err != nil {
-			return err
-		}
-
-		if !found {
-			return fmt.Errorf("worker '%s' not set in the scenario", workerName)
-		}
-
-		containerMetadata := db.ContainerMetadata{}
-
-		*assign, err = worker.CreateContainer(owner, containerMetadata)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	}
-}
-
 func (builder Builder) WithCheckContainer(resourceName string, workerName string) SetupFunc {
 	return func(scenario *Scenario) error {
 		if scenario.Pipeline == nil {
