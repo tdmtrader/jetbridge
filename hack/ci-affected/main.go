@@ -1,9 +1,9 @@
 // Command ci-affected prints the Go packages whose tests a change can affect.
 //
-// It is the selector behind `hack/ci-check.sh --affected` and
-// `hack/test-affected.sh`: the inner loop runs only these packages, and the
-// full unit tier stays the merge gate. A package is affected when its tests
-// import -- directly or transitively -- a package containing a changed file.
+// It is the selector behind `hack/ci-check.sh --affected`: the inner loop runs
+// only these packages, and the full unit tier stays the merge gate. A package
+// is affected when its tests import -- directly or transitively -- a package
+// containing a changed file.
 //
 // Usage:
 //
