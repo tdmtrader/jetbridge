@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/util"
@@ -50,7 +51,8 @@ func (s *Runner) Run(ctx context.Context) error {
 	}
 
 	for _, j := range jobs {
-		if _, exists := s.running.LoadOrStore(j.ID(), true); exists {
+		active := s.claimJob(j)
+		if active == nil {
 			// already scheduling this job
 			continue
 		}
@@ -59,7 +61,7 @@ func (s *Runner) Run(ctx context.Context) error {
 
 		jLog := sLog.Session("job", lager.Data{"job": j.Name()})
 
-		go func(job db.SchedulerJob) {
+		go func(job db.SchedulerJob, active *jobScheduling) {
 			defer func() {
 				err := util.DumpPanic(recover(), "scheduling job %d", job.ID())
 				if err != nil {
@@ -67,10 +69,7 @@ func (s *Runner) Run(ctx context.Context) error {
 				}
 			}()
 
-			defer func() {
-				<-s.guardJobScheduling
-				s.running.Delete(job.ID())
-			}()
+			defer s.finishScheduling(ctx, jLog, job.ID(), active)
 
 			schedulingLock, acquired, err := job.AcquireSchedulingLock(sLog)
 			if err != nil {
@@ -88,7 +87,7 @@ func (s *Runner) Run(ctx context.Context) error {
 			if err != nil {
 				jLog.Error("failed-to-schedule-job", err)
 			}
-		}(j)
+		}(j, active)
 	}
 
 	return nil
@@ -161,4 +160,64 @@ func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.Sc
 	}.Emit(logger)
 
 	return nil
+}
+
+// jobScheduling is one job's in-flight pass. A scan that finds the job already
+// scheduling skips it; if that scan carries a NEWER schedule request than the
+// one the pass started with, the pass re-signals the scheduler when it ends,
+// so the request is picked up at once rather than at the next periodic run.
+// Only a newer request counts: re-signalling for the same unresolved request
+// would busy-loop on a job whose pass keeps asking to run again.
+type jobScheduling struct {
+	requested time.Time
+
+	mu           sync.Mutex
+	retired      bool
+	newerRequest bool
+}
+
+// claimJob returns the job's new pass, or nil when one is already running.
+func (s *Runner) claimJob(job db.SchedulerJob) *jobScheduling {
+	requested := job.ScheduleRequestedTime()
+	next := &jobScheduling{requested: requested}
+	for {
+		value, loaded := s.running.LoadOrStore(job.ID(), next)
+		if !loaded {
+			return next
+		}
+		active := value.(*jobScheduling)
+		active.mu.Lock()
+		if !requested.After(active.requested) {
+			active.mu.Unlock()
+			return nil
+		}
+		if active.retired {
+			// The pass removed its entry while this scan waited for its
+			// mutex. Claim the job rather than record on a finished pass.
+			active.mu.Unlock()
+			continue
+		}
+		active.newerRequest = true
+		active.mu.Unlock()
+		return nil
+	}
+}
+
+// finishScheduling runs after the pass has released the job's scheduling
+// lock, so the scan the notification triggers can take it. That scan goes
+// through every ordinary admission and max-in-flight check; the periodic run
+// still covers a notification that fails to deliver.
+func (s *Runner) finishScheduling(ctx context.Context, logger lager.Logger, jobID int, active *jobScheduling) {
+	<-s.guardJobScheduling
+	active.mu.Lock()
+	s.running.Delete(jobID)
+	active.retired = true
+	notify := active.newerRequest
+	active.mu.Unlock()
+
+	if notify && s.notifications != nil && ctx.Err() == nil {
+		if err := s.notifications.Notify(atc.ComponentScheduler); err != nil {
+			logger.Error("failed-to-notify-scheduler-after-overlap", err)
+		}
+	}
 }
