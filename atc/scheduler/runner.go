@@ -15,19 +15,23 @@ import (
 )
 
 type Runner struct {
-	logger     lager.Logger
-	jobFactory db.JobFactory
-	scheduler  *Scheduler
+	logger        lager.Logger
+	jobFactory    db.JobFactory
+	scheduler     *Scheduler
+	notifications db.NotificationsBus
 
 	guardJobScheduling chan struct{}
 	running            *sync.Map
 }
 
-func NewRunner(logger lager.Logger, jobFactory db.JobFactory, scheduler *Scheduler, maxJobs uint64) *Runner {
+// NewRunner's notifications bus may be nil: the runner then relies on the
+// component's periodic run alone.
+func NewRunner(logger lager.Logger, jobFactory db.JobFactory, scheduler *Scheduler, maxJobs uint64, notifications db.NotificationsBus) *Runner {
 	return &Runner{
-		logger:     logger,
-		jobFactory: jobFactory,
-		scheduler:  scheduler,
+		logger:        logger,
+		jobFactory:    jobFactory,
+		scheduler:     scheduler,
+		notifications: notifications,
 
 		guardJobScheduling: make(chan struct{}, maxJobs),
 		running:            &sync.Map{},

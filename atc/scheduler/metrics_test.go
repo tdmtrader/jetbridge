@@ -64,6 +64,7 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 			jobFactory,
 			realScheduler(algorithm),
 			1,
+			nil,
 		)
 		Expect(runner.Run(ctx)).To(Succeed())
 		waitForSchedulerCompletion(ctx, jobFactory.completion(job.ID()))

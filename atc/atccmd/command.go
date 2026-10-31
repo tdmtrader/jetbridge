@@ -1063,6 +1063,7 @@ func (cmd *RunCommand) backendComponents(
 						alg),
 				},
 				cmd.JobSchedulingMaxInFlight,
+				dbConn.Bus(),
 			),
 		},
 		{

@@ -154,6 +154,7 @@ var _ = Describe("Runner", func() {
 			jobFactory,
 			realScheduler(algorithm),
 			maxInFlight,
+			nil,
 		)
 	}
 
