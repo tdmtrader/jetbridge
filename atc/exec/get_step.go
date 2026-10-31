@@ -24,10 +24,6 @@ import (
 
 var GetResourceLockInterval = 5 * time.Second
 
-type ErrResourceNotFound struct {
-	ResourceName string
-}
-
 type GetResult struct {
 	Name          string
 	ResourceCache db.ResourceCache
