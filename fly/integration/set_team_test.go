@@ -38,7 +38,9 @@ var _ = Describe("set-team", func() {
 	// prompt (bubbletea registers it at the start of Program.Run, before its
 	// first frame, and turns it into ErrInterrupted, so fly exits 1). A SIGINT
 	// that lands any earlier meets the Go runtime's default disposition and the
-	// process dies with 130 -- the race CI hit under -p.
+	// process dies with 130 -- the race CI hit under -p. The session must come
+	// from startAtPrompt: on Linux the prompt never renders with stdin on
+	// /dev/null.
 	interruptAtPrompt := func(sess *gexec.Session) {
 		Eventually(sess.Out).Should(gbytes.Say(`apply team configuration\? \[yN\]`))
 		sess.Interrupt()
@@ -68,8 +70,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("discard role with missing auth", func() {
-						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-						Expect(err).ToNot(HaveOccurred())
+						sess := startAtPrompt(flyCmd)
 
 						Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 
@@ -97,8 +98,7 @@ var _ = Describe("set-team", func() {
 					})
 
 					It("discard role with no user and group", func() {
-						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-						Expect(err).ToNot(HaveOccurred())
+						sess := startAtPrompt(flyCmd)
 						Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 
 						Eventually(sess.Out).Should(gbytes.Say("role owner:"))
@@ -123,8 +123,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users configured for local auth for a given role", func() {
-					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-					Expect(err).ToNot(HaveOccurred())
+					sess := startAtPrompt(flyCmd)
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 
@@ -157,8 +156,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users and groups configured for a given role", func() {
-					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-					Expect(err).ToNot(HaveOccurred())
+					sess := startAtPrompt(flyCmd)
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 
@@ -399,8 +397,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("shows the users configured for local auth", func() {
-					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-					Expect(err).ToNot(HaveOccurred())
+					sess := startAtPrompt(flyCmd)
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
@@ -420,8 +417,7 @@ var _ = Describe("set-team", func() {
 				})
 
 				It("ignores empty arguments", func() {
-					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-					Expect(err).ToNot(HaveOccurred())
+					sess := startAtPrompt(flyCmd)
 
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 					Eventually(sess.Out).Should(gbytes.Say("role owner:"))

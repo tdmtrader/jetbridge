@@ -272,3 +272,20 @@ GIbIZscSNOH/ntRBz9KavYKg84cmisDngbCd1kkMpgCThBC62QLfEoDARoMsjvqv
 hb0txIKJXzaMDiL+jXt4+TVNg6zSmkg0G2v/SZrTF+8QylQ1PGISFbR6f7nhhGRL
 pbjWcf9qXxtCJdZdBm/BNDiJB6c6DDz/OIJwqgpCTsxiQgEdXRT4ig==
 -----END RSA PRIVATE KEY-----`
+
+// startAtPrompt starts fly with an open pipe on stdin, for specs that leave an
+// interactive prompt unanswered (to interrupt it, say). Without one, exec gives
+// the child /dev/null, which Linux's epoll refuses to register: bubbletea's
+// cancel reader then fails before the prompt renders and fly exits 1 at once,
+// while macOS's kqueue accepts /dev/null and the prompt renders. A pipe is
+// registerable on both. The pipe stays open until fly exits (Wait closes it) or
+// the spec is cleaned up, whichever is first.
+func startAtPrompt(cmd *exec.Cmd) *gexec.Session {
+	stdin, err := cmd.StdinPipe()
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = stdin.Close() })
+
+	sess, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
+	Expect(err).NotTo(HaveOccurred())
+	return sess
+}
