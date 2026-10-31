@@ -258,10 +258,8 @@ jobs:
 			pipelineFile := writePipelineFile("check-resource-type.yml", `
 resource_types:
 - name: custom-mock
-  type: mock
-  source:
-    mirror_self: true
-    initial_version: type-v1
+  type: registry-image
+  source: {repository: concourse/mock-resource}
 
 resources:
 - name: custom-res
