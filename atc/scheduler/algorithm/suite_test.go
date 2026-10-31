@@ -7,7 +7,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/tedsuo/ifrit"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -18,7 +17,6 @@ import (
 
 var (
 	postgresRunner postgresrunner.Runner
-	dbProcess      ifrit.Process
 
 	lockFactory lock.LockFactory
 	teamFactory db.TeamFactory
@@ -27,25 +25,22 @@ var (
 )
 
 func TestAlgorithm(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Algorithm Suite")
-}
-
-var _ = BeforeSuite(func() {
-	otlpAddress := os.Getenv("OTLP_ADDRESS")
-
-	if otlpAddress != "" {
+	if otlpAddress := os.Getenv("OTLP_ADDRESS"); otlpAddress != "" {
 		c := tracing.Config{
 			ServiceName: "algorithm_test",
 			OTLP:        tracing.OTLP{Address: otlpAddress},
 		}
 
-		err := c.Prepare()
-		Expect(err).ToNot(HaveOccurred())
+		if err := c.Prepare(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	postgresrunner.InitializeRunnerForGinkgo(&postgresRunner, &dbProcess)
-})
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Algorithm Suite")
+}
+
+var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
 	postgresRunner.CreateTestDBFromTemplate()
@@ -66,8 +61,4 @@ var _ = AfterEach(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	postgresRunner.DropTestDB()
-})
-
-var _ = AfterSuite(func() {
-	postgresrunner.FinalizeRunnerForGinkgo(&postgresRunner, &dbProcess)
 })
