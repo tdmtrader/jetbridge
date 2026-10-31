@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -71,6 +72,47 @@ func daemonMTLSClients(pod *corev1.Pod) (withCert, noCert *http.Client) {
 	return withCert, noCert
 }
 
+// oneFileTar is the smallest artifact the daemon accepts: an artifact is a
+// directory, and PUT /stream-in/<key> extracts a tar stream into steps/<key>.
+func oneFileTar(name, content string) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	Expect(tw.WriteHeader(&tar.Header{
+		Name: name, Mode: 0644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+	})).To(Succeed())
+	_, err := tw.Write([]byte(content))
+	Expect(err).ToNot(HaveOccurred())
+	Expect(tw.Close()).To(Succeed())
+	return buf.Bytes()
+}
+
+// streamIn PUTs a one-file tar to /stream-in/<key>; the daemon extracts it to
+// steps/<key>, which GET/DELETE then address as /artifacts/steps/<key>.
+func streamIn(client *http.Client, daemonURL, key, name, content string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPut, daemonURL+"/stream-in/"+key,
+		bytes.NewReader(oneFileTar(name, content)))
+	Expect(err).ToNot(HaveOccurred())
+	req.Header.Set("Content-Type", "application/octet-stream")
+	return client.Do(req)
+}
+
+// readOneFileTar returns the content of the named regular file in a tar stream.
+func readOneFileTar(r io.Reader, name string) string {
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			Fail(fmt.Sprintf("tar stream has no %q", name))
+		}
+		Expect(err).ToNot(HaveOccurred())
+		if strings.TrimPrefix(hdr.Name, "./") == name && hdr.Typeflag == tar.TypeReg {
+			b, err := io.ReadAll(tr)
+			Expect(err).ToNot(HaveOccurred())
+			return string(b)
+		}
+	}
+}
+
 var _ = Describe("Artifact Daemon Security", func() {
 	var daemonPod *corev1.Pod
 
@@ -124,37 +166,26 @@ var _ = Describe("Artifact Daemon Security", func() {
 			return resp.StatusCode
 		}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
 
-		By("PUT-ing a test artifact to verify hostPath writes")
+		By("streaming a one-file artifact in to verify hostPath writes")
 		testKey := fmt.Sprintf("security-test-%d", time.Now().UnixNano())
 		testContent := "hostpath-write-verification"
 
-		req, err := http.NewRequestWithContext(
-			context.Background(),
-			http.MethodPut,
-			daemonURL+"/artifacts/"+testKey,
-			strings.NewReader(testContent),
-		)
-		Expect(err).ToNot(HaveOccurred())
-
-		resp, err := client.Do(req)
-		Expect(err).ToNot(HaveOccurred(), "PUT to daemon should succeed — if this fails, the daemon likely cannot write to its hostPath due to SecurityContext permissions")
-		defer resp.Body.Close()
+		resp, err := streamIn(client, daemonURL, testKey, "probe.txt", testContent)
+		Expect(err).ToNot(HaveOccurred(), "stream-in to daemon should succeed — if this fails, the daemon likely cannot write to its hostPath due to SecurityContext permissions")
+		resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusCreated),
 			"daemon should be able to write artifacts to hostPath")
 
-		By("GET-ing the artifact back to confirm round-trip")
-		getResp, err := client.Get(daemonURL + "/artifacts/" + testKey)
+		By("GET-ing the artifact back as a tar to confirm round-trip")
+		getResp, err := client.Get(daemonURL + "/artifacts/steps/" + testKey)
 		Expect(err).ToNot(HaveOccurred())
 		defer getResp.Body.Close()
 		Expect(getResp.StatusCode).To(Equal(http.StatusOK))
-
-		body, err := io.ReadAll(getResp.Body)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(string(body)).To(Equal(testContent))
+		Expect(readOneFileTar(getResp.Body, "probe.txt")).To(Equal(testContent))
 
 		By("cleaning up the test artifact")
 		delReq, _ := http.NewRequest(http.MethodDelete,
-			daemonURL+"/artifacts/"+testKey, nil)
+			daemonURL+"/artifacts/steps/"+testKey, nil)
 		delResp, _ := client.Do(delReq)
 		if delResp != nil {
 			delResp.Body.Close()
@@ -175,10 +206,8 @@ var _ = Describe("Artifact Daemon Security", func() {
 
 		key := fmt.Sprintf("mtls-test-%d", time.Now().UnixNano())
 
-		By("rejecting a protected path (PUT /artifacts) without a client cert → 401")
-		req, err := http.NewRequest(http.MethodPut, daemonURL+"/artifacts/"+key, strings.NewReader("x"))
-		Expect(err).ToNot(HaveOccurred())
-		resp, err := noCert.Do(req)
+		By("rejecting a protected path (PUT /stream-in) without a client cert → 401")
+		resp, err := streamIn(noCert, daemonURL, key, "probe.txt", "x")
 		Expect(err).ToNot(HaveOccurred(),
 			"TLS handshake should succeed (server cert is trusted); only the client cert is absent")
 		resp.Body.Close()
@@ -192,17 +221,22 @@ var _ = Describe("Artifact Daemon Security", func() {
 		Expect(hresp.StatusCode).To(Equal(http.StatusOK),
 			"/healthz is exempt and must work without a client cert over HTTPS")
 
-		By("allowing a protected path WITH a valid client cert → 201")
-		preq, err := http.NewRequest(http.MethodPut, daemonURL+"/artifacts/"+key, strings.NewReader("mtls-ok"))
+		By("rejecting a protected read (GET /artifacts) without a client cert → 401")
+		gresp, err := noCert.Get(daemonURL + "/artifacts/steps/" + key)
 		Expect(err).ToNot(HaveOccurred())
-		presp, err := withCert.Do(preq)
+		gresp.Body.Close()
+		Expect(gresp.StatusCode).To(Equal(http.StatusUnauthorized),
+			"reading an artifact must require a client certificate")
+
+		By("allowing a protected path WITH a valid client cert → 201")
+		presp, err := streamIn(withCert, daemonURL, key, "probe.txt", "mtls-ok")
 		Expect(err).ToNot(HaveOccurred())
 		presp.Body.Close()
 		Expect(presp.StatusCode).To(Equal(http.StatusCreated),
 			"a valid client cert must be accepted on protected paths")
 
 		By("cleaning up the test artifact")
-		delReq, _ := http.NewRequest(http.MethodDelete, daemonURL+"/artifacts/"+key, nil)
+		delReq, _ := http.NewRequest(http.MethodDelete, daemonURL+"/artifacts/steps/"+key, nil)
 		if delResp, _ := withCert.Do(delReq); delResp != nil {
 			delResp.Body.Close()
 		}
@@ -227,15 +261,16 @@ var _ = Describe("Artifact Daemon Security", func() {
 			By("verifying RunAsNonRoot is NOT true — hostPath requires root writes")
 			_ = fmt.Sprintf("WARNING: RunAsNonRoot=%v — this will cause hostPath write failures", *sc.RunAsNonRoot)
 			if *sc.RunAsNonRoot {
-				// Verify the daemon can still write — if this PUT fails,
-				// RunAsNonRoot is breaking hostPath access.
+				// Verify the daemon can still write — if this stream-in
+				// fails, RunAsNonRoot is breaking hostPath access.
 				daemonURL, stop := portForwardDaemon(daemonPod.Name, 7780)
 				defer stop()
 				client := &http.Client{Timeout: 10 * time.Second}
-				req, _ := http.NewRequest(http.MethodPut,
-					daemonURL+"/artifacts/non-root-check",
-					bytes.NewReader([]byte("test")))
-				resp, err := client.Do(req)
+				if daemonServesTLS(daemonPod) {
+					daemonURL = strings.Replace(daemonURL, "http://", "https://", 1)
+					client, _ = daemonMTLSClients(daemonPod)
+				}
+				resp, err := streamIn(client, daemonURL, "non-root-check", "probe.txt", "test")
 				if err != nil || resp.StatusCode != http.StatusCreated {
 					Fail("RunAsNonRoot=true and daemon cannot write to hostPath — " +
 						"remove runAsNonRoot from DaemonSet pod SecurityContext")
