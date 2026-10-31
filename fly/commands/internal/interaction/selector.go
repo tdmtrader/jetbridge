@@ -28,8 +28,7 @@ type selectModel struct {
 	choice any
 }
 
-func (s selectModel) Choice() any         { return s.choice }
-func (s selectModel) UserCancelled() bool { return s.UserCancelled() }
+func (s selectModel) Choice() any { return s.choice }
 
 var blankStyle = lipgloss.NewStyle()
 
