@@ -312,35 +312,6 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	return newProcess(processID, pod.Name, c.clientset, c.config, c, io), nil
 }
 
-// outputPaths returns the set of mount paths that should be uploaded to the
-// artifact store after step completion. For task steps with explicit Outputs,
-// only those paths are returned. For get/put steps (no explicit Outputs),
-// the working directory is the implicit output and is included instead.
-// When an output overlaps an input path, it is included because the step
-// may have modified the input data.
-//
-// Paths are normalized via filepath.Clean so that trailing-slash differences
-// between input paths (no slash) and output paths (trailing slash) don't
-// cause mismatches when recording artifact locations.
-func (c *Container) outputPaths() map[string]bool {
-	if len(c.containerSpec.Outputs) > 0 {
-		paths := make(map[string]bool, len(c.containerSpec.Outputs))
-		for _, path := range c.containerSpec.Outputs {
-			paths[filepath.Clean(path)] = true
-		}
-		return paths
-	}
-	// No explicit outputs — for get/put steps the working directory is the
-	// implicit output. Task and check steps with no outputs don't produce
-	// artifacts for downstream consumption.
-	if c.containerSpec.Dir != "" &&
-		c.metadata.Type != db.ContainerTypeTask &&
-		c.metadata.Type != db.ContainerTypeCheck {
-		return map[string]bool{c.containerSpec.Dir: true}
-	}
-	return nil
-}
-
 // bindVolumesToPod sets the pod name on all deferred volumes so that
 // StreamIn/StreamOut can target the correct pod.
 func (c *Container) bindVolumesToPod(podName string) {
