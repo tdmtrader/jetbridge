@@ -2,9 +2,7 @@ package steps
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"debug/elf"
 	"errors"
 	"fmt"
@@ -119,16 +117,12 @@ func prepareLiveDaemon() (int, liveDaemonBinary, error) {
 	}
 	// Compress only the executable's transport, not any artifact result.
 	// The pod verifies the original ELF checksum after real decompression.
-	var packed bytes.Buffer
-	hash := sha256.New()
-	zipper := gzip.NewWriter(&packed)
-	_, copyErr := io.Copy(io.MultiWriter(hash, zipper), file)
-	closeErr := zipper.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
+	packed, sha, err := liveDaemonPayloads.payload(file)
+	if err != nil {
 		return 0, liveDaemonBinary{}, err
 	}
-	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), packed.Len(), time.Since(started))
-	return port, liveDaemonBinary{packed: packed.Bytes(), sha: fmt.Sprintf("%x", hash.Sum(nil)), machine: object.Machine}, nil
+	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), len(packed), time.Since(started))
+	return port, liveDaemonBinary{packed: packed, sha: sha, machine: object.Machine}, nil
 }
 
 // launchLiveDaemon starts and verifies a daemon on s's node, serving s.root on
