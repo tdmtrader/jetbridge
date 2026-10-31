@@ -27,6 +27,21 @@ type Runner struct {
 	Port int
 
 	fileCopy bool
+
+	// dbName is the database this runner clones, opens and drops. Empty means
+	// "testdb", the one database of a runner that owns its postmaster; the
+	// processes of a GinkgoRunner suite share one postmaster and each name
+	// their own (see suitePostmaster).
+	dbName string
+}
+
+// DBName is the database this runner's connections open: the one a spec
+// creates with CreateTestDBFromTemplate or CreateEmptyTestDB.
+func (runner *Runner) DBName() string {
+	if runner.dbName == "" {
+		return "testdb"
+	}
+	return runner.dbName
 }
 
 func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
@@ -191,7 +206,7 @@ func (runner *Runner) OpenDB() *sql.DB {
 }
 
 func (runner *Runner) OpenConn() db.DbConn {
-	return runner.openConn("testdb")
+	return runner.openConn(runner.DBName())
 }
 
 func (runner *Runner) openConn(dbName string) db.DbConn {
@@ -227,7 +242,7 @@ func (runner *Runner) OpenSingleton() *sql.DB {
 }
 
 func (runner *Runner) DataSourceName() string {
-	return runner.dataSourceName("testdb")
+	return runner.dataSourceName(runner.DBName())
 }
 
 func (runner *Runner) dataSourceName(dbName string) string {
@@ -236,8 +251,8 @@ func (runner *Runner) dataSourceName(dbName string) string {
 
 // execSQL uses a fresh connection for each fixture operation, just as the psql
 // invocation it replaces did. Closing it before returning is essential: a
-// connection left on the template prevents cloning, and one left on testdb
-// prevents dropping it. Administrative commands still run outside a transaction.
+// connection left on the template prevents cloning, and one left on the test
+// database prevents dropping it. Administrative commands still run outside a transaction.
 func (runner *Runner) execSQL(dbName, query string) error {
 	conn, err := sql.Open("pgx", runner.dataSourceName(dbName))
 	if err != nil {
@@ -263,7 +278,7 @@ func (runner *Runner) InitializeTestDBTemplate() {
 	Expect(conn.QueryRow("SHOW server_version_num").Scan(&serverVersion)).To(Succeed())
 	// PostgreSQL 15 added WAL_LOG as the default cloning strategy. This
 	// migrated template is large enough that directory copying is cheaper.
-	// Each runner owns its postmaster, so the required checkpoints do not
+	// Each suite owns its postmaster, so the required checkpoints do not
 	// interrupt other suites. Older servers already use directory copying.
 	runner.fileCopy = serverVersion >= 150000
 	err = conn.Close()
@@ -329,21 +344,21 @@ const spreadIDSequencesSQL = `
 `
 
 func (runner *Runner) CreateEmptyTestDB() {
-	Expect(runner.execSQL("postgres", "CREATE DATABASE testdb;")).To(Succeed(), "create empty testdb")
+	Expect(runner.execSQL("postgres", "CREATE DATABASE "+runner.DBName())).To(Succeed(), "create empty "+runner.DBName())
 }
 
 func (runner *Runner) CreateTestDBFromTemplate() {
-	query := "CREATE DATABASE testdb TEMPLATE testdb_template"
+	query := "CREATE DATABASE " + runner.DBName() + " TEMPLATE testdb_template"
 	if runner.fileCopy {
 		query += " STRATEGY FILE_COPY"
 	}
-	Expect(runner.execSQL("postgres", query)).To(Succeed(), "create testdb from template")
+	Expect(runner.execSQL("postgres", query)).To(Succeed(), "create "+runner.DBName()+" from template")
 }
 
 func (runner *Runner) DropTestDB() {
-	runner.terminateIdleConnections("testdb")
+	runner.terminateIdleConnections(runner.DBName())
 
-	Expect(runner.execSQL("postgres", "DROP DATABASE IF EXISTS testdb;")).To(Succeed(), "drop testdb")
+	Expect(runner.execSQL("postgres", "DROP DATABASE IF EXISTS "+runner.DBName())).To(Succeed(), "drop "+runner.DBName())
 }
 
 func (runner *Runner) terminateIdleConnections(dbName string) {
@@ -352,7 +367,7 @@ func (runner *Runner) terminateIdleConnections(dbName string) {
 }
 
 func (runner *Runner) Truncate() {
-	Expect(runner.execSQL("testdb", truncateSQL+spreadIDSequencesSQL)).To(Succeed(), "truncate testdb")
+	Expect(runner.execSQL(runner.DBName(), truncateSQL+spreadIDSequencesSQL)).To(Succeed(), "truncate "+runner.DBName())
 }
 
 // TRUNCATE ... RESTART IDENTITY rewinds every sequence to its start value, so

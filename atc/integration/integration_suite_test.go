@@ -43,7 +43,7 @@ var _ = BeforeEach(func() {
 	_, _ = parser.ParseArgs([]string{})
 
 	cmd.Postgres.User = "postgres"
-	cmd.Postgres.Database = "testdb"
+	cmd.Postgres.Database = postgresRunner.DBName()
 	cmd.Postgres.Port = uint16(postgresRunner.Port)
 	cmd.Postgres.SSLMode = "disable"
 	cmd.Auth.MainTeamFlags.LocalUsers = []string{"test"}

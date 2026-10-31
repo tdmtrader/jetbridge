@@ -215,7 +215,7 @@ func (p *Platform) web(logger lager.Logger, postmaster *postgresrunner.Runner) (
 		return nil, nil, err
 	}
 	store, err := skystorage.NewPostgresStorage(logger, flag.PostgresConfig{
-		Host: "127.0.0.1", Port: uint16(postmaster.Port), User: "postgres", Database: "testdb", SSLMode: "disable"})
+		Host: "127.0.0.1", Port: uint16(postmaster.Port), User: "postgres", Database: postmaster.DBName(), SSLMode: "disable"})
 	if err != nil {
 		return nil, nil, err
 	}

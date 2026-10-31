@@ -214,7 +214,7 @@ func newAuthFixture(database JetbridgeDB, bin authBinaries) (_ *AuthFixture, err
 		return nil, err
 	}
 	f.Store, err = skyStorage.NewPostgresStorage(logger, flag.PostgresConfig{
-		Host: "127.0.0.1", User: "postgres", Database: "testdb", Port: uint16(database.runner.Port), SSLMode: "disable",
+		Host: "127.0.0.1", User: "postgres", Database: database.runner.DBName(), Port: uint16(database.runner.Port), SSLMode: "disable",
 	})
 	if err != nil {
 		return nil, err

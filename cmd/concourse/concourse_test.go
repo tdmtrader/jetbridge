@@ -34,7 +34,7 @@ var _ = Describe("Web Command", func() {
 			concoursePath,
 			"web",
 			"--postgres-user", "postgres",
-			"--postgres-database", "testdb",
+			"--postgres-database", postgresRunner.DBName(),
 			"--postgres-port", strconv.Itoa(postgresRunner.Port),
 			"--main-team-local-user", "test",
 			"--add-local-user", "test:test",

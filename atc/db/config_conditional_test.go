@@ -110,7 +110,7 @@ var _ = Describe("Conditional pipeline configuration", func() {
 		// The strict create sees no committed row, then blocks on the unique index.
 		Eventually(func() int {
 			var waiting int
-			Expect(dbConn.QueryRow("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'").Scan(&waiting)).To(Succeed())
+			Expect(dbConn.QueryRow("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").Scan(&waiting)).To(Succeed())
 			return waiting
 		}, 10*time.Second).Should(BeNumerically(">=", 1))
 		Expect(competitor.Commit()).To(Succeed())

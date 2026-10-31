@@ -32,7 +32,7 @@ var _ = Describe("Dex Server", func() {
 			Port:     uint16(postgresRunner.Port),
 			User:     "postgres",
 			SSLMode:  "disable",
-			Database: "testdb",
+			Database: postgresRunner.DBName(),
 		})
 		Expect(err).ToNot(HaveOccurred())
 
