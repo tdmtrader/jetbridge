@@ -2353,6 +2353,7 @@ var _ = Describe("Team", func() {
 				Expect(found).To(BeTrue())
 
 				jobConfig, err := job.Config()
+				Expect(err).ToNot(HaveOccurred())
 				getStep := jobConfig.PlanSequence[0].Config.(*atc.GetStep)
 				Expect(getStep.Passed).To(ConsistOf("job-*"))
 			})

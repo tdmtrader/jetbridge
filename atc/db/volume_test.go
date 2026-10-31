@@ -228,6 +228,7 @@ var _ = Describe("Volume", func() {
 				nil,
 				nil,
 			)
+			Expect(err).ToNot(HaveOccurred())
 
 			resourceCache, err = resourceCacheFactory.FindOrCreateResourceCache(
 				db.ForBuild(build.ID()),
@@ -890,6 +891,7 @@ var _ = Describe("Volume", func() {
 				nil,
 				nil,
 			)
+			Expect(err).ToNot(HaveOccurred())
 
 			resourceCache, err := resourceCacheFactory.FindOrCreateResourceCache(
 				db.ForBuild(build.ID()),

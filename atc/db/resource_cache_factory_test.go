@@ -297,6 +297,7 @@ var _ = Describe("ResourceCacheFactory", func() {
 				nil,
 				nil,
 			)
+			Expect(err).ToNot(HaveOccurred())
 
 			someUsedResourceCacheFromCustomResource, err = resourceCacheFactory.FindOrCreateResourceCache(resourceCacheUser,
 				"some-custom-resource-type",

@@ -38,6 +38,7 @@ var _ = Describe("WorkerResourceCaches", func() {
 			nil,
 			nil,
 		)
+		Expect(err).ToNot(HaveOccurred())
 
 		resourceCache, err = resourceCacheFactory.FindOrCreateResourceCache(
 			db.ForBuild(build.ID()),

@@ -327,6 +327,7 @@ var _ = Describe("Resource Config Scope", func() {
 				},
 			}
 			bytes, err := json.Marshal(publicPlan)
+			Expect(err).ToNot(HaveOccurred())
 			jr := json.RawMessage(bytes)
 			updated, err := resourceScope.UpdateLastCheckStartTime(99, &jr)
 			Expect(err).ToNot(HaveOccurred())

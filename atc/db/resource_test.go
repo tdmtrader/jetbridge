@@ -186,6 +186,7 @@ var _ = Describe("Resource", func() {
 						},
 					}
 					bytes, err := json.Marshal(publicPlan)
+					Expect(err).ToNot(HaveOccurred())
 					jr := json.RawMessage(bytes)
 					resourceConfigScope.UpdateLastCheckStartTime(99, &jr)
 					resourceConfigScope.UpdateLastCheckEndTime(false)

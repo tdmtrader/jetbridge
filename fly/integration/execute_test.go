@@ -427,6 +427,7 @@ run:
 `),
 					0644,
 				)
+				Expect(err).ToNot(HaveOccurred())
 				bardir = filepath.Join(tmpdir, "bar")
 				err = os.Mkdir(bardir, 0755)
 				Expect(err).ToNot(HaveOccurred())

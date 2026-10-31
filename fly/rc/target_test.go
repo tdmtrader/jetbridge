@@ -252,6 +252,7 @@ Lfkzl8ebb+tt0XFMUFc42WNr
 				Expect(ok).To(BeTrue())
 
 				expectedX509Cert, err := tls.X509KeyPair([]byte(clientCert), []byte(clientKey))
+				Expect(err).ToNot(HaveOccurred())
 
 				Expect((*base).TLSClientConfig).To(Equal(&tls.Config{
 					InsecureSkipVerify: false,

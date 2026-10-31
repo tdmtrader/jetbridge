@@ -445,6 +445,7 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 				nil,
 				nil,
 			)
+			Expect(err).ToNot(HaveOccurred())
 
 			resourceCache, err = resourceCacheFactory.FindOrCreateResourceCache(
 				db.ForBuild(build.ID()),
