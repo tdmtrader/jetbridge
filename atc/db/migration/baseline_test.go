@@ -212,11 +212,12 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 		Expect(exists).To(BeFalse(), "column components.%s should have been dropped", col)
 	}
 
-	// Verify signing_keys table exists
+	// signing_keys came with the idtoken credential manager and left with it
+	// (migration 1789793165): a database migrated to HEAD has no such table.
 	var signingKeysExists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'signing_keys')").Scan(&signingKeysExists)
 	Expect(err).NotTo(HaveOccurred())
-	Expect(signingKeysExists).To(BeTrue(), "signing_keys table should exist")
+	Expect(signingKeysExists).To(BeFalse(), "signing_keys table should have been dropped by 1789793165")
 
 	// Verify simplified triggers exist
 	var triggerCount int
