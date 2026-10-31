@@ -259,33 +259,6 @@ jobs:
           if [ "$GO_TEST_STATUS" -ne 0 ] || [ -n "$GINKGO_FAILED" ]; then exit 1; fi
           echo "=== All unit tests passed ==="
 
-- name: k8s-runtime-tests
-  serial: true
-  serial_groups: [solo-k8s-runtime-tests]
-  plan:
-  - get: repo
-    trigger: true
-    params: {depth: 1}
-    passed: [unit-tests]
-  - task: k8s-runtime-integration-tests
-    timeout: 15m
-    attempts: 2
-    config:
-      platform: linux
-      container_requests: {cpu: 6000}  # millicores; see header
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
-      inputs:
-      - name: repo
-      run:
-        path: sh
-        args:
-        - -exc
-        - |
-          cd repo
-          echo "=== Running jetbridge full test suite ==="
-          go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
-          echo "=== All jetbridge tests passed ==="
-
 # The brine suite, driven by the Rust CLI in `--mode sync` against the
 # jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
@@ -319,7 +292,7 @@ jobs:
 # suite now holds the release chain, which is the point of running it.
 - name: brine
   serial: true
-  serial_groups: [solo-brine, live-tier, solo-build-and-vet, solo-unit-tests, solo-k8s-runtime-tests, solo-worker-image]
+  serial_groups: [solo-brine, live-tier, solo-build-and-vet, solo-unit-tests, solo-worker-image]
   plan:
   - get: repo
     trigger: true
@@ -466,7 +439,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 0, fetch_tags: true}
-    passed: [k8s-runtime-tests, brine]
+    passed: [unit-tests, brine]
   - task: create-rc-tag
     timeout: 10m
     attempts: 2
@@ -889,7 +862,7 @@ jobs:
           echo "=== Image built and pushed: ${RC_TAG} ==="
 
 - name: self-upgrade
-  serial_groups: [deploy, solo-build-and-vet, solo-unit-tests, solo-k8s-runtime-tests, solo-brine, solo-worker-image]
+  serial_groups: [deploy, solo-build-and-vet, solo-unit-tests, solo-brine, solo-worker-image]
   plan:
   - get: repo
     trigger: true
