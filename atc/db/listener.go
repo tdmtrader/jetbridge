@@ -26,7 +26,6 @@ var (
 	listening     struct{}
 	askingForTurn struct{}
 	itsYourTurn   struct{}
-	start         struct{}
 )
 
 func NewPgxListener(pool *pgxpool.Pool) *PgxListener {
