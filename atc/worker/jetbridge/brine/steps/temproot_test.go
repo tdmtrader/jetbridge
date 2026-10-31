@@ -175,7 +175,7 @@ func TestEveryFixtureTempDirIsUnderTheAdapterRoot(t *testing.T) {
 			}
 			t.Errorf("steps/%s:%d calls os.%s with an empty directory, so it puts bytes "+
 				"straight into the user's temp directory under a name nothing can attribute "+
-				"and nothing sweeps. Call AttributedTempDir/AttributedTempFile instead.",
+				"and nothing sweeps. Call AttributedTempDir instead.",
 				source, fileSet.Position(call.Pos()).Line, maker)
 
 			return true

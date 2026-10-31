@@ -36,7 +36,6 @@ func newLiveArtifactNodes(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 	if err != nil {
 		return nil, err
 	}
-	defer bin.remove()
 	cfg, err := liveKubernetesConfig()
 	if err != nil {
 		return nil, err

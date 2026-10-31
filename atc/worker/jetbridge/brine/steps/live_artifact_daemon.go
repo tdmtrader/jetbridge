@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -53,7 +54,6 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 	if err != nil {
 		return nil, err
 	}
-	defer bin.remove()
 	s, err := newLiveArtifactStore(ctx, rec)
 	if err != nil {
 		return nil, err
@@ -69,15 +69,13 @@ func startLiveArtifactDaemon(ctx context.Context, rec *brine.Recorder, mirror bo
 	return d, nil
 }
 
-// liveDaemonBinary is the current daemon executable, compressed once for every
+// liveDaemonBinary is the current daemon executable, gzipped once for every
 // node's upload; sha is the original ELF's checksum each pod verifies.
 type liveDaemonBinary struct {
-	packed  string
+	packed  []byte
 	sha     string
 	machine elf.Machine
 }
-
-func (b liveDaemonBinary) remove() { os.Remove(b.packed) }
 
 // prepareLiveDaemon checks the approvals and the approved port, and packs the
 // static daemon ELF named by BRINE_LIVE_ARTIFACT_DAEMON_BINARY.
@@ -121,26 +119,16 @@ func prepareLiveDaemon() (int, liveDaemonBinary, error) {
 	}
 	// Compress only the executable's transport, not any artifact result.
 	// The pod verifies the original ELF checksum after real decompression.
-	packed, err := AttributedTempFile("brine-live-daemon-*.gz")
-	if err != nil {
-		return 0, liveDaemonBinary{}, err
-	}
-	defer packed.Close()
+	var packed bytes.Buffer
 	hash := sha256.New()
-	zipper := gzip.NewWriter(packed)
+	zipper := gzip.NewWriter(&packed)
 	_, copyErr := io.Copy(io.MultiWriter(hash, zipper), file)
 	closeErr := zipper.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
-		os.Remove(packed.Name())
 		return 0, liveDaemonBinary{}, err
 	}
-	packedInfo, err := packed.Stat()
-	if err != nil {
-		os.Remove(packed.Name())
-		return 0, liveDaemonBinary{}, err
-	}
-	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), packedInfo.Size(), time.Since(started))
-	return port, liveDaemonBinary{packed: packed.Name(), sha: fmt.Sprintf("%x", hash.Sum(nil)), machine: object.Machine}, nil
+	fmt.Printf("live daemon executable preparation: raw=%d gzip=%d elapsed=%s\n", info.Size(), packed.Len(), time.Since(started))
+	return port, liveDaemonBinary{packed: packed.Bytes(), sha: fmt.Sprintf("%x", hash.Sum(nil)), machine: object.Machine}, nil
 }
 
 // launchLiveDaemon starts and verifies a daemon on s's node, serving s.root on
@@ -245,12 +233,7 @@ func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactS
 		return nil, fmt.Errorf("daemon's root %s is not anchor %s's store: got %q, err=%v", s.root, s.anchor.UID, owner, err)
 	}
 	fmt.Printf("live daemon pod ready for upload after %s\n", time.Since(started))
-	packed, err := os.Open(bin.packed)
-	if err != nil {
-		return nil, err
-	}
-	defer packed.Close()
-	checksum, err := s.exec(ctx, ready.Name, []string{"sh", "-ec", "gzip -dc > /opt/brine/artifact-daemon; chmod 0755 /opt/brine/artifact-daemon; sha256sum /opt/brine/artifact-daemon"}, packed)
+	checksum, err := s.exec(ctx, ready.Name, []string{"sh", "-ec", "gzip -dc > /opt/brine/artifact-daemon; chmod 0755 /opt/brine/artifact-daemon; sha256sum /opt/brine/artifact-daemon"}, bytes.NewReader(bin.packed))
 	if err != nil {
 		return nil, err
 	}

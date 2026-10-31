@@ -77,19 +77,6 @@ func AttributedTempDir(prefix string) (string, error) {
 	return os.MkdirTemp(adapterDaemonRoot, temperedPrefix(prefix)+"-*")
 }
 
-// AttributedTempFile is AttributedTempDir for a single file, for the one
-// fixture that wants a path to stream an archive into rather than a directory.
-//
-// The pattern keeps os.CreateTemp's meaning: a "*" in it is where the random
-// part goes, so a caller that needs a suffix ("...-*.gz") keeps it.
-func AttributedTempFile(pattern string) (*os.File, error) {
-	if !strings.Contains(pattern, "*") {
-		pattern = temperedPrefix(pattern) + "-*"
-	}
-
-	return os.CreateTemp(adapterDaemonRoot, pattern)
-}
-
 // temperedPrefix strips the "unique part goes here" punctuation a caller may
 // have written, so the composed name has exactly one of it.
 func temperedPrefix(prefix string) string {
