@@ -212,10 +212,37 @@ removed. Use Prometheus (`metrics.enabled`). Lager remains a manual alternative:
 set `metrics.enabled=false` and `serviceMonitor.enabled=false`, set
 `CONCOURSE_EMIT_TO_LOGS=true` via `web.env` and `web.logLevel=debug`. Only one emitter can be configured.
 
-`web.env` remains available for retained settings, including encryption. These
+`web.env` remains available for retained settings. These
 capabilities were previously reachable through environment configuration and
 pipeline sources, despite having no dedicated chart values; this cut is not a
 chart-only removal. No chart keys or schema entries change.
 
 After upgrade, verify local browser and Fly login, token refresh, MCP sign-in,
 Kubernetes secret resolution and Prometheus scraping in the deployed cluster.
+
+## The encryption key is required (2026-10-30)
+
+The web no longer starts without `--encryption-key`, and `concourse migrate
+--migrate-to-latest-version` needs the same key. `--old-encryption-key` is removed with key rotation
+and the plaintext mode: every row in an encrypted column is ciphertext under
+the one key, and a cluster that needs a different key restores the database
+from a backup taken under it, as for any forward-only migration.
+
+The chart gains `secrets.encryptionKeySecret`, a required reference to a Secret
+holding the key under `encryption-key`; it is rendered as
+`CONCOURSE_ENCRYPTION_KEY` on the web container and on the `migrate-db` init
+container. A deployment that already sets `CONCOURSE_ENCRYPTION_KEY` through
+`web.env` (concourse.home does) keeps rendering unchanged: the chart accepts
+that entry in place of the value and copies it onto `migrate-db`. Setting both
+fails the render. To move, create the Secret with the same key material under
+`encryption-key`, set `secrets.encryptionKeySecret` and drop the `web.env`
+entry in one change.
+
+The key has to be present at upgrade: `migrate-db` does not run and the web
+does not start without it, so a deployment that never set
+`CONCOURSE_ENCRYPTION_KEY` names a Secret before taking this chart. A database
+that was run without a key may hold plaintext rows; the first keyed migration
+run encrypts them itself, and nothing has to be run on the previous release
+first. A database encrypted under a key that is lost cannot be recovered: the
+backup and its Secret version travel together
+([runbook](../../docs/migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure)).

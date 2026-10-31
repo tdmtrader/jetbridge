@@ -7,14 +7,14 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestWebCanAvoidKeylessOverlapDuringEncryptionEnablement(t *testing.T) {
+func TestWebDeploymentStrategyIsTheOperators(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		sets []string
 		want appsv1.DeploymentStrategyType
 	}{
 		{name: "existing default", want: ""},
-		{name: "first encryption key", sets: []string{"web.strategy.type=Recreate"}, want: appsv1.RecreateDeploymentStrategyType},
+		{name: "recreate", sets: []string{"web.strategy.type=Recreate"}, want: appsv1.RecreateDeploymentStrategyType},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manifest := objectNamed(t, render(t, tc.sets...), "Deployment", "-web")

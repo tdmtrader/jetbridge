@@ -48,6 +48,24 @@ template first, so these rules run before anything else in the chart.
 {{- fail "postgresql.host is required when postgresql.enabled=false" -}}
 {{- end -}}
 {{- /*
+  The web refuses to start without --encryption-key and migrate-db runs under
+  the same key, so one source must name it: secrets.encryptionKeySecret, or,
+  for a deployment that predates it, a CONCOURSE_ENCRYPTION_KEY entry in
+  web.env. Both at once would hand the container two values for one variable.
+*/ -}}
+{{- $envKey := false -}}
+{{- range .Values.web.env -}}
+{{- if eq .name "CONCOURSE_ENCRYPTION_KEY" -}}
+{{- $envKey = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and (empty .Values.secrets.encryptionKeySecret) (not $envKey) -}}
+{{- fail "secrets.encryptionKeySecret is required: name the Secret holding the database encryption key under encryption-key; the web does not start without --encryption-key" -}}
+{{- end -}}
+{{- if and .Values.secrets.encryptionKeySecret $envKey -}}
+{{- fail "secrets.encryptionKeySecret and a CONCOURSE_ENCRYPTION_KEY entry in web.env are both set; keep secrets.encryptionKeySecret and drop the web.env entry" -}}
+{{- end -}}
+{{- /*
   Each grant renders as one --kubernetes-step-pod-grant=name=..,owner=..
   flag, so a field may not be empty or hold the flag's own separators.
 */ -}}

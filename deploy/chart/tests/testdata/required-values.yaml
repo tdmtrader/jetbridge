@@ -13,6 +13,7 @@ mcp:
         - http://127.0.0.1:8964/callback
 secrets:
   signingKeySecret: test-signing-key
+  encryptionKeySecret: test-encryption-key
 # The dev profile: the local image, URL and test login these renders use.
 # The K3s suites pass the same values themselves.
 image:

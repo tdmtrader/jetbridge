@@ -478,6 +478,9 @@
         "signingKeySecret": {
           "type": "string",
           "minLength": 1
+        },
+        "encryptionKeySecret": {
+          "type": "string"
         }
       }
     },

@@ -43,6 +43,7 @@ web:
   mainTeamLocalUser: test
 secrets:
   signingKeySecret: jetbridge-session-signing-key
+  encryptionKeySecret: jetbridge-encryption-key
 artifactDaemon:
   tls:
     source: existingSecret
@@ -70,6 +71,17 @@ kubectl create namespace concourse
 concourse generate-key -t rsa -f session_signing_key  # or: openssl genrsa -out session_signing_key 4096
 kubectl -n concourse create secret generic jetbridge-session-signing-key \
   --from-file=session_signing_key
+```
+
+The encryption-key Secret holds the database encryption key under
+`encryption-key`; the web encrypts sensitive columns with it and does not start
+without it, and `migrate-db` runs under the same key. It never rotates, and a
+lost key is a lost database, so back the Secret up with the database. Create it
+once (`openssl rand -hex 16` gives 32 hex characters, a 32-byte key):
+
+```bash
+kubectl -n concourse create secret generic jetbridge-encryption-key \
+  --from-literal=encryption-key="$(openssl rand -hex 16)"
 ```
 
 Then install:
@@ -118,7 +130,8 @@ spec:
     helm:
       # Merge the required certificate, resolve Secret, and mcp.clients settings
       # from deployment-values.yaml above into this application's Helm values,
-      # and create the signing-key Secret as in the k3s quickstart.
+      # and create the signing-key and encryption-key Secrets as in the k3s
+      # quickstart.
       # Use source: existingSecret for Argo; never generated certificates.
       valueFiles:
         - values.yaml
@@ -135,6 +148,8 @@ spec:
           value: admin
         - name: secrets.signingKeySecret
           value: jetbridge-session-signing-key
+        - name: secrets.encryptionKeySecret
+          value: jetbridge-encryption-key
         - name: ingress.enabled
           value: "true"
         - name: ingress.host
@@ -399,9 +414,12 @@ web:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `secrets.signingKeySecret` | `""` | **Required.** Pre-existing Secret holding `session_signing_key`, an RSA private key in PEM. Every web pod mounts it at `/keys`. |
+| `secrets.encryptionKeySecret` | `""` | **Required.** Pre-existing Secret holding `encryption-key`, the 16- or 32-byte database encryption key. Rendered as `CONCOURSE_ENCRYPTION_KEY` on the web container and on `migrate-db`. A deployment that already sets `CONCOURSE_ENCRYPTION_KEY` through `web.env` may keep that until it moves; the chart refuses both at once. |
 
-The chart never generates the key. Every web replica mounts the same Secret,
-so sessions survive restarts and work across replicas.
+The chart never generates either key. Every web replica mounts the same
+signing-key Secret, so sessions survive restarts and work across replicas, and
+reads the same encryption key. There is no key rotation: a cluster that needs a
+different encryption key restores the database from a backup taken under it.
 
 ### Network Policy
 
@@ -481,7 +499,7 @@ The chart always deploys the artifact daemon and wires its host path into web.
 
 ## Production Notes
 
-- **Secrets:** Configure local users with strong credentials in `web.localUsers` and assign admins through `web.mainTeamLocalUser`. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
+- **Secrets:** Configure local users with strong credentials in `web.localUsers` and assign admins through `web.mainTeamLocalUser`. The signing-key Secret named in `secrets.signingKeySecret` and the encryption-key Secret named in `secrets.encryptionKeySecret` are required; generate each key once, outside the chart, and back the encryption key up with the database.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.

@@ -65,14 +65,15 @@ spec:
             {{- if .Values.postgresql.connectTimeout }}
             - --postgres-connect-timeout={{ .Values.postgresql.connectTimeout }}
             {{- end }}
-          {{- if .Values.postgresql.existingSecret }}
           env:
+            {{- include "concourse.encryptionKeyEnv" . | nindent 12 }}
+            {{- if .Values.postgresql.existingSecret }}
             - name: CONCOURSE_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.postgresql.existingSecret }}
                   key: {{ .Values.postgresql.passwordSecretKey }}
-          {{- end }}
+            {{- end }}
           {{- if or .Values.web.tls.enabled .Values.web.extraVolumeMounts }}
           volumeMounts:
             {{- with .Values.web.extraVolumeMounts }}
@@ -292,6 +293,9 @@ spec:
           env:
             - name: CONCOURSE_SESSION_SIGNING_KEY
               value: /keys/session_signing_key
+            {{- if .Values.secrets.encryptionKeySecret }}
+            {{- include "concourse.encryptionKeyEnv" . | nindent 12 }}
+            {{- end }}
             {{- if .Values.postgresql.existingSecret }}
             - name: CONCOURSE_POSTGRES_PASSWORD
               valueFrom:

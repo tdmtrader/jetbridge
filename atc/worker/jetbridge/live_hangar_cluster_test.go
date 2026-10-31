@@ -190,7 +190,7 @@ type liveClusterNames struct {
 
 	hangarKey, storeTLS, storeCredentials, runInput string
 
-	daemonTLS, resolve, postgres, signingKey string
+	daemonTLS, resolve, postgres, signingKey, encryptionKey string
 }
 
 func newLiveClusterNames(release, namespace string) liveClusterNames {
@@ -202,11 +202,13 @@ func newLiveClusterNames(release, namespace string) liveClusterNames {
 		runInput:         release + "-run-input-signing-key",
 		// Operator-owned, outside the bootstrap inventory: the artifact
 		// daemon's pinned TLS Secret and resolve key, the database password
-		// the bundled PostgreSQL and web share, and web's session signing key.
-		daemonTLS:  release + "-artifact-daemon-tls",
-		resolve:    release + "-artifact-daemon-resolve",
-		postgres:   release + "-postgresql-connection",
-		signingKey: release + "-session-signing-key",
+		// the bundled PostgreSQL and web share, web's session signing key and
+		// the database encryption key.
+		daemonTLS:     release + "-artifact-daemon-tls",
+		resolve:       release + "-artifact-daemon-resolve",
+		postgres:      release + "-postgresql-connection",
+		signingKey:    release + "-session-signing-key",
+		encryptionKey: release + "-encryption-key",
 	}
 }
 
@@ -340,8 +342,9 @@ func (cluster *liveCluster) createOperatorObjects() {
 	for name, data := range map[string]map[string][]byte{
 		names.daemonTLS: {"tls.crt": serverCert, "tls.key": serverKey, "ca.crt": cluster.ca.certPEM,
 			"client.crt": cluster.daemonClientCert, "client.key": cluster.daemonClientKey},
-		names.resolve:  {"resolve.key": liveDiskRandomBytes(t, 32)},
-		names.postgres: {"POSTGRES_PASSWORD": []byte(cluster.postgresPassword)},
+		names.resolve:       {"resolve.key": liveDiskRandomBytes(t, 32)},
+		names.postgres:      {"POSTGRES_PASSWORD": []byte(cluster.postgresPassword)},
+		names.encryptionKey: {"encryption-key": liveDiskRandomBytes(t, 32)},
 		names.signingKey: {"session_signing_key": pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(signingKey)})},
 	} {
@@ -441,6 +444,7 @@ func (cluster *liveCluster) through(ids ...string) []string {
 		"artifactDaemon.tls.existingSecret=" + names.daemonTLS,
 		"artifactDaemon.resolveCapability.existingSecret=" + names.resolve,
 		"secrets.signingKeySecret=" + names.signingKey,
+		"secrets.encryptionKeySecret=" + names.encryptionKey,
 		// Per release, so a second contract on this node never opens the
 		// first one's output control ledger: it lives in the storage root.
 		"artifactDaemon.hostPath=" + cluster.hostPath,

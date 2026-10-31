@@ -18,8 +18,8 @@ web:
   # -- Number of web node replicas
   replicas: 1
 
-  # -- Optional Deployment strategy. Use {type: Recreate} when first enabling
-  # database encryption so a keyless web pod cannot overlap the encrypted one.
+  # -- Optional Deployment strategy, e.g. {type: Recreate} where two web pods
+  # must never overlap during a rollout.
   strategy: {}
 
   # -- Required. The URL users reach the UI and API at, e.g.
@@ -104,11 +104,11 @@ web:
 
   # -- Additional environment variables for the web container.
   # Supports both literal values and valueFrom (secretKeyRef, configMapKeyRef):
-  #   - name: CONCOURSE_ENCRYPTION_KEY
-  #     valueFrom:
-  #       secretKeyRef:
-  #         name: concourse-encryption
-  #         key: encryption-key
+  #   - name: CONCOURSE_AUTH_DURATION
+  #     value: 72h
+  # A CONCOURSE_ENCRYPTION_KEY entry here is accepted in place of
+  # secrets.encryptionKeySecret for deployments that predate that value; new
+  # deployments set the value.
   env: []
 
 
@@ -397,6 +397,18 @@ secrets:
   # `helm template`, which is how Argo renders, so a generated key would be
   # re-minted on every sync and written into the manifest in cleartext.
   signingKeySecret: ""
+
+  # -- Required. Name of a pre-existing Secret holding the database encryption
+  # key, 16 or 32 bytes, under encryption-key. The web refuses to start
+  # without --encryption-key, and migrate-db runs under the same key. There is
+  # no rotation: a cluster that needs a different key restores the database
+  # from a backup taken under it. Create it once (openssl rand -hex 16 gives 32
+  # hex characters, which the web takes as a 32-byte key):
+  #   kubectl create secret generic jetbridge-encryption-key \
+  #     --from-literal=encryption-key="$(openssl rand -hex 16)"
+  # Deployments that already set CONCOURSE_ENCRYPTION_KEY through web.env may
+  # leave this empty until they move; the chart refuses both at once.
+  encryptionKeySecret: ""
 
 # -- Pod Security Admission (PSA) recommendations.
 # Concourse task pods may run as root (resource type images require it),

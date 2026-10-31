@@ -118,3 +118,26 @@ PostgreSQL port.
 {{- default "5432" .Values.postgresql.port | toString }}
 {{- end }}
 {{- end }}
+
+{{/*
+The CONCOURSE_ENCRYPTION_KEY env entry, from secrets.encryptionKeySecret (under
+the fixed key encryption-key) or, for a deployment that predates that value,
+copied from the web.env entry of that name. _validate.tpl guarantees exactly
+one source. migrate-db always includes this; the web container includes it only
+for the typed source, since its web.env range already emits the other.
+*/}}
+{{- define "concourse.encryptionKeyEnv" -}}
+{{- if .Values.secrets.encryptionKeySecret -}}
+- name: CONCOURSE_ENCRYPTION_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.encryptionKeySecret }}
+      key: encryption-key
+{{- else -}}
+{{- range .Values.web.env -}}
+{{- if eq .name "CONCOURSE_ENCRYPTION_KEY" -}}
+- {{ toYaml . | nindent 2 | trim }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

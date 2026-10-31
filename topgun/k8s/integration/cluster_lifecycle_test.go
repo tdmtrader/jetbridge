@@ -206,6 +206,35 @@ func createResolveCapabilitySecret(kubeconfig, namespace string) {
 	}
 }
 
+// encryptionKeySecretName is the Secret holding the database encryption key
+// under encryption-key. The web refuses to start without --encryption-key and
+// migrate-db runs under the same key, so the chart requires the reference and
+// never mints the key. Fixed content, like the resolve key: the cluster is
+// thrown away and a deterministic key makes a failure reproducible.
+const encryptionKeySecretName = "concourse-encryption-key"
+
+func createEncryptionKeySecret(kubeconfig, namespace string) {
+	log.Printf("Creating encryption-key Secret %s in %s...", encryptionKeySecretName, namespace)
+
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+		"-n", namespace,
+		"create", "secret", "generic", encryptionKeySecretName,
+		"--from-literal=encryption-key="+strings.Repeat("e", 32),
+		"--dry-run=client", "-o", "yaml")
+	manifest, err := cmd.Output()
+	if err != nil {
+		log.Fatalf("could not render encryption-key Secret: %v", err)
+	}
+
+	apply := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "apply", "-f", "-")
+	apply.Stdin = strings.NewReader(string(manifest))
+	apply.Stdout = os.Stderr
+	apply.Stderr = os.Stderr
+	if err := apply.Run(); err != nil {
+		log.Fatalf("could not apply encryption-key Secret: %v", err)
+	}
+}
+
 // signingKeySecretName is the Secret holding web's session signing key. The
 // chart requires one and never mints it: a key minted per pod breaks sessions
 // across pods and on every restart. So the key is created here, once, exactly
@@ -303,6 +332,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 
 	createResolveCapabilitySecret(kubeconfig, namespace)
 	createSigningKeySecret(kubeconfig, namespace)
+	createEncryptionKeySecret(kubeconfig, namespace)
 
 	log.Printf("Deploying Concourse chart from %s into namespace %s...", chartPath, namespace)
 
@@ -346,6 +376,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// plumbing passes CI silently.
 		"--set", "artifactDaemon.resolveCapability.existingSecret=" + resolveCapabilitySecretName,
 		"--set", "secrets.signingKeySecret=" + signingKeySecretName,
+		"--set", "secrets.encryptionKeySecret=" + encryptionKeySecretName,
 		"--timeout", "5m",
 	}
 	helmArgs = append(helmArgs, telemetry...)
