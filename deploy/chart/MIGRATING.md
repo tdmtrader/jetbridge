@@ -43,13 +43,13 @@ It does not change credential providers or optional infrastructure.
 | `artifactDaemon.resolveCapability.existingSecret` | Now required. Preserve an existing key; otherwise provision a Secret with `resolve.key`, exactly 32 random bytes. |
 | `--enable-mcp` and `--mcp-client-config` in `web.extraArgs` (removed) | Remove them. Copy the existing registered clients into `mcp.clients`; the chart renders and mounts their ConfigMap. |
 | `--mcp-disable-operation` | Move operation IDs into `mcp.disabledOperations`. Restrictions are preserved. |
-| Environment equivalents of the above chart-owned arguments | Remove them and use the corresponding explicit values. Conflicting overrides fail rendering. |
+| Environment equivalents of the above chart-owned arguments | Remove them and use the corresponding explicit values. `web.env`, which carried them, is gone (see [web.env becomes typed values](#webenv-becomes-typed-values-2026-10-31)). |
 | `rbac.brineLive`, `rbac.brineLiveServiceAccount` | Remove them. The closed schema rejects each as an unknown key. The chart no longer renders the `<fullname>-brine-live` ClusterRole, its ClusterRoleBinding or the named ServiceAccount, and an upgrade prunes them. If you run the brine live tier, declare its ServiceAccount, ClusterRole and ClusterRoleBinding outside the chart, beside the cluster's other test identities (JetBridge's own cluster names all three `jetbridge-brine-live`). Copy the rules from the template's last version, `git show dba4b49803:deploy/chart/templates/brine-live-rbac.yaml`, and write the binding subject's namespace out, since nothing fills it in any more. Map the brine job and `main/one-off` to that ServiceAccount with `kubernetes.stepPodGrants`. Create it before upgrading, so no brine build runs without it. |
 | `secrets.create` | Remove it, including `false`. The closed schema rejects it as an unknown key. `secrets.signingKeySecret` is now required; without it the render fails naming it. Create the Secret once: `concourse generate-key -t rsa -f session_signing_key`, or without the concourse binary `openssl genrsa -out session_signing_key 4096` (web reads a PKCS#1 or PKCS#8 PEM), then `kubectl create secret generic <name> --from-file=session_signing_key`, and set `secrets.signingKeySecret: <name>`. A release that ran with `create: true` keeps an orphaned `<fullname>-keys` Secret after the upgrade, because it carried `helm.sh/resource-policy: keep`; nothing mounts it, so delete it by hand. That release's sessions reset once, because the old key lived in each pod's emptyDir and is gone with it. A release already on `create: false` with a named Secret renders unchanged apart from dropping the value. |
 | `otelMetrics` and `--otel-metrics-*` | Remove them. ATC OTel metrics instruments and both OTLP/GCP export paths are retired. Use `metrics.enabled` for Prometheus; `tracing.*` still exports traces. OTel-only measurements are retired, not replaced by equivalent Prometheus series. |
-| `web.extraArgs` | Remove it. The closed schema rejects it as an unknown key. Move each flag to its typed value: `--cookie-secure` needs nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://` (behind a TLS-terminating proxy with an `http://` URL, set `CONCOURSE_COOKIE_SECURE=true` in `web.env` for now); `--kubernetes-pod-scheduling-timeout` is `kubernetes.podSchedulingTimeout`; `--default-task-cpu-request` is `kubernetes.defaultTaskCPURequest` (millicores); `--kubernetes-preferred-step-node` is `kubernetes.preferredStepNode` (`key=value`); the OTLP flags are `tracing.otlpAddress` and `tracing.serviceName` for traces. Retained flags with no typed value can use their `CONCOURSE_*` variables through `web.env`. |
+| `web.extraArgs` | Remove it. The closed schema rejects it as an unknown key. Move each flag to its typed value: `--cookie-secure` needs nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://` (set it to the `https://` URL users reach, a TLS-terminating proxy included); `--kubernetes-pod-scheduling-timeout` is `kubernetes.podSchedulingTimeout`; `--default-task-cpu-request` is `kubernetes.defaultTaskCPURequest` (millicores); `--kubernetes-preferred-step-node` is `kubernetes.preferredStepNode` (`key=value`); the OTLP flags are `tracing.otlpAddress` and `tracing.serviceName` for traces. A retained flag with no typed value keeps the binary's default; `web.env` is gone too (see [web.env becomes typed values](#webenv-becomes-typed-values-2026-10-31)). |
 | `kubernetes.imageRegistryPrefix` | Remove it. The closed schema rejects it as an unknown key. The web flag it rendered, `--kubernetes-image-registry-prefix`, was never read: a resource type's image is a registry-image reference the web resolves and pins as written. `kubernetes.imageRegistrySecret` stays. |
-| `web.env` entries for removed upstream web flags (`CONCOURSE_ENABLE_GLOBAL_RESOURCES`, `CONCOURSE_ENABLE_RERUN_WHEN_WORKER_DISAPPEARS`, `CONCOURSE_TELEMETRY_OPT_IN`, `CONCOURSE_ENABLE_LETS_ENCRYPT`, `CONCOURSE_ENABLE_*_AUDITING`, `CONCOURSE_SYSLOG_*`, `CONCOURSE_OPA_URL`, `CONCOURSE_CONCURRENT_REQUEST_LIMIT`, `CONCOURSE_STREAMING_ARTIFACTS_COMPRESSION`, `CONCOURSE_TRACING_{JAEGER,HONEYCOMB,STACKDRIVER}_*`) | Remove them at leisure. The web reads an environment variable only through a declared flag, so one naming a removed flag is inert, not an error; global resources are now unconditional and build rerun on a lost worker is off. The flags themselves fail command-line parsing, and the chart has no value that renders them. |
+| Entries of the removed `web.env` for removed upstream web flags (`CONCOURSE_ENABLE_GLOBAL_RESOURCES`, `CONCOURSE_ENABLE_RERUN_WHEN_WORKER_DISAPPEARS`, `CONCOURSE_TELEMETRY_OPT_IN`, `CONCOURSE_ENABLE_LETS_ENCRYPT`, `CONCOURSE_ENABLE_*_AUDITING`, `CONCOURSE_SYSLOG_*`, `CONCOURSE_OPA_URL`, `CONCOURSE_CONCURRENT_REQUEST_LIMIT`, `CONCOURSE_STREAMING_ARTIFACTS_COMPRESSION`, `CONCOURSE_TRACING_{JAEGER,HONEYCOMB,STACKDRIVER}_*`) | Remove them at leisure. The web reads an environment variable only through a declared flag, so one naming a removed flag is inert, not an error; global resources are now unconditional and build rerun on a lost worker is off. The flags themselves fail command-line parsing, and the chart has no value that renders them. |
 | `image.repository`, `web.externalUrl`, `web.localUsers`, `web.mainTeamLocalUser` | Now required. The chart's `concourse-local` image, `http://localhost:8080` URL and `test:test` main-team admin defaults are gone, and a render that leaves any of them out fails naming it. Set the image repository you deploy, the URL users reach the UI at, the local users (`user:password`, comma-separated) and the main-team admin. A release that relied on the old defaults sets them explicitly to keep its behaviour. |
 
 Keep `postgresql.enabled`, ingress/native TLS choices, monitoring resources,
@@ -213,8 +213,7 @@ removed. Use Prometheus (`metrics.enabled`). The Lager emitter
 flags that only it and the event buffer read are removed too; every metric
 name, label and help text on `/metrics` is unchanged.
 
-`web.env` remains available for retained settings. These
-capabilities were previously reachable through environment configuration and
+These capabilities were previously reachable through environment configuration and
 pipeline sources, despite having no dedicated chart values; this cut is not a
 chart-only removal. No chart keys or schema entries change.
 
@@ -232,12 +231,11 @@ from a backup taken under it, as for any forward-only migration.
 The chart gains `secrets.encryptionKeySecret`, a required reference to a Secret
 holding the key under `encryption-key`; it is rendered as
 `CONCOURSE_ENCRYPTION_KEY` on the web container and on the `migrate-db` init
-container. A deployment that already sets `CONCOURSE_ENCRYPTION_KEY` through
-`web.env` (concourse.home does) keeps rendering unchanged: the chart accepts
-that entry in place of the value and copies it onto `migrate-db`. Setting both
-fails the render. To move, create the Secret with the same key material under
-`encryption-key`, set `secrets.encryptionKeySecret` and drop the `web.env`
-entry in one change.
+container. Until `web.env` went (2026-10-31) a `CONCOURSE_ENCRYPTION_KEY` entry
+there was accepted in place of the value; it no longer is. To move, create the
+Secret with the same key material under `encryption-key` (or name the existing
+Secret if it already holds the key under that name), set
+`secrets.encryptionKeySecret` and drop the `web.env` entry in one change.
 
 The key has to be present at upgrade: `migrate-db` does not run and the web
 does not start without it, so a deployment that never set
@@ -252,14 +250,14 @@ backup and its Secret version travel together
 
 `web.env` was the pass-through ADR-0008 bans: it handed the web whatever
 environment the operator typed, past every check. Every setting a deployment
-passed through it now has a typed value, and the chart removes `web.env` in
+passed through it now has a typed value, and the chart removed `web.env` in
 two steps:
 
-1. This chart adds the typed values. `web.env` still renders, but an entry
-   naming a variable whose typed value is also set fails the render naming
-   the value, and a `CONCOURSE_ENCRYPTION_KEY` entry is still accepted in
+1. The chart added the typed values. `web.env` still rendered, but an entry
+   naming a variable whose typed value was also set failed the render naming
+   the value, and a `CONCOURSE_ENCRYPTION_KEY` entry was still accepted in
    place of `secrets.encryptionKeySecret`.
-2. The next chart change removes `web.env`. The closed schema then rejects
+2. The chart removed `web.env`. The closed schema rejects
    it as an unknown key under `web`, naming `env`, and
    the `CONCOURSE_ENCRYPTION_KEY` alternative goes with it:
    `secrets.encryptionKeySecret` is the one source of the key.

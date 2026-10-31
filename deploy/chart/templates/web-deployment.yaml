@@ -293,9 +293,7 @@ spec:
           env:
             - name: CONCOURSE_SESSION_SIGNING_KEY
               value: /keys/session_signing_key
-            {{- if .Values.secrets.encryptionKeySecret }}
             {{- include "concourse.encryptionKeyEnv" . | nindent 12 }}
-            {{- end }}
             {{- if .Values.postgresql.existingSecret }}
             - name: CONCOURSE_POSTGRES_PASSWORD
               valueFrom:
@@ -314,9 +312,6 @@ spec:
             - name: {{ index . 0 }}
               value: {{ index . 2 | quote }}
             {{- end }}
-            {{- end }}
-            {{- range .Values.web.env }}
-            - {{- toYaml . | nindent 14 }}
             {{- end }}
           ports:
             - containerPort: 8080

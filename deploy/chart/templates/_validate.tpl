@@ -35,28 +35,6 @@ template first, so these rules run before anything else in the chart.
 {{- end -}}
 {{- $_ := set $ids .client_id true -}}
 {{- end -}}
-{{- $owned := list "enable-mcp" "mcp-client-config" "mcp-disable-operation" "kubernetes-artifact-daemon-port" "kubernetes-artifact-daemon-host-path" "kubernetes-artifact-daemon-service" "kubernetes-artifact-daemon-resolve-capability-key" "kubernetes-artifact-daemon-tls-cert" "kubernetes-artifact-daemon-tls-key" "kubernetes-artifact-daemon-tls-ca-cert" -}}
-{{- range .Values.web.env -}}
-{{- $name := .name -}}
-{{- range $owned -}}
-{{- if eq $name (printf "CONCOURSE_%s" (. | replace "-" "_" | upper)) -}}
-{{- fail (printf "web.env must not override chart-owned %s; use the explicit chart setting" $name) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- /*
-  Each web setting with a typed value renders its own variable, so a web.env
-  entry naming the same variable would hand the container two values.
-*/ -}}
-{{- $settings := include "concourse.web.settingsEnv" . | fromJsonArray -}}
-{{- range .Values.web.env -}}
-{{- $name := .name -}}
-{{- range $settings -}}
-{{- if and (eq $name (index . 0)) (index . 2) -}}
-{{- fail (printf "web.env sets %s, which %s now renders; drop the web.env entry" $name (index . 1)) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
 {{- /*
   SSL_CERT_FILE names a file in the container, and only an extra volume
   mount brings one in: a path outside every mount names a file that is not
@@ -79,21 +57,10 @@ template first, so these rules run before anything else in the chart.
 {{- end -}}
 {{- /*
   The web refuses to start without --encryption-key and migrate-db runs under
-  the same key, so one source must name it: secrets.encryptionKeySecret, or,
-  for a deployment that predates it, a CONCOURSE_ENCRYPTION_KEY entry in
-  web.env. Both at once would hand the container two values for one variable.
+  the same key, so the Secret holding it is required.
 */ -}}
-{{- $envKey := false -}}
-{{- range .Values.web.env -}}
-{{- if eq .name "CONCOURSE_ENCRYPTION_KEY" -}}
-{{- $envKey = true -}}
-{{- end -}}
-{{- end -}}
-{{- if and (empty .Values.secrets.encryptionKeySecret) (not $envKey) -}}
+{{- if empty .Values.secrets.encryptionKeySecret -}}
 {{- fail "secrets.encryptionKeySecret is required: name the Secret holding the database encryption key under encryption-key; the web does not start without --encryption-key" -}}
-{{- end -}}
-{{- if and .Values.secrets.encryptionKeySecret $envKey -}}
-{{- fail "secrets.encryptionKeySecret and a CONCOURSE_ENCRYPTION_KEY entry in web.env are both set; keep secrets.encryptionKeySecret and drop the web.env entry" -}}
 {{- end -}}
 {{- /*
   Each grant renders as one --kubernetes-step-pod-grant=name=..,owner=..

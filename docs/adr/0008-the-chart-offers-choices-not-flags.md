@@ -62,7 +62,7 @@ Two lists name what the schema leaves open:
 
 - `openMaps` are the free-form Kubernetes maps and lists: annotations,
   labels, node selectors, affinity, tolerations, resources, strategy, probes,
-  security contexts, OTLP headers, extra volumes and mounts, env, ingress TLS
+  security contexts, OTLP headers, extra volumes and mounts, ingress TLS
   and NetworkPolicy peers. Each counts as one value, and nothing inside one
   is checked.
 - `deferredGroups` are the Hangar groups (`artifactDaemon.hangar`,
@@ -140,3 +140,11 @@ open schema stubs, the removed-keys table in `_validate.tpl` and the
 `removedKeys` guard are gone; a stale key fails the render as an unknown key
 under its closed parent, and MIGRATING.md carries the replacement. The
 tombstone wording in the amendments above is historical.
+
+Amended 2026-10-31: `web.env` is gone, and `grandfathered` is empty. Each
+setting concourse.home passed through it became a typed value
+(`web.authDuration`, `web.caCertFile`, `web.checks.*`, `web.gc.*`,
+`web.secretRetry.*`; the encryption key already had
+`secrets.encryptionKeySecret`), and the closed schema refuses `web.env` as an
+unknown key. The consequence above that `web.env` remains no longer holds.
+`deploy/chart/MIGRATING.md` maps each variable to its value.

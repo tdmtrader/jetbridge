@@ -77,8 +77,8 @@ import (
 // cut did not all lower the cap. Typing the ten settings concourse.home
 // passed through web.env (web.authDuration, web.caCertFile, web.checks' four,
 // web.gc's two, web.secretRetry's two) adds ten, leaving 173 while web.env
-// stays for one release.
-const maxValues = 173
+// stays for one release. Removing web.env leaves 172.
+const maxValues = 172
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -124,7 +124,6 @@ var openMaps = []string{
 	"tracing.otlpHeaders",
 	"web.affinity",
 	"web.containerSecurityContext",
-	"web.env",
 	"web.extraVolumeMounts",
 	"web.extraVolumes",
 	"web.livenessProbe",
@@ -156,11 +155,10 @@ var bannedKeys = []string{
 	`(extra|additional)?(flags|options|opts)`,
 }
 
-// grandfathered are the pass-through values that predate the ban. Track 6
-// removes both.
-var grandfathered = []string{
-	"web.env",
-}
+// grandfathered are the pass-through values that predate the ban. It is
+// empty: web.extraArgs went 2026-10-05 and web.env 2026-10-31, each setting
+// to a typed value. The list only shrinks.
+var grandfathered = []string{}
 
 // bareRenderNames are the values a render with no values file must name when
 // it fails, so an operator who forgot one is told which.
