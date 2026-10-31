@@ -86,10 +86,6 @@ type FlyCommand struct {
 
 	TriggerJob TriggerJobCommand `command:"trigger-job" alias:"tj" description:"Start a job in a pipeline"`
 
-	Volumes VolumesCommand `command:"volumes" alias:"vs" description:"List the active volumes"`
-
-	Workers WorkersCommand `command:"workers" alias:"ws" description:"List the registered workers"`
-
 	Curl CurlCommand `command:"curl" alias:"c" description:"curl the api"`
 
 	GetWall   GetWallCommand   `command:"get-wall" alias:"gw" description:"Get the current wall message"`

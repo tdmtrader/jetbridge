@@ -26,12 +26,6 @@ type Container struct {
 	Id    string `json:"id"`
 }
 
-type Worker struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
-	Team  string `json:"team"`
-}
-
 type Pipeline struct {
 	ID       int    `json:"id"`
 	Name     string `json:"name"`
@@ -95,19 +89,6 @@ func (f *FlyCli) GetContainers() []Container {
 	Expect(err).ToNot(HaveOccurred())
 
 	return containers
-}
-
-func (f *FlyCli) GetWorkers() []Worker {
-	var workers = []Worker{}
-
-	sess := f.Start("workers", "--json")
-	<-sess.Exited
-	Expect(sess.ExitCode()).To(BeZero())
-
-	err := json.Unmarshal(sess.Out.Contents(), &workers)
-	Expect(err).ToNot(HaveOccurred())
-
-	return workers
 }
 
 func (f *FlyCli) GetPipelines() []Pipeline {

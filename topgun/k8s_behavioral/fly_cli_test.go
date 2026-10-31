@@ -215,25 +215,6 @@ jobs:
 			Expect(sess.Out).To(gbytes.Say("main"))
 		})
 
-		It("lists workers", func() {
-			workers := fly.GetWorkers()
-			Expect(workers).ToNot(BeEmpty(), "expected at least one worker")
-			var foundRunning bool
-			for _, w := range workers {
-				if w.State == "running" {
-					foundRunning = true
-					break
-				}
-			}
-			Expect(foundRunning).To(BeTrue(), "expected at least one worker in running state")
-		})
-
-		It("lists volumes", func() {
-			sess := fly.Start("volumes")
-			<-sess.Exited
-			Expect(sess.ExitCode()).To(Equal(0))
-		})
-
 		It("lists builds", func() {
 			sess := fly.Start("builds")
 			<-sess.Exited

@@ -1,7 +1,6 @@
 package integration_test
 
 import (
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,22 +11,6 @@ import (
 )
 
 var _ = Describe("K8s-Specific Behaviors", func() {
-	It("shows a k8s-backed worker via fly workers", func() {
-		workers := flyTable("workers")
-		Expect(workers).ToNot(BeEmpty())
-
-		var found bool
-		for _, w := range workers {
-			if strings.Contains(w["name"], "k8s") {
-				found = true
-				Expect(w["platform"]).To(Equal("linux"))
-				Expect(w["state"]).To(Equal("running"))
-				break
-			}
-		}
-		Expect(found).To(BeTrue(), "expected to find a k8s-backed worker")
-	})
-
 	It("applies resource limits to task pods", func() {
 		pipelineFile := writePipelineFile("limits-pipeline.yml", `
 jobs:
