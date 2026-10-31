@@ -41,14 +41,18 @@ func GinkgoRunner(runner *Runner) none {
 		joinSuitePostmaster(runner, handoff)
 	})
 
-	SynchronizedAfterSuite(func() {}, stopSuitePostmaster)
+	SynchronizedAfterSuite(stopSuitePostmasterIfOrphaned, stopSuitePostmaster)
 
 	return none{}
 }
 
 // suiteProcess is the postmaster process 1 started; it is nil in every other
-// process.
+// process, and once it has been stopped.
 var suiteProcess ifrit.Process
+
+// suiteParent is the parent process 1 had when it started the postmaster: the
+// ginkgo CLI under `ginkgo -p`.
+var suiteParent int
 
 // suitePostmaster is what process 1 hands the others: where the postmaster
 // listens, and how to clone its template.
@@ -60,6 +64,7 @@ type suitePostmaster struct {
 func startSuitePostmaster() []byte {
 	var runner Runner
 	InitializeRunnerForGinkgo(&runner, &suiteProcess)
+	suiteParent = os.Getppid()
 
 	handoff, err := json.Marshal(suitePostmaster{Port: runner.Port, FileCopy: runner.fileCopy})
 	Expect(err).NotTo(HaveOccurred())
@@ -89,6 +94,22 @@ func stopSuitePostmaster() {
 	}
 	suiteProcess.Signal(os.Interrupt)
 	Eventually(suiteProcess.Wait(), 10*time.Second).Should(Receive())
+	suiteProcess = nil
+}
+
+// stopSuitePostmasterIfOrphaned covers the one way process 1 can outlive its
+// run without stopping the postmaster. Process 1 waits for the others through
+// the ginkgo CLI before it stops it; when the CLI is killed, every process
+// aborts and runs its after-suite nodes, but that wait fails and Ginkgo skips
+// process 1's half of SynchronizedAfterSuite. When each process owned its
+// postmaster, a plain AfterSuite stopped it even then, so a killed CLI leaked
+// nothing; without this check it would leak this one. A process whose parent
+// has changed has been orphaned, and the processes it would wait for are
+// aborting too.
+func stopSuitePostmasterIfOrphaned() {
+	if suiteProcess != nil && os.Getppid() != suiteParent {
+		stopSuitePostmaster()
+	}
 }
 
 func InitializeRunnerForGinkgo(runner *Runner, dbProcess *ifrit.Process) {
