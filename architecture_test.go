@@ -2567,3 +2567,66 @@ func TestNothingDependsOnCounterfeiter(t *testing.T) {
 		}
 	}
 }
+
+// A lager.Logger built mid-wiring has no sink, or a sink of its own at a fixed
+// level: its lines vanish (the migrator's did) or ignore --log-level and the
+// atc.* session chain (the daemon client's did). A logger is made once, at a
+// composition root, and passed down. This rule pins that: outside package
+// main and test files, nothing calls lager.NewLogger. Nested modules (the
+// brine suite) are other modules and are not scanned.
+//
+// newLoggerExceptions are test-support packages that build a whole web for a
+// spec and so are its composition root.
+var newLoggerExceptions = map[string]string{
+	"atc/atctest/atctest.go": "the in-process ATC platform for integration specs is its own composition root",
+}
+
+func TestOnlyCompositionRootsBuildALagerLogger(t *testing.T) {
+	var offenders []string
+	inMain := 0
+	for _, source := range productionGoFiles(t, func(string) bool { return true }) {
+		lagerName := ""
+		for _, spec := range source.file.Imports {
+			if path, _ := strconv.Unquote(spec.Path.Value); path == "code.cloudfoundry.org/lager/v3" {
+				lagerName = "lager"
+				if spec.Name != nil {
+					lagerName = spec.Name.Name
+				}
+			}
+		}
+		if lagerName == "" {
+			continue
+		}
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "NewLogger" {
+				return true
+			}
+			if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != lagerName {
+				return true
+			}
+			switch {
+			case source.file.Name.Name == "main":
+				inMain++
+			case newLoggerExceptions[source.rel] != "":
+			default:
+				offenders = append(offenders, source.rel)
+			}
+			return true
+		})
+	}
+	// cmd/artifact-daemon/main.go builds one: a scan that finds none in a
+	// main package has stopped recognising the call and would pass vacuously.
+	if inMain == 0 {
+		t.Fatal("found no lager.NewLogger in any main package; the scan is not recognising the call")
+	}
+	if len(offenders) != 0 {
+		t.Fatalf("lager.NewLogger outside a composition root: %v\n\nTake the caller's "+
+			"logger (logger.Session(...)) instead; a logger built here has no sink or "+
+			"ignores --log-level.", offenders)
+	}
+}
