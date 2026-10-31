@@ -352,11 +352,11 @@ concourse web \
 # Check the web UI is accessible
 curl -s http://localhost:8080/api/v1/info | jq .
 
-# Check workers are registered
-fly -t <target> login ...
-fly -t <target> workers
+# Check the synthetic worker is registered ("workers": "ok")
+curl -s http://localhost:8080/api/v1/health | jq .workers
 
 # Check pipelines are visible
+fly -t <target> login ...
 fly -t <target> pipelines
 ```
 

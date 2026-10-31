@@ -352,8 +352,8 @@ func (o RegistrationOutcome) ok() error {
 // Both are zero by OMISSION — the registrar never sets them on the atc.Worker
 // it builds — which is exactly the kind of property that regresses when
 // somebody adds a field "for completeness". A worker reporting volumes it does
-// not have, or a start time it did not start at, lies to `fly workers` and to
-// anything scheduling on volume locality.
+// not have, or a start time it did not start at, lies to anything scheduling
+// on volume locality.
 func RegistrarIdentityDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 

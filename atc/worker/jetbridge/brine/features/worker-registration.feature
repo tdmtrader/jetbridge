@@ -1,7 +1,7 @@
 @WR-01 @WR-02 @WR-03 @WR-04 @WR-05 @WR-06
 Feature: A Kubernetes worker presenting itself to Concourse
 
-  The worker has to appear in `fly workers` looking like any other worker: a
+  The worker has to appear to the scheduler looking like any other worker: a
   stable name, a platform, a version, a live lease, an honest container count,
   and the resource types it can run. Everything a scheduler needs to decide
   whether to place work on it.

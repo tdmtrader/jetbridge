@@ -19,6 +19,9 @@ locator without making nodes a scheduling unit.
 
 - `fly workers` shows one worker per namespace. Worker-level operations
   (land, retire, prune) mean little and are mostly no-ops.
+  Amended 2026-10-30 (listing surface cut): `fly workers`, `fly volumes` and
+  their API routes are removed in 0.3.2; `/api/v1/health` reports the worker.
+  Land, retire and prune were never carried.
 - Placement is Kubernetes's job. The web only expresses affinity for the
   node that holds a step's inputs.
 - Container and volume records exist for compatibility; the reaper and the
