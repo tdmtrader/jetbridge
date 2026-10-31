@@ -413,9 +413,12 @@ See `deploy/chart/values.yaml` for all configurable parameters and
   Set `postgresql.enabled=false` and provide `postgresql.host`/`postgresql.port`.
 - **Auth**: Configure local users with strong credentials in `web.localUsers`
   and assign admins through `web.mainTeamLocalUser`.
-- **Secrets**: The signing-key Secret in `secrets.signingKeySecret` is
-  required. Generate the key once, outside the chart; every web replica
-  mounts the same Secret, so sessions work across replicas and restarts.
+- **Secrets**: The signing-key Secret in `secrets.signingKeySecret` and the
+  encryption-key Secret in `secrets.encryptionKeySecret` are required.
+  Generate each key once, outside the chart; every web replica mounts the
+  same signing key, so sessions work across replicas and restarts, and reads
+  the same encryption key. The encryption key never rotates and a lost key is
+  a lost database: back the Secret up with the database.
 - **Multi-node**: No shared storage is required — the artifact daemon runs on
   every node and moves artifacts over the network. Size
   `artifactDaemon.hostPath` for the node's disk and set

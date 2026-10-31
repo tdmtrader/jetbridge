@@ -99,20 +99,19 @@ concourse migrate \
 There is no flag to print the version or to migrate to a chosen one. Read the
 current version with the query under [History Tracking](#history-tracking).
 
-### Encryption Key Rotation
+### The Encryption Key
 
-Migrations can also handle encryption key rotation:
+Every migration run needs the database's one encryption key: Go migrations
+read and write the encrypted columns, and each run ends by encrypting any row
+of an encrypted column still in plaintext.
 
 ```bash
-# Encrypt previously plaintext data
-concourse migrate --postgres-host=... --encryption-key <new-key>
-
-# Rotate encryption key
-concourse migrate --postgres-host=... --old-encryption-key <old> --encryption-key <new>
-
-# Decrypt to plaintext
-concourse migrate --postgres-host=... --old-encryption-key <old>
+concourse migrate --postgres-host=... --encryption-key <key> --migrate-to-latest-version
 ```
+
+There is no key rotation and no plaintext mode (`--old-encryption-key` is
+gone). A cluster that needs a different key restores the database from a
+backup taken under it, as for any forward-only migration.
 
 ### Important Notes
 

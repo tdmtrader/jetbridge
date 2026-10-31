@@ -73,11 +73,10 @@ no secret. The server's dedicated upstream `jetbridge-mcp` Dex client is distinc
 from these registrations and must not be configured through `--add-client`.
 
 The database migration adds `mcp_oauth_state`. Opaque access/refresh credentials
-are indexed by hash; sensitive broker state uses JetBridge's configured database
-encryption strategy and participates in key rotation. Configure an
-`--encryption-key` in production: without one, that strategy stores plaintext.
-Replicas must share the database, encryption configuration, external URL and
-client registrations. Expired records are collected hourly. Disabling MCP leaves
+are indexed by hash; sensitive broker state is encrypted under the database
+encryption key the web is required to start with (`--encryption-key`).
+Replicas must share the database, encryption key, external URL and client
+registrations. Expired records are collected hourly. Disabling MCP leaves
 existing fly/web login available; removing the MCP migration destroys its grants.
 
 ## Choose what a connection may do
