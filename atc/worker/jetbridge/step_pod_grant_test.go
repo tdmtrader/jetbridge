@@ -393,7 +393,7 @@ var _ = Describe("ParseStepPodGrant", func() {
 	)
 
 	It("accepts a privileged grant with no ServiceAccount", func() {
-		grant, err := jetbridge.ParseStepPodGrant("name=dind,owner=main/k8s-e2e/k8s-integration-tests,privileged=true")
+		grant, err := jetbridge.ParseStepPodGrant("name=dind,owner=main/k8s-e2e/k8s-behavioral-tests,privileged=true")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(grant.Privileged).To(BeTrue())
 		Expect(grant.ServiceAccount).To(BeEmpty())

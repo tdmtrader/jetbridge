@@ -605,6 +605,58 @@ func TestHangarRunnersNameTheFakeGCSEndpointOnlyWhereItIsReachable(t *testing.T)
 	}
 }
 
+// TestTheBehavioralTierWaitsForTheGeneratedPodContract holds the k8s-e2e
+// chain's shape: build-kind-runner, then hangar-generated-pod-contract, then
+// k8s-behavioral-tests. The contract stands up its own K3s cluster in about
+// three minutes, so gating the hours-long behavioral suite on it puts the cheap
+// signal first and keeps two DinD workloads off one worker. A job cut from the
+// middle of the chain (the topgun/k8s/integration tier was) must leave the
+// behavioral suite gated on the contract, not straight off the image build.
+func TestTheBehavioralTierWaitsForTheGeneratedPodContract(t *testing.T) {
+	pipeline := loadPipeline(t, filepath.Join(repoRoot(t), "deploy", "k8s-e2e-pipeline.yml"))
+
+	jobs := map[string]bool{}
+	for _, job := range pipeline.Jobs {
+		jobs[job.Name] = true
+	}
+
+	found := false
+	for _, job := range pipeline.Jobs {
+		if job.Name != "k8s-behavioral-tests" {
+			continue
+		}
+		found = true
+		gets := 0
+		for _, step := range flattenPlan(job.Plan) {
+			if step.Get == "" {
+				continue
+			}
+			gets++
+			if len(step.Passed) != 1 || step.Passed[0] != "hangar-generated-pod-contract" {
+				t.Errorf("k8s-behavioral-tests gets %s passed %v, want [hangar-generated-pod-contract]",
+					step.Get, step.Passed)
+			}
+		}
+		if gets == 0 {
+			t.Error("k8s-behavioral-tests has no get steps; this check would pass vacuously")
+		}
+	}
+	if !found {
+		t.Fatal("job k8s-behavioral-tests was not found; this check would pass vacuously")
+	}
+
+	for _, job := range pipeline.Jobs {
+		for _, step := range flattenPlan(job.Plan) {
+			for _, upstream := range step.Passed {
+				if !jobs[upstream] {
+					t.Errorf("job %q gets %s passed %q, which is not a job of k8s-e2e-pipeline.yml",
+						job.Name, step.Get, upstream)
+				}
+			}
+		}
+	}
+}
+
 type pipelineDoc struct {
 	Template bool `json:"template"`
 	Jobs     []struct {
@@ -618,12 +670,13 @@ type step struct {
 		Name  string `json:"name"`
 		Input string `json:"input"`
 	} `json:"run_inputs"`
-	Get      string `json:"get"`
-	Put      string `json:"put"`
-	Task     string `json:"task"`
-	Resource string `json:"resource"`
-	Attempts int    `json:"attempts"`
-	Timeout  string `json:"timeout"`
+	Get      string   `json:"get"`
+	Passed   []string `json:"passed"`
+	Put      string   `json:"put"`
+	Task     string   `json:"task"`
+	Resource string   `json:"resource"`
+	Attempts int      `json:"attempts"`
+	Timeout  string   `json:"timeout"`
 
 	// Pointer so an absent `trigger:` is distinguishable from `trigger: false`.
 	// They mean the same thing to Concourse and different things to a reader.

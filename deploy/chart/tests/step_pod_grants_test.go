@@ -90,12 +90,12 @@ func TestAPrivilegedStepPodGrantRendersThePrivilegeKey(t *testing.T) {
 		"kubernetes.stepPodGrants[0].serviceAccount=concourse-brine-live",
 		"kubernetes.stepPodGrants[0].privileged=true",
 		"kubernetes.stepPodGrants[1].name=dind",
-		"kubernetes.stepPodGrants[1].owner=main/k8s-e2e/k8s-integration-tests",
+		"kubernetes.stepPodGrants[1].owner=main/k8s-e2e/k8s-behavioral-tests",
 		"kubernetes.stepPodGrants[1].privileged=true",
 	)
 	for _, want := range []string{
 		"--kubernetes-step-pod-grant=name=brine,owner=main/jetbridge/brine,service-account=concourse-brine-live,privileged=true\"",
-		"--kubernetes-step-pod-grant=name=dind,owner=main/k8s-e2e/k8s-integration-tests,privileged=true\"",
+		"--kubernetes-step-pod-grant=name=dind,owner=main/k8s-e2e/k8s-behavioral-tests,privileged=true\"",
 	} {
 		if !strings.Contains(webDeployment(t, out), want) {
 			t.Errorf("web lacks %s", want)

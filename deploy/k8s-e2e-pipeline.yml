@@ -1,7 +1,7 @@
-# K8s E2E Pipeline — KinD-based integration and behavioral tests
+# K8s E2E Pipeline — K3s-based contract and behavioral tests
 #
-# These tests create ephemeral KinD clusters inside the task pod,
-# deploy Concourse via Helm, and run the full topgun test suites.
+# These tests create ephemeral K3s clusters inside the task pod,
+# deploy Concourse via Helm, and run the topgun behavioral suite.
 # Requires privileged tasks for Docker-in-Docker.
 
 resources:
@@ -356,7 +356,7 @@ jobs:
 # same tree ref and never reissues a generation.
 #
 # A separate job with its own cluster, rather than a third contract in
-# hangar-generated-pod-contract: that job is what k8s-integration-tests is
+# hangar-generated-pod-contract: that job is what k8s-behavioral-tests is
 # `passed:` on, so a red here would hold back the whole behavioral half, and
 # this contract needs an image build and a PVC the other two do not. It is off
 # the gating chain on purpose -- nothing is `passed:` on it -- and shares
@@ -708,129 +708,18 @@ jobs:
     params:
       GITHUB_TOKEN: ((github-token))
 
-- name: k8s-integration-tests
+- name: k8s-behavioral-tests
   serial: true
-  serial_groups: [k8s-tests]
   plan:
   # Gated on the Hangar contract rather than straight off the image build. That
   # job stands up its own K3s cluster and finishes in about three minutes, so
   # chaining keeps two DinD workloads off the same worker and puts the cheap
-  # signal ahead of the hour-long one.
+  # signal ahead of the hours-long one.
   - get: trigger
     trigger: true
     passed: [hangar-generated-pod-contract]
   - get: repo
     passed: [hangar-generated-pod-contract]
-  - task: k8s-integration
-    privileged: true
-    timeout: 60m
-    config:
-      platform: linux
-      inputs:
-      - name: repo
-      rootfs_uri: *kind_runner_image
-      run:
-        path: sh
-        args:
-        - -exc
-        - |
-          # Build from the freshly-fetched git resource, NOT the image's baked
-          # /src (which goes stale behind a cached image tag). repo is a real
-          # checkout, so tests resolve the repo root via git rev-parse directly.
-          cd repo
-
-          echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
-          GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
-          GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
-          go build -o /tmp/fly ./fly
-          go test -c -o /tmp/integration.test ./topgun/k8s/integration/
-          go mod download
-
-          echo "=== Starting Docker daemon (DinD) ==="
-          # Thorough cleanup of stale Docker/containerd state from previous runs.
-          killall -9 dockerd containerd 2>/dev/null || true
-          sleep 1
-          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
-          mkdir -p /var/lib/docker /run/containerd
-          mount -t tmpfs -o size=8G tmpfs /var/lib/docker 2>/dev/null || true
-          # --dns=8.8.8.8 ensures nested containers (K3s) can resolve
-          # external hostnames for pulling system images (CoreDNS, etc.)
-          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
-                  --dns=8.8.8.8 \
-                  --log-level=warn &
-          DOCKERD_PID=$!
-
-          echo "Waiting for Docker daemon..."
-          for i in $(seq 1 30); do
-            if docker info >/dev/null 2>&1; then
-              echo "Docker daemon ready"
-              docker info | grep "Storage Driver"
-              break
-            fi
-            sleep 2
-          done
-
-          echo "=== Building concourse Docker image ==="
-          # Stage only the needed binaries to avoid sending the full repo (~315MB)
-          # as Docker build context — that causes OOM/eviction in constrained pods.
-          mkdir -p /tmp/docker-build
-          cp concourse-linux-amd64 artifact-daemon-linux-amd64 /tmp/docker-build/
-          cat <<'DOCKERFILE' > /tmp/docker-build/Dockerfile
-          FROM debian:bookworm-slim
-          RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
-          COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
-          COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
-          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
-          ENV PATH="/usr/local/concourse/bin:${PATH}"
-          ENTRYPOINT ["dumb-init", "concourse"]
-          DOCKERFILE
-          docker build -t concourse-local:latest /tmp/docker-build/
-          echo "=== Image built ==="
-
-          echo "=== Pre-pulling K3s image (after Docker build to avoid layer corruption from shim disconnects) ==="
-          docker pull rancher/k3s:v1.31.6-k3s1
-
-          echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
-          # A failed spec is re-run in place (-ginkgo.flake-attempts) instead of
-          # the whole task being re-run by a Concourse `attempts:`, which used to
-          # repeat the cluster bring-up and every passing spec for one flake.
-          JETBRIDGE_REPO_ROOT="$PWD" FLY_PATH=/tmp/fly /tmp/integration.test -test.v -test.timeout 30m -test.count 1 -ginkgo.flake-attempts=2 || {
-            echo "=== TEST FAILED — dumping diagnostics ==="
-            echo "--- Docker containers ---"
-            docker ps -a 2>/dev/null || true
-            echo "--- kubeadm.conf from KinD node ---"
-            docker cp concourse-integration-control-plane:/kind/kubeadm.conf /tmp/kubeadm-debug.conf 2>&1 && cat /tmp/kubeadm-debug.conf || echo "(container not available)"
-            echo "--- End diagnostics ---"
-            kill $DOCKERD_PID 2>/dev/null || true
-            exit 1
-          }
-          echo "=== K8s integration tests passed (plain HTTP) ==="
-
-          echo "=== Running artifact daemon mTLS verification (ARTIFACT_DAEMON_TLS=true) ==="
-          # Redeploys the suite with the daemon TLS-hardened (chart auto-generates
-          # the CA + server/client certs; web pod + init containers wire HTTPS
-          # automatically) and re-runs the Artifact* specs — daemon mTLS
-          # enforcement, artifact passing (stream-in/out), and read-after-reap
-          # (peer fetch) — so the mTLS data path is exercised end-to-end.
-          ARTIFACT_DAEMON_TLS=true JETBRIDGE_REPO_ROOT="$PWD" FLY_PATH=/tmp/fly /tmp/integration.test \
-            -test.v -test.timeout 25m -test.count 1 -ginkgo.focus 'Artifact' -ginkgo.flake-attempts=2 || {
-            echo "=== mTLS VERIFICATION FAILED — dumping diagnostics ==="
-            docker ps -a 2>/dev/null || true
-            kill $DOCKERD_PID 2>/dev/null || true
-            exit 1
-          }
-          echo "=== Artifact daemon mTLS verification passed ==="
-
-          kill $DOCKERD_PID 2>/dev/null || true
-
-- name: k8s-behavioral-tests
-  serial: true
-  plan:
-  - get: trigger
-    trigger: true
-    passed: [k8s-integration-tests]
-  - get: repo
-    passed: [k8s-integration-tests]
   - task: k8s-behavioral
     privileged: true
     timeout: 4h
