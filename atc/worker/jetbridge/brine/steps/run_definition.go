@@ -70,7 +70,28 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 			return in, nil
 		}),
 		brine.DefineMap[RetainedRunDefinition, RetainedRunDefinition]("the stored definition bytes are corrupted", func(in RetainedRunDefinition, _ brine.Params, _ *brine.Recorder) (RetainedRunDefinition, error) {
-			_, err := in.DB.Conn.Exec(`UPDATE pipeline_run_definitions SET config = replace(config, 'hello', 'corrupted') WHERE run_id = $1`, in.Creation.Run.ID())
+			// The definition is stored encrypted (hex ciphertext), so a text
+			// substitution on the column would never match. Change the decrypted
+			// definition and seal it again under the key: the change reaches the
+			// reader intact, and only the attestation can refuse it.
+			var config string
+			var nonce *string
+			if err := in.DB.Conn.QueryRow(`SELECT config, nonce FROM pipeline_run_definitions WHERE run_id = $1`, in.Creation.Run.ID()).Scan(&config, &nonce); err != nil {
+				return in, err
+			}
+			payload, err := in.DB.Conn.EncryptionKey().Decrypt(config, nonce)
+			if err != nil {
+				return in, err
+			}
+			changed := strings.Replace(string(payload), "hello", "corrupted", 1)
+			if changed == string(payload) {
+				return in, fmt.Errorf("the stored definition does not hold the parameter default to corrupt")
+			}
+			config, nonce, err = in.DB.Conn.EncryptionKey().Encrypt([]byte(changed))
+			if err != nil {
+				return in, err
+			}
+			_, err = in.DB.Conn.Exec(`UPDATE pipeline_run_definitions SET config = $2, nonce = $3 WHERE run_id = $1`, in.Creation.Run.ID(), config, nonce)
 			return in, err
 		}),
 		brine.DefineMap[RetainedRunDefinition, RetainedRunDefinition]("deletion of the retained definition is attempted", func(in RetainedRunDefinition, _ brine.Params, _ *brine.Recorder) (RetainedRunDefinition, error) {
