@@ -16,3 +16,22 @@ ci
 .local-cluster
 docs
 screenshots
+
+# Working output, never source: handoffs and CI logs (output/, tens of MB and
+# growing), scratch (tmp/), and the untracked leftover of the compose cut.
+output
+tmp
+integration
+
+# Build intermediates and caches. web/public/elm.js is gitignored and rebuilt
+# by Dockerfile.build's frontend stage; the brine adapter build and compiled
+# Go test binaries are local artefacts of the test tiers.
+web/public/elm.js
+atc/worker/jetbridge/brine/.build
+**/*.test
+**/__pycache__
+**/*.pyc
+
+# Test data read at test run time only; no image builds or runs these tests.
+# (Dockerfile.kind-runner precompiles atc/worker/jetbridge and topgun only.)
+atc/scheduler/algorithm/testdata
