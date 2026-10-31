@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,8 +10,6 @@ import (
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/rc"
 )
-
-var ErrMissingPipelineName = errors.New("Need to specify at least one pipeline name")
 
 type OrderPipelinesCommand struct {
 	Alphabetical bool                 `short:"a"  long:"alphabetical" description:"Order all pipelines alphabetically"`
