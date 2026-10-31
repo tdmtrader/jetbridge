@@ -113,12 +113,11 @@ var _ = Describe("AuthenticationHandler", func() {
 				auth.UnauthorizedRejector{},
 			)
 
-			// GetSigningKeys is a route this handler guards, and it carries no
-			// default role, so a valid token is the only thing between the
-			// request and the inner handler.
+			// ListTeams is a route this handler guards: a valid token, or none,
+			// is the only thing between the request and the inner handler.
 			server = httptest.NewServer(accessor.NewHandler(
 				logger,
-				atc.GetSigningKeys,
+				atc.ListTeams,
 				innerHandler,
 				realAccessFactory(),
 				map[string]string{},

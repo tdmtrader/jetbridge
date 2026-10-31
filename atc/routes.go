@@ -120,9 +120,6 @@ const (
 	GetWall   = "GetWall"
 	ClearWall = "ClearWall"
 
-	GetOpenIDConfiguration = "GetOpenIDConfiguration"
-	GetSigningKeys         = "GetSigningKeys"
-
 	GetHangarStatus      = "GetHangarStatus"
 	ResolveHangarFinding = "ResolveHangarFinding"
 )
@@ -254,7 +251,4 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/hangar/status", Method: "GET", Name: GetHangarStatus},
 	{Path: "/api/v1/hangar/findings/:finding_id/resolve", Method: "PUT", Name: ResolveHangarFinding},
-
-	{Path: "/.well-known/openid-configuration", Method: "GET", Name: GetOpenIDConfiguration},
-	{Path: "/.well-known/jwks.json", Method: "GET", Name: GetSigningKeys},
 })

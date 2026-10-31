@@ -133,8 +133,6 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ListSharedForResourceType,
 			atc.ClearResourceVersions,
 			atc.ClearResourceTypeVersions,
-			atc.GetOpenIDConfiguration,
-			atc.GetSigningKeys,
 			atc.CopyResourceVersions,
 			atc.ListDeprecatedScopes:
 

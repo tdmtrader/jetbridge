@@ -70,9 +70,7 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.ListAllJobs,
 		atc.ListAllResources,
 		atc.ListBuilds,
-		atc.GetWall,
-		atc.GetOpenIDConfiguration,
-		atc.GetSigningKeys:
+		atc.GetWall:
 		return AuthorizationDelegated, true
 	case atc.DestroyTeam,
 		atc.ListActiveUsersSince,
