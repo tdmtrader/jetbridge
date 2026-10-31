@@ -46,7 +46,9 @@ func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error 
 	postgresPath, err := exec.LookPath("postgres")
 	Expect(err).NotTo(HaveOccurred())
 
-	initCmd := exec.Command(initdbPath, "-U", "postgres", "-D", tmpdir, "-E", "UTF8", "--no-locale")
+	// The cluster is disposable and runs with fsync off (below), so initdb
+	// need not flush its files to disk before the server starts either.
+	initCmd := exec.Command(initdbPath, "-U", "postgres", "-D", tmpdir, "-E", "UTF8", "--no-locale", "--no-sync")
 	startCmd := exec.Command(postgresPath, "-k", "/tmp", "-D", tmpdir, "-h", "127.0.0.1", "-p", strconv.Itoa(runner.Port))
 
 	if currentUser.Uid == "0" {
