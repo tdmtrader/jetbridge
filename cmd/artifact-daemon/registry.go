@@ -29,6 +29,14 @@ import (
 // the value itself rather than be re-derived by every consumer. An entry that
 // will not relativize is REFUSED at Register, not stored and re-checked later.
 type Registry struct {
+	// persistMu serializes alias snapshots with their writes, so a snapshot
+	// taken earlier can never be written after one taken later. Callers that
+	// overlap share one write: a write of generation N covers every mutation
+	// numbered N or below.
+	persistMu           sync.Mutex
+	persistedGeneration uint64 // under persistMu: the last generation written
+	aliasGeneration     uint64 // under mu: bumped by every alias mutation
+
 	mu sync.RWMutex
 	// storagePath is the root every value is relative to. It is the only
 	// absolute path the registry holds.
@@ -174,6 +182,7 @@ func (r *Registry) registerAlias(key, localPath string, readOnly bool) (RelKey, 
 	r.mu.Lock()
 	r.entries[key] = rk
 	r.aliases[key] = rk
+	r.aliasGeneration++
 	r.mu.Unlock()
 
 	r.logger.Debug("registered-alias", lager.Data{"key": key, "rel": string(rk)})
@@ -227,6 +236,7 @@ func (r *Registry) LoadAliases() error {
 	for key, rel := range loaded {
 		r.entries[key] = rel
 		r.aliases[key] = rel
+		r.aliasGeneration++
 	}
 	r.mu.Unlock()
 
@@ -242,6 +252,9 @@ func (r *Registry) Remove(key string) {
 	delete(r.entries, key)
 	_, wasAlias := r.aliases[key]
 	delete(r.aliases, key)
+	if wasAlias {
+		r.aliasGeneration++
+	}
 	r.mu.Unlock()
 
 	if wasAlias {
@@ -278,6 +291,7 @@ func (r *Registry) RemoveByPath(dirPath string) {
 		delete(r.entries, key)
 		if _, ok := r.aliases[key]; ok {
 			delete(r.aliases, key)
+			r.aliasGeneration++
 			hadAliases = true
 		}
 	}
@@ -295,14 +309,26 @@ func (r *Registry) persistAliases() {
 		return
 	}
 
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
 	r.mu.RLock()
+	generation := r.aliasGeneration
+	if generation == r.persistedGeneration {
+		// A caller that overlapped this one already wrote this mutation.
+		r.mu.RUnlock()
+		return
+	}
 	snapshot := make(map[string]RelKey, len(r.aliases))
 	maps.Copy(snapshot, r.aliases)
 	r.mu.RUnlock()
 
 	if err := r.aliasStore.Save(snapshot); err != nil {
+		// Leave persistedGeneration behind so the next caller retries.
 		r.logger.Error("failed-to-persist-aliases", err)
+		return
 	}
+	r.persistedGeneration = generation
 }
 
 // Len returns the number of registered artifacts.
