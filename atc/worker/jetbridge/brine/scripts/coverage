@@ -76,6 +76,17 @@ if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 
     # which on stderr, interleaved with everything else. Name it here.
     echo "Adapter exit failures:" >&2
     grep -E '^brine-adapter-jetbridge: (disposal failed|temp leak|panic):' "$report_dir/brine.log" >&2 || echo "(none)" >&2
+    # A panic in a step body ends the adapter without a scenario_end, so
+    # nothing above names the scenario. The trace follows the panic line
+    # and the scenario that was running is the last scenario_start before
+    # it (CI build 1126315: 550 passes, no run_end, trace never printed).
+    grep -n -E '^brine-adapter-jetbridge: panic:' "$report_dir/brine.log" | cut -d: -f1 | head -5 |
+    while read -r line; do
+        echo "--- scenario running at the panic on line $line:" >&2
+        sed -n "1,${line}p" "$report_dir/brine.log" | grep '"type":"scenario_start"' | tail -1 >&2 || true
+        echo "--- trace after line $line:" >&2
+        sed -n "${line},$((line + 60))p" "$report_dir/brine.log" | grep -v '^{' >&2 || true
+    done
     # The fixtures' own diagnostics (what a step cancelled, which lock it
     # released) are the lines just before each failing scenario_end; the
     # tail alone never reaches them. Print the forty non-protocol lines
