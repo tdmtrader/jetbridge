@@ -67,9 +67,15 @@ if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 
     # every scenario_end that is not a pass, the run_end, the failure count.
     echo "brine run failed. Scenarios that did not pass:" >&2
     grep '"type":"scenario_end"' "$report_dir/brine.log" | grep -v '"status":"passed"' >&2 || true
-    printf 'scenario_end records: %s total, %s passed\n' \
-        "$(grep -c '"type":"scenario_end"' "$report_dir/brine.log" || true)" \
-        "$(grep '"type":"scenario_end"' "$report_dir/brine.log" | grep -c '"status":"passed"' || true)" >&2
+    # One log holds every discovered manifest, so a bare count mixes the
+    # tiers: count per manifest (CI build 1126315 read "550 passed" as the
+    # local tier's progress; 131 of them were the live tier's).
+    grep '"type":"scenario_end"' "$report_dir/brine.log" |
+        sed -n 's/.*"manifest":"\([^"]*\)".*/\1/p' | sort | uniq -c |
+        while read -r n manifest; do
+            printf 'scenario_end records for %s: %s total, %s passed\n' "$manifest" "$n" \
+                "$(grep '"type":"scenario_end"' "$report_dir/brine.log" | grep -F "\"manifest\":\"$manifest\"" | grep -c '"status":"passed"' || true)" >&2
+        done
     grep '"type":"run_end"' "$report_dir/brine.log" >&2 || true
     # A run_end can count a failure no scenario_end carries: the adapter
     # exits non-zero when a disposal fails or a temp root leaks, and says

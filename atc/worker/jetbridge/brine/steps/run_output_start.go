@@ -202,7 +202,9 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, nodeUID st
 	}
 	decl.Config.Jobs = append(decl.Config.Jobs, atc.JobConfig{Name: "other", PlanSequence: []atc.Step{{Config: &atc.TaskStep{Name: "other", Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}}}}}})
 	if checks {
-		decl.Config.ResourceTypes = atc.ResourceTypes{{Name: "custom", Type: "mock", Source: atc.Source{"uri": "fixture"}}}
+		// A resource type's image is a registry-image reference (atc.ValidateImageType);
+		// the "type" check kind names this type and sets its own check type.
+		decl.Config.ResourceTypes = atc.ResourceTypes{{Name: "custom", Type: "registry-image", Source: atc.Source{"repository": "fixture"}}}
 		decl.Config.Resources = atc.ResourceConfigs{{Name: "source", Type: "mock", Source: atc.Source{"uri": "fixture"}}}
 		decl.Config.Jobs[1].PlanSequence = append([]atc.Step{{Config: &atc.GetStep{Name: "source"}}}, decl.Config.Jobs[1].PlanSequence...)
 	}

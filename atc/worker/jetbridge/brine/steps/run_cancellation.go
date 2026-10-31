@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -233,6 +234,16 @@ func RunCancellationDefinitions() []brine.StepDefinition {
 }
 
 func acceptRunCancellation(in RunOutputStart, by string, reason *string, rollback bool) (atc.RunCancelOutcome, error) {
+	// A Given that could not create its Run stores the refusal for the Check
+	// steps to report; cancelling a Run that was never created must fail the
+	// scenario, not dereference a nil Run and kill the adapter (CI build
+	// 1126315: the fixture's resource type was refused by validation).
+	if in.Err != nil {
+		return "", fmt.Errorf("the Run was not created: %w", in.Err)
+	}
+	if in.Creation.Run == nil {
+		return "", errors.New("the Run was not created")
+	}
 	factory, ok := db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory).(runCancellationAcceptor)
 	if !ok {
 		return "", fmt.Errorf("Run has no durable cancellation operation")
