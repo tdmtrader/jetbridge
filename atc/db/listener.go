@@ -118,10 +118,22 @@ func (l *PgxListener) listenerLoop() {
 		select {
 		case <-notifyDone:
 			if err != nil {
-				// Will retry to a max of 15mins
+				// Retries for backoff's default 15 minutes, then crashes the
+				// process on purpose. A degraded mode that logged and kept
+				// retrying is not safe: the component runners and the worker
+				// and team caches also poll, but a running build's abort wait
+				// (engine) and a build's event stream (buildEventSource) wait
+				// only on this bus, so a web without LISTEN would ignore every
+				// abort and stall every live log, silently. A restarted web
+				// re-tracks its builds and reads each abort flag before it
+				// waits, which recovers both. Under Kubernetes the restart is
+				// the pod's restartPolicy.
 				_, err = backoff.Retry(ctx, l.reconnect, backoff.WithBackOff(backoff.NewExponentialBackOff()))
 				if err != nil {
-					panic(fmt.Errorf("unable to reconnect to the database: %w", err))
+					panic(fmt.Errorf("the database LISTEN connection could not be re-established within %s; "+
+						"exiting so the web restarts and re-tracks its builds. Check that PostgreSQL is "+
+						"reachable from this pod (the --postgres-* flags, network policy, the database's "+
+						"own health): %w", backoff.DefaultMaxElapsedTime, err))
 				}
 
 				//listen to all channels again
