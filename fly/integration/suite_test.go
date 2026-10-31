@@ -33,17 +33,6 @@ const teamName = "main"
 const atcVersion = "0.1.0"
 const workerVersion = "4.5.6"
 
-var teams = []atc.Team{
-	atc.Team{
-		ID:   1,
-		Name: "main",
-	},
-	atc.Team{
-		ID:   2,
-		Name: "other-team",
-	},
-}
-
 var _ = SynchronizedBeforeSuite(func() []byte {
 	binPath, err := gexec.Build("github.com/concourse/concourse/fly", "-buildvcs=false")
 	Expect(err).NotTo(HaveOccurred())
@@ -168,10 +157,6 @@ func osFlag(short string, long string) string {
 		return fmt.Sprintf("/%s, /%s", short, long)
 	}
 	return fmt.Sprintf("-%s, --%s", short, long)
-}
-
-func userHomeDir() string {
-	return os.Getenv("HOME")
 }
 
 func Change(fn func() int) *changeMatcher {

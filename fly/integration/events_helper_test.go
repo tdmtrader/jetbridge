@@ -70,17 +70,3 @@ func AssertEvents(sess *gexec.Session, streaming <-chan struct{}, events chan<- 
 	<-sess.Exited
 	Expect(sess.ExitCode()).To(Equal(0))
 }
-
-func AssertErrorEvents(sess *gexec.Session, streaming <-chan struct{}, events chan<- atc.Event) {
-	Eventually(streaming).Should(BeClosed())
-
-	events <- event.Error{Message: "oh no"}
-	events <- event.Status{Status: atc.StatusErrored}
-
-	Eventually(sess.Out).Should(gbytes.Say("oh no"))
-
-	close(events)
-
-	<-sess.Exited
-	Expect(sess.ExitCode()).To(Equal(2))
-}
