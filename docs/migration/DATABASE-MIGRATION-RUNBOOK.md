@@ -1,10 +1,12 @@
 # Database Migration Runbook: Concourse → JetBridge
 
-This runbook guides operators through migrating a legacy Concourse database (v6.8.0 through v8.0.1) to JetBridge Edition. JetBridge is forked from Concourse v8.0.1 with a small number of incremental schema changes, so migration is a direct database upgrade — not an export/import.
+This runbook guides operators through migrating a Concourse v8.0.x database to JetBridge Edition. JetBridge is forked from Concourse v8.0.1 and its earliest migration is a baseline of the v8.0.x schema, so migration is a direct database upgrade — not an export/import.
+
+A database older than v8.0.x (below migration `1765921815`) is refused with a message naming JetBridge 0.3.1. Upgrade it with JetBridge 0.3.1 (or Concourse v8.0.x) first, following this runbook as it shipped with that release, then return here.
 
 ## Prerequisites
 
-- **Source Concourse version:** v6.8.0 or later (v7.x, v8.0.0, v8.0.1)
+- **Source version:** Concourse v8.0.0 or v8.0.1, or JetBridge 0.3.1 or later. Older databases go through JetBridge 0.3.1 first.
 - **PostgreSQL:** 13 or later (JetBridge requirement)
 - **JetBridge binary:** The `concourse` binary from a JetBridge release
 - **Database access:** A PostgreSQL user with schema modification privileges
@@ -42,10 +44,8 @@ Run the pre-flight script to validate the source database:
 The script checks:
 - Database connectivity and PostgreSQL version
 - Current schema version and detected Concourse release
-- Migration path validity (is the source version supported?)
-- `pgcrypto` extension availability (required for md5→sha256 migration)
+- Migration path validity (is the source at or past the baseline `1765921815`?)
 - Data integrity: row counts, orphaned records, failed migrations
-- Estimated md5→sha256 rehash time for large databases
 
 **Do not proceed if the pre-flight reports any FAIL results.**
 
@@ -168,30 +168,6 @@ concourse web \
 
 **Note:** Option A is preferred for production migrations because it separates the migration step from the server startup, making it easier to diagnose and recover from failures.
 
-### Option C: Migrate to a Specific Version
-
-If you want to apply migrations incrementally (e.g., to isolate the md5→sha256 migration):
-
-```bash
-# First, apply everything up to (but not including) the md5→sha256 migration
-concourse migrate \
-  --postgres-host=<pg-host> \
-  ... \
-  --migrate-db-to-version 1746768931
-
-# Then apply the md5→sha256 migration separately
-concourse migrate \
-  --postgres-host=<pg-host> \
-  ... \
-  --migrate-db-to-version 1747084615
-
-# Finally, apply remaining migrations
-concourse migrate \
-  --postgres-host=<pg-host> \
-  ... \
-  --migrate-to-latest-version
-```
-
 ### Monitoring Migration Progress
 
 Watch the PostgreSQL logs for migration activity:
@@ -242,20 +218,6 @@ ORDER BY table_name;
 ```
 
 **All counts should match the pre-flight report exactly.** The migrations do not delete rows from these tables.
-
-### 5.3 SHA256 Migration Verification
-
-If migrating from v7.x (pre-sha256):
-
-```sql
--- All resource_config_versions should now have sha256 digests
-SELECT count(*) AS total,
-       count(version_sha256) AS has_sha256,
-       count(version_md5) AS has_md5
-FROM resource_config_versions;
-
--- Expected: total = has_sha256. has_md5 should equal total for historical rows.
-```
 
 ### 5.4 Component Table Verification
 
@@ -411,8 +373,9 @@ fly -t <target> pipelines
 
 ## Rollback Procedure
 
-Every fork migration after upstream `1765921815` is forward-only. A downgrade
-fails even on an empty database. Recovery restores the pre-upgrade database;
+Every migration from the baseline `1765921815` on is forward-only: none has a
+down, and the migrator refuses a downgrade before changing anything, even on an
+empty database. Recovery restores the pre-upgrade database;
 it discards all ordinary database changes made since that snapshot, including
 build history, configuration changes and new Runs. Older lossy downs could
 retain some surviving rows; restore-only recovery does not retain later writes.
@@ -484,8 +447,8 @@ newer image. Then scale web to its original single replica.
 
 ### Step R5: Verify and resume automation
 
-Check migration logs and effective database version with the matching binary's
-`migrate --current-db-version`. Verify login, decryption, pipelines, retained
+Check migration logs and the effective database version (the query in
+[5.1](#51-schema-version-check)). Verify login, decryption, pipelines, retained
 build history and access to required artifacts. Keep scheduling paused until
 those checks pass. Resume Argo only after its desired state matches the
 restored deployment; resume self-upgrade only after preventing it from
@@ -496,65 +459,43 @@ an upgrade.
 
 ## Version-Specific Notes
 
-### Migrating from v7.x (v7.0.0 through v7.14.3)
+### Migrating from v7.x or earlier
 
-- **Migration count:** 5–29 migrations depending on exact v7.x version
-- **Key migration:** `1747084615_switch_md5_to_sha256` — rehashes all `resource_config_versions` rows. Duration is proportional to row count. For databases with millions of rows, plan a maintenance window of 5–15 minutes for this migration alone.
-- **Key migration:** `1653924132_int_to_bigint` — converts integer IDs to bigint across multiple tables. Can be slow on large `builds` tables.
-- **pgcrypto:** Required for the md5→sha256 migration. Install it before migrating if not already present: `CREATE EXTENSION IF NOT EXISTS pgcrypto;`
-- **Intermediate upgrades:** You do NOT need to upgrade to v8.0.1 first. JetBridge applies all intermediate migrations automatically.
+This release refuses the database: its version is below the baseline
+`1765921815`. Upgrade it with JetBridge 0.3.1 (or Concourse v8.0.x) first. That
+step runs `1747084615_switch_md5_to_sha256`, which rehashes every
+`resource_config_versions` row and needs `pgcrypto`; see the runbook shipped
+with JetBridge 0.3.1 for its duration and verification.
 
 ### Migrating from v8.0.0
 
-- **Migration count:** 58 (JetBridge-only migrations)
+- **Migration count:** 61 (JetBridge-only migrations)
 - **Duration:** scales with the `builds` table (`1773105506` scans it three times under ACCESS EXCLUSIVE; see schema-delta.md)
 - **Risk:** Medium — measure on a restored copy first
 
 ### Migrating from v8.0.1
 
-- **Migration count:** 58 (identical to v8.0.0)
+- **Migration count:** 61 (identical to v8.0.0)
 - **Duration:** as for v8.0.0
 - **Risk:** Medium — measure on a restored copy first
 - **Note:** v8.0.0 and v8.0.1 share identical migration sets
-
-### MD5 → SHA256 Migration Details
-
-The `1747084615_switch_md5_to_sha256` migration is the most significant schema change:
-
-1. **What it does:** Adds a `version_sha256` column to `resource_config_versions` and computes SHA256 digests for every existing row using `pgcrypto`.
-2. **Column renames:** `version_md5` is renamed to `version_digest` in 5 related tables (inputs, outputs, next_build_inputs, resource_caches, disabled_versions).
-3. **Index changes:** Drops old MD5 uniqueness constraint, creates new SHA256 uniqueness constraint, preserves MD5 lookup index for backward compatibility.
-4. **Duration:** Proportional to `resource_config_versions` row count:
-   - < 100K rows: seconds
-   - 100K–1M rows: 10–60 seconds
-   - 1M+ rows: minutes (plan accordingly)
-5. **Verification:** After migration, confirm `version_sha256 IS NOT NULL` for all rows:
-   ```sql
-   SELECT count(*) FROM resource_config_versions WHERE version_sha256 IS NULL;
-   -- Expected: 0
-   ```
 
 ---
 
 ## Troubleshooting
 
-### "cannot begin migration: database is in a dirty state"
+### "database is at migration …, older than this release's baseline migration 1765921815"
 
-The `schema_migrations` table has `dirty = true`, meaning a previous migration attempt failed partway through. Investigate:
+Also "database records migration … in schema_migrations" or "… in
+migration_version". The database predates Concourse v8.0.x. Nothing was
+changed. Upgrade it with JetBridge 0.3.1 (or Concourse v8.0.x) first, then run
+this release again.
 
-```sql
-SELECT * FROM schema_migrations;
-```
+### "migration … is forward-only: restore the pre-upgrade database backup instead"
 
-If the version looks correct and you're confident the data is consistent, fix it:
-
-```sql
-UPDATE schema_migrations SET dirty = false;
-```
-
-### "must upgrade from db version 189"
-
-The database has the very old `migration_version` table from Concourse <= 3.6.0. You must upgrade to at least Concourse v6.x first.
+Something asked the migrator to go below the database's version: usually an
+older binary than the database. Nothing was reversed. Follow the
+[rollback procedure](#rollback-procedure).
 
 ### Migration hangs (no progress)
 
@@ -567,16 +508,6 @@ WHERE datname = 'concourse';
 ```
 
 Check for connections from other Concourse instances or migration processes.
-
-### "pgcrypto extension not available"
-
-Install it as a superuser:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-```
-
-On managed PostgreSQL (RDS, Cloud SQL), pgcrypto is available but may need enabling through the provider's console.
 
 ### Post-migration: resource checks fail
 

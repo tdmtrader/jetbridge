@@ -117,6 +117,17 @@ updates; this chart cleanup adds no migration. Preserve database encryption if
 already configured. If introducing encryption, use the documented coordinated
 key rollout; do not rotate or generate a new key implicitly during this change.
 
+## Migration baseline (2026-10-30)
+
+The 300 upstream migrations up to `1765921815` are now one baseline,
+`1765921815_baseline.up.sql`, that runs only on an empty database. A JetBridge
+0.3.1 database is past it and needs nothing. A database below it (Concourse
+v7.x or earlier) is refused, unchanged, with a message naming JetBridge 0.3.1:
+deploy JetBridge 0.3.1 (or Concourse v8.0.x) against it first. The chart's
+migration step still runs `concourse migrate --migrate-to-latest-version`;
+`--current-db-version`, `--supported-db-version` and `--migrate-db-to-version`
+are removed, so drop them from any hand-written job.
+
 ## Validation and rollout
 
 1. Render the new chart with the complete migrated values and resolve every
@@ -158,8 +169,8 @@ handoff for them. Existing headers, payloads, inputs, results and build logs
 remain. Reconcile uncertain submissions and finish credential handoffs before
 this step. Composition retries likewise must not repeat old calls after the
 truncate. Do not truncate any other table or disable its immutability guards.
-All fork migrations after upstream `1765921815` are forward-only, including
-empty installs. Restore the pre-upgrade database backup, matching image and
+Every migration from the baseline `1765921815` on is forward-only, including
+on empty installs. Restore the pre-upgrade database backup, matching image and
 encryption key for recovery; starting an old image does not reliably reject
 a newer schema. Follow the [restore procedure](../../docs/migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).
 

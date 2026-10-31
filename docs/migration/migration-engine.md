@@ -9,14 +9,25 @@ This document describes how Concourse discovers and applies database migrations,
 Migration files are embedded in the Concourse binary at compile time using Go's `//go:embed` directive. They live in `atc/db/migration/migrations/` and follow the naming convention:
 
 ```
-{UNIX_TIMESTAMP}_{description}.{up|down}.{sql|go}
+{UNIX_TIMESTAMP}_{description}.up.{sql|go}
 ```
 
 Examples:
+- `1765921815_baseline.up.sql`
 - `1773105500_drop_component_interval_and_last_ran.up.sql`
-- `1579713199_migrate_job_configs_to_job_inputs_and_outputs.up.go`
 
 The version number is the Unix timestamp prefix. Migrations are sorted by version and applied in order.
+
+### The Baseline
+
+The earliest migration a binary carries is its baseline. Here it is
+`1765921815_baseline.up.sql`, the upstream Concourse 8.0.x schema as
+`pg_dump --schema-only` writes it, which replaced the 300 upstream files from
+`1510262030_initial_schema` on. It runs only on an empty database. A database
+whose recorded version is at or past it already has it. One whose version is
+below it is refused before anything changes, with a message naming
+JetBridge 0.3.1, the last release that carries the replaced files: upgrade it
+with that release (or Concourse 8.0.x) first.
 
 ### Automatic Application on Startup
 
@@ -62,11 +73,11 @@ ORDER BY tstamp DESC LIMIT 1;
 
 ### Legacy Schema Handling
 
-Concourse handles upgrades from older schema formats automatically:
-
-1. **`migration_version` table** (Concourse <= 3.6.0) — Must be at version 189. Migrated to `schema_migrations`.
-2. **`schema_migrations` table** (Concourse 4.x–7.x) — Read and migrated to `migrations_history` format. Fails if `dirty = true`.
-3. **`migrations_history` table** (current) — Used directly.
+A database that records its version only in `migration_version` (Concourse
+3.6 and earlier) or `schema_migrations` (before migration `1532706545`) predates
+the baseline, and is refused without being converted. JetBridge 0.3.1 still
+converts both. A `schema_migrations` table left beside `migrations_history` is
+ignored.
 
 ## Running Migrations Independently
 
@@ -75,33 +86,18 @@ Concourse handles upgrades from older schema formats automatically:
 The `concourse migrate` subcommand runs migrations without starting the full server:
 
 ```bash
-# Check current database version
+# Migrate to latest version
 concourse migrate \
   --postgres-host=localhost \
   --postgres-port=5432 \
   --postgres-database=concourse \
   --postgres-user=concourse \
   --postgres-password=concourse \
-  --current-db-version
-
-# Check the latest supported version
-concourse migrate \
-  --postgres-host=localhost \
-  ... \
-  --supported-db-version
-
-# Migrate to latest version
-concourse migrate \
-  --postgres-host=localhost \
-  ... \
   --migrate-to-latest-version
-
-# Migrate to a specific version
-concourse migrate \
-  --postgres-host=localhost \
-  ... \
-  --migrate-db-to-version 1773105501
 ```
+
+There is no flag to print the version or to migrate to a chosen one. Read the
+current version with the query under [History Tracking](#history-tracking).
 
 ### Encryption Key Rotation
 
@@ -122,16 +118,12 @@ concourse migrate --postgres-host=... --old-encryption-key <old>
 
 - **Automatic on startup:** If you simply start JetBridge against the database, it will apply all pending migrations automatically. The `concourse migrate` command is useful for running migrations separately (e.g., in a maintenance window before starting the server).
 - **No `--dry-run`:** There is no dry-run mode. Use a database backup to test migrations.
-- **Fork migrations are forward-only:** Every migration after upstream
-  `1765921815` has an explicit failing down, even on an empty database.
-  `--migrate-db-to-version` still selects a version, but cannot reverse a fork
-  migration. Generated SQL and Go downs also fail and direct the operator to
-  restore the pre-upgrade database backup. Upstream downs remain unchanged.
-- **Transactions are per file:** A refused SQL down rolls back that file and
-  records a failed, non-dirty history entry; the effective version stays put.
-  Earlier successful files in a multi-file migration remain committed. Since
-  every fork down refuses, a downgrade from a fork version stops at its first
-  down file without partial schema reversal.
+- **Migrations are forward-only:** A down file is optional, and none ships:
+  the baseline and every fork migration after it have none, and the generator
+  writes only the up file. Asked to reverse a migration without a down, the
+  migrator refuses with `migration <version> is forward-only: restore the
+  pre-upgrade database backup instead`, before reversing anything, so the
+  schema, data, history and effective version are unchanged.
 - **Image rollback is not a compatibility check:** Older binaries embed their
   own migration files. They may retain historical downs or start against a
   newer schema without reversing it. Restore the matching database and

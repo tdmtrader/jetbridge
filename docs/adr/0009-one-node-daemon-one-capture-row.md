@@ -105,6 +105,14 @@ refuses reversal, including empty installs. This replaces the former lossy
 reversal contract; restore the matching database, image and encryption key
 using the [recovery runbook](../migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).
 
+Amended 2026-10-30: the upstream history up to `1765921815` is squashed into
+one baseline migration, `1765921815_baseline.up.sql`, which runs only on an
+empty database. C13's contract now holds by omission: no migration has a down,
+and the migrator refuses to reverse one, before reversing anything, with the
+message the deleted refusal stubs raised. A database below the baseline is
+refused; upgrade it with JetBridge 0.3.1 first. Rollback remains
+restore-from-backup.
+
 Amended by C9: the source classifier lives with the marker writer in
 `cmd/artifact-daemon/outputplane`, sharing marker constants and the leaf's
 capture-directory derivation. Its read-only constructor remains unconditional

@@ -125,6 +125,15 @@ var _ = Describe("Baseline", func() {
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			runPreflightAndExpectPass(postgresRunner.DataSourceName())
 		})
+
+		It("fails a database below the baseline, naming the release that can upgrade it", func() {
+			SetupMigrationsHistoryTableToExistAtVersion(db, v713LastMigration)
+			output, err := runPreflight(postgresRunner.DataSourceName())
+			Expect(err).To(HaveOccurred())
+			Expect(output).To(ContainSubstring(fmt.Sprintf("Database version (%d) is older than the baseline (%d", v713LastMigration, v801LastMigration)))
+			Expect(output).To(ContainSubstring("Upgrade it with JetBridge 0.3.1"))
+			Expect(output).To(ContainSubstring("RESULT: Pre-flight FAILED"))
+		})
 	})
 })
 
@@ -284,40 +293,37 @@ var _ = Describe("migrate-preflight.sh", func() {
 // runPreflightAndExpectPass runs the migrate-preflight.sh script against the
 // test database and asserts that it exits 0 (pass or pass-with-warnings).
 func runPreflightAndExpectPass(dsn string) {
+	GinkgoHelper()
+	output, err := runPreflight(dsn)
+	Expect(err).NotTo(HaveOccurred(), "pre-flight script failed with exit code != 0:\n%s", output)
+	Expect(output).To(ContainSubstring("RESULT: Pre-flight PASSED"))
+}
+
+// runPreflight runs the migrate-preflight.sh script against the test database.
+func runPreflight(dsn string) (string, error) {
+	GinkgoHelper()
 	// Resolve script path relative to this source file so it works
 	// regardless of the working directory ginkgo uses.
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
 	scriptPath := filepath.Join(repoRoot, "docs", "migration", "migrate-preflight.sh")
-
-	// Check the script exists
 	_, err := os.Stat(scriptPath)
-	if os.IsNotExist(err) {
-		Skip("migrate-preflight.sh not found at " + scriptPath)
-	}
 	Expect(err).NotTo(HaveOccurred())
 
-	// Parse DSN fields: "host=/tmp user=postgres dbname=testdb sslmode=disable port=5432"
+	// The test postgres runner uses Unix sockets (host=/tmp); the script reads
+	// the socket directory as its host.
 	dsnFields := parseDSN(dsn)
-
-	// The test postgres runner uses Unix sockets (host=/tmp). The preflight
-	// script uses psql via PGHOST/PGPORT/etc env vars. For Unix sockets,
-	// we pass the socket directory as PGHOST.
 	cmd := exec.Command("bash", scriptPath,
 		"--host", dsnFields["host"],
 		"--port", dsnFields["port"],
 		"--dbname", dsnFields["dbname"],
 		"--user", dsnFields["user"],
 	)
-	// Set PGPASSWORD empty for trust auth, and ensure sslmode is off
 	cmd.Env = append(os.Environ(), "PGPASSWORD=", "PGSSLMODE=disable")
 
 	output, err := cmd.CombinedOutput()
 	GinkgoWriter.Printf("Pre-flight output:\n%s\n", string(output))
-
-	// Exit 0 = PASSED (possibly with warnings)
-	Expect(err).NotTo(HaveOccurred(), "pre-flight script failed with exit code != 0:\n%s", string(output))
-	Expect(string(output)).To(ContainSubstring("RESULT: Pre-flight PASSED"))
+	return string(output), err
 }
 
 // parseDSN parses a space-separated key=value DSN string into a map.

@@ -30,11 +30,15 @@ v8.0.1:1765921815
 # Must equal the highest migration in atc/db/migration/migrations. This script
 # runs on an operator's laptop against a live database before an upgrade, so it
 # cannot ask the binary; the "migrate-preflight.sh targets the head migration"
-# spec in atc/db/migration/legacy_upgrade_test.go keeps it honest.
+# spec in atc/db/migration/baseline_test.go keeps it honest.
 JETBRIDGE_VERSION=1789793164
 
-# Minimum supported source version (v6.x)
-MIN_SUPPORTED_VERSION=1601993582
+# The baseline: upstream Concourse 8.0.x's last migration, and the earliest
+# migration JetBridge carries. A database below it is refused.
+BASELINE_VERSION=1765921815
+
+# The last release that carries the migrations the baseline replaced.
+LAST_RELEASE_BEFORE_BASELINE="JetBridge 0.3.1"
 
 # --- Argument Parsing ---------------------------------------------------------
 
@@ -146,21 +150,12 @@ if [[ "$HAS_MIGRATIONS_HISTORY" == "t" ]]; then
 elif [[ "$HAS_SCHEMA_MIGRATIONS" == "t" ]]; then
   SCHEMA_FORMAT="schema_migrations"
   CURRENT_VERSION=$(run_sql "SELECT version FROM schema_migrations LIMIT 1;")
-  DIRTY=$(run_sql "SELECT dirty FROM schema_migrations LIMIT 1;")
-  if [[ "$DIRTY" == "t" ]]; then
-    fail "Database is in a dirty state (schema_migrations.dirty = true) — resolve before proceeding"
-  else
-    pass "Schema tracking: schema_migrations (legacy format, will be auto-upgraded)"
-  fi
+  fail "Schema tracking: schema_migrations predates the baseline — upgrade with ${LAST_RELEASE_BEFORE_BASELINE} first"
 
 elif [[ "$HAS_MIGRATION_VERSION" == "t" ]]; then
   SCHEMA_FORMAT="migration_version"
   CURRENT_VERSION=$(run_sql "SELECT version FROM migration_version LIMIT 1;")
-  if [[ "$CURRENT_VERSION" -eq 189 ]]; then
-    pass "Schema tracking: migration_version (very old format, version 189 — will be auto-upgraded)"
-  else
-    fail "migration_version = ${CURRENT_VERSION} — must be 189 (Concourse 3.6.0) to auto-upgrade"
-  fi
+  fail "Schema tracking: migration_version predates the baseline — upgrade with ${LAST_RELEASE_BEFORE_BASELINE} first"
 else
   fail "No schema tracking table found — is this a Concourse database?"
 fi
@@ -181,39 +176,14 @@ if [[ "$CURRENT_VERSION" -eq "$JETBRIDGE_VERSION" ]]; then
   pass "Database is already at JetBridge version — no migration needed"
 elif [[ "$CURRENT_VERSION" -gt "$JETBRIDGE_VERSION" ]]; then
   fail "Database version (${CURRENT_VERSION}) is ahead of JetBridge (${JETBRIDGE_VERSION}) — downgrade not supported"
-elif [[ "$CURRENT_VERSION" -lt "$MIN_SUPPORTED_VERSION" ]]; then
-  fail "Database version (${CURRENT_VERSION}) is too old — minimum supported is v6.8.0 (${MIN_SUPPORTED_VERSION})"
-  info "Upgrade to Concourse v6.8.0 or later first, then migrate to JetBridge"
+elif [[ "$CURRENT_VERSION" -lt "$BASELINE_VERSION" ]]; then
+  fail "Database version (${CURRENT_VERSION}) is older than the baseline (${BASELINE_VERSION}, Concourse v8.0.x)"
+  info "Upgrade it with ${LAST_RELEASE_BEFORE_BASELINE} (or Concourse v8.0.x) first, then migrate to this release"
 else
-  MIGRATION_GAP=$((JETBRIDGE_VERSION - CURRENT_VERSION))
   pass "Migration path is valid: ${CURRENT_VERSION} → ${JETBRIDGE_VERSION}"
-
-  if [[ "$CURRENT_VERSION" -le 1746768931 ]]; then
-    warn "Source is v7.x or earlier — the md5→sha256 migration (1747084615) will rehash all resource_config_versions rows. This can be slow on large databases."
-  fi
 fi
 
-# 4. Check for pgcrypto extension (needed by md5→sha256 migration)
-echo ""
-echo "--- Extension Requirements ---"
-
-if [[ "$CURRENT_VERSION" -lt 1747084615 ]]; then
-  HAS_PGCRYPTO=$(run_sql "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgcrypto');")
-  if [[ "$HAS_PGCRYPTO" == "t" ]]; then
-    pass "pgcrypto extension is installed (required for md5→sha256 migration)"
-  else
-    CAN_CREATE=$(run_sql "SELECT has_database_privilege(current_user, current_database(), 'CREATE');" 2>/dev/null || echo "f")
-    if [[ "$CAN_CREATE" == "t" ]]; then
-      warn "pgcrypto extension not installed — migration will auto-install it (CREATE EXTENSION IF NOT EXISTS pgcrypto)"
-    else
-      fail "pgcrypto extension not installed and user lacks CREATE privilege — install pgcrypto manually before migrating"
-    fi
-  fi
-else
-  pass "pgcrypto already applied (migration version past 1747084615)"
-fi
-
-# 5. Data Integrity Checks
+# 4. Data Integrity Checks
 echo ""
 echo "--- Data Integrity ---"
 
@@ -242,22 +212,7 @@ if [[ "$HAS_MIGRATIONS_HISTORY" == "t" ]]; then
   fi
 fi
 
-# Estimate md5→sha256 migration time if applicable
-if [[ "$CURRENT_VERSION" -lt 1747084615 ]]; then
-  echo ""
-  echo "--- MD5→SHA256 Migration Estimate ---"
-  RCV_COUNT=$(run_sql "SELECT count(*) FROM resource_config_versions;" 2>/dev/null || echo "0")
-  info "resource_config_versions rows: ${RCV_COUNT}"
-  if [[ "$RCV_COUNT" -gt 1000000 ]]; then
-    warn "Large table — md5→sha256 rehash may take several minutes. Plan for maintenance window."
-  elif [[ "$RCV_COUNT" -gt 100000 ]]; then
-    info "Moderate table size — md5→sha256 rehash should complete in under a minute"
-  else
-    info "Small table — md5→sha256 rehash will be fast"
-  fi
-fi
-
-# 6. Database Size
+# 5. Database Size
 echo ""
 echo "--- Database Size ---"
 DB_SIZE=$(run_sql "SELECT pg_size_pretty(pg_database_size(current_database()));")

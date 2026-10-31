@@ -2,42 +2,53 @@
 
 This document catalogs every migration between upstream Concourse releases and JetBridge HEAD, documenting what each changes and whether it is destructive or additive.
 
-Every fork migration after upstream `1765921815` is forward-only, including
-`1789793158` and later migrations. Empty and populated databases both refuse
-downgrades. Recovery requires restoring the pre-upgrade backup with its matching
-image and encryption key; upstream downs remain unchanged.
+Since JetBridge 0.3.2 the 300 upstream migration files up to and including
+`1765921815` are one baseline, `1765921815_baseline.up.sql`: the upstream
+Concourse 8.0.x schema as `pg_dump --schema-only` writes it. It runs only on an
+empty database. A database at or past `1765921815` already has it; one below it
+is refused with a message naming JetBridge 0.3.1, the last release that carries
+the replaced files. Upgrade such a database with JetBridge 0.3.1 (or upstream
+Concourse 8.0.x) first.
+
+Every migration from the baseline on is forward-only: none has a down, and the
+migrator refuses to reverse one on empty and populated databases alike.
+Recovery requires restoring the pre-upgrade backup with its matching image and
+encryption key.
 
 ## Version Boundaries
 
-| Version | Last Migration | Total Migrations |
+| Version | Last Migration | Upgrades directly to JetBridge HEAD? |
 |---------|---------------|-----------------|
-| v6.8.0 (last v6.x) | `1601993582` | ~114 |
-| v7.0.0 | `1612565824` | 124 |
-| v7.14.3 (last v7.x) | `1746768931` | 148 |
-| v8.0.0 | `1765921815` | 150 |
-| v8.0.1 | `1765921815` | 150 |
-| JetBridge HEAD | `1789793164` | 210 |
+| v6.8.0 (last v6.x) | `1601993582` | No — through JetBridge 0.3.1 |
+| v7.0.0 | `1612565824` | No — through JetBridge 0.3.1 |
+| v7.14.3 (last v7.x) | `1746768931` | No — through JetBridge 0.3.1 |
+| v8.0.0 | `1765921815` | Yes |
+| v8.0.1 | `1765921815` | Yes |
+| JetBridge 0.3.1 | `1773105509` | Yes |
+| JetBridge HEAD | `1789793164` | — (baseline + 61 fork migrations) |
 
 ## Migration Gap by Source Version
 
-### From v7.14.3 to JetBridge HEAD (63 migrations)
+### Baseline
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
-| `1747084615` | `switch_md5_to_sha256` | **Schema + Data** | **Yes** — renames `version_md5` columns to `version_digest`, adds `version_sha256` column, rehashes all `resource_config_versions` rows from MD5 to SHA256. Requires `pgcrypto` extension. |
-| `1765921815` | `rerun_of_bigint` | **Schema + Data** | **Yes** — renames `rerun_of` to `rerun_of_old`, adds new `rerun_of bigint` column, recreates indexes. Runs `ANALYZE builds` to update stats. |
-| `1773104944` | `simplify_worker_cache_triggers` | **Schema** | **Yes** — drops the JSON-payload `notify_trigger()` function and worker/container triggers, replaces with simpler bare-NOTIFY trigger functions. |
-| `1773105500` | `drop_component_interval_and_last_ran` | **Schema** | **Yes** — drops `interval` and `last_ran` columns from `components` table. |
-| `1773105501` | `drop_component_paused` | **Schema** | **Yes** — drops `paused` column from `components` table. |
-| `1773105503` | `add_deprecated_scope_columns` | **Schema** | No — additive; adds `deprecated_at` and `deprecated_from_resource_id` to `resource_config_scopes` with two partial indexes |
-| `1773105504` | `add_resource_cache_durable_key` | **Schema** | No — additive; adds a nullable `durable_key` to `resource_caches` |
-| `1773105505` | `add_pipeline_template_runs` | **Schema** | No — additive; creates `pipeline_runs`, adds template/params/retention columns to `pipelines`, 7 triggers |
-| `1773105506` | `add_pipeline_run_build_identity` | **Schema** | No — additive, but see the risk note below: three full scans of `builds` under ACCESS EXCLUSIVE |
-| `1773105507` | `add_run_task_cache_identity` | **Schema** | No — additive |
-| `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
-| `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
+| `1765921815` | `baseline` | **Schema** | No — creates the upstream 8.0.x schema on an empty database; never runs on an existing one |
 
-### From v8.0.1 to JetBridge HEAD (61 migrations — JetBridge-only)
+It replaced `1510262030_initial_schema` through `1765921815_rerun_of_bigint`
+(6,233 lines). Migrating an empty database through the baseline and through
+those files produces byte-identical `pg_dump --schema-only` output, both at
+`1765921815` and at `1789793164`.
+
+### From a database below the baseline
+
+Refused before anything changes, whichever table records its version
+(`migrations_history`, `schema_migrations` or `migration_version`). Run
+JetBridge 0.3.1 (or Concourse 8.0.x) against it first; it applies the replaced
+migrations, including the expensive md5→sha256 rehash (`1747084615`), and then
+this release applies the fork migrations below.
+
+### From v8.0.x to JetBridge HEAD (61 migrations — JetBridge-only)
 
 | Migration | Name | Type | Destructive? |
 |-----------|------|------|-------------|
@@ -54,65 +65,18 @@ image and encryption key; upstream downs remain unchanged.
 
 Migrations `1773105510` through `1789793164` (51 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
 
-### From v8.0.0 to JetBridge HEAD (61 migrations)
-
-Same as v8.0.1 — v8.0.0 and v8.0.1 share identical migration sets.
-
-### From v7.0.0 to JetBridge HEAD (86 migrations)
-
-In addition to the 12 listed above, v7.0.0 users must apply 24 intermediate migrations covering:
-- Job/pipeline cascade deletes and ordering indexes
-- Resource config scope last_check tracking
-- Prototypes table
-- Build comments
-- Worker cache triggers (original version)
-- Job/pipeline pause tables
-- Container cleanup (removing image check/get columns)
-- `int` to `bigint` conversions for IDs
-- Resource config scope bigint conversion
-- Worker resource cache `invalid_since` column
-- Signing keys table
+v8.0.0 and v8.0.1 share identical migration sets. A JetBridge 0.3.1 database
+applies only the migrations after its own head.
 
 ## Detailed Migration Descriptions
 
-### `1746768931` — Add Signing Keys (present in v7.14.3+)
+### `1765921815` — Baseline
 
-```sql
-CREATE TABLE signing_keys (
-    kid text PRIMARY KEY,
-    kty text NOT NULL,
-    jwk json NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-```
-
-- **Type:** Additive (new table)
-- **Risk:** None — purely additive
-- **Duration:** Instant
-
-### `1747084615` — Switch MD5 to SHA256 (present in v8.0.0+)
-
-- Adds `version_sha256` column to `resource_config_versions`
-- Renames `version_md5` to `version_digest` in 5 tables: `build_resource_config_version_inputs`, `build_resource_config_version_outputs`, `next_build_inputs`, `resource_caches`, `resource_disabled_versions`
-- Rehashes **all** `resource_config_versions` rows from MD5 to SHA256 using `pgcrypto`
-- Recreates unique constraints and indexes on the new column
-
-- **Type:** Schema change + full table data migration
-- **Risk:** HIGH — full table scan and update on `resource_config_versions`. Requires `pgcrypto` extension.
-- **Duration:** Proportional to `resource_config_versions` row count. Can take minutes on large instances (millions of rows).
-- **Reversible:** Yes — down migration recalculates MD5 digests from SHA256
-
-### `1765921815` — Rerun of Bigint (present in v8.0.0+)
-
-- Renames `builds.rerun_of` (integer) to `rerun_of_old`
-- Adds new `builds.rerun_of` as `bigint`
-- Recreates ordering indexes to reference both columns
-- Runs `ANALYZE builds` to update query planner statistics
-
-- **Type:** Schema change + index rebuild
-- **Risk:** Medium — index recreation on `builds` table
-- **Duration:** Proportional to `builds` table size
-- **Reversible:** Yes
+- Creates the upstream 8.0.x schema, including the `pgcrypto` extension, on an
+  empty database
+- **Type:** Schema (empty database only)
+- **Risk:** None on an existing database: it never runs there
+- **Reversible:** No — there is no down
 
 ### `1773104944` — Simplify Worker Cache Triggers (JetBridge-only)
 
@@ -165,23 +129,23 @@ on payload deletion.
 
 ## Key Observations
 
-1. **The schema delta is no longer small.** Ten migrations are JetBridge-specific. Five of
+1. **The schema delta is no longer small.** Sixty-one migrations are JetBridge-specific. Five of
    them (`1773105505`–`1773105509`) add pipeline templates and numbered runs, and one of
-   those, `1773105506`, is the second most expensive migration in the set — see Observation 6.
-2. **The md5→sha256 migration is the most expensive** — it rehashes every row in `resource_config_versions`. Plan for this on large instances.
-3. **All fork migrations after `1765921815` are forward-only.** Every fork
-   down refuses before schema changes, regardless of retained data. Restore
-   the database backup before starting its matching older image; an older
-   image does not reliably reject a newer schema.
-4. **v7.x users have the biggest gap** — up to 36 migrations depending on the exact v7.x version.
-5. **v8.0.0 and v8.0.1 are identical** in terms of migrations — 10 JetBridge-specific migrations need to apply.
-6. **`1773105506` locks `builds` ACCESS EXCLUSIVE for three full scans.** In one transaction it
+   those, `1773105506`, is the most expensive migration this release can run — see Observation 4.
+2. **Every migration from the baseline on is forward-only.** None has a down;
+   the migrator refuses a downgrade before changing anything, regardless of
+   retained data. Restore the database backup before starting its matching
+   older image; an older image does not reliably reject a newer schema.
+3. **Databases older than v8.0.x upgrade in two steps** — JetBridge 0.3.1 (or
+   Concourse 8.0.x) first, which runs the md5→sha256 rehash on v7.x sources,
+   then this release.
+4. **`1773105506` locks `builds` ACCESS EXCLUSIVE for three full scans.** In one transaction it
    validates a new foreign key on `builds.pipeline_run_id`, verifies a new CHECK constraint, and
    builds a non-concurrent index. Because the migration runner wraps each file in a single
    transaction, none of these can be deferred with `NOT VALID` or `CONCURRENTLY` without splitting
    the file. Duration scales with `builds` row count; every in-flight build's status write and event
    insert blocks for the whole transaction. **Measure on a restored copy before upgrading a busy
-   cluster.** No `ANALYZE builds` is run afterwards, unlike `1765921815`.
+   cluster.** No `ANALYZE builds` is run afterwards.
 
 ## 1789793158 — retire container-count notifications (C5)
 
@@ -207,5 +171,5 @@ then explicitly `TRUNCATE TABLE pipeline_run_invocations;` if it is nonempty.
 Retries with old keys can then create new Runs; old credential handoffs lose
 their invocation-owner evidence, and composition callers must not replay old
 calls. See [the rollout procedure](../../deploy/chart/MIGRATING.md#c7-run-contract-simplification).
-The down migration always refuses; restore the pre-upgrade backup to recover
+It has no down: the migrator refuses to reverse it. Restore the pre-upgrade backup to recover
 the previous schema and discarded evidence.

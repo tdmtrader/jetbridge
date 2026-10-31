@@ -208,7 +208,7 @@ Concourse database migrations live under `atc/db/migration/migrations`. They are
 generated using Concourse's own inbuilt migration library. The migration file
 names are of the following format:
 ```
-<migration_version>_<migration_name>.(up|down).(sql|go)
+<migration_version>_<migration_name>.up.(sql|go)
 ```
 
 The migration version number is the timestamp of the time at which the migration
@@ -243,14 +243,13 @@ new migrations are placed in `./migrations`):
 $ ./mig generate -n my_migration_name -t sql
 ```
 
-This should generate two files for you:
+This generates one file:
 ```
-1510262030_my_migration_name.down.sql
-1510262030_my_migration_name.up.sql
+1789900000_my_migration_name.up.sql
 ```
 
-Now that the migration files have been created in the right format, you can fill
-the database up and down migrations in these files. On startup, `concourse web`
+Fill it in. Migrations are forward-only: there is no down file, and the
+migrator refuses to reverse a migration without one. On startup, `concourse web`
 will look for any new migrations in `atc/db/migration/migrations` and will run
 them in order.
 
