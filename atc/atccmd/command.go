@@ -773,7 +773,7 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	dbResourceConfigFactory := db.NewResourceConfigFactory(dbConn, lockFactory)
 
-	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
+	pool, err := cmd.constructPool(logger, dbConn, lockFactory, workerCache)
 	if err != nil {
 		return nil, err
 	}
@@ -979,7 +979,7 @@ func (cmd *RunCommand) backendComponents(
 
 	alg := algorithm.New(db.NewVersionsDB(dbConn, algorithmLimitRows, schedulerCache))
 
-	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
+	pool, err := cmd.constructPool(logger, dbConn, lockFactory, workerCache)
 	if err != nil {
 		return nil, err
 	}
@@ -1288,8 +1288,8 @@ func (cmd *RunCommand) artifactLocator() *jetbridge.ArtifactLocator {
 	return cmd.k8sArtifactLocator
 }
 
-func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
-	factory, workerDB, err := cmd.workerFactory(dbConn, lockFactory, workerCache)
+func (cmd *RunCommand) constructPool(logger lager.Logger, dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
+	factory, workerDB, err := cmd.workerFactory(logger, dbConn, lockFactory, workerCache)
 	if err != nil {
 		return worker.Pool{}, err
 	}
@@ -1300,7 +1300,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 // worker DB beside it. It is split from constructPool so the collaborators the
 // factory carries (the artifact locator above all) can be checked against the
 // ones the Reaper is given.
-func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.DefaultFactory, worker.DB, error) {
+func (cmd *RunCommand) workerFactory(logger lager.Logger, dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.DefaultFactory, worker.DB, error) {
 	dbResourceCacheFactory := db.NewResourceCacheFactory(dbConn, lockFactory)
 	dbWorkerBaseResourceTypeFactory := db.NewWorkerBaseResourceTypeFactory(dbConn)
 	dbTaskCacheFactory := db.NewTaskCacheFactory(dbConn)
@@ -1367,12 +1367,9 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 		}
 
 		if k8sCfg.ArtifactDaemonService != "" {
-			dcLogger := lager.NewLogger("daemon-client")
-			dcLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
-
 			// The Config picks the daemon's namespace, not this call site:
 			// the daemon may live apart from the step-pod namespace.
-			factory.K8sDaemonClient = jetbridge.NewDaemonClientFromConfig(dcLogger, k8sClientset, k8sCfg)
+			factory.K8sDaemonClient = jetbridge.NewDaemonClientFromConfig(logger.Session("daemon-client"), k8sClientset, k8sCfg)
 		}
 	}
 

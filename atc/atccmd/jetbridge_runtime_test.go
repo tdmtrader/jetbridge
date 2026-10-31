@@ -96,11 +96,11 @@ func findReaper(t *testing.T, components []RunnableComponent) *jetbridge.Reaper 
 func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 	cmd := jetbridgeCommand(t)
 
-	apiFactory, _, err := cmd.workerFactory(nil, nil, nil)
+	apiFactory, _, err := cmd.workerFactory(lagertest.NewTestLogger("worker-factory"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("API worker factory: %v", err)
 	}
-	backendFactory, _, err := cmd.workerFactory(nil, nil, nil)
+	backendFactory, _, err := cmd.workerFactory(lagertest.NewTestLogger("worker-factory"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("backend worker factory: %v", err)
 	}
@@ -283,11 +283,11 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 func TestTheJetbridgeConfigIsAssembledOnce(t *testing.T) {
 	cmd := jetbridgeCommand(t)
 
-	apiFactory, _, err := cmd.workerFactory(nil, nil, nil)
+	apiFactory, _, err := cmd.workerFactory(lagertest.NewTestLogger("worker-factory"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("API worker factory: %v", err)
 	}
-	backendFactory, _, err := cmd.workerFactory(nil, nil, nil)
+	backendFactory, _, err := cmd.workerFactory(lagertest.NewTestLogger("worker-factory"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("backend worker factory: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestTheJetbridgeConfigIsAssembledOnce(t *testing.T) {
 
 	broken := jetbridgeCommand(t)
 	broken.Kubernetes.CacheStore = "tmpfs"
-	if _, _, err := broken.workerFactory(nil, nil, nil); err == nil || !strings.Contains(err.Error(), `invalid --kubernetes-cache-store value "tmpfs"`) {
+	if _, _, err := broken.workerFactory(lagertest.NewTestLogger("worker-factory"), nil, nil, nil); err == nil || !strings.Contains(err.Error(), `invalid --kubernetes-cache-store value "tmpfs"`) {
 		t.Fatalf("an unknown cache store reached the worker factory: %v", err)
 	}
 	if _, err := broken.jetbridgeComponents(lagertest.NewTestLogger("test"), nil, nil, nil); err == nil {
@@ -339,7 +339,7 @@ func TestAStepPodGrantThatCannotBeResolvedRefusesStartup(t *testing.T) {
 // the port every pod would run as the default identity whatever the grants say.
 func TestTheWorkerFactoryHandsWorkersTheBuildLookup(t *testing.T) {
 	cmd := jetbridgeCommand(t)
-	factory, _, err := cmd.workerFactory(nil, nil, nil)
+	factory, _, err := cmd.workerFactory(lagertest.NewTestLogger("worker-factory"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("worker factory: %v", err)
 	}
