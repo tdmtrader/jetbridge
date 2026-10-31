@@ -41,8 +41,6 @@ web:
         key: placeholder-key
   - name: SSL_CERT_FILE
     value: placeholder
-  - name: CONCOURSE_ENABLE_GLOBAL_RESOURCES
-    value: placeholder
   - name: CONCOURSE_AUTH_DURATION
     value: placeholder
   - name: CONCOURSE_SECRET_RETRY_ATTEMPTS
@@ -66,10 +64,6 @@ web:
   - name: CONCOURSE_BUILD_TRACKER_INTERVAL
     value: placeholder
   - name: CONCOURSE_DB_NOTIFICATION_BUS_QUEUE_SIZE
-    value: placeholder
-  - name: CONCOURSE_AGENT_STEP_IMAGE
-    value: placeholder
-  - name: CONCOURSE_AGENT_PLATFORM_TOKEN_SECRET
     value: placeholder
 mcp:
   clients:
