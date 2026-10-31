@@ -66,12 +66,6 @@ func (state *pipelineAPIDecoratorState) recordFindTeam(name string) {
 	state.findTeamArgs = append(state.findTeamArgs, name)
 }
 
-func (state *pipelineAPIDecoratorState) findTeamArguments() []string {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return append([]string(nil), state.findTeamArgs...)
-}
-
 func (state *pipelineAPIDecoratorState) recordPipelineOrder(names []string) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
