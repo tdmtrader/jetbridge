@@ -258,6 +258,13 @@ jobs:
           # Not `[ ] && [ ]`: sh -e does not exit on a failure inside an && list.
           if [ "$GO_TEST_STATUS" -ne 0 ] || [ -n "$GINKGO_FAILED" ]; then exit 1; fi
           echo "=== All unit tests passed ==="
+          echo ""
+          # fly/integration is excluded above and runs here, through the same
+          # entry point a developer uses. It builds fly and drives it against a
+          # mock ATC -- no cluster, no postgres -- so it needs no job of its
+          # own; until 2026-10-30 no job ran it at all.
+          echo "=== Running fly integration tests ==="
+          make test-fly-integration
 
 # The brine suite, driven by the Rust CLI in `--mode sync` against the
 # jetbridge adapter built from

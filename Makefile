@@ -31,11 +31,15 @@ test-elm:
 	@echo "==> Running Elm tests..."
 	yarn --silent run test
 
-# Fly integration tests (~10 min)
+# Fly integration tests (~35 sec)
 # Requires: nothing (uses mock HTTP server)
+#
+# The pipeline's unit-tests job runs this target after the unit tier, so it is
+# also the CI invocation. The Ginkgo CLI comes from go.mod through go run: the
+# CI test runner has no ginkgo on PATH, and the module pins the version.
 test-fly-integration:
 	@echo "==> Running fly integration tests..."
-	ginkgo -r --keep-going ./fly/integration/
+	go run github.com/onsi/ginkgo/v2/ginkgo -r -p --keep-going ./fly/integration/
 
 # K8s integration tests (~30 min)
 # Requires: Docker, Helm, kubectl. The cluster is created by
