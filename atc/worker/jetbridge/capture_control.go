@@ -265,13 +265,3 @@ func captureSelectedOutputName(spec runtime.ContainerSpec) string {
 
 	return spec.ExecutionControl.Capture.Output
 }
-
-// captureSelectedOutputPath is the container path of the one selected output,
-// or "" when nothing is captured.
-func captureSelectedOutputPath(spec runtime.ContainerSpec) string {
-	if !spec.ExecutionControl.HasDurableOutputCapture() {
-		return ""
-	}
-
-	return spec.Outputs[spec.ExecutionControl.Capture.Output]
-}

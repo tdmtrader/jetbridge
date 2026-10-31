@@ -50,7 +50,6 @@ var captureSites = map[string]string{
 		"volume must resolve to, through output.CaptureKey.Directory -- the one derivation " +
 		"the node's daemon shares. No API accepts a caller-chosen path",
 	"capture_control.go:captureSelectedOutputName": "which declared output was selected",
-	"capture_control.go:captureSelectedOutputPath": "where that output lives in the container",
 	"storage_daemonset.go:BuildAffinity": "the two ready labels and the capture's node. A " +
 		"capture pod requires BOTH labels and the node by name; the labels pick nodes whose " +
 		"daemons could acknowledge a hold, and the node is where the capture's step directory " +
