@@ -8,17 +8,14 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/tedsuo/ifrit"
 )
 
 var _ = Describe("fixture SQL execution", func() {
 	var runner Runner
-	var process ifrit.Process
 	var observer *sql.DB
 
 	BeforeEach(func() {
-		InitializeRunnerForGinkgo(&runner, &process)
-		DeferCleanup(func() { FinalizeRunnerForGinkgo(&runner, &process) })
+		runner = suiteRunner
 		runner.CreateTestDBFromTemplate()
 		DeferCleanup(runner.DropTestDB)
 		observer = runner.OpenSingleton()
@@ -34,7 +31,7 @@ var _ = Describe("fixture SQL execution", func() {
 	}
 
 	It("executes a multi-statement command and closes its connection", func() {
-		Expect(runner.execSQL("testdb", `
+		Expect(runner.execSQL(runner.DBName(), `
 			CREATE TABLE fixture_sql_probe (value integer);
 			INSERT INTO fixture_sql_probe VALUES (42);
 			SELECT * FROM fixture_sql_probe;
@@ -46,7 +43,7 @@ var _ = Describe("fixture SQL execution", func() {
 	})
 
 	It("returns SQL errors, rolls back the command, and closes its connection", func() {
-		err := runner.execSQL("testdb", `
+		err := runner.execSQL(runner.DBName(), `
 			CREATE TABLE fixture_sql_probe (value integer);
 			INSERT INTO fixture_sql_probe VALUES ('not an integer');
 		`)
@@ -69,7 +66,7 @@ var _ = Describe("fixture SQL execution", func() {
 		Expect(absent).To(BeTrue())
 	})
 	It("creates a pristine clone after the previous clone changes data and schema", func() {
-		Expect(runner.execSQL("testdb", "CREATE TABLE fixture_sql_probe (value integer)")).To(Succeed())
+		Expect(runner.execSQL(runner.DBName(), "CREATE TABLE fixture_sql_probe (value integer)")).To(Succeed())
 		var firstID int
 		Expect(observer.QueryRow("INSERT INTO teams (name) VALUES ('fixture-isolation') RETURNING id").Scan(&firstID)).To(Succeed())
 		Expect(observer.Close()).To(Succeed())

@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/tedsuo/ifrit"
-
 	"github.com/concourse/concourse/atc/postgresrunner"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,17 +11,13 @@ import (
 
 var _ = Describe("spread id sequences", func() {
 	var (
-		runner    postgresrunner.Runner
-		dbProcess ifrit.Process
+		runner postgresrunner.Runner
 
 		conn *sql.DB
 	)
 
 	BeforeEach(func() {
-		postgresrunner.InitializeRunnerForGinkgo(&runner, &dbProcess)
-		DeferCleanup(func() {
-			postgresrunner.FinalizeRunnerForGinkgo(&runner, &dbProcess)
-		})
+		runner = *postgresrunner.SuiteRunner()
 
 		runner.CreateTestDBFromTemplate()
 		DeferCleanup(runner.DropTestDB)

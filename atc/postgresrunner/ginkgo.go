@@ -1,6 +1,7 @@
 package postgresrunner
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -17,19 +18,77 @@ import (
 
 type none struct{}
 
+// GinkgoRunner gives a suite one postmaster, however many processes
+// `ginkgo -p` runs it in.
+//
+// Process 1 starts the postmaster and migrates the template database once, in
+// the first half of SynchronizedBeforeSuite; every process then joins it with a
+// database name of its own (testdb_<process>), so specs in different processes
+// clone, open and drop different databases and stay as isolated as they were
+// when each process ran a postmaster of its own. Advisory locks and
+// LISTEN/NOTIFY are scoped to a database, so they do not cross either.
+//
+// It used to be a plain BeforeSuite, which runs in every process: under
+// `ginkgo -p --procs=6` atc/db ran initdb and every migration six times before
+// its first spec, and held six postmasters -- six of macOS's 32 SysV shared
+// memory segments, each left behind by a killed run.
+//
+// The suite's one SynchronizedBeforeSuite and SynchronizedAfterSuite are
+// these; a suite with setup of its own does it in BeforeEach, in its Test
+// function before RunSpecs, or in a ReportAfterSuite.
 func GinkgoRunner(runner *Runner) none {
-	var dbProcess ifrit.Process
-
-	BeforeSuite(func() {
-		InitializeRunnerForGinkgo(runner, &dbProcess)
+	SynchronizedBeforeSuite(startSuitePostmaster, func(handoff []byte) {
+		joinSuitePostmaster(runner, handoff)
 	})
 
-	AfterSuite(func() {
-		dbProcess.Signal(os.Interrupt)
-		Eventually(dbProcess.Wait(), 10*time.Second).Should(Receive())
-	})
+	SynchronizedAfterSuite(func() {}, stopSuitePostmaster)
 
 	return none{}
+}
+
+// suiteProcess is the postmaster process 1 started; it is nil in every other
+// process.
+var suiteProcess ifrit.Process
+
+// suitePostmaster is what process 1 hands the others: where the postmaster
+// listens, and how to clone its template.
+type suitePostmaster struct {
+	Port     int  `json:"port"`
+	FileCopy bool `json:"file_copy"`
+}
+
+func startSuitePostmaster() []byte {
+	var runner Runner
+	InitializeRunnerForGinkgo(&runner, &suiteProcess)
+
+	handoff, err := json.Marshal(suitePostmaster{Port: runner.Port, FileCopy: runner.fileCopy})
+	Expect(err).NotTo(HaveOccurred())
+	return handoff
+}
+
+func joinSuitePostmaster(runner *Runner, handoff []byte) {
+	var postmaster suitePostmaster
+	Expect(json.Unmarshal(handoff, &postmaster)).To(Succeed())
+
+	*runner = postmaster.runner(GinkgoParallelProcess())
+}
+
+// runner is the given process's view of the postmaster.
+func (postmaster suitePostmaster) runner(process int) Runner {
+	return Runner{
+		Port:     postmaster.Port,
+		fileCopy: postmaster.FileCopy,
+		dbName:   fmt.Sprintf("testdb_%d", process),
+	}
+}
+
+// stopSuitePostmaster runs in process 1 once every process has finished.
+func stopSuitePostmaster() {
+	if suiteProcess == nil {
+		return
+	}
+	suiteProcess.Signal(os.Interrupt)
+	Eventually(suiteProcess.Wait(), 10*time.Second).Should(Receive())
 }
 
 func InitializeRunnerForGinkgo(runner *Runner, dbProcess *ifrit.Process) {

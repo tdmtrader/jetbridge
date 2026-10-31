@@ -228,7 +228,7 @@ var _ = AfterEach(func() {
 const admittedRunsEntry = "composition: the consumer invariant saw admitted runs"
 
 // ReportAfterSuite rather than AfterSuite: postgresrunner.GinkgoRunner already
-// defines the suite's one permitted AfterSuite, and reports may be many.
+// defines the suite's one permitted SynchronizedAfterSuite, and reports may be many.
 var _ = ReportAfterSuite("the consumer invariant looked at something", func(report Report) {
 	var specsThatAdmitted int
 	for _, spec := range report.SpecReports {
