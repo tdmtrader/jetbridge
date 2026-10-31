@@ -42,7 +42,7 @@ var _ = Describe("PublicHandler", func() {
 	// index.html loads elm-setup.js as /public/elm-setup.js?id=<hash>, but a
 	// relative import resolves against that URL and drops the query, so the
 	// modules it loads arrive with no content hash in the URL.
-	for _, spec := range []string{"./index.mjs", "./causality.mjs", "./graph.mjs", "./d3.v7.min.js", "./mdi-svg.min.js"} {
+	for _, spec := range []string{"./index.mjs", "./graph.mjs", "./d3.v7.min.js", "./mdi-svg.min.js"} {
 		It("makes the browser revalidate "+spec+", which elm-setup.js loads without a content hash", func() {
 			base, err := url.Parse("/public/elm-setup.js?id=deadbeef")
 			Expect(err).ToNot(HaveOccurred())

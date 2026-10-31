@@ -463,7 +463,7 @@ jobs:
 
           # Ship the whole merged directory: `yarn run build` regenerates
           # elm.js/elm.min.js/main.css/*bundle.js and the rest (images, fonts,
-          # mdi-svg.min.js, graphviz) is committed source.
+          # mdi-svg.min.js) is committed source.
           cp -a web/public/. ../web-public/
   - task: build-and-push-local
     timeout: 45m
