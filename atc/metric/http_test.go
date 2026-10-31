@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	. "github.com/concourse/concourse/atc/metric"
+	"github.com/concourse/concourse/atc/metric"
+	"github.com/prometheus/client_golang/prometheus"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -21,61 +23,34 @@ func noopHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(404)
 }
 
-var _ = Describe("MetricsHandler", func() {
+var _ = Describe("WrapHandler", func() {
 	var (
-		ts      *httptest.Server
-		emitter *recordingEmitter
+		ts  *httptest.Server
+		reg *prometheus.Registry
 	)
 
 	BeforeEach(func() {
-		emitter = captureMetrics()
-
-		ts = httptest.NewServer(WrapHandler("ApiEndpoint", http.HandlerFunc(noopHandler)))
+		reg = freshRegistry()
+		ts = httptest.NewServer(metric.WrapHandler("ApiEndpoint", http.HandlerFunc(noopHandler)))
 	})
 
 	AfterEach(func() {
 		ts.Close()
 	})
 
-	Context("when serving requests", func() {
-		var (
-			endpoint = "/"
-			event    Event
-		)
+	DescribeTable("records the response time by method, route and status",
+		func(path, status string) {
+			labels := map[string]string{"method": "GET", "route": "ApiEndpoint", "status": status}
+			before := gathered(reg, "concourse_http_responses_duration_seconds", labels)
 
-		JustBeforeEach(func() {
-			res, err := http.Get(ts.URL + endpoint)
+			res, err := http.Get(ts.URL + path)
 			Expect(err).ToNot(HaveOccurred())
 			res.Body.Close()
 
-			Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
-			event = emitter.Events()[0]
-		})
-
-		It("captures request and response properties", func() {
-			Expect(event.Attributes).To(HaveKeyWithValue("status", "404"))
-			Expect(event.Attributes).To(HaveKeyWithValue("method", "GET"))
-			Expect(event.Attributes).To(HaveKeyWithValue("route", "ApiEndpoint"))
-		})
-
-		Context("to endpoint that returns success statuses", func() {
-			BeforeEach(func() {
-				endpoint = "/success"
-			})
-
-			It("captures error code", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("status", "200"))
-			})
-		})
-
-		Context("to faulty endpoint", func() {
-			BeforeEach(func() {
-				endpoint = "/failure"
-			})
-
-			It("captures error code", func() {
-				Expect(event.Attributes).To(HaveKeyWithValue("status", "500"))
-			})
-		})
-	})
+			Expect(gathered(reg, "concourse_http_responses_duration_seconds", labels)).To(Equal(before + 1))
+		},
+		Entry("not found", "/", "404"),
+		Entry("success", "/success", "200"),
+		Entry("failure", "/failure", "500"),
+	)
 })

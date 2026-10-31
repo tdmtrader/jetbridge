@@ -5,174 +5,119 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/atc/db/lock"
-
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-var nopLogger = lager.NewLogger("metric")
+func ms(duration time.Duration) float64 {
+	return float64(duration) / 1000000
+}
 
 // StepWaited records how long a step waited for a worker.
 func StepWaited(teamID, teamName, stepType string, waited time.Duration) {
-	Metrics.emit(nopLogger, Event{
-		Name:  "steps waiting duration",
-		Value: waited.Seconds(),
-		Attributes: map[string]string{
-			"teamId":   teamID,
-			"teamName": teamName,
-			"type":     stepType,
-		},
-	})
+	stepsWaitingDuration.WithLabelValues("", teamID, teamName, stepType, "").Observe(waited.Seconds())
 }
 
-func emitMs(name string, duration time.Duration) {
-	Metrics.emit(nopLogger, Event{Name: name, Value: ms(duration)})
+// JobSchedulingDuration records one scheduling pass over a job.
+func JobSchedulingDuration(pipeline, job string, jobID int, d time.Duration) {
+	jobsSchedulingDuration.WithLabelValues(pipeline, job, strconv.Itoa(jobID)).Observe(ms(d))
 }
 
 // The garbage collectors' pass durations.
-func GCBuildCollectorDuration(d time.Duration) { emitMs("gc: build collector duration (ms)", d) }
-func GCWorkerCollectorDuration(d time.Duration) {
-	emitMs("gc: worker collector duration (ms)", d)
-}
+func GCBuildCollectorDuration(d time.Duration)  { gcBuildCollectorDuration.Observe(ms(d)) }
+func GCWorkerCollectorDuration(d time.Duration) { gcWorkerCollectorDuration.Observe(ms(d)) }
 func GCResourceCacheUseCollectorDuration(d time.Duration) {
-	emitMs("gc: resource cache use collector duration (ms)", d)
+	gcResourceCacheUseCollectorDuration.Observe(ms(d))
 }
 func GCResourceConfigCollectorDuration(d time.Duration) {
-	emitMs("gc: resource config collector duration (ms)", d)
+	gcResourceConfigCollectorDuration.Observe(ms(d))
 }
 func GCDeprecatedScopeCollectorDuration(d time.Duration) {
-	emitMs("gc: deprecated scope collector duration (ms)", d)
+	gcDeprecatedScopeCollectorDuration.Observe(ms(d))
 }
 func GCResourceCacheCollectorDuration(d time.Duration) {
-	emitMs("gc: resource cache collector duration (ms)", d)
+	gcResourceCacheCollectorDuration.Observe(ms(d))
 }
-func GCTaskCacheCollectorDuration(d time.Duration) {
-	emitMs("gc: task cache collector duration (ms)", d)
-}
+func GCTaskCacheCollectorDuration(d time.Duration) { gcTaskCacheCollectorDuration.Observe(ms(d)) }
 func GCResourceConfigCheckSessionCollectorDuration(d time.Duration) {
-	emitMs("gc: resource config check session collector duration (ms)", d)
+	gcResourceConfigCheckSessionCollectorDuration.Observe(ms(d))
 }
-func GCArtifactCollectorDuration(d time.Duration) {
-	emitMs("gc: artifact collector duration (ms)", d)
-}
-func GCContainerCollectorDuration(d time.Duration) {
-	emitMs("gc: container collector duration (ms)", d)
-}
-func GCVolumeCollectorDuration(d time.Duration) { emitMs("gc: volume collector duration (ms)", d) }
+func GCArtifactCollectorDuration(d time.Duration)  { gcArtifactCollectorDuration.Observe(ms(d)) }
+func GCContainerCollectorDuration(d time.Duration) { gcContainerCollectorDuration.Observe(ms(d)) }
+func GCVolumeCollectorDuration(d time.Duration)    { gcVolumeCollectorDuration.Observe(ms(d)) }
 
 // PipelineRunReclaimBacklog is the number of pipeline runs eligible for
 // reclamation at the start of a reclaimer pass, counted without the batch
 // bound. Read it against the batch size: a backlog that stays above the batch
 // pass after pass is a reclaimer that will never catch up, and every run in it
 // is a payload pipeline, its jobs and its build rows still on disk.
-func PipelineRunReclaimBacklog(runs int) {
-	Metrics.emit(nopLogger, Event{Name: "pipeline run reclaim backlog", Value: float64(runs)})
-}
+func PipelineRunReclaimBacklog(runs int) { pipelineRunReclaimBacklog.Set(float64(runs)) }
 
 // PipelineRunReclaimDuration is how long one reclaimer pass took, batch
 // included. It is per-batch rather than per-run so that it stays comparable
 // with the component's own interval: a pass that outlasts the interval is the
 // other half of the backlog story.
-func PipelineRunReclaimDuration(d time.Duration) {
-	emitMs("gc: pipeline run reclaim duration (ms)", d)
-}
-
-// JobSchedulingDuration records one scheduling pass over a job.
-func JobSchedulingDuration(pipeline, job string, jobID int, d time.Duration) {
-	Metrics.emit(nopLogger, Event{
-		Name:  "scheduling: job duration (ms)",
-		Value: ms(d),
-		Attributes: map[string]string{
-			"pipeline": pipeline,
-			"job":      job,
-			"job_id":   strconv.Itoa(jobID),
-		},
-	})
-}
-
-func emitCount(name string, count int) {
-	Metrics.emit(nopLogger, Event{Name: name, Value: float64(count), Attributes: map[string]string{}})
-}
+func PipelineRunReclaimDuration(d time.Duration) { pipelineRunReclaimDuration.Observe(ms(d)) }
 
 // What one garbage collection pass found to delete.
 func CreatingContainersToBeGarbageCollected(n int) {
-	emitCount("creating containers to be garbage collected", n)
+	creatingContainersToBeGarbageCollected.Add(float64(n))
 }
 func CreatedContainersToBeGarbageCollected(n int) {
-	emitCount("created containers to be garbage collected", n)
+	createdContainersToBeGarbageCollected.Add(float64(n))
 }
 func DestroyingContainersToBeGarbageCollected(n int) {
-	emitCount("destroying containers to be garbage collected", n)
+	destroyingContainersToBeGarbageCollected.Add(float64(n))
 }
 func FailedContainersToBeGarbageCollected(n int) {
-	emitCount("failed containers to be garbage collected", n)
+	failedContainersToBeGarbageCollected.Add(float64(n))
 }
-func CreatedVolumesToBeGarbageCollected(n int) {
-	emitCount("created volumes to be garbage collected", n)
-}
+func CreatedVolumesToBeGarbageCollected(n int) { createdVolumesToBeGarbageCollected.Add(float64(n)) }
 func DestroyingVolumesToBeGarbageCollected(n int) {
-	emitCount("destroying volumes to be garbage collected", n)
+	destroyingVolumesToBeGarbageCollected.Add(float64(n))
 }
-func FailedVolumesToBeGarbageCollected(n int) {
-	emitCount("failed volumes to be garbage collected", n)
-}
+func FailedVolumesToBeGarbageCollected(n int) { failedVolumesToBeGarbageCollected.Add(float64(n)) }
+
+var buildStatusValues = map[string]float64{"succeeded": 0, "failed": 1, "aborted": 2, "errored": 3}
 
 // LatestCompletedBuildStatus records a job's latest completed build. Only the
 // four terminal statuses are published.
 func LatestCompletedBuildStatus(team, pipeline, job, status string) {
-	var value int
-	switch status {
-	case "succeeded":
-		value = 0
-	case "failed":
-		value = 1
-	case "aborted":
-		value = 2
-	case "errored":
-		value = 3
-	default:
-		return
+	if value, ok := buildStatusValues[status]; ok {
+		latestCompletedBuildStatus.WithLabelValues(job, pipeline, team).Set(value)
 	}
-
-	Metrics.emit(nopLogger, Event{
-		Name:  "latest completed build status",
-		Value: float64(value),
-		Attributes: map[string]string{
-			"jobName":      job,
-			"pipelineName": pipeline,
-			"teamName":     team,
-		},
-	})
 }
 
-// BuildStarted records a started pipeline build.
-func BuildStarted(build db.Build) {
-	Metrics.emit(nopLogger, Event{
-		Name:       "build started",
-		Value:      float64(build.ID()),
-		Attributes: build.TracingAttrs(),
-	})
-}
-
-// BuildFinished records a finished pipeline build.
+// BuildFinished records a finished pipeline build, with its trace as the
+// duration's exemplar.
 func BuildFinished(build db.Build) {
 	attrs := build.TracingAttrs()
-	attrs["build_status"] = build.Status().String()
+	status := build.Status()
 
-	duration := build.EndTime().Sub(build.StartTime())
+	buildsFinished.Inc()
+	buildsFinishedVec.WithLabelValues(attrs["team_name"], attrs["pipeline"], attrs["job"], string(status)).Inc()
+
+	switch status {
+	case db.BuildStatusAborted:
+		buildsAborted.Inc()
+	case db.BuildStatusSucceeded:
+		buildsSucceeded.Inc()
+	case db.BuildStatusFailed:
+		buildsFailed.Inc()
+	case db.BuildStatusErrored:
+		buildsErrored.Inc()
+	}
 
 	var traceID string
 	if sc := build.SpanContext(); sc != nil {
 		traceID = extractTraceID(sc.Get("traceparent"))
 	}
 
-	Metrics.emit(nopLogger, Event{
-		Name:       "build finished",
-		Value:      ms(duration),
-		Attributes: attrs,
-		TraceID:    traceID,
-	})
+	// seconds are the standard prometheus base unit for time
+	duration := ms(build.EndTime().Sub(build.StartTime())) / 1000
+	observeWithTrace(buildDurationsVec.WithLabelValues(attrs["team_name"], attrs["pipeline"], attrs["job"]), duration, traceID)
 }
 
 // extractTraceID parses the trace ID from a W3C traceparent header.
@@ -185,29 +130,12 @@ func extractTraceID(traceparent string) string {
 	return ""
 }
 
-func ms(duration time.Duration) float64 {
-	return float64(duration) / 1000000
-}
-
-func errorLogged(message string) {
-	Metrics.emit(nopLogger, Event{
-		Name:       "error log",
-		Value:      1,
-		Attributes: map[string]string{"message": message},
-	})
-}
-
-func httpResponded(route, method string, status int, duration time.Duration, traceID string) {
-	Metrics.emit(nopLogger, Event{
-		Name:  "http response time",
-		Value: ms(duration),
-		Attributes: map[string]string{
-			"route":  route,
-			"method": method,
-			"status": strconv.Itoa(status),
-		},
-		TraceID: traceID,
-	})
+func observeWithTrace(observer prometheus.Observer, value float64, traceID string) {
+	if eo, ok := observer.(prometheus.ExemplarObserver); ok && traceID != "" {
+		eo.ObserveWithExemplar(value, prometheus.Labels{"trace_id": traceID})
+		return
+	}
+	observer.Observe(value)
 }
 
 var lockTypeNames = map[int]string{
@@ -226,26 +154,27 @@ var lockTypeNames = map[int]string{
 
 func LogLockAcquired(logger lager.Logger, lockID lock.LockID) {
 	logger.Debug("acquired")
-	lockHeld(lockID, 1)
+	if gauge, ok := lockGauge(lockID); ok {
+		gauge.Inc()
+	}
 }
 
 func LogLockReleased(logger lager.Logger, lockID lock.LockID) {
 	logger.Debug("released")
-	lockHeld(lockID, 0)
+	if gauge, ok := lockGauge(lockID); ok {
+		gauge.Dec()
+	}
 }
 
-func lockHeld(lockID lock.LockID, value float64) {
+func lockGauge(lockID lock.LockID) (prometheus.Gauge, bool) {
 	if len(lockID) == 0 {
-		return
+		return nil, false
 	}
-
-	if lockType, ok := lockTypeNames[lockID[0]]; ok {
-		Metrics.emit(nopLogger, Event{
-			Name:       "lock held",
-			Value:      value,
-			Attributes: map[string]string{"type": lockType},
-		})
+	lockType, ok := lockTypeNames[lockID[0]]
+	if !ok {
+		return nil, false
 	}
+	return locksHeld.WithLabelValues(lockType), true
 }
 
 // WorkersRegistered records how many workers the database holds in each
@@ -255,15 +184,10 @@ func WorkersRegistered(stateByName map[string]db.WorkerState) {
 		count := 0
 		for _, workerState := range stateByName {
 			if workerState == state {
-				count += 1
+				count++
 			}
 		}
-
-		Metrics.emit(nopLogger, Event{
-			Name:       "worker state",
-			Value:      float64(count),
-			Attributes: map[string]string{"state": string(state)},
-		})
+		workersRegistered.WithLabelValues(string(state)).Set(float64(count))
 	}
 }
 
@@ -300,23 +224,12 @@ type HangarOutputSnapshot struct {
 
 // HangarOutputStatus publishes one status pass.
 func HangarOutputStatus(status HangarOutputSnapshot) {
-	Metrics.emit(nopLogger, Event{
-		Name:  "hangar output enabled",
-		Value: boolValue(status.Enabled),
-	})
-	Metrics.emit(nopLogger, Event{
-		Name:       "hangar output at risk",
-		Value:      boolValue(status.AtRisk),
-		Attributes: map[string]string{"reasons": status.Reasons},
-	})
+	hangarOutputEnabled.Set(boolValue(status.Enabled))
+	hangarOutputAtRisk.WithLabelValues(status.Reasons).Set(boolValue(status.AtRisk))
 	for violation, count := range status.Violations {
-		Metrics.emit(nopLogger, Event{
-			Name:       "hangar output policy violations",
-			Value:      float64(count),
-			Attributes: map[string]string{"violation": violation},
-		})
+		hangarOutputViolations.WithLabelValues(violation).Set(float64(count))
 	}
-	for name, value := range map[string]int{
+	for kind, value := range map[string]int{
 		"live_generations":        status.LiveGenerations,
 		"nonterminal_captures":    status.NonterminalCaptures,
 		"pending_captures":        status.PendingCaptures,
@@ -327,11 +240,7 @@ func HangarOutputStatus(status HangarOutputSnapshot) {
 		"open_integrity_findings": status.OpenIntegrityFindings,
 		"residue":                 status.Residue,
 	} {
-		Metrics.emit(nopLogger, Event{
-			Name:       "hangar output plane inventory",
-			Value:      float64(value),
-			Attributes: map[string]string{"kind": name},
-		})
+		hangarOutputPlaneInventory.WithLabelValues(kind).Set(float64(value))
 	}
 }
 
@@ -339,17 +248,9 @@ func HangarOutputStatus(status HangarOutputSnapshot) {
 // reclaimed, generations it deferred to a later pass (claimed or captured
 // between the query and the lock), and deletes that did not answer.
 func HangarOutputReclaimPass(reclaimed, deferred, failed int) {
-	for outcome, value := range map[string]int{
-		"reclaimed": reclaimed,
-		"deferred":  deferred,
-		"failed":    failed,
-	} {
-		Metrics.emit(nopLogger, Event{
-			Name:       "hangar output reclaim generations",
-			Value:      float64(value),
-			Attributes: map[string]string{"outcome": outcome},
-		})
-	}
+	hangarOutputReclaimed.WithLabelValues("reclaimed").Add(float64(reclaimed))
+	hangarOutputReclaimed.WithLabelValues("deferred").Add(float64(deferred))
+	hangarOutputReclaimed.WithLabelValues("failed").Add(float64(failed))
 }
 
 // HangarOutputOrphanSweep is one orphan sweep's count of listed objects per
@@ -359,26 +260,20 @@ func HangarOutputReclaimPass(reclaimed, deferred, failed int) {
 // the shared deletion lock was held elsewhere, and is neither.
 func HangarOutputOrphanSweep(objects map[string]int, failed, skipped bool) {
 	for class, value := range objects {
-		Metrics.emit(nopLogger, Event{
-			Name:       "hangar output orphan sweep objects",
-			Value:      float64(value),
-			Attributes: map[string]string{"class": class},
-		})
+		hangarOutputSweepObjects.WithLabelValues(class).Set(float64(value))
 	}
-	if skipped {
-		return
+	switch {
+	case skipped:
+	case failed:
+		hangarOutputSweepFailures.Inc()
+	default:
+		hangarOutputSweepPasses.Inc()
 	}
-	name := "hangar output orphan sweep passes"
-	if failed {
-		name = "hangar output orphan sweep failures"
-	}
-	Metrics.emit(nopLogger, Event{Name: name, Value: 1})
 }
 
 func boolValue(value bool) float64 {
 	if value {
 		return 1
 	}
-
 	return 0
 }

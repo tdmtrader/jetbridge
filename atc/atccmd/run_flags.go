@@ -169,10 +169,10 @@ type RunCommand struct {
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
 
 	Metrics struct {
-		HostName            string            `long:"metrics-host-name" description:"Host string to attach to emitted metrics."`
 		Attributes          map[string]string `long:"metrics-attribute" description:"A key-value attribute to attach to emitted metrics. Can be specified multiple times." value-name:"NAME:VALUE"`
-		BufferSize          uint32            `long:"metrics-buffer-size" default:"1000" description:"The size of the buffer used in emitting event metrics."`
 		CaptureErrorMetrics bool              `long:"capture-error-metrics" description:"Enable capturing of error log metrics"`
+
+		Prometheus metric.PrometheusConfig `group:"Metric Emitter (Prometheus)"`
 	} `group:"Metrics & Diagnostics"`
 
 	Tracing tracing.Config `group:"Tracing" namespace:"tracing"`
@@ -239,32 +239,17 @@ type RunCommand struct {
 }
 
 func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
-	var (
-		metricsGroup *flags.Group
-		credsGroup   *flags.Group
-	)
+	var credsGroup *flags.Group
 
 	groups := commandFlags.Groups()
-	for i := 0; i < len(groups); i++ {
+	for i := 0; i < len(groups) && credsGroup == nil; i++ {
 		group := groups[i]
 
-		if credsGroup == nil && group.ShortDescription == "Credential Management" {
+		if group.ShortDescription == "Credential Management" {
 			credsGroup = group
 		}
 
-		if metricsGroup == nil && group.ShortDescription == "Metrics & Diagnostics" {
-			metricsGroup = group
-		}
-
-		if metricsGroup != nil && credsGroup != nil {
-			break
-		}
-
 		groups = append(groups, group.Groups()...)
-	}
-
-	if metricsGroup == nil {
-		panic("could not find Metrics & Diagnostics group for registering emitters")
 	}
 
 	if credsGroup == nil {
@@ -277,8 +262,6 @@ func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 	}
 
 	cmd.CredentialManagers = managerConfigs
-
-	metric.Metrics.WireEmitters(metricsGroup)
 }
 
 func (cmd *RunCommand) validateCustomRoles() error {

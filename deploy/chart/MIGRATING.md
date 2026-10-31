@@ -208,9 +208,10 @@ purge of teams, users or tokens is required. Dex still replaces connector
 registrations at startup; local browser/Fly login, refresh and MCP auth remain.
 
 Datadog/DogStatsD, InfluxDB and New Relic metric emitters and their flags are
-removed. Use Prometheus (`metrics.enabled`). Lager remains a manual alternative:
-set `metrics.enabled=false` and `serviceMonitor.enabled=false`, set
-`CONCOURSE_EMIT_TO_LOGS=true` via `web.env` and `web.logLevel=debug`. Only one emitter can be configured.
+removed. Use Prometheus (`metrics.enabled`). The Lager emitter
+(`--emit-to-logs`) and the `--metrics-host-name` and `--metrics-buffer-size`
+flags that only it and the event buffer read are removed too; every metric
+name, label and help text on `/metrics` is unchanged.
 
 `web.env` remains available for retained settings. These
 capabilities were previously reachable through environment configuration and
@@ -277,7 +278,7 @@ two steps:
 | `CONCOURSE_SECRET_RETRY_ATTEMPTS` | `web.secretRetry.attempts` (an integer) |
 | `CONCOURSE_SECRET_RETRY_INTERVAL` | `web.secretRetry.interval` |
 | `CONCOURSE_COOKIE_SECURE` | Nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://`, which it is wherever users reach the UI over HTTPS, a TLS-terminating proxy included. |
-| `CONCOURSE_EMIT_TO_LOGS` | No chart value. The chart offers Prometheus (`metrics.enabled`); the Lager emitter remains a binary flag only. |
+| `CONCOURSE_EMIT_TO_LOGS` | Drop it: the Lager emitter and its `--emit-to-logs` flag are removed, and no flag reads the variable. The chart offers Prometheus (`metrics.enabled`). |
 | Any name no `concourse web` flag reads (`CONCOURSE_GC_INTERVAL`, `CONCOURSE_BUILD_TRACKER_INTERVAL`, `CONCOURSE_DB_NOTIFICATION_BUS_QUEUE_SIZE`, ...) | Drop it; it never did anything. |
 | Any other `CONCOURSE_*` name | No chart value: the setting is the binary's default. A setting deployments need to vary gets a typed value, a schema entry and room under `maxValues` (ADR-0008). |
 

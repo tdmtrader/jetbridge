@@ -36,9 +36,6 @@ import (
 	"github.com/tedsuo/ifrit/sigmon"
 	"go.yaml.in/yaml/v3"
 
-	// dynamically registered metric emitters
-	_ "github.com/concourse/concourse/atc/metric/emitter"
-
 	// dynamically registered policy checkers
 
 	// dynamically registered credential managers
@@ -175,7 +172,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		db.InitConnectionTracker(false)
 	})
 
-	if err := cmd.configureMetrics(logger); err != nil {
+	if err := cmd.configureMetrics(); err != nil {
 		return nil, err
 	}
 
@@ -234,12 +231,8 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	}
 
 	members = append(members, grouper.Member{
-		Name: "periodic-metrics",
-		Runner: metric.PeriodicallyEmit(
-			logger.Session("periodic-metrics"),
-			metric.Metrics,
-			10*time.Second,
-		),
+		Name:   "periodic-metrics",
+		Runner: metric.PeriodicallyEmit(10 * time.Second),
 	})
 
 	onReady := func() {
@@ -412,13 +405,9 @@ func run(runner ifrit.Runner, onReady func(), onExit func()) ifrit.Runner {
 	})
 }
 
-func (cmd *RunCommand) configureMetrics(logger lager.Logger) error {
-	host := cmd.Metrics.HostName
-	if host == "" {
-		host, _ = os.Hostname()
-	}
-
-	return metric.Metrics.Initialize(logger.Session("metrics"), host, cmd.Metrics.Attributes, cmd.Metrics.BufferSize)
+func (cmd *RunCommand) configureMetrics() error {
+	_, err := cmd.Metrics.Prometheus.Serve(cmd.Metrics.Attributes)
+	return err
 }
 
 func (cmd *RunCommand) constructEngine(

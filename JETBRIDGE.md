@@ -539,11 +539,11 @@ metrics:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `concourse_k8s_pod_startup_duration_ms` | Gauge | Time from pod creation to Running phase (milliseconds). Reports max value per scrape interval. |
+| `concourse_k8s_pod_startup_duration_milliseconds` | Histogram | Time from pod creation to Running phase (milliseconds). Observes the longest startup seen in each 10s interval. |
 | `concourse_k8s_image_pull_failures_total` | Counter | Number of ImagePullBackOff / ErrImagePull failures. |
 
-Standard Concourse metrics (`concourse_containers_created_total`,
-`concourse_failed_containers_total`, etc.) continue to work.
+Every family the web publishes is declared in `atc/metric/prometheus.go` and
+pinned by `atc/metric/testdata/metric_families.txt`.
 
 Enable Prometheus scraping via Helm `serviceMonitor.enabled=true` (requires
 prometheus-operator CRDs).

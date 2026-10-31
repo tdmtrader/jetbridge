@@ -516,7 +516,5 @@ The chart always deploys the artifact daemon and wires its host path into web.
 - **Resources:** Tune `web.resources` based on pipeline count. The web node is the control plane and doesn't run builds.
 - **Connection pools:** For N replicas, ensure PostgreSQL `max_connections >= N * (apiMaxConns + backendMaxConns + 7)`.
 
-The metric emitters are Prometheus and Lager. Lager is a manual alternative:
-set `metrics.enabled=false` and `serviceMonitor.enabled=false`, set
-`CONCOURSE_EMIT_TO_LOGS=true` through `web.env`, and set `web.logLevel=debug`. It cannot run alongside Prometheus and does not
-automatically take over if Prometheus fails.
+Prometheus is the only metric sink: `metrics.enabled` opens the web's
+`/metrics` listener. The Lager emitter (`CONCOURSE_EMIT_TO_LOGS`) is removed.

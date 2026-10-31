@@ -2,11 +2,8 @@ package gc_test
 
 import (
 	"context"
-	"slices"
-	"sync"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
@@ -14,62 +11,44 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-// recordingEmitter keeps every event handed to it. The shipped emitters are
-// write-only sinks that rewrite what they are given, so a spec that wants to
-// see what the reclaimer measured has to supply the sink itself.
-type recordingEmitter struct {
-	mu     sync.Mutex
-	events []metric.Event
-}
-
-func (e *recordingEmitter) Emit(_ lager.Logger, event metric.Event) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.events = append(e.events, event)
-}
-
-func (e *recordingEmitter) Events() []metric.Event {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return slices.Clone(e.events)
-}
-
-type recordingEmitterFactory struct{ emitter *recordingEmitter }
-
-func (f recordingEmitterFactory) Description() string { return "recording" }
-func (f recordingEmitterFactory) IsConfigured() bool  { return true }
-func (f recordingEmitterFactory) NewEmitter(map[string]string) (metric.Emitter, error) {
-	return f.emitter, nil
-}
-
-// captureMetrics swaps the process-wide Monitor for a recording one and
-// restores it afterwards, because a metric Event emits to that global.
-func captureMetrics() *recordingEmitter {
+// reclaimMetrics registers the metric collectors with a registry of its
+// own, so a spec reads what the /metrics page would carry.
+func reclaimMetrics() *prometheus.Registry {
 	GinkgoHelper()
 
-	emitter := &recordingEmitter{}
-	monitor := metric.NewMonitor()
-	monitor.RegisterEmitter(recordingEmitterFactory{emitter: emitter})
-	Expect(monitor.Initialize(logger, "test", map[string]string{}, 1000)).To(Succeed())
-
-	previous := metric.Metrics
-	metric.Metrics = monitor
-	DeferCleanup(func() { metric.Metrics = previous })
-
-	return emitter
+	reg := prometheus.NewRegistry()
+	Expect(metric.Register(reg, nil)).To(Succeed())
+	return reg
 }
 
-func eventValues(emitter *recordingEmitter, name string) []float64 {
-	values := []float64{}
-	for _, event := range emitter.Events() {
-		if event.Name == name {
-			values = append(values, event.Value)
+// reclaimValue reads the backlog gauge, or the duration histogram's pass
+// count.
+func reclaimValue(reg *prometheus.Registry, name string) float64 {
+	GinkgoHelper()
+
+	families, err := reg.Gather()
+	Expect(err).NotTo(HaveOccurred())
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
 		}
+		m := family.GetMetric()[0]
+		if m.GetHistogram() != nil {
+			return float64(m.GetHistogram().GetSampleCount())
+		}
+		return m.GetGauge().GetValue()
 	}
-	return values
+	Fail("no family " + name)
+	return 0
 }
+
+const (
+	backlogMetric  = "concourse_gc_pipeline_run_reclaim_backlog"
+	durationMetric = "concourse_gc_pipeline_run_reclaim_duration"
+)
 
 var _ = Describe("PipelineRunReclaimer metrics", func() {
 	var (
@@ -109,39 +88,40 @@ var _ = Describe("PipelineRunReclaimer metrics", func() {
 
 	It("reports the whole backlog, not just the batch it took", func() {
 		createTerminalRuns(22)
-		emitter := captureMetrics()
+		reg := reclaimMetrics()
+		passes := reclaimValue(reg, durationMetric)
 
 		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now)
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 
-		Eventually(func() []float64 { return eventValues(emitter, "pipeline run reclaim backlog") }).
-			Should(Equal([]float64{21}), "twenty-one of twenty-two runs are past the retention window")
-
-		Eventually(func() []float64 { return eventValues(emitter, "gc: pipeline run reclaim duration (ms)") }).
-			Should(HaveLen(1))
+		Expect(reclaimValue(reg, backlogMetric)).
+			To(Equal(float64(21)), "twenty-one of twenty-two runs are past the retention window")
+		Expect(reclaimValue(reg, durationMetric)).To(Equal(passes + 1))
 	})
 
 	It("drains the backlog across batches", func() {
 		createTerminalRuns(22)
-		emitter := captureMetrics()
+		reg := reclaimMetrics()
 
 		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now)
-		Expect(reclaimer.Run(context.Background())).To(Succeed())
-		Expect(reclaimer.Run(context.Background())).To(Succeed())
-		Expect(reclaimer.Run(context.Background())).To(Succeed())
+		backlogs := []float64{}
+		for range 3 {
+			Expect(reclaimer.Run(context.Background())).To(Succeed())
+			backlogs = append(backlogs, reclaimValue(reg, backlogMetric))
+		}
 
-		Eventually(func() []float64 { return eventValues(emitter, "pipeline run reclaim backlog") }).
-			Should(Equal([]float64{21, 1, 0}), "each pass must measure the backlog it found, and reclaiming must shrink it")
+		Expect(backlogs).To(Equal([]float64{21, 1, 0}), "each pass must measure the backlog it found, and reclaiming must shrink it")
 	})
 
 	It("reports an empty backlog when there is nothing to reclaim", func() {
-		emitter := captureMetrics()
+		reg := reclaimMetrics()
+		metric.PipelineRunReclaimBacklog(5) // a stale level a pass must overwrite
 
 		reclaimer := gc.NewPipelineRunReclaimer(lifecycle, time.Now)
 		Expect(reclaimer.Run(context.Background())).To(Succeed())
 
-		Eventually(func() []float64 { return eventValues(emitter, "pipeline run reclaim backlog") }).
-			Should(Equal([]float64{0}), "an idle reclaimer must publish zero rather than nothing at all")
+		Expect(reclaimValue(reg, backlogMetric)).
+			To(Equal(float64(0)), "an idle reclaimer must publish zero rather than nothing at all")
 	})
 
 	It("counts every candidate the bounded batch could not name", func() {

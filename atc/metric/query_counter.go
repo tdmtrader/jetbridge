@@ -2,17 +2,35 @@ package metric
 
 import (
 	"database/sql"
+	"slices"
+	"sync"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db"
+)
+
+var (
+	databasesMu sync.Mutex
+	databases   []db.DbConn
 )
 
 // InstrumentDB counts every query made through conn and publishes its open
 // connections on each periodic tick.
 func InstrumentDB(conn db.DbConn) db.DbConn {
 	instrumented := &countingConn{DbConn: conn}
-	Metrics.Databases = append(Metrics.Databases, instrumented)
+
+	databasesMu.Lock()
+	databases = append(databases, instrumented)
+	databasesMu.Unlock()
+
 	return instrumented
+}
+
+func instrumentedDBs() []db.DbConn {
+	databasesMu.Lock()
+	defer databasesMu.Unlock()
+
+	return slices.Clone(databases)
 }
 
 type countingConn struct {

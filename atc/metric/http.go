@@ -2,6 +2,7 @@ package metric
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/felixge/httpsnoop"
 	"go.opentelemetry.io/otel/trace"
@@ -18,6 +19,10 @@ func WrapHandler(route string, handler http.Handler) http.Handler {
 			traceID = sc.TraceID().String()
 		}
 
-		httpResponded(route, r.Method, metrics.Code, metrics.Duration, traceID)
+		observeWithTrace(
+			httpRequestsDuration.WithLabelValues(r.Method, route, strconv.Itoa(metrics.Code)),
+			ms(metrics.Duration)/1000,
+			traceID,
+		)
 	})
 }

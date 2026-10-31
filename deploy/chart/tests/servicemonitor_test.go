@@ -58,7 +58,7 @@ func TestServiceMonitorScrapesTheMetricsListener(t *testing.T) {
 		if bindPort == "" {
 			t.Errorf("nothing behind Service %s binds a metrics listener: the ATC "+
 				"registers its Prometheus emitter only when both bind flags are set "+
-				"(IsConfigured in atc/metric/emitter/prometheus.go), and the artifact "+
+				"(IsConfigured in atc/metric/prometheus.go), and the artifact "+
 				"daemon opens its plain-HTTP listener only with --metrics-port, so "+
 				"nothing is listening for this ServiceMonitor to scrape", svc.name)
 			continue

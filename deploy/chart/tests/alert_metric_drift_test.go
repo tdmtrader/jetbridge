@@ -31,7 +31,7 @@ import (
 // So resolve the names against their actual definition rather than against
 // anyone's memory of them. Every Prometheus metric this project publishes is
 // declared as a prometheus.*Opts literal -- the ATC's in
-// atc/metric/emitter/prometheus.go, the artifact daemon's in
+// atc/metric/prometheus.go, the artifact daemon's in
 // cmd/artifact-daemon/metrics.go -- so the AST of those files is the oracle,
 // the same move TestChartRendersOnlyFlagsTheBinaryAccepts makes by reading
 // --help instead of trusting the chart.
@@ -39,7 +39,7 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 	// Each prefix is resolved only against the binary that owns it: a daemon
 	// rule naming an ATC series is as dead as one naming nothing.
 	oracles := map[string]map[string]bool{
-		"concourse":       declaredPrometheusMetrics(t, "atc", "metric", "emitter", "prometheus.go"),
+		"concourse":       declaredPrometheusMetrics(t, "atc", "metric", "prometheus.go"),
 		"artifact_daemon": declaredPrometheusMetrics(t, "cmd", "artifact-daemon", "metrics.go"),
 	}
 	for prefix := range oracles {

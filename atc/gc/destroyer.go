@@ -69,13 +69,12 @@ func (d *destroyer) DestroyVolumes(workerName string, currentHandles []string) e
 		return nil
 	}
 
-	deleted, err := d.volumeRepository.RemoveDestroyingVolumes(workerName, currentHandles)
+	_, err := d.volumeRepository.RemoveDestroyingVolumes(workerName, currentHandles)
 	if err != nil {
 		d.logger.Error("failed-to-destroy-volumes", err)
 		return err
 	}
 
-	metric.Metrics.VolumesDeleted.IncDelta(deleted)
 	return nil
 }
 

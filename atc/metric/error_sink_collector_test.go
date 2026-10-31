@@ -3,50 +3,36 @@ package metric_test
 import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/prometheus/client_golang/prometheus"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("ErrorSink", func() {
-	var emitter *recordingEmitter
+	var reg *prometheus.Registry
 
 	BeforeEach(func() {
-		emitter = captureMetrics()
+		reg = freshRegistry()
 	})
 
-	Context("Log", func() {
-		var log lager.LogFormat
+	count := func(message string) float64 {
+		return gathered(reg, "concourse_error_logs", map[string]string{"message": message})
+	}
 
-		JustBeforeEach(func() {
-			metric.ErrorSink{}.Log(log)
-		})
+	It("counts an ERROR line by its message", func() {
+		before := count("err-msg")
 
-		Context("with message of level ERROR", func() {
-			BeforeEach(func() {
-				log = lager.LogFormat{
-					Message:  "err-msg",
-					LogLevel: lager.ERROR,
-				}
-			})
+		metric.ErrorSink{}.Log(lager.LogFormat{Message: "err-msg", LogLevel: lager.ERROR})
 
-			It("emits with the message in the tags", func() {
-				Eventually(emitter.EventCount).Should(BeNumerically("==", 1))
-				Expect(emitter.Events()[0].Attributes).To(HaveKeyWithValue("message", "err-msg"))
-			})
-		})
+		Expect(count("err-msg")).To(Equal(before + 1))
+	})
 
-		Context("with message of non-ERROR level", func() {
-			BeforeEach(func() {
-				log = lager.LogFormat{
-					Message:  "message",
-					LogLevel: lager.INFO,
-				}
-			})
+	It("ignores lines below ERROR", func() {
+		before := count("info-msg")
 
-			It("doesn't emit", func() {
-				Consistently(emitter.EventCount).Should(BeNumerically("==", 0))
-			})
-		})
+		metric.ErrorSink{}.Log(lager.LogFormat{Message: "info-msg", LogLevel: lager.INFO})
+
+		Expect(count("info-msg")).To(Equal(before))
 	})
 })

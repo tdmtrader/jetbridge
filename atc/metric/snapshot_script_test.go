@@ -10,10 +10,9 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/metric"
-	"github.com/concourse/concourse/tracing"
 	"github.com/tedsuo/ifrit"
-	"go.opentelemetry.io/otel/propagation"
 
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -63,7 +62,7 @@ func driveEveryMetric() {
 	metric.JobSchedulingDuration("pipeline", "job", 1, time.Second)
 	metric.StepWaited("1", "main", "task", time.Second)
 	metric.LatestCompletedBuildStatus("main", "pipeline", "job", "failed")
-	metric.BuildFinished(snapshotBuild{})
+	metric.BuildFinished(tracedBuild{})
 
 	// Workers.
 	metric.WorkersRegistered(map[string]db.WorkerState{"worker": db.WorkerStateRunning})
@@ -99,23 +98,12 @@ func driveEveryMetric() {
 	metric.HangarOutputOrphanSweep(map[string]int{"orphan": 1}, false, false)
 	metric.HangarOutputOrphanSweep(map[string]int{"orphan": 0}, true, false)
 
-	// One periodic tick publishes the sampled tallies and the pool gauges.
-	process := ifrit.Invoke(metric.PeriodicallyEmit(logger, metric.Metrics, 50*time.Millisecond))
-	time.Sleep(200 * time.Millisecond)
-	process.Signal(os.Interrupt)
-	<-process.Wait()
-}
-
-// snapshotBuild is a finished pipeline build with a trace, the shape
-// BuildFinished reads.
-type snapshotBuild struct{ db.Build }
-
-func (snapshotBuild) TracingAttrs() tracing.Attrs {
-	return tracing.Attrs{"build_id": "1", "build": "1", "team_name": "main", "pipeline": "pipeline", "job": "job"}
-}
-func (snapshotBuild) Status() db.BuildStatus { return db.BuildStatusSucceeded }
-func (snapshotBuild) StartTime() time.Time   { return time.Unix(0, 0) }
-func (snapshotBuild) EndTime() time.Time     { return time.Unix(5, 0) }
-func (snapshotBuild) SpanContext() propagation.TextMapCarrier {
-	return propagation.MapCarrier{"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+	// The periodic tick publishes the sampled tallies and the pool gauges. It
+	// runs until the spec ends, so the comparison waits for a tick rather than
+	// racing one.
+	process := ifrit.Invoke(metric.PeriodicallyEmit(50 * time.Millisecond))
+	DeferCleanup(func() {
+		process.Signal(os.Interrupt)
+		<-process.Wait()
+	})
 }

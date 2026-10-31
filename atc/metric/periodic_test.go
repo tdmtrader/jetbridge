@@ -4,36 +4,26 @@ import (
 	"os"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/tedsuo/ifrit"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gstruct"
 )
 
 var _ = Describe("Periodic emission of metrics", func() {
 	var (
-		emitter *recordingEmitter
-		monitor *metric.Monitor
-
+		reg     *prometheus.Registry
 		process ifrit.Process
 	)
 
 	BeforeEach(func() {
-		monitor, emitter = monitorWithRecorder()
+		reg = freshRegistry()
 	})
 
 	JustBeforeEach(func() {
-		runner := metric.PeriodicallyEmit(
-			lager.NewLogger("dont care"),
-			monitor,
-			250*time.Millisecond,
-		)
-
-		process = ifrit.Invoke(runner)
+		process = ifrit.Invoke(metric.PeriodicallyEmit(250 * time.Millisecond))
 	})
 
 	AfterEach(func() {
@@ -45,35 +35,55 @@ var _ = Describe("Periodic emission of metrics", func() {
 		BeforeEach(func() {
 			useEmptyTestDB()
 
-			monitor.Databases = []db.DbConn{openTestConn("A"), openTestConn("B")}
+			metric.InstrumentDB(openTestConn("A"))
+			metric.InstrumentDB(openTestConn("B"))
 		})
 
-		It("emits database queries", func() {
-			Eventually(emitter.Events).Should(
-				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name": Equal("database queries"),
-					}),
-				),
-			)
+		It("publishes the queries counted and each pool's open connections", func() {
+			before := gathered(reg, "concourse_db_queries_total", nil)
+			metric.Metrics.DatabaseQueries.Inc()
 
-			By("emits database connections for each pool")
-			Eventually(emitter.Events).Should(
-				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":       Equal("database connections"),
-						"Attributes": Equal(map[string]string{"ConnectionName": "A"}),
-					}),
-				),
-			)
-			Eventually(emitter.Events).Should(
-				ContainElement(
-					MatchFields(IgnoreExtras, Fields{
-						"Name":       Equal("database connections"),
-						"Attributes": Equal(map[string]string{"ConnectionName": "B"}),
-					}),
-				),
-			)
+			Eventually(func() float64 { return gathered(reg, "concourse_db_queries_total", nil) }).
+				Should(BeNumerically(">=", before+1))
+
+			By("publishing one connection gauge per pool")
+			Eventually(func() int { return seriesCount(reg, "concourse_db_connections", map[string]string{"dbname": "A"}) }).Should(Equal(1))
+			Eventually(func() int { return seriesCount(reg, "concourse_db_connections", map[string]string{"dbname": "B"}) }).Should(Equal(1))
 		})
 	})
+
+	It("publishes the highest level a sampled gauge reached since the last tick", func() {
+		metric.Metrics.BuildsRunning.Inc()
+		metric.Metrics.BuildsRunning.Inc()
+		metric.Metrics.BuildsRunning.Dec()
+		metric.Metrics.BuildsRunning.Dec()
+
+		Eventually(func() float64 { return gathered(reg, "concourse_builds_running", nil) }).Should(Equal(float64(2)))
+		Eventually(func() float64 { return gathered(reg, "concourse_builds_running", nil) }).Should(Equal(float64(0)))
+	})
 })
+
+// seriesCount counts the series of family name whose labels include want.
+func seriesCount(reg *prometheus.Registry, name string, want map[string]string) int {
+	GinkgoHelper()
+
+	families, err := reg.Gather()
+	Expect(err).NotTo(HaveOccurred())
+
+	count := 0
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+	series:
+		for _, m := range family.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if v, ok := want[label.GetName()]; ok && v != label.GetValue() {
+					continue series
+				}
+			}
+			count++
+		}
+	}
+	return count
+}

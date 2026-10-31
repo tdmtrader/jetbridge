@@ -147,7 +147,6 @@ func (b *engineBuild) Run(ctx context.Context) {
 		return
 	}
 
-	b.trackStarted(logger)
 	defer b.trackFinished(logger)
 
 	logger.Info("running")
@@ -334,12 +333,6 @@ func (b *engineBuild) saveStatus(logger lager.Logger, status atc.BuildStatus) {
 	}
 	if b.build.ID() >= id {
 		metric.LatestCompletedBuildStatus(job.TeamName(), job.PipelineName(), job.Name(), status.String())
-	}
-}
-
-func (b *engineBuild) trackStarted(logger lager.Logger) {
-	if b.build.Name() != db.CheckBuildName {
-		metric.BuildStarted(b.build)
 	}
 }
 

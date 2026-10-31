@@ -13,5 +13,5 @@ func (ErrorSink) Log(f lager.LogFormat) {
 		return
 	}
 
-	errorLogged(f.Message)
+	errorLogs.WithLabelValues(f.Message).Inc()
 }
