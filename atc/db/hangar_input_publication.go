@@ -53,7 +53,7 @@ func (repository *HangarOutputRepository) RegisterInputPublication(ctx context.C
 	if err := publication.Validate(); err != nil {
 		return err
 	}
-	stage, nonce, _, err := readInputPublication(ctx, tx, publication.Stage.ReservationID)
+	stage, _, _, err := readInputPublication(ctx, tx, publication.Stage.ReservationID)
 	if err != nil {
 		return err
 	}
