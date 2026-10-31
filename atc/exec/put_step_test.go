@@ -29,14 +29,6 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
-// stepFunc adapts a plain function to exec.Step, for substeps a spec scripts
-// itself.
-type stepFunc func(context.Context, exec.RunState) (bool, error)
-
-func (f stepFunc) Run(ctx context.Context, state exec.RunState) (bool, error) {
-	return f(ctx, state)
-}
-
 func persistedFinishPuts(fixture *execDBFixture, build db.Build) []event.FinishPut {
 	GinkgoHelper()
 	var finished []event.FinishPut
