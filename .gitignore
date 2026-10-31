@@ -58,3 +58,7 @@ package-lock.json
 web/public/elm.js
 .brine-runs/
 atc/worker/jetbridge/brine/.build/
+
+# Python bytecode caches (hack/ has Python tools).
+__pycache__/
+*.pyc
