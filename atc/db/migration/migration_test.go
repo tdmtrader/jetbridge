@@ -2,15 +2,11 @@ package migration_test
 
 import (
 	"database/sql"
-	"io/fs"
+	"fmt"
 	"math/rand/v2"
-	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"testing/fstest"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 
@@ -20,9 +16,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-const initialSchemaVersion = 1510262030
-const upgradedSchemaVersion = 1510670987
 
 var _ = Describe("Migration", func() {
 	var (
@@ -79,7 +72,7 @@ var _ = Describe("Migration", func() {
 		})
 
 		It("SupportedVersion reports the highest supported migration version", func() {
-			SetupMigrationsHistoryTableToExistAtVersion(db, initialSchemaVersion)
+			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 
 			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
 				"1000_some_migration.up.sql":                                     &fstest.MapFile{},
@@ -95,7 +88,7 @@ var _ = Describe("Migration", func() {
 		})
 
 		It("Ignores files it can't parse", func() {
-			SetupMigrationsHistoryTableToExistAtVersion(db, initialSchemaVersion)
+			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 
 			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
 				"1000_some_migration.up.sql":                                     &fstest.MapFile{},
@@ -113,95 +106,6 @@ var _ = Describe("Migration", func() {
 	})
 
 	Context("Upgrade", func() {
-		Context("old schema_migrations table exist", func() {
-			var dirty bool
-
-			// schemaMigrationsEraFS holds the migration a schema_migrations
-			// database records, and one to apply after it.
-			schemaMigrationsEraFS := func() fstest.MapFS {
-				return fstest.MapFS{
-					"1000_recorded.up.sql": &fstest.MapFile{Data: []byte(`SELECT 1;`)},
-					"1001_next.up.sql":     &fstest.MapFile{Data: []byte(`SELECT 1;`)},
-				}
-			}
-
-			JustBeforeEach(func() {
-				SetupSchemaMigrationsTable(db, 1000, dirty)
-			})
-
-			Context("dirty state is true", func() {
-				BeforeEach(func() {
-					dirty = true
-				})
-
-				It("errors", func() {
-
-					Expect(err).NotTo(HaveOccurred())
-
-					migrator := migration.NewMigrator(db, lockFactory)
-
-					err = migrator.Up(nil, nil)
-					Expect(err).To(HaveOccurred())
-					Expect(err.Error()).To(ContainSubstring("database is in a dirty state"))
-
-					var newTableCreated bool
-					err = db.QueryRow("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='migrations_history')").Scan(&newTableCreated)
-					Expect(newTableCreated).To(BeFalse())
-				})
-			})
-
-			Context("dirty state is false", func() {
-				BeforeEach(func() {
-					dirty = false
-				})
-
-				It("populate migrations_history table with starting version from schema_migrations table", func() {
-					startTime := time.Now()
-					migrator := migration.NewMigratorForMigrations(db, lockFactory, schemaMigrationsEraFS())
-
-					err = migrator.Up(nil, nil)
-					Expect(err).NotTo(HaveOccurred())
-
-					var (
-						version   int
-						isDirty   bool
-						timeStamp sql.NullTime
-						status    string
-						direction string
-					)
-					err = db.QueryRow("SELECT * from migrations_history ORDER BY tstamp ASC LIMIT 1").Scan(&version, &timeStamp, &direction, &status, &isDirty)
-					Expect(version).To(Equal(1000))
-					Expect(isDirty).To(BeFalse())
-					Expect(timeStamp.Time.After(startTime)).To(Equal(true))
-					Expect(direction).To(Equal("up"))
-					Expect(status).To(Equal("passed"))
-				})
-
-				Context("when the migrations_history table already exists", func() {
-					It("does not repopulate the migrations_history table", func() {
-						SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
-						startTime := time.Now()
-						migrator := migration.NewMigratorForMigrations(db, lockFactory, schemaMigrationsEraFS())
-
-						err = migrator.Up(nil, nil)
-						Expect(err).NotTo(HaveOccurred())
-
-						var timeStamp sql.NullTime
-						rows, err := db.Query("SELECT tstamp FROM migrations_history WHERE version=1000")
-						Expect(err).NotTo(HaveOccurred())
-						var numRows = 0
-						for rows.Next() {
-							err = rows.Scan(&timeStamp)
-							Expect(err).NotTo(HaveOccurred())
-							numRows++
-						}
-						Expect(numRows).To(Equal(1))
-						Expect(timeStamp.Time.Before(startTime)).To(Equal(true))
-					})
-				})
-			})
-		})
-
 		Context("sql migrations", func() {
 			It("runs a migration", func() {
 				migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
@@ -334,53 +238,6 @@ var _ = Describe("Migration", func() {
 				wg.Wait()
 			})
 		})
-
-		Context("golang migrations", func() {
-			It("runs a migration with Migrate", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1516643303_update_auth_providers.up.go",
-				))
-
-				By("applying the initial migration")
-				err := migrator.Migrate(nil, nil, 1510262030)
-				Expect(err).NotTo(HaveOccurred())
-				var columnExists string
-				err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.columns where table_name = 'teams' AND column_name='basic_auth')").Scan(&columnExists)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(columnExists).To(Equal("true"))
-
-				err = migrator.Migrate(nil, nil, 1516643303)
-				Expect(err).NotTo(HaveOccurred())
-
-				By("applying the go migration")
-				err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.columns where table_name = 'teams' AND column_name='basic_auth')").Scan(&columnExists)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(columnExists).To(Equal("false"))
-
-				By("updating the schema migrations table")
-				ExpectDatabaseMigrationVersionToEqual(migrator, 1516643303)
-			})
-
-			It("runs a migration with Up", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1516643303_update_auth_providers.up.go",
-				))
-
-				err := migrator.Up(nil, nil)
-				Expect(err).NotTo(HaveOccurred())
-
-				By("applying the migration")
-				var columnExists string
-				err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.columns where table_name = 'teams' AND column_name='basic_auth')").Scan(&columnExists)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(columnExists).To(Equal("false"))
-
-				By("updating the schema migrations table")
-				ExpectDatabaseMigrationVersionToEqual(migrator, 1516643303)
-			})
-		})
 	})
 
 	Context("Baseline", func() {
@@ -424,13 +281,26 @@ var _ = Describe("Migration", func() {
 			ExpectDatabaseMigrationVersionToEqual(migrator, 999)
 		})
 
-		It("refuses a schema_migrations database older than the baseline without converting it", func() {
+		DescribeTable("refuses a database tracked by a table older than migrations_history, changing nothing",
+			func(setup func(), table string, version int) {
+				setup()
+				migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+				err := migrator.Up(nil, nil)
+				Expect(err).To(MatchError(fmt.Sprintf("database records migration %d in %s, which predates this release's baseline migration 1000: upgrade it with %s first", version, table, migration.LastReleaseBeforeBaseline)))
+				Expect(tableExists(table)).To(BeTrue())
+				Expect(tableExists("migrations_history")).To(BeFalse())
+				Expect(tableExists("baseline_table")).To(BeFalse())
+			},
+			Entry("schema_migrations", func() { SetupSchemaMigrationsTable(db, 1532706544, false) }, "schema_migrations", 1532706544),
+			Entry("migration_version", func() { SetupMigrationVersionTableToExistAtVersion(db, 189) }, "migration_version", 189),
+		)
+
+		It("ignores a schema_migrations table left beside migrations_history", func() {
+			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 			SetupSchemaMigrationsTable(db, 999, false)
 			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
-			err := migrator.Up(nil, nil)
-			Expect(err).To(MatchError(ContainSubstring("database is at migration 999, older than this release's baseline migration 1000")))
-			Expect(tableExists("migrations_history")).To(BeFalse())
-			Expect(tableExists("baseline_table")).To(BeFalse())
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 		})
 
 		It("refuses to migrate to a version older than the baseline", func() {
@@ -495,152 +365,53 @@ var _ = Describe("Migration", func() {
 	})
 
 	Context("Downgrade", func() {
-		Context("Downgrades to a version that uses the old mattes/migrate schema_migrations table", func() {
-			It("Downgrades to a given version and write it to a new created schema_migrations table", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.down.sql",
-				))
+		reversibleFS := func() fstest.MapFS {
+			return fstest.MapFS{
+				"1000_test_table_created.up.sql": &fstest.MapFile{Data: []byte(`CREATE TABLE some_table (id integer);`)},
+				"1001_add_column.up.sql":         &fstest.MapFile{Data: []byte(`ALTER TABLE some_table ADD COLUMN name text;`)},
+				"1001_add_column.down.sql":       &fstest.MapFile{Data: []byte(`ALTER TABLE some_table DROP COLUMN name;`)},
+			}
+		}
 
-				err := migrator.Up(nil, nil)
-				Expect(err).NotTo(HaveOccurred())
+		It("Downgrades to a given version", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, reversibleFS())
 
-				currentVersion, err := migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(upgradedSchemaVersion))
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 
-				err = migrator.Migrate(nil, nil, initialSchemaVersion)
-				Expect(err).NotTo(HaveOccurred())
+			Expect(migrator.Migrate(nil, nil, 1000)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1000)
 
-				currentVersion, err = migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(initialSchemaVersion))
-
-				ExpectDatabaseVersionToEqual(db, initialSchemaVersion, "schema_migrations")
-
-				ExpectToBeAbleToInsertData(db)
-			})
-
-			It("Downgrades to a given version and write it to the existing schema_migrations table with dirty true", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.down.sql",
-				))
-
-				err := migrator.Up(nil, nil)
-				Expect(err).NotTo(HaveOccurred())
-
-				currentVersion, err := migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(upgradedSchemaVersion))
-
-				SetupSchemaMigrationsTable(db, 8878, true)
-
-				err = migrator.Migrate(nil, nil, initialSchemaVersion)
-				Expect(err).NotTo(HaveOccurred())
-
-				currentVersion, err = migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(initialSchemaVersion))
-
-				ExpectDatabaseVersionToEqual(db, initialSchemaVersion, "schema_migrations")
-
-				ExpectToBeAbleToInsertData(db)
-			})
+			var columnExists bool
+			Expect(db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'some_table' AND column_name = 'name')").Scan(&columnExists)).To(Succeed())
+			Expect(columnExists).To(BeFalse())
 		})
 
-		Context("Downgrades to a version with new migrations_history table", func() {
-			It("Downgrades to a given version", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.down.sql",
-				))
+		It("Doesn't fail if already at the requested version", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, reversibleFS())
 
-				err := migrator.Up(nil, nil)
-				Expect(err).NotTo(HaveOccurred())
+			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
+			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
+		})
 
-				currentVersion, err := migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(upgradedSchemaVersion))
+		It("Locks the database so multiple consumers don't run downgrade at the same time", func() {
+			migrator := migration.NewMigratorForMigrations(db, lockFactory, reversibleFS())
 
-				err = migrator.Migrate(nil, nil, initialSchemaVersion)
-				Expect(err).NotTo(HaveOccurred())
+			Expect(migrator.Up(nil, nil)).To(Succeed())
 
-				currentVersion, err = migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(initialSchemaVersion))
+			var wg sync.WaitGroup
+			wg.Add(3)
 
-				ExpectToBeAbleToInsertData(db)
-			})
+			go TryRunMigrateAndVerifyResult(db, migrator, 1000, &wg)
+			go TryRunMigrateAndVerifyResult(db, migrator, 1000, &wg)
+			go TryRunMigrateAndVerifyResult(db, migrator, 1000, &wg)
 
-			It("Doesn't fail if already at the requested version", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.up.sql",
-				))
-
-				err := migrator.Migrate(nil, nil, upgradedSchemaVersion)
-				Expect(err).NotTo(HaveOccurred())
-
-				currentVersion, err := migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(upgradedSchemaVersion))
-
-				err = migrator.Migrate(nil, nil, upgradedSchemaVersion)
-				Expect(err).NotTo(HaveOccurred())
-
-				currentVersion, err = migrator.CurrentVersion()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(currentVersion).To(Equal(upgradedSchemaVersion))
-
-				ExpectToBeAbleToInsertData(db)
-			})
-
-			It("Locks the database so multiple consumers don't run downgrade at the same time", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, hackyRealMigrationsFS(
-					"1510262030_initial_schema.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.up.sql",
-					"1510670987_update_unique_constraint_for_resource_caches.down.sql",
-				))
-
-				err := migrator.Up(nil, nil)
-				Expect(err).NotTo(HaveOccurred())
-
-				var wg sync.WaitGroup
-				wg.Add(3)
-
-				go TryRunMigrateAndVerifyResult(db, migrator, initialSchemaVersion, &wg)
-				go TryRunMigrateAndVerifyResult(db, migrator, initialSchemaVersion, &wg)
-				go TryRunMigrateAndVerifyResult(db, migrator, initialSchemaVersion, &wg)
-
-				wg.Wait()
-			})
+			wg.Wait()
 		})
 	})
 
 })
-
-// this is pretty awful; anything using it relies on our real-live migrations,
-// making these tests tightly coupled to Concourse instead of being a generic
-// migration package
-func hackyRealMigrationsFS(migrations ...string) fs.FS {
-	GinkgoHelper()
-	fs := fstest.MapFS{}
-
-	for _, m := range migrations {
-		content, err := os.ReadFile(filepath.Join("migrations", m))
-		Expect(err).ToNot(HaveOccurred())
-
-		fs[m] = &fstest.MapFile{
-			Data: content,
-		}
-	}
-
-	return fs
-}
 
 func TryRunUpAndVerifyResult(db *sql.DB, migrator migration.Migrator, version int, wg *sync.WaitGroup) {
 	defer GinkgoRecover()
@@ -660,8 +431,6 @@ func TryRunMigrateAndVerifyResult(db *sql.DB, migrator migration.Migrator, versi
 	Expect(err).NotTo(HaveOccurred())
 
 	ExpectDatabaseMigrationVersionToEqual(migrator, version)
-
-	ExpectToBeAbleToInsertData(db)
 }
 
 func SetupMigrationsHistoryTableToExistAtVersion(db *sql.DB, version int) {
@@ -681,17 +450,6 @@ func SetupSchemaMigrationsTable(db *sql.DB, version int, dirty bool) {
 	Expect(err).NotTo(HaveOccurred())
 }
 
-func SetupSchemaFromFile(db *sql.DB, path string) {
-	GinkgoHelper()
-	migrations, err := os.ReadFile(path)
-	Expect(err).NotTo(HaveOccurred())
-
-	for migration := range strings.SplitSeq(string(migrations), ";") {
-		_, err = db.Exec(migration)
-		Expect(err).NotTo(HaveOccurred())
-	}
-}
-
 func ExpectDatabaseMigrationVersionToEqual(migrator migration.Migrator, expectedVersion int) {
 	dbVersion, err := migrator.CurrentVersion()
 	Expect(err).NotTo(HaveOccurred())
@@ -704,7 +462,7 @@ func ExpectToBeAbleToInsertData(dbConn *sql.DB) {
 	Expect(err).NotTo(HaveOccurred())
 
 	pipelineID := rand.IntN(10000)
-	_, err = dbConn.Exec("INSERT INTO pipelines(id, team_id, name) VALUES ($1, $2, $3)", pipelineID, teamID, strconv.Itoa(pipelineID))
+	_, err = dbConn.Exec("INSERT INTO pipelines(id, team_id, name, secondary_ordering) VALUES ($1, $2, $3, 1)", pipelineID, teamID, strconv.Itoa(pipelineID))
 	Expect(err).NotTo(HaveOccurred())
 
 	jobID := rand.IntN(10000)

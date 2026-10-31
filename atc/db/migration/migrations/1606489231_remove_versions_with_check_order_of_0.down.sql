@@ -1,1 +1,0 @@
-/* Nothing to do because up migration is deleting rows. */

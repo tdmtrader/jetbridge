@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"database/sql"
-	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
 
@@ -104,21 +103,6 @@ var _ = Describe("Encryption", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(isEncryptedWith(db, key1, "test")).To(BeTrue())
 			})
-
-			It("rotates the key while doing a migration", func() {
-				migrator := migration.NewMigrator(db, lockFactory)
-
-				// do all the necessary schema migrations to this particular version
-				err = migrator.Migrate(nil, nil, 1513895878)
-				Expect(err).ToNot(HaveOccurred())
-
-				insertIntoEncryptedColumnLegacy(db, key1, "test")
-
-				// the migration after this one, 1516643303 needs to re-encrypt the auth column
-				err := migrator.Up(key2, key1)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(isEncryptedWith(db, key2, "test")).To(BeTrue())
-			})
 		})
 	})
 
@@ -180,19 +164,6 @@ var _ = Describe("Encryption", func() {
 		})
 	})
 })
-
-// used to test database versions before the column got renamed
-func insertIntoEncryptedColumnLegacy(db *sql.DB, strategy encryption.Strategy, name string) {
-	GinkgoHelper()
-	ciphertext, nonce, err := strategy.Encrypt([]byte("{}"))
-	Expect(err).ToNot(HaveOccurred())
-	var teamID int
-	err = db.QueryRow(`INSERT INTO teams(name, auth, nonce) VALUES($1, $2, $3) RETURNING id`, name, ciphertext, nonce).Scan(&teamID)
-	Expect(err).ToNot(HaveOccurred())
-
-	_, err = db.Exec(fmt.Sprintf(`CREATE TABLE team_build_events_%d () INHERITS (build_events)`, teamID))
-	Expect(err).ToNot(HaveOccurred())
-}
 
 func insertIntoEncryptedColumn(db *sql.DB, strategy encryption.Strategy, name string) {
 	GinkgoHelper()

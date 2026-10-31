@@ -2,6 +2,7 @@ package migration_test
 
 import (
 	"database/sql"
+	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
 
@@ -40,55 +41,30 @@ var _ = Describe("OpenHelper", func() {
 		}
 	})
 
-	Context("legacy migration_version table exists", func() {
-		It("Fails if trying to upgrade from a migration_version < 189", func() {
-			SetupMigrationVersionTableToExistAtVersion(db, 188)
+	It("refuses a database tracked by migration_version, leaving it as it was", func() {
+		SetupMigrationVersionTableToExistAtVersion(db, 189)
 
-			err = openHelper.MigrateToVersion(5000)
+		err = openHelper.MigrateToVersion(v801LastMigration)
+		Expect(err).To(MatchError(fmt.Sprintf("database records migration 189 in migration_version, which predates this release's baseline migration %d: upgrade it with JetBridge 0.3.1 first", v801LastMigration)))
 
-			Expect(err.Error()).To(Equal("must upgrade from db version 189 (concourse 3.6.0), current db version: 188"))
+		ExpectDatabaseVersionToEqual(db, 189, "migration_version")
+		var historyExists bool
+		Expect(db.QueryRow("SELECT to_regclass('migrations_history') IS NOT NULL").Scan(&historyExists)).To(Succeed())
+		Expect(historyExists).To(BeFalse())
+	})
 
-			_, err = db.Exec("SELECT version FROM migration_version")
-			Expect(err).NotTo(HaveOccurred())
-		})
+	It("migrates a fresh database to the requested version", func() {
+		err = openHelper.MigrateToVersion(v801LastMigration)
+		Expect(err).NotTo(HaveOccurred())
 
-		It("Fails if trying to upgrade from a migration_version > 189", func() {
-			SetupMigrationVersionTableToExistAtVersion(db, 190)
+		ExpectDatabaseVersionToEqual(db, v801LastMigration, "migrations_history")
+		ExpectMigrationVersionTableNotToExist(db)
+		ExpectToBeAbleToInsertData(db)
+	})
 
-			err = openHelper.MigrateToVersion(5000)
-
-			Expect(err.Error()).To(Equal("must upgrade from db version 189 (concourse 3.6.0), current db version: 190"))
-
-			_, err = db.Exec("SELECT version FROM migration_version")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("Forces schema migration version to a known first version if migration_version is 189", func() {
-			var initialSchemaVersion = 1510262030
-			SetupMigrationVersionTableToExistAtVersion(db, 189)
-
-			SetupSchemaFromFile(db, "migrations/1510262030_initial_schema.up.sql")
-
-			err = openHelper.MigrateToVersion(initialSchemaVersion)
-			Expect(err).NotTo(HaveOccurred())
-
-			ExpectDatabaseVersionToEqual(db, initialSchemaVersion, "schema_migrations")
-
-			ExpectMigrationVersionTableNotToExist(db)
-
-			ExpectToBeAbleToInsertData(db)
-		})
-
-		It("Runs migrator if migration_version table does not exist", func() {
-			err = openHelper.MigrateToVersion(initialSchemaVersion)
-			Expect(err).NotTo(HaveOccurred())
-
-			ExpectDatabaseVersionToEqual(db, initialSchemaVersion, "migrations_history")
-
-			ExpectMigrationVersionTableNotToExist(db)
-
-			ExpectToBeAbleToInsertData(db)
-		})
+	It("refuses a version older than the baseline", func() {
+		err = openHelper.MigrateToVersion(v713LastMigration)
+		Expect(err).To(MatchError(fmt.Sprintf("cannot migrate to %d: it predates this release's baseline migration %d", v713LastMigration, v801LastMigration)))
 	})
 })
 

@@ -93,55 +93,8 @@ func (helper *OpenHelper) MigrateToVersion(version int) error {
 	}
 
 	defer db.Close()
-	m := NewMigrator(db, helper.lockFactory)
 
-	err = helper.migrateFromMigrationVersion(db)
-	if err != nil {
-		return err
-	}
-
-	return m.Migrate(helper.newKey, helper.oldKey, version)
-}
-
-func (helper *OpenHelper) migrateFromMigrationVersion(db *sql.DB) error {
-
-	legacySchemaExists, err := checkTableExist(db, "migration_version")
-	if err != nil {
-		return err
-	}
-
-	if !legacySchemaExists {
-		return nil
-	}
-
-	oldMigrationLastVersion := 189
-	newMigrationStartVersion := 1510262030
-
-	var dbVersion int
-
-	if err = db.QueryRow("SELECT version FROM migration_version").Scan(&dbVersion); err != nil {
-		return err
-	}
-
-	if dbVersion != oldMigrationLastVersion {
-		return fmt.Errorf("must upgrade from db version %d (concourse 3.6.0), current db version: %d", oldMigrationLastVersion, dbVersion)
-	}
-
-	if _, err = db.Exec("DROP TABLE IF EXISTS migration_version"); err != nil {
-		return err
-	}
-
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS schema_migrations (version bigint, dirty boolean)")
-	if err != nil {
-		return err
-	}
-
-	_, err = db.Exec("INSERT INTO schema_migrations (version, dirty) VALUES ($1, false)", newMigrationStartVersion)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return NewMigrator(db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version)
 }
 
 type Migrator interface {
@@ -326,32 +279,14 @@ func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) e
 		defer lock.Release()
 	}
 
-	existingDBVersion, err := helper.migrateFromSchemaMigrations()
+	err = helper.refuseLegacyTracking(baseline)
 	if err != nil {
 		return err
-	}
-	if existingDBVersion > 0 && existingDBVersion < baseline {
-		return belowBaseline(existingDBVersion, baseline)
 	}
 
 	_, err = helper.db.Exec("CREATE TABLE IF NOT EXISTS migrations_history (version bigint, tstamp timestamp with time zone, direction varchar, status varchar, dirty boolean)")
 	if err != nil {
 		return err
-	}
-
-	if existingDBVersion > 0 {
-		var containsOldMigrationInfo bool
-		err = helper.db.QueryRow("SELECT EXISTS (SELECT 1 FROM migrations_history where version=$1)", existingDBVersion).Scan(&containsOldMigrationInfo)
-		if err != nil {
-			return err
-		}
-
-		if !containsOldMigrationInfo {
-			_, err = helper.db.Exec("INSERT INTO migrations_history (version, tstamp, direction, status, dirty) VALUES ($1, current_timestamp, 'up', 'passed', false)", existingDBVersion)
-			if err != nil {
-				return err
-			}
-		}
 	}
 
 	currentVersion, err := helper.CurrentVersion()
@@ -397,11 +332,6 @@ func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) e
 			if err != nil {
 				return err
 			}
-		}
-
-		err = helper.migrateToSchemaMigrations(toVersion)
-		if err != nil {
-			return err
 		}
 	}
 
@@ -537,69 +467,35 @@ func checkTableExist(db *sql.DB, tableName string) (bool, error) {
 	return existingTable.Valid, nil
 }
 
-func (helper *migrator) migrateFromSchemaMigrations() (int, error) {
-	oldSchemaExists, err := checkTableExist(helper.db, "schema_migrations")
-	if err != nil {
-		return 0, err
+// refuseLegacyTracking refuses a database that records its version only in a
+// tracking table older than migrations_history: migration_version (before
+// Concourse 3.7) or schema_migrations (before migration 1532706545). Both
+// predate the baseline, so the database is refused before anything changes.
+func (helper *migrator) refuseLegacyTracking(baseline int) error {
+	historyExists, err := checkTableExist(helper.db, "migrations_history")
+	if err != nil || historyExists {
+		return err
 	}
-
-	newSchemaExists, err := checkTableExist(helper.db, "migrations_history")
-	if err != nil {
-		return 0, err
+	for _, table := range []string{"migration_version", "schema_migrations"} {
+		exists, err := checkTableExist(helper.db, table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		var version int
+		err = helper.db.QueryRow("SELECT coalesce(max(version), 0) FROM " + table).Scan(&version)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("database records migration %d in %s, which predates this release's baseline migration %d: upgrade it with %s first", version, table, baseline, LastReleaseBeforeBaseline)
 	}
-
-	if !oldSchemaExists || newSchemaExists {
-		return 0, nil
-	}
-
-	var isDirty = false
-	var existingVersion int
-	err = helper.db.QueryRow("SELECT dirty, version FROM schema_migrations LIMIT 1").Scan(&isDirty, &existingVersion)
-	if err != nil {
-		return 0, err
-	}
-
-	if isDirty {
-		return 0, errors.New("cannot begin migration: database is in a dirty state")
-	}
-
-	return existingVersion, nil
+	return nil
 }
 
 func sortMigrations(migrationList []migration) {
 	sort.Slice(migrationList, func(i, j int) bool {
 		return migrationList[i].Version < migrationList[j].Version
 	})
-}
-
-func (helper *migrator) migrateToSchemaMigrations(toVersion int) error {
-	newMigrationsHistoryFirstVersion := 1532706545
-
-	if toVersion >= newMigrationsHistoryFirstVersion {
-		return nil
-	}
-
-	oldSchemaExists, err := checkTableExist(helper.db, "schema_migrations")
-	if err != nil {
-		return err
-	}
-
-	if !oldSchemaExists {
-		_, err := helper.db.Exec("CREATE TABLE schema_migrations (version bigint, dirty boolean)")
-		if err != nil {
-			return err
-		}
-
-		_, err = helper.db.Exec("INSERT INTO schema_migrations (version, dirty) VALUES ($1, false)", toVersion)
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err := helper.db.Exec("UPDATE schema_migrations SET version=$1, dirty=false", toVersion)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
