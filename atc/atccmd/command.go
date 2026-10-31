@@ -1,3 +1,10 @@
+// The web composition root: RunCommand.Execute and Runner configure the
+// metrics, open the connections, publish the check intervals and build the
+// secret manager, and constructMembers turns the API members and the
+// component table into the ifrit group the web node runs. The engine the
+// backend components share is built here too. The flags live in run_flags.go
+// and the wiring Runner calls into lives in the wiring_*.go files beside it.
+
 package atccmd
 
 import (
