@@ -116,6 +116,7 @@ func appendToFile(path string, content string) {
 
 func (runner *Runner) MigrateToVersion(version int) {
 	err := migration.NewOpenHelper(
+		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		runner.DataSourceName(),
 		nil,
@@ -127,6 +128,7 @@ func (runner *Runner) MigrateToVersion(version int) {
 
 func (runner *Runner) TryOpenDBAtVersion(version int) (*sql.DB, error) {
 	dbConn, err := migration.NewOpenHelper(
+		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		runner.DataSourceName(),
 		nil,
@@ -153,6 +155,7 @@ func (runner *Runner) OpenDBAtVersion(version int) *sql.DB {
 
 func (runner *Runner) OpenDB() *sql.DB {
 	dbConn, err := migration.NewOpenHelper(
+		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		runner.DataSourceName(),
 		nil,

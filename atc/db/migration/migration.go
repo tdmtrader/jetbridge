@@ -18,8 +18,11 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 )
 
-func NewOpenHelper(driver, name string, lockFactory lock.LockFactory, newKey *encryption.Key, oldKey *encryption.Key) *OpenHelper {
+// NewOpenHelper logs migration work (encryption passes) under the caller's
+// logger, as a "migrations" session.
+func NewOpenHelper(logger lager.Logger, driver, name string, lockFactory lock.LockFactory, newKey *encryption.Key, oldKey *encryption.Key) *OpenHelper {
 	return &OpenHelper{
+		logger,
 		driver,
 		name,
 		lockFactory,
@@ -29,6 +32,7 @@ func NewOpenHelper(driver, name string, lockFactory lock.LockFactory, newKey *en
 }
 
 type OpenHelper struct {
+	logger         lager.Logger
 	driver         string
 	dataSourceName string
 	lockFactory    lock.LockFactory
@@ -44,7 +48,7 @@ func (helper *OpenHelper) CurrentVersion() (int, error) {
 
 	defer db.Close()
 
-	return NewMigrator(db, helper.lockFactory).CurrentVersion()
+	return NewMigrator(helper.logger, db, helper.lockFactory).CurrentVersion()
 }
 
 func (helper *OpenHelper) SupportedVersion() (int, error) {
@@ -55,7 +59,7 @@ func (helper *OpenHelper) SupportedVersion() (int, error) {
 
 	defer db.Close()
 
-	return NewMigrator(db, helper.lockFactory).SupportedVersion()
+	return NewMigrator(helper.logger, db, helper.lockFactory).SupportedVersion()
 }
 
 func (helper *OpenHelper) Open() (*sql.DB, error) {
@@ -64,7 +68,7 @@ func (helper *OpenHelper) Open() (*sql.DB, error) {
 		return nil, err
 	}
 
-	if err := NewMigrator(db, helper.lockFactory).Up(helper.newKey, helper.oldKey); err != nil {
+	if err := NewMigrator(helper.logger, db, helper.lockFactory).Up(helper.newKey, helper.oldKey); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -78,7 +82,7 @@ func (helper *OpenHelper) OpenAtVersion(version int) (*sql.DB, error) {
 		return nil, err
 	}
 
-	if err := NewMigrator(db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version); err != nil {
+	if err := NewMigrator(helper.logger, db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -94,7 +98,7 @@ func (helper *OpenHelper) MigrateToVersion(version int) error {
 
 	defer db.Close()
 
-	return NewMigrator(db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version)
+	return NewMigrator(helper.logger, db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version)
 }
 
 type Migrator interface {
@@ -119,11 +123,11 @@ var embeddedMigrations = sync.OnceValues(func() ([]migration, error) {
 	return readMigrations(migrationsFS)
 })
 
-func NewMigrator(db *sql.DB, lockFactory lock.LockFactory) Migrator {
+func NewMigrator(logger lager.Logger, db *sql.DB, lockFactory lock.LockFactory) Migrator {
 	return &migrator{
 		db,
 		lockFactory,
-		lager.NewLogger("migrations"),
+		logger.Session("migrations"),
 		func() ([]migration, error) {
 			migrations, err := embeddedMigrations()
 			// Migrations historically returned a fresh slice. Keep callers from
@@ -133,11 +137,11 @@ func NewMigrator(db *sql.DB, lockFactory lock.LockFactory) Migrator {
 	}
 }
 
-func NewMigratorForMigrations(db *sql.DB, lockFactory lock.LockFactory, migrationsFS fs.FS) Migrator {
+func NewMigratorForMigrations(logger lager.Logger, db *sql.DB, lockFactory lock.LockFactory, migrationsFS fs.FS) Migrator {
 	return &migrator{
 		db,
 		lockFactory,
-		lager.NewLogger("migrations"),
+		logger.Session("migrations"),
 		func() ([]migration, error) { return readMigrations(migrationsFS) },
 	}
 }

@@ -13,7 +13,7 @@ var _ = Describe("MCP authorization encryption", func() {
 		conn, err := sql.Open("pgx", postgresRunner.DataSourceName())
 		Expect(err).NotTo(HaveOccurred())
 		defer conn.Close()
-		migrator := migration.NewMigrator(conn, nil)
+		migrator := migration.NewMigrator(testLogger, conn, nil)
 		Expect(migrator.Up(nil, nil)).To(Succeed())
 		plain := `{"identity":{"refresh_token":"provider-refresh-secret"}}`
 		_, err = conn.Exec(`INSERT INTO mcp_oauth_state(id,kind,data,expires_at) VALUES ('identity:test','identity',$1,CURRENT_TIMESTAMP + interval '90 days')`, plain)

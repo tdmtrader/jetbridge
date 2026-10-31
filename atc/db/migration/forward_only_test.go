@@ -41,7 +41,7 @@ func schemaFingerprint(database *sql.DB) []string {
 
 var _ = Describe("Fork migrations are forward-only", func() {
 	It("carries no down for any migration after the upstream boundary", func() {
-		migrations, err := migration.NewMigrator(nil, nil).Migrations()
+		migrations, err := migration.NewMigrator(testLogger, nil, nil).Migrations()
 		Expect(err).NotTo(HaveOccurred())
 		ups := 0
 		for _, m := range migrations {
@@ -57,7 +57,7 @@ var _ = Describe("Fork migrations are forward-only", func() {
 	DescribeTable("refuses HEAD to the upstream boundary without changing schema, data or effective version", func(populated bool) {
 		database := postgresRunner.OpenDBAtVersion(v801LastMigration)
 		DeferCleanup(func() { Expect(database.Close()).To(Succeed()) })
-		migrator := migration.NewMigrator(database, nil)
+		migrator := migration.NewMigrator(testLogger, database, nil)
 		head, err := migrator.SupportedVersion()
 		Expect(err).NotTo(HaveOccurred())
 		if populated {
@@ -92,6 +92,6 @@ var _ = Describe("Fork migrations are forward-only", func() {
 		database = postgresRunner.OpenDBAtVersion(head)
 		Expect(dataSnapshot()).To(Equal(dataBefore))
 		Expect(schemaFingerprint(database)).To(Equal(before))
-		ExpectDatabaseMigrationVersionToEqual(migration.NewMigrator(database, nil), head)
+		ExpectDatabaseMigrationVersionToEqual(migration.NewMigrator(testLogger, database, nil), head)
 	}, Entry("empty database", false), Entry("populated database", true))
 })

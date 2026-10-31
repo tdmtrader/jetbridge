@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -85,7 +86,7 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 			sqlConn := in.DB.runner.OpenSingleton()
 			sqlConn.SetMaxOpenConns(4)
 			defer sqlConn.Close()
-			migrator := migration.NewMigrator(sqlConn, in.DB.LockFactory)
+			migrator := migration.NewMigrator(lagertest.NewTestLogger("run-definition-encryption"), sqlConn, in.DB.LockFactory)
 			version, err := migrator.SupportedVersion()
 			if err != nil {
 				return in, err

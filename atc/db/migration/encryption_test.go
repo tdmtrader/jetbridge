@@ -6,6 +6,7 @@ import (
 	"database/sql"
 
 	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -51,7 +52,7 @@ var _ = Describe("Encryption", func() {
 		})
 
 		It("encrypts the database", func() {
-			migrator := migration.NewMigrator(db, lockFactory)
+			migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
 			err := migrator.Up(nil, nil)
 			Expect(err).ToNot(HaveOccurred())
@@ -61,6 +62,18 @@ var _ = Describe("Encryption", func() {
 			err = migrator.Up(key, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(isEncryptedWith(db, key, "test")).To(BeTrue())
+		})
+
+		It("logs the encryption pass to the caller's logger", func() {
+			Expect(migration.NewMigrator(testLogger, db, lockFactory).Up(nil, nil)).To(Succeed())
+			insertIntoEncryptedColumn(db, encryption.NewNoEncryption(), "test")
+
+			logger := lagertest.NewTestLogger("web")
+			conn, err := migration.NewOpenHelper(logger, "pgx", postgresRunner.DataSourceName(), lockFactory, key, nil).Open()
+			Expect(err).NotTo(HaveOccurred())
+			_ = conn.Close()
+
+			Expect(logger.LogMessages()).To(ContainElement("web.migrations.encrypt.table.encrypted-existing-plaintext-data"))
 		})
 	})
 
@@ -77,7 +90,7 @@ var _ = Describe("Encryption", func() {
 
 		Context("removing the encryption key", func() {
 			It("decrypts the database", func() {
-				migrator := migration.NewMigrator(db, lockFactory)
+				migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
 				err := migrator.Up(key1, nil)
 				Expect(err).ToNot(HaveOccurred())
@@ -92,7 +105,7 @@ var _ = Describe("Encryption", func() {
 
 		Context("rotating the encryption key", func() {
 			It("re-encrypts the database with the new key", func() {
-				migrator := migration.NewMigrator(db, lockFactory)
+				migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
 				err := migrator.Up(key2, nil)
 				Expect(err).ToNot(HaveOccurred())
@@ -116,7 +129,7 @@ var _ = Describe("Encryption", func() {
 		BeforeEach(func() {
 			key1 = createKey("AES256Key-32Characters1234567890")
 			key2 = createKey("AES256Key-32Characters0987654321")
-			migrator = migration.NewMigrator(db, lockFactory)
+			migrator = migration.NewMigrator(testLogger, db, lockFactory)
 
 			err := migrator.Up(nil, nil)
 			Expect(err).ToNot(HaveOccurred())

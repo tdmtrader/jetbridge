@@ -12,16 +12,16 @@ import (
 
 var _ = Describe("embedded migration definitions", func() {
 	It("matches a fresh parse of every migration shipped in the source tree", func() {
-		fresh, err := migration.NewMigratorForMigrations(nil, nil, os.DirFS("migrations")).Migrations()
+		fresh, err := migration.NewMigratorForMigrations(testLogger, nil, nil, os.DirFS("migrations")).Migrations()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(fresh).NotTo(BeEmpty())
-		embedded, err := migration.NewMigrator(nil, nil).Migrations()
+		embedded, err := migration.NewMigrator(testLogger, nil, nil).Migrations()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(embedded).To(Equal(fresh))
 	})
 
 	It("does not let a caller change another migrator's definitions", func() {
-		first, err := migration.NewMigrator(nil, nil).Migrations()
+		first, err := migration.NewMigrator(testLogger, nil, nil).Migrations()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(first).NotTo(BeEmpty())
 		original := first[0]
@@ -31,7 +31,7 @@ var _ = Describe("embedded migration definitions", func() {
 		first[0].Statements = "changed by caller"
 		first[0].Strategy = migration.Strategy(-1)
 
-		next, err := migration.NewMigrator(nil, nil).Migrations()
+		next, err := migration.NewMigrator(testLogger, nil, nil).Migrations()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(next[0]).To(Equal(original))
 	})
@@ -40,7 +40,7 @@ var _ = Describe("embedded migration definitions", func() {
 		dir := GinkgoT().TempDir()
 		path := filepath.Join(dir, "1000_example.up.sql")
 		Expect(os.WriteFile(path, []byte("SELECT 1;"), 0600)).To(Succeed())
-		migrator := migration.NewMigratorForMigrations(nil, nil, os.DirFS(dir))
+		migrator := migration.NewMigratorForMigrations(testLogger, nil, nil, os.DirFS(dir))
 		first, err := migrator.Migrations()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(first).NotTo(BeEmpty())
@@ -65,7 +65,7 @@ var _ = Describe("embedded migration definitions", func() {
 func BenchmarkEmbeddedMigrations(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		definitions, err := migration.NewMigrator(nil, nil).Migrations()
+		definitions, err := migration.NewMigrator(testLogger, nil, nil).Migrations()
 		if err != nil {
 			b.Fatal(err)
 		}

@@ -48,7 +48,7 @@ var _ = Describe("Baseline", func() {
 		}
 		fakeLogFunc := func(logger lager.Logger, id lock.LockID) {}
 		lockFactory = lock.NewLockFactory(lockDB, fakeLogFunc, fakeLogFunc)
-		migrator = migration.NewMigrator(db, lockFactory)
+		migrator = migration.NewMigrator(testLogger, db, lockFactory)
 
 		head, err = migrator.SupportedVersion()
 		Expect(err).NotTo(HaveOccurred())
@@ -281,7 +281,7 @@ var _ = Describe("migrate-preflight.sh", func() {
 	// Adding a migration means editing this constant. The failure message is the
 	// documentation.
 	It("targets the head migration", func() {
-		migrator := migration.NewMigrator(nil, nil)
+		migrator := migration.NewMigrator(testLogger, nil, nil)
 
 		head, err := migrator.SupportedVersion()
 		Expect(err).NotTo(HaveOccurred())

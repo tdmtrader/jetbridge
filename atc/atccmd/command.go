@@ -308,6 +308,7 @@ type RunCommand struct {
 
 type Migration struct {
 	lockFactory lock.LockFactory
+	logger      lager.Logger
 
 	Postgres               flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
 	EncryptionKey          flag.Cipher         `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database."`
@@ -334,6 +335,12 @@ func (m *Migration) Execute(args []string) error {
 
 	m.lockFactory = lock.NewLockFactory(lockConns, metric.LogLockAcquired, metric.LogLockReleased)
 
+	// Logs go to stderr, as a one-shot command's diagnostics should, leaving
+	// stdout to whatever the command itself reports.
+	logs := flag.Lager{LogLevel: flag.LogLevelInfo}
+	logs.SetWriterSink(os.Stderr)
+	m.logger, _ = logs.Logger("migrate")
+
 	if m.MigrateToLatestVersion {
 		return m.migrateToLatestVersion()
 	}
@@ -355,6 +362,7 @@ func (cmd *Migration) rotateEncryptionKey() error {
 	}
 
 	helper := migration.NewOpenHelper(
+		cmd.logger,
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
 		cmd.lockFactory,
@@ -372,6 +380,7 @@ func (cmd *Migration) rotateEncryptionKey() error {
 
 func (cmd *Migration) migrateToLatestVersion() error {
 	helper := migration.NewOpenHelper(
+		cmd.logger,
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
 		cmd.lockFactory,

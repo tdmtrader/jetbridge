@@ -46,7 +46,7 @@ var _ = Describe("Migration", func() {
 
 	Context("Migration test run", func() {
 		It("Runs all the migrations", func() {
-			migrator := migration.NewMigrator(db, lockFactory)
+			migrator := migration.NewMigrator(testLogger, db, lockFactory)
 
 			err := migrator.Up(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -59,7 +59,7 @@ var _ = Describe("Migration", func() {
 
 			SetupMigrationsHistoryTableToExistAtVersion(db, myDatabaseVersion)
 
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 				"1000_some_migration.up.sql":                                     &fstest.MapFile{},
 				"1510262030_initial_schema.up.sql":                               &fstest.MapFile{},
 				"1510670987_update_unique_constraint_for_resource_caches.up.sql": &fstest.MapFile{},
@@ -74,7 +74,7 @@ var _ = Describe("Migration", func() {
 		It("SupportedVersion reports the highest supported migration version", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 				"1000_some_migration.up.sql":                                     &fstest.MapFile{},
 				"1510262030_initial_schema.up.sql":                               &fstest.MapFile{},
 				"1510670987_update_unique_constraint_for_resource_caches.up.sql": &fstest.MapFile{},
@@ -90,7 +90,7 @@ var _ = Describe("Migration", func() {
 		It("Ignores files it can't parse", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 				"1000_some_migration.up.sql":                                     &fstest.MapFile{},
 				"1510262030_initial_schema.up.sql":                               &fstest.MapFile{},
 				"1510670987_update_unique_constraint_for_resource_caches.up.sql": &fstest.MapFile{},
@@ -108,7 +108,7 @@ var _ = Describe("Migration", func() {
 	Context("Upgrade", func() {
 		Context("sql migrations", func() {
 			It("runs a migration", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 					"1000_test_table_created.up.sql": &fstest.MapFile{
 						Data: []byte(`
 							CREATE TABLE some_table (id integer);
@@ -136,7 +136,7 @@ var _ = Describe("Migration", func() {
 			It("ignores migrations before the current version", func() {
 				SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 					"1000_test_table_created.up.sql": &fstest.MapFile{
 						Data: []byte(`
 							CREATE TABLE some_table (id integer);
@@ -155,7 +155,7 @@ var _ = Describe("Migration", func() {
 			})
 
 			It("runs the up migrations in ascending order", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 					"1000_test_table_created.up.sql": &fstest.MapFile{
 						Data: []byte(`
 							CREATE TABLE some_table (id integer);
@@ -174,7 +174,7 @@ var _ = Describe("Migration", func() {
 
 			Context("when sql migrations fail", func() {
 				It("rolls back and leaves the database clean", func() {
-					migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+					migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 						"1000_test_table_created.up.sql": &fstest.MapFile{
 							Data: []byte(`
 								CREATE TABLE some_table (id integer);
@@ -201,7 +201,7 @@ var _ = Describe("Migration", func() {
 			})
 
 			It("Doesn't fail if there are no migrations to run", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 					"1000_test_table_created.up.sql": &fstest.MapFile{
 						Data: []byte(`
 							CREATE TABLE some_table (id integer);
@@ -220,7 +220,7 @@ var _ = Describe("Migration", func() {
 			})
 
 			It("Locks the database so multiple ATCs don't all run migrations at the same time", func() {
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 					"1000_test_table_created.up.sql": &fstest.MapFile{
 						Data: []byte(`
 							CREATE TABLE some_table (id integer);
@@ -256,7 +256,7 @@ var _ = Describe("Migration", func() {
 		}
 
 		It("builds a fresh database from the earliest migration", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			Expect(tableExists("baseline_table")).To(BeTrue())
 			Expect(tableExists("next_table")).To(BeTrue())
@@ -265,7 +265,7 @@ var _ = Describe("Migration", func() {
 
 		It("treats a database at or past the baseline as having it", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			Expect(tableExists("baseline_table")).To(BeFalse())
 			Expect(tableExists("next_table")).To(BeTrue())
@@ -274,7 +274,7 @@ var _ = Describe("Migration", func() {
 
 		It("refuses a database older than the baseline, naming the release that can upgrade it", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 999)
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
 			err := migrator.Up(nil, nil)
 			Expect(err).To(MatchError("database is at migration 999, older than this release's baseline migration 1000: upgrade it with " + migration.LastReleaseBeforeBaseline + " first"))
 			Expect(tableExists("baseline_table")).To(BeFalse())
@@ -284,7 +284,7 @@ var _ = Describe("Migration", func() {
 		DescribeTable("refuses a database tracked by a table older than migrations_history, changing nothing",
 			func(setup func(), table string, version int) {
 				setup()
-				migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+				migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
 				err := migrator.Up(nil, nil)
 				Expect(err).To(MatchError(fmt.Sprintf("database records migration %d in %s, which predates this release's baseline migration 1000: upgrade it with %s first", version, table, migration.LastReleaseBeforeBaseline)))
 				Expect(tableExists(table)).To(BeTrue())
@@ -298,13 +298,13 @@ var _ = Describe("Migration", func() {
 		It("ignores a schema_migrations table left beside migrations_history", func() {
 			SetupMigrationsHistoryTableToExistAtVersion(db, 1000)
 			SetupSchemaMigrationsTable(db, 999, false)
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
 		})
 
 		It("refuses to migrate to a version older than the baseline", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, baselineFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, baselineFS())
 			err := migrator.Migrate(nil, nil, 999)
 			Expect(err).To(MatchError("cannot migrate to 999: it predates this release's baseline migration 1000"))
 			Expect(tableExists("migrations_history")).To(BeFalse())
@@ -330,7 +330,7 @@ var _ = Describe("Migration", func() {
 		}
 
 		It("reverses migrations that have a down", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, forwardOnlyFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, forwardOnlyFS())
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
 			Expect(tableExists("second_table")).To(BeFalse())
@@ -338,7 +338,7 @@ var _ = Describe("Migration", func() {
 		})
 
 		It("refuses to reverse a migration without a down before reversing anything", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, forwardOnlyFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, forwardOnlyFS())
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			var historyBefore int
 			Expect(db.QueryRow("SELECT count(*) FROM migrations_history").Scan(&historyBefore)).To(Succeed())
@@ -353,7 +353,7 @@ var _ = Describe("Migration", func() {
 		})
 
 		It("reports no version once the earliest migration is reversed", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, fstest.MapFS{
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, fstest.MapFS{
 				"1000_first.up.sql":   &fstest.MapFile{Data: []byte(`CREATE TABLE first_table (id integer);`)},
 				"1000_first.down.sql": &fstest.MapFile{Data: []byte(`DROP TABLE first_table;`)},
 			})
@@ -374,7 +374,7 @@ var _ = Describe("Migration", func() {
 		}
 
 		It("Downgrades to a given version", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, reversibleFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, reversibleFS())
 
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 			ExpectDatabaseMigrationVersionToEqual(migrator, 1001)
@@ -388,7 +388,7 @@ var _ = Describe("Migration", func() {
 		})
 
 		It("Doesn't fail if already at the requested version", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, reversibleFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, reversibleFS())
 
 			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
 			Expect(migrator.Migrate(nil, nil, 1001)).To(Succeed())
@@ -396,7 +396,7 @@ var _ = Describe("Migration", func() {
 		})
 
 		It("Locks the database so multiple consumers don't run downgrade at the same time", func() {
-			migrator := migration.NewMigratorForMigrations(db, lockFactory, reversibleFS())
+			migrator := migration.NewMigratorForMigrations(testLogger, db, lockFactory, reversibleFS())
 
 			Expect(migrator.Up(nil, nil)).To(Succeed())
 

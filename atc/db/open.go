@@ -63,7 +63,7 @@ type Tx interface {
 
 func Open(logger lager.Logger, driver, dsn string, newKey, oldKey *encryption.Key, name string, lockFactory lock.LockFactory) (DbConn, error) {
 	for {
-		sqlDB, err := migration.NewOpenHelper(driver, dsn, lockFactory, newKey, oldKey).Open()
+		sqlDB, err := migration.NewOpenHelper(logger, driver, dsn, lockFactory, newKey, oldKey).Open()
 		if err != nil {
 			if shouldRetry(err) {
 				logger.Error("failed-to-open-db-retrying", err)
