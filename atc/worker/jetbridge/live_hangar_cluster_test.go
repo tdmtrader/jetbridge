@@ -344,7 +344,11 @@ func (cluster *liveCluster) createOperatorObjects() {
 			"client.crt": cluster.daemonClientCert, "client.key": cluster.daemonClientKey},
 		names.resolve:       {"resolve.key": liveDiskRandomBytes(t, 32)},
 		names.postgres:      {"POSTGRES_PASSWORD": []byte(cluster.postgresPassword)},
-		names.encryptionKey: {"encryption-key": liveDiskRandomBytes(t, 32)},
+		// 32 hex characters, as the chart README prescribes. An environment
+		// variable carries text: raw random bytes reached the web lengthened
+		// (56 and 62 bytes in k8s-e2e/hangar-cluster-contract/32) and AES
+		// refused the key.
+		names.encryptionKey: {"encryption-key": []byte(liveDiskRandomHex(t, 16))},
 		names.signingKey: {"session_signing_key": pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(signingKey)})},
 	} {
