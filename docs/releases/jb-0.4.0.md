@@ -1,6 +1,16 @@
-# JetBridge 0.3.2 (in progress)
+# JetBridge 0.4.0
 
-Running notes for the next release; rewritten into full notes at cut time.
+JetBridge 0.4.0 follows jb-0.3.1 (5133d0ddbc, 2026-09-04) with about 1,900 commits on `core`. It was declared 0.3.2 while in progress and released as 0.4.0 because it breaks upgrades: the database migrations collapse into a baseline, every fork migration is forward-only, legacy runs are deleted, the encryption key becomes required, about forty upstream web flags and their features are removed, and the chart's values schema closes. Read [Operator notes](#operator-notes) and the chart's [`MIGRATING.md`](../../deploy/chart/MIGRATING.md) before upgrading, and take a database backup with the encryption key: the only way back is restoring it.
+
+## Highlights
+
+- Landing queues: core lands changes on a repository's trunk once every gate, each a pipeline Run, has passed on the exact tree that lands (ADR-0011).
+- Pipeline Runs v2: idempotent admission by invocation key, durable execution and results, build closures, queued and fenced cancellation, and the `run_pipeline` step.
+- Step pod grants: only the web's configuration chooses the ServiceAccount a build's step pods run under, and the default step pod identity carries no API token.
+- `fly abort-build` works again, and an aborted or timed-out task's pod is actually torn down instead of running on.
+- Upstream surface removed: Let's Encrypt, `idtoken`, pipeline `var_sources`, the audit log, syslog drainer, OPA, non-OTLP tracers, `fly workers`/`fly volumes`, `prototypes:` and more (see [Upstream features removed](#upstream-features-removed)).
+- Upgrade path: a database older than JetBridge 0.3.1 / Concourse 8.0.x is refused; upgrade it with 0.3.1 first.
+- Chart 0.2.0: closed values schema; `web.env` and `web.extraArgs` replaced by typed values; image, URL, users and signing key required (see [Chart](#chart-011--020)).
 
 ## New
 
@@ -70,7 +80,7 @@ A web started with a removed flag fails to parse its command line and does not s
 - A sidecar's logs are never folded into the step's stdout under a `[name] ` prefix; each declared sidecar streams to its own log writer under its own plan ID, and a step that has a stdout but no writer for a declared sidecar is refused naming the sidecar.
 - The chart no longer tombstones a removed value: a stale key fails the render as an unknown property of its closed parent, and [`MIGRATING.md`](../../deploy/chart/MIGRATING.md) names each replacement.
 
-### Chart (0.1.1 → 0.1.3)
+### Chart (0.1.1 → 0.2.0)
 
 Every item below fails `helm template` on a values file that still uses the old form, naming the key. [`MIGRATING.md`](../../deploy/chart/MIGRATING.md#values-migration) has the replacement for each.
 

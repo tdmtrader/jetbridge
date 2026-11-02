@@ -1,4 +1,4 @@
-# Chart 0.1.3: standard runtime and MCP
+# Chart 0.2.0: standard runtime and MCP
 
 The artifact daemon, daemon mTLS, signed artifact resolution, and authenticated
 MCP are standard capabilities. Their deployment configuration is explicit; empty
@@ -192,7 +192,7 @@ replace external team membership with local users before upgrading.
 Kubernetes Secrets is the retained production secret backend. Vault, CredHub,
 AWS SSM, AWS Secrets Manager and Conjur managers and their flags/environment
 configuration are removed from both binaries. The dummy and ID-token managers
-and pipeline `var_sources` followed in 0.3.2: `set-pipeline` and
+and pipeline `var_sources` followed in 0.4.0: `set-pipeline` and
 `fly validate-pipeline` refuse a pipeline that declares `var_sources:`. Move
 secret lookups into the global Kubernetes credential manager, where a `((var))`
 resolves under the pipeline's team and pipeline. Generic variable resolution

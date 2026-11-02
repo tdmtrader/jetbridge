@@ -2,7 +2,7 @@
 
 This document catalogs every migration between upstream Concourse releases and JetBridge HEAD, documenting what each changes and whether it is destructive or additive.
 
-Since JetBridge 0.3.2 the 300 upstream migration files up to and including
+Since JetBridge 0.4.0 the 300 upstream migration files up to and including
 `1765921815` are one baseline, `1765921815_baseline.up.sql`: the upstream
 Concourse 8.0.x schema as `pg_dump --schema-only` writes it. It runs only on an
 empty database. A database at or past `1765921815` already has it; one below it
