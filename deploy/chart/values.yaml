@@ -149,6 +149,14 @@ web:
     # -- Key in the Secret for the TLS private key
     keyFilename: tls.key
 
+  # -- Deprecated, and removed in the next chart change (ADR-0008 bans the
+  # pass-through): every setting it carried has a typed value above
+  # (deploy/chart/MIGRATING.md maps each name). An entry naming a variable a
+  # set typed value renders fails the render. A CONCOURSE_ENCRYPTION_KEY entry
+  # is still accepted in place of secrets.encryptionKeySecret until then.
+  env: []
+
+
   # -- Existing web-only Secret containing input.key (exactly 32 raw random
   # bytes) for workload Run input grants. Requires hangarOutput.webEnabled.
   # Use a key distinct from both the Hangar and artifact resolve keys, in a
@@ -443,6 +451,8 @@ secrets:
   # hex characters, which the web takes as a 32-byte key):
   #   kubectl create secret generic jetbridge-encryption-key \
   #     --from-literal=encryption-key="$(openssl rand -hex 16)"
+  # Deployments that already set CONCOURSE_ENCRYPTION_KEY through web.env may
+  # leave this empty until they move; the chart refuses both at once.
   encryptionKeySecret: ""
 
 # -- Pod Security Admission (PSA) recommendations.

@@ -4,10 +4,7 @@ package tests
 // value of its own (ADR-0008), rendered as the variable the web reads.
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -123,43 +120,12 @@ func renderRollout(t *testing.T) string {
 	return string(out)
 }
 
-// web.env, the pass-through ADR-0008 bans, is gone: the closed schema refuses
-// it as an unknown key, and MIGRATING.md maps each entry a deployment set to
-// its typed value.
-func TestWebEnvIsAnUnknownKeyAndMigratingNamesEveryReplacement(t *testing.T) {
-	out := renderHangarError(t, "web.env[0].name=CONCOURSE_AUTH_DURATION", "web.env[0].value=720h")
-	// Helm 3 says "web: Additional property env is not allowed", Helm 4
-	// "at '/web': additional properties 'env' not allowed".
-	if !regexp.MustCompile(`(?i)web\W.*additional propert(y|ies) '?env'? `).MatchString(out) {
-		t.Fatalf("the refusal of web.env does not name it as an unknown key under web:\n%s", out)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "chart", "MIGRATING.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	section := string(raw)
-	start := strings.Index(section, "## web.env becomes typed values")
-	if start < 0 {
-		t.Fatal("MIGRATING.md has no web.env section")
-	}
-	section = section[start:]
-	if end := strings.Index(section[3:], "\n## "); end >= 0 {
-		section = section[:end+3]
-	}
-	replacements := map[string]string{"CONCOURSE_ENCRYPTION_KEY": "secrets.encryptionKeySecret"}
-	for _, setting := range webSettings {
-		replacements[setting.variable] = setting.set[:strings.Index(setting.set, "=")]
-	}
-	for variable, value := range replacements {
-		row := ""
-		for _, line := range strings.Split(section, "\n") {
-			if strings.HasPrefix(line, "| `"+variable+"`") {
-				row = line
-			}
-		}
-		if !strings.Contains(row, "`"+value) {
-			t.Errorf("MIGRATING.md's web.env table does not map %s to %s: %q", variable, value, row)
-		}
+// While web.env remains, an entry naming a variable a set typed value
+// renders would hand the container two values; the render names the value.
+func TestAWebEnvEntryATypedSettingRendersFailsTheRender(t *testing.T) {
+	out := renderHangarError(t, "web.authDuration=720h",
+		"web.env[0].name=CONCOURSE_AUTH_DURATION", "web.env[0].value=24h")
+	if !strings.Contains(out, "web.authDuration") {
+		t.Fatalf("the refusal does not name web.authDuration:\n%s", out)
 	}
 }

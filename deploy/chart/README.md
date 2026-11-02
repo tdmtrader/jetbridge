@@ -202,6 +202,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.gc.missingGracePeriod` | `""` | How long a container or volume may be missing before it is reaped (default 5m). `CONCOURSE_GC_MISSING_GRACE_PERIOD`. |
 | `web.secretRetry.attempts` | `0` | Attempts at a credential lookup that fails retryably (0 keeps the binary's 5). `CONCOURSE_SECRET_RETRY_ATTEMPTS`. |
 | `web.secretRetry.interval` | `""` | Wait between those attempts (default 1s). `CONCOURSE_SECRET_RETRY_INTERVAL`. |
+| `web.env` | `[]` | **Deprecated; removed in the next chart change.** Every setting it carried has a typed value above ([MIGRATING.md](MIGRATING.md#webenv-becomes-typed-values-2026-10-31)). |
 | `web.extraVolumeMounts` | `[]` | Additional volume mounts (e.g. CA bundles). |
 | `web.extraVolumes` | `[]` | Additional volumes for the web pod. |
 | `web.nodeSelector` | `{}` | Node selector for the web pod. |
@@ -423,7 +424,7 @@ web:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `secrets.signingKeySecret` | `""` | **Required.** Pre-existing Secret holding `session_signing_key`, an RSA private key in PEM. Every web pod mounts it at `/keys`. |
-| `secrets.encryptionKeySecret` | `""` | **Required.** Pre-existing Secret holding `encryption-key`, the 16- or 32-byte database encryption key. Rendered as `CONCOURSE_ENCRYPTION_KEY` on the web container and on `migrate-db`. |
+| `secrets.encryptionKeySecret` | `""` | **Required.** Pre-existing Secret holding `encryption-key`, the 16- or 32-byte database encryption key. Rendered as `CONCOURSE_ENCRYPTION_KEY` on the web container and on `migrate-db`. A deployment that already sets `CONCOURSE_ENCRYPTION_KEY` through `web.env` may keep that until it moves; the chart refuses both at once. |
 
 The chart never generates either key. Every web replica mounts the same
 signing-key Secret, so sessions survive restarts and work across replicas, and

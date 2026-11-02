@@ -229,6 +229,9 @@
             }
           }
         },
+        "env": {
+          "$ref": "#/definitions/openList"
+        },
         "runInputSigningKeySecret": {
           "type": "string"
         },
