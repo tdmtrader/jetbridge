@@ -173,7 +173,7 @@ func start(postmaster *postgresrunner.Runner) (p *Platform, stop func(), err err
 	}
 	ignore := func(lager.Logger, lock.LockID) {}
 	locks := lock.NewLockFactory(lockConns, ignore, ignore)
-	conn, err := db.Open(logger, "pgx", postmaster.DataSourceName(), nil, nil, "atctest", locks)
+	conn, err := db.Open(logger, "pgx", postmaster.DataSourceName(), postgresrunner.EncryptionKey(), nil, "atctest", locks)
 	if err != nil {
 		return nil, stop, err
 	}

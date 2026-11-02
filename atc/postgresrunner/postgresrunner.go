@@ -1,6 +1,8 @@
 package postgresrunner
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"database/sql"
 	"fmt"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/concourse/concourse/atc/db/encryption"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
@@ -38,6 +42,21 @@ type Runner struct {
 
 // DBName is the database this runner's connections open: the one a spec
 // creates with CreateTestDBFromTemplate or CreateEmptyTestDB.
+// EncryptionKey is the key every test database is opened and migrated under,
+// as production runs with one. The suites share this fixed key the way a
+// cluster's webs share a Secret.
+func EncryptionKey() *encryption.Key {
+	block, err := aes.NewCipher([]byte("AES256Key-32Characters1234567890"))
+	if err != nil {
+		panic(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err)
+	}
+	return encryption.NewKey(aead)
+}
+
 func (runner *Runner) DBName() string {
 	if runner.dbName == "" {
 		return "testdb"
@@ -147,7 +166,7 @@ func (runner *Runner) MigrateToVersion(version int) {
 		"pgx",
 		runner.DataSourceName(),
 		nil,
-		nil,
+		EncryptionKey(),
 		nil,
 	).MigrateToVersion(version)
 	Expect(err).NotTo(HaveOccurred())
@@ -159,7 +178,7 @@ func (runner *Runner) TryOpenDBAtVersion(version int) (*sql.DB, error) {
 		"pgx",
 		runner.DataSourceName(),
 		nil,
-		nil,
+		EncryptionKey(),
 		nil,
 	).OpenAtVersion(version)
 
@@ -186,7 +205,7 @@ func (runner *Runner) OpenDB() *sql.DB {
 		"pgx",
 		runner.DataSourceName(),
 		nil,
-		nil,
+		EncryptionKey(),
 		nil,
 	).Open()
 	Expect(err).NotTo(HaveOccurred())
@@ -208,7 +227,7 @@ func (runner *Runner) openConn(dbName string) db.DbConn {
 		lagertest.NewTestLogger("postgres-runner"),
 		"pgx",
 		runner.dataSourceName(dbName),
-		nil,
+		EncryptionKey(),
 		nil,
 		"postgresrunner",
 		nil,

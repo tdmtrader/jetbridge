@@ -68,6 +68,7 @@ var _ = BeforeEach(func() {
 	Expect(err).ToNot(HaveOccurred())
 
 	cmd.Auth.AuthFlags.SigningKey = &flag.PrivateKey{PrivateKey: signingKey}
+	Expect(cmd.EncryptionKey.UnmarshalFlag("AES256Key-32Characters1234567890")).To(Succeed())
 
 	postgresRunner.CreateTestDBFromTemplate()
 

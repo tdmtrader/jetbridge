@@ -30,9 +30,12 @@ func (e Key) Encrypt(plaintext []byte) (string, *string, error) {
 	return hex.EncodeToString(ciphertext), &noncense, nil
 }
 
+// Decrypt returns the plaintext of a row. A row without a nonce is plaintext
+// already, by the schema's convention, and is returned as is: the migrator
+// encrypts such rows, and a keyed web reads one a keyless deployment left.
 func (e Key) Decrypt(text string, n *string) ([]byte, error) {
 	if n == nil {
-		return nil, errDataIsNotEncrypted
+		return []byte(text), nil
 	}
 
 	ciphertext, err := hex.DecodeString(text)
