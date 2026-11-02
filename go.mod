@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/storage v1.64.0
 	code.cloudfoundry.org/clock v1.57.0
 	code.cloudfoundry.org/lager/v3 v3.57.0
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.30.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b
 	github.com/cenkalti/backoff/v5 v5.0.3
@@ -22,7 +23,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4
 	github.com/fsouza/fake-gcs-server v1.52.3
 	github.com/go-jose/go-jose/v4 v4.1.4
-	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/gobwas/glob v0.2.3
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8
 	github.com/google/go-containerregistry v0.21.2
@@ -138,6 +138,7 @@ require (
 	cloud.google.com/go/iam v1.11.0 // indirect
 	cloud.google.com/go/monitoring v1.29.0 // indirect
 	cloud.google.com/go/pubsub/v2 v2.5.1 // indirect
+	cloud.google.com/go/trace v1.16.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/AppsFlyer/go-sundheit v0.6.0 // indirect

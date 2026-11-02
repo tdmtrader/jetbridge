@@ -9,7 +9,7 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 - **`skip_download`** — get steps can resolve version metadata without downloading artifacts
 - **Configurable base resource types** — override default resource type images via `--kubernetes-base-resource-type name=image`
 - **Health endpoint** — `GET /api/v1/health` with DB + worker checks (used for K8s readiness probes)
-- **OpenTelemetry** — distributed tracing over OTLP
+- **OpenTelemetry** — distributed tracing over OTLP or to Google Cloud Trace
 
 Core pipeline syntax, `fly`, the web UI, resource types and the REST API retain
 the Concourse interface. Authentication is local-only; Kubernetes Secrets is
@@ -233,7 +233,7 @@ config:
 - Configurable base resource types (`--kubernetes-base-resource-type name=image`)
 - Direct image references for resource types (`image:` on a `resource_types` entry; every image is a registry-image reference)
 - Health endpoint (`GET /api/v1/health`) for K8s probes
-- OpenTelemetry tracing over OTLP
+- OpenTelemetry tracing over OTLP or to Google Cloud Trace
 - Deterministic pod naming
 - Transient error retry with K8s error classification
 - Artifact passing via a per-node DaemonSet over HTTP; node-local task caches

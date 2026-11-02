@@ -82,6 +82,20 @@ var _ = Describe("Tracer", func() {
 			Expect(tracing.Configured).To(BeTrue())
 		})
 
+		It("prefers otlp when stackdriver is configured too", func() {
+			c := tracing.Config{
+				OTLP:        tracing.OTLP{Address: "ingest.example.com:443"},
+				Stackdriver: tracing.Stackdriver{ProjectID: "my-project"},
+			}
+			Expect(c.Prepare()).To(Succeed())
+			Expect(tracing.Configured).To(BeTrue())
+		})
+
+		It("treats a stackdriver project id as configuring stackdriver", func() {
+			Expect(tracing.Stackdriver{ProjectID: "my-project"}.IsConfigured()).To(BeTrue())
+			Expect(tracing.Stackdriver{}.IsConfigured()).To(BeFalse())
+		})
+
 		It("does not configure tracing if no flags are provided", func() {
 			c := tracing.Config{}
 			c.Prepare()

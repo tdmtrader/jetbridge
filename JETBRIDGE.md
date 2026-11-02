@@ -329,7 +329,7 @@ Source: `atc/atccmd/run_flags.go` (RunCommand.GC struct)
 
 ### OpenTelemetry Tracing Flags
 
-Traces are exported over OTLP; tracing is on when `--tracing-otlp-address` is set.
+Traces are exported over OTLP or to Google Cloud Trace (Stackdriver). Tracing is on when `--tracing-otlp-address` or `--tracing-stackdriver-projectid` is set; with both, OTLP wins.
 
 **Common flags:**
 
@@ -346,6 +346,12 @@ Traces are exported over OTLP; tracing is on when `--tracing-otlp-address` is se
 | `--tracing-otlp-header` | (none) | Headers on OTLP requests. Repeatable. |
 | `--tracing-otlp-use-tls` | `false` | Use TLS for OTLP connection. |
 
+**Stackdriver:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tracing-stackdriver-projectid` | (none) | GCP project ID for Cloud Trace. |
+
 **Sampling:**
 
 | Flag | Default | Description |
@@ -353,7 +359,7 @@ Traces are exported over OTLP; tracing is on when `--tracing-otlp-address` is se
 | `--tracing-sampling-strategy` | `always` | Strategy: `always`, `never`, `probability`. |
 | `--tracing-sampling-rate` | `1.0` | Sampling rate for `probability` strategy (0.0 to 1.0). |
 
-Source: `tracing/tracer.go`, `tracing/otlp.go`, `tracing/sampling.go`
+Source: `tracing/tracer.go`, `tracing/otlp.go`, `tracing/stackdriver.go`, `tracing/sampling.go`
 
 ## Deployment
 
