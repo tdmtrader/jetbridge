@@ -15,6 +15,8 @@ import (
 	"os"
 	"time"
 
+	"code.cloudfoundry.org/clock"
+
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
@@ -39,6 +41,7 @@ import (
 	// dynamically registered policy checkers
 
 	// dynamically registered credential managers
+	_ "github.com/concourse/concourse/atc/creds/dummy"
 	_ "github.com/concourse/concourse/atc/creds/kubernetes"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -225,6 +228,14 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		return nil, err
 	}
 
+	cmd.varSourcePool = creds.NewVarSourcePool(
+		logger.Session("var-source-pool"),
+		cmd.CredentialManagement,
+		cmd.GC.VarSourceRecyclePeriod,
+		1*time.Minute,
+		clock.NewClock(),
+	)
+
 	members, err := cmd.constructMembers(logger, apiConn, workerConn, backendConn, gcConn, storage, lockFactory, secretManager)
 	if err != nil {
 		return nil, err
@@ -255,6 +266,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		for _, closer := range lockConns {
 			closer.Close()
 		}
+		cmd.varSourcePool.Close()
 		if cmd.hangarOutputStoreClose != nil {
 			_ = cmd.hangarOutputStoreClose()
 		}
@@ -459,6 +471,7 @@ func (cmd *RunCommand) constructEngine(
 			resolver,
 		),
 		secretManager,
+		cmd.varSourcePool,
 	)
 }
 

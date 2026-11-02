@@ -622,6 +622,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		concourse.JetBridgeVersion,
 		concourse.ConcourseVersion,
 		secretManager,
+		cmd.varSourcePool,
 		credsManagers,
 		containerserver.NewInterceptTimeoutFactory(cmd.InterceptIdleTimeout),
 		time.Minute,

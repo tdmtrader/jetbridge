@@ -58,7 +58,12 @@ func (s *Server) CheckResourceWebHook(dbPipeline db.Pipeline) http.Handler {
 			InstanceVars: dbPipeline.InstanceVars(),
 		}
 
-		variables := creds.NewVariables(s.secretManager, secretsParams, false)
+		variables, err := dbPipeline.Variables(logger, s.secretManager, s.varSourcePool, secretsParams)
+		if err != nil {
+			logger.Error("failed-to-create-var-sources", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		token, err := creds.NewString(variables, dbResource.WebhookToken()).Evaluate()
 		if err != nil {
 			logger.Error("failed-to-evaluate-webhook-token", err)

@@ -17,13 +17,12 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/credstest"
+	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/testhelpers"
-	"github.com/concourse/concourse/vars"
 	"github.com/tedsuo/rata"
 	"sigs.k8s.io/yaml"
 
@@ -274,11 +273,11 @@ func (factory *configAPITeamFactory) notifyResourceScannerCallCount() int {
 	return factory.notifyResourceScannerCalls
 }
 
-// configAPISecrets is an in-memory credential manager holding the one variable
-// given. Its lookup paths are real, so resolving a var walks team/pipeline/,
-// then team/, then the bare name.
+// configAPISecrets is the credential manager production registers under the
+// name "dummy", holding the one variable given. Its lookup paths are real, so
+// resolving a var walks team/pipeline/, then team/, then the bare name.
 func configAPISecrets(name string, value any) creds.Secrets {
-	return &credstest.Secrets{StaticVariables: vars.StaticVariables{name: value}}
+	return dummy.NewSecretsFactory([]dummy.VarFlag{{Name: name, Value: value}}).NewSecrets()
 }
 
 var _ = Describe("Config API", func() {
@@ -293,6 +292,16 @@ var _ = Describe("Config API", func() {
 					Name:      "some-group",
 					Jobs:      []string{"some-job"},
 					Resources: []string{"some-resource"},
+				},
+			},
+
+			VarSources: atc.VarSourceConfigs{
+				{
+					Name: "some",
+					Type: "dummy",
+					Config: map[string]any{
+						"vars": map[string]any{},
+					},
 				},
 			},
 

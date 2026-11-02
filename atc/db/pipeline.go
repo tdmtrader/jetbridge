@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
+
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/event"
+	"github.com/concourse/concourse/vars"
 )
 
 // pipelineObjectTables contains a list of tables that are objects within a
@@ -41,6 +45,7 @@ type Pipeline interface {
 	ParentJobID() int
 	ParentBuildID() int
 	Groups() atc.GroupConfigs
+	VarSources() atc.VarSourceConfigs
 	Display() *atc.DisplayConfig
 	ConfigVersion() ConfigVersion
 	Config() (atc.Config, error)
@@ -105,6 +110,8 @@ type Pipeline interface {
 
 	Destroy() error
 
+	Variables(lager.Logger, creds.Secrets, creds.VarSourcePool, creds.SecretLookupParams) (vars.Variables, error)
+
 	SetParentIDs(jobID, buildID int) error
 }
 
@@ -117,6 +124,7 @@ type pipeline struct {
 	parentJobID          int
 	parentBuildID        int
 	groups               atc.GroupConfigs
+	varSources           atc.VarSourceConfigs
 	display              *atc.DisplayConfig
 	configVersion        ConfigVersion
 	paused               bool
@@ -146,7 +154,9 @@ var pipelinesQuery = psql.Select(`
 		p.id,
 		p.name,
 		p.groups,
+		p.var_sources,
 		p.display,
+		p.nonce,
 		p.version,
 		p.team_id,
 		t.name,
@@ -189,6 +199,7 @@ func (p *pipeline) ParentJobID() int                      { return p.parentJobID
 func (p *pipeline) ParentBuildID() int                    { return p.parentBuildID }
 func (p *pipeline) InstanceVars() atc.InstanceVars        { return p.instanceVars }
 func (p *pipeline) Groups() atc.GroupConfigs              { return p.groups }
+func (p *pipeline) VarSources() atc.VarSourceConfigs      { return p.varSources }
 func (p *pipeline) Display() *atc.DisplayConfig           { return p.display }
 func (p *pipeline) ConfigVersion() ConfigVersion          { return p.configVersion }
 func (p *pipeline) Public() bool                          { return p.public }
@@ -270,6 +281,7 @@ func (p *pipeline) Config() (atc.Config, error) {
 
 	config := atc.Config{
 		Groups:        p.Groups(),
+		VarSources:    p.VarSources(),
 		Resources:     resources.Configs(),
 		ResourceTypes: resourceTypes.Configs(),
 		Jobs:          jobConfigs,
@@ -954,6 +966,55 @@ func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
 	}
 
 	return build, nil
+}
+
+// Variables creates variables for this pipeline. If this pipeline has its own
+// var_sources, a vars.MultiVars containing all pipeline specific var_sources
+// plug the global variables, otherwise just return the global variables.
+func (p *pipeline) Variables(logger lager.Logger, globalSecrets creds.Secrets, varSourcePool creds.VarSourcePool, secretLookupParams creds.SecretLookupParams) (vars.Variables, error) {
+	globalVars := creds.NewVariables(globalSecrets, secretLookupParams, false)
+	namedVarsMap := vars.NamedVariables{}
+
+	// It's safe to add NamedVariables to allVars via an array here, because
+	// a map is passed by reference.
+	allVars := vars.NewMultiVars([]vars.Variables{namedVarsMap, globalVars})
+
+	orderedVarSources, err := p.varSources.OrderByDependency()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, cm := range orderedVarSources {
+		factory := creds.ManagerFactories()[cm.Type]
+		if factory == nil {
+			return nil, fmt.Errorf("unknown credential manager type: %s", cm.Type)
+		}
+
+		// Interpolate variables in pipeline credential manager's config
+		newConfig, err := creds.NewParams(allVars, atc.Params{"config": cm.Config}).Evaluate()
+		if err != nil {
+			return nil, fmt.Errorf("evaluate var_source '%s' error: %w", cm.Name, err)
+		}
+
+		config, ok := newConfig["config"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("var_source '%s' invalid config", cm.Name)
+		}
+		secrets, err := varSourcePool.FindOrCreate(logger, config, factory)
+		if err != nil {
+			return nil, fmt.Errorf("create var_source '%s' error: %w", cm.Name, err)
+		}
+		namedVarsMap[cm.Name] = creds.NewVariables(secrets, secretLookupParams, true)
+
+	}
+
+	// If there is no var_source from the pipeline, then just return the global
+	// vars.
+	if len(namedVarsMap) == 0 {
+		return globalVars, nil
+	}
+
+	return allVars, nil
 }
 
 func (p *pipeline) SetParentIDs(jobID, buildID int) error {

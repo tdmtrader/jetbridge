@@ -274,7 +274,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 		db.NewCheckFactory(p.conn, p.locks, make(chan db.Build, 64), nil), db.NewResourceConfigFactory(p.conn, p.locks), users, db.NewLandingQueueFactory(p.conn),
 		buildserver.NewEventHandler, nil, false, os.TempDir(),
 		concourse.Version, concourse.WorkerVersion, concourse.JetBridgeVersion, concourse.ConcourseVersion,
-		noop.Noop{}, creds.Managers{},
+		noop.Noop{}, creds.NewVarSourcePool(logger, creds.CredentialManagementConfig{}, time.Minute, time.Minute, clock.NewClock()), creds.Managers{},
 		containerserver.NewInterceptTimeoutFactory(time.Minute), time.Minute, db.NewWall(p.conn, &dbClock), clock.NewClock(),
 		p.conn, nil, services)
 }

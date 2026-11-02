@@ -3,6 +3,8 @@ package lidar
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -24,6 +26,7 @@ func NewScanner(
 	resolver imageresolver.Resolver,
 	resourceConfigFactory db.ResourceConfigFactory,
 	secrets creds.Secrets,
+	varSourcePool creds.VarSourcePool,
 ) *scanner {
 	return &scanner{
 		checkFactory:          checkFactory,
@@ -32,6 +35,7 @@ func NewScanner(
 		resolver:              resolver,
 		resourceConfigFactory: resourceConfigFactory,
 		secrets:               secrets,
+		varSourcePool:         varSourcePool,
 	}
 }
 
@@ -42,9 +46,10 @@ type scanner struct {
 	resolver              imageresolver.Resolver
 	resourceConfigFactory db.ResourceConfigFactory
 
-	// secrets evaluates the ((var)) references in a
+	// secrets and varSourcePool evaluate the ((var)) references in a
 	// registry-image source before native resolution, as a check build would.
-	secrets creds.Secrets
+	secrets       creds.Secrets
+	varSourcePool creds.VarSourcePool
 }
 
 func (s *scanner) Run(ctx context.Context) error {
@@ -514,7 +519,7 @@ func (s *scanner) nativeSource(logger lager.Logger, checkable db.Checkable, reso
 		return source, true
 	}
 
-	evaluated, err := s.evaluateSource(checkable, checkable.TeamName(), source)
+	evaluated, err := s.evaluateSource(logger, checkable, checkable.TeamName(), source)
 	if err != nil {
 		logger.Error("failed-to-evaluate-source", err)
 		return nil, false
@@ -522,14 +527,26 @@ func (s *scanner) nativeSource(logger lager.Logger, checkable db.Checkable, reso
 	return evaluated, true
 }
 
-// evaluateSource interpolates a stored source through the global credential
-// manager, looked up under the same team and pipeline a check build uses.
-func (s *scanner) evaluateSource(ref db.PipelineRef, teamName string, source atc.Source) (atc.Source, error) {
-	variables := creds.NewVariables(s.secrets, creds.SecretLookupParams{
+// evaluateSource interpolates a stored source through the pipeline's
+// credential variables: the global credential manager and the pipeline's
+// var_sources, looked up under the same team and pipeline a check build uses.
+func (s *scanner) evaluateSource(logger lager.Logger, ref db.PipelineRef, teamName string, source atc.Source) (atc.Source, error) {
+	pipeline, found, err := ref.Pipeline()
+	if err != nil {
+		return nil, fmt.Errorf("find pipeline: %w", err)
+	}
+	if !found {
+		return nil, errors.New("pipeline not found")
+	}
+
+	variables, err := pipeline.Variables(logger, s.secrets, s.varSourcePool, creds.SecretLookupParams{
 		Team:         teamName,
 		Pipeline:     ref.PipelineName(),
 		InstanceVars: ref.PipelineInstanceVars(),
-	}, false)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pipeline variables: %w", err)
+	}
 
 	return creds.NewSource(variables, source).Evaluate()
 }

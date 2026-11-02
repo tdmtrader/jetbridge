@@ -1,0 +1,20 @@
+---
+var_sources:
+- name: vs-dummy
+  type: dummy
+  config:
+    vars:
+      k1: v1
+
+resources:
+- name: some-resource
+  type: some-type
+  source:
+    private_key: ((vs-dummy:large-string-param))
+    config-a: ((vs-dummy:param-a))
+    config-b: ((vs-dummy:param-b))
+
+jobs:
+- name: some-job
+  plan:
+  - get: some-resource

@@ -50,6 +50,8 @@ type RunCommand struct {
 
 	Logger flag.Lager
 
+	varSourcePool creds.VarSourcePool
+
 	// customRoles is loaded during validation and reused by the API so the
 	// security check and enforcement always operate on the same mapping. It is
 	// keyed on the path it was parsed from, so a path set after an earlier
@@ -194,6 +196,7 @@ type RunCommand struct {
 		MissingGracePeriod         time.Duration `long:"missing-grace-period" default:"5m" description:"Period after which to reap containers and volumes that were created but went missing from the worker."`
 		HijackGracePeriod          time.Duration `long:"hijack-grace-period" default:"5m" description:"Period after which hijacked containers will be garbage collected"`
 		FailedGracePeriod          time.Duration `long:"failed-grace-period" default:"120h" description:"Period after which failed containers will be garbage collected"`
+		VarSourceRecyclePeriod     time.Duration `long:"var-source-recycle-period" default:"5m" description:"Period after which to reap var_sources that are not used."`
 		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
 	} `group:"Garbage Collection" namespace:"gc"`
 

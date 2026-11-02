@@ -96,7 +96,7 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 // when its first segment names a declared parameter or a reserved run value --
 // template_placeholders.go and vars.NewExactReferenceExclusion both document
 // that materialization leaves it entirely alone -- so it must be reported as
-// absent for the credential manager to resolve, rather than traversed into a
+// absent for a runtime var source to resolve, rather than traversed into a
 // scalar and rejected with a field error.
 type runScopedVariables struct {
 	vars.StaticVariables

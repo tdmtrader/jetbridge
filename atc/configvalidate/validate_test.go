@@ -7,6 +7,9 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 
+	// load dummy credential manager
+	_ "github.com/concourse/concourse/atc/creds/dummy"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -31,6 +34,8 @@ var _ = Describe("ValidateConfig", func() {
 					Jobs: []string{"some-empty-*"},
 				},
 			},
+
+			VarSources: atc.VarSourceConfigs{},
 
 			Resources: atc.ResourceConfigs{
 				{
@@ -160,6 +165,21 @@ var _ = Describe("ValidateConfig", func() {
 			It("returns a warning", func() {
 				Expect(warnings).To(HaveLen(1))
 				Expect(warnings[0].Message).To(ContainSubstring("'_some-resource-type' is not a valid identifier"))
+			})
+		})
+
+		Context("when a var source has an invalid identifier", func() {
+			BeforeEach(func() {
+				config.VarSources = append(config.VarSources, atc.VarSourceConfig{
+					Name:   "_some-var-source",
+					Type:   "dummy",
+					Config: "",
+				})
+			})
+
+			It("returns a warning", func() {
+				Expect(warnings).To(HaveLen(1))
+				Expect(warnings[0].Message).To(ContainSubstring("'_some-var-source' is not a valid identifier"))
 			})
 		})
 
@@ -315,6 +335,142 @@ var _ = Describe("ValidateConfig", func() {
 				Expect(errorMessages).To(HaveLen(1))
 				Expect(errorMessages[0]).To(ContainSubstring("invalid groups:"))
 				Expect(errorMessages[0]).To(ContainSubstring("invalid glob expression 'some-bad-glob-[0-9' for group 'a-group'"))
+			})
+		})
+	})
+
+	Describe("invalid var sources", func() {
+		DescribeTable("rejects retired credential managers", func(sourceType string) {
+			config.VarSources = atc.VarSourceConfigs{{Name: "retired", Type: sourceType, Config: map[string]any{}}}
+			_, errors := configvalidate.Validate(config)
+			Expect(errors).To(ContainElement(ContainSubstring("unsupported credential manager type: " + sourceType + " (pipeline var_sources support only dummy)")))
+		},
+			Entry("Vault", "vault"),
+			Entry("CredHub", "credhub"),
+			Entry("SSM", "ssm"),
+			Entry("Secrets Manager", "secretsmanager"),
+			Entry("Conjur", "conjur"),
+		)
+
+		Context("when a var source type is invalid", func() {
+			BeforeEach(func() {
+				config.VarSources = append(config.VarSources, atc.VarSourceConfig{
+					Name:   "some",
+					Type:   "some",
+					Config: "",
+				})
+			})
+
+			It("returns an error", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("unsupported credential manager type: some"))
+			})
+		})
+
+		Context("when config is invalid", func() {
+			BeforeEach(func() {
+				config.VarSources = append(config.VarSources, atc.VarSourceConfig{
+					Name:   "some",
+					Type:   "dummy",
+					Config: "",
+				})
+			})
+
+			It("returns an error", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("failed to create credential manager some: invalid dummy credential manager config"))
+			})
+		})
+
+		Context("when duplicate var source names", func() {
+			BeforeEach(func() {
+				config.VarSources = append(config.VarSources,
+					atc.VarSourceConfig{
+						Name: "some",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k2": "v2"},
+						},
+					},
+					atc.VarSourceConfig{
+						Name: "some",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k2": "v2"},
+						},
+					},
+				)
+			})
+
+			It("returns an error", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("var_sources[0] and var_sources[1] have the same name ('some')"))
+			})
+		})
+
+		Context("when var source's dependency cannot be resolved", func() {
+			BeforeEach(func() {
+				config.VarSources = append(config.VarSources,
+					atc.VarSourceConfig{
+						Name: "s1",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k": "v"},
+						},
+					},
+					atc.VarSourceConfig{
+						Name: "s2",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k": "((s1:k))"},
+						},
+					},
+					atc.VarSourceConfig{
+						Name: "s3",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k": "((none:k))"},
+						},
+					},
+				)
+			})
+
+			It("returns an error", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("could not resolve inter-dependent var sources: s3"))
+			})
+		})
+
+		Context("when var source names are circular", func() {
+			BeforeEach(func() {
+				config.VarSources = append(config.VarSources,
+					atc.VarSourceConfig{
+						Name: "s1",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k": "((s3:v))"},
+						},
+					},
+					atc.VarSourceConfig{
+						Name: "s2",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k": "((s1:k))"},
+						},
+					},
+					atc.VarSourceConfig{
+						Name: "s3",
+						Type: "dummy",
+						Config: map[string]any{
+							"vars": map[string]any{"k": "((s2:k))"},
+						},
+					},
+				)
+			})
+
+			It("returns an error", func() {
+				Expect(errorMessages).To(HaveLen(1))
+				Expect(errorMessages[0]).To(ContainSubstring("could not resolve inter-dependent var sources: s1, s2, s3"))
 			})
 		})
 	})

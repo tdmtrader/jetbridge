@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/creds"
 	"github.com/gobwas/glob"
 )
 
@@ -303,6 +304,12 @@ func Validate(c atc.Config) ([]atc.ConfigWarning, []string) {
 		errorMessages = append(errorMessages, formatErr("resource types", resourceTypesErr))
 	}
 	warnings = append(warnings, resourceTypesWarnings...)
+
+	varSourcesWarnings, varSourcesErr := validateVarSources(c)
+	if varSourcesErr != nil {
+		errorMessages = append(errorMessages, formatErr("variable sources", varSourcesErr))
+	}
+	warnings = append(warnings, varSourcesWarnings...)
 
 	jobWarnings, jobsErr := validateJobs(c)
 	if jobsErr != nil {
@@ -669,6 +676,59 @@ func compositeErr(errorMessages []string) error {
 	}
 
 	return errors.New(strings.Join(errorMessages, "\n"))
+}
+
+func validateVarSources(c atc.Config) ([]atc.ConfigWarning, error) {
+	var warnings []atc.ConfigWarning
+	var errorMessages []string
+
+	names := map[string]location{}
+
+	for i, varSource := range c.VarSources {
+		location := location{section: "var_sources", index: i}
+		identifier := location.Identifier(varSource.Name)
+
+		warning, err := atc.ValidateIdentifier(varSource.Name, identifier)
+		if err != nil {
+			errorMessages = append(errorMessages, err.Error())
+		}
+		if warning != nil {
+			warnings = append(warnings, *warning)
+		}
+
+		if factory, exists := creds.ManagerFactories()[varSource.Type]; exists {
+			switch varSource.Type {
+			case "dummy":
+			default:
+				errorMessages = append(errorMessages, fmt.Sprintf("credential manager type %s is not supported in pipeline yet", varSource.Type))
+			}
+
+			if other, ok := names[varSource.Name]; ok {
+				errorMessages = append(errorMessages,
+					fmt.Sprintf(
+						"%s and %s have the same name ('%s')",
+						other, location, varSource.Name))
+			}
+			names[varSource.Name] = location
+
+			if manager, err := factory.NewInstance(varSource.Config); err == nil {
+				err = manager.Validate()
+				if err != nil {
+					errorMessages = append(errorMessages, fmt.Sprintf("credential manager %s is invalid: %s", varSource.Name, err.Error()))
+				}
+			} else {
+				errorMessages = append(errorMessages, fmt.Sprintf("failed to create credential manager %s: %s", varSource.Name, err.Error()))
+			}
+		} else {
+			errorMessages = append(errorMessages, fmt.Sprintf("unsupported credential manager type: %s (pipeline var_sources support only dummy)", varSource.Type))
+		}
+	}
+
+	if _, err := c.VarSources.OrderByDependency(); err != nil {
+		errorMessages = append(errorMessages, fmt.Sprintf("failed to order by dependency: %s", err.Error()))
+	}
+
+	return warnings, compositeErr(errorMessages)
 }
 
 func validateDisplay(c atc.Config) ([]atc.ConfigWarning, error) {

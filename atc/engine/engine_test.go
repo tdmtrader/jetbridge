@@ -7,13 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/creds"
-	"github.com/concourse/concourse/atc/creds/credstest"
+	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -103,6 +104,17 @@ func (b *abortListenerRecordingBuild) abortSignal() *db.NotifySignal {
 	return b.signal
 }
 
+// A build whose pipeline resolves cannot fail only the credential lookup.
+type variablesErrorBuild struct {
+	db.Build
+
+	err error
+}
+
+func (b variablesErrorBuild) Variables(lager.Logger, creds.Secrets, creds.VarSourcePool) (vars.Variables, error) {
+	return nil, b.err
+}
+
 // A stepper factory hands out a closure and keeps no record of having done so,
 // so the number of builds it was asked about is only observable from outside.
 type countingStepperFactory struct {
@@ -122,6 +134,7 @@ var _ = Describe("Engine", func() {
 		stepperFactory    *countingStepperFactory
 
 		globalSecrets creds.Secrets
+		varSourcePool creds.VarSourcePool
 	)
 
 	BeforeEach(func() {
@@ -139,7 +152,15 @@ var _ = Describe("Engine", func() {
 			),
 		}
 
-		globalSecrets = &credstest.Secrets{StaticVariables: vars.StaticVariables{"foo": "bar"}}
+		globalSecrets = &dummy.Secrets{StaticVariables: vars.StaticVariables{"foo": "bar"}}
+		varSourcePool = creds.NewVarSourcePool(
+			lagertest.NewTestLogger("var-source-pool"),
+			creds.CredentialManagementConfig{},
+			time.Minute,
+			time.Minute,
+			clock.NewClock(),
+		)
+		DeferCleanup(varSourcePool.Close)
 	})
 
 	Describe("NewBuild", func() {
@@ -161,7 +182,7 @@ var _ = Describe("Engine", func() {
 				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
 				"some-user",
 			)
-			engine = NewEngine(stepperFactory, globalSecrets)
+			engine = NewEngine(stepperFactory, globalSecrets, varSourcePool)
 		})
 
 		JustBeforeEach(func() {
@@ -278,6 +299,7 @@ var _ = Describe("Engine", func() {
 				dbBuild,
 				stepperFactory,
 				globalSecrets,
+				varSourcePool,
 				release,
 				trackedStates,
 				waitGroup,
@@ -624,6 +646,20 @@ var _ = Describe("Engine", func() {
 							})
 						})
 
+						Context("when getting the build vars fails", func() {
+							BeforeEach(func() {
+								dbBuild = variablesErrorBuild{Build: recorder, err: errors.New("ruh roh")}
+							})
+
+							It("releases the lock", func() {
+								expectTrackingLockReleased()
+							})
+
+							It("saves an error event", func() {
+								Expect(recorder.events).To(HaveLen(1))
+								Expect(recorder.events[0].EventType()).To(Equal(event.EventTypeError))
+							})
+						})
 					})
 
 					Context("when converting the plan to a step fails", func() {
