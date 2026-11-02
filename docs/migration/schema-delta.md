@@ -25,7 +25,7 @@ encryption key.
 | v8.0.0 | `1765921815` | Yes |
 | v8.0.1 | `1765921815` | Yes |
 | JetBridge 0.3.1 | `1773105509` | Yes |
-| JetBridge HEAD | `1789793166` | — (baseline + 63 fork migrations) |
+| JetBridge HEAD | `1789793167` | — (baseline + 64 fork migrations) |
 
 ## Migration Gap by Source Version
 
@@ -63,7 +63,7 @@ this release applies the fork migrations below.
 | `1773105508` | `skip_run_payload_event_partitions` | **Schema** | No — replaces `on_pipeline_insert()` so run payloads get no per-pipeline event partition |
 | `1773105509` | `guard_run_payload_deletion` | **Schema** | No — adds a `BEFORE DELETE` guard on `pipelines` |
 
-Migrations `1773105510` through `1789793166` (53 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
+Migrations `1773105510` through `1789793167` (54 of them) are not catalogued here; read them in `atc/db/migration/migrations`.
 
 v8.0.0 and v8.0.1 share identical migration sets. A JetBridge 0.3.1 database
 applies only the migrations after its own head.

@@ -31,7 +31,7 @@ v8.0.1:1765921815
 # runs on an operator's laptop against a live database before an upgrade, so it
 # cannot ask the binary; the "migrate-preflight.sh targets the head migration"
 # spec in atc/db/migration/baseline_test.go keeps it honest.
-JETBRIDGE_VERSION=1789793166
+JETBRIDGE_VERSION=1789793167
 
 # The baseline: upstream Concourse 8.0.x's last migration, and the earliest
 # migration JetBridge carries. A database below it is refused.
