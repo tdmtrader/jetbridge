@@ -187,3 +187,51 @@ Relic metric emitters. 0.4.1 restores the connectors and the credential
 managers, configured through `web.env` as before. The three metric emitters
 stay removed: use Prometheus (`metrics.enabled`), OpenTelemetry metrics
 (`otelMetrics`) or traces over OTLP or to Google Cloud Trace.
+
+## The encryption key (2026-10-30, rotation restored in 0.4.1)
+
+The chart names one source for the database encryption key,
+`secrets.encryptionKeySecret`: a reference to a Secret holding the key under
+`encryption-key`, rendered as `CONCOURSE_ENCRYPTION_KEY` on the web container
+and on the `migrate-db` init container. A deployment that already sets
+`CONCOURSE_ENCRYPTION_KEY` through `web.env` keeps rendering unchanged: the
+chart accepts that entry in place of the value and copies it onto
+`migrate-db`. Setting both fails the render.
+
+0.4.0 also removed key rotation and the keyless mode from the binary; 0.4.1
+restores both. To rotate, stop the webs, run
+`concourse migrate --encryption-key NEW --old-encryption-key OLD` against the
+database once, then point the Secret at the new key and start the webs. A
+database encrypted under a key that is lost cannot be recovered: the backup
+and its Secret version travel together
+([runbook](../../docs/migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure)).
+
+## Typed values and web.env (2026-10-31, web.env kept in 0.4.1)
+
+The settings deployments commonly passed through `web.env` have typed values.
+An entry naming a variable whose typed value is also set fails the render
+naming the value. 0.4.0 removed `web.env` itself; 0.4.1 brings it back as the
+place for everything the chart deliberately does not type: auth connectors,
+credential managers and other binary flags. A values file written for 0.4.0
+renders unchanged.
+
+| `web.env` entry | Typed value |
+| --- | --- |
+| `CONCOURSE_ENCRYPTION_KEY` from a Secret | `secrets.encryptionKeySecret: <Secret name>`; the key must be under `encryption-key` (copy it to that key first if it is elsewhere). Rendered on the web and on `migrate-db`, as before. |
+| `SSL_CERT_FILE` | `web.caCertFile: <path>`. Keep the `web.extraVolumes` / `web.extraVolumeMounts` entry that mounts the bundle; the path must lie under its mountPath. |
+| `CONCOURSE_AUTH_DURATION` | `web.authDuration` |
+| `CONCOURSE_RESOURCE_CHECKING_INTERVAL` | `web.checks.interval` |
+| `CONCOURSE_RESOURCE_TYPE_CHECKING_INTERVAL` | `web.checks.resourceTypeInterval` |
+| `CONCOURSE_RESOURCE_WITH_WEBHOOK_CHECKING_INTERVAL` | `web.checks.webhookInterval` |
+| `CONCOURSE_GLOBAL_RESOURCE_CHECK_TIMEOUT` | `web.checks.timeout` |
+| `CONCOURSE_GC_ONE_OFF_GRACE_PERIOD` | `web.gc.oneOffGracePeriod` |
+| `CONCOURSE_GC_MISSING_GRACE_PERIOD` | `web.gc.missingGracePeriod` |
+| `CONCOURSE_SECRET_RETRY_ATTEMPTS` | `web.secretRetry.attempts` (an integer) |
+| `CONCOURSE_SECRET_RETRY_INTERVAL` | `web.secretRetry.interval` |
+| `CONCOURSE_COOKIE_SECURE` | Nothing: web marks its cookies Secure whenever `web.externalUrl` is `https://`, which it is wherever users reach the UI over HTTPS, a TLS-terminating proxy included. |
+| `CONCOURSE_EMIT_TO_LOGS` | Drop it: the Lager emitter and its `--emit-to-logs` flag are removed, and no flag reads the variable. The chart offers Prometheus (`metrics.enabled`) and OpenTelemetry (`otelMetrics.*`). |
+| Any name no `concourse web` flag reads (`CONCOURSE_GC_INTERVAL`, `CONCOURSE_BUILD_TRACKER_INTERVAL`, `CONCOURSE_DB_NOTIFICATION_BUS_QUEUE_SIZE`, ...) | Drop it; it never did anything. |
+| Any other `CONCOURSE_*` name | Keep it in `web.env`. Auth connectors (`CONCOURSE_OIDC_*`, `CONCOURSE_GITHUB_*`, `CONCOURSE_MAIN_TEAM_*`, ...), credential managers (`CONCOURSE_VAULT_*`, `CONCOURSE_AWS_SSM_*`, ...) and `CONCOURSE_TRACING_STACKDRIVER_PROJECTID` are configured this way. |
+
+Each typed value is empty by default and then renders nothing, so the binary
+keeps its default; durations are Go durations, checked by the schema.

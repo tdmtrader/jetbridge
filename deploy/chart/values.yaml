@@ -160,7 +160,6 @@ web:
   #         key: client-secret
   env: []
 
-
   # -- Existing web-only Secret containing input.key (exactly 32 raw random
   # bytes) for workload Run input grants. Requires hangarOutput.webEnabled.
   # Use a key distinct from both the Hangar and artifact resolve keys, in a
@@ -469,9 +468,9 @@ secrets:
 
   # -- Required. Name of a pre-existing Secret holding the database encryption
   # key, 16 or 32 bytes, under encryption-key. The web refuses to start
-  # without --encryption-key, and migrate-db runs under the same key. There is
-  # no rotation: a cluster that needs a different key restores the database
-  # from a backup taken under it. Create it once (openssl rand -hex 16 gives 32
+  # without --encryption-key, and migrate-db runs under the same key. Rotate
+  # it with `concourse migrate --encryption-key NEW --old-encryption-key OLD`
+  # (MIGRATING.md). Create it once (openssl rand -hex 16 gives 32
   # hex characters, which the web takes as a 32-byte key):
   #   kubectl create secret generic jetbridge-encryption-key \
   #     --from-literal=encryption-key="$(openssl rand -hex 16)"

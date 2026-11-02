@@ -75,8 +75,9 @@ kubectl -n concourse create secret generic jetbridge-session-signing-key \
 
 The encryption-key Secret holds the database encryption key under
 `encryption-key`; the web encrypts sensitive columns with it and does not start
-without it, and `migrate-db` runs under the same key. It never rotates, and a
-lost key is a lost database, so back the Secret up with the database. Create it
+without it, and `migrate-db` runs under the same key. Rotate it with
+`concourse migrate --encryption-key NEW --old-encryption-key OLD`
+([MIGRATING.md](MIGRATING.md)); a lost key is a lost database, so back the Secret up with the database. Create it
 once (`openssl rand -hex 16` gives 32 hex characters, a 32-byte key):
 
 ```bash
@@ -202,7 +203,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.gc.missingGracePeriod` | `""` | How long a container or volume may be missing before it is reaped (default 5m). `CONCOURSE_GC_MISSING_GRACE_PERIOD`. |
 | `web.secretRetry.attempts` | `0` | Attempts at a credential lookup that fails retryably (0 keeps the binary's 5). `CONCOURSE_SECRET_RETRY_ATTEMPTS`. |
 | `web.secretRetry.interval` | `""` | Wait between those attempts (default 1s). `CONCOURSE_SECRET_RETRY_INTERVAL`. |
-| `web.env` | `[]` | **Deprecated; removed in the next chart change.** Every setting it carried has a typed value above ([MIGRATING.md](MIGRATING.md#webenv-becomes-typed-values-2026-10-31)). |
+| `web.env` | `[]` | Extra environment for the web container (`value` or `valueFrom`). Configures what the chart does not type: auth connectors (`CONCOURSE_OIDC_*`, `CONCOURSE_GITHUB_*`, ...), credential managers (`CONCOURSE_VAULT_*`, ...), Google Cloud Trace. An entry naming a variable a set typed value renders fails the render ([MIGRATING.md](MIGRATING.md#typed-values-and-webenv-2026-10-31-webenv-kept-in-041)). |
 | `web.extraVolumeMounts` | `[]` | Additional volume mounts (e.g. CA bundles). |
 | `web.extraVolumes` | `[]` | Additional volumes for the web pod. |
 | `web.nodeSelector` | `{}` | Node selector for the web pod. |

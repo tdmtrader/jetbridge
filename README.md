@@ -230,7 +230,7 @@ config:
 - Task step sidecars (inline, file reference, or `image_artifact`)
 - `skip_download` on get steps (resolve version without downloading)
 - Configurable base resource types (`--kubernetes-base-resource-type name=image`)
-- Direct image references for resource types (`image:` on a `resource_types` entry; every image is a registry-image reference)
+- Direct image references for resource types (`image:` on a `resource_types` entry), and images from any resource type, custom ones included
 - Health endpoint (`GET /api/v1/health`) for K8s probes
 - OpenTelemetry tracing over OTLP or to Google Cloud Trace
 - Deterministic pod naming
