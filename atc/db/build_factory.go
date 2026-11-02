@@ -103,7 +103,7 @@ func (f *buildFactory) BuildForAPI(buildID int) (BuildForAPI, bool, error) {
 		RunWith(f.conn).
 		QueryRow()
 
-	err := scanBuild(build, row, f.conn.EncryptionKey())
+	err := scanBuild(build, row, f.conn.EncryptionStrategy())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// If it cannot find the build from table "builds", then try to see
@@ -139,7 +139,7 @@ func (f *buildFactory) Build(buildID int) (Build, bool, error) {
 		RunWith(f.conn).
 		QueryRow()
 
-	err := scanBuild(build, row, f.conn.EncryptionKey())
+	err := scanBuild(build, row, f.conn.EncryptionStrategy())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, false, nil
@@ -246,7 +246,7 @@ func getBuilds(buildsQuery sq.SelectBuilder, conn DbConn, lockFactory lock.LockF
 
 	for rows.Next() {
 		b := newEmptyBuild(conn, lockFactory)
-		err := scanBuild(b, rows, conn.EncryptionKey())
+		err := scanBuild(b, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
 		}
@@ -278,7 +278,7 @@ func getBuildsWithDates(buildsQuery sq.SelectBuilder, page Page, conn DbConn, lo
 	builds := make([]BuildForAPI, 0)
 	for rows.Next() {
 		build := newEmptyBuild(conn, lockFactory)
-		err = scanBuild(build, rows, conn.EncryptionKey())
+		err = scanBuild(build, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, Pagination{}, err
 		}
@@ -362,7 +362,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 	builds := make([]BuildForAPI, 0)
 	for rows.Next() {
 		build := newEmptyBuild(conn, lockFactory)
-		err = scanBuild(build, rows, conn.EncryptionKey())
+		err = scanBuild(build, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, Pagination{}, err
 		}
@@ -397,7 +397,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 		QueryRow()
 
 	build := newEmptyBuild(conn, lockFactory)
-	err = scanBuild(build, row, conn.EncryptionKey())
+	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err
 	}
@@ -416,7 +416,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 		QueryRow()
 
 	build = newEmptyBuild(conn, lockFactory)
-	err = scanBuild(build, row, conn.EncryptionKey())
+	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err
 	}

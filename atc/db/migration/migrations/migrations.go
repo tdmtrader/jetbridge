@@ -7,13 +7,13 @@ import (
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
-func NewMigrations(tx *sql.Tx, key *encryption.Key) *migrations {
-	return &migrations{tx, key}
+func NewMigrations(tx *sql.Tx, es encryption.Strategy) *migrations {
+	return &migrations{tx, es}
 }
 
 type migrations struct {
 	*sql.Tx
-	*encryption.Key
+	encryption.Strategy
 }
 
 func (m *migrations) Run(name string) error {

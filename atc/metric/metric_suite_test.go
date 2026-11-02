@@ -66,7 +66,7 @@ func newTestConn(name string) db.DbConn {
 	sqlDB, err := sql.Open("pgx", dsn)
 	Expect(err).NotTo(HaveOccurred())
 
-	conn, err := db.NewConn(name, sqlDB, dsn, postgresrunner.EncryptionKey())
+	conn, err := db.NewConn(name, sqlDB, dsn, nil, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	return conn

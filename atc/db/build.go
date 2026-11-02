@@ -425,7 +425,7 @@ func (b *build) Reload() (bool, error) {
 		RunWith(tx).
 		QueryRow()
 
-	err = scanBuild(b, row, b.conn.EncryptionKey())
+	err = scanBuild(b, row, b.conn.EncryptionStrategy())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
@@ -604,7 +604,7 @@ func (b *build) start(tx Tx, plan atc.Plan) (bool, error) {
 		return false, err
 	}
 
-	encryptedPlan, nonce, err := b.conn.EncryptionKey().Encrypt([]byte(metadata))
+	encryptedPlan, nonce, err := b.conn.EncryptionStrategy().Encrypt([]byte(metadata))
 	if err != nil {
 		return false, err
 	}
@@ -2022,7 +2022,7 @@ func newNullInt64(i int) sql.NullInt64 {
 	}
 }
 
-func scanBuild(b *build, row scannable, encryptionKey *encryption.Key) error {
+func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) error {
 	var (
 		jobID, resourceID, resourceTypeID, pipelineID, rerunOf, rerunNumber               sql.NullInt64
 		schema, privatePlan, jobName, resourceName, pipelineName, publicPlan, rerunOfName sql.NullString
@@ -2117,7 +2117,7 @@ func scanBuild(b *build, row scannable, encryptionKey *encryption.Key) error {
 
 	if nonce.Valid {
 		noncense = &nonce.String
-		decryptedPlan, err = encryptionKey.Decrypt(string(privatePlan.String), noncense)
+		decryptedPlan, err = encryptionStrategy.Decrypt(string(privatePlan.String), noncense)
 		if err != nil {
 			return err
 		}
@@ -2220,7 +2220,7 @@ func createBuild(tx Tx, build *build, vals map[string]any) error {
 		Where(sq.Eq{"b.id": buildID}).
 		RunWith(tx).
 		QueryRow(),
-		build.conn.EncryptionKey(),
+		build.conn.EncryptionStrategy(),
 	)
 }
 
@@ -2250,7 +2250,7 @@ func createStartedBuild(tx Tx, build *build, args startedBuildArgs) error {
 		return err
 	}
 
-	encryptedPlan, nonce, err := build.conn.EncryptionKey().Encrypt(plan)
+	encryptedPlan, nonce, err := build.conn.EncryptionStrategy().Encrypt(plan)
 	if err != nil {
 		return err
 	}

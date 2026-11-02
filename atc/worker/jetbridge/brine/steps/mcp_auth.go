@@ -397,7 +397,7 @@ func MCPAuthenticationDefinitions() []brine.StepDefinition {
 				if nonce == nil || json.Valid([]byte(data)) || strings.Contains(data, s.Tokens.RefreshToken) || strings.Contains(data, s.Tokens.AccessToken) {
 					return errors.New("MCP authorization state was stored without encryption")
 				}
-				plain, err := s.Fixture.MCPConn.EncryptionKey().Decrypt(data, nonce)
+				plain, err := s.Fixture.MCPConn.EncryptionStrategy().Decrypt(data, nonce)
 				if err != nil {
 					return fmt.Errorf("decrypt persisted MCP state: %w", err)
 				}

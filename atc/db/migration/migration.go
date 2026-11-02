@@ -18,18 +18,16 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 )
 
-// NewOpenHelper opens and migrates a database under key, logging migration
-// work (the encryption pass) under the caller's logger as a "migrations"
-// session. CurrentVersion and SupportedVersion read the schema alone and
-// accept a nil key; Open, OpenAtVersion and MigrateToVersion run migrations
-// and refuse one.
-func NewOpenHelper(logger lager.Logger, driver, name string, lockFactory lock.LockFactory, key *encryption.Key) *OpenHelper {
+// NewOpenHelper logs migration work (encryption passes) under the caller's
+// logger, as a "migrations" session.
+func NewOpenHelper(logger lager.Logger, driver, name string, lockFactory lock.LockFactory, newKey *encryption.Key, oldKey *encryption.Key) *OpenHelper {
 	return &OpenHelper{
 		logger,
 		driver,
 		name,
 		lockFactory,
-		key,
+		newKey,
+		oldKey,
 	}
 }
 
@@ -38,7 +36,8 @@ type OpenHelper struct {
 	driver         string
 	dataSourceName string
 	lockFactory    lock.LockFactory
-	key            *encryption.Key
+	newKey         *encryption.Key
+	oldKey         *encryption.Key
 }
 
 func (helper *OpenHelper) CurrentVersion() (int, error) {
@@ -69,7 +68,7 @@ func (helper *OpenHelper) Open() (*sql.DB, error) {
 		return nil, err
 	}
 
-	if err := NewMigrator(helper.logger, db, helper.lockFactory).Up(helper.key); err != nil {
+	if err := NewMigrator(helper.logger, db, helper.lockFactory).Up(helper.newKey, helper.oldKey); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -83,7 +82,7 @@ func (helper *OpenHelper) OpenAtVersion(version int) (*sql.DB, error) {
 		return nil, err
 	}
 
-	if err := NewMigrator(helper.logger, db, helper.lockFactory).Migrate(helper.key, version); err != nil {
+	if err := NewMigrator(helper.logger, db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -99,14 +98,14 @@ func (helper *OpenHelper) MigrateToVersion(version int) error {
 
 	defer db.Close()
 
-	return NewMigrator(helper.logger, db, helper.lockFactory).Migrate(helper.key, version)
+	return NewMigrator(helper.logger, db, helper.lockFactory).Migrate(helper.newKey, helper.oldKey, version)
 }
 
 type Migrator interface {
 	CurrentVersion() (int, error)
 	SupportedVersion() (int, error)
-	Migrate(key *encryption.Key, version int) error
-	Up(key *encryption.Key) error
+	Migrate(newKey, oldKey *encryption.Key, version int) error
+	Up(newKey, oldKey *encryption.Key) error
 	Migrations() ([]migration, error)
 }
 
@@ -249,12 +248,16 @@ func forwardOnly(version int) error {
 	return fmt.Errorf("migration %d is forward-only: restore the pre-upgrade database backup instead", version)
 }
 
-// Migrate refuses to run without a key (encryption.ErrNoKey): Go migrations
-// read and write the encrypted columns, and every run ends by encrypting any
-// plaintext left in them, so a keyless run has nothing to work with.
-func (helper *migrator) Migrate(key *encryption.Key, toVersion int) error {
-	if key == nil {
-		return encryption.ErrNoKey
+func (helper *migrator) Migrate(newKey, oldKey *encryption.Key, toVersion int) error {
+	var strategy encryption.Strategy
+	if oldKey != nil {
+		strategy = oldKey
+	} else if newKey != nil {
+		// special case - if the old key is not provided but the new key is,
+		// this might mean the data was not encrypted, or that it was encrypted with newKey
+		strategy = encryption.NewFallbackStrategy(newKey, encryption.NewNoEncryption())
+	} else {
+		strategy = encryption.NewNoEncryption()
 	}
 
 	migrations, err := helper.Migrations()
@@ -301,7 +304,7 @@ func (helper *migrator) Migrate(key *encryption.Key, toVersion int) error {
 	if currentVersion <= toVersion {
 		for _, m := range migrations {
 			if currentVersion < m.Version && m.Version <= toVersion && m.Direction == "up" {
-				err = helper.runMigration(m, key)
+				err = helper.runMigration(m, strategy)
 				if err != nil {
 					return err
 				}
@@ -329,14 +332,31 @@ func (helper *migrator) Migrate(key *encryption.Key, toVersion int) error {
 			reversals = append(reversals, down)
 		}
 		for _, down := range reversals {
-			err = helper.runMigration(down, key)
+			err = helper.runMigration(down, strategy)
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	return helper.encryptPlaintext(key)
+	switch {
+	case oldKey != nil && newKey == nil:
+		err = helper.decryptToPlaintext(oldKey)
+	case oldKey != nil && newKey != nil:
+		err = helper.encryptWithNewKey(newKey, oldKey)
+	}
+	if err != nil {
+		return err
+	}
+
+	if newKey != nil {
+		err = helper.encryptPlaintext(newKey)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 type Strategy int
@@ -366,7 +386,7 @@ func (m *migrator) recordMigrationFailure(migration migration, migrationErr erro
 	return migrationErr
 }
 
-func (m *migrator) runMigration(migration migration, key *encryption.Key) (err error) {
+func (m *migrator) runMigration(migration migration, strategy encryption.Strategy) (err error) {
 	tx, err := m.db.Begin()
 	if err != nil {
 		return err
@@ -389,7 +409,7 @@ func (m *migrator) runMigration(migration migration, key *encryption.Key) (err e
 
 	switch migration.Strategy {
 	case GoMigration:
-		err = migrations.NewMigrations(tx, key).Run(migration.Name)
+		err = migrations.NewMigrations(tx, strategy).Run(migration.Name)
 		if err != nil {
 			return err
 		}
@@ -408,12 +428,12 @@ func (m *migrator) runMigration(migration migration, key *encryption.Key) (err e
 	return tx.Commit()
 }
 
-func (helper *migrator) Up(key *encryption.Key) error {
+func (helper *migrator) Up(newKey, oldKey *encryption.Key) error {
 	migrations, err := helper.Migrations()
 	if err != nil {
 		return err
 	}
-	return helper.Migrate(key, migrations[len(migrations)-1].Version)
+	return helper.Migrate(newKey, oldKey, migrations[len(migrations)-1].Version)
 }
 
 func (helper *migrator) acquireLock() (lock.Lock, error) {

@@ -79,7 +79,7 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 			if err := in.DB.Conn.QueryRow(`SELECT config, nonce FROM pipeline_run_definitions WHERE run_id = $1`, in.Creation.Run.ID()).Scan(&config, &nonce); err != nil {
 				return in, err
 			}
-			payload, err := in.DB.Conn.EncryptionKey().Decrypt(config, nonce)
+			payload, err := in.DB.Conn.EncryptionStrategy().Decrypt(config, nonce)
 			if err != nil {
 				return in, err
 			}
@@ -87,7 +87,7 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 			if changed == string(payload) {
 				return in, fmt.Errorf("the stored definition does not hold the parameter default to corrupt")
 			}
-			config, nonce, err = in.DB.Conn.EncryptionKey().Encrypt([]byte(changed))
+			config, nonce, err = in.DB.Conn.EncryptionStrategy().Encrypt([]byte(changed))
 			if err != nil {
 				return in, err
 			}

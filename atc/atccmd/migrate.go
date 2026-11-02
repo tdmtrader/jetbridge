@@ -7,7 +7,6 @@ package atccmd
 
 import (
 	"errors"
-	"fmt"
 	"os"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -25,7 +24,8 @@ type Migration struct {
 	logger      lager.Logger
 
 	Postgres               flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
-	EncryptionKey          flag.Cipher         `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database. Required to run migrations."`
+	EncryptionKey          flag.Cipher         `long:"encryption-key"     description:"A 16 or 32 length key used to encrypt sensitive information before storing it in the database."`
+	OldEncryptionKey       flag.Cipher         `long:"old-encryption-key" description:"Encryption key previously used for encrypting sensitive information. If provided without a new key, data is decrypted. If provided with a new key, data is re-encrypted."`
 	MigrateToLatestVersion bool                `long:"migrate-to-latest-version" description:"Migrate to the latest migration version and exit"`
 }
 
@@ -57,22 +57,44 @@ func (m *Migration) Execute(args []string) error {
 	if m.MigrateToLatestVersion {
 		return m.migrateToLatestVersion()
 	}
-	return errors.New("must specify `--migrate-to-latest-version`")
+	if m.OldEncryptionKey.AEAD != nil {
+		return m.rotateEncryptionKey()
+	}
+	return errors.New("must specify one of `--migrate-to-latest-version` or `--old-encryption-key`")
 }
 
-// encryptionKey is the key the migrate command was started with, or
-// encryption.ErrNoKey naming the flag when it was not.
-func (cmd *Migration) encryptionKey() (*encryption.Key, error) {
-	if cmd.EncryptionKey.AEAD == nil {
-		return nil, fmt.Errorf("--encryption-key is required to run migrations: %w", encryption.ErrNoKey)
+func (cmd *Migration) rotateEncryptionKey() error {
+	var newKey *encryption.Key
+	var oldKey *encryption.Key
+
+	if cmd.EncryptionKey.AEAD != nil {
+		newKey = encryption.NewKey(cmd.EncryptionKey.AEAD)
 	}
-	return encryption.NewKey(cmd.EncryptionKey.AEAD), nil
+	if cmd.OldEncryptionKey.AEAD != nil {
+		oldKey = encryption.NewKey(cmd.OldEncryptionKey.AEAD)
+	}
+
+	helper := migration.NewOpenHelper(
+		cmd.logger,
+		defaultDriverName,
+		cmd.Postgres.ConnectionString(),
+		cmd.lockFactory,
+		newKey,
+		oldKey,
+	)
+
+	version, err := helper.CurrentVersion()
+	if err != nil {
+		return err
+	}
+
+	return helper.MigrateToVersion(version)
 }
 
 func (cmd *Migration) migrateToLatestVersion() error {
-	key, err := cmd.encryptionKey()
-	if err != nil {
-		return err
+	var key *encryption.Key
+	if cmd.EncryptionKey.AEAD != nil {
+		key = encryption.NewKey(cmd.EncryptionKey.AEAD)
 	}
 
 	helper := migration.NewOpenHelper(
@@ -81,6 +103,7 @@ func (cmd *Migration) migrateToLatestVersion() error {
 		cmd.Postgres.ConnectionString(),
 		cmd.lockFactory,
 		key,
+		nil,
 	)
 
 	version, err := helper.SupportedVersion()

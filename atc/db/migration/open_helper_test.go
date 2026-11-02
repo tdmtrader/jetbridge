@@ -8,7 +8,6 @@ import (
 
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
-	"github.com/concourse/concourse/atc/postgresrunner"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -32,7 +31,7 @@ var _ = Describe("OpenHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		lockFactory = lock.NewLockFactory(lockDB, fakeLogFunc, fakeLogFunc)
-		openHelper = migration.NewOpenHelper(testLogger, "pgx", postgresRunner.DataSourceName(), lockFactory, postgresrunner.EncryptionKey())
+		openHelper = migration.NewOpenHelper(testLogger, "pgx", postgresRunner.DataSourceName(), lockFactory, nil, nil)
 	})
 
 	AfterEach(func() {

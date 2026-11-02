@@ -18,11 +18,20 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 )
 
-// encryptionKey is the one key this web encrypts and decrypts database
-// columns with. --encryption-key is a required flag, so the AEAD is set by
-// the time Runner is called; validate() names the flag if it is not.
-func (cmd *RunCommand) encryptionKey() *encryption.Key {
-	return encryption.NewKey(cmd.EncryptionKey.AEAD)
+func (cmd *RunCommand) newKey() *encryption.Key {
+	var newKey *encryption.Key
+	if cmd.EncryptionKey.AEAD != nil {
+		newKey = encryption.NewKey(cmd.EncryptionKey.AEAD)
+	}
+	return newKey
+}
+
+func (cmd *RunCommand) oldKey() *encryption.Key {
+	var oldKey *encryption.Key
+	if cmd.OldEncryptionKey.AEAD != nil {
+		oldKey = encryption.NewKey(cmd.OldEncryptionKey.AEAD)
+	}
+	return oldKey
 }
 
 func (cmd *RunCommand) constructDBConn(
@@ -33,7 +42,7 @@ func (cmd *RunCommand) constructDBConn(
 	connectionName string,
 	lockFactory lock.LockFactory,
 ) (db.DbConn, error) {
-	dbConn, err := db.Open(logger.Session("db"), driverName, cmd.Postgres.ConnectionString(), cmd.encryptionKey(), connectionName, lockFactory)
+	dbConn, err := db.Open(logger.Session("db"), driverName, cmd.Postgres.ConnectionString(), cmd.newKey(), cmd.oldKey(), connectionName, lockFactory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %s", err)
 	}

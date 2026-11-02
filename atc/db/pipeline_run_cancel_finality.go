@@ -54,7 +54,7 @@ func (c *runCancellationCommit) perform(ctx context.Context) (bool, error) {
 			return false, output.ErrInvalidIdentity
 		}
 		build := newEmptyBuild(f.conn, f.lockFactory)
-		if err := scanBuild(build, buildsQuery.Where(sq.Eq{"b.id": id}).RunWith(f.conn).QueryRowContext(ctx), f.conn.EncryptionKey()); err != nil {
+		if err := scanBuild(build, buildsQuery.Where(sq.Eq{"b.id": id}).RunWith(f.conn).QueryRowContext(ctx), f.conn.EncryptionStrategy()); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return c.collectedBuild(ctx)
 			}

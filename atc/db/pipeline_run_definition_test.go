@@ -50,7 +50,7 @@ var _ = Describe("A Run's retained definition attestation", func() {
 		var nonce *string
 		Expect(dbConn.QueryRow(`SELECT config, nonce FROM pipeline_run_definitions WHERE run_id = $1`, run.ID()).Scan(&config, &nonce)).To(Succeed())
 		Expect(nonce).NotTo(BeNil(), "the definition is stored encrypted")
-		payload, err := dbConn.EncryptionKey().Decrypt(config, nonce)
+		payload, err := dbConn.EncryptionStrategy().Decrypt(config, nonce)
 		Expect(err).NotTo(HaveOccurred())
 		changed := strings.Replace(string(payload), "hello", "corrupted", 1)
 		Expect(changed).NotTo(Equal(string(payload)))
@@ -61,7 +61,7 @@ var _ = Describe("A Run's retained definition attestation", func() {
 
 	It("refuses a changed definition re-encrypted under the key", func() {
 		rewrite(func(payload []byte) (string, *string) {
-			config, nonce, err := dbConn.EncryptionKey().Encrypt(payload)
+			config, nonce, err := dbConn.EncryptionStrategy().Encrypt(payload)
 			Expect(err).NotTo(HaveOccurred())
 			return config, nonce
 		})

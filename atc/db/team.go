@@ -1084,7 +1084,7 @@ func (t *team) CreateStartedBuild(plan atc.Plan) (Build, error) {
 		return nil, err
 	}
 
-	encryptedPlan, nonce, err := t.conn.EncryptionKey().Encrypt(metadata)
+	encryptedPlan, nonce, err := t.conn.EncryptionStrategy().Encrypt(metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -1427,7 +1427,7 @@ func saveJob(tx Tx, job atc.JobConfig, pipelineID int, groups []string, runMetad
 		return 0, err
 	}
 
-	es := tx.EncryptionKey()
+	es := tx.EncryptionStrategy()
 	encryptedPayload, nonce, err := es.Encrypt(configPayload)
 	if err != nil {
 		return 0, err
@@ -1465,7 +1465,7 @@ func saveResourceType(tx Tx, resourceType atc.ResourceType, pipelineID int) erro
 		return err
 	}
 
-	es := tx.EncryptionKey()
+	es := tx.EncryptionStrategy()
 	encryptedPayload, nonce, err := es.Encrypt(configPayload)
 	if err != nil {
 		return err
@@ -1720,7 +1720,7 @@ func saveResources(tx Tx, resources atc.ResourceConfigs, pipelineID int) (map[st
 			return nil, err
 		}
 
-		es := tx.EncryptionKey()
+		es := tx.EncryptionStrategy()
 		encryptedPayload, nonce, err := es.Encrypt(configPayload)
 		if err != nil {
 			return nil, err
@@ -1827,7 +1827,7 @@ func existingResources(tx Tx, pipelineID int) (map[string]existingResource, erro
 	return resources, nil
 }
 
-func configsDifferent(resourceConfig atc.ResourceConfig, encryptedBlob string, existing existingResource, es *encryption.Key) (bool, error) {
+func configsDifferent(resourceConfig atc.ResourceConfig, encryptedBlob string, existing existingResource, es encryption.Strategy) (bool, error) {
 	if encryptedBlob == existing.ConfigBlob {
 		return false, nil
 	}

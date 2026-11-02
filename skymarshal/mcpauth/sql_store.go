@@ -59,7 +59,7 @@ func (t *sqlTx) Get(kind, key string, dst any) error {
 	if err != nil {
 		return err
 	}
-	plain, err := t.tx.EncryptionKey().Decrypt(data, nonce)
+	plain, err := t.tx.EncryptionStrategy().Decrypt(data, nonce)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (t *sqlTx) Put(kind, key string, value any, expires time.Time) error {
 	if err != nil {
 		return err
 	}
-	data, nonce, err := t.tx.EncryptionKey().Encrypt(plain)
+	data, nonce, err := t.tx.EncryptionStrategy().Encrypt(plain)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (t *sqlTx) List(kind string) ([]Record, error) {
 		if err := rows.Scan(&id, &data, &nonce); err != nil {
 			return nil, err
 		}
-		plain, err := t.tx.EncryptionKey().Decrypt(data, nonce)
+		plain, err := t.tx.EncryptionStrategy().Decrypt(data, nonce)
 		if err != nil {
 			return nil, err
 		}

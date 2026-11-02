@@ -2,89 +2,107 @@ package migration
 
 import (
 	"database/sql"
+	"errors"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
 var encryptedColumns = []encryptedColumn{
-	{"teams", "legacy_auth", "id"},
-	{"resources", "config", "id"},
-	{"jobs", "config", "id"},
-	{"resource_types", "config", "id"},
-	{"builds", "private_plan", "id"},
-	{"pipeline_run_definitions", "config", "run_id"},
-	{"mcp_oauth_state", "data", "id"},
+	{"teams", "legacy_auth", "id", false},
+	{"resources", "config", "id", false},
+	{"jobs", "config", "id", false},
+	{"resource_types", "config", "id", false},
+	{"builds", "private_plan", "id", false},
+	{"pipeline_run_definitions", "config", "run_id", true},
+	{"mcp_oauth_state", "data", "id", true},
 }
 
 type encryptedColumn struct {
 	Table      string
 	Column     string
 	PrimaryKey string
+	// A newer table can be absent at a supported historical schema version.
+	Optional bool
 }
 
-// encryptedColumnsInSchema is the subset of encryptedColumns the database
-// has at its current schema version: the list names today's columns, and a
-// migration to an earlier version (a test, or --migrate-db-to-version) runs
-// against a schema where a later table or column does not exist yet.
 func (m migrator) encryptedColumnsInSchema() ([]encryptedColumn, error) {
 	var columns []encryptedColumn
 	for _, column := range encryptedColumns {
-		var present bool
-		if err := m.db.QueryRow(`
-			SELECT EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2
-			) AND EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = current_schema() AND table_name = $1 AND column_name = 'nonce'
-			)
-		`, column.Table, column.Column).Scan(&present); err != nil {
-			return nil, err
-		}
-		if !present {
-			continue
+		if column.Optional {
+			var present bool
+			if err := m.db.QueryRow("SELECT to_regclass($1) IS NOT NULL", column.Table).Scan(&present); err != nil {
+				return nil, err
+			}
+			if !present {
+				continue
+			}
 		}
 		columns = append(columns, column)
 	}
 	return columns, nil
 }
 
-// encryptPlaintext encrypts, under key, every row of an encrypted column that
-// is still plaintext (nonce IS NULL). Every write since the key became
-// required is ciphertext; this pass picks up a database that was once run
-// without a key, on its first start under one.
-//
-// The pass works in batches of plaintextBatchSize rows per column: each
-// batch is read to memory, the cursor closed, then the column and its nonce
-// written together in one transaction, until the SELECT returns no rows. The
-// predicate makes a batch idempotent, so a crash between batches leaves only
-// whole rows and the next start resumes. Reading before writing also keeps
-// the pass off the connection the cursor holds, which matters on the test
-// helpers' one-connection pools; and a batch, not the whole column, is what
-// a long-keyless install's builds.private_plan holds under locks at a time.
 func (m migrator) encryptPlaintext(key *encryption.Key) error {
 	logger := m.logger.Session("encrypt")
 	columns, err := m.encryptedColumnsInSchema()
 	if err != nil {
 		return err
 	}
-
 	for _, ec := range columns {
+		rows, err := m.db.Query(`
+			SELECT ` + ec.PrimaryKey + `, ` + ec.Column + `
+			FROM ` + ec.Table + `
+			WHERE nonce IS NULL
+			AND ` + ec.Column + ` IS NOT NULL
+		`)
+		if err != nil {
+			return err
+		}
+
 		tLog := logger.Session("table", lager.Data{
 			"table": ec.Table,
 		})
 
 		encryptedRows := 0
-		for {
-			n, err := m.encryptPlaintextBatch(tLog, key, ec)
+
+		for rows.Next() {
+			var (
+				primaryKey any
+				val        sql.NullString
+			)
+
+			err := rows.Scan(&primaryKey, &val)
 			if err != nil {
+				tLog.Error("failed-to-scan", err)
 				return err
 			}
-			if n == 0 {
-				break
+
+			if !val.Valid {
+				continue
 			}
-			encryptedRows += n
+
+			rLog := tLog.Session("row", lager.Data{
+				"primary-key": primaryKey,
+			})
+
+			encrypted, nonce, err := key.Encrypt([]byte(val.String))
+			if err != nil {
+				rLog.Error("failed-to-encrypt", err)
+				return err
+			}
+
+			_, err = m.db.Exec(`
+				UPDATE `+ec.Table+`
+				SET `+ec.Column+` = $1, nonce = $2
+				WHERE `+ec.PrimaryKey+` = $3
+			`, encrypted, nonce, primaryKey)
+			if err != nil {
+				rLog.Error("failed-to-update", err)
+				return err
+			}
+
+			encryptedRows++
 		}
 
 		if encryptedRows > 0 {
@@ -97,88 +115,150 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 	return nil
 }
 
-// plaintextBatchSize is how many plaintext rows one transaction encrypts.
-const plaintextBatchSize = 1000
-
-// encryptPlaintextBatch encrypts up to plaintextBatchSize plaintext rows of
-// the column in one transaction and returns how many it wrote.
-func (m migrator) encryptPlaintextBatch(tLog lager.Logger, key *encryption.Key, ec encryptedColumn) (int, error) {
-	tx, err := m.db.Begin()
+func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
+	logger := m.logger.Session("decrypt")
+	columns, err := m.encryptedColumnsInSchema()
 	if err != nil {
-		return 0, err
+		return err
 	}
-	defer tx.Rollback()
+	for _, ec := range columns {
+		rows, err := m.db.Query(`
+			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
+			FROM ` + ec.Table + `
+			WHERE nonce IS NOT NULL
+		`)
+		if err != nil {
+			return err
+		}
 
-	plaintext, err := plaintextRows(tx, ec, plaintextBatchSize)
-	if err != nil {
-		tLog.Error("failed-to-read-plaintext-rows", err)
-		return 0, err
-	}
-	if len(plaintext) == 0 {
-		return 0, nil
-	}
-
-	for _, row := range plaintext {
-		rLog := tLog.Session("row", lager.Data{
-			"primary-key": row.primaryKey,
+		tLog := logger.Session("table", lager.Data{
+			"table": ec.Table,
 		})
 
-		encrypted, nonce, err := key.Encrypt([]byte(row.value))
-		if err != nil {
-			rLog.Error("failed-to-encrypt", err)
-			return 0, err
+		decryptedRows := 0
+
+		for rows.Next() {
+			var (
+				primaryKey any
+				val, nonce string
+			)
+
+			err := rows.Scan(&primaryKey, &nonce, &val)
+			if err != nil {
+				tLog.Error("failed-to-scan", err)
+				return err
+			}
+
+			rLog := tLog.Session("row", lager.Data{
+				"primary-key": primaryKey,
+			})
+
+			decrypted, err := oldKey.Decrypt(val, &nonce)
+			if err != nil {
+				rLog.Error("failed-to-decrypt", err)
+				return err
+			}
+
+			_, err = m.db.Exec(`
+				UPDATE `+ec.Table+`
+				SET `+ec.Column+` = $1, nonce = NULL
+				WHERE `+ec.PrimaryKey+` = $2
+			`, decrypted, primaryKey)
+			if err != nil {
+				rLog.Error("failed-to-update", err)
+				return err
+			}
+
+			decryptedRows++
 		}
 
-		_, err = tx.Exec(`
-			UPDATE `+ec.Table+`
-			SET `+ec.Column+` = $1, nonce = $2
-			WHERE `+ec.PrimaryKey+` = $3
-		`, encrypted, nonce, row.primaryKey)
-		if err != nil {
-			rLog.Error("failed-to-update", err)
-			return 0, err
+		if decryptedRows > 0 {
+			tLog.Info("decrypted-existing-encrypted-data", lager.Data{
+				"rows": decryptedRows,
+			})
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return len(plaintext), nil
+	return nil
 }
 
-type plaintextRow struct {
-	primaryKey any
-	value      string
-}
+var errEncryptedWithUnknownKey = errors.New("row encrypted with neither old nor new key")
 
-// plaintextRows reads up to limit plaintext rows of the column and closes the
-// cursor before returning.
-func plaintextRows(tx *sql.Tx, ec encryptedColumn, limit int) ([]plaintextRow, error) {
-	rows, err := tx.Query(`
-		SELECT `+ec.PrimaryKey+`, `+ec.Column+`
-		FROM `+ec.Table+`
-		WHERE nonce IS NULL
-		AND `+ec.Column+` IS NOT NULL
-		LIMIT $1
-	`, limit)
+func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.Key) error {
+	logger := m.logger.Session("rotate")
+	columns, err := m.encryptedColumnsInSchema()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer rows.Close()
+	for _, ec := range columns {
+		rows, err := m.db.Query(`
+			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
+			FROM ` + ec.Table + `
+			WHERE nonce IS NOT NULL
+		`)
+		if err != nil {
+			return err
+		}
 
-	var plaintext []plaintextRow
-	for rows.Next() {
-		var (
-			primaryKey any
-			val        sql.NullString
-		)
-		if err := rows.Scan(&primaryKey, &val); err != nil {
-			return nil, err
+		tLog := logger.Session("table", lager.Data{
+			"table": ec.Table,
+		})
+
+		encryptedRows := 0
+
+		for rows.Next() {
+			var (
+				primaryKey any
+				val, nonce string
+			)
+
+			err := rows.Scan(&primaryKey, &nonce, &val)
+			if err != nil {
+				tLog.Error("failed-to-scan", err)
+				return err
+			}
+
+			rLog := tLog.Session("row", lager.Data{
+				"primary-key": primaryKey,
+			})
+
+			decrypted, err := oldKey.Decrypt(val, &nonce)
+			if err != nil {
+				_, err = newKey.Decrypt(val, &nonce)
+				if err == nil {
+					rLog.Debug("already-encrypted-with-new-key")
+					continue
+				}
+
+				logger.Error("failed-to-decrypt-with-either-key", err)
+				return errEncryptedWithUnknownKey
+			}
+
+			encrypted, newNonce, err := newKey.Encrypt(decrypted)
+			if err != nil {
+				rLog.Error("failed-to-encrypt", err)
+				return err
+			}
+
+			_, err = m.db.Exec(`
+				UPDATE `+ec.Table+`
+				SET `+ec.Column+` = $1, nonce = $2
+				WHERE `+ec.PrimaryKey+` = $3
+			`, encrypted, newNonce, primaryKey)
+			if err != nil {
+				rLog.Error("failed-to-update", err)
+				return err
+			}
+
+			encryptedRows++
 		}
-		if !val.Valid {
-			continue
+
+		if encryptedRows > 0 {
+			tLog.Info("re-encrypted-existing-encrypted-data", lager.Data{
+				"rows": encryptedRows,
+			})
 		}
-		plaintext = append(plaintext, plaintextRow{primaryKey: primaryKey, value: val.String})
 	}
-	return plaintext, rows.Err()
+
+	return nil
 }

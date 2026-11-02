@@ -42,7 +42,6 @@ var _ = Describe("Web Command", func() {
 			"--bind-port", strconv.Itoa(8080+GinkgoParallelProcess()),
 			"--client-id", "client-id",
 			"--client-secret", "client-secret",
-			"--encryption-key", "AES256Key-32Characters1234567890",
 		)
 	})
 

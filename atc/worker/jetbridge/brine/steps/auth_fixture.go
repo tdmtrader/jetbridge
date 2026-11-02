@@ -209,7 +209,7 @@ func newAuthFixture(database JetbridgeDB, bin authBinaries) (_ *AuthFixture, err
 	if err != nil {
 		return nil, err
 	}
-	f.MCPConn, err = db.NewConn("brine-mcp", database.runner.OpenSingleton(), database.runner.DataSourceName(), encryption.NewKey(gcm))
+	f.MCPConn, err = db.NewConn("brine-mcp", database.runner.OpenSingleton(), database.runner.DataSourceName(), nil, encryption.NewKey(gcm))
 	if err != nil {
 		return nil, err
 	}

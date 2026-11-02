@@ -452,7 +452,7 @@ func scanResourceType(t *resourceType, row scannable) error {
 	t.lastCheckEndTime = lastCheckEndTime.Time
 	t.pipelineRunID = int(pipelineRunID.Int64)
 
-	es := t.conn.EncryptionKey()
+	es := t.conn.EncryptionStrategy()
 
 	var noncense *string
 	if nonce.Valid {
