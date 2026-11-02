@@ -307,6 +307,16 @@
           "type": "integer",
           "minimum": 0
         },
+        "baseResourceTypes": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z0-9][-a-z0-9_.]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "preferredStepNode": {
           "type": "string",
           "pattern": "^$|^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?=([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$"

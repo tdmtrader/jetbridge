@@ -166,6 +166,9 @@ spec:
             {{- with .Values.kubernetes.preferredStepNode }}
             - --kubernetes-preferred-step-node={{ . }}
             {{- end }}
+            {{- range $name, $image := .Values.kubernetes.baseResourceTypes }}
+            - --kubernetes-base-resource-type={{ $name }}={{ $image }}
+            {{- end }}
             {{- if .Values.kubernetes.artifactHelperImage }}
             - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
             {{- end }}

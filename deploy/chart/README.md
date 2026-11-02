@@ -258,6 +258,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `kubernetes.podStartupTimeout` | `5m` | Max time to wait for pod Running. |
 | `kubernetes.podSchedulingTimeout` | `""` (15m) | Max time a step pod may wait Pending for cluster resources. Resolve capability expiry is derived from effective scheduling + startup + 36m. |
 | `kubernetes.defaultTaskCPURequest` | `0` | CPU request (millicores) for a task step that names none; 0 leaves such pods BestEffort. |
+| `kubernetes.baseResourceTypes` | `{}` | Base resource type images, `name: image`. Overrides a built-in type (`git`, `registry-image`, ...) or adds one, e.g. `git-with-ado`. Renders `--kubernetes-base-resource-type=name=image` per entry. |
 | `kubernetes.preferredStepNode` | `""` | Node label `key=value` every step pod prefers but does not require. Step pods also tolerate the taint `key=value:NoSchedule`, so tainting the node reserves it for builds. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
 | `kubernetes.artifactHelperImage` | `alpine:latest` | Image for init containers and sidecar. Must have `tar`. |

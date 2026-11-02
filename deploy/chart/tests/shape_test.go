@@ -81,7 +81,10 @@ import (
 // 2026-11-02: restoring ATC OTel metrics (otelMetrics.otlpAddress,
 // otlpHeaders, otlpUseTLS) adds back the three values 0.4.0 retired, leaving
 // 176. Removing a capability operators use was the mistake, not the values.
-const maxValues = 176
+// kubernetes.baseResourceTypes gives --kubernetes-base-resource-type, which
+// other deployments set for custom registry-image and git types, a typed
+// value instead of a web.env entry, leaving 177.
+const maxValues = 177
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -116,8 +119,10 @@ var openMaps = []string{
 	"artifactDaemon.tolerations",
 	"ingress.annotations",
 	"ingress.tls",
+	"kubernetes.baseResourceTypes",
 	"networkPolicy.ingressFrom",
 	"networkPolicy.taskEgressTo",
+	"otelMetrics.otlpHeaders",
 	"postgresql.containerSecurityContext",
 	"postgresql.podSecurityContext",
 	"postgresql.resources",
@@ -125,7 +130,6 @@ var openMaps = []string{
 	"service.labels",
 	"serviceAccount.annotations",
 	"serviceMonitor.labels",
-	"otelMetrics.otlpHeaders",
 	"tracing.otlpHeaders",
 	"web.affinity",
 	"web.containerSecurityContext",
