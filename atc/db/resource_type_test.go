@@ -643,10 +643,10 @@ var _ = Describe("ResourceType", func() {
 
 	Describe("CheckPlan", func() {
 		var (
-			createdCheckPlan atc.Plan
-			version          atc.Version
-			resourceType     db.ResourceType
-			skipInterval     bool
+			createdCheckPlan                      atc.Plan
+			version                               atc.Version
+			resourceType                          db.ResourceType
+			skipInterval, skipIntervalRecursively bool
 		)
 
 		// A custom type's image is a registry-image reference the delegate
@@ -675,6 +675,7 @@ var _ = Describe("ResourceType", func() {
 		BeforeEach(func() {
 			atc.DefaultCheckInterval = time.Minute
 			skipInterval = false
+			skipIntervalRecursively = false
 		})
 
 		AfterEach(func() {
@@ -693,7 +694,7 @@ var _ = Describe("ResourceType", func() {
 
 			planFactory := atc.NewPlanFactory(0)
 			version = atc.Version{"version": "from"}
-			createdCheckPlan = resourceType.CheckPlan(planFactory, resourceTypes, version, atc.CheckEvery{Interval: 1 * time.Hour}, sourceDefault, skipInterval)
+			createdCheckPlan = resourceType.CheckPlan(planFactory, resourceTypes, version, atc.CheckEvery{Interval: 1 * time.Hour}, sourceDefault, skipInterval, skipIntervalRecursively)
 		}
 
 		Context("when there is a resource type using a base type", func() {

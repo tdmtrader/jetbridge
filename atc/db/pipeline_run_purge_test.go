@@ -109,7 +109,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	resource, found, err := payload.Resource("source")
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
-	check, created, err := checkFactory.TryCreateCheck(ctx, resource, db.ResourceTypes{}, nil, true, false)
+	check, created, err := checkFactory.TryCreateCheck(ctx, resource, db.ResourceTypes{}, nil, true, false, false)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(created).To(BeTrue())
 	tx, err = dbConn.Begin()

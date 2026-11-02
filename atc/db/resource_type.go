@@ -42,7 +42,7 @@ type ResourceType interface {
 	SetResourceConfigScope(ResourceConfigScope) error
 	SharedResourcesAndTypes() (atc.ResourcesAndTypes, error)
 
-	CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool) atc.Plan
+	CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan
 	CreateBuild(context.Context, bool, atc.Plan) (Build, bool, error)
 	CreateInMemoryBuild(context.Context, atc.Plan, util.SequenceGenerator) (Build, error)
 
@@ -324,7 +324,7 @@ func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigS
 	return rowsAffected > 0, nil
 }
 
-func (r *resourceType) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool) atc.Plan {
+func (r *resourceType) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan {
 	plan := planFactory.NewPlan(atc.CheckPlan{
 		Name:   r.name,
 		Type:   r.type_,

@@ -16,6 +16,7 @@ type CheckResourceTypeCommand struct {
 	ResourceType flaghelpers.ResourceFlag `short:"r" long:"resource-type" required:"true" value-name:"PIPELINE/RESOURCE-TYPE" description:"Name of a resource-type to check"`
 	Version      *atc.Version             `short:"f" long:"from"                     value-name:"VERSION"           description:"Version of the resource type to check from, e.g. digest:sha256@..."`
 	Async        bool                     `short:"a" long:"async"                    value-name:"ASYNC"             description:"Return the check without waiting for its result"`
+	Shallow      bool                     `long:"shallow"                          value-name:"SHALLOW"         description:"Check the resource type itself only"`
 	Team         flaghelpers.TeamFlag     `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
 }
 
@@ -41,7 +42,7 @@ func (command *CheckResourceTypeCommand) Execute(args []string) error {
 		version = *command.Version
 	}
 
-	build, found, err := team.CheckResourceType(command.ResourceType.PipelineRef, command.ResourceType.ResourceName, version)
+	build, found, err := team.CheckResourceType(command.ResourceType.PipelineRef, command.ResourceType.ResourceName, version, command.Shallow)
 	if err != nil {
 		return err
 	}

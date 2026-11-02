@@ -149,7 +149,7 @@ var _ = Describe("Tracker", func() {
 
 			checkFactory := db.NewCheckFactory(dbConn, lockFactory, buildChan, util.NewSequenceGenerator(1))
 			lidarCheck := func() bool {
-				_, created, err := checkFactory.TryCreateCheck(context.Background(), resource, db.ResourceTypes{}, nil, false, false)
+				_, created, err := checkFactory.TryCreateCheck(context.Background(), resource, db.ResourceTypes{}, nil, false, false, false)
 				Expect(err).NotTo(HaveOccurred())
 				return created
 			}

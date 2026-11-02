@@ -99,6 +99,7 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 				version,
 				true,
 				true,
+				true,
 			)
 			if err != nil {
 				logger.Error("failed-to-create-check", err)

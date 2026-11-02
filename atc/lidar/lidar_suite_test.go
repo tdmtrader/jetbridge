@@ -45,11 +45,12 @@ type lidarDB struct {
 }
 
 type lidarCheckCall struct {
-	checkable         db.Checkable
-	resourceTypes     db.ResourceTypes
-	from              atc.Version
-	manuallyTriggered bool
-	toDB              bool
+	checkable               db.Checkable
+	resourceTypes           db.ResourceTypes
+	from                    atc.Version
+	manuallyTriggered       bool
+	skipIntervalRecursively bool
+	toDB                    bool
 }
 
 func (call lidarCheckCall) resource() db.Resource {
@@ -88,15 +89,17 @@ func (factory *lidarCheckFactory) TryCreateCheck(
 	resourceTypes db.ResourceTypes,
 	from atc.Version,
 	manuallyTriggered bool,
+	skipIntervalRecursively bool,
 	toDB bool,
 ) (db.Build, bool, error) {
 	factory.mu.Lock()
 	factory.calls = append(factory.calls, lidarCheckCall{
-		checkable:         checkable,
-		resourceTypes:     resourceTypes,
-		from:              from,
-		manuallyTriggered: manuallyTriggered,
-		toDB:              toDB,
+		checkable:               checkable,
+		resourceTypes:           resourceTypes,
+		from:                    from,
+		manuallyTriggered:       manuallyTriggered,
+		skipIntervalRecursively: skipIntervalRecursively,
+		toDB:                    toDB,
 	})
 	panicTryCreate := factory.panicTryCreate
 	factory.mu.Unlock()
@@ -106,7 +109,7 @@ func (factory *lidarCheckFactory) TryCreateCheck(
 	}
 	return factory.CheckFactory.TryCreateCheck(
 		ctx, checkable, resourceTypes, from,
-		manuallyTriggered, toDB,
+		manuallyTriggered, skipIntervalRecursively, toDB,
 	)
 }
 

@@ -86,7 +86,7 @@ const (
 // open one is left unfinished, as a build cannot finish before its closure.
 func (f runCheckFixture) check(checkable db.Checkable, execution checkExecution) (db.Build, db.RunExecutionAdmission) {
 	GinkgoHelper()
-	check, created, err := checkFactory.TryCreateCheck(f.ctx, checkable, f.resourceTypes, nil, true, false)
+	check, created, err := checkFactory.TryCreateCheck(f.ctx, checkable, f.resourceTypes, nil, true, false, false)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(created).To(BeTrue())
 	Expect(check.SaveEvent(event.Log{Payload: "check output"})).To(Succeed())
