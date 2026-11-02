@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc/api/configserver"
 	"github.com/concourse/concourse/atc/api/containerserver"
 	"github.com/concourse/concourse/atc/api/hangarserver"
+	"github.com/concourse/concourse/atc/api/idtokenserver"
 	"github.com/concourse/concourse/atc/api/infoserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/landingserver"
@@ -39,6 +40,7 @@ func NewHandler(
 	logger lager.Logger,
 
 	externalURL string,
+	oidcIssuer string,
 	clusterName string,
 
 	wrapper wrappa.Wrappa,
@@ -73,6 +75,7 @@ func NewHandler(
 	interceptUpdateInterval time.Duration,
 	dbWall db.Wall,
 	clock clock.Clock,
+	dbSigningKeyFactory db.SigningKeyFactory,
 	dbPinger infoserver.DBPinger,
 	hangarStatus hangarserver.Source,
 	runServices ...pipelinerunserver.Services,
@@ -107,6 +110,10 @@ func NewHandler(
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
 	hangarServer := hangarserver.NewServer(logger, hangarStatus)
+	if oidcIssuer == "" {
+		oidcIssuer = externalURL
+	}
+	idTokenServer := idtokenserver.NewServer(logger, oidcIssuer, dbSigningKeyFactory)
 
 	handlers := map[string]http.Handler{
 		atc.GetConfig:             http.HandlerFunc(configServer.GetConfig),
@@ -219,6 +226,9 @@ func NewHandler(
 
 		atc.GetHangarStatus:      http.HandlerFunc(hangarServer.GetStatus),
 		atc.ResolveHangarFinding: http.HandlerFunc(hangarServer.ResolveFinding),
+
+		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
+		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

@@ -231,7 +231,8 @@ type apiDBDeps struct {
 	userFactory           db.UserFactory
 	landingQueueFactory   db.LandingQueueFactory
 
-	wall db.Wall
+	wall              db.Wall
+	signingKeyFactory db.SigningKeyFactory
 
 	hangarStatus hangarserver.Source
 }
@@ -274,6 +275,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		logger,
 
 		externalURL,
+		"",
 		clusterName,
 
 		apiWrapper,
@@ -308,6 +310,7 @@ func newAPIServer(deps apiDBDeps) *httptest.Server {
 		time.Second,
 		deps.wall,
 		fakeClock,
+		deps.signingKeyFactory,
 		nil,
 		deps.hangarStatus,
 	)

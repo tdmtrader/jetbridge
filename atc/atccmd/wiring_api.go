@@ -97,6 +97,7 @@ func (cmd *RunCommand) constructAPIMembers(
 	gcContainerDestroyer := gc.NewDestroyer(logger, dbContainerRepository, dbVolumeRepository)
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, checkBuildsChan, nil)
+	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 	dbClock := db.NewClock()
 	dbWall := db.NewWall(dbConn, &dbClock)
 
@@ -144,6 +145,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		credsManagers,
 		accessFactory,
 		dbWall,
+		dbSigningKeyFactory,
 		dbConn,
 	)
 	if err != nil {
@@ -401,6 +403,7 @@ func (cmd *RunCommand) constructHTTPHandler(
 	webMux.Handle("/api/v2/", csrfHandler)
 	webMux.Handle("/sky/issuer/", authHandler)
 	webMux.Handle("/sky/", skyHandler)
+	webMux.Handle("/.well-known/", apiHandler)
 	webMux.Handle("/", webHandler)
 
 	// MCP uses its own bearer credentials and browser consent cookies. In
@@ -561,6 +564,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	credsManagers creds.Managers,
 	accessFactory accessor.AccessFactory,
 	dbWall db.Wall,
+	dbSigningKeyFactory db.SigningKeyFactory,
 	dbConn db.DbConn,
 ) (http.Handler, error) {
 
@@ -595,6 +599,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	return api.NewHandler(
 		logger,
 		cmd.ExternalURL.String(),
+		cmd.OIDCIssuerURL.String(),
 		cmd.Server.ClusterName,
 		apiWrapper,
 
@@ -628,6 +633,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		time.Minute,
 		dbWall,
 		clock.NewClock(),
+		dbSigningKeyFactory,
 		dbConn,
 		cmd.hangarStatusSource(dbConn),
 		cmd.pipelineRunServices(dbConn, dbPipelineRunFactory, teamFactory),

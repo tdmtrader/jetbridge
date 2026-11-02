@@ -26,6 +26,8 @@ var _ = Describe("anonymous Run capabilities", func() {
 	})
 
 	It("preserves anonymous authorization across a restart", func() {
+		waitForSigningKeys()
+
 		before := captureEveryRouteAnonymously()
 
 		// The classification is used only for the guard below. It is a
@@ -88,8 +90,8 @@ var _ = Describe("anonymous Run capabilities", func() {
 // credentials, using its declared method, and returns the whole answer.
 //
 // Some members carry a weak comparison and are still issued and still
-// compared: DownloadCLI, CheckResourceWebHook and the badge routes answer
-// about something this fixture does not set up, so
+// compared: DownloadCLI, CheckResourceWebHook, the badge routes and the
+// .well-known routes answer about something this fixture does not set up, so
 // their two answers agree for reasons unrelated to authorization. Naming them is
 // the point -- a reader should know which parts of this sweep are load-bearing.
 func captureEveryRouteAnonymously() map[string]capturedResponse {
@@ -178,4 +180,31 @@ func findFixturePipeline(response capturedResponse) atc.Pipeline {
 
 	Fail("the exposed fixture template is absent from this anonymous collection; the comparison would be vacuous: " + string(response.Body))
 	return atc.Pipeline{}
+}
+
+// waitForSigningKeys settles the one piece of startup state that is not ready
+// when the server first answers. The signing key lifecycler generates and
+// stores its keys asynchronously, so a capture taken too early reads an empty
+// key set while the second boot -- which finds them already in the database --
+// does not. Waiting keeps GetSigningKeys inside the comparison; excluding its
+// body would have taken a route out of it.
+func waitForSigningKeys() {
+	GinkgoHelper()
+
+	path, err := atc.Routes.CreatePathForRoute(atc.GetSigningKeys, rata.Params{})
+	Expect(err).NotTo(HaveOccurred())
+
+	Eventually(func() int {
+		response, err := http.Get(atcURL + path)
+		if err != nil {
+			return 0
+		}
+		var keys struct {
+			Keys []json.RawMessage `json:"keys"`
+		}
+		if json.Unmarshal(readResponse(response).Body, &keys) != nil {
+			return 0
+		}
+		return len(keys.Keys)
+	}, 30*time.Second).Should(BeNumerically(">", 0), "the signing keys never appeared; every capture below would race the lifecycler")
 }
