@@ -177,12 +177,10 @@
           }
         },
         "localUsers": {
-          "type": "string",
-          "minLength": 1
+          "type": "string"
         },
         "mainTeamLocalUser": {
-          "type": "string",
-          "minLength": 1
+          "type": "string"
         },
         "podSecurityContext": {
           "$ref": "#/definitions/openMap"

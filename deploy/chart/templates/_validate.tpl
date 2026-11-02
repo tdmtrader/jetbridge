@@ -119,6 +119,15 @@ template first, so these rules run before anything else in the chart.
   which the daemonset renders as -1. The schema admits any string so that
   this message, not a generic one, names the value.
 */ -}}
+{{- $mainTeamOwner := not (empty (trim .Values.web.mainTeamLocalUser)) -}}
+{{- range .Values.web.env -}}
+{{- if hasPrefix "CONCOURSE_MAIN_TEAM_" .name -}}
+{{- $mainTeamOwner = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $mainTeamOwner -}}
+{{- fail "the main team needs an owner: set web.mainTeamLocalUser, or for SSO a CONCOURSE_MAIN_TEAM_* entry in web.env (e.g. CONCOURSE_MAIN_TEAM_OIDC_GROUP)" -}}
+{{- end -}}
 {{- $mirrorReplicas := .Values.artifactDaemon.mirror.replicas -}}
 {{- if and (kindIs "string" $mirrorReplicas) (ne $mirrorReplicas "all") -}}
 {{- fail (printf "artifactDaemon.mirror.replicas must be an integer or the string \"all\", got %q" $mirrorReplicas) -}}

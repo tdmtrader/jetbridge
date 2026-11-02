@@ -187,8 +187,8 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.externalUrl` | `""` | **Required.** URL users use to reach the UI. |
 | `web.clusterName` | `jetbridge` | Cluster name displayed in the UI. |
 | `web.logLevel` | `info` | Log level: `debug`, `info`, `error`. |
-| `web.localUsers` | `""` | **Required.** Local user credentials (`user:password`, comma-separated). |
-| `web.mainTeamLocalUser` | `""` | **Required.** User granted admin on the main team. |
+| `web.localUsers` | `""` | Local user credentials (`user:password`, comma-separated). Empty for SSO only. |
+| `web.mainTeamLocalUser` | `""` | User granted admin on the main team. The main team needs an owner: set this, or give it one through `web.env` (`CONCOURSE_MAIN_TEAM_OIDC_GROUP`, `CONCOURSE_MAIN_TEAM_GITHUB_ORG`, ...) for an SSO-only deployment. |
 | `web.apiMaxConns` | `10` | API connection pool max (per replica). |
 | `web.backendMaxConns` | `50` | Backend connection pool max (per replica). |
 | `web.terminationGracePeriodSeconds` | `120` | Graceful shutdown timeout. |
@@ -209,6 +209,30 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.nodeSelector` | `{}` | Node selector for the web pod. |
 | `web.tolerations` | `[]` | Tolerations for the web pod. |
 | `web.affinity` | `{}` | Affinity rules for the web pod. |
+
+#### Single sign-on only
+
+Leave `web.localUsers` and `web.mainTeamLocalUser` empty and configure the
+connector and the main team's owners through `web.env`. The render fails if
+the main team ends up with no owner.
+
+```yaml
+web:
+  env:
+    - name: CONCOURSE_OIDC_DISPLAY_NAME
+      value: Company SSO
+    - name: CONCOURSE_OIDC_ISSUER
+      value: https://login.example.com
+    - name: CONCOURSE_OIDC_CLIENT_ID
+      value: concourse
+    - name: CONCOURSE_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: concourse-oidc
+          key: client-secret
+    - name: CONCOURSE_MAIN_TEAM_OIDC_GROUP
+      value: platform-admins
+```
 
 ### Web Security Context
 
@@ -523,7 +547,7 @@ The chart always deploys the artifact daemon and wires its host path into web.
 
 ## Production Notes
 
-- **Secrets:** Add OIDC/OAuth through `web.env` (`CONCOURSE_OIDC_*` and the like) until the chart has typed auth values, and keep `web.localUsers` to a strong admin credential. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
+- **Secrets:** Add OIDC/OAuth through `web.env` (`CONCOURSE_OIDC_*` and the like); keep any `web.localUsers` to strong credentials, or leave it empty for SSO only. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.

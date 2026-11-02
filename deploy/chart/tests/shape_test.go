@@ -178,8 +178,6 @@ var bareRenderNames = []string{
 	"mcp.clients",
 	"secrets.signingKeySecret",
 	"web.externalUrl",
-	"web.localUsers",
-	"web.mainTeamLocalUser",
 }
 
 func TestTheChartHoldsItsShape(t *testing.T) {

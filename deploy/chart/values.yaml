@@ -79,13 +79,16 @@ web:
     # default, 1s. Rendered as CONCOURSE_SECRET_RETRY_INTERVAL.
     interval: ""
 
-  # -- Required. Local user credentials. Comma-separated "user:password"
-  # pairs, e.g. "admin:s3cret,ci:token". The chart emits one --add-local-user
-  # flag per pair (Concourse's CLI flag does not itself split on commas).
+  # -- Local user credentials. Comma-separated "user:password" pairs, e.g.
+  # "admin:s3cret,ci:token". The chart emits one --add-local-user flag per
+  # pair (Concourse's CLI flag does not itself split on commas). Leave it
+  # empty for an SSO-only deployment.
   localUsers: ""
 
-  # -- Required. Main team local user(s), granted admin on the main team,
-  # e.g. admin. A comma-separated list renders one --main-team-local-user each.
+  # -- Main team local user(s), granted admin on the main team, e.g. admin. A
+  # comma-separated list renders one --main-team-local-user each. The main
+  # team needs an owner: set this, or for SSO only leave it empty and give the
+  # main team its owners through web.env, e.g. CONCOURSE_MAIN_TEAM_OIDC_GROUP.
   mainTeamLocalUser: ""
 
   # -- Pod-level security context (applied to the pod spec)
