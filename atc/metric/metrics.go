@@ -1,6 +1,7 @@
 package metric
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -18,35 +19,60 @@ func ms(duration time.Duration) float64 {
 // StepWaited records how long a step waited for a worker.
 func StepWaited(teamID, teamName, stepType string, waited time.Duration) {
 	stepsWaitingDuration.WithLabelValues("", teamID, teamName, stepType, "").Observe(waited.Seconds())
+	RecordStepsWaitDuration(context.Background(), waited.Seconds(), teamName, stepType)
 }
 
 // JobSchedulingDuration records one scheduling pass over a job.
 func JobSchedulingDuration(pipeline, job string, jobID int, d time.Duration) {
 	jobsSchedulingDuration.WithLabelValues(pipeline, job, strconv.Itoa(jobID)).Observe(ms(d))
+	RecordSchedulingJobDuration(context.Background(), d.Seconds(), pipeline, job)
 }
 
 // The garbage collectors' pass durations.
-func GCBuildCollectorDuration(d time.Duration)  { gcBuildCollectorDuration.Observe(ms(d)) }
-func GCWorkerCollectorDuration(d time.Duration) { gcWorkerCollectorDuration.Observe(ms(d)) }
+func GCBuildCollectorDuration(d time.Duration) {
+	gcBuildCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "build", ms(d))
+}
+func GCWorkerCollectorDuration(d time.Duration) {
+	gcWorkerCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "worker", ms(d))
+}
 func GCResourceCacheUseCollectorDuration(d time.Duration) {
 	gcResourceCacheUseCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "resource-cache-use", ms(d))
 }
 func GCResourceConfigCollectorDuration(d time.Duration) {
 	gcResourceConfigCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "resource-config", ms(d))
 }
 func GCDeprecatedScopeCollectorDuration(d time.Duration) {
 	gcDeprecatedScopeCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "deprecated-scope", ms(d))
 }
 func GCResourceCacheCollectorDuration(d time.Duration) {
 	gcResourceCacheCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "resource-cache", ms(d))
 }
-func GCTaskCacheCollectorDuration(d time.Duration) { gcTaskCacheCollectorDuration.Observe(ms(d)) }
+func GCTaskCacheCollectorDuration(d time.Duration) {
+	gcTaskCacheCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "task-cache", ms(d))
+}
 func GCResourceConfigCheckSessionCollectorDuration(d time.Duration) {
 	gcResourceConfigCheckSessionCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "resource-config-check-session", ms(d))
 }
-func GCArtifactCollectorDuration(d time.Duration)  { gcArtifactCollectorDuration.Observe(ms(d)) }
-func GCContainerCollectorDuration(d time.Duration) { gcContainerCollectorDuration.Observe(ms(d)) }
-func GCVolumeCollectorDuration(d time.Duration)    { gcVolumeCollectorDuration.Observe(ms(d)) }
+func GCArtifactCollectorDuration(d time.Duration) {
+	gcArtifactCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "artifact", ms(d))
+}
+func GCContainerCollectorDuration(d time.Duration) {
+	gcContainerCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "container", ms(d))
+}
+func GCVolumeCollectorDuration(d time.Duration) {
+	gcVolumeCollectorDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "volume", ms(d))
+}
 
 // PipelineRunReclaimBacklog is the number of pipeline runs eligible for
 // reclamation at the start of a reclaimer pass, counted without the batch
@@ -59,7 +85,10 @@ func PipelineRunReclaimBacklog(runs int) { pipelineRunReclaimBacklog.Set(float64
 // included. It is per-batch rather than per-run so that it stays comparable
 // with the component's own interval: a pass that outlasts the interval is the
 // other half of the backlog story.
-func PipelineRunReclaimDuration(d time.Duration) { pipelineRunReclaimDuration.Observe(ms(d)) }
+func PipelineRunReclaimDuration(d time.Duration) {
+	pipelineRunReclaimDuration.Observe(ms(d))
+	RecordGCCollectorDuration(context.Background(), "pipeline-run-reclaim", ms(d))
+}
 
 // What one garbage collection pass found to delete.
 func CreatingContainersToBeGarbageCollected(n int) {
@@ -118,6 +147,16 @@ func BuildFinished(build db.Build) {
 	// seconds are the standard prometheus base unit for time
 	duration := ms(build.EndTime().Sub(build.StartTime())) / 1000
 	observeWithTrace(buildDurationsVec.WithLabelValues(attrs["team_name"], attrs["pipeline"], attrs["job"]), duration, traceID)
+
+	RecordBuildDuration(
+		context.Background(),
+		build.EndTime().Sub(build.StartTime()),
+		attrs["team_name"],
+		attrs["pipeline"],
+		attrs["job"],
+		string(status),
+	)
+	RecordBuildFinished(context.Background(), string(status))
 }
 
 // extractTraceID parses the trace ID from a W3C traceparent header.

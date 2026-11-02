@@ -419,6 +419,18 @@ web:
 | `tracing.otlpUseTLS` | `false` | Use TLS for OTLP connection. |
 | `tracing.serviceName` | `""` | Service name in traces (default: `concourse-web`). |
 
+Google Cloud Trace (Stackdriver) is the other trace exporter: set
+`CONCOURSE_TRACING_STACKDRIVER_PROJECTID` through `web.env`. With both set,
+OTLP wins.
+
+### Metrics (OpenTelemetry)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `otelMetrics.otlpAddress` | `""` | OTLP gRPC endpoint for metrics. |
+| `otelMetrics.otlpHeaders` | `{}` | Additional OTLP headers for metrics. |
+| `otelMetrics.otlpUseTLS` | `false` | Use TLS for metrics OTLP connection. |
+
 ### Secrets
 
 | Parameter | Default | Description |

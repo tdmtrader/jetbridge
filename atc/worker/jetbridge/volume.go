@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/tracing"
 	"github.com/klauspost/compress/gzip"
@@ -151,6 +153,9 @@ func (v *Volume) DBVolume() db.CreatedVolume {
 // When compression is non-nil and not raw, the incoming stream is decompressed
 // before being piped to tar.
 func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Compression, limitInMB float64, reader io.Reader) error {
+	start := time.Now()
+	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "stream_in") }()
+
 	if v.executor == nil {
 		return fmt.Errorf("cannot stream in: volume %s has no executor (stub volume cannot perform I/O)", v.handle)
 	}
@@ -304,6 +309,8 @@ func (v *Volume) resolvedPath(path string) string {
 }
 
 func (v *Volume) InitializeResourceCache(ctx context.Context, cache db.ResourceCache) (*db.UsedWorkerResourceCache, error) {
+	start := time.Now()
+	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	if v.dbVolume == nil {
 		return nil, nil
 	}
@@ -311,6 +318,8 @@ func (v *Volume) InitializeResourceCache(ctx context.Context, cache db.ResourceC
 }
 
 func (v *Volume) InitializeStreamedResourceCache(ctx context.Context, cache db.ResourceCache, sourceWorkerResourceCacheID int) (*db.UsedWorkerResourceCache, error) {
+	start := time.Now()
+	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	if v.dbVolume == nil {
 		return nil, nil
 	}
@@ -318,6 +327,8 @@ func (v *Volume) InitializeStreamedResourceCache(ctx context.Context, cache db.R
 }
 
 func (v *Volume) InitializeTaskCache(ctx context.Context, identity atc.TaskCacheIdentity, stepName string, path string, privileged bool) error {
+	start := time.Now()
+	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	if v.dbVolume == nil {
 		return nil
 	}

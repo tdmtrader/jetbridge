@@ -32,6 +32,7 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/skymarshal/storage"
+	"github.com/concourse/concourse/tracing"
 	gocache "github.com/patrickmn/go-cache"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/grouper"
@@ -41,10 +42,10 @@ import (
 	// dynamically registered policy checkers
 
 	// dynamically registered credential managers
-	_ "github.com/concourse/concourse/atc/creds/dummy"
-	"github.com/concourse/concourse/atc/creds/idtoken"
 	_ "github.com/concourse/concourse/atc/creds/conjur"
 	_ "github.com/concourse/concourse/atc/creds/credhub"
+	_ "github.com/concourse/concourse/atc/creds/dummy"
+	"github.com/concourse/concourse/atc/creds/idtoken"
 	_ "github.com/concourse/concourse/atc/creds/kubernetes"
 	_ "github.com/concourse/concourse/atc/creds/secretsmanager"
 	_ "github.com/concourse/concourse/atc/creds/ssm"
@@ -167,6 +168,25 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	if err != nil {
 		return nil, err
 	}
+
+	mp, mpShutdown, err := cmd.OTelMetrics.MeterProvider()
+	if err != nil {
+		return nil, fmt.Errorf("otel metrics: %w", err)
+	}
+	if mp != nil {
+		tracing.ConfigureMeterProvider(mp)
+		logger.Info("otel-metrics-configured")
+		_ = mpShutdown // shutdown handled by process lifecycle
+	}
+
+	metric.InitOTelStepDuration()
+	metric.InitOTelMetrics()
+	metric.InitOTelBuildLifecycle()
+	metric.InitOTelStepWaiting()
+	metric.InitOTelScheduling()
+	metric.InitOTelGC()
+	metric.InitOTelDBChecks()
+	metric.InitOTelArtifactUpload()
 
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
 	http.HandleFunc("/debug/connections", func(w http.ResponseWriter, r *http.Request) {

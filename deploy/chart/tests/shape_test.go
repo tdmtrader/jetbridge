@@ -78,7 +78,10 @@ import (
 // passed through web.env (web.authDuration, web.caCertFile, web.checks' four,
 // web.gc's two, web.secretRetry's two) adds ten, leaving 173 while web.env
 // stays for one release.
-const maxValues = 173
+// 2026-11-02: restoring ATC OTel metrics (otelMetrics.otlpAddress,
+// otlpHeaders, otlpUseTLS) adds back the three values 0.4.0 retired, leaving
+// 176. Removing a capability operators use was the mistake, not the values.
+const maxValues = 176
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
@@ -97,6 +100,7 @@ var allowedSwitches = []string{
 	"rbac.create",
 	"serviceAccount.create",
 	"serviceMonitor.enabled",
+	"otelMetrics.otlpUseTLS",
 	"tracing.otlpUseTLS",
 	"web.tls.enabled",
 }
@@ -121,6 +125,7 @@ var openMaps = []string{
 	"service.labels",
 	"serviceAccount.annotations",
 	"serviceMonitor.labels",
+	"otelMetrics.otlpHeaders",
 	"tracing.otlpHeaders",
 	"web.affinity",
 	"web.containerSecurityContext",

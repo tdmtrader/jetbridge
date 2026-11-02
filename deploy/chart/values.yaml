@@ -433,6 +433,16 @@ tracing:
   # -- Service name reported in traces (default: concourse-web)
   serviceName: ""
 
+# -- OpenTelemetry metrics configuration.
+# When enabled, the web node exports metrics via OTLP gRPC.
+otelMetrics:
+  # -- OTLP gRPC endpoint for metrics (e.g., "otel-collector.monitoring.svc:4317")
+  otlpAddress: ""
+  # -- Additional OTLP headers for metrics
+  otlpHeaders: {}
+  # -- Use TLS for the metrics OTLP connection
+  otlpUseTLS: false
+
 # -- Secrets configuration
 secrets:
   # -- Required. Name of a pre-existing Secret holding the session signing

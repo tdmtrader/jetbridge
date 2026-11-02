@@ -98,6 +98,9 @@ func NewGetStep(
 }
 
 func (step *GetStep) Run(ctx context.Context, state RunState) (bool, error) {
+	start := time.Now()
+	defer func() { metric.RecordStepDuration(ctx, "get", step.plan.Name, time.Since(start)) }()
+
 	delegate := step.delegateFactory.GetDelegate(state)
 	ctx, span := delegate.StartSpan(ctx, "get", tracing.Attrs{
 		"name":     step.plan.Name,

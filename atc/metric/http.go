@@ -24,5 +24,6 @@ func WrapHandler(route string, handler http.Handler) http.Handler {
 			ms(metrics.Duration)/1000,
 			traceID,
 		)
+		RecordHTTPResponseTime(r.Context(), metrics.Duration, r.Method, route, metrics.Code)
 	})
 }

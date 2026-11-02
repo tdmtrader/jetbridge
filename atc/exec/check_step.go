@@ -85,6 +85,9 @@ func NewCheckStep(
 }
 
 func (step *CheckStep) Run(ctx context.Context, state RunState) (bool, error) {
+	start := time.Now()
+	defer func() { metric.RecordStepDuration(ctx, "check", step.plan.Name, time.Since(start)) }()
+
 	attrs := tracing.Attrs{
 		"name": step.plan.Name,
 	}

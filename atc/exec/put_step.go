@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker"
@@ -84,6 +85,9 @@ func NewPutStep(
 // The resource's put script is then invoked. If the context is canceled, the
 // script will be interrupted.
 func (step *PutStep) Run(ctx context.Context, state RunState) (bool, error) {
+	start := time.Now()
+	defer func() { metric.RecordStepDuration(ctx, "put", step.plan.Name, time.Since(start)) }()
+
 	delegate := step.delegateFactory.PutDelegate(state)
 	ctx, span := delegate.StartSpan(ctx, "put", tracing.Attrs{
 		"name":     step.plan.Name,

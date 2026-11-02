@@ -282,6 +282,16 @@ spec:
             {{- range $key, $val := .Values.tracing.otlpHeaders }}
             - --tracing-otlp-header={{ $key }}:{{ $val }}
             {{- end }}
+            # OTel Metrics
+            {{- if .Values.otelMetrics.otlpAddress }}
+            - --otel-metrics-otlp-address={{ .Values.otelMetrics.otlpAddress }}
+            {{- end }}
+            {{- if .Values.otelMetrics.otlpUseTLS }}
+            - --otel-metrics-otlp-use-tls
+            {{- end }}
+            {{- range $key, $val := .Values.otelMetrics.otlpHeaders }}
+            - --otel-metrics-otlp-header={{ $key }}:{{ $val }}
+            {{- end }}
             # Connection pool sizing
             {{- if .Values.web.apiMaxConns }}
             - --api-max-conns={{ .Values.web.apiMaxConns }}

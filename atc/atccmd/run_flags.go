@@ -185,6 +185,8 @@ type RunCommand struct {
 
 	Tracing tracing.Config `group:"Tracing" namespace:"tracing"`
 
+	OTelMetrics tracing.MetricsConfig `group:"OTel Metrics" namespace:"otel-metrics"`
+
 	Server struct {
 		XFrameOptions           string `long:"x-frame-options" default:"deny" description:"The value to set for the X-Frame-Options header."`
 		ContentSecurityPolicy   string `long:"content-security-policy" default:"frame-ancestors 'none'" description:"The value to set for the Content-Security-Policy header."`

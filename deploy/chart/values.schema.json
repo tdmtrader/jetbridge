@@ -521,6 +521,21 @@
         }
       }
     },
+    "otelMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otlpAddress": {
+          "type": "string"
+        },
+        "otlpHeaders": {
+          "$ref": "#/definitions/openMap"
+        },
+        "otlpUseTLS": {
+          "type": "boolean"
+        }
+      }
+    },
     "secrets": {
       "type": "object",
       "additionalProperties": false,
