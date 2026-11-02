@@ -42,6 +42,7 @@ import (
 
 	// dynamically registered credential managers
 	_ "github.com/concourse/concourse/atc/creds/dummy"
+	"github.com/concourse/concourse/atc/creds/idtoken"
 	_ "github.com/concourse/concourse/atc/creds/kubernetes"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -222,6 +223,15 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	if err != nil {
 		return nil, err
 	}
+
+	issuer := cmd.ExternalURL.String()
+	if cmd.OIDCIssuerURL.String() != "" {
+		issuer = cmd.OIDCIssuerURL.String()
+	}
+
+	idtoken.UpdateGlobalManagerFactory(func(f *idtoken.ManagerFactory) {
+		f.SetIssuer(issuer)
+	})
 
 	secretManager, err := cmd.secretManager(logger)
 	if err != nil {

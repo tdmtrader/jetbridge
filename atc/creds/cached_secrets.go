@@ -2,6 +2,7 @@ package creds
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -21,6 +22,13 @@ type CachedSecrets struct {
 	secrets     Secrets
 	cacheConfig SecretCacheConfig
 	cache       *cache.Cache
+
+	// keyedOnParams is set when the provider's value for a path depends on
+	// the caller's SecretLookupParams (idtoken signs a token naming the
+	// caller's team, pipeline, instance vars and job under the bare path
+	// "token"). Such entries are keyed on the path and the params, so one
+	// caller is never served another's value.
+	keyedOnParams bool
 }
 
 type cacheEntry struct {
@@ -34,10 +42,40 @@ func NewCachedSecrets(secrets Secrets, cacheConfig SecretCacheConfig) *CachedSec
 	// - default expiration time for entries set to 'cacheConfig.Duration'
 	// - purges expired items regularly, on every `cacheConfig.PurgeInterval` after creation
 	return &CachedSecrets{
-		secrets:     secrets,
-		cacheConfig: cacheConfig,
-		cache:       cache.New(cacheConfig.Duration, cacheConfig.PurgeInterval),
+		secrets:       secrets,
+		cacheConfig:   cacheConfig,
+		cache:         cache.New(cacheConfig.Duration, cacheConfig.PurgeInterval),
+		keyedOnParams: providerReadsParams(secrets),
 	}
+}
+
+// providerReadsParams reports whether the provider beneath any retry wrapper
+// implements SecretsWithParams itself. A provider that only implements Get
+// never sees the params, so its value depends on the path alone and its
+// entries can be shared by every caller asking for that path.
+func providerReadsParams(secrets Secrets) bool {
+	for {
+		switch wrapper := secrets.(type) {
+		case *RetryableSecrets:
+			secrets = wrapper.secrets
+		default:
+			_, readsParams := secrets.(SecretsWithParams)
+			return readsParams
+		}
+	}
+}
+
+// cacheKey is the entry a lookup reads and writes; ok is false when the
+// params cannot be encoded, and the lookup then goes uncached.
+func (cs *CachedSecrets) cacheKey(secretPath string, lookupCtx SecretLookupParams) (string, bool) {
+	if !cs.keyedOnParams {
+		return secretPath, true
+	}
+	params, err := json.Marshal(lookupCtx)
+	if err != nil {
+		return "", false
+	}
+	return secretPath + "\x00" + string(params), true
 }
 
 func (cs *CachedSecrets) Get(secretPath string) (any, *time.Time, bool, error) {
@@ -54,7 +92,12 @@ func (cs *CachedSecrets) GetWithParams(secretPath string, lookupCtx SecretLookup
 	})
 	_ = ctx
 
-	key := secretPath
+	key, cacheable := cs.cacheKey(secretPath, lookupCtx)
+	if !cacheable {
+		value, expiration, found, err := GetWithParams(cs.secrets, secretPath, lookupCtx)
+		tracing.End(span, err)
+		return value, expiration, found, err
+	}
 
 	// if there is a corresponding entry in the cache, return it
 	entry, found := cs.cache.Get(key)

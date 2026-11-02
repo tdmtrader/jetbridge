@@ -24,6 +24,7 @@ const (
 	ComponentK8sWorkerRegistrar         = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper            = "k8s_worker_reaper"
 	ComponentPipelinePauser             = "pipeline_pauser"
+	ComponentSigningKeyLifecycler       = "signing_key_lifecycler"
 
 	// ComponentHangarOutputCapture advances durable output captures.
 	//

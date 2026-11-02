@@ -16,6 +16,7 @@ import (
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/creds"
+	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/gc"
@@ -49,6 +50,7 @@ func (cmd *RunCommand) backendComponents(
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
+	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 
@@ -164,7 +166,22 @@ func (cmd *RunCommand) backendComponents(
 				),
 			),
 		},
+		{
+			Component: atc.Component{
+				Name: atc.ComponentSigningKeyLifecycler,
+			},
+			Runnable: &idtoken.SigningKeyLifecycler{
+				Logger:              logger.Session(atc.ComponentSigningKeyLifecycler),
+				DBSigningKeyFactory: dbSigningKeyFactory,
+				KeyRotationPeriod:   cmd.SigningKey.RotationPeriod,
+				KeyGracePeriod:      cmd.SigningKey.GracePeriod,
+			},
+		},
 	}
+
+	idtoken.UpdateGlobalManagerFactory(func(f *idtoken.ManagerFactory) {
+		f.SetSigningKeyFactory(dbSigningKeyFactory)
+	})
 
 	k8sComponents, err := cmd.jetbridgeComponents(logger, dbConn, dbWorkerFactory, dbBuildFactory)
 	if err != nil {

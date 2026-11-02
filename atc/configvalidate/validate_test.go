@@ -343,7 +343,7 @@ var _ = Describe("ValidateConfig", func() {
 		DescribeTable("rejects retired credential managers", func(sourceType string) {
 			config.VarSources = atc.VarSourceConfigs{{Name: "retired", Type: sourceType, Config: map[string]any{}}}
 			_, errors := configvalidate.Validate(config)
-			Expect(errors).To(ContainElement(ContainSubstring("unsupported credential manager type: " + sourceType + " (pipeline var_sources support only dummy)")))
+			Expect(errors).To(ContainElement(ContainSubstring("unsupported credential manager type: " + sourceType + " (pipeline var_sources support only dummy and idtoken)")))
 		},
 			Entry("Vault", "vault"),
 			Entry("CredHub", "credhub"),
