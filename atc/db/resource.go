@@ -288,7 +288,7 @@ func (r *resource) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.Image
 		Resource: r.name,
 	})
 
-	plan.Check.TypeImage = imagePlanner.ImageForType(plan.ID, r.type_, r.config.Tags)
+	plan.Check.TypeImage = imagePlanner.ImageForType(plan.ID, r.type_, r.config.Tags, skipInterval && skipIntervalRecursively)
 	return plan
 }
 

@@ -57,6 +57,8 @@ func init() {
 	RegisterEvent(SelectedWorker{})
 	RegisterEvent(Log{})
 	RegisterEvent(Error{})
+	RegisterEvent(ImageCheck{})
+	RegisterEvent(ImageGet{})
 	RegisterEvent(AcrossSubsteps{})
 	RegisterEvent(Sidecar{})
 }

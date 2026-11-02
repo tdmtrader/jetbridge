@@ -150,7 +150,7 @@ var _ = Describe("PipelineRun", func() {
 				Name: "runtime-resource", Type: "some-base-resource-type", Source: atc.Source{"source": "runtime"},
 			}},
 			ResourceTypes: atc.ResourceTypes{{
-				Name: "runtime-type", Type: "registry-image", Source: atc.Source{"repository": "runtime"},
+				Name: "runtime-type", Type: "some-base-resource-type", Source: atc.Source{"source": "runtime"},
 			}},
 		}
 

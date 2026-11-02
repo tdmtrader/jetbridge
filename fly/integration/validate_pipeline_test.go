@@ -40,41 +40,6 @@ var _ = Describe("validate-pipeline", func() {
 		Expect(sess.Out).NotTo(gbytes.Say("looks good"))
 	})
 
-	It("refuses a resource type whose image is not a registry-image reference", func() {
-		config := filepath.Join(GinkgoT().TempDir(), "pipeline.yml")
-		Expect(os.WriteFile(config, []byte(`resource_types:
-- name: git-backed
-  type: git
-  source: {uri: https://example.com/repo}
-jobs:
-- name: entry
-  plan: []
-`), 0600)).To(Succeed())
-		sess, err := gexec.Start(exec.Command(flyPath, "validate-pipeline", "-c", config), GinkgoWriter, GinkgoWriter)
-		Expect(err).NotTo(HaveOccurred())
-		Eventually(sess).Should(gexec.Exit(1))
-		Expect(sess.Err).To(gbytes.Say("resource_types.git-backed: an image declared with type 'git' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'"))
-		Expect(sess.Out).NotTo(gbytes.Say("looks good"))
-	})
-
-	It("refuses an inline task whose image_resource is not a registry-image reference", func() {
-		config := filepath.Join(GinkgoT().TempDir(), "pipeline.yml")
-		Expect(os.WriteFile(config, []byte(`jobs:
-- name: entry
-  plan:
-  - task: build
-    config:
-      platform: linux
-      image_resource: {type: docker-image, source: {repository: busybox}}
-      run: {path: "true"}
-`), 0600)).To(Succeed())
-		sess, err := gexec.Start(exec.Command(flyPath, "validate-pipeline", "-c", config), GinkgoWriter, GinkgoWriter)
-		Expect(err).NotTo(HaveOccurred())
-		Eventually(sess).Should(gexec.Exit(1))
-		Expect(sess.Err).To(gbytes.Say("image_resource: an image declared with type 'docker-image' is not registry-image"))
-		Expect(sess.Out).NotTo(gbytes.Say("looks good"))
-	})
-
 	It("returns valid on valid configuration", func() {
 		flyCmd := exec.Command(
 			flyPath,

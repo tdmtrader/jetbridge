@@ -21,7 +21,7 @@ type BuildStepDelegateFactory interface {
 type BuildStepDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 
-	FetchImage(context.Context, atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
+	FetchImage(context.Context, atc.Plan, *atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
 	PinnedImage(context.Context, string, bool) (runtime.ImageSpec, db.ResourceCache, error)
 
 	Stdout() io.Writer

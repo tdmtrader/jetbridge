@@ -252,7 +252,7 @@ func FetchInputsFromJob(fact atc.PlanFactory, team concourse.Team, inputsFrom fl
 			Params:  buildInput.Params,
 			Tags:    buildInput.Tags,
 		})
-		plan.Get.TypeImage = resourceTypes.ImageForType(plan.ID, buildInput.Type, buildInput.Tags)
+		plan.Get.TypeImage = resourceTypes.ImageForType(plan.ID, buildInput.Type, buildInput.Tags, false)
 		kvMap[buildInput.Name] = Input{
 			Name: buildInput.Name,
 

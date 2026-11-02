@@ -101,6 +101,7 @@ type DomID
     | StepTab String Int
     | StepHeader String
     | StepSubHeader String Int
+    | StepInitialization String
     | StepVersion String
     | ShowSearchButton
     | ClearSearchButton

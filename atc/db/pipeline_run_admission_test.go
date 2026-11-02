@@ -311,7 +311,7 @@ var _ = Describe("template checking and scheduling", func() {
 				Name: "source", Type: "custom", Source: atc.Source{"repository": "example"},
 			}},
 			ResourceTypes: atc.ResourceTypes{{
-				Name: "custom", Type: "registry-image", Source: atc.Source{"repository": "type"},
+				Name: "custom", Type: "some-base-resource-type", Source: atc.Source{"repository": "type"},
 			}},
 			Jobs: atc.JobConfigs{{
 				Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source", Trigger: true}}},

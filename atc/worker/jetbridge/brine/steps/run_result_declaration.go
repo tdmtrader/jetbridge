@@ -117,7 +117,7 @@ func RunResultDeclarationDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return err
 			}
-			plan, err := builds.NewPlanner(atc.NewPlanFactory(0)).Create(materialized.Config.Jobs[0].StepConfig(), nil, nil, nil)
+			plan, err := builds.NewPlanner(atc.NewPlanFactory(0)).Create(materialized.Config.Jobs[0].StepConfig(), nil, nil, nil, true)
 			if err != nil {
 				return err
 			}

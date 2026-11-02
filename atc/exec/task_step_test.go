@@ -41,9 +41,11 @@ type recordingTaskDelegate struct {
 }
 
 type taskImageFetch struct {
-	resource   atc.ImageResource
-	privileged bool
-	tags       atc.Tags
+	resource     atc.ImageResource
+	types        atc.ResourceTypes
+	privileged   bool
+	tags         atc.Tags
+	skipInterval bool
 }
 
 func (delegate *recordingTaskDelegate) Initializing(logger lager.Logger) {
@@ -64,15 +66,19 @@ func (delegate *recordingTaskDelegate) SetTaskConfig(config atc.TaskConfig) {
 func (delegate *recordingTaskDelegate) FetchImage(
 	ctx context.Context,
 	image atc.ImageResource,
+	types atc.ResourceTypes,
 	privileged bool,
 	tags atc.Tags,
+	skipInterval bool,
 ) (runtime.ImageSpec, error) {
 	delegate.imageFetches = append(delegate.imageFetches, taskImageFetch{
-		resource:   image,
-		privileged: privileged,
-		tags:       tags,
+		resource:     image,
+		types:        types,
+		privileged:   privileged,
+		tags:         tags,
+		skipInterval: skipInterval,
 	})
-	return delegate.TaskDelegate.FetchImage(ctx, image, privileged, tags)
+	return delegate.TaskDelegate.FetchImage(ctx, image, types, privileged, tags, skipInterval)
 }
 
 func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.FinishTask {
@@ -100,7 +106,8 @@ var _ = Describe("TaskStep", func() {
 		delegate        *recordingTaskDelegate
 		delegateFactory exec.TaskDelegateFactory
 
-		stepper exec.Stepper
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
 
 		taskPlan *atc.TaskPlan
 
@@ -161,7 +168,6 @@ var _ = Describe("TaskStep", func() {
 					clock.NewClock(),
 					fixture.WorkerFactory,
 					fixture.LockFactory,
-					engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
 				),
 			}
 			return delegate
@@ -169,6 +175,7 @@ var _ = Describe("TaskStep", func() {
 
 		taskStepOptions = nil
 
+		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
 
 		state = exec.NewRunState(func(plan atc.Plan) exec.Step {
@@ -1063,8 +1070,8 @@ var _ = Describe("TaskStep", func() {
 						Context("when the task config also specifies image_resource", func() {
 							BeforeEach(func() {
 								taskPlan.Config.ImageResource = &atc.ImageResource{
-									Type:    "registry-image",
-									Source:  atc.Source{"repository": "registry.example/task"},
+									Type:    "docker",
+									Source:  atc.Source{"some": "super-secret-source"},
 									Params:  atc.Params{"some": "params"},
 									Version: atc.Version{"some": "version"},
 								}
@@ -1148,27 +1155,20 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Context("when the image_resource is specified (even if rootfs_uri is configured)", func() {
-			// The image_resource is a registry-image reference the delegate
-			// resolves natively from the reference's scope; no check or get
-			// runs for it and no event is emitted for it.
+			var fetchedImageArtifact *runtimetest.Volume
+
 			BeforeEach(func() {
 				taskPlan.Config.RootfsURI = "some-image"
 				taskPlan.Config.ImageResource = &atc.ImageResource{
-					Type:   "registry-image",
-					Source: atc.Source{"repository": "registry.example/task", "tag": "((source-param))"},
-					Params: atc.Params{"format": "oci"},
+					Type:   "docker",
+					Source: atc.Source{"some": "super-secret-source"},
+					Params: atc.Params{"some": "params"},
 				}
 				taskPlan.Tags = atc.Tags{"some", "tags"}
 
-				imageConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
-					"registry-image",
-					atc.Source{"repository": "registry.example/task", "tag": "super-secret-source"},
-					nil,
-				)
-				Expect(err).NotTo(HaveOccurred())
-				imageScope, err := imageConfig.FindOrCreateScope(nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(imageScope.SaveVersions(db.SpanContext{}, []atc.Version{{"digest": "sha256:task"}})).To(Succeed())
+				fetchedImageArtifact = runtimetest.NewVolume("some-volume")
+				imageStepper.artifact = fetchedImageArtifact
+				stepper = imageStepper.step
 			})
 
 			It("succeeds", func() {
@@ -1179,20 +1179,22 @@ var _ = Describe("TaskStep", func() {
 			It("fetches the image", func() {
 				Expect(delegate.imageFetches).To(Equal([]taskImageFetch{{
 					resource: atc.ImageResource{
-						Type:   "registry-image",
-						Source: atc.Source{"repository": "registry.example/task", "tag": "super-secret-source"},
-						Params: atc.Params{"format": "oci"},
+						Type:   "docker",
+						Source: atc.Source{"some": "super-secret-source"},
+						Params: atc.Params{"some": "params"},
 					},
-					privileged: false,
-					tags:       atc.Tags{"some", "tags"},
+					types:        taskPlan.ResourceTypes,
+					privileged:   false,
+					tags:         atc.Tags{"some", "tags"},
+					skipInterval: false,
 				}}))
-				Expect(execBuildEventTypes(fixture, dbBuild)).NotTo(ContainElement(atc.EventType("image-get")))
-				Expect(execBuildEventTypes(fixture, dbBuild)).NotTo(ContainElement(atc.EventType("image-check")))
+				Expect(execBuildEventTypes(fixture, dbBuild)).To(ContainElement(event.EventTypeImageGet))
 			})
 
-			It("creates the specs with the resolved image reference", func() {
+			It("creates the specs with the fetched image", func() {
 				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
-					ImageURL: "docker:///registry.example/task@sha256:task",
+					ImageArtifact: fetchedImageArtifact,
+					ResourceType:  "image",
 				}))
 			})
 
@@ -1208,14 +1210,14 @@ var _ = Describe("TaskStep", func() {
 				})
 			})
 
-			Context("when the image_resource is not a registry-image reference", func() {
+			Context("when check skip interval is true", func() {
 				BeforeEach(func() {
-					taskPlan.Config.ImageResource.Type = "docker-image"
+					taskPlan.CheckSkipInterval = true
 				})
 
-				It("refuses it by name", func() {
-					Expect(stepErr).To(MatchError(ContainSubstring("an image declared with type 'docker-image' is not registry-image")))
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+				It("fetches an image with forced check", func() {
+					Expect(delegate.imageFetches).To(HaveLen(1))
+					Expect(delegate.imageFetches[0].skipInterval).To(BeTrue())
 				})
 			})
 		})

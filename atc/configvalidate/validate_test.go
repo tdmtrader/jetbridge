@@ -50,9 +50,9 @@ var _ = Describe("ValidateConfig", func() {
 			ResourceTypes: atc.ResourceTypes{
 				{
 					Name: "some-resource-type",
-					Type: "registry-image",
+					Type: "some-type",
 					Source: atc.Source{
-						"repository": "registry.example/some-resource-type",
+						"source-config": "some-value",
 					},
 				},
 			},
@@ -853,31 +853,20 @@ var _ = Describe("ValidateConfig", func() {
 			})
 		})
 
-		Context("when a resource type's type is not registry-image", func() {
+		Context("when two resource types name each other as their type", func() {
 			BeforeEach(func() {
 				config.ResourceTypes = append(config.ResourceTypes,
-					atc.ResourceType{Name: "git-backed", Type: "git", Source: atc.Source{"uri": "https://example.com/repo"}},
-					atc.ResourceType{Name: "chained", Type: "some-resource-type", Source: atc.Source{"some": "source"}},
+					atc.ResourceType{Name: "type-a", Type: "type-b"},
+					atc.ResourceType{Name: "type-b", Type: "type-a"},
+					atc.ResourceType{Name: "type-c", Type: "type-a"},
 				)
 			})
 
-			It("refuses each by name: an image is a registry-image reference, never another type", func() {
+			It("returns one error naming the cycle", func() {
 				Expect(errorMessages).To(HaveLen(1))
 				Expect(errorMessages[0]).To(ContainSubstring("invalid resource types:"))
-				Expect(errorMessages[0]).To(ContainSubstring("resource_types.git-backed: an image declared with type 'git' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'"))
-				Expect(errorMessages[0]).To(ContainSubstring("resource_types.chained: an image declared with type 'some-resource-type' is not registry-image"))
-			})
-		})
-
-		Context("when a resource type is declared with a direct image", func() {
-			BeforeEach(func() {
-				config.ResourceTypes = append(config.ResourceTypes,
-					atc.ResourceType{Name: "pinned", Image: "registry.example/pinned@sha256:abc"},
-				)
-			})
-
-			It("does not return an error", func() {
-				Expect(errorMessages).To(HaveLen(0))
+				Expect(errorMessages[0]).To(ContainSubstring("resource_types.type-a is in a cycle of resource types: type-a -> type-b -> type-a"))
+				Expect(errorMessages[0]).ToNot(ContainSubstring("type-c"))
 			})
 		})
 
@@ -1078,50 +1067,6 @@ var _ = Describe("ValidateConfig", func() {
 					Expect(errorMessages).To(HaveLen(1))
 					Expect(errorMessages[0]).To(ContainSubstring("invalid jobs:"))
 					Expect(errorMessages[0]).To(ContainSubstring("jobs.some-other-job.plan.do[0].task(some-resource).config: missing 'platform'"))
-				})
-			})
-
-			Context("when a task's inline config names an image_resource that is not registry-image", func() {
-				BeforeEach(func() {
-					job.PlanSequence = append(job.PlanSequence, atc.Step{
-						Config: &atc.TaskStep{
-							Name: "build",
-							Config: &atc.TaskConfig{
-								Platform:      "linux",
-								ImageResource: &atc.ImageResource{Type: "docker-image", Source: atc.Source{"repository": "busybox"}},
-								Run:           atc.TaskRunConfig{Path: "true"},
-							},
-						},
-					})
-
-					config.Jobs = append(config.Jobs, job)
-				})
-
-				It("refuses it by name", func() {
-					Expect(errorMessages).To(HaveLen(1))
-					Expect(errorMessages[0]).To(ContainSubstring("invalid jobs:"))
-					Expect(errorMessages[0]).To(ContainSubstring("jobs.some-other-job.plan.do[0].task(build).config: image_resource: an image declared with type 'docker-image' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'"))
-				})
-			})
-
-			Context("when a task's inline config names a registry-image image_resource", func() {
-				BeforeEach(func() {
-					job.PlanSequence = append(job.PlanSequence, atc.Step{
-						Config: &atc.TaskStep{
-							Name: "build",
-							Config: &atc.TaskConfig{
-								Platform:      "linux",
-								ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": "busybox"}},
-								Run:           atc.TaskRunConfig{Path: "true"},
-							},
-						},
-					})
-
-					config.Jobs = append(config.Jobs, job)
-				})
-
-				It("does not return an error", func() {
-					Expect(errorMessages).To(HaveLen(0))
 				})
 			})
 
@@ -2891,46 +2836,5 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 	It("keeps pinned versions and interpolated identities valid under normal config validation", func() {
 		_, errorMessages := configvalidate.Validate(dynamicTemplateConfig())
 		Expect(errorMessages).To(BeEmpty())
-	})
-})
-
-var _ = Describe("ValidateImageTypes", func() {
-	// fly's set-pipeline runs this rule alone before printing a diff; it must
-	// refuse exactly what Validate refuses on save, by the same sentence.
-	It("accepts a config whose images are all registry-image references or direct images", func() {
-		Expect(configvalidate.ValidateImageTypes(atc.Config{
-			ResourceTypes: atc.ResourceTypes{
-				{Name: "ref", Type: "registry-image", Source: atc.Source{"repository": "registry.example/ref"}},
-				{Name: "pinned", Image: "registry.example/pinned@sha256:abc"},
-			},
-			Jobs: atc.JobConfigs{{Name: "job", PlanSequence: []atc.Step{{Config: &atc.TaskStep{
-				Name: "build",
-				Config: &atc.TaskConfig{
-					Platform:      "linux",
-					ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": "busybox"}},
-				},
-			}}}}},
-		})).To(Succeed())
-	})
-
-	It("names every resource type and inline image_resource whose type is not registry-image", func() {
-		err := configvalidate.ValidateImageTypes(atc.Config{
-			ResourceTypes: atc.ResourceTypes{
-				{Name: "git-backed", Type: "git", Source: atc.Source{"uri": "https://example.com/repo"}},
-			},
-			Jobs: atc.JobConfigs{{Name: "job", PlanSequence: []atc.Step{
-				{Config: &atc.TaskStep{Name: "file-task", ConfigPath: "task.yml"}},
-				{Config: &atc.TaskStep{
-					Name: "build",
-					Config: &atc.TaskConfig{
-						Platform:      "linux",
-						ImageResource: &atc.ImageResource{Type: "docker-image", Source: atc.Source{"repository": "busybox"}},
-					},
-				}},
-			}}},
-		})
-		Expect(err).To(MatchError("invalid image types:\n" +
-			"resource_types.git-backed: an image declared with type 'git' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'\n" +
-			"jobs.job.task(build).config.image_resource: an image declared with type 'docker-image' is not registry-image: an image is a registry-image reference, declared as 'type: registry-image' with a source, or for a resource type a direct 'image:'"))
 	})
 })

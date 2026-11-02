@@ -36,7 +36,7 @@ type GetDelegateFactory interface {
 type GetDelegate interface {
 	StartSpan(context.Context, string, tracing.Attrs) (context.Context, trace.Span)
 
-	FetchImage(context.Context, atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
+	FetchImage(context.Context, atc.Plan, *atc.Plan, bool) (runtime.ImageSpec, db.ResourceCache, error)
 	PinnedImage(context.Context, string, bool) (runtime.ImageSpec, db.ResourceCache, error)
 
 	Stdout() io.Writer
@@ -146,7 +146,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		}
 	} else if step.plan.TypeImage.GetPlan != nil {
 		var err error
-		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.Privileged)
+		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.CheckPlan, step.plan.TypeImage.Privileged)
 		if err != nil {
 			return false, err
 		}
@@ -168,8 +168,9 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 			Metadata: nil,
 		}
 
-		// Create the ResourceCache even though we skip the physical get, so
-		// the step still has a result to report.
+		// Create the ResourceCache even though we skip the physical get.
+		// Callers like check_step.FetchImage need the cache to build the
+		// resource config chain for custom resource types.
 		resourceCache, err := step.resourceCacheFactory.FindOrCreateResourceCache(
 			delegate.ResourceCacheUser(),
 			step.plan.Type,

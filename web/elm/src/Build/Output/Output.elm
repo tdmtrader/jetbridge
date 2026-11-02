@@ -270,6 +270,16 @@ handleEvent event ( model, effects ) =
             in
             ( { model | steps = newSt }, effects )
 
+        ImageCheck { id } plan ->
+            ( { model | steps = Maybe.map (Build.StepTree.StepTree.setImageCheck model.buildId id plan) model.steps }
+            , effects
+            )
+
+        ImageGet { id } plan ->
+            ( { model | steps = Maybe.map (Build.StepTree.StepTree.setImageGet model.buildId id plan) model.steps }
+            , effects
+            )
+
         SidecarPlan { id } plan ->
             ( { model | steps = Maybe.map (Build.StepTree.StepTree.setSidecar model.buildId id plan) model.steps }
             , effects
@@ -284,9 +294,6 @@ handleEvent event ( model, effects ) =
             ( { model | state = StepsComplete, eventStreamUrlPath = Nothing }
             , effects
             )
-
-        UnknownEvent _ ->
-            ( model, effects )
 
         NetworkError ->
             ( model, effects )

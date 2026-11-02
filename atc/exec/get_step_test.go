@@ -148,7 +148,8 @@ var _ = Describe("GetStep", func() {
 
 		lockFactory *recordingLockFactory
 
-		stepper exec.Stepper
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
 
 		getPlan *atc.GetPlan
 
@@ -200,42 +201,17 @@ var _ = Describe("GetStep", func() {
 		expectedOwner = db.NewBuildStepContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID)
 
 		resourceCacheFactory = fixture.ResourceCacheFactory
-		// loadOwnedCache is the get's own resource cache. A custom type's
-		// image is a second cache the build uses (FetchImage creates it under
-		// the build); the get's cache is the one created under it.
 		loadOwnedCache = func() db.ResourceCache {
-			rows, err := fixture.Conn.Query(
+			var resourceCacheID int
+			err := fixture.Conn.QueryRow(
 				"SELECT resource_cache_id FROM resource_cache_uses WHERE build_id = $1",
 				realBuild.ID(),
-			)
+			).Scan(&resourceCacheID)
 			Expect(err).NotTo(HaveOccurred())
-
-			var ids []int
-			for rows.Next() {
-				var resourceCacheID int
-				Expect(rows.Scan(&resourceCacheID)).To(Succeed())
-				ids = append(ids, resourceCacheID)
-			}
-			Expect(rows.Close()).To(Succeed())
-			Expect(ids).NotTo(BeEmpty())
-
-			var caches []db.ResourceCache
-			for _, id := range ids {
-				cache, found, err := fixture.ResourceCacheFactory.FindResourceCacheByID(id)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				caches = append(caches, cache)
-			}
-			if len(caches) == 1 {
-				return caches[0]
-			}
-			for _, cache := range caches {
-				if cache.ResourceConfig().CreatedByResourceCache() != nil {
-					return cache
-				}
-			}
-			Fail("no resource cache created under an image cache")
-			return nil
+			cache, found, err := fixture.ResourceCacheFactory.FindResourceCacheByID(resourceCacheID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			return cache
 		}
 
 		chosenWorker = runtimetest.NewWorker("worker").
@@ -265,6 +241,7 @@ var _ = Describe("GetStep", func() {
 
 		lockFactory = &recordingLockFactory{LockFactory: fixture.LockFactory}
 
+		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
 
 		runState = exec.NewRunState(func(plan atc.Plan) exec.Step {
@@ -718,45 +695,63 @@ var _ = Describe("GetStep", func() {
 	})
 
 	Context("when using a custom resource type", func() {
-		// The type's image is a registry-image reference the delegate resolves
-		// natively from the reference's scope; no check or get runs for it.
+		var (
+			fetchedImageArtifact *runtimetest.Volume
+			imageResourceCache   db.ResourceCache
+		)
+
 		BeforeEach(func() {
-			getPlan.Type = "some-custom-type"
-			getPlan.TypeImage = atc.TypeImage{
-				BaseType: "registry-image",
-				GetPlan: &atc.Plan{
-					ID: "1/image-get",
-					Get: &atc.GetPlan{
-						Name:      "some-custom-type",
-						Type:      "registry-image",
-						Source:    atc.Source{"repository": "registry.example/custom", "tag": "((source-var))"},
-						Params:    atc.Params{"format": "((params-var))"},
-						TypeImage: atc.TypeImage{BaseType: "registry-image"},
-					},
+			getPlan.TypeImage.GetPlan = &atc.Plan{
+				ID: "1/image-get",
+				Get: &atc.GetPlan{
+					Name:   "some-custom-type",
+					Type:   "another-custom-type",
+					Source: atc.Source{"some-custom": "((source-var))"},
+					Params: atc.Params{"some-custom": "((params-var))"},
 				},
 			}
 
-			delegateOpts = []engine.DelegateOption{
-				engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
+			getPlan.TypeImage.CheckPlan = &atc.Plan{
+				ID: "1/image-check",
+				Check: &atc.CheckPlan{
+					Name:   "some-custom-type",
+					Type:   "another-custom-type",
+					Source: atc.Source{"some-custom": "((source-var))"},
+				},
 			}
 
-			imageConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
-				"registry-image",
-				atc.Source{"repository": "registry.example/custom", "tag": "super-secret-source"},
+			getPlan.Type = "some-custom-type"
+			getPlan.TypeImage.BaseType = "registry-image"
+
+			fetchedImageArtifact = runtimetest.NewVolume("some-volume")
+
+			var err error
+			imageResourceCache, err = fixture.ResourceCacheFactory.FindOrCreateResourceCache(
+				db.ForInMemoryBuild(123, time.Unix(1, 0)),
+				"another-custom-type",
+				atc.Version{"some": "image-version"},
+				atc.Source{"some-custom": "super-secret-source"},
+				atc.Params{"some-custom": "super-secret-params"},
 				nil,
 			)
 			Expect(err).NotTo(HaveOccurred())
-			imageScope, err := imageConfig.FindOrCreateScope(nil)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(imageScope.SaveVersions(db.SpanContext{}, []atc.Version{{"digest": "sha256:custom"}})).To(Succeed())
+
+			imageStepper.artifact = fetchedImageArtifact
+			imageStepper.cache = imageResourceCache
+			stepper = imageStepper.step
 		})
 
-		It("creates the resource cache under the image's resource cache", func() {
+		It("uses the same imageResourceCache to create the resourceCache", func() {
 			cache := loadOwnedCache()
-			imageCache := cache.ResourceConfig().CreatedByResourceCache()
-			Expect(imageCache).NotTo(BeNil())
-			Expect(imageCache.Version()).To(Equal(atc.Version{"digest": "sha256:custom"}))
-			Expect(imageCache.BaseResourceType().Name).To(Equal("registry-image"))
+			Expect(cache.ResourceConfig().CreatedByResourceCache().ID()).To(Equal(imageResourceCache.ID()))
+		})
+
+		It("fetches the resource type image and uses it for the container", func() {
+			Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
+				*getPlan.TypeImage.CheckPlan,
+				*getPlan.TypeImage.GetPlan,
+			}))
+			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
 		It("sets the worker spec with teamID", func() {
@@ -770,9 +765,10 @@ var _ = Describe("GetStep", func() {
 			))
 		})
 
-		It("runs in the resolved image reference", func() {
+		It("runs with the correct ImageSpec", func() {
 			Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
-				ImageURL: "docker:///registry.example/custom@sha256:custom",
+				ImageArtifact: fetchedImageArtifact,
+				ResourceType:  "some-custom-type",
 			}))
 		})
 
@@ -783,17 +779,6 @@ var _ = Describe("GetStep", func() {
 
 			It("fetches the image with privileged", func() {
 				Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
-			})
-		})
-
-		Context("when the type's image is not a registry-image reference", func() {
-			BeforeEach(func() {
-				getPlan.TypeImage.GetPlan.Get.Type = "git"
-			})
-
-			It("refuses it by name before selecting a worker", func() {
-				Expect(stepErr).To(MatchError(atc.UnsupportedImageTypeError{Type: "git"}))
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 			})
 		})
 	})

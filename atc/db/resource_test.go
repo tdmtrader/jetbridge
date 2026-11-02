@@ -1463,33 +1463,8 @@ var _ = Describe("Resource", func() {
 			skipInterval, skipIntervalRecursively bool
 		)
 
-		// A custom type's image is a registry-image reference the delegate
-		// resolves natively; the check build plans no check or get for it.
-		customType := atc.ResourceType{
-			Name:   "some-resource-type",
-			Type:   "registry-image",
-			Source: atc.Source{"repository": "registry.example/some-resource-type"},
-		}
-		privilegedType := customType
-		privilegedType.Privileged = true
-
-		imagePlanOf := func(planID atc.PlanID, tags atc.Tags) *atc.Plan {
-			return &atc.Plan{
-				ID: planID + "/image-get",
-				Get: &atc.GetPlan{
-					Name:      "some-resource-type",
-					Type:      "registry-image",
-					Source:    atc.Source{"repository": "registry.example/some-resource-type"},
-					TypeImage: atc.TypeImage{BaseType: "registry-image"},
-					Tags:      tags,
-				},
-			}
-		}
-
 		BeforeEach(func() {
 			atc.DefaultCheckInterval = time.Minute
-			skipInterval = false
-			skipIntervalRecursively = false
 		})
 
 		AfterEach(func() {
@@ -1570,15 +1545,26 @@ var _ = Describe("Resource", func() {
 								"some": "source",
 							},
 						}},
-						ResourceTypes: atc.ResourceTypes{customType},
+						ResourceTypes: atc.ResourceTypes{{
+							Name:   "some-resource-type",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "type-source"},
+						}},
 					},
 					"some-custom-resource",
 					nil,
-					atc.ResourceTypes{customType},
+					atc.ResourceTypes{
+						{
+							Name:   "some-resource-type",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "type-source"},
+						},
+					},
 				)
 			})
 
-			It("names the type's image as a registry-image reference and plans no check for it", func() {
+			It("produces a check plan with nested image steps", func() {
+				checkPlanID := atc.PlanID("1/image-check")
 				expectedPlan := atc.Plan{
 					ID: atc.PlanID("1"),
 					Check: &atc.CheckPlan{
@@ -1590,8 +1576,128 @@ var _ = Describe("Resource", func() {
 						Tags:    resource.Tags(),
 						Timeout: resource.CheckTimeout(),
 						TypeImage: atc.TypeImage{
-							BaseType: "registry-image",
-							GetPlan:  imagePlanOf("1", resource.Tags()),
+							BaseType: "some-base-resource-type",
+							CheckPlan: &atc.Plan{
+								ID: checkPlanID,
+								Check: &atc.CheckPlan{
+									Name:         "some-resource-type",
+									ResourceType: "some-resource-type",
+									Type:         "some-base-resource-type",
+									Interval: atc.CheckEvery{
+										Interval: 1 * time.Minute,
+									},
+									Source: atc.Source{"some": "type-source"},
+									TypeImage: atc.TypeImage{
+										BaseType: "some-base-resource-type",
+									},
+									Tags: resource.Tags(),
+								},
+							},
+							GetPlan: &atc.Plan{
+								ID: atc.PlanID("1/image-get"),
+								Get: &atc.GetPlan{
+									Name:   "some-resource-type",
+									Type:   "some-base-resource-type",
+									Source: atc.Source{"some": "type-source"},
+									TypeImage: atc.TypeImage{
+										BaseType: "some-base-resource-type",
+									},
+									Tags:        resource.Tags(),
+									VersionFrom: &checkPlanID,
+								},
+							},
+						},
+						FromVersion: version,
+						Resource:    resource.Name(),
+						Interval: atc.CheckEvery{
+							Interval: 1 * time.Hour,
+						},
+					},
+				}
+				Expect(createdCheckPlan).To(Equal(expectedPlan))
+			})
+		})
+
+		Context("when there is a resource using a custom type with configured check every", func() {
+			BeforeEach(func() {
+				setupCheckPlan("pipeline-with-resource-custom-type",
+					atc.Config{
+						Resources: atc.ResourceConfigs{{
+							Name: "some-custom-resource",
+							Type: "some-resource-type",
+							Tags: []string{"tag"},
+							Source: atc.Source{
+								"some": "source",
+							},
+						}},
+						ResourceTypes: atc.ResourceTypes{{
+							Name:   "some-resource-type",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "type-source"},
+							CheckEvery: &atc.CheckEvery{
+								Never:    false,
+								Interval: 2 * time.Minute,
+							},
+						}},
+					},
+					"some-custom-resource",
+					nil,
+					atc.ResourceTypes{
+						{
+							Name:   "some-resource-type",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "type-source"},
+							CheckEvery: &atc.CheckEvery{
+								Never:    false,
+								Interval: 2 * time.Minute,
+							},
+						},
+					},
+				)
+			})
+
+			It("produces a check plan with interval set as check every for image check", func() {
+				checkPlanID := atc.PlanID("1/image-check")
+				expectedPlan := atc.Plan{
+					ID: atc.PlanID("1"),
+					Check: &atc.CheckPlan{
+						Name: resource.Name(),
+						Type: resource.Type(),
+						Source: atc.Source{
+							"some": "source",
+						},
+						Tags: resource.Tags(),
+						TypeImage: atc.TypeImage{
+							BaseType: "some-base-resource-type",
+							CheckPlan: &atc.Plan{
+								ID: checkPlanID,
+								Check: &atc.CheckPlan{
+									Name:         "some-resource-type",
+									ResourceType: "some-resource-type",
+									Type:         "some-base-resource-type",
+									Interval: atc.CheckEvery{
+										Interval: 2 * time.Minute,
+									},
+									Source: atc.Source{"some": "type-source"},
+									TypeImage: atc.TypeImage{
+										BaseType: "some-base-resource-type",
+									},
+									Tags: resource.Tags(),
+								},
+							},
+							GetPlan: &atc.Plan{
+								ID: atc.PlanID("1/image-get"),
+								Get: &atc.GetPlan{
+									Name:   "some-resource-type",
+									Type:   "some-base-resource-type",
+									Source: atc.Source{"some": "type-source"},
+									TypeImage: atc.TypeImage{
+										BaseType: "some-base-resource-type",
+									},
+									Tags:        resource.Tags(),
+									VersionFrom: &checkPlanID,
+								},
+							},
 						},
 						FromVersion: version,
 						Resource:    resource.Name(),
@@ -1616,15 +1722,28 @@ var _ = Describe("Resource", func() {
 								"some": "source",
 							},
 						}},
-						ResourceTypes: atc.ResourceTypes{privilegedType},
+						ResourceTypes: atc.ResourceTypes{{
+							Name:       "some-resource-type",
+							Type:       "some-base-resource-type",
+							Source:     atc.Source{"some": "type-source"},
+							Privileged: true,
+						}},
 					},
 					"some-custom-resource",
 					nil,
-					atc.ResourceTypes{privilegedType},
+					atc.ResourceTypes{
+						{
+							Name:       "some-resource-type",
+							Type:       "some-base-resource-type",
+							Source:     atc.Source{"some": "type-source"},
+							Privileged: true,
+						},
+					},
 				)
 			})
 
 			It("produces a check plan with privileged", func() {
+				checkPlanID := atc.PlanID("1/image-check")
 				expectedPlan := atc.Plan{
 					ID: atc.PlanID("1"),
 					Check: &atc.CheckPlan{
@@ -1634,9 +1753,35 @@ var _ = Describe("Resource", func() {
 							"some": "source",
 						},
 						TypeImage: atc.TypeImage{
-							BaseType:   "registry-image",
+							BaseType:   "some-base-resource-type",
 							Privileged: true,
-							GetPlan:    imagePlanOf("1", nil),
+							CheckPlan: &atc.Plan{
+								ID: checkPlanID,
+								Check: &atc.CheckPlan{
+									Name:         "some-resource-type",
+									ResourceType: "some-resource-type",
+									Type:         "some-base-resource-type",
+									Interval: atc.CheckEvery{
+										Interval: 1 * time.Minute,
+									},
+									Source: atc.Source{"some": "type-source"},
+									TypeImage: atc.TypeImage{
+										BaseType: "some-base-resource-type",
+									},
+								},
+							},
+							GetPlan: &atc.Plan{
+								ID: atc.PlanID("1/image-get"),
+								Get: &atc.GetPlan{
+									Name:   "some-resource-type",
+									Type:   "some-base-resource-type",
+									Source: atc.Source{"some": "type-source"},
+									TypeImage: atc.TypeImage{
+										BaseType: "some-base-resource-type",
+									},
+									VersionFrom: &checkPlanID,
+								},
+							},
 						},
 						FromVersion: version,
 						Resource:    resource.Name(),
@@ -1650,8 +1795,7 @@ var _ = Describe("Resource", func() {
 		})
 
 		Context("when skipping the interval", func() {
-			BeforeEach(func() {
-				skipInterval = true
+			JustBeforeEach(func() {
 				setupCheckPlan(
 					"pipeline-with-resource-custom-type",
 					atc.Config{
@@ -1662,36 +1806,141 @@ var _ = Describe("Resource", func() {
 								"some": "source",
 							},
 						}},
-						ResourceTypes: atc.ResourceTypes{customType},
+						ResourceTypes: atc.ResourceTypes{{
+							Name:   "some-resource-type",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "type-source"},
+						}},
 					},
 					"some-custom-resource",
 					nil,
-					atc.ResourceTypes{customType},
+					atc.ResourceTypes{
+						{
+							Name:   "some-resource-type",
+							Type:   "some-base-resource-type",
+							Source: atc.Source{"some": "type-source"},
+						},
+					},
 				)
 			})
 
-			It("skips the interval for the check; the type's image has no interval to skip", func() {
-				expectedPlan := atc.Plan{
-					ID: atc.PlanID("1"),
-					Check: &atc.CheckPlan{
-						Name: resource.Name(),
-						Type: resource.Type(),
-						Source: atc.Source{
-							"some": "source",
+			Context("when not skipping the interval recursively", func() {
+				BeforeEach(func() {
+					skipInterval = true
+					skipIntervalRecursively = false
+				})
+
+				It("skips the interval for the resource check, but not for the resource type", func() {
+					checkPlanID := atc.PlanID("1/image-check")
+					expectedPlan := atc.Plan{
+						ID: atc.PlanID("1"),
+						Check: &atc.CheckPlan{
+							Name: resource.Name(),
+							Type: resource.Type(),
+							Source: atc.Source{
+								"some": "source",
+							},
+							SkipInterval: true,
+							TypeImage: atc.TypeImage{
+								BaseType: "some-base-resource-type",
+								CheckPlan: &atc.Plan{
+									ID: checkPlanID,
+									Check: &atc.CheckPlan{
+										Name:         "some-resource-type",
+										ResourceType: "some-resource-type",
+										Type:         "some-base-resource-type",
+										Interval: atc.CheckEvery{
+											Interval: 1 * time.Minute,
+										},
+
+										Source:       atc.Source{"some": "type-source"},
+										SkipInterval: false,
+										TypeImage: atc.TypeImage{
+											BaseType: "some-base-resource-type",
+										},
+									},
+								},
+								GetPlan: &atc.Plan{
+									ID: atc.PlanID("1/image-get"),
+									Get: &atc.GetPlan{
+										Name:   "some-resource-type",
+										Type:   "some-base-resource-type",
+										Source: atc.Source{"some": "type-source"},
+										TypeImage: atc.TypeImage{
+											BaseType: "some-base-resource-type",
+										},
+										VersionFrom: &checkPlanID,
+									},
+								},
+							},
+							FromVersion: version,
+							Resource:    resource.Name(),
+							Interval: atc.CheckEvery{
+								Interval: 1 * time.Hour,
+							},
 						},
-						SkipInterval: true,
-						TypeImage: atc.TypeImage{
-							BaseType: "registry-image",
-							GetPlan:  imagePlanOf("1", nil),
+					}
+					Expect(createdCheckPlan).To(Equal(expectedPlan))
+				})
+			})
+
+			Context("when skipping the interval recursively", func() {
+				BeforeEach(func() {
+					skipInterval = true
+					skipIntervalRecursively = true
+				})
+
+				It("skips the interval for the resource and resource type checks", func() {
+					checkPlanID := atc.PlanID("1/image-check")
+					expectedPlan := atc.Plan{
+						ID: atc.PlanID("1"),
+						Check: &atc.CheckPlan{
+							Name: resource.Name(),
+							Type: resource.Type(),
+							Source: atc.Source{
+								"some": "source",
+							},
+							SkipInterval: true,
+							TypeImage: atc.TypeImage{
+								BaseType: "some-base-resource-type",
+								CheckPlan: &atc.Plan{
+									ID: checkPlanID,
+									Check: &atc.CheckPlan{
+										Name:         "some-resource-type",
+										ResourceType: "some-resource-type",
+										Type:         "some-base-resource-type",
+										Interval: atc.CheckEvery{
+											Interval: 1 * time.Minute,
+										},
+										Source:       atc.Source{"some": "type-source"},
+										SkipInterval: true,
+										TypeImage: atc.TypeImage{
+											BaseType: "some-base-resource-type",
+										},
+									},
+								},
+								GetPlan: &atc.Plan{
+									ID: atc.PlanID("1/image-get"),
+									Get: &atc.GetPlan{
+										Name:   "some-resource-type",
+										Type:   "some-base-resource-type",
+										Source: atc.Source{"some": "type-source"},
+										TypeImage: atc.TypeImage{
+											BaseType: "some-base-resource-type",
+										},
+										VersionFrom: &checkPlanID,
+									},
+								},
+							},
+							FromVersion: version,
+							Resource:    resource.Name(),
+							Interval: atc.CheckEvery{
+								Interval: 1 * time.Hour,
+							},
 						},
-						FromVersion: version,
-						Resource:    resource.Name(),
-						Interval: atc.CheckEvery{
-							Interval: 1 * time.Hour,
-						},
-					},
-				}
-				Expect(createdCheckPlan).To(Equal(expectedPlan))
+					}
+					Expect(createdCheckPlan).To(Equal(expectedPlan))
+				})
 			})
 		})
 	})

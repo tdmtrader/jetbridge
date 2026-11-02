@@ -90,6 +90,9 @@ type alias Step =
     , finish : Maybe Time.Posix
     , tabFocus : TabFocus
     , expandedHeaders : Dict Int Bool
+    , initializationExpanded : Bool
+    , imageCheck : Maybe StepTree
+    , imageGet : Maybe StepTree
     , sidecars : List StepTree
     }
 
@@ -209,12 +212,13 @@ type BuildEvent
     | StreamingVolume Origin String String (Maybe Time.Posix)
     | WaitingForStreamedVolume Origin String (Maybe Time.Posix)
     | Error Origin String Time.Posix
+    | ImageCheck Origin Concourse.BuildPlan
+    | ImageGet Origin Concourse.BuildPlan
     | SidecarPlan Origin Concourse.BuildPlan
     | AcrossSubsteps Origin (List Concourse.AcrossSubstep)
     | End
     | Opened
     | NetworkError
-    | UnknownEvent String
 
 
 type alias Origin =

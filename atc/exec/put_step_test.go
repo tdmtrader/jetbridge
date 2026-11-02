@@ -37,6 +37,36 @@ func (f stepFunc) Run(ctx context.Context, state exec.RunState) (bool, error) {
 	return f(ctx, state)
 }
 
+// imageFetchStepper answers the check and get substeps a delegate's FetchImage
+// runs. The get substep does what the real get step does: register the fetched
+// artifact and store a GetResult under its own plan ID.
+type imageFetchStepper struct {
+	artifact runtime.Artifact
+	cache    db.ResourceCache
+
+	ranPlans []atc.Plan
+}
+
+func (stepper *imageFetchStepper) step(plan atc.Plan) exec.Step {
+	return stepFunc(func(_ context.Context, state exec.RunState) (bool, error) {
+		stepper.ranPlans = append(stepper.ranPlans, plan)
+
+		if plan.Get != nil {
+			state.StoreResult(plan.ID, exec.GetResult{
+				Name:          plan.Get.Name,
+				ResourceCache: stepper.cache,
+			})
+			state.ArtifactRepository().RegisterArtifact(
+				build.ArtifactName(plan.Get.Name),
+				stepper.artifact,
+				false,
+			)
+		}
+
+		return true, nil
+	})
+}
+
 func persistedFinishPuts(fixture *execDBFixture, build db.Build) []event.FinishPut {
 	GinkgoHelper()
 	var finished []event.FinishPut
@@ -86,7 +116,8 @@ var _ = Describe("PutStep", func() {
 		delegateFactory exec.PutDelegateFactory
 		delegateOpts    []engine.DelegateOption
 
-		stepper exec.Stepper
+		stepper      exec.Stepper
+		imageStepper *imageFetchStepper
 
 		fakePool        *scriptedPool
 		chosenWorker    *runtimetest.Worker
@@ -189,6 +220,7 @@ var _ = Describe("PutStep", func() {
 			return delegate
 		})
 
+		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
 
 		state = exec.NewRunState(func(plan atc.Plan) exec.Step {
@@ -583,36 +615,42 @@ var _ = Describe("PutStep", func() {
 	})
 
 	Context("when using a custom resource type", func() {
-		// The type's image is a registry-image reference the delegate resolves
-		// natively from the reference's scope; no check or get runs for it.
+		var fetchedImageArtifact *runtimetest.Volume
+
 		BeforeEach(func() {
-			putPlan.Type = "some-custom-type"
-			putPlan.TypeImage = atc.TypeImage{
-				BaseType: "registry-image",
-				GetPlan: &atc.Plan{
-					ID: "1/image-get",
-					Get: &atc.GetPlan{
-						Name:      "some-custom-type",
-						Type:      "registry-image",
-						Source:    atc.Source{"repository": "registry.example/custom", "tag": "((source-var))"},
-						TypeImage: atc.TypeImage{BaseType: "registry-image"},
-					},
+			putPlan.TypeImage.GetPlan = &atc.Plan{
+				ID: "1/image-get",
+				Get: &atc.GetPlan{
+					Name:   "some-custom-type",
+					Type:   "another-custom-type",
+					Source: atc.Source{"some-custom": "((source-var))"},
+					Params: atc.Params{"some-custom": "((params-var))"},
 				},
 			}
 
-			delegateOpts = []engine.DelegateOption{
-				engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, nil),
+			putPlan.TypeImage.CheckPlan = &atc.Plan{
+				ID: "1/image-check",
+				Check: &atc.CheckPlan{
+					Name:   "some-custom-type",
+					Type:   "another-custom-type",
+					Source: atc.Source{"some-custom": "((source-var))"},
+				},
 			}
 
-			imageConfig, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
-				"registry-image",
-				atc.Source{"repository": "registry.example/custom", "tag": "super-secret-source"},
-				nil,
-			)
-			Expect(err).NotTo(HaveOccurred())
-			imageScope, err := imageConfig.FindOrCreateScope(nil)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(imageScope.SaveVersions(db.SpanContext{}, []atc.Version{{"digest": "sha256:custom"}})).To(Succeed())
+			putPlan.Type = "some-custom-type"
+			putPlan.TypeImage.BaseType = "registry-image"
+
+			fetchedImageArtifact = runtimetest.NewVolume("some-volume")
+			imageStepper.artifact = fetchedImageArtifact
+			stepper = imageStepper.step
+		})
+
+		It("fetches the resource type image and uses it for the container", func() {
+			Expect(imageStepper.ranPlans).To(Equal([]atc.Plan{
+				*putPlan.TypeImage.CheckPlan,
+				*putPlan.TypeImage.GetPlan,
+			}))
+			Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeFalse())
 		})
 
 		It("sets the worker spec with teamID", func() {
@@ -624,22 +662,21 @@ var _ = Describe("PutStep", func() {
 			}))
 		})
 
-		It("puts in the resolved image reference", func() {
-			Expect(stepErr).ToNot(HaveOccurred())
+		It("sets the image spec in the container spec", func() {
 			Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
-				ImageURL: "docker:///registry.example/custom@sha256:custom",
+				ImageArtifact: fetchedImageArtifact,
+				ResourceType:  "some-custom-type",
 			}))
 		})
 
-		It("saves the build output under a resource config created under the image's resource cache", func() {
-			configID := putStepResource().ResourceConfigID()
-			Expect(configID).NotTo(BeZero())
-			config, found, err := fixture.ResourceConfigFactory.FindResourceConfigByID(configID)
+		It("saves the build output using the custom type's resource cache", func() {
+			config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+				"some-custom-type",
+				atc.Source{"some": "super-secret-source"},
+				nil,
+			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(config.CreatedByResourceCache()).NotTo(BeNil())
-			Expect(config.CreatedByResourceCache().Version()).To(Equal(atc.Version{"digest": "sha256:custom"}))
-			Expect(config.OriginBaseResourceType().Name).To(Equal("registry-image"))
+			Expect(putStepResource().ResourceConfigID()).To(Equal(config.ID()))
 		})
 
 		Context("when the resource type is privileged", func() {
@@ -649,17 +686,6 @@ var _ = Describe("PutStep", func() {
 
 			It("fetches the image with privileged", func() {
 				Expect(chosenContainer.Spec.ImageSpec.Privileged).To(BeTrue())
-			})
-		})
-
-		Context("when the type's image is not a registry-image reference", func() {
-			BeforeEach(func() {
-				putPlan.TypeImage.GetPlan.Get.Type = "git"
-			})
-
-			It("refuses it by name before selecting a worker", func() {
-				Expect(stepErr).To(MatchError(atc.UnsupportedImageTypeError{Type: "git"}))
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 			})
 		})
 	})

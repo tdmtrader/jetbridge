@@ -56,7 +56,7 @@ var _ = Describe("TaskConfigSource", func() {
 			Platform:  "some-platform",
 			RootfsURI: "some-image",
 			ImageResource: &atc.ImageResource{
-				Type: "registry-image",
+				Type: "docker",
 				Source: atc.Source{
 					"a":               "b",
 					"evaluated-value": "((task-variable-name))",
@@ -688,7 +688,7 @@ run: {path: a/file}
 
 		Context("resourceTypes is empty, and base resource type defaults configured", func() {
 			BeforeEach(func() {
-				atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{"registry-image": atc.Source{"some-key": "some-value"}})
+				atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{"docker": atc.Source{"some-key": "some-value"}})
 			})
 			AfterEach(func() {
 				atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{})
@@ -706,12 +706,9 @@ run: {path: a/file}
 
 		Context("resourceTypes contains image source type", func() {
 			BeforeEach(func() {
-				// A type overriding registry-image by name lends its defaults to
-				// the image_resource that names it.
 				resourceTypes = atc.ResourceTypes{
 					{
-						Name:     "registry-image",
-						Type:     "registry-image",
+						Name:     "docker",
 						Defaults: atc.Source{"some-key": "some-value"},
 					},
 				}

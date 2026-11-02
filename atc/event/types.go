@@ -59,6 +59,12 @@ const (
 	// error occurred
 	EventTypeError atc.EventType = "error"
 
+	// image check sub-plan
+	EventTypeImageCheck atc.EventType = "image-check"
+
+	// image get sub-plan
+	EventTypeImageGet atc.EventType = "image-get"
+
 	// across step substeps (sent dynamically as of Concourse 7.4)
 	EventTypeAcrossSubsteps atc.EventType = "across-substeps"
 

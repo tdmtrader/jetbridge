@@ -30,7 +30,7 @@ type Plan struct {
 	ArtifactInput  *ArtifactInputPlan  `json:"artifact_input,omitempty"`
 	ArtifactOutput *ArtifactOutputPlan `json:"artifact_output,omitempty"`
 
-	// sidecar container (emitted dynamically via Sidecar events)
+	// sidecar container (emitted dynamically via Sidecar events, similar to ImageCheck/ImageGet)
 	Sidecar *SidecarPlan `json:"sidecar,omitempty"`
 
 	// deprecated, kept for backwards compatibility to be able to show old builds
@@ -114,17 +114,16 @@ func (id PlanID) String() string {
 }
 
 type TypeImage struct {
-	// GetPlan is the registry-image reference a custom type's image is
-	// resolved from (FetchImagePlan). It is never run as a step.
-	GetPlan *Plan `json:"get_plan,omitempty"`
+	// Image of the container. One of these must be specified.
+	CheckPlan *Plan `json:"check_plan,omitempty"`
+	GetPlan   *Plan `json:"get_plan,omitempty"`
 
-	// The resource type the step's image is: a base type, or registry-image
-	// for a custom type declared with type: and a source.
+	// The bottom-most resource type that this get step relies on.
 	BaseType string `json:"base_type,omitempty"`
 
 	// ImageRef is a direct container image reference (e.g. "repo:tag" or
-	// "repo@sha256:digest"): the type's pinned image, handed directly to
-	// the container runtime.
+	// "repo@sha256:digest"). When set, the image is passed directly to the
+	// container runtime without any check/get plans.
 	ImageRef string `json:"image_ref,omitempty"`
 
 	// Privileged indicates whether the parent resource type is privileged.
@@ -132,6 +131,9 @@ type TypeImage struct {
 }
 
 func (t *TypeImage) EachPlan(f func(*Plan)) {
+	if t.CheckPlan != nil {
+		t.CheckPlan.Each(f)
+	}
 	if t.GetPlan != nil {
 		t.GetPlan.Each(f)
 	}
@@ -363,8 +365,12 @@ type TaskPlan struct {
 	// image does not count towards the timeout.
 	Timeout string `json:"timeout,omitempty"`
 
-	// Resource types whose source defaults apply to the task's image_resource.
+	// Resource types to have available for use when fetching the task's image.
 	ResourceTypes ResourceTypes `json:"resource_types,omitempty"`
+
+	// If set, the check plan for the image will be forced to run and not respect
+	// the checking interval
+	CheckSkipInterval bool `json:"check_skip_interval,omitempty"`
 
 	// Sidecars is a list of sidecar sources: either file paths pointing to
 	// sidecar container definition files within the build's artifacts, or

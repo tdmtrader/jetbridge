@@ -81,6 +81,8 @@ var _ = Describe("ParseEvent", func() {
 		Entry("SelectedWorker", event.SelectedWorker{}),
 		Entry("Log", event.Log{}),
 		Entry("Error", event.Error{}),
+		Entry("ImageCheck", event.ImageCheck{}),
+		Entry("ImageGet", event.ImageGet{}),
 		Entry("AcrossSubsteps", event.AcrossSubsteps{}),
 		Entry("Sidecar", event.Sidecar{}),
 	)

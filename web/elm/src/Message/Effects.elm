@@ -932,6 +932,9 @@ toHtmlID domId =
         StepState stepID ->
             stepID ++ "_state"
 
+        StepInitialization stepID ->
+            stepID ++ "_image"
+
         StepVersion stepID ->
             stepID ++ "_version"
 

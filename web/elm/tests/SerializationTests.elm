@@ -1,8 +1,6 @@
 module SerializationTests exposing (all)
 
-import Build.StepTree.Models exposing (BuildEvent(..))
 import Concourse exposing (JsonValue(..))
-import Concourse.BuildEvents
 import Concourse.BuildStatus as BuildStatus
 import Data
 import Dict
@@ -178,40 +176,4 @@ all =
                 """
                     |> Json.Decode.decodeString Concourse.decodeBuildPlan
                     |> Expect.err
-        , test "a plan from before image sub-steps were cut still decodes, its image plans ignored" <|
-            \_ ->
-                """
-                {"id":"1","get":{"name":"my-resource","type":"custom","resource":"my-resource",
-                  "image_check_plan":{"id":"1/image-check","check":{"name":"custom","type":"registry-image"}},
-                  "image_get_plan":{"id":"1/image-get","get":{"name":"custom","type":"registry-image"}}}}
-                """
-                    |> Json.Decode.decodeString Concourse.decodeBuildPlan
-                    |> Expect.equal
-                        (Ok
-                            { id = "1"
-                            , step = Concourse.BuildStepGet "my-resource" (Just "my-resource") Nothing
-                            }
-                        )
-        , test "an event kind this page does not know decodes as UnknownEvent so the batch still renders" <|
-            \_ ->
-                let
-                    envelope payload =
-                        Json.Encode.object
-                            [ ( "type", Json.Encode.string "event" )
-                            , ( "target", Json.Encode.object [ ( "url", Json.Encode.string "/api/v1/builds/1/events" ) ] )
-                            , ( "data", Json.Encode.string payload )
-                            ]
-                in
-                Json.Encode.list envelope
-                    [ """{"event":"image-check","version":"1.1","data":{"origin":{"id":"1"},"plan":{}}}"""
-                    , """{"event":"log","version":"5.1","data":{"origin":{"id":"1"},"payload":"hello"}}"""
-                    ]
-                    |> Json.Decode.decodeValue (Json.Decode.list Concourse.BuildEvents.decodeBuildEventEnvelope)
-                    |> Result.map (List.map .data)
-                    |> Expect.equal
-                        (Ok
-                            [ UnknownEvent "image-check"
-                            , Log { source = "", id = "1" } "hello" Nothing
-                            ]
-                        )
         ]

@@ -4,9 +4,12 @@ module Build.StepTree.StepTree exposing
     , init
     , setAcrossSubsteps
     , setHighlight
+    , setImageCheck
+    , setImageGet
     , setSidecar
     , switchTab
     , toggleStep
+    , toggleStepInitialization
     , toggleStepSubHeader
     , tooltip
     , view
@@ -75,16 +78,21 @@ init buildId hl resources plan =
         Concourse.BuildStepTask _ ->
             step |> initBottom buildId hl resources plan Task
 
-        Concourse.BuildStepCheck _ ->
-            step |> initBottom buildId hl resources plan Check
+        Concourse.BuildStepCheck _ imagePlans ->
+            step
+                |> initBottom buildId hl resources plan Check
+                |> setImagePlans buildId step.id imagePlans
 
-        Concourse.BuildStepGet name _ version ->
+        Concourse.BuildStepGet name _ version imagePlans ->
             step
                 |> setupGetStep resources name version
                 |> initBottom buildId hl resources plan Get
+                |> setImagePlans buildId step.id imagePlans
 
-        Concourse.BuildStepPut _ _ ->
-            step |> initBottom buildId hl resources plan Put
+        Concourse.BuildStepPut _ _ imagePlans ->
+            step
+                |> initBottom buildId hl resources plan Put
+                |> setImagePlans buildId step.id imagePlans
 
         Concourse.BuildStepArtifactInput _ ->
             step |> initBottom buildId hl resources plan ArtifactInput
@@ -173,6 +181,44 @@ init buildId hl resources plan =
 
         Concourse.BuildStepSidecar _ ->
             step |> initBottom buildId hl resources plan Sidecar
+
+
+setImagePlans : Maybe Concourse.JobBuildIdentifier -> StepID -> Maybe Concourse.ImageBuildPlans -> StepTreeModel -> StepTreeModel
+setImagePlans buildId stepId imagePlans model =
+    case imagePlans of
+        Nothing ->
+            model
+
+        Just { check, get } ->
+            model
+                |> setImageCheck buildId stepId check
+                |> setImageGet buildId stepId get
+
+
+setImageCheck : Maybe Concourse.JobBuildIdentifier -> StepID -> Concourse.BuildPlan -> StepTreeModel -> StepTreeModel
+setImageCheck buildId stepId subPlan model =
+    let
+        sub =
+            init buildId model.highlight model.resources subPlan
+    in
+    { model
+        | steps =
+            Dict.union sub.steps model.steps
+                |> Dict.update stepId (Maybe.map (\step -> { step | imageCheck = Just sub.tree }))
+    }
+
+
+setImageGet : Maybe Concourse.JobBuildIdentifier -> StepID -> Concourse.BuildPlan -> StepTreeModel -> StepTreeModel
+setImageGet buildId stepId subPlan model =
+    let
+        sub =
+            init buildId model.highlight model.resources subPlan
+    in
+    { model
+        | steps =
+            Dict.union sub.steps model.steps
+                |> Dict.update stepId (Maybe.map (\step -> { step | imageGet = Just sub.tree }))
+    }
 
 
 setSidecar : Maybe Concourse.JobBuildIdentifier -> StepID -> Concourse.BuildPlan -> StepTreeModel -> StepTreeModel
@@ -339,6 +385,9 @@ constructStep { id, step } =
     , finish = Nothing
     , tabFocus = Auto
     , expandedHeaders = Dict.empty
+    , initializationExpanded = False
+    , imageCheck = Nothing
+    , imageGet = Nothing
     , sidecars = []
     }
 
@@ -449,6 +498,13 @@ finishStep step =
 toggleStep : StepID -> StepTreeModel -> ( StepTreeModel, List Effect )
 toggleStep id root =
     ( updateAt id (\step -> { step | expanded = not step.expanded }) root
+    , []
+    )
+
+
+toggleStepInitialization : StepID -> StepTreeModel -> ( StepTreeModel, List Effect )
+toggleStepInitialization id root =
+    ( updateAt id (\step -> { step | initializationExpanded = not step.initializationExpanded }) root
     , []
     )
 
@@ -829,9 +885,37 @@ viewStepWithBody model session depth step body =
             , Html.div
                 [ style "display" "flex" ]
                 [ viewVersion step model.buildId <| resourceName step.buildStep
+                , case Maybe.Extra.or step.imageCheck step.imageGet of
+                    Just _ ->
+                        viewInitializationToggle step
+
+                    Nothing ->
+                        Html.text ""
                 , viewStepState step.state (Just step.id)
                 ]
             ]
+        , if step.initializationExpanded then
+            Html.div (class "sub-steps" :: Styles.imageSteps)
+                [ case step.imageCheck of
+                    Just subTree ->
+                        Html.div [ class "seq" ]
+                            [ viewTree session model subTree (depth + 1)
+                            ]
+
+                    Nothing ->
+                        Html.text ""
+                , case step.imageGet of
+                    Just subTree ->
+                        Html.div [ class "seq" ]
+                            [ viewTree session model subTree (depth + 1)
+                            ]
+
+                    Nothing ->
+                        Html.text ""
+                ]
+
+          else
+            Html.text ""
         , if step.expanded then
             Html.div
                 [ class "step-body"
@@ -865,6 +949,29 @@ viewStepWithBody model session depth step body =
 
           else
             Html.text ""
+        ]
+
+
+viewInitializationToggle : Step -> Html Message
+viewInitializationToggle step =
+    let
+        domId =
+            StepInitialization step.id
+    in
+    Html.h3
+        ([ StrictEvents.onLeftClickStopPropagation (Click domId)
+         , onMouseLeave <| Hover Nothing
+         , onMouseEnter <| Hover (Just domId)
+         , id (toHtmlID domId)
+         ]
+            ++ Styles.initializationToggle step.initializationExpanded
+        )
+        [ Icon.icon
+            { sizePx = 14
+            , image = Assets.CogsIcon
+            }
+            [ style "background-size" "contain"
+            ]
         ]
 
 
@@ -1200,13 +1307,13 @@ viewStepHeader step =
         Concourse.BuildStepLoadVar name ->
             simpleHeader "load_var:" Nothing name
 
-        Concourse.BuildStepCheck name ->
+        Concourse.BuildStepCheck name _ ->
             simpleHeader "check:" Nothing name
 
-        Concourse.BuildStepGet name _ _ ->
+        Concourse.BuildStepGet name _ _ _ ->
             simpleHeader "get:" (Just "new version") name
 
-        Concourse.BuildStepPut name _ ->
+        Concourse.BuildStepPut name _ _ ->
             simpleHeader "put:" Nothing name
 
         Concourse.BuildStepArtifactInput name ->
@@ -1276,13 +1383,13 @@ stepName header =
         Concourse.BuildStepArtifactOutput name ->
             Just name
 
-        Concourse.BuildStepCheck name ->
+        Concourse.BuildStepCheck name _ ->
             Just name
 
-        Concourse.BuildStepGet name _ _ ->
+        Concourse.BuildStepGet name _ _ _ ->
             Just name
 
-        Concourse.BuildStepPut name _ ->
+        Concourse.BuildStepPut name _ _ ->
             Just name
 
         Concourse.BuildStepAcross { vars } ->
@@ -1328,10 +1435,10 @@ stepName header =
 resourceName : Concourse.BuildStep -> Maybe String
 resourceName step =
     case step of
-        Concourse.BuildStepGet _ resource _ ->
+        Concourse.BuildStepGet _ resource _ _ ->
             resource
 
-        Concourse.BuildStepPut _ resource ->
+        Concourse.BuildStepPut _ resource _ ->
             resource
 
         _ ->
@@ -1371,6 +1478,20 @@ tooltip model { hovered } =
                 , attachPosition =
                     { direction = Tooltip.Top
                     , alignment = Tooltip.Start
+                    }
+                , arrow = Just 5
+                , containerAttrs = Nothing
+                }
+
+        HoverState.Tooltip (StepInitialization _) _ ->
+            Just
+                { body =
+                    Html.div
+                        Styles.changedStepTooltip
+                        [ Html.text "image fetching" ]
+                , attachPosition =
+                    { direction = Tooltip.Top
+                    , alignment = Tooltip.End
                     }
                 , arrow = Just 5
                 , containerAttrs = Nothing

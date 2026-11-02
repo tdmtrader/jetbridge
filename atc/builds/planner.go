@@ -22,13 +22,15 @@ func (planner Planner) Create(
 	resources db.SchedulerResources,
 	resourceTypes atc.ResourceTypes,
 	inputs []db.BuildInput,
+	manuallyTriggered bool,
 ) (atc.Plan, error) {
 	visitor := &planVisitor{
 		planFactory: planner.planFactory,
 
-		resources:     resources,
-		resourceTypes: resourceTypes,
-		inputs:        inputs,
+		resources:         resources,
+		resourceTypes:     resourceTypes,
+		inputs:            inputs,
+		manuallyTriggered: manuallyTriggered,
 	}
 
 	err := planConfig.Visit(visitor)
@@ -42,9 +44,10 @@ func (planner Planner) Create(
 type planVisitor struct {
 	planFactory atc.PlanFactory
 
-	resources     db.SchedulerResources
-	resourceTypes atc.ResourceTypes
-	inputs        []db.BuildInput
+	resources         db.SchedulerResources
+	resourceTypes     atc.ResourceTypes
+	inputs            []db.BuildInput
+	manuallyTriggered bool
 
 	plan atc.Plan
 }
@@ -70,7 +73,8 @@ func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 		Timeout:           step.Timeout,
 		Sidecars:          step.Sidecars,
 
-		ResourceTypes: visitor.resourceTypes,
+		ResourceTypes:     visitor.resourceTypes,
+		CheckSkipInterval: visitor.manuallyTriggered,
 	})
 
 	return nil
@@ -115,7 +119,7 @@ func (visitor *planVisitor) VisitGet(step *atc.GetStep) error {
 		SkipDownload: step.SkipDownload,
 	})
 
-	plan.Get.TypeImage = visitor.resourceTypes.ImageForType(plan.ID, resource.Type, step.Tags)
+	plan.Get.TypeImage = visitor.resourceTypes.ImageForType(plan.ID, resource.Type, step.Tags, false)
 
 	visitor.plan = plan
 	return nil
@@ -149,7 +153,7 @@ func (visitor *planVisitor) VisitPut(step *atc.PutStep) error {
 		ExposeBuildCreatedBy: resource.ExposeBuildCreatedBy,
 	})
 
-	plan.Put.TypeImage = visitor.resourceTypes.ImageForType(plan.ID, resource.Type, step.Tags)
+	plan.Put.TypeImage = visitor.resourceTypes.ImageForType(plan.ID, resource.Type, step.Tags, visitor.manuallyTriggered)
 
 	if step.NoGet {
 		visitor.plan = plan
@@ -168,7 +172,7 @@ func (visitor *planVisitor) VisitPut(step *atc.PutStep) error {
 		Timeout: step.Timeout,
 	})
 
-	dependentGetPlan.Get.TypeImage = visitor.resourceTypes.ImageForType(dependentGetPlan.ID, resource.Type, step.Tags)
+	dependentGetPlan.Get.TypeImage = visitor.resourceTypes.ImageForType(dependentGetPlan.ID, resource.Type, step.Tags, visitor.manuallyTriggered)
 
 	visitor.plan = visitor.planFactory.NewPlan(atc.OnSuccessPlan{
 		Step: plan,

@@ -1220,6 +1220,8 @@ var _ = Describe("Team", func() {
 		)
 
 		BeforeEach(func() {
+			imageCheckPlanID := atc.PlanID("image-check")
+
 			plan = atc.Plan{
 				ID: atc.PlanID("56"),
 				Get: &atc.GetPlan{
@@ -1231,17 +1233,32 @@ var _ = Describe("Team", func() {
 					Version:  &atc.Version{"some": "version"},
 					Tags:     atc.Tags{"some-tags"},
 					TypeImage: atc.TypeImage{
-						BaseType: "registry-image",
+						BaseType: "some-type",
+						CheckPlan: &atc.Plan{
+							ID: imageCheckPlanID,
+							Check: &atc.CheckPlan{
+								Name:   "some-name",
+								Source: atc.Source{"some": "source"},
+								Type:   "some-type",
+								TypeImage: atc.TypeImage{
+									BaseType:   "some-type",
+									Privileged: true,
+								},
+								Tags: atc.Tags{"some-tags"},
+							},
+						},
 						GetPlan: &atc.Plan{
 							ID: "image-get",
 							Get: &atc.GetPlan{
-								Name:   "some-type",
-								Source: atc.Source{"repository": "registry.example/some-type"},
-								Type:   "registry-image",
+								Name:   "some-name",
+								Source: atc.Source{"some": "source"},
+								Type:   "some-type",
 								TypeImage: atc.TypeImage{
-									BaseType: "registry-image",
+									BaseType:   "some-type",
+									Privileged: true,
 								},
-								Tags: atc.Tags{"some-tags"},
+								Tags:        atc.Tags{"some-tags"},
+								VersionFrom: &imageCheckPlanID,
 							},
 						},
 					},

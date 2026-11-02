@@ -251,20 +251,27 @@ run:
 			taskPlan.Task.ResourceTypes = atc.ResourceTypes{
 				{
 					Name:   "resource-type",
-					Type:   "registry-image",
-					Source: atc.Source{"repository": "registry.example/resource-type"},
+					Type:   "s3",
+					Source: atc.Source{},
 				},
 			}
 
 			planFactory := atc.NewPlanFactory(0)
 
-			// The type's image is its registry-image reference; no check or
-			// get is planned for it.
+			expectedCheckPlan := planFactory.NewPlan(atc.CheckPlan{
+				Name:         "resource-type",
+				ResourceType: "resource-type",
+				Type:         "s3",
+				TypeImage:    atc.TypeImage{BaseType: "s3"},
+				Interval: atc.CheckEvery{
+					Interval: 0,
+				},
+			})
 			expectedGetPlan := planFactory.NewPlan(atc.GetPlan{
-				Name:      "resource-type",
-				Type:      "registry-image",
-				Source:    atc.Source{"repository": "registry.example/resource-type"},
-				TypeImage: atc.TypeImage{BaseType: "registry-image"},
+				Name:        "resource-type",
+				Type:        "s3",
+				TypeImage:   atc.TypeImage{BaseType: "s3"},
+				VersionFrom: &expectedCheckPlan.ID,
 			})
 			expectedPlan = planFactory.NewPlan(atc.DoPlan{
 				planFactory.NewPlan(atc.InParallelPlan{
@@ -273,8 +280,9 @@ run:
 							Name: "fixture",
 							Type: "resource-type",
 							TypeImage: atc.TypeImage{
-								BaseType: "registry-image",
-								GetPlan:  &expectedGetPlan,
+								BaseType:  "s3",
+								CheckPlan: &expectedCheckPlan,
+								GetPlan:   &expectedGetPlan,
 							},
 						}),
 					},
@@ -310,8 +318,8 @@ run:
 					ghttp.RespondWithJSONEncoded(200, atc.ResourceTypes{
 						{
 							Name:   "resource-type",
-							Type:   "registry-image",
-							Source: atc.Source{"repository": "registry.example/resource-type"},
+							Type:   "s3",
+							Source: atc.Source{},
 						},
 					}),
 				),

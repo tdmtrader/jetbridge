@@ -2523,6 +2523,7 @@ all =
                                                 "step"
                                                 (Just "step")
                                                 Nothing
+                                                Nothing
                                       }
                                     , { inputs = [], outputs = [] }
                                     )
@@ -2582,6 +2583,7 @@ all =
                                                 "step"
                                                 (Just "step")
                                                 Nothing
+                                                Nothing
                                       }
                                     , { inputs = [], outputs = [] }
                                     )
@@ -2626,6 +2628,7 @@ all =
                                                 Concourse.BuildStepGet
                                                     "step"
                                                     (Just "step")
+                                                    Nothing
                                                     Nothing
                                           }
                                         , { inputs = [], outputs = [] }
@@ -2673,6 +2676,7 @@ all =
                                                                 "step"
                                                                 (Just "step")
                                                                 Nothing
+                                                                Nothing
                                                         }
                                                     }
                                           }
@@ -2709,6 +2713,7 @@ all =
                                           , step =
                                                 Concourse.BuildStepCheck
                                                     "step"
+                                                    Nothing
                                           }
                                         , { inputs = [], outputs = [] }
                                         )
@@ -2780,6 +2785,7 @@ all =
                                                 Concourse.BuildStepPut
                                                     "step"
                                                     (Just "step")
+                                                    Nothing
                                           }
                                         , { inputs = [], outputs = [] }
                                         )
@@ -2803,18 +2809,21 @@ all =
                                                 Concourse.BuildStepGet "step"
                                                     (Just "step")
                                                     (Just version)
+                                                    Nothing
                                           }
                                         , { id = "bar"
                                           , step =
                                                 Concourse.BuildStepGet "step2"
                                                     (Just "step2")
                                                     (Just version)
+                                                    Nothing
                                           }
                                         , { id = "baz"
                                           , step =
                                                 Concourse.BuildStepGet "step3"
                                                     (Just "step3")
                                                     (Just version)
+                                                    Nothing
                                           }
                                         ]
                         in
@@ -3185,6 +3194,7 @@ all =
                                                             stepName
                                                             resourceName
                                                             Nothing
+                                                            Nothing
                                                   }
                                                 , { inputs = [], outputs = [] }
                                                 )
@@ -3240,6 +3250,7 @@ all =
                                                         Concourse.BuildStepGet
                                                             stepName
                                                             resourceName
+                                                            Nothing
                                                             Nothing
                                                   }
                                                 , { inputs = [], outputs = [] }
@@ -3770,6 +3781,7 @@ all =
                                                     "step"
                                                     (Just "step")
                                                     (Just <| Dict.fromList [ ( "version", "1" ) ])
+                                                    Nothing
                                           }
                                         , { inputs = [], outputs = [] }
                                         )

@@ -483,62 +483,65 @@ func validateResourceTypes(c atc.Config, seenTypes map[string]location) ([]atc.C
 			errorMessages = append(errorMessages, identifier+" cannot specify both 'image' and 'type'")
 		} else if resourceType.Image == "" && resourceType.Type == "" {
 			errorMessages = append(errorMessages, identifier+" has no type")
-		} else if err := resourceTypeImage(resourceType, identifier); err != nil {
-			errorMessages = append(errorMessages, err.Error())
 		}
+
 	}
+
+	errorMessages = append(errorMessages, validateResourceTypeCycles(c)...)
 
 	return warnings, compositeErr(errorMessages)
 }
 
-// resourceTypeImage applies atc.ValidateImageType to one resource type: its
-// image is a direct image: or a registry-image reference, so a type: that is
-// not registry-image is refused by name. Nothing fetches a type's image
-// through another resource type.
-func resourceTypeImage(resourceType atc.ResourceType, identifier string) error {
-	if resourceType.Image != "" {
-		return nil
-	}
-	if err := atc.ValidateImageType(resourceType.Type); err != nil {
-		return fmt.Errorf("%s: %w", identifier, err)
-	}
-	return nil
-}
-
-// ValidateImageTypes is the image-type rule alone, over a config's resource
-// types and its inline task configs. Validate applies the same rule through
-// validateResourceTypes and TaskConfig.Validate; fly's set-pipeline runs this
-// by itself so it refuses the file before printing a diff -- or a clean
-// --dry-run -- for a config SaveConfig answers with a 400.
-func ValidateImageTypes(c atc.Config) error {
+// validateResourceTypeCycles rejects resource types whose type chain comes
+// back to itself (a: type b, b: type a). A resource type whose type is its own
+// name is not a cycle: that names the base resource type it overrides. Each
+// cycle is reported once, at its first resource type in config order.
+func validateResourceTypeCycles(c atc.Config) []string {
 	var errorMessages []string
 
-	for i, resourceType := range c.ResourceTypes {
-		location := location{section: "resource_types", index: i}
-		if err := resourceTypeImage(resourceType, location.Identifier(resourceType.Name)); err != nil {
-			errorMessages = append(errorMessages, err.Error())
+	byName := map[string]atc.ResourceType{}
+	for _, resourceType := range c.ResourceTypes {
+		if _, exists := byName[resourceType.Name]; !exists {
+			byName[resourceType.Name] = resourceType
 		}
 	}
 
-	for i, job := range c.Jobs {
-		location := location{section: "jobs", index: i}
-		_ = job.StepConfig().Visit(atc.StepRecursor{
-			OnTask: func(step *atc.TaskStep) error {
-				if step.Config == nil || step.Config.ImageResource == nil {
-					return nil
+	reported := map[string]bool{}
+	for i, start := range c.ResourceTypes {
+		if reported[start.Name] {
+			continue
+		}
+
+		chain := []string{start.Name}
+		walked := map[string]bool{start.Name: true}
+		current := start
+		for {
+			parent, found := byName[current.Type]
+			if current.Type == "" || !found || parent.Name == current.Name {
+				break
+			}
+
+			chain = append(chain, parent.Name)
+			if parent.Name == start.Name {
+				for _, name := range chain {
+					reported[name] = true
 				}
-				if err := atc.ValidateImageType(step.Config.ImageResource.Type); err != nil {
-					errorMessages = append(errorMessages, fmt.Sprintf("%s.task(%s).config.image_resource: %s", location.Identifier(job.Name), step.Name, err))
-				}
-				return nil
-			},
-		})
+				location := location{section: "resource_types", index: i}
+				errorMessages = append(errorMessages, fmt.Sprintf(
+					"%s is in a cycle of resource types: %s",
+					location.Identifier(start.Name), strings.Join(chain, " -> ")))
+				break
+			}
+			if walked[parent.Name] {
+				break
+			}
+
+			walked[parent.Name] = true
+			current = parent
+		}
 	}
 
-	if len(errorMessages) == 0 {
-		return nil
-	}
-	return fmt.Errorf("invalid image types:\n%s", strings.Join(errorMessages, "\n"))
+	return errorMessages
 }
 
 func validateResourcesUnused(c atc.Config) []string {
