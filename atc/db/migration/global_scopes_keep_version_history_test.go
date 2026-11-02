@@ -51,8 +51,8 @@ var _ = Describe("1789793167 folds per-resource scopes into global ones", func()
 			INSERT INTO resource_config_versions (resource_config_scope_id, version, version_md5, version_sha256, check_order) VALUES
 				(100, '{"ref":"a1"}', 'a1', 'a1', 1),
 				(100, '{"ref":"a2"}', 'a2', 'a2', 2),
-				(200, '{"ref":"s1"}', 's1', 's1', 1),
-				(200, '{"ref":"s2"}', 's2', 's2', 2),
+				(200, '{"ref":"s1"}', 's1', 's1', 49),
+				(200, '{"ref":"s2"}', 's2', 's2', 50),
 				(201, '{"ref":"s2"}', 's2', 's2', 1),
 				(201, '{"ref":"s3"}', 's3', 's3', 2),
 				(300, '{"ref":"u1"}', 'u1', 'u1', 1),
@@ -112,7 +112,9 @@ var _ = Describe("1789793167 folds per-resource scopes into global ones", func()
 		Expect(scopeA).To(Equal(201))
 		Expect(scopeB).To(Equal(201))
 		Expect(owner).To(BeNil())
-		Expect(versionsNewestFirst(201)).To(ConsistOf("s1", "s2", "s3"))
+		// 200 was checked for longer, so its numbers run higher; its old s1
+		// must not outrank s3, the newest version the kept scope found.
+		Expect(versionsNewestFirst(201)).To(Equal([]string{"s3", "s2", "s1"}))
 
 		var remaining int
 		Expect(database.QueryRow(`SELECT count(*) FROM resource_config_scopes WHERE id = 200`).Scan(&remaining)).To(Succeed())

@@ -10,17 +10,20 @@
 --   * a config with no global scope promotes its most recently checked
 --     per-resource scope to be the global one;
 --   * a config that already has one (a deployment that ran 0.4.0 or 0.4.1)
---     keeps it, and its versions, found since the upgrade, are moved after
---     the older history so they stay the newest;
+--     keeps it;
 --   * every other per-resource scope of the config adds the versions the
 --     global scope lacks, its resources move to the global scope, and it
 --     goes.
 --
+-- check_order is numbered per scope, so a long-lived scope's old versions can
+-- carry higher numbers than the kept scope's newest. The kept scope's versions
+-- are therefore moved above the highest number being merged in: its newest
+-- version stays the latest, and the merged history sits below it.
+--
 -- Build inputs and outputs, pins and disabled versions name a resource and a
 -- version, not a scope, so they carry over unchanged. Where two resources
--- shared a config, their check orders are merged as they stood: each came
--- from the same source, so a version keeps its place relative to its own
--- history. A database that ran with global resources on has no such scope
+-- shared a config, the versions merged in below the kept scope's keep their
+-- order relative to their own scope's history. A database that ran with global resources on has no such scope
 -- and is untouched.
 
 CREATE TEMP TABLE unique_history_configs ON COMMIT DROP AS
@@ -59,19 +62,20 @@ LEFT JOIN resource_config_scopes g
       AND g.deprecated_at IS NULL
 ORDER BY f.resource_config_id, f.last_check_end_time DESC, f.scope_id;
 
--- A global scope started since the upgrade holds only versions found since;
--- move them after the history being folded in.
+-- Move the kept scope's versions above every version merged into it, so its
+-- newest stays the latest.
 UPDATE resource_config_versions v
 SET check_order = v.check_order + history.max_order
 FROM scope_targets t
 JOIN (
     SELECT f.resource_config_id, max(fv.check_order) AS max_order
     FROM scope_folds f
+    JOIN scope_targets ft ON ft.resource_config_id = f.resource_config_id
     JOIN resource_config_versions fv ON fv.resource_config_scope_id = f.scope_id
+    WHERE f.scope_id <> ft.target_id
     GROUP BY f.resource_config_id
 ) history ON history.resource_config_id = t.resource_config_id
-WHERE t.target_existed
-  AND v.resource_config_scope_id = t.target_id;
+WHERE v.resource_config_scope_id = t.target_id;
 
 UPDATE resource_config_scopes s
 SET resource_id = NULL
