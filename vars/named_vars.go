@@ -3,7 +3,7 @@ package vars
 type NamedVariables map[string]Variables
 
 // Get checks var_source if presents, then forward var to underlying secret manager.
-// A Reference with a var_source looks like "mysource:foo", where "mysource" is
+// A Reference with a var_source looks like "myvault:foo", where "myvault" is
 // the var_source name, and "foo" is the real var name that should be forwarded
 // to the underlying secret manager.
 func (m NamedVariables) Get(ref Reference) (any, bool, error) {

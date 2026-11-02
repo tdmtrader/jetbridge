@@ -235,7 +235,7 @@ type RunCommand struct {
 
 	BaseResourceTypeDefaults flag.File `long:"base-resource-type-defaults" description:"Base resource type defaults"`
 
-	DisplayUserIdPerConnector map[string]string `long:"display-user-id-per-connector" description:"Define how to display local user IDs. Format is local:<fieldname>. Valid field names are user_id, name, username and email, where name maps to claims field username, and username maps to claims field preferred username"`
+	DisplayUserIdPerConnector map[string]string `long:"display-user-id-per-connector" description:"Define how to display user ID for each authentication connector. Format is <connector>:<fieldname>. Valid field names are user_id, name, username and email, where name maps to claims field username, and username maps to claims field preferred username"`
 
 	DefaultGetTimeout  time.Duration `long:"default-get-timeout" description:"Default timeout of get steps"`
 	DefaultPutTimeout  time.Duration `long:"default-put-timeout" description:"Default timeout of put steps"`
@@ -248,14 +248,21 @@ type RunCommand struct {
 }
 
 func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
-	var credsGroup *flags.Group
+	var (
+		credsGroup *flags.Group
+		authGroup  *flags.Group
+	)
 
 	groups := commandFlags.Groups()
-	for i := 0; i < len(groups) && credsGroup == nil; i++ {
+	for i := 0; i < len(groups) && (credsGroup == nil || authGroup == nil); i++ {
 		group := groups[i]
 
-		if group.ShortDescription == "Credential Management" {
+		if credsGroup == nil && group.ShortDescription == "Credential Management" {
 			credsGroup = group
+		}
+
+		if authGroup == nil && group.ShortDescription == "Authentication" {
+			authGroup = group
 		}
 
 		groups = append(groups, group.Groups()...)
@@ -265,12 +272,19 @@ func (cmd *RunCommand) WireDynamicFlags(commandFlags *flags.Command) {
 		panic("could not find Credential Management group for registering managers")
 	}
 
+	if authGroup == nil {
+		panic("could not find Authentication group for registering connectors")
+	}
+
 	managerConfigs := make(creds.Managers)
 	for name, p := range creds.ManagerFactories() {
 		managerConfigs[name] = p.AddConfig(credsGroup)
 	}
 
 	cmd.CredentialManagers = managerConfigs
+
+	skycmd.WireConnectors(authGroup)
+	skycmd.WireTeamConnectors(authGroup.Find("Authentication (Main Team)"))
 }
 
 func (cmd *RunCommand) validateCustomRoles() error {

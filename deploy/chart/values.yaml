@@ -149,11 +149,15 @@ web:
     # -- Key in the Secret for the TLS private key
     keyFilename: tls.key
 
-  # -- Deprecated, and removed in the next chart change (ADR-0008 bans the
-  # pass-through): every setting it carried has a typed value above
-  # (deploy/chart/MIGRATING.md maps each name). An entry naming a variable a
-  # set typed value renders fails the render. A CONCOURSE_ENCRYPTION_KEY entry
-  # is still accepted in place of secrets.encryptionKeySecret until then.
+  # -- Additional environment variables for the web container.
+  # Supports both literal values and valueFrom (secretKeyRef, configMapKeyRef):
+  #   - name: CONCOURSE_GITHUB_CLIENT_ID
+  #     value: "my-client-id"
+  #   - name: CONCOURSE_GITHUB_CLIENT_SECRET
+  #     valueFrom:
+  #       secretKeyRef:
+  #         name: github-oauth
+  #         key: client-secret
   env: []
 
 

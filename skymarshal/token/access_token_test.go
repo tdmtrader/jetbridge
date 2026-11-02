@@ -64,7 +64,7 @@ var _ = Describe("Access Tokens", func() {
 			accessTokenFactory = realdb.AccessTokens
 			userFactory = realdb.Users
 			var err error
-			displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "email"})
+			displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"oidc": "email"})
 			Expect(err).NotTo(HaveOccurred())
 
 			dummyLogger = lagertest.NewTestLogger("whatever")
@@ -181,7 +181,7 @@ var _ = Describe("Access Tokens", func() {
 					"email":              "some@example.com",
 					"federated_claims": map[string]any{
 						"user_id":      "some-user-id",
-						"connector_id": "local",
+						"connector_id": "oidc",
 					},
 				}
 				if !t.omitExpiryClaim {
@@ -264,7 +264,7 @@ var _ = Describe("Access Tokens", func() {
 					Expect(*storedToken.Claims.Expiry).To(Equal(expiry))
 					Expect(storedToken.Claims.FederatedClaims).To(Equal(db.FederatedClaims{
 						UserID:    "some-user-id",
-						Connector: "local",
+						Connector: "oidc",
 					}))
 					Expect(storedToken.Claims.Username).To(Equal("some-username"))
 					Expect(storedToken.Claims.PreferredUsername).To(Equal("some-preferred-username"))
@@ -279,7 +279,7 @@ var _ = Describe("Access Tokens", func() {
 						WHERE sub = $1
 					`, "some-subject").Scan(&username, &connector, &subject)).To(Succeed())
 					Expect(username).To(Equal("some@example.com"))
-					Expect(connector).To(Equal("local"))
+					Expect(connector).To(Equal("oidc"))
 					Expect(subject).To(Equal("some-subject"))
 				}
 			})

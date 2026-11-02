@@ -73,13 +73,13 @@ var _ = Describe("RunPipelinePlan", func() {
 			plan = creds.NewRunPipelinePlan(localVars(map[string]any{"v": "local-value"}), atc.RunPipelinePlan{
 				Name: "some-pipeline",
 				Params: atc.RunParams{
-					"secret":      "((secret/x))",
+					"secret":      "((vault/x))",
 					"sourced":     "((mysource:key))",
 					"unqualified": "((plain))",
 					"field":       "((a.b))",
-					"mixed":       "((.:v))-((secret/x))",
+					"mixed":       "((.:v))-((vault/x))",
 					"nested": map[string]any{
-						"list": []any{"((secret/y))", "((.:v))"},
+						"list": []any{"((vault/y))", "((.:v))"},
 					},
 				},
 			})
@@ -88,13 +88,13 @@ var _ = Describe("RunPipelinePlan", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(result.Params).To(Equal(atc.RunParams{
-				"secret":      "((secret/x))",
+				"secret":      "((vault/x))",
 				"sourced":     "((mysource:key))",
 				"unqualified": "((plain))",
 				"field":       "((a.b))",
-				"mixed":       "local-value-((secret/x))",
+				"mixed":       "local-value-((vault/x))",
 				"nested": map[string]any{
-					"list": []any{"((secret/y))", "local-value"},
+					"list": []any{"((vault/y))", "local-value"},
 				},
 			}))
 		})
@@ -104,12 +104,12 @@ var _ = Describe("RunPipelinePlan", func() {
 		It("does not report a non-local reference as a missing var", func() {
 			plan = creds.NewRunPipelinePlan(localVars(map[string]any{}), atc.RunPipelinePlan{
 				Name:   "some-pipeline",
-				Params: atc.RunParams{"ref": "((secret/nothing-here))"},
+				Params: atc.RunParams{"ref": "((vault/nothing-here))"},
 			})
 
 			result, err := plan.Evaluate()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Params).To(Equal(atc.RunParams{"ref": "((secret/nothing-here))"}))
+			Expect(result.Params).To(Equal(atc.RunParams{"ref": "((vault/nothing-here))"}))
 		})
 	})
 })

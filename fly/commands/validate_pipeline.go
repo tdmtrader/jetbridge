@@ -10,9 +10,14 @@ import (
 	"github.com/concourse/concourse/fly/commands/internal/validatepipelinehelpers"
 
 	// dynamically registered credential managers
+	_ "github.com/concourse/concourse/atc/creds/conjur"
+	_ "github.com/concourse/concourse/atc/creds/credhub"
 	_ "github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	_ "github.com/concourse/concourse/atc/creds/kubernetes"
+	_ "github.com/concourse/concourse/atc/creds/secretsmanager"
+	_ "github.com/concourse/concourse/atc/creds/ssm"
+	_ "github.com/concourse/concourse/atc/creds/vault"
 )
 
 type ValidatePipelineCommand struct {

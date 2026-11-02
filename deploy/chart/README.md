@@ -509,12 +509,9 @@ The chart always deploys the artifact daemon and wires its host path into web.
 
 ## Production Notes
 
-- **Secrets:** Configure local users with strong credentials in `web.localUsers` and assign admins through `web.mainTeamLocalUser`. The signing-key Secret named in `secrets.signingKeySecret` and the encryption-key Secret named in `secrets.encryptionKeySecret` are required; generate each key once, outside the chart, and back the encryption key up with the database.
+- **Secrets:** Add OIDC/OAuth through `web.env` (`CONCOURSE_OIDC_*` and the like) until the chart has typed auth values, and keep `web.localUsers` to a strong admin credential. The signing-key Secret named in `secrets.signingKeySecret` is required; generate the key once, outside the chart.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.
 - **Resources:** Tune `web.resources` based on pipeline count. The web node is the control plane and doesn't run builds.
 - **Connection pools:** For N replicas, ensure PostgreSQL `max_connections >= N * (apiMaxConns + backendMaxConns + 7)`.
-
-Prometheus is the only metric sink: `metrics.enabled` opens the web's
-`/metrics` listener. The Lager emitter (`CONCOURSE_EMIT_TO_LOGS`) is removed.

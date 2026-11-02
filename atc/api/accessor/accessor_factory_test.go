@@ -37,7 +37,7 @@ var _ = Describe("AccessorFactory", func() {
 		dummyRequest, _ = http.NewRequest("GET", "/", nil)
 
 		var err error
-		displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "email"})
+		displayUserIdGenerator, err = skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"github": "email"})
 		Expect(err).NotTo(HaveOccurred())
 
 		role = accessor.ViewerRole
@@ -63,7 +63,7 @@ var _ = Describe("AccessorFactory", func() {
 					"preferred_username": "user1",
 					"email":              "user1@example.com",
 					"federated_claims": map[string]any{
-						"connector_id": "local",
+						"connector_id": "github",
 					},
 				})
 				dummyRequest.Header.Set("Authorization", "bearer user1-token")
@@ -79,9 +79,9 @@ var _ = Describe("AccessorFactory", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				persistTeam("t1", "local:user1")
-				persistTeam("t2", "local:another-user")
-				persistTeam("t3", "local:user1")
+				persistTeam("t1", "github:user1")
+				persistTeam("t2", "github:another-user")
+				persistTeam("t3", "github:user1")
 			})
 
 			It("returns an accessor authorized for the matching persisted teams", func() {

@@ -36,7 +36,7 @@ Validate issuer, expiry, intended resource audience and granted permissions on e
 
 For unattended work, provide separately scoped service identities and client credentials, preferably with private-key authentication. MCP defines this as an optional extension, so verify client support. Human session longevity and machine identity should be separate features. [Client-credentials extension](https://modelcontextprotocol.io/extensions/auth/oauth-client-credentials)
 
-JetBridge retains Dex renewable sessions through its local connector. JetBridge must expose and test the pinned provider's policy/configuration rather than assume the latest upstream settings are already wired. [Dex token guidance](https://dexidp.io/docs/configuration/tokens/), [Dex scopes](https://dexidp.io/docs/configuration/custom-scopes-claims-clients/)
+Dex supports renewable sessions, but refresh availability depends on the connector; for example, its SAML connector does not support `offline_access`. JetBridge must expose and test the pinned provider's policy/configuration rather than assume the latest upstream settings are already wired. [Dex token guidance](https://dexidp.io/docs/configuration/tokens/), [Dex scopes](https://dexidp.io/docs/configuration/custom-scopes-claims-clients/)
 
 ## Discovery and tool shape
 

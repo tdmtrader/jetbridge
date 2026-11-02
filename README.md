@@ -11,11 +11,10 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 - **Health endpoint** — `GET /api/v1/health` with DB + worker checks (used for K8s readiness probes)
 - **OpenTelemetry** — distributed tracing over OTLP or to Google Cloud Trace
 
-Core pipeline syntax, `fly`, the web UI, resource types and the REST API retain
-the Concourse interface. Authentication is local-only; Kubernetes Secrets is
-the only credential backend; pipelines have no `var_sources`. See
-[migration guidance](deploy/chart/MIGRATING.md) for removed auth connectors,
-credential managers and metric emitters.
+Core pipeline syntax, `fly`, the web UI, resource types, authentication
+(local users and the Dex connectors), credential managers (Kubernetes, Vault,
+CredHub, SSM, Secrets Manager, Conjur, `var_sources`) and the REST API retain
+the Concourse interface.
 
 ---
 
@@ -222,7 +221,7 @@ config:
 - Resource types (git, time, registry-image, s3, etc.)
 - Web UI
 - PostgreSQL schema and migrations
-- Auth (local users, browser login and renewable sessions)
+- Auth (OIDC, OAuth, local users)
 - REST API
 
 ### Added

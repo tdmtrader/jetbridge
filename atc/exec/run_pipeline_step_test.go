@@ -310,9 +310,9 @@ var _ = Describe("RunPipelineStep", func() {
 			rpPlan = &atc.RunPipelinePlan{
 				Name: "version-upgrade",
 				Params: atc.RunParams{
-					"secret": "((secret/x))",
+					"secret": "((vault/x))",
 					"local":  "((.:source-ref))",
-					"mixed":  "((.:source-ref))-((secret/x))",
+					"mixed":  "((.:source-ref))-((vault/x))",
 				},
 			}
 		})
@@ -320,9 +320,9 @@ var _ = Describe("RunPipelineStep", func() {
 		It("reaches the admitter as a reference, while the local var arrives resolved", func() {
 			Expect(stepErr).NotTo(HaveOccurred())
 			Expect(admittedRequest().Params).To(Equal(atc.RunParams{
-				"secret": "((secret/x))",
+				"secret": "((vault/x))",
 				"local":  "deadbeef",
-				"mixed":  "deadbeef-((secret/x))",
+				"mixed":  "deadbeef-((vault/x))",
 			}))
 		})
 	})
@@ -369,7 +369,7 @@ var _ = Describe("RunPipelineStep", func() {
 		It("is unmoved by what a credential reference resolves to", func() {
 			referencing := atc.RunPipelinePlan{
 				Name:   "version-upgrade",
-				Params: atc.RunParams{"ref": "((secret/x))"},
+				Params: atc.RunParams{"ref": "((vault/x))"},
 			}
 
 			Expect(digestFor(referencing, map[string]any{"unrelated": "before"})).
@@ -378,7 +378,7 @@ var _ = Describe("RunPipelineStep", func() {
 
 		It("is not the digest of the secret a reference names", func() {
 			Expect(digestFor(
-				atc.RunPipelinePlan{Name: "version-upgrade", Params: atc.RunParams{"ref": "((secret/x))"}},
+				atc.RunPipelinePlan{Name: "version-upgrade", Params: atc.RunParams{"ref": "((vault/x))"}},
 				localVars,
 			)).NotTo(Equal(digestFor(
 				atc.RunPipelinePlan{Name: "version-upgrade", Params: atc.RunParams{"ref": "deadbeef"}},

@@ -127,7 +127,7 @@ is best-effort — failures are logged and do not block the rest of the sweep.
   etc.) are mapped to their standard Docker images.
 - **Web UI**: Identical.
 - **PostgreSQL schema**: Same database, same migrations.
-- **Auth**: Local users with browser login and renewable sessions.
+- **Auth**: Same OIDC/OAuth/local user configuration.
 - **API**: Same REST API (plus new health endpoint, see below).
 
 ## New Pipeline Features
@@ -413,14 +413,16 @@ See `deploy/chart/values.yaml` for all configurable parameters and
 
 - **Database**: Use an external managed database (Cloud SQL, RDS).
   Set `postgresql.enabled=false` and provide `postgresql.host`/`postgresql.port`.
-- **Auth**: Configure local users with strong credentials in `web.localUsers`
-  and assign admins through `web.mainTeamLocalUser`.
+- **Auth**: Keep `web.localUsers` to a strong admin credential and add
+  GitHub, GitLab, LDAP, SAML, OIDC, OAuth and the other Dex connectors through
+  `web.env` (`CONCOURSE_OIDC_*`, `CONCOURSE_MAIN_TEAM_OIDC_GROUP` and the like).
 - **Secrets**: The signing-key Secret in `secrets.signingKeySecret` and the
   encryption-key Secret in `secrets.encryptionKeySecret` are required.
   Generate each key once, outside the chart; every web replica mounts the
   same signing key, so sessions work across replicas and restarts, and reads
-  the same encryption key. The encryption key never rotates and a lost key is
-  a lost database: back the Secret up with the database.
+  the same encryption key. Rotate the encryption key with
+  `concourse migrate --encryption-key NEW --old-encryption-key OLD`; back the
+  Secret up with the database.
 - **Multi-node**: No shared storage is required — the artifact daemon runs on
   every node and moves artifacts over the network. Size
   `artifactDaemon.hostPath` for the node's disk and set

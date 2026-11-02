@@ -22,7 +22,7 @@ func NewRunPipelinePlan(variables vars.Variables, plan atc.RunPipelinePlan) RunP
 //
 // A run's params are stored on the run header, returned by the runs API to
 // anyone who can view the team, and shown to the policy agent. Interpolating
-// `((secret/x))` here would persist the secret in all three places for as long
+// `((vault/x))` here would persist the secret in all three places for as long
 // as the run exists, which is not something a pipeline author asked for by
 // writing a reference. So the reference travels verbatim: materialisation
 // substitutes the param value into the payload config (atc.RunConfig), and the

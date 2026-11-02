@@ -19,6 +19,8 @@ func main() {
 	helpParser := flags.NewParser(&commands.Fly, flags.HelpFlag)
 	helpParser.NamespaceDelimiter = "-"
 
+	commands.WireTeamConnectors(parser.Find("set-team"))
+
 	_, err := parser.Parse()
 	err = loginAndRetry(parser, err)
 	handleError(helpParser, err)

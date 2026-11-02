@@ -81,7 +81,7 @@ func (step *RunPipelineStep) run(ctx context.Context, state RunState, delegate R
 	// other reference travels verbatim, because the params are persisted on
 	// the run header and served to anyone who can view the team: see
 	// creds.RunPipelinePlan for why, and atc.RunConfig for the substitution
-	// that lets `((secret/x))` resolve in the payload at build time instead.
+	// that lets `((vault/x))` resolve in the payload at build time instead.
 	resolvedPlan, err := creds.NewRunPipelinePlan(state, step.plan).Evaluate()
 	if err != nil {
 		return false, err
@@ -203,7 +203,7 @@ type runPipelineDigestInputs struct {
 // run.
 //
 // A credential rotation does not change the digest, because it does not change
-// what was asked for: `((secret/x))` is still `((secret/x))`, resolved afresh by
+// what was asked for: `((vault/x))` is still `((vault/x))`, resolved afresh by
 // the payload on every build. That is the same rule a pipeline's config hash
 // already follows -- rotating a secret does not make a pipeline's config
 // different -- and it is what keeps a rerun of a build re-attaching to its own

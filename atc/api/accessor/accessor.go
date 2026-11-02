@@ -84,6 +84,10 @@ func (a *access) computeTeamRoles() {
 func (a *access) rolesForTeam(auth atc.TeamAuth) []string {
 	connectorID := a.connectorID()
 
+	if strings.EqualFold(connectorID, "cloudfoundry") {
+		connectorID = "cf"
+	}
+
 	userID := a.userID()
 	if userID != "" {
 		userID = fmt.Sprintf("%v:%v", connectorID, userID)

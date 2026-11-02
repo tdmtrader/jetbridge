@@ -48,21 +48,6 @@ var _ = Describe("set-team", func() {
 
 	Context("using a config file", func() {
 		Describe("config validation", func() {
-			Context("unsupported connectors", func() {
-				BeforeEach(func() {
-					cmdParams = []string{"-c", "fixtures/team_config_mixed.yml", "--non-interactive"}
-				})
-				It("rejects mixed membership without submitting a reduced team", func() {
-					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-					Expect(err).NotTo(HaveOccurred())
-					Eventually(sess).Should(gexec.Exit(1))
-					Expect(sess.Err).To(gbytes.Say(`unsupported connector "(github|oauth)" in team role "owner"`))
-					for _, request := range atcServer.ReceivedRequests() {
-						Expect(request.Method).NotTo(Equal(http.MethodPut))
-					}
-				})
-			})
-
 			Describe("no auth", func() {
 				Context("auth config is missing auth for role", func() {
 					BeforeEach(func() {
@@ -150,6 +135,147 @@ var _ = Describe("set-team", func() {
 				})
 			})
 
+			Context("Setting github auth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{"-c", "fixtures/team_config_with_github_auth.yml"}
+				})
+
+				It("shows the users and groups configured for github for a given role", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role member:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- github:some-user"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- github:some-other-org"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role viewer:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- github:some-github-user"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- github:some-org:some-team"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
+			Context("Setting cf auth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{"-c", "fixtures/team_config_with_cf_auth.yml"}
+				})
+
+				It("shows the users and groups configured for cf auth for a given role", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role member:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-member"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-org:some-space:developer"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-admin"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-org"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-org:some-space:manager"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-guid"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role viewer:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-org:some-other-space"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-org:some-space:developer"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-org:some-space:auditor"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:some-guid"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
+			Context("Setting ldap auth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{"-c", "fixtures/team_config_with_ldap_auth.yml"}
+				})
+
+				It("shows the users and groups configured for ldap auth for a given role", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role member:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- ldap:some-user"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- ldap:some-admin"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- ldap:some-other-group"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role viewer:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- ldap:some-group"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
+			Context("Setting generic oauth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{"-c", "fixtures/team_config_with_generic_oauth.yml"}
+				})
+
+				It("shows the groups configured for generic oauth for a given role", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role member:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- oauth:some-user"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- oauth:some-admin"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- oauth:some-other-group"))
+
+					Eventually(sess.Out).Should(gbytes.Say("role viewer:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- oauth:some-group"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
 			Context("Setting auth with empty values", func() {
 				BeforeEach(func() {
 					cmdParams = []string{"-c", "fixtures/team_config_empty_values.yml"}
@@ -162,9 +288,9 @@ var _ = Describe("set-team", func() {
 
 					Eventually(sess.Out).Should(gbytes.Say("role member:"))
 					Eventually(sess.Out).Should(gbytes.Say("users:"))
-					Eventually(sess.Out).Should(gbytes.Say("- local:some-member"))
-					Eventually(sess.Out).Should(gbytes.Say("groups:"))
 					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- github:some-org"))
 
 					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
 					Eventually(sess.Out).Should(gbytes.Say("users:"))
@@ -242,7 +368,7 @@ var _ = Describe("set-team", func() {
 
 		Describe("sending", func() {
 			BeforeEach(func() {
-				cmdParams = []string{"-c", "fixtures/team_config_with_local_auth.yml"}
+				cmdParams = []string{"-c", "fixtures/team_config_mixed.yml"}
 
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
@@ -251,13 +377,16 @@ var _ = Describe("set-team", func() {
 							"auth": {
 								"owner":{
 									"users": [
-										"local:some-owner"
+										"github:some-github-user",
+										"local:some-admin"
 									],
-									"groups": []
+									"groups": [
+										"oauth:some-oauth-group"
+									]
 								},
 								"member":{
 									"users": [
-										"local:some-member"
+										"local:some-user"
 									],
 									"groups": []
 								},
@@ -308,7 +437,7 @@ var _ = Describe("set-team", func() {
 
 		Describe("handling server response", func() {
 			BeforeEach(func() {
-				cmdParams = []string{"-c", "fixtures/team_config_with_local_auth.yml"}
+				cmdParams = []string{"-c", "fixtures/team_config_mixed.yml"}
 			})
 
 			Context("when the server returns 500", func() {
@@ -320,13 +449,16 @@ var _ = Describe("set-team", func() {
 							"auth": {
 								"owner":{
 									"users": [
-										"local:some-owner"
+										"github:some-github-user",
+										"local:some-admin"
 									],
-									"groups": []
+									"groups": [
+										"oauth:some-oauth-group"
+									]
 								},
 								"member":{
 									"users": [
-										"local:some-member"
+										"local:some-user"
 									],
 									"groups": []
 								},
@@ -426,9 +558,76 @@ var _ = Describe("set-team", func() {
 				})
 			})
 
+			Context("Setting cf auth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{"--cf-org", "myorg-1", "--cf-space", "myorg-2:myspace", "--cf-user", "my-username", "--cf-space-guid", "myspace-guid"}
+				})
+
+				It("shows the users and groups configured for cf auth", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:my-username"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:myorg-1"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:myorg-2:myspace"))
+					Eventually(sess.Out).Should(gbytes.Say("- cf:myspace-guid"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
+			Context("Setting ldap auth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{"--ldap-group", "my-group", "--ldap-user", "my-username"}
+				})
+
+				It("shows the users and groups configured for ldap auth", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("- ldap:my-username"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- ldap:my-group"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
+			Context("Setting generic oauth", func() {
+				BeforeEach(func() {
+					cmdParams = []string{
+						"--oauth-group", "cool-scope-name",
+					}
+				})
+
+				It("shows the groups configured for generic oauth", func() {
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+
+					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
+					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
+					Eventually(sess.Out).Should(gbytes.Say("users:"))
+					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- oauth:cool-scope-name"))
+
+					sess.Interrupt()
+					Eventually(sess).Should(gexec.Exit(1))
+				})
+			})
+
 			Context("Setting auth with empty arguments", func() {
 				BeforeEach(func() {
-					cmdParams = []string{"--local-user", "", "--local-user", "samson", "--local-user", ""}
+					cmdParams = []string{"--oauth-group", "", "--github-team", "samson-org:samson-team", "--github-user", ""}
 				})
 
 				It("ignores empty arguments", func() {
@@ -437,9 +636,9 @@ var _ = Describe("set-team", func() {
 					Eventually(sess.Out).Should(gbytes.Say("setting team: venture"))
 					Eventually(sess.Out).Should(gbytes.Say("role owner:"))
 					Eventually(sess.Out).Should(gbytes.Say("users:"))
-					Eventually(sess.Out).Should(gbytes.Say("- local:samson"))
-					Eventually(sess.Out).Should(gbytes.Say("groups:"))
 					Eventually(sess.Out).Should(gbytes.Say("none"))
+					Eventually(sess.Out).Should(gbytes.Say("groups:"))
+					Eventually(sess.Out).Should(gbytes.Say("- github:samson-org:samson-team"))
 
 					interruptAtPrompt(sess)
 					Eventually(sess).Should(gexec.Exit(1))
@@ -492,8 +691,10 @@ var _ = Describe("set-team", func() {
 			BeforeEach(func() {
 				cmdParams = []string{
 					"--local-user", "brock-obama",
-					"--local-user", "lisa",
-					"--local-user", "frank",
+					"--github-org", "obama-org",
+					"--github-team", "samson-org:venture-team",
+					"--github-user", "lisa",
+					"--github-user", "frank",
 				}
 
 				atcServer.AppendHandlers(
@@ -503,9 +704,14 @@ var _ = Describe("set-team", func() {
 							"auth": {
 								"owner":{
 									"users": [
-										"local:brock-obama", "local:lisa", "local:frank"
+										"github:lisa",
+										"github:frank",
+										"local:brock-obama"
 									],
-									"groups": []
+									"groups": [
+										"github:obama-org",
+										"github:samson-org:venture-team"
+									]
 								}
 							}
 						}`),

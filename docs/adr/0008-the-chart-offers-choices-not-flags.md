@@ -123,17 +123,13 @@ settings leave the values budget. Each keeps an open schema tombstone and
 removed-key diagnostic for one release. Result reads use concurrency 2 and a
 fixed 1Gi disk scratch volume; private spool setup and cleanup remain.
 
-Amended 2026-10-09 — Amended by C6: deliberately reduce the binary to local
-user authentication, Kubernetes Secrets (with dummy, noop and ID-token support
-retained), and Prometheus or Lager metrics. Remove the five vendor credential
-managers, nine external auth connectors, and three vendor metric emitters.
-`web.env` remains grandfathered: it previously reached these flags, and vendor
-pipeline var_sources bypassed chart configuration entirely. This is a binary
-capability reduction, not a consequence of the chart's closed values. See
-`deploy/chart/MIGRATING.md` for persisted-data checks and rollout verification.
-The branch's merges since 2026-02 are internal; recurring upstream rebases are
-not a rationale for this decision. These backends had recent fork fixes, so
-removal is based on the chosen capability boundary, not presumed inactivity.
+Amended 2026-10-09, reverted 2026-11-02 — C6 reduced the binary to local user
+authentication, Kubernetes Secrets and Prometheus or Lager metrics. That was a
+mistake: this ADR governs the chart's shape, not what the binary can do, and a
+capability one deployment does not use is still used by others. The auth
+connectors and the credential managers are back, reached through `web.env`.
+Metrics and tracing are consolidated to Prometheus, OpenTelemetry and Google
+Cloud Trace.
 
 Amended 2026-10-30: removed keys no longer get a one-release tombstone. The
 open schema stubs, the removed-keys table in `_validate.tpl` and the

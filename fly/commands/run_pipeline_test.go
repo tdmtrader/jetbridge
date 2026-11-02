@@ -159,10 +159,10 @@ var _ = Describe("RunPipelineCommand", func() {
 
 		sourced := &RunPipelineCommand{
 			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
-			JSONVars: []flaghelpers.JSONVariablePairFlag{{Ref: vars.Reference{Source: "source", Path: "a"}, Value: float64(1)}},
+			JSONVars: []flaghelpers.JSONVariablePairFlag{{Ref: vars.Reference{Source: "vault", Path: "a"}, Value: float64(1)}},
 		}
 		Expect(sourced.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(
-			MatchError(ContainSubstring("--json-var parameter name source:a")),
+			MatchError(ContainSubstring("--json-var parameter name vault:a")),
 		)
 
 		illFormed := &RunPipelineCommand{

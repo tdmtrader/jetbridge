@@ -18,7 +18,7 @@ var templatePlaceholderPattern = regexp.MustCompile(`\(\((([-/\.\w\pL]+\:)?[-/\.
 // declaredTemplateParameter returns the first reference in text that names a
 // declared template parameter or a reserved run value.
 //
-// A qualified, dotted, or undeclared reference such as ((source:token)) is an
+// A qualified, dotted, or undeclared reference such as ((vault:token)) is an
 // ordinary Concourse variable: MaterializeRunConfig does not substitute it, so
 // it is left entirely alone.
 func declaredTemplateParameter(text string, declared map[string]struct{}) (string, bool) {
