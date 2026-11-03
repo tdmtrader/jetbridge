@@ -109,15 +109,14 @@ func TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult(t *testing.T) {
 }
 
 // liveHangarRequireRunResults gates a check that runs a v2 Run to a published
-// result: it skips while web.hangarOutputCapture and web.runResults both
-// expect off, and once either expects on, every other feature a Run's result
-// needs must expect on too and the live-tests password must be set. It
-// returns the password.
+// result: it skips while web.hangarOutputCapture expects off, and once it
+// expects on, every other feature a Run's result needs must expect on too and
+// the live-tests password must be set. It returns the password.
 func liveHangarRequireRunResults(t *testing.T) string {
 	t.Helper()
-	liveHangarRequire(t, "web.hangarOutputCapture", "web.runResults")
+	liveHangarRequire(t, "web.hangarOutputCapture")
 	manifest := loadLiveManifest(t)
-	for _, feature := range []string{"daemon.hangarOutput", "web.hangarOutput", "web.hangarOutputCapture", "web.runResults", "store.disk"} {
+	for _, feature := range []string{"daemon.hangarOutput", "web.hangarOutput", "web.hangarOutputCapture", "store.disk"} {
 		if manifest.Features[feature].Expect != "on" {
 			t.Fatalf("the manifest expects Run results on but %s %q; a Run's result needs it", feature, manifest.Features[feature].Expect)
 		}

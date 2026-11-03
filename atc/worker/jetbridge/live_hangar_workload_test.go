@@ -44,7 +44,7 @@ import (
 // named to the tier by CONCOURSE_LIVE_REVIEW_WORKER_IMAGE. The credential
 // handed off is the fixture's synthetic auth.json, never a real one.
 //
-// Both skip while web.hangarOutputCapture and web.runResults expect off in
+// Both skip while web.hangarOutputCapture expects off in
 // testdata/live_deployment.json; see liveHangarRequireRunResults.
 
 const (
