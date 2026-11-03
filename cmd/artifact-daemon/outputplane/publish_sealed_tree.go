@@ -72,8 +72,10 @@ func tarDirectory(root string, out io.Writer) error {
 
 			switch {
 			case info.IsDir():
+				// No trailing separator: the canonicalizer refuses one, and the
+				// type flag already says this is a directory.
 				if err := writeHeader(writer, &tar.Header{
-					Typeflag: tar.TypeDir, Name: name + "/", Mode: 0o755,
+					Typeflag: tar.TypeDir, Name: name, Mode: 0o755,
 				}); err != nil {
 					return err
 				}
