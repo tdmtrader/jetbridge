@@ -1,0 +1,29 @@
+# LDAP sign-in with CredHub as the credential manager.
+web:
+  env:
+  - name: CONCOURSE_LDAP_DISPLAY_NAME
+    value: Corp LDAP
+  - name: CONCOURSE_LDAP_HOST
+    value: ldap.example:636
+  - name: CONCOURSE_LDAP_BIND_DN
+    value: cn=concourse,ou=services,dc=example,dc=com
+  - name: CONCOURSE_LDAP_BIND_PW
+    valueFrom:
+      secretKeyRef:
+        name: ldap-bind
+        key: password
+  - name: CONCOURSE_LDAP_USER_SEARCH_BASE_DN
+    value: ou=people,dc=example,dc=com
+  - name: CONCOURSE_LDAP_USER_SEARCH_USERNAME
+    value: uid
+  - name: CONCOURSE_MAIN_TEAM_LDAP_GROUP
+    value: ci-admins
+  - name: CONCOURSE_CREDHUB_URL
+    value: https://credhub.example:8844
+  - name: CONCOURSE_CREDHUB_CLIENT_ID
+    value: concourse
+  - name: CONCOURSE_CREDHUB_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: credhub-client
+        key: client-secret

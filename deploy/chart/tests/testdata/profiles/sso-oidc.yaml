@@ -1,0 +1,25 @@
+# Everyone signs in through an OIDC provider; there is no local user, and the
+# main team is owned by a provider group. The database is external.
+web:
+  localUsers: ""
+  mainTeamLocalUser: ""
+  env:
+  - name: CONCOURSE_OIDC_DISPLAY_NAME
+    value: Example SSO
+  - name: CONCOURSE_OIDC_ISSUER
+    value: https://sso.example/realms/ci
+  - name: CONCOURSE_OIDC_CLIENT_ID
+    value: concourse
+  - name: CONCOURSE_OIDC_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: oidc-client
+        key: client-secret
+  - name: CONCOURSE_OIDC_GROUPS_KEY
+    value: groups
+  - name: CONCOURSE_MAIN_TEAM_OIDC_GROUP
+    value: platform-admins
+postgresql:
+  enabled: false
+  host: postgres.example
+  existingSecret: concourse-postgres

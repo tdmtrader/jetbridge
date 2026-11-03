@@ -1,0 +1,6 @@
+# The operator's own registry-image build, and a type pipelines name without
+# declaring it.
+kubernetes:
+  baseResourceTypes:
+    registry-image: registry.example/registry-image-resource:1.12
+    git-with-ado: registry.example/git-resource-ado:1.4

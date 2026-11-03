@@ -1,0 +1,23 @@
+# GitHub OAuth beside a local admin, with Vault as the credential manager.
+web:
+  env:
+  - name: CONCOURSE_GITHUB_CLIENT_ID
+    value: example-client-id
+  - name: CONCOURSE_GITHUB_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: github-oauth
+        key: client-secret
+  - name: CONCOURSE_MAIN_TEAM_GITHUB_ORG
+    value: example-org
+  - name: CONCOURSE_VAULT_URL
+    value: https://vault.example:8200
+  - name: CONCOURSE_VAULT_PATH_PREFIX
+    value: /concourse
+  - name: CONCOURSE_VAULT_AUTH_BACKEND
+    value: approle
+  - name: CONCOURSE_VAULT_AUTH_PARAM
+    valueFrom:
+      secretKeyRef:
+        name: vault-approle
+        key: auth-param

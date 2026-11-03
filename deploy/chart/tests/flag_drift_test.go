@@ -72,7 +72,9 @@ var (
 	// A bare argument that is not a flag: the subcommand, e.g. "- web".
 	renderedArg = regexp.MustCompile(`^\s*-\s+([a-z][a-z0-9-]*)\s*$`)
 	// Both help dialects: "  -name type" (stdlib) and "  -x, --name" / "      --name" (go-flags).
-	helpFlag = regexp.MustCompile(`(?m)^\s+(?:-\w,\s+)?--?([a-z0-9][a-z0-9-]*)`)
+	// Anchored to the option column: go-flags wraps long descriptions into
+	// deeply indented lines that would otherwise read as flags ("--web", "add-loc-").
+	helpFlag = regexp.MustCompile(`(?m)^ {2,12}(?:-\w,\s+)?--?([a-z0-9][a-z0-9-]*)`)
 )
 
 // flagsBySubcommand attributes every rendered flag to the subcommand of the

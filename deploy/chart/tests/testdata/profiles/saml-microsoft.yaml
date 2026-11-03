@@ -1,0 +1,22 @@
+# SAML and Microsoft sign-in side by side.
+web:
+  env:
+  - name: CONCOURSE_SAML_DISPLAY_NAME
+    value: Corp SAML
+  - name: CONCOURSE_SAML_SSO_URL
+    value: https://idp.example/sso
+  - name: CONCOURSE_SAML_CA_CERT
+    value: /etc/concourse/saml/ca.crt
+  - name: CONCOURSE_MAIN_TEAM_SAML_GROUP
+    value: ci-admins
+  - name: CONCOURSE_MICROSOFT_CLIENT_ID
+    value: example-client-id
+  - name: CONCOURSE_MICROSOFT_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: microsoft-oauth
+        key: client-secret
+  - name: CONCOURSE_MICROSOFT_TENANT
+    value: example.onmicrosoft.com
+  - name: CONCOURSE_MAIN_TEAM_MICROSOFT_GROUP
+    value: ci-admins

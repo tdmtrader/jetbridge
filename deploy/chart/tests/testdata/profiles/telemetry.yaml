@@ -1,0 +1,23 @@
+# OTel metrics and OTLP traces to a collector, Google Cloud metrics and the
+# Prometheus scrape with its monitor and alerts, behind a network policy.
+web:
+  replicas: 2
+  env:
+  - name: CONCOURSE_OTEL_METRICS_GCP_PROJECT_ID
+    value: example-project
+otelMetrics:
+  otlpAddress: otel-collector.monitoring.svc:4317
+  otlpHeaders:
+    x-tenant: ci
+  otlpUseTLS: true
+tracing:
+  otlpAddress: tempo.monitoring.svc:4317
+  serviceName: concourse-web
+serviceMonitor:
+  enabled: true
+alertingRules:
+  enabled: true
+networkPolicy:
+  enabled: true
+pdb:
+  enabled: true
