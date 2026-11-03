@@ -323,8 +323,13 @@ func (b *engineBuild) finish(logger lager.Logger, err error, succeeded bool, fro
 	}
 }
 
+// runOutputPendingInterval is how long a Run build's finish waits before
+// asking again whether its captures have settled.
+var runOutputPendingInterval = 2 * time.Second
+
 func (b *engineBuild) saveStatus(logger lager.Logger, status atc.BuildStatus) {
-	if err := b.build.Finish(db.BuildStatus(status)); err != nil {
+	status, err := b.finishOverRunOutput(logger, status)
+	if err != nil {
 		logger.Error("failed-to-finish-build", err)
 		return
 	}
@@ -350,6 +355,38 @@ func (b *engineBuild) saveStatus(logger lager.Logger, status atc.BuildStatus) {
 	}
 	if b.build.ID() >= id {
 		metric.LatestCompletedBuildStatus(job.TeamName(), job.PipelineName(), job.Name(), status.String())
+	}
+}
+
+// finishOverRunOutput finishes the build, holding it while the captures of a
+// Run build settle. Left to the build tracker, a pending finish would run the
+// plan again, and a producer whose capture is already publishing cannot be
+// admitted twice: the build would error over an output it published. The wait
+// ends when the finish lands; when the build is aborted, whose build closure
+// settles the rest; or when the web drains, leaving the build to the next web.
+// It returns the status the build finished with.
+func (b *engineBuild) finishOverRunOutput(logger lager.Logger, status atc.BuildStatus) (atc.BuildStatus, error) {
+	for {
+		err := b.build.Finish(db.BuildStatus(status))
+		if errors.Is(err, atc.ErrRunOutputLost) {
+			b.buildStepErrored(logger, err.Error())
+			status = atc.StatusErrored
+			continue
+		}
+		if !errors.Is(err, atc.ErrRunOutputPending) || status == atc.StatusAborted {
+			return status, err
+		}
+
+		logger.Info("waiting-for-run-output", lager.Data{"status": status})
+		select {
+		case <-b.release:
+			return status, err
+		case <-time.After(runOutputPendingInterval):
+		}
+
+		if b.abortRequested(logger) {
+			status = atc.StatusAborted
+		}
 	}
 }
 

@@ -46,6 +46,43 @@ func (b trackingLockErrorBuild) AcquireTrackingLock(lager.Logger, time.Duration)
 // processed. Both routes to that flag are counted — reading the row directly
 // and reloading the build — so the barrier holds whichever one the watcher
 // uses.
+// pendingOutputBuild answers its first finishes as a Run build's would while
+// its captures settle, then finishes for real.
+type pendingOutputBuild struct {
+	db.Build
+
+	answers  []error
+	onFinish func(n int)
+
+	mu       sync.Mutex
+	statuses []db.BuildStatus
+}
+
+func (b *pendingOutputBuild) Finish(status db.BuildStatus) error {
+	b.mu.Lock()
+	b.statuses = append(b.statuses, status)
+	n := len(b.statuses)
+	var answer error
+	if len(b.answers) > 0 {
+		answer, b.answers = b.answers[0], b.answers[1:]
+	}
+	b.mu.Unlock()
+
+	if b.onFinish != nil {
+		b.onFinish(n)
+	}
+	if answer != nil {
+		return answer
+	}
+	return b.Build.Finish(status)
+}
+
+func (b *pendingOutputBuild) finishes() []db.BuildStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]db.BuildStatus(nil), b.statuses...)
+}
+
 type abortListenerRecordingBuild struct {
 	db.Build
 
@@ -526,6 +563,82 @@ var _ = Describe("Engine", func() {
 									waitGroup.Wait()
 									Expect(realBuild.Reload()).To(BeTrue())
 									Expect(realBuild.Status()).To(Equal(db.BuildStatusSucceeded))
+								})
+							})
+
+							// A Run build's finish waits for its captures to
+							// publish. Leaving the build to the tracker would
+							// run its plan again, and a producer whose capture
+							// is already publishing cannot be admitted twice.
+							Context("when the finish waits on Run output", func() {
+								var pending *pendingOutputBuild
+
+								BeforeEach(func() {
+									restore := SetRunOutputPendingInterval(10 * time.Millisecond)
+									DeferCleanup(restore)
+									fakeStep.RunReturns(true, nil)
+									pending = &pendingOutputBuild{Build: aborts, answers: []error{atc.ErrRunOutputPending, atc.ErrRunOutputPending}}
+									dbBuild = pending
+								})
+
+								It("asks again with the same status instead of running the plan again", func() {
+									waitGroup.Wait()
+									Expect(fakeStep.RunCallCount()).To(Equal(1))
+									Expect(pending.finishes()).To(Equal([]db.BuildStatus{db.BuildStatusSucceeded, db.BuildStatusSucceeded, db.BuildStatusSucceeded}))
+									Expect(realBuild.Reload()).To(BeTrue())
+									Expect(realBuild.Status()).To(Equal(db.BuildStatusSucceeded))
+								})
+
+								It("holds the tracking lock until the finish lands", func() {
+									waitGroup.Wait()
+									expectTrackingLockReleased()
+								})
+
+								Context("when the output can no longer be published", func() {
+									BeforeEach(func() {
+										pending.answers = []error{atc.ErrRunOutputPending, atc.ErrRunOutputLost}
+									})
+
+									It("errors the build and says why", func() {
+										waitGroup.Wait()
+										Expect(pending.finishes()).To(Equal([]db.BuildStatus{db.BuildStatusSucceeded, db.BuildStatusSucceeded, db.BuildStatusErrored}))
+										Expect(realBuild.Reload()).To(BeTrue())
+										Expect(realBuild.Status()).To(Equal(db.BuildStatusErrored))
+										Expect(recorder.events).To(ContainElement(BeAssignableToTypeOf(event.Error{})))
+									})
+								})
+
+								Context("when the build is aborted while it waits", func() {
+									BeforeEach(func() {
+										pending.answers = []error{atc.ErrRunOutputPending, atc.ErrRunOutputPending}
+										pending.onFinish = func(n int) {
+											if n == 1 {
+												defer GinkgoRecover()
+												abortHandle, _, err := fixture.BuildFactory.Build(realBuild.ID())
+												Expect(err).NotTo(HaveOccurred())
+												Expect(abortHandle.MarkAsAborted()).To(Succeed())
+											}
+										}
+									})
+
+									It("finishes it aborted and leaves the rest to its build closure", func() {
+										waitGroup.Wait()
+										Expect(pending.finishes()).To(Equal([]db.BuildStatus{db.BuildStatusSucceeded, db.BuildStatusAborted}))
+									})
+								})
+
+								Context("when the web drains while it waits", func() {
+									BeforeEach(func() {
+										pending.answers = []error{atc.ErrRunOutputPending}
+										pending.onFinish = func(int) { close(release) }
+									})
+
+									It("leaves the build started for the next web", func() {
+										waitGroup.Wait()
+										Expect(pending.finishes()).To(HaveLen(1))
+										Expect(realBuild.Reload()).To(BeTrue())
+										Expect(realBuild.Status()).To(Equal(db.BuildStatusStarted))
+									})
 								})
 							})
 

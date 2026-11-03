@@ -723,6 +723,18 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 			}
 			return atc.ErrRunOutputPending
 		}
+		if outputPending && status == BuildStatusSucceeded && !aborted {
+			var lost bool
+			if err = tx.QueryRow(`SELECT EXISTS (
+				SELECT 1 FROM pipeline_run_captures s
+				JOIN hangar_captures c USING (execution_id, output_name)
+				WHERE s.build_id=$1 AND c.state IN ('discarded','failed'))`, b.id).Scan(&lost); err != nil {
+				return err
+			}
+			if lost {
+				return atc.ErrRunOutputLost
+			}
+		}
 		if outputPending {
 			return requestClosure()
 		}

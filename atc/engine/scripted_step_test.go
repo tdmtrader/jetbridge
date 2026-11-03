@@ -43,3 +43,9 @@ func (s *scriptedStep) RunArgsForCall(i int) (context.Context, exec.RunState) {
 	defer s.mu.Unlock()
 	return s.runs[i].ctx, s.runs[i].state
 }
+
+func (s *scriptedStep) RunCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.runs)
+}

@@ -189,6 +189,10 @@ func walkRunTasks(step StepConfig, repeated bool, visit func(*TaskStep, bool) er
 // ErrRunOutputPending preserves an admitted producer until its Run-owned finish disposition is durable.
 var ErrRunOutputPending = errors.New("Run output disposition is pending")
 
+// ErrRunOutputLost refuses a succeeded finish over a capture that was
+// discarded or failed: no wait can publish it, so the build cannot succeed.
+var ErrRunOutputLost = errors.New("Run output was not published")
+
 // RunTaskImage returns the rootfs_uri the stable task taskID runs from, but
 // only when nothing else can put a container in that task's Pod: no image
 // artifact replaces it, no image_resource supplies one and no sidecar runs
