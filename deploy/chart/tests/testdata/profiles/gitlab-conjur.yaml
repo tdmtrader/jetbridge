@@ -1,0 +1,25 @@
+# GitLab sign-in with Conjur as the credential manager.
+web:
+  env:
+  - name: CONCOURSE_GITLAB_CLIENT_ID
+    value: example-client-id
+  - name: CONCOURSE_GITLAB_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: gitlab-oauth
+        key: client-secret
+  - name: CONCOURSE_GITLAB_HOST
+    value: https://gitlab.example
+  - name: CONCOURSE_MAIN_TEAM_GITLAB_GROUP
+    value: platform
+  - name: CONCOURSE_CONJUR_APPLIANCE_URL
+    value: https://conjur.example
+  - name: CONCOURSE_CONJUR_ACCOUNT
+    value: example
+  - name: CONCOURSE_CONJUR_AUTHN_LOGIN
+    value: host/concourse
+  - name: CONCOURSE_CONJUR_AUTHN_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: conjur-authn
+        key: api-key

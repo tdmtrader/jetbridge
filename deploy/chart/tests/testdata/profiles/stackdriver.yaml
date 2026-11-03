@@ -1,0 +1,5 @@
+# Traces to Google Cloud Trace instead of an OTLP collector.
+web:
+  env:
+  - name: CONCOURSE_TRACING_STACKDRIVER_PROJECTID
+    value: example-project

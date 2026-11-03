@@ -1,0 +1,29 @@
+# A cloud deployment: generic OAuth sign-in, SSM and Secrets Manager for
+# credentials, and the idtoken issuer for OIDC federation to the cloud.
+web:
+  env:
+  - name: CONCOURSE_OAUTH_DISPLAY_NAME
+    value: Corp OAuth
+  - name: CONCOURSE_OAUTH_CLIENT_ID
+    value: concourse
+  - name: CONCOURSE_OAUTH_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: oauth-client
+        key: client-secret
+  - name: CONCOURSE_OAUTH_AUTH_URL
+    value: https://auth.example/authorize
+  - name: CONCOURSE_OAUTH_TOKEN_URL
+    value: https://auth.example/token
+  - name: CONCOURSE_OAUTH_USERINFO_URL
+    value: https://auth.example/userinfo
+  - name: CONCOURSE_MAIN_TEAM_OAUTH_GROUP
+    value: ci-admins
+  - name: CONCOURSE_AWS_SSM_REGION
+    value: us-east-1
+  - name: CONCOURSE_AWS_SECRETSMANAGER_REGION
+    value: us-east-1
+  - name: CONCOURSE_OIDC_ISSUER_URL
+    value: https://concourse.example
+  - name: CONCOURSE_SIGNING_KEY_ROTATION_PERIOD
+    value: 168h

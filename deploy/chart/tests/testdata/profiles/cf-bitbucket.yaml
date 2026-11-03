@@ -1,0 +1,23 @@
+# Cloud Foundry UAA and Bitbucket Cloud sign-in side by side.
+web:
+  env:
+  - name: CONCOURSE_CF_API_URL
+    value: https://api.cf.example
+  - name: CONCOURSE_CF_CLIENT_ID
+    value: concourse
+  - name: CONCOURSE_CF_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: cf-uaa
+        key: client-secret
+  - name: CONCOURSE_MAIN_TEAM_CF_SPACE_WITH_DEVELOPER_ROLE
+    value: example-org:ci
+  - name: CONCOURSE_BITBUCKET_CLOUD_CLIENT_ID
+    value: example-client-id
+  - name: CONCOURSE_BITBUCKET_CLOUD_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: bitbucket-oauth
+        key: client-secret
+  - name: CONCOURSE_MAIN_TEAM_BITBUCKET_CLOUD_TEAM
+    value: example-team
