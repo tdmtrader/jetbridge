@@ -364,6 +364,11 @@ func (b *engineBuild) saveStatus(logger lager.Logger, status atc.BuildStatus) {
 // admitted twice: the build would error over an output it published. The wait
 // ends when the finish lands; when the build is aborted, whose build closure
 // settles the rest; or when the web drains, leaving the build to the next web.
+//
+// An execution with no closure is different: nothing closes it while the
+// build waits, only a step that reattaches to it. So that finish leaves the
+// build to the tracker, which runs the plan again.
+//
 // It returns the status the build finished with.
 func (b *engineBuild) finishOverRunOutput(logger lager.Logger, status atc.BuildStatus) (atc.BuildStatus, error) {
 	for {
@@ -374,6 +379,10 @@ func (b *engineBuild) finishOverRunOutput(logger lager.Logger, status atc.BuildS
 			continue
 		}
 		if !errors.Is(err, atc.ErrRunOutputPending) || status == atc.StatusAborted {
+			return status, err
+		}
+		if errors.Is(err, atc.ErrRunExecutionOpen) {
+			logger.Info("run-execution-open", lager.Data{"status": status})
 			return status, err
 		}
 

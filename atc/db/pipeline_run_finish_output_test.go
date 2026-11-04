@@ -34,7 +34,21 @@ var _ = Describe("Run build finish over its captures", func() {
 
 	It("keeps a succeeded finish pending while its capture is in flight", func() {
 		f.start(f.review, f.reviewPlan)
-		Expect(f.review.Finish(db.BuildStatusSucceeded)).To(MatchError(atc.ErrRunOutputPending))
+		err := f.review.Finish(db.BuildStatusSucceeded)
+		Expect(err).To(MatchError(atc.ErrRunOutputPending))
+		Expect(err).NotTo(MatchError(atc.ErrRunExecutionOpen), "a capture in flight is worth waiting for")
+	})
+
+	// Once the captures settle, an execution with no closure is closed only by
+	// a step that reattaches to it. The engine runs the plan again for that
+	// answer instead of waiting on it.
+	It("says an errored finish over settled captures has an open execution", func() {
+		settle(f.start(f.review, f.reviewPlan), true)
+		err := f.review.Finish(db.BuildStatusErrored)
+		Expect(err).To(MatchError(atc.ErrRunExecutionOpen))
+		Expect(err).To(MatchError(atc.ErrRunOutputPending))
+		completed, _ := f.buildState(f.review)
+		Expect(completed).To(BeFalse())
 	})
 
 	It("says a succeeded finish lost its output once the capture failed", func() {

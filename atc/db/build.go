@@ -711,9 +711,9 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 		// publication remains the Run terminalizer's separate transaction.
 		// Aborting a build is scoped to that build: open work it cannot close
 		// itself becomes its build closure, never its Run's cancellation.
-		requestClosure := func() error {
+		requestClosure := func(pending error) error {
 			if !aborted || status != BuildStatusAborted || cancellation != nil || run.CancellationRequested() {
-				return atc.ErrRunOutputPending
+				return pending
 			}
 			if err := recordBuildClosure(ctx, tx, int(runID.Int64), b.id); err != nil {
 				return err
@@ -721,7 +721,7 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 			if err := tx.Commit(); err != nil {
 				return err
 			}
-			return atc.ErrRunOutputPending
+			return pending
 		}
 		if outputPending && status == BuildStatusSucceeded && !aborted {
 			var lost bool
@@ -736,14 +736,14 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 			}
 		}
 		if outputPending {
-			return requestClosure()
+			return requestClosure(atc.ErrRunOutputPending)
 		}
 		var executionClosed bool
 		if err = tx.QueryRow(`SELECT run_execution_closed($1)`, b.id).Scan(&executionClosed); err != nil {
 			return err
 		}
 		if !executionClosed {
-			return requestClosure()
+			return requestClosure(atc.ErrRunExecutionOpen)
 		}
 	}
 

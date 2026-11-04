@@ -193,6 +193,12 @@ var ErrRunOutputPending = errors.New("Run output disposition is pending")
 // discarded or failed: no wait can publish it, so the build cannot succeed.
 var ErrRunOutputLost = errors.New("Run output was not published")
 
+// ErrRunExecutionOpen is the ErrRunOutputPending a finish returns when every
+// capture has settled but an admitted execution has no closure. Only a step
+// that reattaches to that execution can close it, so the build has to run
+// again rather than wait.
+var ErrRunExecutionOpen = fmt.Errorf("%w: an admitted execution has no closure", ErrRunOutputPending)
+
 // RunTaskImage returns the rootfs_uri the stable task taskID runs from, but
 // only when nothing else can put a container in that task's Pod: no image
 // artifact replaces it, no image_resource supplies one and no sidecar runs

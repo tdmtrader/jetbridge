@@ -627,6 +627,27 @@ var _ = Describe("Engine", func() {
 									})
 								})
 
+								// An execution with no closure is closed only by
+								// a step that reattaches to it, which waiting
+								// never does: the tracker runs the plan again.
+								Context("when an execution has no closure once the captures settle", func() {
+									BeforeEach(func() {
+										pending.answers = []error{atc.ErrRunOutputPending, atc.ErrRunExecutionOpen}
+									})
+
+									It("leaves the build started for the tracker", func() {
+										waitGroup.Wait()
+										Expect(pending.finishes()).To(HaveLen(2))
+										Expect(realBuild.Reload()).To(BeTrue())
+										Expect(realBuild.Status()).To(Equal(db.BuildStatusStarted))
+									})
+
+									It("releases the tracking lock", func() {
+										waitGroup.Wait()
+										expectTrackingLockReleased()
+									})
+								})
+
 								Context("when the web drains while it waits", func() {
 									BeforeEach(func() {
 										pending.answers = []error{atc.ErrRunOutputPending}
