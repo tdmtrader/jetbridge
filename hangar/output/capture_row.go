@@ -50,6 +50,12 @@ func (state CaptureState) Validate() error {
 	return nil
 }
 
+// Sealed reports whether the producer's tree is fixed: it exited successfully,
+// every container of its Pod stopped, and the digest is written.
+func (state CaptureState) Sealed() bool {
+	return state == CapturePublishing || state == CapturePublished
+}
+
 // Terminal reports whether no further state transition exists.
 func (state CaptureState) Terminal() bool {
 	return state == CapturePublished || state == CaptureDiscarded || state == CaptureFailed

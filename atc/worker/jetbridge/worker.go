@@ -147,6 +147,11 @@ func (w *Worker) FindOrCreateContainer(
 		return nil, nil, fmt.Errorf("find container in db: %w", err)
 	}
 
+	if containerSpec.RunTaskSealed && createdContainer == nil {
+		// Its outputs live only under the container it ran in.
+		return nil, nil, errors.New("the task's result is sealed but the container it ran in is gone; its outputs cannot be read again")
+	}
+
 	var containerHandle string
 
 	if creatingContainer != nil {

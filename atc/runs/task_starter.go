@@ -47,12 +47,33 @@ func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan at
 		if s.Output == nil {
 			return spec, atc.ErrRunResultsUnavailable
 		}
+		sealed, err := s.runTaskSealed(ctx, buildID, task.TaskID)
+		if err != nil {
+			return spec, err
+		}
+		if sealed {
+			// A re-driven build: the producer already exited successfully and
+			// its capture was sealed. It is not admitted again.
+			prepared.RunTaskSealed = true
+			return prepared, nil
+		}
 		prepared.ExecutionControl, err = s.Output.Prepare(ctx, buildID, plan, prepared)
 		if err != nil {
 			return spec, err
 		}
 	}
 	return prepared, nil
+}
+
+// runTaskSealed reports whether a retained task's capture is already sealed.
+func (s *ExecutionStarter) runTaskSealed(ctx context.Context, buildID int, taskID string) (bool, error) {
+	var sealed bool
+	err := s.transaction(ctx, func(tx db.Tx) error {
+		capture, found, err := s.Factory.RunCaptureTask(ctx, tx, buildID, taskID)
+		sealed = found && capture.Capture.State.Sealed()
+		return err
+	})
+	return sealed, err
 }
 
 func runInputDestination(dir string, task atc.TaskStep, name string) (string, bool) {

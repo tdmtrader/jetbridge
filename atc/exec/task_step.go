@@ -379,6 +379,22 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, err
 	}
 
+	if containerSpec.RunTaskSealed {
+		// A re-driven build reached a producer whose capture is already
+		// sealed: it exited successfully and its tree is fixed. Starting it
+		// again would be a second execution of one capture, so its outcome is
+		// read back instead.
+		fmt.Fprintln(delegate.Stdout(), "this task's result was sealed before the build was resumed; not running it again")
+		step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
+		if step.metadata.TaskCacheIdentity != nil {
+			if err := step.registerCaches(ctx, repository, config, volumeMounts, step.containerMetadata); err != nil {
+				return false, err
+			}
+		}
+		delegate.Finished(logger, ExitStatus(0))
+		return true, nil
+	}
+
 	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	process, err := runtime.AttachOrRun(

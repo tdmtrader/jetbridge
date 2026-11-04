@@ -81,6 +81,17 @@ func (delegate *recordingTaskDelegate) FetchImage(
 	return delegate.TaskDelegate.FetchImage(ctx, image, types, privileged, tags, skipInterval)
 }
 
+// sealedRunTaskPreparer answers what retained Run task preparation answers for
+// a producer whose capture is already sealed.
+type sealedRunTaskPreparer struct{ calls int }
+
+func (p *sealedRunTaskPreparer) PrepareTask(_ context.Context, _ int, plan atc.TaskPlan, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
+	p.calls++
+	spec.RunTaskID = plan.TaskID
+	spec.RunTaskSealed = true
+	return spec, nil
+}
+
 func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.FinishTask {
 	GinkgoHelper()
 	var finished []event.FinishTask
@@ -796,6 +807,42 @@ var _ = Describe("TaskStep", func() {
 				})
 
 				itRegistersCaches(false)
+			})
+		})
+
+		Context("when a re-driven Run producer's capture is already sealed", func() {
+			var sealedOutput *runtimetest.Volume
+			var preparer *sealedRunTaskPreparer
+
+			BeforeEach(func() {
+				taskPlan.TaskID = "6f1c3b8e-2f5d-4f7a-9b8e-0d2c4a6e8f10"
+				taskPlan.RunResult = &atc.RunResult{Name: "findings", Output: "some-output"}
+				taskPlan.Config.Outputs = []atc.TaskOutputConfig{{Name: "some-output"}}
+				preparer = &sealedRunTaskPreparer{}
+				taskStepOptions = append(taskStepOptions, exec.WithRunTaskPreparer(preparer))
+				sealedOutput = runtimetest.NewVolume("sealed-output")
+				chosenContainer.Mounts = []runtime.VolumeMount{
+					{Volume: sealedOutput, MountPath: "some-artifact-root/some-output/"},
+				}
+			})
+
+			It("succeeds without starting the producer again", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+				Expect(preparer.calls).To(Equal(1))
+				Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+			})
+
+			It("registers the existing container's outputs for later steps", func() {
+				Expect(repo.AsMap()).To(Equal(map[build.ArtifactName]build.ArtifactEntry{
+					"some-output": {Artifact: sealedOutput},
+				}))
+			})
+
+			It("finishes the task with the producer's successful exit", func() {
+				finished := persistedFinishTasks(fixture, dbBuild)
+				Expect(finished).To(HaveLen(1))
+				Expect(finished[0].ExitStatus).To(Equal(0))
 			})
 		})
 

@@ -178,6 +178,11 @@ func AttachOrRun(ctx context.Context, container Container, spec ProcessSpec, io 
 type ContainerSpec struct {
 	// RunTaskID is populated only by retained Run task preparation.
 	RunTaskID string
+	// RunTaskSealed is set only by retained Run task preparation, when the
+	// task's capture is already sealed: its producer exited successfully and
+	// its Pod is gone. A re-driven build reads that execution's outputs from
+	// its existing container and never starts it again.
+	RunTaskSealed bool
 	// TeamID identifies the team to which the Container belongs.
 	TeamID int
 	// TeamName is the name of the team to which the Container belongs.

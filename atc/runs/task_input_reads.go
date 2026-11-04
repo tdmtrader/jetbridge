@@ -45,6 +45,10 @@ func (s *ExecutionStarter) PrepareInputs(ctx context.Context, owner db.Container
 	if !isBuild || teamID != spec.TeamID || len(volumeNames) != len(spec.Inputs) {
 		return spec, atc.ErrInvalidRunInputs
 	}
+	if spec.RunTaskSealed {
+		// Nothing will read these inputs again.
+		return spec, s.checkSealed(ctx, buildID, spec)
+	}
 	if err := s.CheckStart(ctx, owner, spec); err != nil {
 		return spec, err
 	}

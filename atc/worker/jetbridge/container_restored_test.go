@@ -53,6 +53,14 @@ func restoredTask(worker *jetbridge.Worker, ctx context.Context, handle string, 
 		db.ContainerMetadata{Type: db.ContainerTypeTask}, spec, delegate)
 }
 
+func mountPaths(mounts []runtime.VolumeMount) []string {
+	paths := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		paths = append(paths, mount.MountPath)
+	}
+	return paths
+}
+
 func restoredPod(ctx context.Context, clientset *fake.Clientset, namespace string) corev1.Pod {
 	GinkgoHelper()
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
@@ -405,6 +413,41 @@ var _ = Describe("Container", func() {
 
 			Expect(hijackExecutor.execCalls).To(HaveLen(1))
 			Expect(hijackExecutor.execCalls[0].tty).To(BeFalse())
+		})
+	})
+
+	Describe("a sealed Run task", func() {
+		sealedSpec := func() runtime.ContainerSpec {
+			return runtime.ContainerSpec{
+				Dir:           "/tmp/build/workdir",
+				Outputs:       runtime.OutputPaths{"result": "/tmp/build/workdir/result/"},
+				RunTaskID:     "6f1c3b8e-2f5d-4f7a-9b8e-0d2c4a6e8f10",
+				RunTaskSealed: true,
+			}
+		}
+
+		It("refuses to create a container its outputs never lived in", func() {
+			_, _, err := restoredTask(worker, ctx, "sealed-gone", sealedSpec(), delegate)
+			Expect(err).To(MatchError(ContainSubstring("container it ran in is gone")))
+			creating, created, err := dbWorker.FindContainer(db.NewFixedHandleContainerOwner("sealed-gone"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(creating).To(BeNil())
+			Expect(created).To(BeNil())
+		})
+
+		It("finds the container it ran in and its output mounts without creating a Pod", func() {
+			spec := sealedSpec()
+			spec.RunTaskSealed = false
+			original, originalMounts := createTaskOn(worker, "sealed-found", spec)
+
+			container, mounts, err := restoredTask(worker, ctx, "sealed-found", sealedSpec(), delegate)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(container.DBContainer().Handle()).To(Equal(original.DBContainer().Handle()))
+			Expect(mountPaths(mounts)).To(Equal(mountPaths(originalMounts)))
+			Expect(mountPaths(mounts)).To(ContainElement("/tmp/build/workdir/result/"))
+			pods, err := fakeClientset.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).To(BeEmpty())
 		})
 	})
 

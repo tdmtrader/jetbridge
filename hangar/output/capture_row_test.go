@@ -16,3 +16,17 @@ func TestCaptureDerivedIdentitiesAreStable(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Only a capture whose digest is written names a producer that exited
+// successfully with a fixed tree.
+func TestOnlyPublishingAndPublishedCapturesAreSealed(t *testing.T) {
+	want := map[CaptureState]bool{
+		CapturePending: false, CapturePublishing: true, CapturePublished: true,
+		CaptureDiscarded: false, CaptureFailed: false,
+	}
+	for _, state := range CaptureStates() {
+		if state.Sealed() != want[state] {
+			t.Errorf("%s: Sealed() = %v, want %v", state, state.Sealed(), want[state])
+		}
+	}
+}
