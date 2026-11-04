@@ -437,6 +437,7 @@ func (p *execProcess) reportExactOutcomeWithoutRerunning(ctx context.Context) (r
 	// Its own errors are flattened with %v on purpose: the budget's deadline
 	// is not the step's timeout, and task_step reads DeadlineExceeded as one.
 	// A cancelled step's own context error is joined by Wait instead.
+	stepCtx := ctx
 	ctx, cancel := detachedLedgerContext(ctx)
 	defer cancel()
 
@@ -467,7 +468,17 @@ func (p *execProcess) reportExactOutcomeWithoutRerunning(ctx context.Context) (r
 		}
 		return runtime.ProcessResult{ExitStatus: exitCode}, nil
 	}
-	if _, _, journaled := p.exactJournal(); classified.Classification == executioncontrol.ClassificationExecuting && journaled {
+	if state, resource, journaled := p.exactJournal(); classified.Classification == executioncontrol.ClassificationExecuting && journaled {
+		if !resource {
+			// A task still running when its web restarted has no exit to
+			// read yet. Wait for it under the step's own context, then read
+			// the journal under a fresh ledger budget: the wait is as long
+			// as the task, and the budget is not.
+			p.followJournaledTask(stepCtx, state)
+			cancel()
+			ctx, cancel = detachedLedgerContext(stepCtx)
+			defer cancel()
+		}
 		outcome, start, err := p.recoverJournaledOutcome(ctx)
 		if err != nil {
 			return runtime.ProcessResult{}, fmt.Errorf("%w: reading the original journaled outcome: %v", ErrExactOutcomeUnresolved, err)

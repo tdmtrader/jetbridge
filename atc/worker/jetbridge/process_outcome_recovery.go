@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"code.cloudfoundry.org/lager/v3"
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -111,6 +113,54 @@ func (p *execProcess) recoverJournaledOutcome(ctx context.Context) (executioncon
 	outcome, err := readJournaledOutcome(ctx, p.clientset, p.executor, p.config.Namespace, p.podName, p.exact.nodeName, state, start)
 	return outcome, start, err
 }
+
+// followJournaledTask waits, under the step's own context, for a supervised
+// task that is still running to journal its exit, replaying its log to the
+// step's stdout as the supervisor itself does on a re-exec.
+//
+// A web that restarted mid-task reattaches through recovery: the start is
+// recorded, so the supervisor is never delivered again, and a single read of
+// the journal finds no exit and leaves a running command unresolved. This
+// waits only while the journal's runner is alive, never launches anything and
+// writes nothing: the journal stays the supervisor's. Its own failure is only
+// logged, because the read that follows says what the journal holds.
+func (p *execProcess) followJournaledTask(ctx context.Context, state string) {
+	if p.executor == nil || p.exact == nil {
+		return
+	}
+	// The log replayed is the original Pod's only: a replacement has none of
+	// this journal, and its files must not stand in for the old Pod's.
+	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+	if err != nil || string(pod.UID) != string(p.exact.podUID) || pod.Spec.NodeName != p.exact.nodeName {
+		return
+	}
+	stdout := p.processIO.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	script := strings.ReplaceAll(exactFollowTaskScript, "__STATE_DIR__", shellQuote(state))
+	if err := p.executor.ExecInPod(ctx, p.config.Namespace, p.podName, mainContainerName, []string{"sh", "-c", script},
+		nil, stdout, nil, false, ExecAttrs{Purpose: "exact-follow"}); err != nil {
+		lagerctx.FromContext(ctx).Info("stopped-following-journaled-task", lager.Data{"error": err.Error()})
+	}
+}
+
+// exactFollowTaskScript is the supervisor's own wait, without its launch: it
+// returns at once unless the start is claimed, no exit is journaled and the
+// runner that will journal one is alive.
+const exactFollowTaskScript = `S=__STATE_DIR__
+alive() {
+  pid="$(cat "$S/pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+[ -f "$S/start" ] && [ ! -f "$S/exit" ] && alive || exit 0
+tail -n +1 -f "$S/log" 2>/dev/null &
+T=$!
+while [ ! -f "$S/exit" ] && alive; do sleep 1; done
+sleep 2
+kill "$T" 2>/dev/null
+wait "$T" 2>/dev/null
+exit 0`
 
 func readJournaledOutcome(ctx context.Context, client kubernetes.Interface, executor PodExecutor, namespace, podName, nodeName, state string, start executioncontrol.Acknowledgement) (executioncontrol.ExitOutcome, error) {
 	if executor == nil {

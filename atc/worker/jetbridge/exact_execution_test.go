@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -584,6 +585,46 @@ var _ = Describe("An execProcess under exact control", func() {
 		Entry("and the delivered supervisor has journaled no exit yet", false),
 	)
 
+	// A web restarted while its task ran. The task's start is recorded, so the
+	// next web reattaches through recovery and never delivers the supervisor
+	// again. Its runner is still alive: the step waits for the journaled exit,
+	// replays the task's log, and reports the task's own exit.
+	It("waits for a task still running when its web restarted, and reports its exit", func() {
+		hold()
+		container.recordWitness = func(context.Context, executioncontrol.Acknowledgement) error { return nil }
+		id := fmt.Sprintf("reattach-%d", time.Now().UnixNano())
+		spec := runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 7"}}
+		_, state := supervisorCommandParts(id, spec)
+		DeferCleanup(func() { Expect(os.RemoveAll(state)).To(Succeed()) })
+		local := &restartedWebExecutor{state: state, gone: make(chan struct{}), delivered: make(chan struct{})}
+		processFor := func(stdout io.Writer) *execProcess {
+			p := newExecProcess(id, "capture-pod", clientset, container.config, container, local, spec,
+				runtime.ProcessIO{Stdout: stdout, Stderr: &bytes.Buffer{}}, nil)
+			return p
+		}
+
+		firstCtx, stopFirst := context.WithCancel(ctx)
+		first := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			defer close(first)
+			_, _ = processFor(&bytes.Buffer{}).Wait(firstCtx)
+		}()
+		DeferCleanup(func() { stopFirst(); close(local.gone); <-first })
+		Eventually(local.delivered).Should(BeClosed())
+
+		stdout := &bytes.Buffer{}
+		result, err := processFor(stdout).Wait(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(7))
+		Expect(local.deliveries()).To(Equal(1), "the reattaching web delivered the task again")
+		Expect(stdout.String()).To(ContainSubstring("still running"), "the task's log was not replayed")
+		observed, err := harness.Client.Classify(ctx, identity)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(observed.Classification.Authoritative()).To(BeTrue())
+		Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(7))
+	})
+
 	// The ledger and the Run's witness are asked under their own detached
 	// budget, whose deadline is not the step's. A step reads
 	// context.DeadlineExceeded as its own timeout and fails; a stall here is an
@@ -943,6 +984,69 @@ func (executor *lateAnswerExecutor) ExecInPod(ctx context.Context, _, _, _ strin
 		return err
 	}
 	return nil
+}
+
+// restartedWebExecutor is a web that died with its task's exec stream open.
+// Its one delivery journals what the exact supervisor would -- the claimed
+// start, the runner's pid and a log -- and starts a runner on the host that
+// journals exit 7 a moment later, then never answers. Every other exec runs
+// the real script on the host. It does not run the supervisor itself, whose
+// setsid a macOS host lacks.
+type restartedWebExecutor struct {
+	mu        sync.Mutex
+	count     int
+	state     string
+	gone      chan struct{}
+	delivered chan struct{}
+}
+
+func (executor *restartedWebExecutor) ExecInPod(ctx context.Context, _, _, _ string, command []string,
+	stdin io.Reader, stdout, stderr io.Writer, _ bool, attrs ExecAttrs) error {
+	if attrs.Purpose == "step-command" {
+		executor.mu.Lock()
+		executor.count++
+		first := executor.count == 1
+		executor.mu.Unlock()
+		if !first {
+			return errors.New("the task was delivered again")
+		}
+		state := executor.state
+		if err := os.MkdirAll(state, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(state, "start"), []byte("started\n"), 0o600); err != nil {
+			return err
+		}
+		runner := exec.Command("sh", "-c", `S="$1"; echo still running >>"$S/log"; sleep 2; echo 7 >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit"`, "runner", state)
+		if err := runner.Start(); err != nil {
+			return err
+		}
+		go func() { _ = runner.Wait() }()
+		if err := os.WriteFile(filepath.Join(state, "pid"), []byte(strconv.Itoa(runner.Process.Pid)+"\n"), 0o600); err != nil {
+			return err
+		}
+		close(executor.delivered)
+		select {
+		case <-executor.gone:
+		case <-ctx.Done():
+		}
+		return errors.New("the web went away")
+	}
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			return &ExecExitError{ExitCode: exit.ExitCode()}
+		}
+		return err
+	}
+	return nil
+}
+
+func (executor *restartedWebExecutor) deliveries() int {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	return executor.count
 }
 
 // The resource cancel script can run without procfs when it precedes dispatch:
