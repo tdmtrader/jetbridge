@@ -163,6 +163,13 @@ func (repository *containerRepository) FindDestroyingContainers(workerName strin
 	return destroyingContainers, err
 }
 
+// RemoveMissingContainers deletes created containers whose runtime has been
+// missing for longer than the grace period.
+//
+// A Run producer's container is kept until its build completes. Its Pod is
+// released as soon as the node acknowledges its outcome, while the build is
+// still running, and a resumed build reads that producer's other outputs from
+// this container rather than running the producer again (runs: checkSealed).
 func (repository *containerRepository) RemoveMissingContainers(gracePeriod time.Duration) (int, error) {
 	result, err := psql.Delete("containers c USING workers w").
 		Where(sq.Expr("c.worker_name = w.name")).
@@ -171,6 +178,11 @@ func (repository *containerRepository) RemoveMissingContainers(gracePeriod time.
 				sq.Expr(fmt.Sprintf("c.state='%s'", atc.ContainerStateCreated)),
 				sq.Expr(fmt.Sprintf("w.state!='%s'", WorkerStateStalled)),
 				sq.Expr(fmt.Sprintf("NOW() - missing_since > '%s'", fmt.Sprintf("%.0f seconds", gracePeriod.Seconds()))),
+				sq.Expr(`NOT EXISTS (
+					SELECT 1 FROM pipeline_run_executions e
+					JOIN pipeline_run_captures s ON s.execution_id = e.execution_id
+					JOIN builds b ON b.id = e.build_id
+					WHERE e.build_id = c.build_id AND e.plan_id = c.plan_id AND NOT b.completed)`),
 			},
 		).RunWith(repository.conn).
 		Exec()
