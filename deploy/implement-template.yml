@@ -55,6 +55,9 @@ jobs:
         run_inputs:
           - name: snapshot
             input: source
+          - name: change
+            input: change
+            result: change
         run_result:
           name: validation
           output: validation

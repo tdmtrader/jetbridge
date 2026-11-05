@@ -79,7 +79,7 @@ func TestInstalledTemplateMatchesTheWorkload(t *testing.T) {
 	}
 	results := map[string]atc.RunTaskDeclaration{}
 	for _, d := range declarations {
-		if d.Result == nil || len(d.Inputs) != 1 || d.Inputs[0] != (atc.RunInput{Name: SnapshotInput, Input: "source"}) {
+		if d.Result == nil || len(d.Inputs) == 0 || d.Inputs[0] != (atc.RunInput{Name: SnapshotInput, Input: "source"}) {
 			t.Fatalf("a producer does not take %q on source: %+v", SnapshotInput, d)
 		}
 		results[d.Result.Name] = d
@@ -87,6 +87,11 @@ func TestInstalledTemplateMatchesTheWorkload(t *testing.T) {
 	author, validate := results[ChangeResult], results[ValidationResult]
 	if author.TaskID == "" || validate.TaskID == "" {
 		t.Fatalf("template does not publish %q and %q: %+v", ChangeResult, ValidationResult, declarations)
+	}
+	// validate reads the author's change as this Run's own result, a managed
+	// read of the published tree, never as the author's build artifact.
+	if len(author.Inputs) != 1 || len(validate.Inputs) != 2 || validate.Inputs[1] != (atc.RunInput{Name: ChangeResult, Input: "change", Result: ChangeResult}) {
+		t.Fatalf("validate does not read %q as an in-Run result input on change: %+v", ChangeResult, declarations)
 	}
 	if got := atc.RunTaskImage(config, author.TaskID); got != "docker:///"+pinnedWorker {
 		t.Fatalf("the change producer runs %q, not the pinned worker image", got)

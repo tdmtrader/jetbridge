@@ -219,12 +219,14 @@ func checkInstalledImplementTemplate(in RunInputAdmission, runID int) error {
 	if len(args) != 5 || !strings.Contains(args[1], "jb-review-worker implement") || args[3] != "brine-model" || args[4] != fmt.Sprintf("--run-id=%d", runID) {
 		return fmt.Errorf("installed template did not preserve the implement mode, operator model and admitted Run ID: %v", args)
 	}
-	// The validate task routes the same snapshot input, publishes the
-	// validation result, and runs the operator's command on the operator's
-	// image: never the pinned worker image that receives credentials.
+	// The validate task routes the same snapshot input and reads the author's
+	// change as this Run's own result, publishes the validation result, and
+	// runs the operator's command on the operator's image: never the pinned
+	// worker image that receives credentials.
 	validate, ok := definition.Materialized.Jobs[0].PlanSequence[1].Config.(*atc.TaskStep)
-	if !ok || validate.RunResult == nil || validate.RunResult.Name != implementclient.ValidationResult || len(validate.RunInputs) != 1 || validate.RunInputs[0].Name != implementclient.SnapshotInput || validate.Config.Run.Path != "/bin/sh" {
-		return fmt.Errorf("installed template lost its validate task's snapshot input, validation result or launcher")
+	if !ok || validate.RunResult == nil || validate.RunResult.Name != implementclient.ValidationResult || len(validate.RunInputs) != 2 || validate.RunInputs[0].Name != implementclient.SnapshotInput ||
+		validate.RunInputs[1] != (atc.RunInput{Name: implementclient.ChangeResult, Input: "change", Result: implementclient.ChangeResult}) || validate.Config.Run.Path != "/bin/sh" {
+		return fmt.Errorf("installed template lost its validate task's snapshot input, change result input, validation result or launcher")
 	}
 	if image := atc.RunTaskImage(definition.Materialized, validate.TaskID); image != "docker:///example.test/toolchain@sha256:"+strings.Repeat("b", 64) {
 		return fmt.Errorf("installed validate task runs %q, not the operator's validate image", image)
