@@ -78,18 +78,16 @@ var _ = BeforeEach(func() {
 	savePipeline("landing-compose", atc.Config{Template: true,
 		Params: []atc.ParamSchema{{Name: "repository", Type: atc.ParamTypeString, Required: true}, {Name: "trunk", Type: atc.ParamTypeString, Required: true}, {Name: "entries", Type: atc.ParamTypeString, Required: true}},
 		Jobs: atc.JobConfigs{{Name: "compose", PlanSequence: []atc.Step{
-			{Config: &atc.TaskStep{Name: "compose", TaskID: uuid.NewString(), RunResult: &atc.RunResult{Name: "candidate", Output: "candidate"},
-				Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Outputs: []atc.TaskOutputConfig{{Name: "candidate"}, {Name: "manifest"}}}}},
-			{Config: &atc.TaskStep{Name: "manifest", TaskID: uuid.NewString(), RunResult: &atc.RunResult{Name: "manifest", Output: "manifest"},
-				Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "manifest"}}, Outputs: []atc.TaskOutputConfig{{Name: "manifest"}}}}},
+			{Config: &atc.TaskStep{Name: "compose", TaskID: uuid.NewString(), RunResult: &atc.RunResult{Name: "composition", Output: "composition"},
+				Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Outputs: []atc.TaskOutputConfig{{Name: "composition"}}}}},
 		}}}})
 	savePipeline("landing-land", atc.Config{Template: true,
 		Params: []atc.ParamSchema{{Name: "repository", Type: atc.ParamTypeString, Required: true}, {Name: "trunk", Type: atc.ParamTypeString, Required: true}, {Name: "entries", Type: atc.ParamTypeString, Required: true}},
 		Jobs: atc.JobConfigs{{Name: "land", PlanSequence: []atc.Step{
 			{Config: &atc.TaskStep{Name: "land", TaskID: uuid.NewString(),
-				RunInputs: []atc.RunInput{{Name: "manifest", Input: "manifest"}, {Name: "candidate", Input: "candidate"}},
+				RunInputs: []atc.RunInput{{Name: "composition", Input: "composition"}},
 				RunResult: &atc.RunResult{Name: "verdict", Output: "verdict"},
-				Config:    &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "manifest"}, {Name: "candidate"}}, Outputs: []atc.TaskOutputConfig{{Name: "verdict"}}}}},
+				Config:    &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "composition"}}, Outputs: []atc.TaskOutputConfig{{Name: "verdict"}}}}},
 		}}}})
 
 	displayUserIds, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})

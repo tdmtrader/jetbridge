@@ -2,7 +2,7 @@
 # fly set-pipeline -p landing-land -c deploy/landing-land-template.yml
 # -v landing_image=<image with git> -v github-token=<token with push to the
 # trunk>. The landing queue component admits a Run of it per candidate, with
-# the compose Run's manifest and candidate bound as run inputs.
+# the compose Run's composition bound as a run input.
 #
 # land rebuilds the commit from the manifest's facts by the recipe both
 # templates share, refuses unless it gets compose's sha, and pushes it to the
@@ -29,10 +29,8 @@ jobs:
         timeout: 10m
         task_id: 05cedfec-c786-4a73-aa18-433c8101d8d6
         run_inputs:
-          - name: manifest
-            input: manifest
-          - name: candidate
-            input: candidate
+          - name: composition
+            input: composition
         run_result:
           name: verdict
           output: verdict
@@ -42,8 +40,7 @@ jobs:
           platform: linux
           rootfs_uri: docker:///((landing_image))
           inputs:
-            - name: manifest
-            - name: candidate
+            - name: composition
           outputs:
             - name: verdict
           run:
@@ -53,9 +50,9 @@ jobs:
               - -c
               - |
                 # land: rebuild compose's commit and fast-forward the trunk to it.
-                # $1 repository, $2 trunk; inputs manifest/ (compose's facts) and candidate/ (the tested tree)
+                # $1 repository, $2 trunk; input composition/: manifest/ (compose's facts) and candidate/ (the tested tree)
                 repo=$1 trunk=$2
-                manifest=$PWD/manifest verdict=$PWD/verdict/verdict.json
+                manifest=$PWD/composition/manifest verdict=$PWD/verdict/verdict.json
                 val() { grep "^$1=" "$manifest/manifest.env" 2>/dev/null | head -1 | cut -d= -f2-; }
                 esc() { printf '%s' "$1" | tr '\n' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
                 say() { printf '{"outcome":"%s","sha":"%s","reason":"%s"}\n' "$1" "$2" "$(esc "$3")" > "$verdict"; echo "land: $1 $2 $3"; }

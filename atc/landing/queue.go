@@ -176,9 +176,9 @@ func (e *Engine) settleLand(ctx context.Context, queue db.LandingQueue, intent d
 }
 
 // admitLand admits the land Run for a composed candidate, binding the compose
-// Run's manifest and candidate results, and records it on the intent in the
-// same transaction. A candidate whose results are no longer bindable is
-// composed again; an admission the port refuses outright leaves the intent for
+// Run's composition result, and records it on the intent in the same
+// transaction. A candidate whose composition is no longer bindable, or was
+// never published, is composed again; an admission the port refuses outright leaves the intent for
 // the next pass, except a declaration mismatch, which is a defect to report.
 func (e *Engine) admitLand(ctx context.Context, queue db.LandingQueue, intent db.LandingIntent) (bool, error) {
 	entry, err := e.Queues.Entry(ctx, intent.EntryRowID)
@@ -197,7 +197,7 @@ func (e *Engine) admitLand(ctx context.Context, queue db.LandingQueue, intent db
 	run, _, err := e.Port.AdmitVersionedRun(ctx, tx, runs.Admission{
 		Template:  runs.TemplateRef{Team: queue.TeamName, Pipeline: atc.PipelineRef{Name: queue.Config.Land}},
 		Params:    runParams(queue, entry),
-		Inputs:    map[string]atc.RunInputSource{"manifest": {RunID: intent.ComposeRunID, Result: "manifest"}, "candidate": {RunID: intent.ComposeRunID, Result: "candidate"}},
+		Inputs:    map[string]atc.RunInputSource{"composition": {RunID: intent.ComposeRunID, Result: "composition"}},
 		Principal: runs.Principal{Queue: &runs.QueuePrincipal{TeamName: queue.TeamName, QueueName: queue.Name}},
 
 		ContractKey: contractKey("land", entry.EntryID, intent.ComposeRunID, intent.Fails),
@@ -206,11 +206,11 @@ func (e *Engine) admitLand(ctx context.Context, queue db.LandingQueue, intent db
 	case errors.Is(err, atc.ErrRunInputUnavailable):
 		tx.Rollback()
 		return e.inTx(ctx, intent, func(tx db.Tx, intent db.LandingIntent) (bool, error) {
-			_, err := e.Queues.Recompose(ctx, tx, intent, fmt.Sprintf("compose Run %d's results are no longer bindable; composing again", intent.ComposeRunID))
+			_, err := e.Queues.Recompose(ctx, tx, intent, fmt.Sprintf("compose Run %d's composition is no longer bindable; composing again", intent.ComposeRunID))
 			return false, err
 		})
 	case errors.Is(err, atc.ErrInvalidRunInputs):
-		return true, fmt.Errorf("land template %q does not declare the manifest and candidate run inputs: %w", queue.Config.Land, err)
+		return true, fmt.Errorf("land template %q does not declare the composition run input: %w", queue.Config.Land, err)
 	case err != nil:
 		e.Logger.Info("landing-land-admission-refused", lager.Data{"queue": queue.Name, "entry": entry.EntryID, "error": err.Error()})
 		return true, nil

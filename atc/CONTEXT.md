@@ -307,9 +307,9 @@ reachability.
 _Avoid_: admit ref
 
 **Candidate**:
-The tree the compose Run publishes as its `candidate` result, built by
-rebuilding the entries on the trunk's head, with its `manifest` naming base,
-entries, identities and the rebuilt sha. Gates test the candidate; the land
+The tree the compose Run publishes under `candidate/` of its one result,
+`composition`, built by rebuilding the entries on the trunk's head, beside a
+`manifest/` naming base, entries, identities and the rebuilt sha. Gates test the candidate; the land
 step rebuilds and pushes exactly that commit. It is never a branch.
 _Avoid_: candidate branch, queue-next
 

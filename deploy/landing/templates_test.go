@@ -77,8 +77,8 @@ func run(s script, outputs []string, params ...string) (int, string, string) {
 	return runWith(s, "", outputs, params...)
 }
 
-// runWith also copies the compose run's manifest and candidate outputs in as
-// the land task's inputs, the way the platform binds them.
+// runWith also copies the compose run's composition output in as the land
+// task's input, the way the platform binds it.
 func runWith(s script, inputsFrom string, outputs []string, params ...string) (int, string, string) {
 	GinkgoHelper()
 	wd := GinkgoT().TempDir()
@@ -86,10 +86,8 @@ func runWith(s script, inputsFrom string, outputs []string, params ...string) (i
 		Expect(os.MkdirAll(filepath.Join(wd, out), 0o755)).To(Succeed())
 	}
 	if inputsFrom != "" {
-		for _, in := range []string{"manifest", "candidate"} {
-			cp := exec.Command("cp", "-R", filepath.Join(inputsFrom, in), filepath.Join(wd, in))
-			Expect(cp.Run()).To(Succeed())
-		}
+		cp := exec.Command("cp", "-R", filepath.Join(inputsFrom, "composition"), filepath.Join(wd, "composition"))
+		Expect(cp.Run()).To(Succeed())
 	}
 	args := append([]string{"-eu", "-c", s.body, s.args[0]}, params...)
 	cmd := exec.Command("/bin/sh", args...)
@@ -148,19 +146,19 @@ var _ = Describe("The landing templates", func() {
 	})
 
 	It("compose rebuilds the entry on the trunk's head with its author, subject, body and an original: trailer, reproducibly", func() {
-		code, out, wd := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, wd := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
 		manifest := readManifest(wd)
 		Expect(manifest["base"]).To(Equal(git(remote, "rev-parse", "core")))
 		head := manifest["head"]
 		Expect(head).To(HaveLen(40))
 		Expect(git(remote, "rev-parse", "core")).NotTo(Equal(head), "compose pushes nothing")
-		Expect(filepath.Join(wd, "candidate", "fix.txt")).To(BeAnExistingFile())
-		info, err := os.Stat(filepath.Join(wd, "candidate", "tool.sh"))
+		Expect(filepath.Join(wd, "composition", "candidate", "fix.txt")).To(BeAnExistingFile())
+		info, err := os.Stat(filepath.Join(wd, "composition", "candidate", "tool.sh"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(info.Mode()&0o100).NotTo(BeZero(), "the exec bit survives git archive")
 
-		code, _, again := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, _, again := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0))
 		Expect(readManifest(again)["head"]).To(Equal(head), "the same input composes the same sha")
 
@@ -186,9 +184,9 @@ var _ = Describe("The landing templates", func() {
 	})
 
 	It("compose records each entry's author, date and message in the manifest, which land rebuilds from", func() {
-		code, out, wd := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, wd := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
-		facts := filepath.Join(wd, "manifest", "entries", "fix-1")
+		facts := filepath.Join(wd, "composition", "manifest", "entries", "fix-1")
 		Expect(filepath.Join(facts, "author")).To(BeAnExistingFile())
 		body, err := os.ReadFile(filepath.Join(facts, "message"))
 		Expect(err).NotTo(HaveOccurred())
@@ -203,13 +201,13 @@ var _ = Describe("The landing templates", func() {
 		git(work, "add", "fix.txt")
 		git(work, "commit", "-q", "-m", "trunk moves onto the same file")
 		git(work, "push", "-q", "origin", "HEAD:core")
-		code, out, _ := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, _ := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(1))
 		Expect(out).To(ContainSubstring("conflicts with the trunk"))
 	})
 
 	It("land rebuilds compose's commit, pushes it by fast-forward, and reports landed", func() {
-		code, out, composed := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, composed := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
 		head := readManifest(composed)["head"]
 		code, out, landed := runWith(land, composed, []string{"verdict"}, remote, "core")
@@ -223,7 +221,7 @@ var _ = Describe("The landing templates", func() {
 	})
 
 	It("land reports moved, and pushes nothing, when the trunk is no longer at the base", func() {
-		code, out, composed := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, composed := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
 		git(work, "checkout", "-q", "core")
 		Expect(os.WriteFile(filepath.Join(work, "other.txt"), []byte("x\n"), 0o644)).To(Succeed())
@@ -238,9 +236,9 @@ var _ = Describe("The landing templates", func() {
 	})
 
 	It("land refuses a manifest with a key missing rather than reading it as moved", func() {
-		code, out, composed := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, composed := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
-		Expect(os.WriteFile(filepath.Join(composed, "manifest", "manifest.env"), []byte("entries=fix-1="+sha+"\n"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(composed, "composition", "manifest", "manifest.env"), []byte("entries=fix-1="+sha+"\n"), 0o644)).To(Succeed())
 		code, out, landed := runWith(land, composed, []string{"verdict"}, remote, "core")
 		Expect(code).To(Equal(1), out)
 		Expect(readVerdict(landed)["outcome"]).To(Equal("failed"))
@@ -248,9 +246,9 @@ var _ = Describe("The landing templates", func() {
 	})
 
 	It("land refuses a manifest whose head it cannot rebuild", func() {
-		code, out, composed := run(compose, []string{"candidate", "manifest"}, remote, "core", "fix-1="+sha)
+		code, out, composed := run(compose, []string{"composition"}, remote, "core", "fix-1="+sha)
 		Expect(code).To(Equal(0), out)
-		env := filepath.Join(composed, "manifest", "manifest.env")
+		env := filepath.Join(composed, "composition", "manifest", "manifest.env")
 		body, err := os.ReadFile(env)
 		Expect(err).NotTo(HaveOccurred())
 		forged := strings.Replace(string(body), "head="+readManifest(composed)["head"], "head="+strings.Repeat("0", 40), 1)
@@ -264,7 +262,7 @@ var _ = Describe("The landing templates", func() {
 
 func readManifest(wd string) map[string]string {
 	GinkgoHelper()
-	body, err := os.ReadFile(filepath.Join(wd, "manifest", "manifest.env"))
+	body, err := os.ReadFile(filepath.Join(wd, "composition", "manifest", "manifest.env"))
 	Expect(err).NotTo(HaveOccurred())
 	manifest := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {

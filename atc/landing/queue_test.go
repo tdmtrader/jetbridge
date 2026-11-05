@@ -47,7 +47,7 @@ var _ = Describe("The landing queue with no gate", func() {
 		pass()
 		Expect(runCount(creator)).To(Equal(1), "a running compose Run admits nothing")
 
-		finishRun(composeRun, atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(composeRun, atc.RunStatusSucceeded, "composition")
 		pass()
 		view = entry("fix-1")
 		Expect(view.State).To(Equal(atc.LandingEntryInFlight))
@@ -55,7 +55,7 @@ var _ = Describe("The landing queue with no gate", func() {
 		landRun := runIDByNumber("landing-land", 1)
 		var bound int
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_run_inputs WHERE run_id = $1 AND source_run_id = $2`, landRun, composeRun).Scan(&bound)).To(Succeed())
-		Expect(bound).To(Equal(2), "the land Run binds the compose Run's manifest and candidate")
+		Expect(bound).To(Equal(1), "the land Run binds the compose Run's composition")
 
 		finishRun(landRun, atc.RunStatusSucceeded, "verdict")
 		results.verdicts[landRun] = landing.Verdict{Outcome: landing.VerdictLanded, SHA: shaB}
@@ -72,7 +72,7 @@ var _ = Describe("The landing queue with no gate", func() {
 	It("When the trunk moved under the land Run the entry is composed again on the new head and lands", func() {
 		submit("fix-1", shaA)
 		pass()
-		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "composition")
 		pass()
 		first := runIDByNumber("landing-land", 1)
 		finishRun(first, atc.RunStatusSucceeded, "verdict")
@@ -82,7 +82,7 @@ var _ = Describe("The landing queue with no gate", func() {
 		Expect(view.Reason).To(ContainSubstring("trunk moved"))
 		Expect(view.State).To(Equal(atc.LandingEntryInFlight), "composed again in the same pass")
 		Expect(view.ComposeRun).To(Equal(2), "a new compose Run, not the old candidate")
-		finishRun(runIDByNumber("landing-compose", 2), atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(runIDByNumber("landing-compose", 2), atc.RunStatusSucceeded, "composition")
 		pass()
 		second := runIDByNumber("landing-land", 2)
 		finishRun(second, atc.RunStatusSucceeded, "verdict")
@@ -113,7 +113,7 @@ var _ = Describe("The landing queue with no gate", func() {
 		engine = newEngine()
 		pass()
 		Expect(runCount(creator)).To(Equal(1))
-		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "composition")
 		pass()
 		engine = newEngine()
 		pass()
@@ -127,7 +127,7 @@ var _ = Describe("The landing queue with no gate", func() {
 	It("A land Run that did not land counts as a failed landing and the same candidate gets another land Run", func() {
 		submit("fix-1", shaA)
 		pass()
-		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "composition")
 		pass()
 		first := runIDByNumber("landing-land", 1)
 		finishRun(first, atc.RunStatusErrored)
@@ -155,7 +155,7 @@ var _ = Describe("The landing queue with no gate", func() {
 	It("A verdict that cannot be read counts as a failed landing and the candidate gets another land Run", func() {
 		submit("fix-1", shaA)
 		pass()
-		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "composition")
 		pass()
 		landRun := runIDByNumber("landing-land", 1)
 		finishRun(landRun, atc.RunStatusSucceeded, "verdict")
@@ -183,23 +183,35 @@ var _ = Describe("The landing queue with no gate", func() {
 		Expect(landRuns).To(BeZero())
 	})
 
-	It("A land template that does not declare the manifest and candidate inputs is a reported defect, and the entry waits", func() {
+	It("A candidate composed by the earlier compose template, which published candidate and manifest, is composed again", func() {
+		submit("fix-1", shaA)
+		pass()
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		pass()
+		view := entry("fix-1")
+		Expect(view.Reason).To(ContainSubstring("no longer bindable"))
+		Expect(view.State).To(Equal(atc.LandingEntryInFlight))
+		Expect(view.ComposeRun).To(Equal(2), "composed again in the same pass")
+		Expect(entry("fix-1").LandRun).To(BeZero())
+	})
+
+	It("A land template that still declares the earlier manifest and candidate inputs is a reported defect, and the entry waits", func() {
 		savePipeline("landing-land-short", atc.Config{Template: true,
 			Params: []atc.ParamSchema{{Name: "repository", Type: atc.ParamTypeString, Required: true}, {Name: "trunk", Type: atc.ParamTypeString, Required: true}, {Name: "entries", Type: atc.ParamTypeString, Required: true}},
 			Jobs: atc.JobConfigs{{Name: "land", PlanSequence: []atc.Step{
 				{Config: &atc.TaskStep{Name: "land", TaskID: uuid.NewString(),
-					RunInputs: []atc.RunInput{{Name: "manifest", Input: "manifest"}},
+					RunInputs: []atc.RunInput{{Name: "manifest", Input: "manifest"}, {Name: "candidate", Input: "candidate"}},
 					RunResult: &atc.RunResult{Name: "verdict", Output: "verdict"},
-					Config:    &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "manifest"}}, Outputs: []atc.TaskOutputConfig{{Name: "verdict"}}}}},
+					Config:    &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "manifest"}, {Name: "candidate"}}, Outputs: []atc.TaskOutputConfig{{Name: "verdict"}}}}},
 			}}}})
 		Expect(queues.SetQueue(ctx, team.ID(), "trunk", atc.LandingQueueConfig{
 			Repository: "https://example.test/repo.git", Trunk: "core", Compose: "landing-compose", Land: "landing-land-short",
 		})).To(Succeed())
 		submit("fix-1", shaA)
 		pass()
-		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "candidate", "manifest")
+		finishRun(runIDByNumber("landing-compose", 1), atc.RunStatusSucceeded, "composition")
 		pass()
-		Expect(engine.Logger.(*lagertest.TestLogger).Buffer()).To(gbytes.Say("does not declare the manifest and candidate run inputs"))
+		Expect(engine.Logger.(*lagertest.TestLogger).Buffer()).To(gbytes.Say("does not declare the composition run input"))
 		Expect(entry("fix-1").State).To(Equal(atc.LandingEntryInFlight))
 		Expect(entry("fix-1").LandRun).To(BeZero())
 		Expect(runCount(creator)).To(Equal(1))

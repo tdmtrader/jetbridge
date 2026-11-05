@@ -7,9 +7,8 @@
 # author, date and message under manifest/entries/<id>/, rebuilds each entry
 # on the trunk's head as one commit by the recipe both templates share
 # (author kept, committer fixed, dates the author's, an original: trailer),
-# and publishes the tree as `candidate` and the facts the land step needs as
-# `manifest`. One task publishes one result, so a second task republishes the
-# manifest.
+# and publishes one result, `composition`: the tree under candidate/ and the
+# facts the land step needs under manifest/.
 template: true
 params:
   - name: repository
@@ -28,14 +27,13 @@ jobs:
         timeout: 10m
         task_id: 9eba7574-fde3-4527-b99c-ee265b8673eb
         run_result:
-          name: candidate
-          output: candidate
+          name: composition
+          output: composition
         config:
           platform: linux
           rootfs_uri: docker:///((landing_image))
           outputs:
-            - name: candidate
-            - name: manifest
+            - name: composition
           run:
             path: /bin/sh
             args:
@@ -45,7 +43,8 @@ jobs:
                 # compose: rebuild the entries on the trunk's head.
                 # $1 repository, $2 trunk, $3 entries (id=sha, comma separated)
                 repo=$1 trunk=$2 entries=$3
-                out=$PWD/candidate manifest=$PWD/manifest
+                out=$PWD/composition/candidate manifest=$PWD/composition/manifest
+                mkdir -p "$out" "$manifest"
                 export GIT_COMMITTER_NAME=landing-queue GIT_COMMITTER_EMAIL=landing-queue@jetbridge
                 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
                 git init -q work && cd work
@@ -87,21 +86,3 @@ jobs:
               - ((repository))
               - ((trunk))
               - ((entries))
-      - task: manifest
-        timeout: 2m
-        task_id: 89d8a769-a75e-4c5a-bd6a-933aa6b38a7f
-        run_result:
-          name: manifest
-          output: manifest
-        config:
-          platform: linux
-          rootfs_uri: docker:///((landing_image))
-          inputs:
-            - name: manifest
-          outputs:
-            - name: manifest
-          run:
-            path: /bin/sh
-            args:
-              - -ec
-              - cat manifest/manifest.env
