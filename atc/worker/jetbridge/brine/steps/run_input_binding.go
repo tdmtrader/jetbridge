@@ -64,14 +64,14 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 				// The implement template's shape: one snapshot input routed to
 				// source in both tasks, the change the author publishes, and
 				// the validation the validate task publishes from source and
-				// the author's change.
+				// the author's change, which it reads as this Run's result.
 				task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
 				task.Name = "author"
 				task.RunInputs = []atc.RunInput{{Name: "snapshot", Input: "source"}}
 				task.RunResult = &atc.RunResult{Name: "change", Output: "change"}
 				task.Config.Outputs = []atc.TaskOutputConfig{{Name: "change"}}
 				config.Jobs[0].PlanSequence = append(config.Jobs[0].PlanSequence, atc.Step{Config: &atc.TaskStep{
-					Name: "validate", TaskID: freshUUID(), RunInputs: []atc.RunInput{{Name: "snapshot", Input: "source"}},
+					Name: "validate", TaskID: freshUUID(), RunInputs: []atc.RunInput{{Name: "snapshot", Input: "source"}, {Name: "change", Input: "change", Result: "change"}},
 					RunResult: &atc.RunResult{Name: "validation", Output: "validation"},
 					Config:    &atc.TaskConfig{Platform: "linux", Inputs: []atc.TaskInputConfig{{Name: "source"}, {Name: "change"}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}, Run: atc.TaskRunConfig{Path: "true"}},
 				}})

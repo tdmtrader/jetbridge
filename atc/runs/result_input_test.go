@@ -229,7 +229,9 @@ var _ = Describe("an in-Run result input", func() {
 
 	Describe("PrepareTask", func() {
 		prepare := func(ctx context.Context) (runtime.ContainerSpec, error) {
-			return starter.PrepareTask(ctx, build.ID(), validate, spec)
+			prepared, sealed, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
+			Expect(sealed).To(BeFalse())
+			return prepared, err
 		}
 
 		It("routes a published result to its input as a Hangar tree", func() {
@@ -293,10 +295,58 @@ var _ = Describe("an in-Run result input", func() {
 		})
 	})
 
+	// A re-driven build reaches the producer again. Once its capture is
+	// sealed it is reported sealed and never admitted again; the later task
+	// reads its result from Hangar, so nothing needs its container.
+	Describe("the producer on a re-driven build", func() {
+		var authorSpec runtime.ContainerSpec
+
+		BeforeEach(func() {
+			// Admission past the sealed check is refused: this output starter
+			// has no node source.
+			starter.Output = &runs.OutputStarter{}
+			authorSpec = runtime.ContainerSpec{TeamID: defaultTeam.ID(), Type: db.ContainerTypeTask, Dir: "/tmp/build/author"}
+		})
+
+		prepareAuthor := func() (bool, error) {
+			_, sealed, err := starter.PrepareTask(ctx, build.ID(), author, authorSpec)
+			return sealed, err
+		}
+
+		It("is sealed once its capture is publishing, and the later task still reads its result", func() {
+			seal()
+			Expect(prepareAuthor()).To(BeTrue())
+			Expect(publish()).To(Succeed())
+			Expect(prepareAuthor()).To(BeTrue())
+			prepared, sealed, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sealed).To(BeFalse())
+			Expect(prepared.Inputs[0].HangarTree).To(PointTo(Equal(publishedRef())))
+		})
+
+		It("is admitted as before while it has no capture, or a pending one", func() {
+			sealed, err := prepareAuthor()
+			Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
+			Expect(sealed).To(BeFalse())
+			start()
+			sealed, err = prepareAuthor()
+			Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
+			Expect(sealed).To(BeFalse())
+		})
+
+		It("is not sealed once its capture failed", func() {
+			seal()
+			Expect(fail()).To(Succeed())
+			sealed, err := prepareAuthor()
+			Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
+			Expect(sealed).To(BeFalse())
+		})
+	})
+
 	It("is admitted as a managed read of the published tree", func() {
 		seal()
 		Expect(publish()).To(Succeed())
-		prepared, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
+		prepared, _, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
 		Expect(err).NotTo(HaveOccurred())
 
 		workers := db.NewWorkerFactory(dbConn, nil)

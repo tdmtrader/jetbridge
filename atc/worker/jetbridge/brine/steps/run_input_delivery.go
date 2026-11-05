@@ -71,7 +71,7 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	spec, err = starter.PrepareTask(ctx, buildID, plan, spec)
+	spec, _, err = starter.PrepareTask(ctx, buildID, plan, spec)
 	if err != nil {
 		return err
 	}

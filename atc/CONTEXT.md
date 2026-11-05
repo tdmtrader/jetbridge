@@ -249,7 +249,12 @@ A template's choice of whether its payloads share one growing task cache
 
 **Run result**:
 One output of a template task, declared on that task (`run_result`), that a
-succeeded run publishes as a tree ref in Hangar.
+succeeded run publishes as a tree ref in Hangar. It is the only way the
+producer's output reaches anything: none of a producer's outputs is a build
+artifact, so a later step of the same job reads the result through a
+`run_inputs` route with `result`, and the producer's other outputs are
+scratch. A resumed build finishes a producer whose capture is already sealed
+without running it or finding its container.
 
 **Run input**:
 A named binding given at admission (a prior run's result, or a sealed

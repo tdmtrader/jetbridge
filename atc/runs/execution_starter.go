@@ -46,13 +46,7 @@ func (s *ExecutionStarter) PrepareContainer(ctx context.Context, owner db.Contai
 	if err != nil || !owned {
 		return spec, err
 	}
-	if !isBuild || teamID != spec.TeamID || (metadata.BuildID != 0 && metadata.BuildID != buildID) || metadata.Type != spec.Type {
-		return spec, atc.ErrRunResultsUnavailable
-	}
-	if spec.RunTaskSealed {
-		return spec, s.checkSealed(ctx, buildID, spec)
-	}
-	if s.Source == nil {
+	if !isBuild || teamID != spec.TeamID || (metadata.BuildID != 0 && metadata.BuildID != buildID) || metadata.Type != spec.Type || s.Source == nil {
 		return spec, atc.ErrRunResultsUnavailable
 	}
 	req := db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: spec.Type}
@@ -102,23 +96,6 @@ func (s *ExecutionStarter) PrepareContainer(ctx context.Context, owner db.Contai
 	}
 	// A cancellation may have committed while the node was being contacted.
 	return spec, s.CheckStart(ctx, owner, spec)
-}
-
-// checkSealed admits nothing: a sealed producer's container is only found
-// again so its outputs can be read. The spec's claim is checked against the
-// capture row, never trusted.
-func (s *ExecutionStarter) checkSealed(ctx context.Context, buildID int, spec runtime.ContainerSpec) error {
-	if spec.RunTaskID == "" {
-		return atc.ErrRunResultsUnavailable
-	}
-	sealed, err := s.runTaskSealed(ctx, buildID, spec.RunTaskID)
-	if err != nil {
-		return err
-	}
-	if !sealed {
-		return fmt.Errorf("%w: Run task %s is not sealed", atc.ErrRunResultsUnavailable, spec.RunTaskID)
-	}
-	return nil
 }
 
 func (s *ExecutionStarter) RecordWitness(ctx context.Context, owner db.ContainerOwner, witness executioncontrol.Acknowledgement) error {

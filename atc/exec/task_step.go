@@ -74,9 +74,10 @@ type TaskDelegate interface {
 	BuildStartTime() time.Time
 }
 
-// RunTaskPreparer resolves a retained task before worker selection.
+// RunTaskPreparer resolves a retained task before worker selection. It
+// reports a producer whose result was already sealed, which is not run again.
 type RunTaskPreparer interface {
-	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
+	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, bool, error)
 }
 
 func WithRunTaskPreparer(p RunTaskPreparer) TaskStepOption {
@@ -339,9 +340,19 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	}
 
 	if runTask {
-		containerSpec, err = step.runTaskPreparer.PrepareTask(ctx, step.metadata.BuildID, step.plan, containerSpec)
+		var sealed bool
+		containerSpec, sealed, err = step.runTaskPreparer.PrepareTask(ctx, step.metadata.BuildID, step.plan, containerSpec)
 		if err != nil {
 			return false, err
+		}
+		if sealed {
+			// A re-driven build reached a producer whose result is already
+			// sealed: it exited successfully and later steps read that result
+			// from Hangar. Starting it again would be a second execution of
+			// one capture.
+			fmt.Fprintln(delegate.Stdout(), "this task's result was sealed before the build was resumed; not running it again")
+			delegate.Finished(logger, ExitStatus(0))
+			return true, nil
 		}
 	}
 
@@ -379,22 +390,6 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, err
 	}
 
-	if containerSpec.RunTaskSealed {
-		// A re-driven build reached a producer whose capture is already
-		// sealed: it exited successfully and its tree is fixed. Starting it
-		// again would be a second execution of one capture, so its outcome is
-		// read back instead.
-		fmt.Fprintln(delegate.Stdout(), "this task's result was sealed before the build was resumed; not running it again")
-		step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
-		if step.metadata.TaskCacheIdentity != nil {
-			if err := step.registerCaches(ctx, repository, config, volumeMounts, step.containerMetadata); err != nil {
-				return false, err
-			}
-		}
-		delegate.Finished(logger, ExitStatus(0))
-		return true, nil
-	}
-
 	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
 	process, err := runtime.AttachOrRun(
@@ -423,7 +418,11 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	result, runErr := process.Wait(ctx)
 
-	step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
+	// A Run producer's outputs reach later steps only as its published
+	// result, through an in-Run result input; none is a build artifact.
+	if step.plan.RunResult == nil {
+		step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
+	}
 
 	// Do not initialize caches for checks or one-off builds.
 	if step.metadata.TaskCacheIdentity != nil {
