@@ -64,10 +64,13 @@ type RunInputBinding struct {
 }
 
 // RunInput routes one named durable binding to an inline task's declared input.
-// It contains no source ref or bearer; admission supplies the exact binding.
+// It contains no source ref or bearer; admission supplies the exact binding,
+// except for an in-Run result input: with Result set, the binding is this
+// Run's own published result of that name, produced earlier in the same job.
 type RunInput struct {
-	Name  string `json:"name"`
-	Input string `json:"input"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+	Result string `json:"result,omitempty"`
 }
 
 func (input *RunInput) UnmarshalJSON(data []byte) error {
@@ -85,6 +88,11 @@ func validateRunInputSlots(task *TaskStep) error {
 	for _, route := range task.RunInputs {
 		if err := output.OutputName(route.Name).Validate(); err != nil {
 			return fmt.Errorf("input name: %w", err)
+		}
+		if route.Result != "" {
+			if err := output.OutputName(route.Result).Validate(); err != nil {
+				return fmt.Errorf("input result: %w", err)
+			}
 		}
 		if seen[route.Input] {
 			return fmt.Errorf("task %s input route %q is duplicated", task.TaskID, route.Input)

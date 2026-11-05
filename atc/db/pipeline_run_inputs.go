@@ -26,7 +26,11 @@ func resolveRunInputs(ctx context.Context, tx Tx, audience runinput.Audience, de
 	names := map[string]bool{}
 	for _, task := range declarations {
 		for _, input := range task.Inputs {
-			names[input.Name] = true
+			// An in-Run result input binds this Run's own result, never a
+			// supplied source.
+			if input.Result == "" {
+				names[input.Name] = true
+			}
 		}
 	}
 	if len(names) != len(supplied) {

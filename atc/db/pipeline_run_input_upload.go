@@ -66,7 +66,7 @@ func (f *pipelineRunFactory) InputUploadAudience(ctx context.Context, tx Tx, tem
 	}
 	for _, task := range declarations {
 		for _, declaration := range task.Inputs {
-			if declaration.Name == input {
+			if declaration.Name == input && declaration.Result == "" {
 				return runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: principal, Input: input}, nil
 			}
 		}

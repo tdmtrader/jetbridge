@@ -47,6 +47,13 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 	var declarations []RunTaskDeclaration
 	seenTasks, seenResults := map[string]bool{}, map[string]bool{}
 	seenInputs := map[string]bool{}
+	type producer struct{ job, task string }
+	producers := map[string]producer{}
+	type inRunRoute struct {
+		job, task string
+		route     RunInput
+	}
+	var inRun []inRunRoute
 	inputEdges := 0
 	expected := expectedJobNames(config.Jobs, entryJobNames(config.Jobs))
 	for _, job := range config.Jobs {
@@ -90,6 +97,9 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 				}
 				for _, input := range task.RunInputs {
 					seenInputs[input.Name] = true
+					if input.Result != "" {
+						inRun = append(inRun, inRunRoute{job: job.Name, task: task.TaskID, route: input})
+					}
 				}
 				if len(seenInputs) > 64 {
 					return errors.New("a template may declare at most 64 named inputs")
@@ -109,6 +119,7 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 					return fmt.Errorf("result name %q is duplicated", task.RunResult.Name)
 				}
 				seenResults[task.RunResult.Name] = true
+				producers[task.RunResult.Name] = producer{job: job.Name, task: task.TaskID}
 				if len(seenResults) > 64 {
 					return errors.New("a template may declare at most 64 results")
 				}
@@ -130,6 +141,34 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 		})
 		if err != nil {
 			return nil, err
+		}
+	}
+	// An in-Run result input is bound to this Run's own result, never by
+	// admission, so its name is not one admission could also supply, and it
+	// reads a result another task of the same job produces.
+	external, inRunResults := map[string]bool{}, map[string]string{}
+	for _, declaration := range declarations {
+		for _, input := range declaration.Inputs {
+			if input.Result == "" {
+				external[input.Name] = true
+			}
+		}
+	}
+	for _, consumer := range inRun {
+		route := consumer.route
+		if external[route.Name] {
+			return nil, fmt.Errorf("Run input %q is both an in-Run result input and an admission input", route.Name)
+		}
+		if bound, found := inRunResults[route.Name]; found && bound != route.Result {
+			return nil, fmt.Errorf("Run input %q names more than one result", route.Name)
+		}
+		inRunResults[route.Name] = route.Result
+		produced, found := producers[route.Result]
+		if !found || produced.job != consumer.job {
+			return nil, fmt.Errorf("Run input %q must name a result of job %s", route.Name, consumer.job)
+		}
+		if produced.task == consumer.task {
+			return nil, fmt.Errorf("task %s cannot consume its own result %q", consumer.task, route.Result)
 		}
 	}
 	mapping, err := json.Marshal(declarations)

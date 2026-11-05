@@ -2,25 +2,23 @@ package runs
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar/output"
 )
 
 // PrepareTask supplies only retained inputs to a stable Run task. Leases are
 // minted later, after the worker has allocated the actual container handle.
 func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan atc.TaskPlan, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
-	var selected db.RunTaskBinding
-	err := s.transaction(ctx, func(tx db.Tx) error {
-		var err error
-		selected, err = db.LoadRunTask(ctx, tx, buildID, plan.TaskID)
-		return err
-	})
+	selected, err := s.loadRunTaskResults(ctx, buildID, plan.TaskID)
 	if err != nil {
 		return spec, err
 	}
@@ -63,6 +61,48 @@ func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan at
 		}
 	}
 	return prepared, nil
+}
+
+// resultInputPoll is how often a task whose in-Run result input is still
+// sealing looks at its capture again.
+const resultInputPoll = time.Second
+
+// loadRunTaskResults loads a Run task once every in-Run result input it reads
+// is published. A capture still pending or publishing is waited for, one short
+// transaction per look and no lock held between them; its own capture deadline
+// bounds the wait. A capture that was discarded or failed, or that the build
+// never started, is unavailable.
+func (s *ExecutionStarter) loadRunTaskResults(ctx context.Context, buildID int, taskID string) (db.RunTaskBinding, error) {
+	for {
+		var selected db.RunTaskBinding
+		err := s.transaction(ctx, func(tx db.Tx) error {
+			var err error
+			selected, err = db.LoadRunTask(ctx, tx, buildID, taskID)
+			return err
+		})
+		if err != nil {
+			return selected, err
+		}
+		waiting := false
+		for _, route := range selected.Task.RunInputs {
+			if _, bound := selected.Inputs[route.Name]; bound || route.Result == "" {
+				continue
+			}
+			state := selected.Results[route.Name]
+			if state != output.CapturePending && state != output.CapturePublishing {
+				return selected, fmt.Errorf("%w: Run result %s was not published", atc.ErrRunInputUnavailable, route.Result)
+			}
+			waiting = true
+		}
+		if !waiting {
+			return selected, nil
+		}
+		select {
+		case <-ctx.Done():
+			return selected, ctx.Err()
+		case <-time.After(resultInputPoll):
+		}
+	}
 }
 
 // runTaskSealed reports whether a retained task's capture is already sealed.
@@ -112,7 +152,10 @@ func matchRunTaskInputs(spec runtime.ContainerSpec, selected db.RunTaskBinding, 
 			if input.RunInput != route.Name || input.Artifact != nil || input.HangarRead != nil || used[i] {
 				return nil, atc.ErrInvalidRunInputs
 			}
-			binding := selected.Inputs[route.Name]
+			binding, bound := selected.Inputs[route.Name]
+			if !bound {
+				return nil, atc.ErrRunInputUnavailable
+			}
 			if resolved {
 				if input.HangarTree == nil || *input.HangarTree != binding.Ref {
 					return nil, atc.ErrInvalidRunInputs

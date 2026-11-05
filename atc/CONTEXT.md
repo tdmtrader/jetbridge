@@ -253,7 +253,9 @@ succeeded run publishes as a tree ref in Hangar.
 
 **Run input**:
 A named binding given at admission (a prior run's result, or a sealed
-uploaded source) and delivered to a template task's `run_inputs`.
+uploaded source), or this run's own published result (a `run_inputs` route
+with `result`, produced earlier in the same job), delivered to a template
+task's `run_inputs` as a managed read.
 
 ### Run admission
 
