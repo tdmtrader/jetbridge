@@ -2,7 +2,7 @@
 
 Behavioral tests for `atc/worker/jetbridge`, run through Brine as a
 third-party runner (`cmd/brine-adapter-jetbridge`, contract 5,
-document-native — see `.brine`'s header comment for what that means).
+document-native — see `local/.brine`'s header comment for what that means).
 Scenarios share
 one `WorkerReady` fixture: a real `envtest` Kubernetes API server + etcd (no
 kubelet), real PostgreSQL, and a real `artifact-daemon` subprocess — no
@@ -37,12 +37,12 @@ needs `otelcol` on `PATH` (or `BRINE_OTELCOL_BINARY`).
 
 ```sh
 sh scripts/build-private-network
-brine run --no-engine --mode sync --format jsonl
+brine run local --no-engine --mode sync --format jsonl
 ```
 
 `build-private-network` compiles `cmd/brine-adapter-jetbridge` and
 `cmd/artifact-daemon`, verifies the BusyBox/namespace prerequisite, and
-requires Linux. `.brine`'s `runner.binary` is `scripts/run-private-network`,
+requires Linux. `local/.brine`'s `runner.binary` is `../scripts/run-private-network`,
 a wrapper — not the adapter itself — that execs the built adapter inside a
 private user+network namespace so this run owns its own loopback and ports
 without touching the host.
@@ -57,7 +57,8 @@ export BRINE_KUBE_CONTEXT=your-authorized-test-context
 There is no default context and no mock fallback. Each scenario creates and
 tears down its own namespace (baseline pod security, a resource quota,
 container limits). From the suite root, plain `brine run` discovers and runs
-both `.brine` and `live/.brine` together.
+both `local/.brine` and `live/.brine` together.
+Run only the complete local tier with `brine run local --no-engine --mode sync`.
 
 The artifact-handoff hostPath/hostPort fixture needs explicit additional
 approval and is not part of an ordinary live run:
@@ -126,9 +127,18 @@ sh scripts/coverage
 ```
 
 Requires `BRINE_KUBE_CONTEXT` and the live-artifact-handoff approvals above;
-builds both tiers, runs both, and requires at least 50% Brine-only coverage
+builds one instrumented adapter, runs the complete local and live manifests
+concurrently in separate process groups, and requires at least 50% Brine-only coverage
 of `atc/worker/jetbridge` production statements — package-scoped, not
-repository-wide. Restores the normal adapter after measuring.
+repository-wide. Each tier must independently pass its CLI verdict and full
+manifest verification. Raw coverage is kept per tier and merged only after
+verification; cross-node work follows the live tier under the same approvals.
+The existing pipeline job retains all cluster exclusion locks. Restores the
+normal adapter after both processes finish.
+
+For a matched sequential baseline or rollback, run
+`BRINE_COVERAGE_SCHEDULE=serial sh scripts/coverage`. This changes scheduling
+only; both modes run the same manifests and coverage gate.
 
 ## Where to look next
 

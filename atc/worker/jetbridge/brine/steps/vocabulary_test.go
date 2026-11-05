@@ -23,7 +23,7 @@ import (
 // These are cheap to check and they only get more useful as the corpus grows.
 
 // featurePaths walks every feature file under ../features, the live tier in
-// features/live included. The .brine manifest at the module root runs only
+// features/live included. The local/.brine manifest runs only
 // features/*.feature and live/.brine runs the rest; the guards read both, so a
 // phrase defined for one tier and said by neither is still reported dead.
 func featurePaths(t *testing.T) []string {

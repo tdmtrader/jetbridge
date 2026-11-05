@@ -281,7 +281,8 @@ jobs:
           # over zero scenarios -- but the reason to go through the CLI is
           # larger than that refusal: the CLI builds the execution document,
           # owns selection, and its verdict folds in the budgets. The script
-          # runs both tiers (local, then live/.brine) and holds the production
+          # runs both complete tiers concurrently in isolated processes, waits
+          # for both verdicts, and holds the production
           # JetBridge statement coverage gate.
           sh scripts/coverage
 

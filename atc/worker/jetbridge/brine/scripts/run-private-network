@@ -3,7 +3,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-# This is brine's runner binary (see .brine's runner.binary): it is invoked
+# This is brine's runner binary (see local/.brine's runner.binary): it is invoked
 # before every local scenario run, so it is the right place to gate on the
 # guard tests rather than trusting each caller to have run them separately.
 # Its stdout IS the adapter's protocol stream (brine and the adapter's own

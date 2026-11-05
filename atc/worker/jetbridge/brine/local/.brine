@@ -10,10 +10,12 @@
 # The binary is a wrapper, not the adapter itself: scripts/run-private-network
 # builds .build/brine-adapter-jetbridge and runs it inside an unprivileged
 # user+network namespace so the local tier owns its own loopback and ports.
-# The live tier (live/.brine) runs the same adapter against a real cluster.
+# The live tier (../live/.brine) runs the same adapter against a real cluster.
+# Separate directories let coverage run both complete manifests concurrently;
+# a plain brine run from the module root still discovers both.
 runner:
   name: jetbridge
-  binary: scripts/run-private-network
+  binary: ../scripts/run-private-network
   contract: 5
 
 # Document-native conformance (contract 5, since 2026-09-09). Contracts 3 and 4
@@ -22,7 +24,7 @@ runner:
 # authoring model remains 3; it is independent of this conformance pin.
 contract: 5
 
-features: "features/*.feature"
+features: "../features/*.feature"
 budgets:
   undefined: 0
   # De-enrolment guard: expanded scenario count, not Scenario declarations.

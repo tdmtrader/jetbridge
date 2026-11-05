@@ -42,7 +42,7 @@ sh scripts/build-private-network
 production_package=github.com/concourse/concourse/atc/worker/jetbridge
 minimum_percent=50
 report_dir=$(mktemp -d "${TMPDIR:-/tmp}/brine-coverage.XXXXXX")
-mkdir "$report_dir/raw"
+mkdir -p "$report_dir/raw/local" "$report_dir/raw/live" "$report_dir/raw/multinode" "$report_dir/merged"
 printf 'Coverage evidence: %s\n' "$report_dir"
 
 # Instrument main as well: Go installs its coverage exit hook there. Only the
@@ -51,16 +51,78 @@ printf 'Coverage evidence: %s\n' "$report_dir"
 # killed run leaves the -cover adapter binary sitting in .build/. The signal
 # trap only exits; `exit` runs the EXIT trap once, so the rebuild happens
 # exactly once and the script never continues past a signal.
-trap 'go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge' 0
-trap 'exit 130' INT TERM HUP
+local_pid=
+live_pid=
+cleanup() {
+    status=$?
+    trap - 0
+    # Repeated cancellation must not interrupt fixture drainage or leave the
+    # instrumented adapter installed while the ordinary binary is rebuilt.
+    trap '' INT TERM HUP
+    # Each CLI and adapter share a process group. On interruption, let the
+    # adapters drain fixtures, including detached groups, before restoration.
+    for pid in $local_pid $live_pid; do /bin/kill -TERM -- "-$pid" 2>/dev/null || true; done
+    if [ -n "$local_pid$live_pid" ]; then
+        remaining=120
+        while [ "$remaining" -gt 0 ]; do
+            running=false
+            for pid in $local_pid $live_pid; do
+                if /bin/kill -0 -- "-$pid" 2>/dev/null; then running=true; fi
+            done
+            if [ "$running" = false ]; then break; fi
+            sleep 1
+            remaining=$((remaining - 1))
+        done
+        for pid in $local_pid $live_pid; do
+            /bin/kill -KILL -- "-$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        done
+    fi
+    if ! go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge; then status=1; fi
+    exit "$status"
+}
+trap cleanup 0
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 go build -cover -covermode=atomic \
     -coverpkg="$production_package,$production_package/brine/cmd/brine-adapter-jetbridge" \
     -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
 
-# The persistent engine inherits its own startup environment. Bypass it so
-# this run's GOCOVERDIR reaches the adapter. This still uses the full CLI gate.
-export GOCOVERDIR="$report_dir/raw"
-if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 2>&1; then
+# Build once, then execute complete manifests with the existing CLI gates.
+# The local adapter has a private network namespace; the live adapter keeps
+# the cluster route. Each process owns its databases, temporary roots and raw
+# coverage directory. No feature, assertion, budget or production wait changes.
+# Keep serial mode for matched baseline measurements and operational rollback.
+schedule=${BRINE_COVERAGE_SCHEDULE:-parallel}
+case "$schedule" in
+    parallel|serial) ;;
+    *) echo "BRINE_COVERAGE_SCHEDULE must be parallel or serial" >&2; exit 2 ;;
+esac
+command -v setsid >/dev/null
+printf 'Brine coverage schedule: %s\n' "$schedule"
+local_status=0
+live_status=0
+# Bypass the persistent engine so each adapter inherits its own GOCOVERDIR.
+GOCOVERDIR="$report_dir/raw/local" setsid brine run local --no-engine --mode sync --format jsonl > "$report_dir/brine-local.log" 2>&1 &
+local_pid=$!
+if [ "$schedule" = serial ]; then
+    wait "$local_pid" || local_status=$?
+    local_pid=
+fi
+GOCOVERDIR="$report_dir/raw/live" setsid brine run live --no-engine --mode sync --format jsonl > "$report_dir/brine-live.log" 2>&1 &
+live_pid=$!
+# Always join both tiers. An ordinary test failure must not interrupt the
+# other adapter's real scenarios or disposal. Any nonzero CLI verdict fails.
+if [ -n "$local_pid" ]; then
+    wait "$local_pid" || local_status=$?
+    local_pid=
+fi
+wait "$live_pid" || live_status=$?
+live_pid=
+printf 'Brine CLI verdicts: local=%s live=%s\n' "$local_status" "$live_status"
+cat "$report_dir/brine-local.log" "$report_dir/brine-live.log" > "$report_dir/brine.log"
+if [ "$local_status" -ne 0 ] || [ "$live_status" -ne 0 ]; then
     # The log interleaves protocol events with every fixture's diagnostics,
     # so the last sixty lines are usually namespace chatter and say nothing
     # about WHICH scenario failed (CI build 873481). Lead with the verdict:
@@ -107,8 +169,9 @@ if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 
     tail -60 "$report_dir/brine.log" >&2
     exit 1
 fi
-# Brine recursively discovers live/.brine; each scenario event names its
-# manifest, by the same absolute path the manifest was discovered at.
+# Each tier log must independently contain its complete manifest and a
+# successful run_end. Combining logs before verifying could let one run_end
+# hide an incomplete sibling. Manifest paths remain the CLI's absolute paths.
 #
 # NAME=PATH, not a bare NAME: brine-verify-run rejects a manifest with no
 # declared floor, because "at least one scenario passed" certified a run of 3
@@ -116,8 +179,9 @@ fi
 # because that is what `scenario_end.manifest` carries, the path so the floor
 # is COUNTED OUT OF each manifest's own feature files rather than restated as
 # a number in this script that would rot the next time a feature is added.
-go run ./cmd/brine-verify-run "$report_dir/brine.log" \
-    "$module_root/.brine=$module_root/.brine" \
+go run ./cmd/brine-verify-run "$report_dir/brine-local.log" \
+    "$module_root/local/.brine=$module_root/local/.brine"
+go run ./cmd/brine-verify-run "$report_dir/brine-live.log" \
     "$module_root/live/.brine=$module_root/live/.brine"
 
 # The cross-node tier (live-multinode/.brine, discover: false) needs two
@@ -132,9 +196,10 @@ else
         -o jsonpath='{range .items[*]}{.spec.unschedulable}|{.status.conditions[?(@.type=="Ready")].status}|{.metadata.labels.concourse\.dev/artifact-cache}{"\n"}{end}' |
         grep -c '^|True|ready$' || true)
 fi
+coverage_inputs="$report_dir/raw/local,$report_dir/raw/live"
 if [ "$approved_up" -ge 2 ]; then
     echo "cross-node tier: $approved_up approved artifact nodes up; running live-multinode/.brine" >&2
-    if ! (cd live-multinode && brine run --no-engine --mode sync --format jsonl) > "$report_dir/brine-multinode.log" 2>&1; then
+    if ! (cd live-multinode && GOCOVERDIR="$report_dir/raw/multinode" brine run --no-engine --mode sync --format jsonl) > "$report_dir/brine-multinode.log" 2>&1; then
         echo "cross-node tier failed. Scenarios that did not pass:" >&2
         grep '"type":"scenario_end"' "$report_dir/brine-multinode.log" | grep -v '"status":"passed"' >&2 || true
         tail -80 "$report_dir/brine-multinode.log" >&2
@@ -142,12 +207,14 @@ if [ "$approved_up" -ge 2 ]; then
     fi
     go run ./cmd/brine-verify-run "$report_dir/brine-multinode.log" \
         "$module_root/live-multinode/.brine=$module_root/live-multinode/.brine"
+    coverage_inputs="$coverage_inputs,$report_dir/raw/multinode"
 else
     echo "cross-node tier NOT run: $approved_up approved artifact node(s) up, it needs 2" >&2
 fi
-go tool covdata textfmt -i="$GOCOVERDIR" -pkg="$production_package" \
+go tool covdata merge -i="$coverage_inputs" -o="$report_dir/merged"
+go tool covdata textfmt -i="$report_dir/merged" -pkg="$production_package" \
     -o="$report_dir/coverage.out"
-go tool covdata percent -i="$GOCOVERDIR" -pkg="$production_package"
+go tool covdata percent -i="$report_dir/merged" -pkg="$production_package"
 
 # Empty scans and rounded percentages must never satisfy the gate.
 awk -v package="$production_package/" -v minimum="$minimum_percent" '
