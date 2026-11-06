@@ -18,7 +18,7 @@ mkdir -p "$work/shared"
 dk3s_start_dockerd
 k3s_image=rancher/k3s:v1.31.6-k3s1
 busybox_image=busybox:1.37
-test_image=registry.home/concourse-test-runner:v11
+test_image=registry.home/concourse-test-runner:v12
 docker pull "$k3s_image"
 docker pull "$busybox_image"
 docker pull "$test_image"

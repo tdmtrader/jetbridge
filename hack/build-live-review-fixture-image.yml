@@ -4,7 +4,7 @@ rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
 inputs:
 - name: repo
 params:
-  TEST_COMPILER: registry.home/concourse-test-runner:v11
+  TEST_COMPILER: registry.home/concourse-test-runner:v12
   TAG: ""
 run:
   path: sh

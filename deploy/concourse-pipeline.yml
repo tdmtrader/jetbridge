@@ -58,7 +58,7 @@ jobs:
     config:
       platform: linux
       container_requests: {cpu: 6000}  # millicores; see header
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       run:
@@ -107,7 +107,7 @@ jobs:
     config:
       platform: linux
       container_requests: {cpu: 6000}  # millicores; see header
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       # The Hangar output plane's tier-2 conformance suite runs against the
@@ -203,7 +203,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       # HANGAR_FAKE_GCS_ENDPOINT is deliberately NOT set here, unlike the
@@ -314,7 +314,7 @@ jobs:
       - name: repo
       params:
         IMAGE: jb-review-worker:pipeline
-        TEST_COMPILER: registry.home/concourse-test-runner:v11
+        TEST_COMPILER: registry.home/concourse-test-runner:v12
       run:
         path: sh
         args: [repo/hack/build-worker-image]
@@ -331,7 +331,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       run:
@@ -473,7 +473,7 @@ jobs:
     config:
       platform: linux
       container_requests: {cpu: 6000}  # millicores; see header
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       - name: web-public
@@ -759,7 +759,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       run:
@@ -828,7 +828,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       run:
@@ -978,7 +978,7 @@ jobs:
     config:
       platform: linux
       container_requests: {cpu: 6000}  # millicores; see header
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       params:
@@ -989,7 +989,7 @@ jobs:
         # The implement template's validate task image (hangar_one_daemon A8):
         # /bin/sh, git, sha256sum, timeout, awk, sed and tr, as root. This task's
         # own image, pinned by digest as deploy/implement-template.yml asks.
-        CONCOURSE_LIVE_VALIDATE_IMAGE: registry.home/concourse-test-runner@sha256:1e1fa432a1d399400bdc140452f610bd4efab8259eb989df2dfb0ea32fdb8fe3
+        CONCOURSE_LIVE_VALIDATE_IMAGE: registry.home/concourse-test-runner@sha256:5c400a4c10ea8038c0ddad525f41e1e90aa3dc13810e9ec975b8effceb7c6c25
       run:
         path: sh
         args:
@@ -1087,7 +1087,7 @@ jobs:
     timeout: 10m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       run:
@@ -1124,7 +1124,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       params:

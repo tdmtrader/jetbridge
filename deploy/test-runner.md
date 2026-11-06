@@ -25,11 +25,16 @@ stage; do not export builder caches or intermediate images.
   unprivileged user+net namespace the adapter runs in), a pinned upstream
   BusyBox at `/usr/local/bin/busybox` (real fetch-script applets), and a
   pinned `otelcol` (real OTLP collector for the trace scenarios). Published
-  2026-09-19 (manifest digest `sha256:1e1fa432a1d3…`); every job in
-  `deploy/concourse-pipeline.yml` pins it. The registry ingress serves a
+  2026-09-19 (manifest digest `sha256:1e1fa432a1d3…`). The registry ingress serves a
   Traefik default certificate, so `docker push` fails TLS verification;
   `docker save` the image and `crane push` the tarball over the plain-HTTP
   ingress instead, then confirm the tag's digest with `crane digest`.
+- `v12` — same Brine pin; Go 1.27.3 (`golang:1.27-bookworm`), PostgreSQL
+  17.11. Built 2026-11-06 on a disposable Colima VM (`--vz-rosetta`, amd64
+  under Rosetta; theborg has no Docker daemon), deleted after the push.
+  Manifest digest `sha256:5c400a4c10ea…`; every job in
+  `deploy/concourse-pipeline.yml` pins it, and the live tier's
+  `CONCOURSE_LIVE_VALIDATE_IMAGE` names that digest.
 
 ## Build
 
@@ -40,7 +45,7 @@ a new tag and updated consuming pipeline references.
 ```sh
 set -eu
 set +x
-runner_tag=v11
+runner_tag=v12
 runner_image="registry.home/concourse-test-runner:${runner_tag}"
 brine_module_pin=$(awk '/^replace github.com\/brine-dev\/brine-go =>/ { print $NF }' atc/worker/jetbridge/brine/go.mod)
 test -n "$brine_module_pin"
