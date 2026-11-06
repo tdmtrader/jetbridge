@@ -163,13 +163,13 @@ func discoverDeployment(ctx context.Context, clientset kubernetes.Interface, nam
 	// Resolve capability: a config without the signing key mints tokens the
 	// daemon refuses. The failure is quiet in the worst way -- the init
 	// container exits 0 and the step then fails on a missing file -- so the key
-	// is read from the Secret the daemon itself mounts, under the name its own
-	// --resolve-capability-key flag gives it.
-	keySecret := d.daemonSecretVolume("resolve-capability")
+	// is read from the artifact daemon key Secret the daemon itself mounts,
+	// under the name its own --resolve-capability-key flag gives it.
+	keySecret := d.daemonSecretVolume("artifact-daemon-key")
 	if keySecret == "" {
-		return nil, fmt.Errorf("artifact daemon %s/%s mounts no resolve-capability Secret, but the chart always enforces signed resolution", namespace, d.daemon.Name)
+		return nil, fmt.Errorf("artifact daemon %s/%s mounts no artifact-daemon-key Secret, but the chart always enforces signed resolution", namespace, d.daemon.Name)
 	}
-	keyName := "resolve.key"
+	keyName := "artifact-daemon.key"
 	if v, ok := d.daemonFlag("resolve-capability-key"); ok && filepath.Base(v) != "." {
 		keyName = filepath.Base(v)
 	}

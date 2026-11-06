@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"encoding/base64"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -11,11 +10,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// hangarKeySets turn on exact execution control with the Hangar key held in
-// the daemon TLS Secret rather than its own (baseControlSets, in
-// hangar_output_test.go, name artifactDaemon.hangar.keySecret instead). Every
-// Run input is a managed read of the output plane, so this is the one switch
-// the key, its TTL and the tree limits ride on.
+// hangarKeySets turn on exact execution control with an operator's daemon TLS
+// Secret; the Hangar key is the artifact daemon key every install names
+// (secrets.artifactDaemonKeySecret). Every Run input is a managed read of the
+// output plane, so this is the one switch the key, its TTL and the tree limits
+// ride on.
 var hangarKeySets = []string{
 	"hangarOutput.executionControl.enabled=true",
 	"artifactDaemon.tls.existingSecret=operator-daemon-tls",
@@ -77,8 +76,8 @@ func TestHangarKeyRendersWithExecutionControl(t *testing.T) {
 		"artifactDaemon.outputScratch.maxEntries=321",
 	)
 	for _, want := range []string{
-		"--hangar-key=/etc/concourse/daemon-tls/hangar.key",
-		"--kubernetes-hangar-key=/etc/concourse/daemon-tls/hangar.key",
+		"--hangar-key=" + daemonKeyPath,
+		"--kubernetes-hangar-key=" + daemonKeyPath,
 		"--kubernetes-hangar-warrant-ttl=420s",
 	} {
 		if !strings.Contains(out, want) {
@@ -166,59 +165,10 @@ func TestHangarTTLIsNotCheckedWithoutExecutionControl(t *testing.T) {
 	render(t, "artifactDaemon.hangar.capabilityTTL=15m")
 }
 
-func TestHangarRejectsImplicitGeneratedKey(t *testing.T) {
-	sets := []string{
-		"artifactDaemon.tls.source=generated",
-		"artifactDaemon.tls.existingSecret=",
-		"hangarOutput.executionControl.enabled=true",
-		"artifactDaemon.outputScratch.sizeLimit=32Gi",
-	}
-	if out := renderHangarError(t, sets...); !strings.Contains(out, "allowGeneratedKey") {
-		t.Fatalf("implicit generated key error did not name the opt-in:\n%s", out)
-	}
-}
-
-func TestHangarExplicitLiveHelmGenerationContainsStrongRawKey(t *testing.T) {
-	out := render(t,
-		"artifactDaemon.tls.source=generated",
-		"artifactDaemon.tls.existingSecret=",
-		"hangarOutput.executionControl.enabled=true",
-		"artifactDaemon.outputScratch.sizeLimit=32Gi",
-		"artifactDaemon.hangar.allowGeneratedKey=true",
-	)
-	for _, doc := range strings.Split(out, "\n---") {
-		var secret struct {
-			Kind string            `json:"kind"`
-			Data map[string]string `json:"data"`
-		}
-		if yaml.Unmarshal([]byte(doc), &secret) != nil || secret.Kind != "Secret" || secret.Data["hangar.key"] == "" {
-			continue
-		}
-		key, err := base64.StdEncoding.DecodeString(secret.Data["hangar.key"])
-		if err != nil || len(key) != 32 {
-			t.Fatalf("generated hangar.key decodes to %d bytes, error=%v", len(key), err)
-		}
-		return
-	}
-	t.Fatal("auto-generated artifact-daemon Secret had no hangar.key")
-}
-
-// A generated TLS Secret without exact execution control holds no Hangar key:
-// nothing would read it.
-func TestGeneratedTLSSecretHoldsNoHangarKeyWithoutExecutionControl(t *testing.T) {
-	out := render(t,
-		"artifactDaemon.tls.source=generated",
-		"artifactDaemon.tls.existingSecret=",
-	)
-	if strings.Contains(out, "hangar.key") {
-		t.Fatal("the generated TLS Secret carries hangar.key with nothing to sign or verify")
-	}
-}
-
 func TestHangarExistingSecretIsSelectedWithoutParallelSecret(t *testing.T) {
 	out := renderHangar(t)
-	if !strings.Contains(out, "secretName: operator-daemon-tls") || !strings.Contains(out, "key: hangar.key") {
-		t.Fatal("existing TLS Secret or required hangar.key selection was not rendered")
+	if !strings.Contains(out, "secretName: operator-daemon-tls") {
+		t.Fatal("existing TLS Secret was not rendered")
 	}
 	if strings.Contains(out, "ca.key:") {
 		t.Fatal("chart generated a parallel TLS Secret while existingSecret was selected")

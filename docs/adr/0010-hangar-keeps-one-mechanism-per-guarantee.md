@@ -114,3 +114,18 @@ rollback is restore-from-backup. Every migration after upstream 1765921815
 refuses reversal, including empty installs. This replaces the former lossy
 reversal contract; restore the matching database, image and encryption key
 using the [recovery runbook](../migration/DATABASE-MIGRATION-RUNBOOK.md#rollback-procedure).
+
+Amended 2026-11-06: one artifact daemon key. The warrant key is no longer a
+Hangar Secret of its own: `secrets.artifactDaemonKeySecret` names the one
+raw 32-byte key (`artifact-daemon.key`) that signs every resolve capability
+and every warrant, required on every install. Both keys already lived on the
+web and every daemon, so two bought no isolation, and the MAC inputs are
+domain-separated (`jb-resolve-v1.` against `hangar-warrant-v1\0`). The
+consequence "Two Hangar Secrets" now reads: the one artifact daemon key and
+the web-only run-input key, which must differ from it. The chart's
+`artifactDaemon.hangar.keySecret`, `allowGeneratedKey`, the `hangar.key`
+entry in the daemon TLS Secret and `artifactDaemon.resolveCapability` are
+gone, and the bootstrap no longer creates a warrant key. The daemon's
+`--hangar-key` still goes with `--execution-control` alone, and the web's
+`--kubernetes-hangar-key` with `--kubernetes-hangar-output-enabled`; both
+name the same file as the resolve key. Resolve has no unsigned mode.

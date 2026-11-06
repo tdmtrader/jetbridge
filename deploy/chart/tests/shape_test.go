@@ -86,7 +86,10 @@ import (
 // value instead of a web.env entry, leaving 177.
 // 2026-11-07: kubernetes.stepRuntime, a mode selecting the step runtime (exec
 // pause pods or batch/v1 Jobs), leaving 178.
-const maxValues = 178
+// One artifact daemon key, secrets.artifactDaemonKeySecret, replaces
+// artifactDaemon.resolveCapability.existingSecret and the Hangar key's
+// artifactDaemon.hangar.keySecret and allowGeneratedKey, leaving 176.
+const maxValues = 176
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside

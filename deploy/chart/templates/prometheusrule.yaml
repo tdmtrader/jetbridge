@@ -94,9 +94,9 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
         - alert: ArtifactDaemonRefusingSignedRequests
           # `capability` and `client_cert` are the two refusal reasons that
           # name the daemon's own configuration rather than a caller's
-          # mistake: the web signs resolve capabilities with resolve.key and
-          # presents the client certificate, and the daemon verifies both
-          # against what IT mounts. Ten minutes of refusals means the two
+          # mistake: the web signs resolve capabilities with the artifact
+          # daemon key and presents the client certificate, and the daemon
+          # verifies both against what IT mounts. Ten minutes of refusals means the two
           # sides hold different material (a Secret rotated on one side), and
           # every step on that node fails until they agree. Every other
           # reason names what the caller did wrong and is answered by fixing
@@ -107,7 +107,7 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
             severity: warning
           annotations:
             summary: "An artifact daemon is refusing signed requests"
-            description: "The daemon on {{ `{{ $labels.node }}` }} has refused {{ `{{ $value }}` }} signed request(s) in the last ten minutes, for ten minutes running: a resolve capability it could not verify or a client certificate its CA did not sign. Compare the resolve.key and TLS Secrets the web and this daemon mount."
+            description: "The daemon on {{ `{{ $labels.node }}` }} has refused {{ `{{ $value }}` }} signed request(s) in the last ten minutes, for ten minutes running: a resolve capability it could not verify or a client certificate its CA did not sign. Compare the artifact daemon key and TLS Secrets the web and this daemon mount."
 {{- end }}
 {{- if .Values.hangarOutput.enabled }}
         # The Hangar output plane. Requirement 52 asks the plane to ALERT when

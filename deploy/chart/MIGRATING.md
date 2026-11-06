@@ -29,18 +29,18 @@ It does not change credential providers or optional infrastructure.
 | Standalone daemon `--durable-*`, `--cache-bucket`, web `--kubernetes-artifact-daemon-cache-bucket` / `--kubernetes-artifact-daemon-warm-timeout`, and `hangar-store --cache-namespace` | Removed. Resource caches remain node-local and may be fetched from peers; a miss reruns the get. Remove these arguments before upgrading. Objects left in an old cache store are no longer read or reclaimed; retire that store separately. |
 | `hangarOutput.cacheBucket` | Removed. Delete this value; Hangar is the only long-term storage plane. |
 | `artifactDaemon.preemption` | Remove it. The closed schema rejects it as an unknown key. The GCP spot preemption watcher (`--preemption-watch`, `--preemption-budget`) is gone; on SIGTERM the daemon drains in-flight mirror jobs before it exits. |
-| `artifactDaemon.hangar.store`, `.bucket`, `.endpoint`, `.prefix`, `.enabled`, `.webEnabled`, `.scratchPath`, `.scratchSizeLimit`, `.maxContentBytes`, `.maxEntries`, `hangarOutput.strictInputBucket` | Remove all eleven. The closed schema rejects each as an unknown key. The separate input plane is gone: every Run input is an input publication in the output namespace (`hangarOutput.bucket`), read back by a managed read the output plane serves, so there is no input store, bucket, scratch, limit, enable switch, web switch or ready label (`concourse.dev/hangar-v1` is set by nothing; a pod with a tree input requires the execution-control and output ready labels). `artifactDaemon.hangar.keySecret`, `.allowGeneratedKey` and `.capabilityTTL` stay: the one Hangar key signs read, execution control and output capture warrants and is needed with `hangarOutput.executionControl.enabled`. The one scratch and the one set of tree limits are `artifactDaemon.outputScratch.{path,sizeLimit,maxContentBytes,maxEntries,concurrency}`; the daemon is now handed `--output-max-content-bytes` and `--output-max-entries` from them, and bounds captures, input publications and managed reads alike. The daemon's `--hangar-enabled`, `--hangar-store`, `--hangar-bucket`, `--hangar-endpoint`, `--hangar-prefix`, `--hangar-store-id`, `--hangar-token-file`, `--hangar-ca-cert`, `--hangar-scratch-dir`, `--hangar-max-content-bytes`, `--hangar-max-entries` and `--strict-input-bucket`, and the web's `--kubernetes-hangar-enabled` and `--kubernetes-hangar-input-bucket`, are gone; a binary given one exits on the unknown flag. `hangar-store` takes no `--input-namespace`, and its credentials Secret (`hangarStorage.disk.credentials.existingSecret`) must lose its `input` key: the store refuses a `server.json` naming an unrecognized role. Trees in the old input namespace or bucket are orphaned: nothing reads or expires them, so delete them or expire the prefix with a lifecycle rule. The `ArtifactDaemonRefusingForLoad` alert is gone with the refusal reason it watched; `ArtifactDaemonRefusingSignedRequests` replaces it. |
+| `artifactDaemon.hangar.store`, `.bucket`, `.endpoint`, `.prefix`, `.enabled`, `.webEnabled`, `.scratchPath`, `.scratchSizeLimit`, `.maxContentBytes`, `.maxEntries`, `hangarOutput.strictInputBucket` | Remove all eleven. The closed schema rejects each as an unknown key. The separate input plane is gone: every Run input is an input publication in the output namespace (`hangarOutput.bucket`), read back by a managed read the output plane serves, so there is no input store, bucket, scratch, limit, enable switch, web switch or ready label (`concourse.dev/hangar-v1` is set by nothing; a pod with a tree input requires the execution-control and output ready labels). `artifactDaemon.hangar.capabilityTTL` stays; the one Hangar key signs read, execution control and output capture warrants and is now the artifact daemon key (see [One artifact daemon key](#one-artifact-daemon-key-2026-11-06)). The one scratch and the one set of tree limits are `artifactDaemon.outputScratch.{path,sizeLimit,maxContentBytes,maxEntries,concurrency}`; the daemon is now handed `--output-max-content-bytes` and `--output-max-entries` from them, and bounds captures, input publications and managed reads alike. The daemon's `--hangar-enabled`, `--hangar-store`, `--hangar-bucket`, `--hangar-endpoint`, `--hangar-prefix`, `--hangar-store-id`, `--hangar-token-file`, `--hangar-ca-cert`, `--hangar-scratch-dir`, `--hangar-max-content-bytes`, `--hangar-max-entries` and `--strict-input-bucket`, and the web's `--kubernetes-hangar-enabled` and `--kubernetes-hangar-input-bucket`, are gone; a binary given one exits on the unknown flag. `hangar-store` takes no `--input-namespace`, and its credentials Secret (`hangarStorage.disk.credentials.existingSecret`) must lose its `input` key: the store refuses a `server.json` naming an unrecognized role. Trees in the old input namespace or bucket are orphaned: nothing reads or expires them, so delete them or expire the prefix with a lifecycle rule. The `ArtifactDaemonRefusingForLoad` alert is gone with the refusal reason it watched; `ArtifactDaemonRefusingSignedRequests` replaces it. |
 | `hangarOutput.activation` (`target`, `serviceAccount`, `job.*`) | Remove it. The closed schema rejects it as an unknown key. There is no activation walk Job and no activation epoch table: the web writes its `hangar_enabled` row at startup from `hangarOutput.webEnabled`, and that is whether the output plane is in service. To drain, set `hangarOutput.webEnabled=false`, wait for `fly hangar-status` to report zero residue, then turn the daemon's output plane off. |
 | `hangarOutput.inventory`, `hangarOutput.reclaimer` | Remove them. The closed schema rejects each as an unknown key. Their Deployments and service accounts are gone: the web runs reclaim (`hangarOutput.reclaim.interval`, `.deleteTimeout`, `.batch`; defaults 1m, 2m, 10) and the orphan sweep (`hangarOutput.orphanSweep.interval`, default 1h). On GCS, move the inventory's list and the reclaimer's get and delete grants on the output bucket to the web's cloud principal (`serviceAccount.annotations`), which must not be the artifact daemon's. On the disk store the web mounts the store's `inventory` and `reclaimer` tokens, and the store's NetworkPolicy admits web. |
 | `hangarOutput.database`, `hangarBootstrap.database` | Remove them. The closed schema rejects each as an unknown key. The activation database role and its bootstrap Job are gone; only the web touches the output plane's tables, as web's own database user. Drop the role and its Secret once nothing runs as them. |
 | Upgrading past database migration `1789793154` with the output plane in service | Drain the output plane first (`hangarOutput.webEnabled=false`, wait for `fly hangar-status` to report drained). The output scope derives from the tenant and the store (H(tenant, store)), and new objects are published under it. Objects published under the earlier epoch-derived scope are not readable: nothing reads or reclaims them, and they carry no store marker, so the orphan sweep counts them as foreign and never deletes them. Delete them, or expire the prefix with a bucket lifecycle rule. |
-| `hangarOutput.activationEpoch`, `hangarOutput.executionControl.keySecret`, `.keyID`, `.publicKeys`, `hangarBootstrap.referencedKeys` | Remove them. The closed schema rejects each as an unknown key. The node daemon is inside the trusted computing base and is reached over mTLS, so its acknowledgement is its answer on that channel and nothing it says is signed: there is no node control key, no key id, no verification ring (the `-hangar-output-control-keys` ConfigMap and the bootstrap's `-hangar-rings-*` Secret are gone) and no control-key generation. The daemon is handed no `--control-key-id`, `--control-key-file` or `--activation-epoch`; its output plane is mounted by `--execution-control`, and it verifies every warrant with the one Hangar key (`--hangar-key`, from `artifactDaemon.hangar.keySecret` or the daemon TLS Secret's `hangar.key`). The web is handed no `--kubernetes-hangar-output-activation-epoch` or `--kubernetes-hangar-output-control-keys`. A Run result binds as an input while its Run succeeded and its claim is live, whatever key was in use when it was published. Delete the control-key Secrets once nothing mounts them. |
-| `hangarOutput.capabilityKeySecret`, `hangarOutput.materializationKeySecret`, `hangarOutput.materializationKeyID` | Remove them. The closed schema rejects each as an unknown key. One Hangar key, `hangar.key`, now signs every warrant -- read, execution control and output capture -- and every artifact daemon verifies against it: name its Secret in `artifactDaemon.hangar.keySecret` (the bootstrap creates an absent one), or hold `hangar.key` in `artifactDaemon.tls.existingSecret`. `hangarOutput.executionControl.enabled` requires one of them (or `artifactDaemon.hangar.allowGeneratedKey`). The daemon is handed `--hangar-key=<path>` (renamed from `--hangar-warrant-key`) and `--execution-control` in place of `--capability-key`; `--capability-key`, `--capability-ttl`, `--materialization-key-file`, `--materialization-key-id` and `--hangar-warrant-ttl` are gone, and a daemon given one exits on the unknown flag. The web is handed `--kubernetes-hangar-key=<path>` (renamed from `--kubernetes-hangar-warrant-key`) with `--kubernetes-hangar-warrant-ttl`; `--kubernetes-hangar-output-warrant-key` and `--kubernetes-hangar-output-materialization-key` are gone. Both mount the key at `/etc/concourse/hangar-key/hangar.key` (volume `hangar-key`, renamed from `hangar-warrant-key`) or read `/etc/concourse/daemon-tls/hangar.key`. Warrants signed under the old keys stop verifying at the switch: drain the output plane first (`hangarOutput.webEnabled=false`, wait for `fly hangar-status` to report no residue). Delete the two old Secrets once nothing mounts them. `web.runInputSigningKeySecret` stays web-only and separate from the Hangar key Secret. |
+| `hangarOutput.activationEpoch`, `hangarOutput.executionControl.keySecret`, `.keyID`, `.publicKeys`, `hangarBootstrap.referencedKeys` | Remove them. The closed schema rejects each as an unknown key. The node daemon is inside the trusted computing base and is reached over mTLS, so its acknowledgement is its answer on that channel and nothing it says is signed: there is no node control key, no key id, no verification ring (the `-hangar-output-control-keys` ConfigMap and the bootstrap's `-hangar-rings-*` Secret are gone) and no control-key generation. The daemon is handed no `--control-key-id`, `--control-key-file` or `--activation-epoch`; its output plane is mounted by `--execution-control`, and it verifies every warrant with the one Hangar key (`--hangar-key`, now from `secrets.artifactDaemonKeySecret`; see [One artifact daemon key](#one-artifact-daemon-key-2026-11-06)). The web is handed no `--kubernetes-hangar-output-activation-epoch` or `--kubernetes-hangar-output-control-keys`. A Run result binds as an input while its Run succeeded and its claim is live, whatever key was in use when it was published. Delete the control-key Secrets once nothing mounts them. |
+| `hangarOutput.capabilityKeySecret`, `hangarOutput.materializationKeySecret`, `hangarOutput.materializationKeyID` | Remove them. The closed schema rejects each as an unknown key. One Hangar key now signs every warrant -- read, execution control and output capture -- and every artifact daemon verifies against it; it is now the artifact daemon key, `secrets.artifactDaemonKeySecret` (see [One artifact daemon key](#one-artifact-daemon-key-2026-11-06)). The daemon is handed `--hangar-key=<path>` (renamed from `--hangar-warrant-key`) and `--execution-control` in place of `--capability-key`; `--capability-key`, `--capability-ttl`, `--materialization-key-file`, `--materialization-key-id` and `--hangar-warrant-ttl` are gone, and a daemon given one exits on the unknown flag. The web is handed `--kubernetes-hangar-key=<path>` (renamed from `--kubernetes-hangar-warrant-key`) with `--kubernetes-hangar-warrant-ttl`; `--kubernetes-hangar-output-warrant-key` and `--kubernetes-hangar-output-materialization-key` are gone. Both now mount it at `/etc/concourse/artifact-daemon-key/artifact-daemon.key` (volume `artifact-daemon-key`). Warrants signed under the old keys stop verifying at the switch: drain the output plane first (`hangarOutput.webEnabled=false`, wait for `fly hangar-status` to report no residue). Delete the two old Secrets once nothing mounts them. `web.runInputSigningKeySecret` stays web-only and separate from the artifact daemon key Secret. |
 | Upgrading past database migration `1789793155` | Roll the web with `web.strategy: {type: Recreate}`. The migration renames the Run cancellation queue's capture kind (`handoff_classify` becomes `capture_cancel_or_settle` and two dead kinds go); an old web overlapping the new one would misread the kind. |
 | Alerts | `HangarOutputInventorySweepStalled`, `HangarOutputInventoryDebtGrowing` and `HangarOutputOperationLeaseUnheld` are gone with their metrics. New: `HangarOutputCapturesStuckPublishing`, `HangarOutputCapturesUnreleased`, `HangarOutputOrphanSweepStalled`, `HangarOutputOrphanSweepFailing` and `HangarOutputDrainResidue`. |
 | `artifactDaemon.tls.existingSecret` | Preserve the existing reference and set `artifactDaemon.tls.source: existingSecret`. |
 | Implicit certificate generation | Select `artifactDaemon.tls.source: generated` explicitly and leave `existingSecret` empty. Live Helm only; offline/GitOps rendering cannot preserve generated material. |
-| `artifactDaemon.resolveCapability.existingSecret` | Now required. Preserve an existing key; otherwise provision a Secret with `resolve.key`, exactly 32 random bytes. |
+| `artifactDaemon.resolveCapability.existingSecret` | Replaced by the required `secrets.artifactDaemonKeySecret`; see [One artifact daemon key](#one-artifact-daemon-key-2026-11-06) for the cutover. |
 | `--enable-mcp` and `--mcp-client-config` in `web.extraArgs` (removed) | Remove them. Copy the existing registered clients into `mcp.clients`; the chart renders and mounts their ConfigMap. |
 | `--mcp-disable-operation` | Move operation IDs into `mcp.disabledOperations`. Restrictions are preserved. |
 | Environment equivalents of the above chart-owned arguments | Remove them and use the corresponding explicit values. Conflicting overrides fail rendering. |
@@ -79,8 +79,9 @@ artifactDaemon:
   tls:
     source: existingSecret
     existingSecret: concourse-artifact-daemon-tls-pinned
-  resolveCapability:
-    existingSecret: concourse-artifact-daemon-resolve-capability
+secrets:
+  # Created from the old resolve.key bytes; see "One artifact daemon key".
+  artifactDaemonKeySecret: concourse-artifact-daemon-key
 mcp:
   clients:
     # Copy all current entries from concourse-mcp-clients/clients.json verbatim.
@@ -106,7 +107,7 @@ Argo values, so reconcile against the deployed Application before editing it.
 
 Upgrade the application image and chart together: 0.3.1 has no authenticated MCP
 endpoint. Preserve the explicit database mode and existing credentials. Supply
-MCP registrations, daemon certificate ownership and the resolve-key Secret.
+MCP registrations, daemon certificate ownership and the artifact daemon key Secret.
 If the old deployment used plaintext daemon traffic or unsigned resolution,
 coordinate web and daemon replacement during a quiet build window: mixed old
 and new processes cannot necessarily communicate during rollout.
@@ -273,3 +274,90 @@ remove.
   `<fullname>-web-credentials` that the chart does not own must be renamed
   before upgrading. The bundled PostgreSQL pod still reads its password from
   its own env.
+
+## One artifact daemon key (2026-11-06)
+
+One Secret, `secrets.artifactDaemonKeySecret`, holds the artifact daemon key:
+exactly 32 random bytes under `artifact-daemon.key`. The web signs every
+resolve capability and every Hangar warrant with it and every daemon verifies
+them (the two MACs are domain-separated). It is required on every install.
+It replaces `artifactDaemon.resolveCapability.existingSecret`,
+`artifactDaemon.hangar.keySecret`, `artifactDaemon.hangar.allowGeneratedKey`
+and the `hangar.key` entry of the daemon TLS Secret. The closed schema rejects
+each removed value as an unknown key; the chart renders no `hangar.key`,
+mounts `/etc/concourse/artifact-daemon-key/artifact-daemon.key` in web and
+the daemon, and hands it to `--resolve-capability-key` and
+`--kubernetes-artifact-daemon-resolve-capability-key` always, and to
+`--hangar-key` and `--kubernetes-hangar-key` with
+`hangarOutput.executionControl.enabled`. The Hangar bootstrap no longer
+creates a warrant key Secret; it still creates the disk store's Secrets and
+the Run input signing key, which must be a different Secret.
+Resolve has no unsigned mode: the daemon does not start without
+`--resolve-capability-key`, and the web does not start without its own.
+
+On an existing cluster, in this order:
+
+1. Create the one Secret from the current resolve key's bytes, so resolve
+   capabilities already minted into pending step pods keep verifying:
+
+   ```sh
+   kubectl -n <ns> get secret <resolveCapability.existingSecret> \
+     -o jsonpath='{.data.resolve\.key}' | base64 -d > artifact-daemon.key
+   test "$(wc -c < artifact-daemon.key)" -eq 32
+   kubectl -n <ns> create secret generic <new name> --from-file=artifact-daemon.key
+   rm artifact-daemon.key
+   ```
+
+2. If the output plane is on (`hangarOutput.executionControl.enabled`), drain
+   it: set `hangarOutput.webEnabled: false`, remove `web.runInputSigningKeySecret`
+   and `web.runCredentialWorkerImages` (the chart refuses the first while the
+   plane is out of service, and the second without the first; note both for
+   step 5), and sync. Then wait until nothing holding an old-key
+   warrant is in flight: `fly -t <target> hangar-status` shows
+   `pending captures`, `publishing captures` and `unreleased captures` all 0,
+   and no reader claim (an in-flight managed read) is open. Do not wait for
+   `out of service, drained`: `open claims` also counts consumers' claims on
+   retained Run results, which a landing queue keeps open indefinitely and which
+   hold no warrant (a result binds whatever key published it).
+   `hangar-status` does not separate the two kinds; readers' claims are the
+   ones with an expiry, so read them from the database:
+
+   ```sql
+   SELECT count(*) FROM hangar_claims
+    WHERE released_at IS NULL AND expires_at > now();
+   ```
+
+   or, without database access, wait `hangarOutput.operationTimeout` plus five
+   minutes after the three capture counts reach 0: no new read is admitted
+   while the plane is out of service, and a reader's claim lapses by then
+   ([docs/hangar.md](../../docs/hangar.md#in-service-and-the-drain)). Every
+   warrant the web signed with the old Hangar key stops verifying in step 4.
+   Drain on the OLD chart: a GitOps tool that renders the chart from a moving
+   revision cannot render these values once that revision carries this chart,
+   so drain before it does, or pin the revision while you drain.
+3. Switch values: set `secrets.artifactDaemonKeySecret: <new name>` and remove
+   `artifactDaemon.resolveCapability` and the whole `artifactDaemon.hangar`
+   mapping (`keySecret`, `allowGeneratedKey` and the `hangar:` key itself);
+   keep `hangar:` only to set `capabilityTTL` under it. Keep
+   `webEnabled: false` and the two web values removed.
+4. Sync, then make sure the web Deployment and the artifact daemon DaemonSet
+   have both rolled: both read their keys at startup. The pod templates change,
+   so a sync rolls them; otherwise `kubectl -n <ns> rollout restart` each, and
+   wait for `kubectl -n <ns> rollout status` on both.
+5. Re-enable: set `hangarOutput.webEnabled: true`, restore
+   `web.runInputSigningKeySecret` and `web.runCredentialWorkerImages` as they
+   were, and sync.
+6. Delete the old resolve Secret and the old Hangar key Secret (the bootstrap
+   never deletes one), and drop `hangar.key` from an operator-managed daemon
+   TLS Secret, once nothing mounts them.
+
+If the order is wrong: a key made from fresh bytes instead of `resolve.key`
+fails the input fetch (403) of every step pod created before the restart,
+for as long as its capability lives (56m at defaults). Skipping the drain
+fails in-flight managed reads and capture control with refused warrants:
+restarted daemons refuse old-key warrants and daemons not yet restarted refuse
+the new web's. Restarting only one side leaves the same split until the other
+restarts, and re-enabling before both have rolled admits work into it.
+Deleting an old Secret before the rollout finishes leaves a restarted old pod
+unable to mount it. Rendering the new chart before the values change fails,
+naming the removed key, and the cluster stays on the old release.

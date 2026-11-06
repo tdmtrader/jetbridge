@@ -81,8 +81,10 @@ node. A managed read carries one.
 _Avoid_: download token, input token
 
 **Warrant key**:
-The one raw 32-byte secret, `hangar.key`, the web signs every warrant with
-and every artifact daemon verifies against. Never present in a task pod.
+The one raw 32-byte secret the web signs every warrant with and every
+artifact daemon verifies against: the artifact daemon key
+(`secrets.artifactDaemonKeySecret`), which signs resolve capabilities too,
+under a separate MAC domain. Never present in a task pod.
 The daemon holds no signing key of its own: there is no node control key.
 _Avoid_: capability key, materialization key, control key
 

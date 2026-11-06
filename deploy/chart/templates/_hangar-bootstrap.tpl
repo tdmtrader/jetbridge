@@ -22,20 +22,15 @@ concourse-hangar-bootstrap
 
 {{/*
 The inventory holds CAs, leaves, bundles, symmetric keys and tokens. The one
-symmetric key Hangar needs is the Hangar key (hangar.key): the web signs every
-warrant with it and the daemon verifies against it. There is no node signing
-key and no verification ring: the daemon is trusted over mTLS and nothing it
-says is signed.
+symmetric key it creates is the web-only Run input signing key. The key the
+web signs every Hangar warrant with, secrets.artifactDaemonKeySecret, is the
+artifact daemon key every install provides; the bootstrap never creates it.
+There is no node signing key and no verification ring: the daemon is trusted
+over mTLS and nothing it says is signed.
 */}}
 {{- define "concourse.hangarBootstrap.inventory" -}}
 {{- $ := . -}}
 {{- $entries := list -}}
-
-{{- with .Values.artifactDaemon.hangar.keySecret -}}
-{{- $entries = append $entries (dict "name" . "kind" "random32" "key" "hangar.key"
-  "purposes" (dict "hangar.key" "the Hangar key: signs every warrant (read, execution control, output capture)")
-  "consumers" (list "web" "artifact-daemon")) -}}
-{{- end -}}
 
 {{- with .Values.hangarStorage.disk.tls.existingSecret -}}
 {{- $entries = append $entries (dict "name" . "kind" "tls-bundle" "commonName" "hangar disk store"

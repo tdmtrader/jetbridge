@@ -94,6 +94,7 @@ tracing:
 secrets:
   signingKeySecret: placeholder-signing-key
   encryptionKeySecret: placeholder-encryption-key
+  artifactDaemonKeySecret: placeholder-artifact-daemon-key
 cacheStore: hostpath
 cacheHostPath: "/var/cache/concourse"
 artifactDaemon:
@@ -105,8 +106,6 @@ artifactDaemon:
   tls:
     source: existingSecret
     existingSecret: placeholder-daemon-tls
-  resolveCapability:
-    existingSecret: placeholder-resolve-key
 postgresql:
   enabled: false
   host: postgresql.example

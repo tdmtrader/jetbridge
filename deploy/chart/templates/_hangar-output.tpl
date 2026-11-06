@@ -50,6 +50,21 @@
 {{- mul (atoi $digits) $multiplier -}}
 {{- end }}
 
+{{/*
+The warrant TTL. A values file left with a bare `hangar:` (null) once its
+other keys went makes Helm drop the whole mapping, defaults included; that
+reads as values.yaml's default, as an absent mapping does, and not as a nil
+pointer. A TTL that is present is passed through to be checked, empty or not.
+*/}}
+{{- define "concourse.artifactDaemon.hangarCapabilityTTL" -}}
+{{- $hangar := .Values.artifactDaemon.hangar | default dict -}}
+{{- if hasKey $hangar "capabilityTTL" -}}
+{{- toString $hangar.capabilityTTL -}}
+{{- else -}}
+900s
+{{- end -}}
+{{- end }}
+
 {{- define "concourse.hangarOutput.validate" -}}
 {{- $output := .Values.hangarOutput -}}
 {{- $base := $output.executionControl.enabled | default false -}}
@@ -59,8 +74,8 @@
 {{- if not $.Values.hangarOutput.webEnabled -}}
 {{- fail "web.runInputSigningKeySecret requires hangarOutput.webEnabled" -}}
 {{- end -}}
-{{- if or (eq . $.Values.artifactDaemon.hangar.keySecret) (eq . $.Values.artifactDaemon.resolveCapability.existingSecret) (eq . $.Values.artifactDaemon.tls.existingSecret) -}}
-{{- fail "web.runInputSigningKeySecret must be separate from the Hangar key, resolve key and daemon TLS Secrets" -}}
+{{- if or (eq . $.Values.secrets.artifactDaemonKeySecret) (eq . $.Values.artifactDaemon.tls.existingSecret) -}}
+{{- fail "web.runInputSigningKeySecret must be separate from secrets.artifactDaemonKeySecret and the daemon TLS Secret" -}}
 {{- end -}}
 {{- end -}}
 
@@ -73,9 +88,6 @@
 {{- end -}}
 
 {{- if $base -}}
-{{- if not (or .Values.artifactDaemon.hangar.keySecret .Values.artifactDaemon.tls.existingSecret (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) -}}
-{{- fail "hangarOutput.executionControl.enabled needs the Hangar key: name a Secret holding hangar.key in artifactDaemon.hangar.keySecret, or hold hangar.key in artifactDaemon.tls.existingSecret, or set artifactDaemon.hangar.allowGeneratedKey=true. The daemon verifies every warrant with it." -}}
-{{- end -}}
 {{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- end -}}
 

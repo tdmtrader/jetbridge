@@ -83,7 +83,7 @@ func TestStandardCapabilityConfigurationFailsClearly(t *testing.T) {
 		{"artifactDaemon.tls.existingSecret=", "tls.existingSecret is required"},
 		{"artifactDaemon.tls.source=generated", "must be empty"},
 		{"artifactDaemon.tls.source=guess", "artifactDaemon.tls.source"},
-		{"artifactDaemon.resolveCapability.existingSecret=", "resolveCapability.existingSecret is required"},
+		{"secrets.artifactDaemonKeySecret=", "secrets.artifactDaemonKeySecret is required"},
 		{"mcp.clients=[]", "mcp.clients"},
 		{"web.externalUrl=https://example.com/subpath", "origin URL"},
 		{"web.env[0].name=CONCOURSE_ENABLE_MCP", "chart-owned CONCOURSE_ENABLE_MCP"},
