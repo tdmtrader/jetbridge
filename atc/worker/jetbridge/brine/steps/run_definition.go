@@ -190,6 +190,9 @@ func retainedDefinitionFixture(res brine.Resources, rollback bool) (RetainedRunD
 	factory := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory)
 	in := RetainedRunDefinition{DB: jdb, Team: team, Template: template}
 	if rollback {
+		if err := putOutputPlaneInService(jdb); err != nil {
+			return in, err
+		}
 		// The fixture pool holds exactly one connection (postgresrunner), so
 		// nothing may use jdb.Conn while tx is open: that waits forever for a
 		// second connection. The deadline turns any such regression into a
@@ -203,6 +206,7 @@ func retainedDefinitionFixture(res brine.Resources, rollback bool) (RetainedRunD
 		defer db.Rollback(tx)
 		refused := errors.New("owner rejected admission")
 		_, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "brine", db.RunCreationOpts{
+			HangarOutput: true,
 			BeforeCommit: func(db.Tx, db.RunCreation) error { return refused },
 		})
 		if !errors.Is(err, refused) {

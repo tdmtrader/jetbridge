@@ -191,6 +191,7 @@ var _ = BeforeEach(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	admitter = runs.NewAdmitter(dbConn, runFactory, teamFactory, displayUserIds, nil)
+	admitter.SetOutputPlane(true)
 
 	memberPrincipal = runs.Principal{Claims: claimsFor("member-user", "member-id")}
 	viewerPrincipal = runs.Principal{Claims: claimsFor("viewer-user", "viewer-id")}

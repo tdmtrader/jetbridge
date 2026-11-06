@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
+	"github.com/concourse/concourse/atc/runinput"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -21,6 +23,8 @@ var _ = Describe("PipelineRunFactory", func() {
 
 	BeforeEach(func() {
 		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
+		_, err := db.SetHangarEnabled(context.Background(), dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("creates a complete run graph in the caller transaction", func() {
@@ -40,6 +44,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		defer tx.Rollback()
 
 		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"value": "one"}}, "creator", db.RunCreationOpts{
+			HangarOutput: true,
 			BeforeCommit: func(callbackTx db.Tx, got db.RunCreation) error {
 				var headers, payloads, builds, nextBuildID, payloadID, payloadRunID int
 				var payloadTemplate bool
@@ -192,7 +197,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{})
+		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 		Expect(err).To(MatchError(ContainSubstring("required")))
 		var number, runs int
 		Expect(tx.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", template.ID()).Scan(&number)).To(Succeed())
@@ -357,7 +362,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"authoritative": "value"}}, "creator", db.RunCreationOpts{Config: &override})
+		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"authoritative": "value"}}, "creator", db.RunCreationOpts{HangarOutput: true, Config: &override})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Config.Jobs[0].Name).To(Equal("override-value"))
 		Expect(creation.EntryJobs).To(Equal([]string{"override-value"}))
@@ -498,7 +503,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{BeforeCommit: func(db.Tx, db.RunCreation) error { return fmt.Errorf("stop") }})
+		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true, BeforeCommit: func(db.Tx, db.RunCreation) error { return fmt.Errorf("stop") }})
 		Expect(err).To(MatchError("stop"))
 		var visibleRows, one int
 		Expect(tx.QueryRow("SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1", template.ID()).Scan(&visibleRows)).To(Succeed())
@@ -511,6 +516,103 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(dbConn.QueryRow("SELECT count(*) FROM pipelines WHERE name = 'rollback-run' AND pipeline_run_id IS NOT NULL").Scan(&payloads)).To(Succeed())
 		Expect(runs).To(Equal(0))
 		Expect(payloads).To(Equal(0))
+	})
+})
+
+var _ = Describe("Run creation and the output plane", func() {
+	var (
+		ctx      context.Context
+		factory  db.PipelineRunFactory
+		template db.Pipeline
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
+		var err error
+		// No run results, no run inputs: the Run a plane-less deployment used
+		// to be given and could not execute.
+		template, _, err = defaultTeam.SavePipeline(atc.PipelineRef{Name: "plain"}, atc.Config{
+			Template:  true,
+			Resources: atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
+			Jobs:      atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source"}}}}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	create := func(opts db.RunCreationOpts) (db.RunCreation, error) {
+		tx, err := dbConn.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Rollback(tx)
+		creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", opts)
+		if err != nil {
+			return creation, err
+		}
+		return creation, tx.Commit()
+	}
+
+	refused := func(opts db.RunCreationOpts) {
+		GinkgoHelper()
+		_, err := create(opts)
+		Expect(err).To(MatchError(atc.ErrRunOutputPlaneNotInService))
+		Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
+		Expect(err.Error()).To(Equal("this deployment's Hangar output plane is not in service, and a Run cannot be created without it"))
+		var runs int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1`, template.ID()).Scan(&runs)).To(Succeed())
+		Expect(runs).To(BeZero())
+	}
+
+	It("refuses a Run of a template with no results or inputs on a web with no output plane", func() {
+		_, err := db.SetHangarEnabled(ctx, dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
+		refused(db.RunCreationOpts{})
+	})
+
+	It("refuses a Run of a template with no results or inputs while the configured plane is out of service", func() {
+		_, err := db.SetHangarEnabled(ctx, dbConn, false)
+		Expect(err).NotTo(HaveOccurred())
+		refused(db.RunCreationOpts{HangarOutput: true})
+	})
+
+	It("creates the Run while the plane is in service, and admits its payload's check execution", func() {
+		_, err := db.SetHangarEnabled(ctx, dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
+		creation, err := create(db.RunCreationOpts{HangarOutput: true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(creation.Run.TemplateID()).To(Equal(template.ID()))
+
+		payload, found, err := factory.InstancePipeline(creation.Run)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		resource, found, err := payload.Resource("source")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		f := runCheckFixture{ctx: ctx, factory: factory, template: template, run: creation.Run, entryBuild: creation.EntryBuilds[0], resource: resource}
+		_, admission := f.check(f.resource, executedOpen)
+		Expect(admission.Identity.ExecutionID).NotTo(BeEmpty())
+	})
+
+	It("still replays an invocation it admitted once the plane is out of service, and admits no new one", func() {
+		invocation := func(key string) db.RunCreationOpts {
+			return db.RunCreationOpts{HangarOutput: true, Invocation: &db.RunInvocationIdentity{
+				PrincipalDigest: runinput.PrincipalDigest("owner"), KeyDigest: strings.Repeat(key, 64),
+			}}
+		}
+		_, err := db.SetHangarEnabled(ctx, dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
+		first, err := create(invocation("a"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.Replayed).To(BeFalse())
+
+		_, err = db.SetHangarEnabled(ctx, dbConn, false)
+		Expect(err).NotTo(HaveOccurred())
+		replay, err := create(invocation("a"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(replay.Replayed).To(BeTrue())
+		Expect(replay.Run.ID()).To(Equal(first.Run.ID()))
+
+		_, err = create(invocation("b"))
+		Expect(err).To(MatchError(atc.ErrRunOutputPlaneNotInService))
 	})
 })
 

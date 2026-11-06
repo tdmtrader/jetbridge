@@ -64,6 +64,7 @@ var _ = Describe("admission's connection budget", func() {
 			db.NewPipelineRunFactory(conn, lockFactory),
 			db.NewTeamFactory(conn, lockFactory),
 			displayUserIds, nil)
+		port.SetOutputPlane(true)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		DeferCleanup(cancel)

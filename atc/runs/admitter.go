@@ -26,8 +26,8 @@ type Admitter interface {
 	// SetSealedInputAuthority is startup wiring; it supplies no public mint route.
 	SetSealedInputAuthority(*runinput.Authority)
 	// SetOutputPlane is startup wiring: whether this control plane has a
-	// Hangar output plane. A Run that declares results or binds inputs is
-	// admitted only while it is enabled.
+	// Hangar output plane. No Run is admitted unless it is enabled and in
+	// service.
 	SetOutputPlane(bool)
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
@@ -276,6 +276,8 @@ func refusal(err error) error {
 	switch {
 	case errors.Is(err, db.ErrRunInvocationConflict):
 		return ErrInvocationConflict
+	case errors.Is(err, atc.ErrRunOutputPlaneNotInService):
+		return atc.ErrRunOutputPlaneNotInService
 	case errors.Is(err, atc.ErrRunResultsUnavailable):
 		return atc.ErrRunResultsUnavailable
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):

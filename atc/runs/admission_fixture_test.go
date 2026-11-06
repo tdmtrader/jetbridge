@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// enableOutputPlane puts Hangar in service for templates requiring it.
+// enableOutputPlane puts Hangar in service, which every Run needs.
 func enableOutputPlane(conn db.DbConn) {
 	GinkgoHelper()
 	_, err := db.SetHangarEnabled(context.Background(), conn, true)

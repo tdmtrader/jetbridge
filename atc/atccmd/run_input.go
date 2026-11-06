@@ -113,8 +113,8 @@ func (cmd *RunCommand) pipelineRunServices(conn db.DbConn, factory db.PipelineRu
 	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: admitter, HangarOutput: cmd.outputPlane()}
 }
 
-// outputPlane reports whether this web has a Hangar output plane, which Run
-// admission may bind results and inputs through.
+// outputPlane reports whether this web has a Hangar output plane, which every
+// Run's admission needs.
 func (cmd *RunCommand) outputPlane() bool {
 	return cmd.Kubernetes.OutputPlaneEnabled
 }

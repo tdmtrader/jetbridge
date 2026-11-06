@@ -109,6 +109,25 @@ var _ = Describe("the port's own checks", func() {
 		})
 	})
 
+	Describe("a web with no output plane", func() {
+		It("refuses a Run of a template with no results or inputs, and keeps the refusal's sentence", func() {
+			displayUserIds, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
+			Expect(err).NotTo(HaveOccurred())
+			planeless := runs.NewAdmitter(dbConn, runFactory, teamFactory, displayUserIds, nil)
+			planeless.SetOutputPlane(false)
+
+			before := countRunRows()
+			_, err = admitWith(planeless, runs.Admission{
+				Template:    templateRef,
+				Principal:   memberPrincipal,
+				ContractKey: contractKey,
+			})
+			Expect(err).To(MatchError(atc.ErrRunOutputPlaneNotInService))
+			Expect(err.Error()).To(Equal("this deployment's Hangar output plane is not in service, and a Run cannot be created without it"))
+			Expect(countRunRows()).To(Equal(before))
+		})
+	})
+
 	// The admin short-circuit is the one way authorization can pass for a team
 	// that is not there: accessor.IsAuthorized returns true on isAdmin without
 	// looking the name up at all. So resolution has to answer for a team it

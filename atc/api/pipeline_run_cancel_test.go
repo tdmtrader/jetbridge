@@ -115,7 +115,7 @@ func createV2Run(database *realDB, template db.Pipeline) db.PipelineRun {
 	tx, err := database.Conn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	creation, err := db.NewPipelineRunFactory(database.Conn, database.LockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{})
+	creation, err := db.NewPipelineRunFactory(database.Conn, database.LockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
 	return creation.Run

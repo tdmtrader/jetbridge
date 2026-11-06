@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/google/uuid"
 )
 
@@ -54,7 +54,7 @@ func RunResultDeclarationDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return err
 			}
-			if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "Run result execution is not activated") {
+			if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), atc.ErrRunOutputPlaneNotInService.Error()) {
 				return fmt.Errorf("expected a clear activation conflict, got HTTP %d: %s", response.StatusCode, body)
 			}
 			return nil
@@ -78,13 +78,21 @@ func RunResultDeclarationDefinitions() []brine.StepDefinition {
 			if err := pipeline.Unpause(); err != nil {
 				return ResultRunAttempt{}, err
 			}
-			_, createErr := dbtest.CreateRun(jdb.Conn, db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory), context.Background(), pipeline, db.RunParams{}, "brine")
+			// A web with no output plane, so the Run is refused at creation.
+			tx, err := jdb.Conn.Begin()
+			if err != nil {
+				return ResultRunAttempt{}, err
+			}
+			_, createErr := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory).CreateRunInTx(context.Background(), tx, pipeline, db.RunParams{}, "brine", db.RunCreationOpts{})
+			if err := tx.Rollback(); err != nil {
+				return ResultRunAttempt{}, err
+			}
 			answer := ResultRunAttempt{Err: createErr}
 			err = jdb.Conn.QueryRow(`SELECT last_run_number, (SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1) FROM pipelines WHERE id = $1`, pipeline.ID()).Scan(&answer.Number, &answer.Runs)
 			return answer, err
 		}),
 		CheckThat[ResultRunAttempt]("Run result execution is held without allocating a Run or number", func(in ResultRunAttempt) error {
-			if in.Err == nil || !strings.Contains(in.Err.Error(), "Run result execution is not activated") {
+			if !errors.Is(in.Err, atc.ErrRunOutputPlaneNotInService) {
 				return fmt.Errorf("expected the activation refusal, got %v", in.Err)
 			}
 			if in.Runs != 0 || in.Number != 0 {

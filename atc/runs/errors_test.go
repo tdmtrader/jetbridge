@@ -36,6 +36,7 @@ var _ = Describe("IsRefusal", func() {
 		// opens the operator's gate, and the person reading the build's
 		// stderr is the one who can go and ask for it to be opened.
 		Entry("Hangar output unavailable", atc.ErrRunResultsUnavailable),
+		Entry("no output plane in service to create a Run on", atc.ErrRunOutputPlaneNotInService),
 		Entry("changed intent under the same invocation key", runs.ErrInvocationConflict),
 		Entry("no such template", runs.ErrTemplateNotFound),
 		Entry("not a template", runs.ErrNotATemplate),

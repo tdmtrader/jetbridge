@@ -184,8 +184,8 @@ completion only wakes it.
 
 Admission has no operator hold. Authorized callers can create runs of runnable
 templates; operators control availability by installing and pausing templates.
-A template declaring results or a run given inputs requires the Hangar output
-plane in service (`hangar_enabled`, written from `hangarOutput.webEnabled`).
+Every run requires the Hangar output plane in service (`hangar_enabled`,
+written from `hangarOutput.webEnabled`); without it creation is refused.
 New captures, credential delivery and input uploads also require that plane.
 Executing any run requires its execution control and the warrant key
 (`hangar.key`, `--kubernetes-hangar-key`).

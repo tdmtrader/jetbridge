@@ -28,10 +28,12 @@ var _ = Describe("A Run's retained definition attestation", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		factory = db.NewPipelineRunFactory(dbConn, lockFactory)
+		_, err = db.SetHangarEnabled(context.Background(), dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{})
+		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		run = creation.Run

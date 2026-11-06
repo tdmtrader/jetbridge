@@ -21,12 +21,14 @@ var _ = Describe("Run invocation replay", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
+		_, err = db.SetHangarEnabled(ctx, dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
 		create := func(key string, params atc.RunParams) (db.RunCreation, error) {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
 			result, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{Vars: params}, "owner", db.RunCreationOpts{
-				Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest("owner"), KeyDigest: strings.Repeat(key, 64)},
+				HangarOutput: true, Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest("owner"), KeyDigest: strings.Repeat(key, 64)},
 			})
 			if err != nil {
 				return result, err

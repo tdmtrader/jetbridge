@@ -62,7 +62,7 @@ func (cmd *RunCommand) constructChildRunAdmitter(
 		customRoles,
 	)
 
-	// Templates declaring results or binding inputs require the output plane.
+	// Every Run requires the output plane.
 	admitter.SetOutputPlane(cmd.outputPlane())
 	return childRunAdmitter{service: composition.NewService(admitter)}, nil
 }

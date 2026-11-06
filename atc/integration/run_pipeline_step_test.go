@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"io"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -121,6 +122,42 @@ var _ = Describe("the run_pipeline step", func() {
 		})
 	})
 
+	// The suite boots every other spec with the output plane; this context
+	// boots the web without one, so the real wiring (cmd.outputPlane() into
+	// both admitters) is what refuses a Run of a template with no results or
+	// inputs.
+	Context("on a web with no output plane", func() {
+		BeforeEach(func() {
+			cmd.Kubernetes.OutputPlaneEnabled = false
+			cmd.Kubernetes.OutputCaptureEnabled = false
+			cmd.Kubernetes.HangarKey = ""
+			cmd.Kubernetes.ArtifactDaemonTLSCert = ""
+			cmd.Kubernetes.ArtifactDaemonTLSKey = ""
+			cmd.Kubernetes.ArtifactDaemonTLSCACert = ""
+		})
+
+		It("refuses the v2 route's Run with a 409 in the refusal's own words", func() {
+			member := authedHTTPClient(atcURL, "m-user", "m-user")
+			refused := postCreateRun(member, "run-team", runTemplateRef.Name, runVars)
+			Expect(refused.Status).To(Equal(http.StatusConflict))
+			Expect(errorsFrom(refused)).To(ConsistOf(atc.ErrRunOutputPlaneNotInService.Error()))
+
+			_, err := login(atcURL, "m-user", "m-user").Team("run-team").CreatePipelineRun(runTemplateRef.Name, v2Request(runVars))
+			Expect(err).To(Equal(concourse.InvalidPipelineRunError{Errors: []string{atc.ErrRunOutputPlaneNotInService.Error()}}))
+
+			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(0))
+		})
+
+		It("fails the step with the refusal on stderr", func() {
+			build := triggerCallingJob(owner)
+			Expect(build.Status).To(Equal(atc.StatusFailed), buildOutput(owner, build))
+
+			stdout, stderr := buildStreams(owner, build)
+			Expect(stderr).To(ContainSubstring(atc.ErrRunOutputPlaneNotInService.Error()))
+			Expect(stdout).NotTo(ContainSubstring("admitted run"))
+			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(0))
+		})
+	})
 })
 
 // triggerCallingJob triggers the caller's job and returns the build once it

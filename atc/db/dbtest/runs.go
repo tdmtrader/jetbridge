@@ -8,14 +8,19 @@ import (
 
 // CreateRun admits one Run of template in its own transaction, with no
 // invocation record: the fixture a spec uses when it is about the Run's
-// payload, builds or lifecycle rather than about admission.
+// payload, builds or lifecycle rather than about admission. No Run is created
+// without the output plane in service, so it puts the plane there first, as
+// the web's startup write does.
 func CreateRun(conn db.DbConn, factory db.PipelineRunFactory, ctx context.Context, template db.Pipeline, params db.RunParams, createdBy string) (db.RunCreation, error) {
+	if _, err := db.SetHangarEnabled(ctx, conn, true); err != nil {
+		return db.RunCreation{}, err
+	}
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return db.RunCreation{}, err
 	}
 	defer db.Rollback(tx)
-	creation, err := factory.CreateRunInTx(ctx, tx, template, params, createdBy, db.RunCreationOpts{})
+	creation, err := factory.CreateRunInTx(ctx, tx, template, params, createdBy, db.RunCreationOpts{HangarOutput: true})
 	if err != nil {
 		return db.RunCreation{}, err
 	}

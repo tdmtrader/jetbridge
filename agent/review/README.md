@@ -69,8 +69,8 @@ Intake additionally requires `web.runInputSigningKeySecret`, naming a separate
 web-only Secret with `input.key` containing exactly 32 random raw bytes. This
 service key signs input grants; it is unrelated to Codex credentials and must
 not be shared with node keys. Both Hangar facets and `hangarOutput.webEnabled`
-must be configured: a review template declares results, so its Runs are
-admitted only while the Hangar output plane is in service. Run
+must be configured: every Run, a review's included, is admitted only while
+the Hangar output plane is in service. Run
 admission is available to authorized callers of runnable templates.
 
 ## Checking a Run

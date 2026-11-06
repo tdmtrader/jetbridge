@@ -836,7 +836,8 @@ hangarOutput:
   enabled: false
   # -- Whether the output plane is IN SERVICE. The web writes it into its
   # hangar_enabled row at startup; with it on, web selects captures and emits
-  # checkpoints. Requires enabled. To drain: set it false, wait for
+  # checkpoints. Every Run needs it: with it off, Run creation is refused.
+  # Requires enabled. To drain: set it false, wait for
   # `fly hangar-status` to report zero residue, then turn the daemon's output
   # plane off. There is no activation step and nothing to rotate.
   webEnabled: false

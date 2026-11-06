@@ -83,10 +83,11 @@ var _ = Describe("a Hangar output plane drain", func() {
 
 		inService(false)
 
-		// Admission of a result template needs the output plane in service:
-		// out of service it is refused.
+		// Admission of any Run needs the output plane in service: out of
+		// service it is refused, and the port keeps the refusal's sentence.
 		_, _, err = admit(portAt(true), "fresh-while-draining")
 		Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
+		Expect(err).To(MatchError(atc.ErrRunOutputPlaneNotInService))
 
 		// The key still replays the running Run.
 		again, replayed, err := admit(portAt(true), "drain-key")
