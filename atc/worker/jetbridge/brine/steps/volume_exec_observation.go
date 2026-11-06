@@ -330,7 +330,7 @@ func (t *volumeExecObservation) requireTransferMetadata() error {
 			attrs["exec.purpose"], attrs["volume.mount_path"])]++
 	}
 	if !reflect.DeepEqual(got, want) {
-		return fmt.Errorf("exported volume execution metadata: got %q, want %q", got, want)
+		return fmt.Errorf("exported volume execution metadata: got %v, want %v", got, want)
 	}
 	return nil
 }

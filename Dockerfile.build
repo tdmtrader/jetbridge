@@ -41,7 +41,7 @@ RUN yarn run build
 # ---------------------------------------------------------------------------
 # Stage 2: Build Go binary with embedded assets
 # ---------------------------------------------------------------------------
-FROM golang:1.25-bookworm AS backend
+FROM golang:1.27-bookworm AS backend
 
 RUN apt-get update && apt-get install -y --no-install-recommends zip && rm -rf /var/lib/apt/lists/*
 

@@ -1,7 +1,7 @@
 # Extended test runner for K3s-based contract and behavioral tests.
 # Uses testcontainers + K3s (replaces KinD — no kubeadm, no timeout issues).
 # Includes: helm, ginkgo, full Docker daemon (for DinD in privileged tasks).
-FROM golang:1.25-bookworm
+FROM golang:1.27-bookworm
 
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
     curl \

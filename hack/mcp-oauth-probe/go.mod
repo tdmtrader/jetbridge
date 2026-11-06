@@ -3,4 +3,4 @@
 // the existing Brine module, whose dependency graph owns this auth fixture.
 module github.com/concourse/concourse/hack/mcp-oauth-probe
 
-go 1.25.6
+go 1.27.3

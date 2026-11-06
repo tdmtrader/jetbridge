@@ -9,7 +9,7 @@
 # A nonzero exit is a broken scan, never an empty queue.
 set -euo pipefail
 D=/tmp/tidy-declinit; rm -rf $D; mkdir -p $D
-export GOTOOLCHAIN=$(go env GOVERSION)                 # the repo's toolchain (go1.25.6 on 2026-10-03): an older go/types rejects a newer go line
+export GOTOOLCHAIN=$(go env GOVERSION)                 # the repo's toolchain (go1.27.3 on 2026-11-06): an older go/types rejects a newer go line
 xt=$(go list -m -f '{{.Version}}' golang.org/x/tools)  # the root module's own pin (v0.45.0 on 2026-10-03), already in the module cache
 cat > $D/main.go <<'EOF'
 // declinit: the declaration-init scan. Run from the repo root.

@@ -50,7 +50,7 @@ RUN cargo build --locked --release --jobs 4 -p brine-cli --bin brine \
     && cargo build --locked --release --jobs 4 -p brine-engine
 
 # --- runner -----------------------------------------------------------------
-FROM golang:1.25-bookworm AS runner
+FROM golang:1.27-bookworm AS runner
 
 # Allow a checked-out task's Go module to select its required toolchain.
 ENV GOTOOLCHAIN=auto
