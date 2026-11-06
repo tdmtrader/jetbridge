@@ -498,6 +498,17 @@ secrets:
   # leave this empty until they move; the chart refuses both at once.
   encryptionKeySecret: ""
 
+  # -- Required. Name of a pre-existing Secret holding the artifact daemon
+  # key, exactly 32 random bytes, under artifact-daemon.key. The web signs
+  # every resolve capability and every Hangar warrant (read, execution
+  # control, output capture) with it, and every artifact daemon verifies them
+  # against it; the two are domain-separated, so one key serves both. Web and
+  # daemon read it at startup: restart both after changing it. Create it once:
+  #   head -c 32 /dev/urandom > artifact-daemon.key
+  #   kubectl create secret generic jetbridge-artifact-daemon-key \
+  #     --from-file=artifact-daemon.key
+  artifactDaemonKeySecret: ""
+
 # -- Pod Security Admission (PSA) recommendations.
 # Concourse task pods may run as root (resource type images require it),
 # so the namespace cannot use the "restricted" PSA level. Recommended labels:
@@ -624,25 +635,13 @@ artifactDaemon:
     # listener, no Service port, no scrape.
     port: ""
 
-  # -- The Hangar key. Every Run input reaches a task as a managed read of
+  # -- Hangar warrants. Every Run input reaches a task as a managed read of
   # the output namespace, and every warrant the web signs for that plane --
-  # read, execution control and output capture -- is signed with this one
-  # key. It is needed with hangarOutput.executionControl.enabled.
+  # read, execution control and output capture -- is signed with the artifact
+  # daemon key, secrets.artifactDaemonKeySecret.
   hangar:
-    # -- Permit the chart to generate hangar.key in its managed TLS Secret.
-    # Use only with live Helm install/upgrade, where lookup can preserve the
-    # Secret. Offline/GitOps rendering must leave this false and provide
-    # tls.existingSecret with all TLS keys plus an exact raw-32-byte hangar.key.
-    allowGeneratedKey: false
-    # -- Secret holding hangar.key, the raw 32-byte Hangar key the web signs
-    # every read, execution control and output capture warrant with and every
-    # artifact daemon verifies against. Needed with
-    # hangarOutput.executionControl.enabled. When set, web and the artifact
-    # daemon mount it from here instead of from artifactDaemon.tls.existingSecret,
-    # and the Hangar bootstrap creates it if it is absent.
-    keySecret: ""
-    # -- Lifetime of every warrant the web signs with the Hangar key, expressed
-    # as positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).
+    # -- Lifetime of every warrant the web signs, as positive whole seconds.
+    # Maximum 900s (Hangar's core 15-minute bound).
     capabilityTTL: "900s"
 
   # -- Override the headless service name. When set, used verbatim.
@@ -720,17 +719,9 @@ artifactDaemon:
     source: existingSecret
     # -- Secret containing ca.crt, tls.crt, tls.key, client.crt, client.key.
     # Required for source: existingSecret; must be empty for source: generated.
-    # The output plane (hangarOutput.executionControl.enabled) additionally
-    # requires hangar.key, the Hangar key, unless artifactDaemon.hangar.keySecret
-    # names it.
-    existingSecret: ""
-  # -- NetworkPolicy configuration for the artifact daemon
-  resolveCapability:
-    # -- Required existing Secret holding resolve.key (exactly 32 random bytes).
-    # Web always signs and the daemon always verifies resolve capabilities.
-    # Provision this key outside Helm; rendering must never rotate it.
     existingSecret: ""
 
+  # -- NetworkPolicy configuration for the artifact daemon
   networkPolicy:
     # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods and
     # egress to required services. Current GKE standard/Calico and Dataplane V2
@@ -807,8 +798,9 @@ artifactDaemon:
 # -- The Hangar bootstrap: a Job at the start of every Argo sync that creates
 # the absent Secrets of the bootstrap inventory and never changes one.
 # An entry joins the inventory once its values key names a Secret (for
-# example artifactDaemon.hangar.keySecret, the Hangar key), so the operator
-# turns each Secret on by naming it. Off renders nothing.
+# example hangarStorage.disk.tls.existingSecret), so the operator turns each
+# Secret on by naming it. Off renders nothing. It never creates
+# secrets.artifactDaemonKeySecret, which every install provides.
 #
 # Trusted readers: the inventory's consumers, web, the cluster administrators
 # the operator lists, and every step pod grant identity that holds privilege
@@ -841,9 +833,9 @@ hangarOutput:
   # acknowledged. Every Run input is a managed read of this plane, so a pod
   # with a tree input requires both labels too; there is no other label.
   #
-  # The daemon verifies every warrant with the one Hangar key
-  # (artifactDaemon.hangar.keySecret, or hangar.key in the daemon TLS Secret),
-  # which this switch requires. The node signs nothing: it is inside the
+  # The daemon verifies every warrant with the artifact daemon key
+  # (secrets.artifactDaemonKeySecret), which this switch hands it as
+  # --hangar-key. The node signs nothing: it is inside the
   # trusted computing base and is reached over mTLS, so its acknowledgement is
   # its answer on that channel. There is no node control key, no key id and no
   # verification ring.

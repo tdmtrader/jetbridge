@@ -3,8 +3,6 @@ artifactDaemon:
   tls:
     source: existingSecret
     existingSecret: test-daemon-tls
-  resolveCapability:
-    existingSecret: test-resolve-key
 mcp:
   clients:
     - client_id: test-client
@@ -14,6 +12,7 @@ mcp:
 secrets:
   signingKeySecret: test-signing-key
   encryptionKeySecret: test-encryption-key
+  artifactDaemonKeySecret: test-artifact-daemon-key
 # The dev profile: the local image, URL and test login these renders use.
 # The K3s suites pass the same values themselves.
 image:

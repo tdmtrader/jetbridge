@@ -35,7 +35,6 @@ var bootstrapSets = []string{
 	"hangarStorage.disk.tls.existingSecret=storage-tls",
 	"hangarStorage.disk.credentials.existingSecret=storage-credentials",
 	"hangarOutput.store=disk",
-	"artifactDaemon.hangar.keySecret=op-hangar-key",
 	"web.runInputSigningKeySecret=jb-concourse-jetbridge-run-input-signing-key",
 }
 
@@ -63,12 +62,11 @@ func TestTheBootstrapRendersWithEveryFeatureOff(t *testing.T) {
 		"hangarBootstrap.enabled=true",
 		"hangarStorage.disk.tls.existingSecret=storage-tls",
 		"hangarStorage.disk.credentials.existingSecret=storage-credentials",
-		"artifactDaemon.hangar.keySecret=op-hangar-key",
 	)
 	inv := renderedInventory(t, out)
-	// The Hangar key, the disk store's TLS bundle and tokens, and the Run
-	// input signing key the bootstrap always declares.
-	if len(inv.Entries) != 4 {
+	// The disk store's TLS bundle and tokens, and the Run input signing key
+	// the bootstrap always declares. The artifact daemon key is never one.
+	if len(inv.Entries) != 3 {
 		t.Errorf("the inventory has %d entries, want every named Secret", len(inv.Entries))
 	}
 }

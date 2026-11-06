@@ -63,9 +63,6 @@ var webDiskFlags = []string{
 // track schedules onto exactly these nodes.
 var baseControlSets = []string{
 	"hangarOutput.executionControl.enabled=true",
-	// The one Hangar key: the web signs every warrant with it and the daemon
-	// verifies against it. Required under the BASE switch.
-	"artifactDaemon.hangar.keySecret=op-hangar-key",
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
 	"artifactDaemon.outputScratch.sizeLimit=32Gi",
@@ -500,7 +497,7 @@ func TestOnlyTheOutputPrincipalsGainAnOutputRole(t *testing.T) {
 	// word output in it". What must not leave the two principals is the key
 	// and the bucket itself.
 	allowed := map[string][]string{
-		"op-hangar-key": {outputDaemonComponent, "-web"},
+		daemonKeyName: {outputDaemonComponent, "-web"},
 	}
 	for secret, carriers := range allowed {
 		found := 0
@@ -1436,16 +1433,15 @@ func TestOnlyTheWebPrincipalIsGrantedObjectDelete(t *testing.T) {
 // The control key is gone
 // ---------------------------------------------------------------------------
 
-// The base facet cannot render without the Hangar key: the daemon verifies
-// every warrant with it. With no key Secret named, no daemon TLS Secret to
-// hold hangar.key and no generated key allowed, the refusal names where to
-// put it. The refusal an operator most needs is the one at render time.
+// The base facet cannot render without the artifact daemon key: the daemon
+// verifies every warrant with it. The refusal names where to put it, and a
+// generated daemon TLS Secret is no substitute.
 func TestTheHangarKeyIsRequiredWithExecutionControl(t *testing.T) {
 	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
-		"artifactDaemon.hangar.keySecret=",
+		"secrets.artifactDaemonKeySecret=",
 		"artifactDaemon.tls.source=generated",
 		"artifactDaemon.tls.existingSecret=")...)
-	if !strings.Contains(message, "artifactDaemon.hangar.keySecret") {
+	if !strings.Contains(message, "secrets.artifactDaemonKeySecret") {
 		t.Errorf("the base facet rendered with no Hangar key, or was refused by something else:\n%s",
 			message)
 	}
@@ -1462,8 +1458,8 @@ func TestOneHangarKeyFlag(t *testing.T) {
 	if got := strings.Count(daemon.body, "--hangar-key="); got != 1 {
 		t.Errorf("the daemon is handed --hangar-key %d times, want exactly once", got)
 	}
-	if !strings.Contains(daemon.body, "--hangar-key=/etc/concourse/hangar-key/hangar.key") {
-		t.Error("the daemon does not read the Hangar key from the artifactDaemon.hangar.keySecret mount")
+	if !strings.Contains(daemon.body, "--hangar-key="+daemonKeyPath) {
+		t.Error("the daemon does not read the Hangar key from the secrets.artifactDaemonKeySecret mount")
 	}
 	if !strings.Contains(daemon.body, "- --execution-control\n") {
 		t.Error("the daemon is not told to mount the output plane")
@@ -1471,8 +1467,8 @@ func TestOneHangarKeyFlag(t *testing.T) {
 	if got := strings.Count(web.body, "--kubernetes-hangar-key="); got != 1 {
 		t.Errorf("web is handed --kubernetes-hangar-key %d times, want exactly once", got)
 	}
-	if !strings.Contains(web.body, "--kubernetes-hangar-key=/etc/concourse/hangar-key/hangar.key") {
-		t.Error("web does not read the Hangar key from the artifactDaemon.hangar.keySecret mount")
+	if !strings.Contains(web.body, "--kubernetes-hangar-key="+daemonKeyPath) {
+		t.Error("web does not read the Hangar key from the secrets.artifactDaemonKeySecret mount")
 	}
 	if got := strings.Count(web.body, "--kubernetes-hangar-warrant-ttl="); got != 1 {
 		t.Errorf("web is handed --kubernetes-hangar-warrant-ttl %d times, want exactly once", got)
@@ -1481,17 +1477,18 @@ func TestOneHangarKeyFlag(t *testing.T) {
 		"--capability-key", "--capability-ttl", "--materialization-key", "--hangar-warrant-key", "--hangar-warrant-ttl",
 		"--kubernetes-hangar-output-warrant-key", "--kubernetes-hangar-output-materialization-key",
 		"--kubernetes-hangar-warrant-key", "hangar-warrant-key", "capability.key", "materialize.key",
+		"hangar.key", "/etc/concourse/hangar-key", "resolve.key",
 	} {
 		if strings.Contains(out, gone) {
 			t.Errorf("the render still carries %q", gone)
 		}
 	}
 	for _, body := range []string{daemon.body, web.body} {
-		if strings.Count(body, "mountPath: /etc/concourse/hangar-key\n") != 1 {
-			t.Error("the Hangar key is not mounted exactly once at /etc/concourse/hangar-key")
+		if strings.Count(body, "mountPath: /etc/concourse/artifact-daemon-key\n") != 1 {
+			t.Error("the artifact daemon key is not mounted exactly once at /etc/concourse/artifact-daemon-key")
 		}
-		if strings.Count(body, "secretName: op-hangar-key") != 1 {
-			t.Error("the Hangar key Secret is not mounted exactly once")
+		if strings.Count(body, "secretName: "+daemonKeyName) != 1 {
+			t.Error("the artifact daemon key Secret is not mounted exactly once")
 		}
 	}
 }

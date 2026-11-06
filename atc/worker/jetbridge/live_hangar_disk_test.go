@@ -169,7 +169,7 @@ func TestLiveHangarDiskStoreRoundTripSurvivesRestart(t *testing.T) {
 	// must carry the Service DNS names the artifact daemon and the disk client
 	// verify against, and those are the chart's to choose.
 	secrets := liveDiskSecretNames{
-		daemonTLS: "hl-daemon-tls", resolve: "hl-resolve",
+		daemonTLS: "hl-daemon-tls", daemonKey: "hl-daemon-key",
 		storeTLS: "hl-store-tls", storeCredentials: "hl-store-credentials",
 	}
 	provision := liveDiskRender(t, namespace, repository, tag, secrets, true)
@@ -207,8 +207,8 @@ func TestLiveHangarDiskStoreRoundTripSurvivesRestart(t *testing.T) {
 	}
 	credentials["server.json"] = serverJSON
 	for name, data := range map[string]map[string][]byte{
-		secrets.daemonTLS:        {"tls.crt": daemonCert, "tls.key": daemonKey, "ca.crt": ca.certPEM, "hangar.key": warrantKey},
-		secrets.resolve:          {"resolve.key": liveDiskRandomBytes(t, 32)},
+		secrets.daemonTLS:        {"tls.crt": daemonCert, "tls.key": daemonKey, "ca.crt": ca.certPEM},
+		secrets.daemonKey:        {"artifact-daemon.key": warrantKey},
 		secrets.storeTLS:         {"tls.crt": storeCert, "tls.key": storeKey, "ca.crt": ca.certPEM},
 		secrets.storeCredentials: credentials,
 	} {
@@ -401,7 +401,7 @@ func liveManagedRead(t *testing.T, signer *hangar.Signer, node executioncontrol.
 }
 
 type liveDiskSecretNames struct {
-	daemonTLS, resolve, storeTLS, storeCredentials string
+	daemonTLS, daemonKey, storeTLS, storeCredentials string
 }
 
 type liveDiskObjects []k8sruntime.Object
@@ -454,7 +454,7 @@ func liveDiskRender(t *testing.T, namespace, repository, tag string, secrets liv
 		"image.tag=" + tag,
 		"image.pullPolicy=Never",
 		"artifactDaemon.tls.existingSecret=" + secrets.daemonTLS,
-		"artifactDaemon.resolveCapability.existingSecret=" + secrets.resolve,
+		"secrets.artifactDaemonKeySecret=" + secrets.daemonKey,
 		"artifactDaemon.hostPath=" + liveDiskHostPath,
 		fmt.Sprintf("artifactDaemon.port=%d", liveDiskPort),
 		// The output plane on the disk store, as the hangar_stores_enabled_in_cluster

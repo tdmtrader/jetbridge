@@ -561,6 +561,9 @@
         },
         "encryptionKeySecret": {
           "type": "string"
+        },
+        "artifactDaemonKeySecret": {
+          "type": "string"
         }
       }
     },
@@ -693,8 +696,6 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "allowGeneratedKey": {},
-            "keySecret": {},
             "capabilityTTL": {}
           }
         },
@@ -743,15 +744,6 @@
                 "generated"
               ]
             },
-            "existingSecret": {
-              "type": "string"
-            }
-          }
-        },
-        "resolveCapability": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
             "existingSecret": {
               "type": "string"
             }

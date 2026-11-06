@@ -43,7 +43,7 @@
     "daemon.hangarOutput": {
       "expect": "on",
       "coveredBy": ["TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult", "TestLiveHangarReviewRunPublishesAVerifiedReport", "TestLiveHangarImplementRunPublishesAVerifiedChangeAndValidation"],
-      "note": "The output plane is mounted in every artifact daemon (--execution-control, verifying every warrant with the Hangar key concourse-hangar-warrant-key) with capture on the disk store. Every Run input reaches a task through it, as a managed read of an input publication."
+      "note": "The output plane is mounted in every artifact daemon (--execution-control, verifying every warrant with the artifact daemon key, secrets.artifactDaemonKeySecret) with capture on the disk store. Every Run input reaches a task through it, as a managed read of an input publication."
     },
     "store.disk": {
       "expect": "on",

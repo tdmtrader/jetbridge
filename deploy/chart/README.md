@@ -44,12 +44,11 @@ web:
 secrets:
   signingKeySecret: jetbridge-session-signing-key
   encryptionKeySecret: jetbridge-encryption-key
+  artifactDaemonKeySecret: jetbridge-artifact-daemon-key
 artifactDaemon:
   tls:
     source: existingSecret
     existingSecret: jetbridge-daemon-tls
-  resolveCapability:
-    existingSecret: jetbridge-resolve-key
 mcp:
   clients:
     - client_id: workstation
@@ -58,7 +57,9 @@ mcp:
 ```
 
 The TLS Secret needs `ca.crt`, `tls.crt`, `tls.key`, `client.crt`, and
-`client.key`. The resolve Secret needs exactly 32 random bytes under `resolve.key`.
+`client.key`. The artifact daemon key Secret needs exactly 32 random bytes under
+`artifact-daemon.key`: the web signs every resolve capability and Hangar
+warrant with it, and every artifact daemon verifies them.
 For a live Helm installation, `tls.source: generated` with an empty
 `tls.existingSecret` explicitly selects chart-managed certificates instead.
 
@@ -83,6 +84,9 @@ once (`openssl rand -hex 16` gives 32 hex characters, a 32-byte key):
 ```bash
 kubectl -n concourse create secret generic jetbridge-encryption-key \
   --from-literal=encryption-key="$(openssl rand -hex 16)"
+head -c 32 /dev/urandom > artifact-daemon.key
+kubectl -n concourse create secret generic jetbridge-artifact-daemon-key \
+  --from-file=artifact-daemon.key
 ```
 
 Then install:
@@ -151,6 +155,8 @@ spec:
           value: jetbridge-session-signing-key
         - name: secrets.encryptionKeySecret
           value: jetbridge-encryption-key
+        - name: secrets.artifactDaemonKeySecret
+          value: jetbridge-artifact-daemon-key
         - name: ingress.enabled
           value: "true"
         - name: ingress.host
@@ -303,14 +309,11 @@ directories or ephemeral emptyDirs.
 | `cacheHostPath` | `""` | Node directory for `hostpath` task caches. Empty falls back to emptyDir. |
 | `artifactDaemon.tls.source` | `existingSecret` | Certificate ownership: `existingSecret` or live-Helm `generated`. mTLS is mandatory. |
 | `artifactDaemon.tls.existingSecret` | `""` | Required certificate Secret in existing-secret mode. |
-| `artifactDaemon.resolveCapability.existingSecret` | `""` | Required Secret holding `resolve.key`; no unsigned mode. |
 | `mcp.clients` | `[]` | Required public OAuth client registrations with exact redirects. |
 | `mcp.disabledOperations` | `[]` | Operation IDs refused regardless of user consent. |
 | `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
 | `artifactDaemon.port` | `7780` | Port the daemon serves on. |
 | `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
-| `artifactDaemon.hangar.allowGeneratedKey` | `false` | Allow live Helm to generate/persist `hangar.key`; unsupported for offline/GitOps rendering. |
-| `artifactDaemon.hangar.keySecret` | `""` | Secret holding `hangar.key`, the Hangar key. Empty reads `hangar.key` from `artifactDaemon.tls.existingSecret`. Needed with `hangarOutput.executionControl.enabled`. |
 | `artifactDaemon.hangar.capabilityTTL` | `900s` | Lifetime of every warrant the web signs, in positive whole seconds, at most 900s. |
 | `artifactDaemon.outputScratch.path` | `/var/concourse/hangar-output-scratch` | The one canonicalization scratch: a daemon-only `emptyDir`, disjoint from `hostPath`. |
 | `artifactDaemon.outputScratch.sizeLimit` | `""` | Required with `hangarOutput.executionControl.enabled`; at least `concurrency` times `maxContentBytes`. |
@@ -327,16 +330,13 @@ is uploaded as an input publication into the output namespace
 is no separate input store. Native GCS authenticates with Workload Identity;
 S3-compatible and filesystem stores are unsupported.
 
-One Hangar key, `hangar.key` (exactly 32 raw bytes after base64 decoding),
-signs every warrant the web issues -- read, execution control and output
-capture -- and every artifact daemon verifies against it. The output plane
-(`hangarOutput.executionControl.enabled`) needs it. Name a Secret holding it in
-`artifactDaemon.hangar.keySecret` (the Hangar bootstrap creates an absent one);
-otherwise `artifactDaemon.tls.existingSecret` must carry `hangar.key` beside
-the TLS material, or `artifactDaemon.hangar.allowGeneratedKey` lets live Helm
-generate it. The web is handed `--kubernetes-hangar-key` and the daemon
-`--hangar-key`, each the path of that one file. The key is mounted only into
-web and artifact-daemon Pods, never task Pods. The Run input signing key
+The artifact daemon key (`secrets.artifactDaemonKeySecret`, exactly 32 raw
+bytes under `artifact-daemon.key`) also signs every warrant the web issues --
+read, execution control and output capture -- and every artifact daemon
+verifies against it. With `hangarOutput.executionControl.enabled` the web is
+also handed it as `--kubernetes-hangar-key` and the daemon as `--hangar-key`,
+the same file as their resolve key. The key is mounted only into web and
+artifact-daemon Pods, never task Pods. The Run input signing key
 (`web.runInputSigningKeySecret`) is web-only and must be a different Secret.
 See
 [`docs/hangar.md`](../../docs/hangar.md) for rollout order, sizing, security,
@@ -463,6 +463,7 @@ OTLP wins.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `secrets.signingKeySecret` | `""` | **Required.** Pre-existing Secret holding `session_signing_key`, an RSA private key in PEM. Every web pod mounts it at `/keys`. |
+| `secrets.artifactDaemonKeySecret` | `""` | **Required.** Pre-existing Secret holding `artifact-daemon.key`, exactly 32 random bytes. The web signs every resolve capability and Hangar warrant with it; every artifact daemon verifies them. The chart never generates it. |
 | `secrets.encryptionKeySecret` | `""` | **Required.** Pre-existing Secret holding `encryption-key`, the 16- or 32-byte database encryption key. Rendered as `CONCOURSE_ENCRYPTION_KEY` on the web container and on `migrate-db`. A deployment that already sets `CONCOURSE_ENCRYPTION_KEY` through `web.env` may keep that until it moves; the chart refuses both at once. |
 
 The chart never generates either key. Every web replica mounts the same

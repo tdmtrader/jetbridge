@@ -22,7 +22,7 @@ available.
 ## Enablement
 
 Hangar is the output plane, configured under `hangarOutput`. It requires the
-artifact DaemonSet, artifact-daemon TLS, the Hangar key, a configured GCS
+artifact DaemonSet, artifact-daemon TLS, the artifact daemon key, a configured GCS
 bucket or disk namespace, a whole-second warrant TTL from `1s` through
 `900s`, and a private scratch volume with positive content and entry limits:
 
@@ -32,7 +32,6 @@ artifactDaemon:
     source: existingSecret
     existingSecret: concourse-artifact-daemon-tls
   hangar:
-    allowGeneratedKey: false
     capabilityTTL: 900s
   outputScratch:
     path: /var/concourse/hangar-output-scratch
@@ -73,30 +72,21 @@ not equal, contain, or sit beneath `artifactDaemon.hostPath`.
 
 ## The Hangar key
 
-One raw 32-byte key, `hangar.key`, signs every warrant -- read, execution
-control and output capture -- and every artifact daemon verifies against it.
-Name a Secret holding it in `artifactDaemon.hangar.keySecret`; the web reads
-it through `--kubernetes-hangar-key` (required with
-`--kubernetes-hangar-output-enabled`) and the daemon through `--hangar-key`
-(required with, and only with, `--execution-control`). Without `keySecret`,
-with chart-managed artifact-daemon TLS, the same Secret also contains
-`hangar.key`. That mode requires the explicit `hangar.allowGeneratedKey:
-true` opt-in and is supported only for live Helm install/upgrade, where
-`lookup` can read and preserve the existing Secret. Helm generates 32
-cryptographically random bytes only when the key is absent; it does not
-reuse a TLS private key.
-
-Offline renderers and GitOps controllers must not use generated keys. `lookup`
-has no reliable live Secret in those modes, so both `hangar.key` and the
-chart-generated TLS CA/certificates would change between renders. Leave
-`allowGeneratedKey: false` and set `artifactDaemon.tls.existingSecret` to an
-operator-managed Secret containing all TLS materials and `hangar.key`.
-
-With `artifactDaemon.tls.existingSecret`, the operator must add all normal TLS
-entries plus `hangar.key`, whose decoded value must be **exactly 32 raw bytes**.
-The chart mounts that selected key read-only into only the web and daemon
-containers. A missing entry prevents the Pods from starting; a wrong-length
-entry is rejected by both binaries at startup.
+The Hangar key is the artifact daemon key: one raw 32-byte key, in the Secret
+`secrets.artifactDaemonKeySecret` names under `artifact-daemon.key`, which
+every install provides. It signs every resolve capability and every warrant
+-- read, execution control and output capture -- and every artifact daemon
+verifies against it. The two MACs are domain-separated (`jb-resolve-v1.`
+against `hangar-warrant-v1`), and both live on the web and on every daemon,
+so a second key would isolate nothing. The web reads the one file through
+`--kubernetes-artifact-daemon-resolve-capability-key` and, with
+`--kubernetes-hangar-output-enabled`, `--kubernetes-hangar-key`; the daemon
+through `--resolve-capability-key` and, with (and only with)
+`--execution-control`, `--hangar-key`. The chart never generates it and the
+Hangar bootstrap never creates it: under `helm template`, which is how Argo
+renders, a generated key would change on every render. Its decoded value must
+be **exactly 32 raw bytes**; a wrong-length key is refused by both binaries
+at startup. It is mounted read-only into only the web and daemon containers.
 
 The web process signs short-lived warrants with the configured `capabilityTTL`
 window, and the daemon accepts none that lives longer than 15 minutes. Chart
@@ -195,9 +185,10 @@ generation is deleted and stamped reclaimed) and `hangar_orphan_sweep` --
 which share one PostgreSQL advisory lock across web replicas. It remains opt-in: `hangarOutput.executionControl.enabled` renders the
 daemon's `--execution-control`, which mounts the output plane (the base
 execution-control protocol, and with `hangarOutput.enabled` the capture
-extension), verifying every warrant with the Hangar key it already holds; and
-`hangarOutput.webEnabled` puts the plane **in service**. Configure the Hangar
-key and mutual TLS as described in `deploy/chart/values.yaml`. Changing the storage
+extension), verifying every warrant with the artifact daemon key it already
+holds; and `hangarOutput.webEnabled` puts the plane **in service**. Configure
+the artifact daemon key and mutual TLS as described in
+`deploy/chart/values.yaml`. Changing the storage
 selector does not bypass these gates.
 
 ### In service, and the drain
@@ -214,7 +205,10 @@ and an acknowledgement is its answer on that channel.
 
 To remove the output plane (or replace its daemons):
 
-1. Set `hangarOutput.webEnabled: false` and roll the web. New admission stops;
+1. Set `hangarOutput.webEnabled: false`, remove `web.runInputSigningKeySecret`
+   and `web.runCredentialWorkerImages` (the chart refuses the first while the
+   plane is out of service, and the second without the first; restore both
+   when the plane returns to service), and roll the web. New admission stops;
    captures already pending carry on to completion, and the reclaim pass keeps
    reclaiming what consumers release. Execution start is admission too: a running multi-step Run
    whose next step needs the output plane fails at that step during a drain.

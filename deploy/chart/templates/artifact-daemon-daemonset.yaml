@@ -1,18 +1,7 @@
 {{- $output := .Values.hangarOutput }}
 {{- $base := $output.executionControl.enabled | default false }}
-{{- /*
-The Hangar key, hangar.key: the one raw 32-byte key the web signs every
-warrant with (read, execution control and output capture) and this daemon
-verifies against. The daemon needs it for the output plane, which every Run
-input is a managed read of, so it is mounted, and its source checked, with
-exact execution control.
-*/}}
-{{- $hangarKey := $base }}
-{{- if and $hangarKey (empty .Values.artifactDaemon.tls.existingSecret) (empty .Values.artifactDaemon.hangar.keySecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
-  {{- fail "the Hangar key is required: name a Secret holding hangar.key in artifactDaemon.hangar.keySecret, hold hangar.key in artifactDaemon.tls.existingSecret, or set artifactDaemon.hangar.allowGeneratedKey=true (live Helm only; offline/GitOps rendering cannot preserve a generated key)" }}
-{{- end }}
 {{- if $base }}
-  {{- $ttl := toString .Values.artifactDaemon.hangar.capabilityTTL }}
+  {{- $ttl := include "concourse.artifactDaemon.hangarCapabilityTTL" . }}
   {{- if not (regexMatch "^[1-9][0-9]*s$" $ttl) }}
     {{- fail "artifactDaemon.hangar.capabilityTTL must use positive whole seconds (for example 900s)" }}
   {{- end }}
@@ -109,21 +98,18 @@ spec:
             - --pod-terminations-namespace={{ include "concourse.kubernetesNamespace" . }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
-            - --resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
+            # The one artifact daemon key (secrets.artifactDaemonKeySecret):
+            # the daemon verifies every resolve capability with it and, with
+            # the output plane, every Hangar warrant. It signs nothing.
+            - --resolve-capability-key=/etc/concourse/artifact-daemon-key/artifact-daemon.key
             - --tls-cert=/etc/concourse/daemon-tls/tls.crt
             - --tls-key=/etc/concourse/daemon-tls/tls.key
             - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- with .Values.artifactDaemon.metrics.port }}
             - --metrics-port={{ . }}
             {{- end }}
-            {{- if $hangarKey }}
-            # The one Hangar key: the daemon verifies every warrant with it
-            # and signs nothing -- its acknowledgement is its answer over mTLS.
-            {{- if .Values.artifactDaemon.hangar.keySecret }}
-            - --hangar-key=/etc/concourse/hangar-key/hangar.key
-            {{- else }}
-            - --hangar-key=/etc/concourse/daemon-tls/hangar.key
-            {{- end }}
+            {{- if $base }}
+            - --hangar-key=/etc/concourse/artifact-daemon-key/artifact-daemon.key
             {{- end }}
             - --mirror-replicas={{ $mirrorReplicas }}
             - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
@@ -199,13 +185,8 @@ spec:
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
-            {{- if and $hangarKey .Values.artifactDaemon.hangar.keySecret }}
-            - name: hangar-key
-              mountPath: /etc/concourse/hangar-key
-              readOnly: true
-            {{- end }}
-            - name: resolve-capability
-              mountPath: /etc/concourse/resolve-capability
+            - name: artifact-daemon-key
+              mountPath: /etc/concourse/artifact-daemon-key
               readOnly: true
             {{- if $base }}
             {{- if $outputDisk }}
@@ -229,23 +210,12 @@ spec:
                 path: tls.key
               - key: ca.crt
                 path: ca.crt
-              {{- if and $hangarKey (not .Values.artifactDaemon.hangar.keySecret) }}
-              - key: hangar.key
-                path: hangar.key
-              {{- end }}
-        {{- if and $hangarKey .Values.artifactDaemon.hangar.keySecret }}
-        - name: hangar-key
+        - name: artifact-daemon-key
           secret:
-            secretName: {{ .Values.artifactDaemon.hangar.keySecret }}
+            secretName: {{ .Values.secrets.artifactDaemonKeySecret }}
             items:
-              - key: hangar.key
-                path: hangar.key
-        {{- end }}
-        {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
-        - name: resolve-capability
-          secret:
-            secretName: {{ . }}
-        {{- end }}
+              - key: artifact-daemon.key
+                path: artifact-daemon.key
         {{- if $base }}
         {{- if $outputDisk }}
         {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "publisher" "name" "hangar-output-disk-client") | nindent 8 }}

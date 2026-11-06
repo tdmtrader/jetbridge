@@ -271,31 +271,31 @@ func buildOOMTriggerImage() {
 	}
 }
 
-// resolveCapabilitySecretName is the Secret the chart is pointed at to arm
-// signed resolve capabilities. The chart never generates key material —
-// generating it needs Helm `lookup`, which returns empty under `helm template`
-// and so re-mints the key on every GitOps render — so the key is created here,
-// once, exactly as an operator would.
-const resolveCapabilitySecretName = "concourse-resolve-capability"
+// artifactDaemonKeySecretName is the Secret holding the one artifact daemon
+// key, which signs every resolve capability and Hangar warrant. The chart
+// never generates key material — generating it needs Helm `lookup`, which
+// returns empty under `helm template` and so re-mints the key on every GitOps
+// render — so the key is created here, once, exactly as an operator would.
+const artifactDaemonKeySecretName = "concourse-artifact-daemon-key"
 
-// createResolveCapabilitySecret puts a 32-byte key in the namespace. Content is
+// createArtifactDaemonKeySecret puts a 32-byte key in the namespace. Content is
 // fixed rather than random: a test cluster is thrown away, and a deterministic
 // key makes a failure reproducible.
-func createResolveCapabilitySecret(kubeconfig, namespace string) {
-	log.Printf("Creating resolve-capability Secret %s in %s...", resolveCapabilitySecretName, namespace)
+func createArtifactDaemonKeySecret(kubeconfig, namespace string) {
+	log.Printf("Creating artifact daemon key Secret %s in %s...", artifactDaemonKeySecretName, namespace)
 
 	key := strings.Repeat("k", 32)
 	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"-n", namespace,
-		"create", "secret", "generic", resolveCapabilitySecretName,
-		"--from-literal=resolve.key="+key,
+		"create", "secret", "generic", artifactDaemonKeySecretName,
+		"--from-literal=artifact-daemon.key="+key,
 		"--dry-run=client", "-o", "yaml")
 	manifest, err := cmd.Output()
 	if err != nil {
 		// Fatal, not a warning: without the Secret the pods mount a volume
 		// that does not exist and the suite dies later as an unrelated
 		// pod-readiness timeout, naming the wrong cause.
-		Fail(fmt.Sprintf("could not render resolve-capability Secret: %v", err))
+		Fail(fmt.Sprintf("could not render artifact daemon key Secret: %v", err))
 	}
 
 	// Apply rather than create: this runs on every install, including upgrades
@@ -305,7 +305,7 @@ func createResolveCapabilitySecret(kubeconfig, namespace string) {
 	apply.Stdout = os.Stderr
 	apply.Stderr = os.Stderr
 	if err := apply.Run(); err != nil {
-		Fail(fmt.Sprintf("could not apply resolve-capability Secret: %v", err))
+		Fail(fmt.Sprintf("could not apply artifact daemon key Secret: %v", err))
 	}
 }
 
@@ -424,7 +424,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	exec.Command("kubectl", "--kubeconfig", kubeconfig,
 		"create", "namespace", namespace).Run()
 
-	createResolveCapabilitySecret(kubeconfig, namespace)
+	createArtifactDaemonKeySecret(kubeconfig, namespace)
 	createSigningKeySecret(kubeconfig, namespace)
 	createEncryptionKeySecret(kubeconfig, namespace)
 
@@ -447,8 +447,8 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "mcp.clients[0].client_id=integration-test",
 		"--set", "mcp.clients[0].client_name=Integration test",
 		"--set", "mcp.clients[0].redirect_uris[0]=http://127.0.0.1:8964/callback",
-		// Exercise the SIGNED resolve path; see createResolveCapabilitySecret.
-		"--set", "artifactDaemon.resolveCapability.existingSecret=" + resolveCapabilitySecretName,
+		// Exercise the SIGNED resolve path; see createArtifactDaemonKeySecret.
+		"--set", "secrets.artifactDaemonKeySecret=" + artifactDaemonKeySecretName,
 		"--set", "secrets.signingKeySecret=" + signingKeySecretName,
 		"--set", "secrets.encryptionKeySecret=" + encryptionKeySecretName,
 		"--timeout", "5m",

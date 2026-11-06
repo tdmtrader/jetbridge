@@ -21,8 +21,8 @@ template first, so these rules run before anything else in the chart.
 {{- else if .Values.artifactDaemon.tls.existingSecret -}}
 {{- fail "artifactDaemon.tls.existingSecret must be empty for tls.source=generated; select certificate ownership explicitly" -}}
 {{- end -}}
-{{- if empty .Values.artifactDaemon.resolveCapability.existingSecret -}}
-{{- fail "artifactDaemon.resolveCapability.existingSecret is required; signed resolution is always enforced" -}}
+{{- if empty .Values.secrets.artifactDaemonKeySecret -}}
+{{- fail "secrets.artifactDaemonKeySecret is required: name the Secret holding the artifact daemon key, exactly 32 random bytes under artifact-daemon.key; the web signs every resolve capability and Hangar warrant with it and every daemon verifies them" -}}
 {{- end -}}
 {{- $url := urlParse .Values.web.externalUrl -}}
 {{- if or (not (has $url.scheme (list "http" "https"))) (empty $url.host) (not (has $url.path (list "" "/"))) (not (empty $url.userinfo)) (not (empty $url.query)) (not (empty $url.fragment)) -}}

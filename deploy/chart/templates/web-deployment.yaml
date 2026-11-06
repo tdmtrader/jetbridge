@@ -226,20 +226,17 @@ spec:
             # in the release namespace, and the web discovers daemons there
             # and verifies them against <service>.<namespace>.svc.
             - --kubernetes-artifact-daemon-namespace={{ .Release.Namespace }}
-            - --kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
+            # The one artifact daemon key (secrets.artifactDaemonKeySecret):
+            # the web signs every resolve capability with it and, with the
+            # output plane, every Hangar warrant -- read and control. Every
+            # Run input is a managed read of the output plane.
+            - --kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/artifact-daemon-key/artifact-daemon.key
             - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- if .Values.hangarOutput.executionControl.enabled }}
-            # The one Hangar key: the web signs every warrant with it -- read
-            # and control -- and every artifact daemon verifies against it.
-            # Every Run input is a managed read of the output plane.
-            {{- if .Values.artifactDaemon.hangar.keySecret }}
-            - --kubernetes-hangar-key=/etc/concourse/hangar-key/hangar.key
-            {{- else }}
-            - --kubernetes-hangar-key=/etc/concourse/daemon-tls/hangar.key
-            {{- end }}
-            - --kubernetes-hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            - --kubernetes-hangar-key=/etc/concourse/artifact-daemon-key/artifact-daemon.key
+            - --kubernetes-hangar-warrant-ttl={{ include "concourse.artifactDaemon.hangarCapabilityTTL" . }}
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node signs control
@@ -429,13 +426,8 @@ spec:
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
-            {{- if and .Values.hangarOutput.executionControl.enabled .Values.artifactDaemon.hangar.keySecret }}
-            - name: hangar-key
-              mountPath: /etc/concourse/hangar-key
-              readOnly: true
-            {{- end }}
-            - name: resolve-capability
-              mountPath: /etc/concourse/resolve-capability
+            - name: artifact-daemon-key
+              mountPath: /etc/concourse/artifact-daemon-key
               readOnly: true
             {{- if .Values.hangarOutput.executionControl.enabled }}
             {{- if .Values.hangarOutput.enabled }}
@@ -496,21 +488,12 @@ spec:
                 path: client.key
               - key: ca.crt
                 path: ca.crt
-              {{- if and .Values.hangarOutput.executionControl.enabled (not .Values.artifactDaemon.hangar.keySecret) }}
-              - key: hangar.key
-                path: hangar.key
-              {{- end }}
-        {{- if and .Values.hangarOutput.executionControl.enabled .Values.artifactDaemon.hangar.keySecret }}
-        - name: hangar-key
+        - name: artifact-daemon-key
           secret:
-            secretName: {{ .Values.artifactDaemon.hangar.keySecret }}
+            secretName: {{ .Values.secrets.artifactDaemonKeySecret }}
             items:
-              - key: hangar.key
-                path: hangar.key
-        {{- end }}
-        - name: resolve-capability
-          secret:
-            secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret }}
+              - key: artifact-daemon.key
+                path: artifact-daemon.key
         {{- if .Values.hangarOutput.executionControl.enabled }}
         {{- if .Values.hangarOutput.enabled }}
         {{- if eq .Values.hangarOutput.store "disk" }}

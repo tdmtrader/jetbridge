@@ -16,11 +16,14 @@ var rolloutSteps = []struct {
 	sets []string
 }{
 	{"S0 pre-flight", nil},
+	// The one artifact daemon key, secrets.artifactDaemonKeySecret, is in the
+	// base values from S0: every install provides it, and it signs the
+	// warrants S6 on needs. The bootstrap creates the store's Secrets and the
+	// Run input signing key, never the daemon key.
 	{"S1 bootstrap", []string{
 		"hangarBootstrap.enabled=true",
 		"hangarStorage.disk.tls.existingSecret=concourse-hangar-store-tls",
 		"hangarStorage.disk.credentials.existingSecret=concourse-hangar-store-credentials",
-		"artifactDaemon.hangar.keySecret=concourse-hangar-warrant-key",
 	}},
 	{"S2 disk init", []string{"hangarStorage.disk.enabled=true", "hangarStorage.disk.storeID=concourse-home-1",
 		"hangarStorage.disk.storageClass=local-path", "hangarStorage.disk.initialize=true"}},

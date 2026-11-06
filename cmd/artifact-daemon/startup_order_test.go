@@ -24,6 +24,25 @@ import (
 // The daemon binary runs for real against a real HTTP server standing in for
 // the Kubernetes API, which records every node PATCH it is sent.
 func TestDaemonRefusesABadCapabilityKeyBeforeLabellingTheNode(t *testing.T) {
+	// Wrong length: LoadKeyFile refuses anything but 32 bytes.
+	badKey := filepath.Join(t.TempDir(), "resolve.key")
+	if err := os.WriteFile(badKey, []byte("too-short"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	daemonRefusesBeforeLabellingTheNode(t, "a bad capability key", "--resolve-capability-key="+badKey)
+}
+
+// Resolve has no unsigned mode: a daemon given no key at all is refused at
+// the same moment, before the label, not served unauthenticated.
+func TestDaemonRefusesAMissingCapabilityKeyBeforeLabellingTheNode(t *testing.T) {
+	daemonRefusesBeforeLabellingTheNode(t, "no capability key")
+}
+
+// daemonRefusesBeforeLabellingTheNode runs the daemon with keyArgs and
+// requires it to exit non-zero on its resolve capability key without ever
+// sending the node the readiness label.
+func daemonRefusesBeforeLabellingTheNode(t *testing.T, what string, keyArgs ...string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("builds the daemon binary")
 	}
@@ -72,29 +91,22 @@ users:
 		t.Fatal(err)
 	}
 
-	// Wrong length: LoadKeyFile refuses anything but 32 bytes.
-	badKey := filepath.Join(dir, "resolve.key")
-	if err := os.WriteFile(badKey, []byte("too-short"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	daemon := exec.CommandContext(ctx, bin,
+	daemon := exec.CommandContext(ctx, bin, append([]string{
 		"--node-name=node-a",
-		"--kubeconfig="+kubeconfig,
-		"--storage-path="+filepath.Join(dir, "storage"),
+		"--kubeconfig=" + kubeconfig,
+		"--storage-path=" + filepath.Join(dir, "storage"),
 		"--listen-address=127.0.0.1",
 		"--port=0",
 		"--mirror-replicas=0",
-		"--resolve-capability-key="+badKey,
-	)
+	}, keyArgs...)...)
 	out, err := daemon.CombinedOutput()
 	if ctx.Err() != nil {
-		t.Fatalf("daemon did not exit on a bad capability key; output:\n%s", out)
+		t.Fatalf("daemon did not exit with %s; output:\n%s", what, out)
 	}
 	if err == nil {
-		t.Fatalf("daemon exited 0 with a bad capability key; output:\n%s", out)
+		t.Fatalf("daemon exited 0 with %s; output:\n%s", what, out)
 	}
 	if !strings.Contains(string(out), "failed-to-load-resolve-capability-key") {
 		t.Fatalf("daemon failed for some other reason; output:\n%s", out)
@@ -104,7 +116,7 @@ users:
 	defer mu.Unlock()
 	for _, p := range patches {
 		if strings.Contains(p, `"ready"`) {
-			t.Errorf("daemon advertised readiness before refusing its capability key: PATCH %s\nall patches: %v", p, patches)
+			t.Errorf("daemon advertised readiness before refusing %s: PATCH %s\nall patches: %v", what, p, patches)
 		}
 	}
 }
