@@ -16,6 +16,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
+	"github.com/concourse/concourse/cmd/artifact-daemon/outputplane"
 )
 
 type stepPodsFunc func(context.Context) (map[string]struct{}, error)
@@ -112,7 +113,7 @@ func TestSweeper_SparesEveryStepDirectoryWhenThePodViewFails(t *testing.T) {
 // containers have all terminated is no longer a writer; a pod on another node
 // is not this daemon's. The fake clientset ignores FieldSelector, so the
 // in-code Spec.NodeName re-check is what excludes the other node's pod here.
-func TestNodeStepPods_ListsTheHandlesOfThisNodesUnterminatedStepPods(t *testing.T) {
+func TestNodePods_ListsTheHandlesOfThisNodesUnterminatedStepPods(t *testing.T) {
 	pod := func(name, handle, node string, terminated bool) *corev1.Pod {
 		state := corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
 		if terminated {
@@ -131,7 +132,7 @@ func TestNodeStepPods_ListsTheHandlesOfThisNodesUnterminatedStepPods(t *testing.
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "unlabelled", Namespace: "tasks"}, Spec: corev1.PodSpec{NodeName: "node-a"}},
 	)
 
-	live, err := daemon.NewNodeStepPods(client, "tasks", "node-a").Live(context.Background())
+	live, err := outputplane.NewNodePods(client, "tasks", "node-a").Live(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,10 +158,10 @@ func TestProbeStepPods_FailsWhenTheNodesStepPodsCannotBeListed(t *testing.T) {
 	client.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("pods is forbidden")
 	})
-	if err := daemon.ProbeStepPods(context.Background(), daemon.NewNodeStepPods(client, "tasks", "node-a")); err == nil {
+	if err := daemon.ProbeStepPods(context.Background(), outputplane.NewNodePods(client, "tasks", "node-a")); err == nil {
 		t.Fatal("a forbidden list probed as healthy")
 	}
-	if err := daemon.ProbeStepPods(context.Background(), daemon.NewNodeStepPods(fake.NewSimpleClientset(), "tasks", "node-a")); err != nil {
+	if err := daemon.ProbeStepPods(context.Background(), outputplane.NewNodePods(fake.NewSimpleClientset(), "tasks", "node-a")); err != nil {
 		t.Fatalf("an empty, readable node probed unhealthy: %v", err)
 	}
 }

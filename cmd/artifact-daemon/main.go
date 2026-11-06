@@ -250,7 +250,7 @@ func main() {
 	// the deploy, as a failed node label does, rather than silently stopping
 	// every step-directory sweep for the life of the daemon.
 	if k8sClient != nil && *nodeName != "" && planeConfig.PodTerminationsNamespace != "" {
-		stepPods := NewNodeStepPods(k8sClient, planeConfig.PodTerminationsNamespace, *nodeName)
+		stepPods := outputplane.NewNodePods(k8sClient, planeConfig.PodTerminationsNamespace, *nodeName)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err := ProbeStepPods(ctx, stepPods)
 		cancel()

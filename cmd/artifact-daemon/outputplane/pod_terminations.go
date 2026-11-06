@@ -15,32 +15,48 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
 
-// nodePodTerminations reads this node's own Pods from the API server. It has
-// get/list on Pods and nothing that changes one: a seal waits for writers to
-// stop and never makes them.
-type nodePodTerminations struct {
+// handleLabelKey is the Pod label the web stamps on every step pod with the
+// step's container handle (atc/worker/jetbridge/config.go). The handle is the
+// name of the step's directory under steps/, so it is how a directory on disk
+// maps back to a Pod on this node.
+const handleLabelKey = "concourse.ci/handle"
+
+// NodePods is the daemon's one view of this node's own Pods in the step pod
+// namespace: the capture seal asks it whether a producing Pod has terminated,
+// the TTL sweep which step pods are still live. It has get/list on Pods and
+// nothing that changes one: neither ends a Pod to get its answer.
+type NodePods struct {
 	client    kubernetes.Interface
 	namespace string
 	node      string
 }
 
-// NewNodePodTerminations observes Pods in namespace scheduled to node.
-func NewNodePodTerminations(client kubernetes.Interface, namespace, node string) PodTerminations {
-	return &nodePodTerminations{client: client, namespace: namespace, node: node}
+// NewNodePods observes Pods in namespace scheduled to node.
+func NewNodePods(client kubernetes.Interface, namespace, node string) *NodePods {
+	return &NodePods{client: client, namespace: namespace, node: node}
+}
+
+func (pods *NodePods) list(ctx context.Context, labelSelector string) ([]corev1.Pod, error) {
+	list, err := pods.client.CoreV1().Pods(pods.namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + pods.node,
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }
 
 // Terminated is true when the Pod with this UID is gone from the node, or
 // every one of its containers -- init, regular and ephemeral -- has a
 // terminated state, or its phase is terminal. Any container running, waiting
 // to start or without a status yet is a writer that may still write.
-func (terminations *nodePodTerminations) Terminated(ctx context.Context, uid executioncontrol.PodUID) (bool, error) {
-	pods, err := terminations.client.CoreV1().Pods(terminations.namespace).List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + terminations.node,
-	})
+func (pods *NodePods) Terminated(ctx context.Context, uid executioncontrol.PodUID) (bool, error) {
+	items, err := pods.list(ctx, "")
 	if err != nil {
 		return false, fmt.Errorf("listing this node's Pods: %w", err)
 	}
-	for _, pod := range pods.Items {
+	for _, pod := range items {
 		if string(pod.UID) != string(uid) {
 			continue
 		}
@@ -49,6 +65,26 @@ func (terminations *nodePodTerminations) Terminated(ctx context.Context, uid exe
 	}
 
 	return true, nil
+}
+
+// Live returns the handles of this node's step pods that have not terminated:
+// a container of each may still read its inputs or write its outputs under
+// steps/<handle>.
+func (pods *NodePods) Live(ctx context.Context) (map[string]struct{}, error) {
+	items, err := pods.list(ctx, handleLabelKey)
+	if err != nil {
+		return nil, fmt.Errorf("listing this node's step pods: %w", err)
+	}
+	live := map[string]struct{}{}
+	for i := range items {
+		pod := &items[i]
+		handle := pod.Labels[handleLabelKey]
+		if handle == "" || pod.Spec.NodeName != pods.node || PodTerminated(pod) {
+			continue
+		}
+		live[handle] = struct{}{}
+	}
+	return live, nil
 }
 
 // PodTerminated is the one definition of "every writer has stopped" for a Pod:

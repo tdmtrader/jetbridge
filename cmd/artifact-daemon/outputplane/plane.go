@@ -115,7 +115,7 @@ func Open(ctx context.Context, config Config, nodes kubernetes.Interface, daemon
 					"reads the task namespace's Pods on this node, and no other namespace's",
 					output.ErrIncomplete)
 			}
-			terminations = NewNodePodTerminations(nodes, config.PodTerminationsNamespace, config.NodeName)
+			terminations = NewNodePods(nodes, config.PodTerminationsNamespace, config.NodeName)
 		case config.PodTerminationsDir != "":
 			terminations = DeclaredPodTerminations(config.PodTerminationsDir)
 		}
