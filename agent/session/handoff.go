@@ -180,6 +180,12 @@ func SendCredentialHandoff(ctx context.Context, path string, runID int, auth io.
 		if err == nil {
 			break
 		}
+		// A deadline that passes inside the dial fails it with the
+		// context's error, not ENOENT: that is the timeout, not a socket
+		// that refused.
+		if ctx.Err() != nil {
+			return ErrCredentialHandoffTimeout
+		}
 		if !errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.ECONNREFUSED) {
 			return errors.New("credential socket is unavailable")
 		}
