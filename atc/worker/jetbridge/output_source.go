@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -13,9 +12,7 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -141,36 +138,10 @@ func NewOutputSource(client kubernetes.Interface, config Config, signer *hangar.
 	}}
 }
 
+// SelectNode chooses the node a Run execution is admitted on. See
+// selectExecutionNode for how.
 func (s *OutputSource) SelectNode(ctx context.Context, spec runtime.ContainerSpec) (string, string, error) {
-	selector := labels.Set{
-		"concourse.dev/artifact-cache": "ready",
-		executioncontrol.ReadyLabel:    "ready", output.ReadyLabel: "ready",
-	}
-	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
-	if err != nil {
-		return "", "", err
-	}
-	sort.Slice(nodes.Items, func(i, j int) bool { return nodes.Items[i].Name < nodes.Items[j].Name })
-	for _, node := range nodes.Items {
-		if node.Spec.Unschedulable || node.DeletionTimestamp != nil || node.Labels[corev1.LabelHostname] != node.Name {
-			continue
-		}
-		tainted := false
-		for _, taint := range node.Spec.Taints {
-			if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
-				tainted = true
-			}
-		}
-		if tainted {
-			continue
-		}
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
-				return node.Name, string(node.UID), nil
-			}
-		}
-	}
-	return "", "", fmt.Errorf("%w: no ready output node", output.ErrInfrastructure)
+	return selectExecutionNode(ctx, s.client, s.controls.config, spec)
 }
 
 func (s *OutputSource) exactClient(ctx context.Context, name, uid string) (*OutputControlClient, error) {

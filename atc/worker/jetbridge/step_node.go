@@ -63,6 +63,13 @@ func (l StepNodeLabel) toleration() corev1.Toleration {
 // buildTolerations is what a step pod tolerates: the taints of the nodes it
 // is steered to, then Config.StepTolerations. Nil when there are none.
 func (c *Container) buildTolerations() []corev1.Toleration {
+	return stepTolerations(c.config)
+}
+
+// stepTolerations is what every step pod built from config tolerates. Node
+// selection reads it too: a node whose taint the pod tolerates is a node the
+// pod can bind to.
+func stepTolerations(config Config) []corev1.Toleration {
 	var tolerations []corev1.Toleration
 	add := func(t corev1.Toleration) {
 		for _, have := range tolerations {
@@ -72,12 +79,12 @@ func (c *Container) buildTolerations() []corev1.Toleration {
 		}
 		tolerations = append(tolerations, t)
 	}
-	for _, label := range []*StepNodeLabel{c.config.PreferredStepNode, c.config.RequiredStepNode} {
+	for _, label := range []*StepNodeLabel{config.PreferredStepNode, config.RequiredStepNode} {
 		if label != nil {
 			add(label.toleration())
 		}
 	}
-	for _, t := range c.config.StepTolerations {
+	for _, t := range config.StepTolerations {
 		add(t)
 	}
 	return tolerations
