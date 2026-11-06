@@ -24,7 +24,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 		factory := db.NewPipelineRunFactory(in.Source.Start.DB.Conn, in.Source.Start.DB.LockFactory)
 		starter := &runs.ExecutionStarter{Conn: in.Source.Start.DB.Conn, Factory: factory}
 		port, ok := any(starter).(interface {
-			PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, bool, error)
+			PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
 		})
 		if !ok {
 			return fmt.Errorf("the Run starter has no retained task preparation port")
@@ -86,7 +86,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		got, _, err := port.PrepareTask(ctx, buildID, plan, spec)
+		got, err := port.PrepareTask(ctx, buildID, plan, spec)
 		valid := mode == "retained inputs" || mode == "edited template" || mode == "repeated preparation"
 		if !valid {
 			if err == nil {
@@ -106,7 +106,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 			}
 		}
 		if mode == "repeated preparation" {
-			again, _, err := port.PrepareTask(ctx, buildID, plan, spec)
+			again, err := port.PrepareTask(ctx, buildID, plan, spec)
 			if err != nil || !reflect.DeepEqual(got, again) {
 				return fmt.Errorf("repeated preparation changed the inputs: %v", err)
 			}
@@ -129,14 +129,14 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 }
 
 func prepareRoutedTask(ctx context.Context, port interface {
-	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, bool, error)
+	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
 }, buildID int, in RunInputAdmission, task *atc.TaskStep, base runtime.ContainerSpec) error {
 	plan := atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
 	spec := runtime.ContainerSpec{TeamID: base.TeamID, Dir: base.Dir, Type: base.Type}
 	for _, route := range task.RunInputs {
 		spec.Inputs = append(spec.Inputs, runtime.Input{RunInput: route.Name, DestinationPath: filepath.Join(spec.Dir, route.Input)})
 	}
-	got, _, err := port.PrepareTask(ctx, buildID, plan, spec)
+	got, err := port.PrepareTask(ctx, buildID, plan, spec)
 	if err != nil {
 		return err
 	}

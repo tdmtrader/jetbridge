@@ -2821,6 +2821,22 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 		Expect(configvalidate.ValidateTemplateConfig(config)).To(Succeed())
 	})
 
+	It("refuses a template whose in-Run result input comes before its producer", func() {
+		author := &atc.TaskStep{
+			Name: "author", TaskID: "4c1e0f7a-5b6d-4e2f-8a9b-0c1d2e3f4a5b", RunResult: &atc.RunResult{Name: "change", Output: "change"},
+			Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Outputs: []atc.TaskOutputConfig{{Name: "change"}}},
+		}
+		validate := &atc.TaskStep{
+			Name: "validate", TaskID: "7d2f1a8b-6c5e-4f3a-9b0c-1d2e3f4a5b6c", RunInputs: []atc.RunInput{{Name: "change", Input: "change", Result: "change"}},
+			Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Inputs: []atc.TaskInputConfig{{Name: "change"}}},
+		}
+		config := atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "implement", PlanSequence: []atc.Step{{Config: validate}, {Config: author}}}}}
+		Expect(configvalidate.ValidateTemplateDeclaration(atc.PipelineRef{Name: "template"}, config)).To(MatchError(ContainSubstring("which comes after it in job implement")))
+		Expect(configvalidate.ValidateTemplateConfig(config)).To(MatchError(ContainSubstring("which comes after it in job implement")))
+		config.Jobs[0].PlanSequence = []atc.Step{{Config: author}, {Config: validate}}
+		Expect(configvalidate.ValidateTemplateDeclaration(atc.PipelineRef{Name: "template"}, config)).To(Succeed())
+	})
+
 	It("keeps pinned versions and interpolated identities valid under normal config validation", func() {
 		_, errorMessages := configvalidate.Validate(dynamicTemplateConfig())
 		Expect(errorMessages).To(BeEmpty())

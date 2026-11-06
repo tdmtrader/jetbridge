@@ -159,7 +159,9 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 	}
 	// An in-Run result input is bound to this Run's own result, never by
 	// admission, so its name is not one admission could also supply, and it
-	// reads a result another task of the same job produces.
+	// reads a result another task of the same job produces. Whether it runs
+	// before its consumer is ValidateRunResultOrder's to judge, not this
+	// function's, which also reads retained definitions.
 	external, inRunResults := map[string]bool{}, map[string]string{}
 	for _, declaration := range declarations {
 		for _, input := range declaration.Inputs {
@@ -195,23 +197,107 @@ func RunTaskDeclarations(config Config) ([]RunTaskDeclaration, error) {
 	return declarations, nil
 }
 
+// ValidateRunResultOrder refuses a template whose in-Run result input could be
+// read before its producer has started: a consumer that comes before its
+// producer in the job's plan, or that runs in a different branch of an
+// in_parallel. At run, a consumer waits for a capture its producer has started
+// and is refused when there is none or it was not published. It judges a
+// template being set and one a new Run is created from, never a retained
+// definition, so a Run admitted before this rule still finishes. Routes
+// RunTaskDeclarations refuses are left to it.
+func ValidateRunResultOrder(config Config) error {
+	type placed struct {
+		task     *TaskStep
+		order    int
+		branches []runBranch
+	}
+	for _, job := range config.Jobs {
+		producers := map[string]placed{}
+		var tasks []placed
+		order := 0
+		err := walkRunTaskBranches(job.StepConfig(), false, nil, func(task *TaskStep, _ bool, branches []runBranch) error {
+			order++
+			if task.RunResult != nil {
+				producers[task.RunResult.Name] = placed{task, order, branches}
+			}
+			tasks = append(tasks, placed{task, order, branches})
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for _, consumer := range tasks {
+			for _, route := range consumer.task.RunInputs {
+				produced, found := producers[route.Result]
+				if route.Result == "" || !found || produced.task == consumer.task {
+					continue
+				}
+				for i := 0; i < len(produced.branches) && i < len(consumer.branches); i++ {
+					p, c := produced.branches[i], consumer.branches[i]
+					if p.parallel != c.parallel {
+						break
+					}
+					if p.branch != c.branch {
+						return fmt.Errorf("Run input %q of task %q reads result %q of task %q, which runs in parallel with it in job %s",
+							route.Name, consumer.task.Name, route.Result, produced.task.Name, job.Name)
+					}
+				}
+				if produced.order > consumer.order {
+					return fmt.Errorf("Run input %q of task %q reads result %q of task %q, which comes after it in job %s",
+						route.Name, consumer.task.Name, route.Result, produced.task.Name, job.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// runBranch is one branch of an in_parallel that encloses a task.
+type runBranch struct {
+	parallel *InParallelStep
+	branch   int
+}
+
 // Wrappers retain the repetition flag for both their body and hooks. The
 // ordinary StepRecursor intentionally has no context about enclosing steps.
 func walkRunTasks(step StepConfig, repeated bool, visit func(*TaskStep, bool) error) error {
+	return walkRunTaskBranches(step, repeated, nil, func(task *TaskStep, repeated bool, _ []runBranch) error {
+		return visit(task, repeated)
+	})
+}
+
+// walkRunTaskBranches is walkRunTasks that also names the in_parallel
+// branches enclosing each task, outermost first.
+func walkRunTaskBranches(step StepConfig, repeated bool, branches []runBranch, visit func(*TaskStep, bool, []runBranch) error) error {
 	if step == nil {
 		return nil
 	}
+	// A wrapped step is visited before its hook, in the order they run.
 	var children []StepConfig
+	if wrapper, ok := step.(StepWrapper); ok {
+		children = append(children, wrapper.Unwrap())
+	}
 	switch typed := step.(type) {
 	case *TaskStep:
-		return visit(typed, repeated)
+		return visit(typed, repeated, branches)
 	case *DoStep:
 		for _, child := range typed.Steps {
 			children = append(children, child.Config)
 		}
 	case *InParallelStep:
-		for _, child := range typed.Config.Steps {
-			children = append(children, child.Config)
+		// With a limit of one the branches run one at a time in listed
+		// order, so they are ordered like the steps of a do.
+		if typed.Config.Limit == 1 {
+			for _, child := range typed.Config.Steps {
+				children = append(children, child.Config)
+			}
+			break
+		}
+		for i, child := range typed.Config.Steps {
+			branch := append(branches[:len(branches):len(branches)], runBranch{typed, i})
+			if err := walkRunTaskBranches(child.Config, repeated, branch, visit); err != nil {
+				return err
+			}
 		}
 	case *AcrossStep:
 		repeated = true
@@ -228,11 +314,8 @@ func walkRunTasks(step StepConfig, repeated bool, visit func(*TaskStep, bool) er
 	case *EnsureStep:
 		children = append(children, typed.Hook.Config)
 	}
-	if wrapper, ok := step.(StepWrapper); ok {
-		children = append(children, wrapper.Unwrap())
-	}
 	for _, child := range children {
-		if err := walkRunTasks(child, repeated, visit); err != nil {
+		if err := walkRunTaskBranches(child, repeated, branches, visit); err != nil {
 			return err
 		}
 	}

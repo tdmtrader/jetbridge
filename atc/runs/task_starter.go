@@ -15,26 +15,30 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
+// TaskSealed reports a producer whose capture is already sealed: a re-driven
+// build reached a task that exited successfully, and its result is read from
+// Hangar, so it is neither prepared, admitted nor given a container again.
+func (s *ExecutionStarter) TaskSealed(ctx context.Context, buildID int, plan atc.TaskPlan) (bool, error) {
+	return s.runTaskSealed(ctx, buildID, plan.TaskID)
+}
+
 // PrepareTask supplies only retained inputs to a stable Run task. Leases are
 // minted later, after the worker has allocated the actual container handle.
-// sealed reports a producer whose capture is already sealed: a re-driven build
-// reached a task that exited successfully, and its result is read from Hangar,
-// so it is neither admitted nor given a container again.
-func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan atc.TaskPlan, spec runtime.ContainerSpec) (runtime.ContainerSpec, bool, error) {
+func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan atc.TaskPlan, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
 	selected, err := s.loadRunTaskResults(ctx, buildID, plan.TaskID)
 	if err != nil {
-		return spec, false, err
+		return spec, err
 	}
 	task := selected.Task
 	if spec.TeamID != selected.TeamID || spec.Type != db.ContainerTypeTask || !filepath.IsAbs(spec.Dir) || task.Name != plan.Name || task.ConfigPath != plan.ConfigPath || !slices.Equal(task.RunInputs, plan.RunInputs) || !reflect.DeepEqual(task.RunResult, plan.RunResult) || !maps.Equal(task.InputMapping, plan.InputMapping) {
-		return spec, false, atc.ErrInvalidRunInputs
+		return spec, atc.ErrInvalidRunInputs
 	}
 	if len(task.RunInputs) > 0 && (task.Config == nil || plan.Config == nil || !reflect.DeepEqual(task.Config.Inputs, plan.Config.Inputs)) {
-		return spec, false, atc.ErrInvalidRunInputs
+		return spec, atc.ErrInvalidRunInputs
 	}
 	bindings, err := matchRunTaskInputs(spec, selected, false)
 	if err != nil {
-		return spec, false, err
+		return spec, err
 	}
 	prepared := spec
 	prepared.RunTaskID = task.TaskID
@@ -46,18 +50,14 @@ func (s *ExecutionStarter) PrepareTask(ctx context.Context, buildID int, plan at
 
 	if task.RunResult != nil {
 		if s.Output == nil {
-			return spec, false, atc.ErrRunResultsUnavailable
-		}
-		sealed, err := s.runTaskSealed(ctx, buildID, task.TaskID)
-		if err != nil || sealed {
-			return spec, sealed, err
+			return spec, atc.ErrRunResultsUnavailable
 		}
 		prepared.ExecutionControl, err = s.Output.Prepare(ctx, buildID, plan, prepared)
 		if err != nil {
-			return spec, false, err
+			return spec, err
 		}
 	}
-	return prepared, false, nil
+	return prepared, nil
 }
 
 // resultInputPoll is how often a task whose in-Run result input is still
@@ -103,9 +103,14 @@ func (s *ExecutionStarter) loadRunTaskResults(ctx context.Context, buildID int, 
 }
 
 // runTaskSealed reports whether a retained task's capture is already sealed.
+// The answer passes the same Run/build start fence its preparation does, so a
+// sealed producer of a Run or build that may not start errors, not finishes.
 func (s *ExecutionStarter) runTaskSealed(ctx context.Context, buildID int, taskID string) (bool, error) {
 	var sealed bool
 	err := s.transaction(ctx, func(tx db.Tx) error {
+		if _, err := db.LoadRunTask(ctx, tx, buildID, taskID); err != nil {
+			return err
+		}
 		capture, found, err := s.Factory.RunCaptureTask(ctx, tx, buildID, taskID)
 		sealed = found && capture.Capture.State.Sealed()
 		return err

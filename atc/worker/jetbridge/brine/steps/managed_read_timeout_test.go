@@ -126,7 +126,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	spec, _, err = starter.PrepareTask(ctx, buildID, plan, spec)
+	spec, err = starter.PrepareTask(ctx, buildID, plan, spec)
 	if err != nil {
 		return err
 	}
