@@ -131,6 +131,7 @@ func TestVersionedRefusalsCarryTheirReasonOnlyAfterAuthorization(t *testing.T) {
 		{"paused template", runs.ErrTemplatePaused, http.StatusConflict, runs.ErrTemplatePaused.Error()},
 		{"changed intent", runs.ErrInvocationConflict, http.StatusConflict, runs.ErrInvocationConflict.Error()},
 		{"output unavailable", atc.ErrRunResultsUnavailable, http.StatusConflict, "not activated"},
+		{"no output plane in service", atc.ErrRunOutputPlaneNotInService, http.StatusConflict, atc.ErrRunOutputPlaneNotInService.Error()},
 		{"unauthorized", runs.ErrUnauthorized, http.StatusForbidden, ""},
 		{"not found", runs.ErrTemplateNotFound, http.StatusNotFound, ""},
 	} {

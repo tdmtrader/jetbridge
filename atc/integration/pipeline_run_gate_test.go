@@ -61,7 +61,7 @@ var _ = Describe("public run creation", func() {
 		member = authedHTTPClient(atcURL, "m-user", "m-user")
 	})
 
-	It("reports a capability that agrees with its own admission decision", func() {
+	It("reports a capability that agrees with its own admission decision on a web with the output plane in service", func() {
 		assertCapabilityAgreesWithAdmission(member)
 	})
 
@@ -77,7 +77,7 @@ var _ = Describe("public run creation", func() {
 			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
 		})
 
-		It("reports a capability that agrees with its own admission decision", func() {
+		It("reports a capability that agrees with its own admission decision on a web with the output plane in service", func() {
 			assertCapabilityAgreesWithAdmission(member)
 		})
 
@@ -271,9 +271,12 @@ func countRows(query string) int {
 }
 
 // assertCapabilityAgreesWithAdmission is the one clause no presenter-level
-// test can carry: whatever this server tells an authorized caller about
-// can_create_run, on each of the three payloads that emit it, must be what the
-// same server does with that caller's request, in the same boot.
+// test can carry: on a web with the output plane in service, whatever this
+// server tells an authorized caller about can_create_run, on each of the three
+// payloads that emit it, must be what the same server does with that caller's
+// request, in the same boot. can_create_run is a role-only hint: a web without
+// the plane in service refuses every Run and still reports it, so the
+// agreement is not claimed there.
 //
 // It must be authenticated. canCreatePipelineRun answers false for an
 // unauthenticated caller; admission checks need an authorized caller.

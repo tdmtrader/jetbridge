@@ -23,10 +23,12 @@ var _ = Describe("The landing queue's tables", func() {
 	// intent's foreign keys point at real pipeline_runs rows.
 	newRun := func() int {
 		GinkgoHelper()
+		_, err := db.SetHangarEnabled(ctx, dbConn, true)
+		Expect(err).NotTo(HaveOccurred())
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "landing-queue/default-team/trunk", db.RunCreationOpts{})
+		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "landing-queue/default-team/trunk", db.RunCreationOpts{HangarOutput: true})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		return creation.Run.ID()

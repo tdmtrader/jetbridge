@@ -68,6 +68,21 @@ var _ = BeforeEach(func() {
 	Expect(err).ToNot(HaveOccurred())
 
 	cmd.Auth.AuthFlags.SigningKey = &flag.PrivateKey{PrivateKey: signingKey}
+
+	// No Run is created without the Hangar output plane in service, so the
+	// web is given one. Nothing here dials the artifact daemon, so its TLS
+	// triple is named and never read; the Hangar key is loaded at startup.
+	tls := GinkgoT().TempDir()
+	hangarKey := make([]byte, 32)
+	_, err = rand.Read(hangarKey)
+	Expect(err).ToNot(HaveOccurred())
+	Expect(os.WriteFile(tls+"/hangar.key", hangarKey, 0o600)).To(Succeed())
+	cmd.Kubernetes.OutputPlaneEnabled = true
+	cmd.Kubernetes.OutputCaptureEnabled = true
+	cmd.Kubernetes.HangarKey = tls + "/hangar.key"
+	cmd.Kubernetes.ArtifactDaemonTLSCert = tls + "/client.crt"
+	cmd.Kubernetes.ArtifactDaemonTLSKey = tls + "/client.key"
+	cmd.Kubernetes.ArtifactDaemonTLSCACert = tls + "/ca.crt"
 	Expect(cmd.EncryptionKey.UnmarshalFlag("AES256Key-32Characters1234567890")).To(Succeed())
 
 	postgresRunner.CreateTestDBFromTemplate()

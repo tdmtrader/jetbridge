@@ -13,6 +13,20 @@ var ErrRunResultPending = errors.New("Run result is not yet terminal")
 
 var ErrRunResultsUnavailable = errors.New("Run result execution is not activated")
 
+// ErrRunOutputPlaneNotInService refuses a Run's creation: every Run executes
+// through the Hangar output plane, so none is created while it is out of
+// service. It is ErrRunResultsUnavailable to errors.Is, so every mapping of
+// that refusal keeps answering for it; only the sentence is the creator's own.
+var ErrRunOutputPlaneNotInService error = runOutputPlaneNotInService{}
+
+type runOutputPlaneNotInService struct{}
+
+func (runOutputPlaneNotInService) Error() string {
+	return "this deployment's Hangar output plane is not in service, and a Run cannot be created without it"
+}
+
+func (runOutputPlaneNotInService) Unwrap() error { return ErrRunResultsUnavailable }
+
 // RunResult selects one declared output of this stable template task. Keeping
 // the declaration on the producer makes two selected outputs unrepresentable.
 type RunResult struct {

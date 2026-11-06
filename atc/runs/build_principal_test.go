@@ -189,6 +189,7 @@ var _ = Describe("a build acting for itself", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			port := runs.NewAdmitter(dbConn, runFactory, teamFactory, displayUserIds, customRoles)
+			port.SetOutputPlane(true)
 
 			tx, err := port.Begin(ctx)
 			Expect(err).NotTo(HaveOccurred())

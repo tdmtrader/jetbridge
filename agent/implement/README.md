@@ -238,7 +238,7 @@ pinned image is asked to do. Operator-installed templates are the trust
 boundary, so restrict who holds that role on the team.
 
 The deployment switches are the review's: Run admission, both Hangar facets
-with `hangarOutput.webEnabled` (the template declares a result), the web-only
+with `hangarOutput.webEnabled` (every Run needs the plane in service), the web-only
 `web.runInputSigningKeySecret`, and at least one credential pin. With no pin
 configured every credential handoff is refused.
 

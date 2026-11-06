@@ -165,8 +165,8 @@ Roll out the daemons before letting the web admit work that needs them:
    false`. Upgrade the DaemonSet and wait for its rollout plus both readiness
    labels on every eligible node.
 2. Set `hangarOutput.webEnabled: true` to put the plane in service: the web
-   then admits Runs that declare results or take inputs, signs read and
-   control warrants, and emits managed reads.
+   then admits Runs (none is admitted without the plane in service), signs
+   read and control warrants, and emits managed reads.
 
 For downgrade, reverse the order: set `hangarOutput.webEnabled: false`, drain
 as described under [In service, and the drain](#in-service-and-the-drain),
@@ -204,9 +204,9 @@ selector does not bypass these gates.
 
 In service is one database row, `hangar_enabled`. The web writes it at
 startup from `hangarOutput.webEnabled`, and every admission that needs the
-output plane -- a new capture, a Run that declares results or takes inputs, an
-input upload -- reads it `FOR SHARE` in its own transaction and is refused
-while it says false. Nothing else is walked or attested (see
+output plane -- a new capture, every new Run, an input upload -- reads it
+`FOR SHARE` in its own transaction and is refused while it says false. A
+deployment without the plane in service creates no Run at all. Nothing else is walked or attested (see
 [ADR-0009](adr/0009-one-node-daemon-one-capture-row.md)): there is no
 control-key generation, no node control key and nothing signed by the
 node; the daemon is trusted over the mTLS channel the web reaches it on,

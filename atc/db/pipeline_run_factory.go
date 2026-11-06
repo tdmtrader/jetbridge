@@ -23,7 +23,8 @@ import (
 type RunParams struct{ Vars atc.RunParams }
 
 type RunCreationOpts struct {
-	// HangarOutput requires the configured plane in service for results and inputs.
+	// HangarOutput says this web has an output plane; with it false, or with the
+	// plane out of service, no Run is created.
 	HangarOutput         bool
 	Invocation           *RunInvocationIdentity
 	Inputs               map[string]atc.RunInputSource
@@ -144,11 +145,11 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if err != nil {
 		return RunCreation{}, ErrPipelineTemplateInvalid{Err: err}
 	}
-	// A Run that declares results or binds exact inputs needs the output plane
-	// in service to be admitted; any other Run is admitted without one. Executing any Run's steps still needs the output plane's
-	// execution control (runs.ExecutionStarter), which is not checked here.
-	if (len(declarations) > 0 || len(opts.Inputs) > 0) && !hangarReady {
-		return RunCreation{}, atc.ErrRunResultsUnavailable
+	// Every Run's steps execute through the output plane (runs.ExecutionStarter),
+	// so no Run is created while it is out of service. A replay above still
+	// answers the Run its invocation already admitted.
+	if !hangarReady {
+		return RunCreation{}, atc.ErrRunOutputPlaneNotInService
 	}
 	normalized, err := atc.ValidateRunParams(effective.Params, params.Vars)
 	if err != nil {

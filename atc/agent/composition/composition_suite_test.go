@@ -128,7 +128,7 @@ var _ = BeforeEach(func() {
 	service = composition.NewService(newAdmitter(dbConn))
 })
 
-// enableOutputPlane puts Hangar in service for templates requiring it.
+// enableOutputPlane puts Hangar in service, which every Run needs.
 func enableOutputPlane(conn db.DbConn) {
 	GinkgoHelper()
 	_, err := db.SetHangarEnabled(context.Background(), conn, true)
@@ -140,10 +140,12 @@ func newAdmitter(conn db.DbConn) runs.Admitter {
 	displayUserIds, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
 	Expect(err).NotTo(HaveOccurred())
 
-	return runs.NewAdmitter(conn,
+	admitter := runs.NewAdmitter(conn,
 		db.NewPipelineRunFactory(conn, lockFactory),
 		db.NewTeamFactory(conn, lockFactory),
 		displayUserIds, nil)
+	admitter.SetOutputPlane(true)
+	return admitter
 }
 
 // A11 part 3, the consumer invariant.

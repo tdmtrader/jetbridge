@@ -122,8 +122,8 @@ func savePipeline(name string, config atc.Config) db.Pipeline {
 	return pipeline
 }
 
-// enableOutputPlane puts the Hangar output plane in service, which admission
-// of a template that declares results requires.
+// enableOutputPlane puts the Hangar output plane in service, which every Run's
+// admission requires.
 func enableOutputPlane() {
 	GinkgoHelper()
 	_, err := db.SetHangarEnabled(context.Background(), dbConn, true)
