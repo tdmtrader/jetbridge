@@ -56,6 +56,7 @@ type PipelineRunFactory interface {
 	RunExecutionOwner(context.Context, Tx, int) (int, bool, error)
 	RunExecution(context.Context, Tx, int, atc.PlanID) (RunExecutionAdmission, bool, error)
 	AdmitRunExecution(context.Context, Tx, RunExecutionRequest) (RunExecutionAdmission, bool, error)
+	RelocateRunExecution(context.Context, Tx, RunExecutionRelocation) (RunExecutionAdmission, error)
 	CheckCancellationOperation(context.Context, Tx, RunCancellationLease, RunCancellationOperation) error
 	ExecuteCancellationOperation(context.Context, RunCancellationLease, RunCancellationOperation) (RunCancellationDebt, error)
 	PendingRunCancellations(context.Context, Tx, RunCancellationLease, int) ([]int, error)

@@ -135,22 +135,55 @@ func detachedLedgerContext(ctx context.Context) (context.Context, context.Cancel
 // daemon says the execution is not admitted, and this admits as early as it
 // possibly can. Making the ATC wait for Running instead would put the admission
 // after the init container it is waiting for.
+//
+// The returned function joins whichever attempt is current: a relocation
+// (process_relocation.go) stops the attempt watching the pod it deletes and
+// starts another for the pod it creates in its place.
 func (p *execProcess) admitWhenScheduled(ctx context.Context) func() error {
 	if p.control == nil {
 		return func() error { return nil }
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- p.admitExactExecution(ctx) }()
+	p.startAdmission(ctx)
 
 	return func() error {
 		select {
-		case err := <-done:
+		case err := <-p.admission.done:
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+// admissionAttempt is one admitExactExecution running in the background.
+type admissionAttempt struct {
+	cancel context.CancelFunc
+	done   chan error
+}
+
+func (p *execProcess) startAdmission(ctx context.Context) {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	attempt := &admissionAttempt{cancel: cancel, done: make(chan error, 1)}
+	go func() { attempt.done <- p.admitExactExecution(attemptCtx) }()
+	p.admission = attempt
+}
+
+// stopAdmission ends the current attempt and waits for it, so that nothing
+// reads the execution's control while a relocation replaces it. It reports
+// whether the attempt had already admitted: a pod that was bound and admitted
+// is not one a relocation may move.
+func (p *execProcess) stopAdmission() (admitted bool) {
+	if p.admission == nil {
+		return false
+	}
+	p.admission.cancel()
+	err := <-p.admission.done
+	if err == nil {
+		// Put the answer back for the join.
+		p.admission.done <- nil
+		return true
+	}
+	return false
 }
 
 func (p *execProcess) admitExactExecution(ctx context.Context) error {

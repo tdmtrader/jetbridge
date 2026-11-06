@@ -742,6 +742,17 @@ type execProcess struct {
 	// (process_control.go: releaseCapturedPod). Atomic because the stop
 	// callback observes from its own goroutine.
 	exactOutcomeAcknowledged atomic.Bool
+
+	// admission is the background attempt admitting the exact identity once
+	// the pod is bound (process_control.go: admitWhenScheduled).
+	admission *admissionAttempt
+
+	// relocatedFrom is every node this step's execution was admitted on and
+	// moved off because its pod could not be scheduled there, and
+	// relocationSpent records that a move was refused or failed, after which
+	// the pod waits where it is (process_relocation.go).
+	relocatedFrom   []string
+	relocationSpent bool
 }
 
 func newExecProcess(
@@ -1750,6 +1761,24 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			if !unschedulableNotified {
 				fmt.Fprintf(p.processIO.Stderr, "pod is Unschedulable: %s — waiting up to %s for cluster resources\n", message, podSchedulingTimeout(p.config))
 				unschedulableNotified = true
+			}
+			if time.Since(unschedulableFirstSeen) > relocationGrace && p.canRelocate(pod) {
+				outcome, err := p.relocateUnboundPod(ctx, pod, message)
+				if err != nil {
+					return err
+				}
+				if outcome != podUntouched {
+					// A new pod: watch it from the start, or the old one's
+					// deletion reads as the step's pod being taken away.
+					watcher.Stop()
+					watcher = NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
+					if outcome == podMoved {
+						// On another node, the scheduling wait starts over.
+						unschedulableFirstSeen = time.Time{}
+						unschedulableNotified = false
+					}
+					continue
+				}
 			}
 			if time.Since(unschedulableFirstSeen) > schedTimeout {
 				writePodDiagnostics(pod, p.processIO.Stderr)

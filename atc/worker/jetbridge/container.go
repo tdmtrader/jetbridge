@@ -54,8 +54,11 @@ var _ runtime.Container = (*Container)(nil)
 // The Pod is created lazily when Run() is called, since the command
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
 type Container struct {
-	recordWitness   func(context.Context, executioncontrol.Acknowledgement) error
-	checkStart      func(context.Context) error
+	recordWitness func(context.Context, executioncontrol.Acknowledgement) error
+	checkStart    func(context.Context) error
+	// relocate moves the execution to another node when its pod was never
+	// bound (process_relocation.go). Nil for a container no Run admitted.
+	relocate        func(context.Context, []string) (runtime.ContainerSpec, error)
 	handle          string
 	podName         string
 	metadata        db.ContainerMetadata

@@ -65,6 +65,11 @@ var commandOrPodSites = map[string]string{
 		"capture-held source",
 	"process.go:recreatePausePod->createPausePod": "recreatePausePod's own creation, after its " +
 		"guards",
+	"process_relocation.go:relocateUnboundPod->createPausePod": "a relocation's replacement of a " +
+		"pause Pod that was never bound to a node, deleted under a precondition on the unbound " +
+		"observation -- the proof no kubelet ran it, so no command started and no capture holds " +
+		"its source. Created on the node the Run re-admitted the execution on, or put back on " +
+		"the original node when the Run refused the move; refused once the transport went live",
 	"volume.go:StreamIn->ExecInPod": "tar into a volume. It runs no step command and creates " +
 		"no Pod; it is listed rather than filtered so the scan cannot be made to miss a step " +
 		"command by moving it into this file",

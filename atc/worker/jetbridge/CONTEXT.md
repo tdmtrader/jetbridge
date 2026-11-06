@@ -80,6 +80,19 @@ replacement still spends the one attempt. An exact execution's start names
 the replacement, not the Pod admission saw, and a replacement on a node other
 than the admitted one is refused before the start.
 
+**Relocation**:
+Moving an exact execution to another node when its pause pod was never bound
+to the node it was admitted on: Unschedulable past a short grace, nothing
+exec'd. The pod is deleted with a precondition on the unbound observation --
+the proof it never ran -- and the Run's admission, with a capturing
+execution's pending capture row, is re-pointed at a node chosen without the
+ones already tried; the identity is kept. A start or closure retained under
+the identity forbids it, in the database as well as here. A refused move puts
+the pod back and spends the step's relocations. The old node keeps a
+never-started execution record that nothing starts, because every start is
+checked against the admission's node.
+_Avoid_: rescheduling, pod migration (a pod is never moved; it is replaced)
+
 **Supervisor**:
 The in-pod shell wrapper a command runs under so a web restart resumes the
 run and replays its log instead of starting over. The command runs in a

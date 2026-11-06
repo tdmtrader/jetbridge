@@ -180,7 +180,7 @@ func (w *Worker) FindOrCreateContainer(
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, true, false)
 		container.outputControls = w.outputControls
-		w.bindStartCheck(container, owner, containerSpec)
+		w.bindStartCheck(container, owner)
 		return container, mounts, nil
 	}
 
@@ -197,7 +197,7 @@ func (w *Worker) FindOrCreateContainer(
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, false, false)
 	container.outputControls = w.outputControls
-	w.bindStartCheck(container, owner, containerSpec)
+	w.bindStartCheck(container, owner)
 	return container, mounts, nil
 }
 

@@ -18,6 +18,18 @@ type RunExecutionRequest struct {
 	Capture output.CaptureKey
 }
 
+// RunExecutionRelocation moves an admitted execution that never started from
+// the node it was admitted on to another. The caller has proved the step pod
+// never ran: it deleted the pod with a precondition on an observation that
+// showed it unbound to any node.
+type RunExecutionRelocation struct {
+	BuildID           int
+	PlanID            atc.PlanID
+	Identity          executioncontrol.Identity
+	FromName, FromUID string
+	ToName, ToUID     string
+}
+
 type RunExecutionAdmission struct {
 	RunExecutionRequest
 	RunID    int

@@ -163,6 +163,9 @@ func (*recordingPreparer) CheckStart(context.Context, db.ContainerOwner, runtime
 }
 
 func (*recordingPreparer) CheckIntercept(context.Context, string) error { return nil }
+func (*recordingPreparer) RelocateContainer(_ context.Context, _ db.ContainerOwner, spec runtime.ContainerSpec, _ []string) (runtime.ContainerSpec, error) {
+	return spec, nil
+}
 
 func (*recordingPreparer) RecordWitness(context.Context, db.ContainerOwner, executioncontrol.Acknowledgement) error {
 	return nil

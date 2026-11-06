@@ -102,6 +102,82 @@ func (f *pipelineRunFactory) AdmitRunExecution(ctx context.Context, tx Tx, req R
 	return a, true, err
 }
 
+// RelocateRunExecution moves an execution that was never started to another
+// node, under the same lock admission takes. The execution keeps its identity;
+// only the node it is admitted on changes, and a capturing execution's pending
+// capture moves with it. A start or closure retained under the identity
+// refuses the move, and so does the database's own guard.
+//
+// A replay of a move that committed returns the moved admission.
+func (f *pipelineRunFactory) RelocateRunExecution(ctx context.Context, tx Tx, r RunExecutionRelocation) (RunExecutionAdmission, error) {
+	var a RunExecutionAdmission
+	if r.FromName == "" || r.FromUID == "" || r.ToName == "" || r.ToUID == "" || r.Identity.ExecutionID == "" {
+		return a, fmt.Errorf("%w: incomplete Run execution relocation", output.ErrInvalidIdentity)
+	}
+	if r.FromName == r.ToName {
+		return a, fmt.Errorf("%w: a relocation names the node it moves from", output.ErrInvalidIdentity)
+	}
+	runID, owned, err := f.RunExecutionOwner(ctx, tx, r.BuildID)
+	if err != nil {
+		return a, err
+	}
+	if !owned {
+		return a, fmt.Errorf("%w: build %d belongs to no Run", output.ErrNotFound, r.BuildID)
+	}
+	if err = lockRunExecutionBuild(ctx, tx, runID, r.BuildID); err != nil {
+		return a, err
+	}
+	a, found, err := f.RunExecution(ctx, tx, r.BuildID, r.PlanID)
+	if err != nil {
+		return a, err
+	}
+	if !found || a.Identity != r.Identity {
+		return a, fmt.Errorf("%w: no admitted execution %s for build %d plan %s", output.ErrNotFound, r.Identity.ExecutionID, r.BuildID, r.PlanID)
+	}
+	if a.NodeName == r.ToName && a.NodeUID == r.ToUID {
+		return a, nil
+	}
+	if a.NodeName != r.FromName || a.NodeUID != r.FromUID {
+		return a, fmt.Errorf("%w: execution %s is admitted on node %s, not %s", output.ErrConflict, a.Identity.ExecutionID, a.NodeName, r.FromName)
+	}
+	var started bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_execution_starts WHERE execution_id=$1 AND execution_fence=$2)
+ OR EXISTS(SELECT 1 FROM pipeline_run_execution_closures WHERE execution_id=$1 AND execution_fence=$2)`,
+		string(a.Identity.ExecutionID), int64(a.Identity.Fence)).Scan(&started); err != nil {
+		return a, err
+	}
+	if started {
+		return a, fmt.Errorf("%w: execution %s was started or closed on node %s and never moves", output.ErrConflict, a.Identity.ExecutionID, a.NodeName)
+	}
+	if a.Capture != (output.CaptureKey{}) {
+		// The capture row is Hangar's: its lock is taken through the suffix,
+		// after the Run's own prefix above, like every other capture write.
+		if _, err := LockHangarSuffix(ctx, tx, runCaptureOutputRepository().prefix, HangarLockRequest{
+			CaptureRows: []output.CaptureKey{a.Capture},
+		}); err != nil {
+			return a, err
+		}
+		moved, err := tx.ExecContext(ctx, `UPDATE hangar_captures SET node=$5, node_uid=$6
+ WHERE execution_id=$1 AND output_name=$2 AND node=$3 AND node_uid=$4 AND state='pending' AND pod_uid IS NULL`,
+			string(a.Capture.ExecutionID), string(a.Capture.Output), r.FromName, r.FromUID, r.ToName, r.ToUID)
+		if err != nil {
+			return a, err
+		}
+		if n, err := moved.RowsAffected(); err != nil || n != 1 {
+			if err == nil {
+				err = fmt.Errorf("%w: capture %s is no longer pending on node %s", output.ErrConflict, a.Capture, r.FromName)
+			}
+			return a, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE pipeline_run_executions SET node_name=$3, node_uid=$4 WHERE build_id=$1 AND plan_id=$2`,
+		r.BuildID, r.PlanID, r.ToName, r.ToUID); err != nil {
+		return a, err
+	}
+	a.NodeName, a.NodeUID = r.ToName, r.ToUID
+	return a, nil
+}
+
 // lockRunExecutionBuild requires the output plane in service and an active Run build.
 func lockRunExecutionBuild(ctx context.Context, tx Tx, runID, buildID int) error {
 	var teamID int

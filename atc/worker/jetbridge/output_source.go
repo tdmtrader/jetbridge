@@ -141,7 +141,13 @@ func NewOutputSource(client kubernetes.Interface, config Config, signer *hangar.
 // SelectNode chooses the node a Run execution is admitted on. See
 // selectExecutionNode for how.
 func (s *OutputSource) SelectNode(ctx context.Context, spec runtime.ContainerSpec) (string, string, error) {
-	return selectExecutionNode(ctx, s.client, s.controls.config, spec)
+	return selectExecutionNode(ctx, s.client, s.controls.config, spec, nil)
+}
+
+// SelectNodeExcept chooses as SelectNode does, among the nodes not in exclude:
+// the nodes a step already could not be scheduled on.
+func (s *OutputSource) SelectNodeExcept(ctx context.Context, spec runtime.ContainerSpec, exclude []string) (string, string, error) {
+	return selectExecutionNode(ctx, s.client, s.controls.config, spec, exclude)
 }
 
 func (s *OutputSource) exactClient(ctx context.Context, name, uid string) (*OutputControlClient, error) {

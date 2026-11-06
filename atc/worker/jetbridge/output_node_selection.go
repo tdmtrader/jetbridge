@@ -3,6 +3,7 @@ package jetbridge
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/concourse/concourse/atc/runtime"
@@ -36,8 +37,10 @@ import (
 // the cluster's own services is fuller than it looks; reserving a node for
 // steps (label, taint, PreferredStepNode) is what makes the count exact. With
 // no candidate able to fit the step, the emptiest is still chosen and the pod
-// waits there for capacity, as it did before selection looked.
-func selectExecutionNode(ctx context.Context, client kubernetes.Interface, config Config, spec runtime.ContainerSpec) (string, string, error) {
+// waits there for capacity, as it did before selection looked. A node in
+// exclude is never a candidate: it is one the step already could not be
+// scheduled on.
+func selectExecutionNode(ctx context.Context, client kubernetes.Interface, config Config, spec runtime.ContainerSpec, exclude []string) (string, string, error) {
 	selector := labels.Set{
 		"concourse.dev/artifact-cache": "ready",
 		executioncontrol.ReadyLabel:    "ready", output.ReadyLabel: "ready",
@@ -49,6 +52,9 @@ func selectExecutionNode(ctx context.Context, client kubernetes.Interface, confi
 	tolerations := stepTolerations(config)
 	var candidates []corev1.Node
 	for _, node := range nodes.Items {
+		if slices.Contains(exclude, node.Name) {
+			continue
+		}
 		if canRunStep(node, tolerations, config.RequiredStepNode) {
 			candidates = append(candidates, node)
 		}
