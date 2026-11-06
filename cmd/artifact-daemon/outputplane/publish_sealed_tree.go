@@ -32,7 +32,7 @@ import (
 // not the artifact; it is input to the one canonicalizer this repository has.
 func (daemon *Daemon) CanonicalizeDirectory(ctx context.Context, root string) (*hangar.CapturedTree, error) {
 	reader, writer := io.Pipe()
-	go func() { writer.CloseWithError(tarDirectory(root, writer)) }()
+	go func() { writer.CloseWithError(tarSealedSource(root, writer)) }()
 
 	captured, err := daemon.canonicalizer.Capture(ctx, reader)
 	if err != nil {
@@ -44,7 +44,9 @@ func (daemon *Daemon) CanonicalizeDirectory(ctx context.Context, root string) (*
 	return captured, nil
 }
 
-// tarDirectory writes a deterministic tar of a directory tree.
+// tarSealedSource writes a deterministic tar of a sealed source, as input to
+// the canonicalizer only. It is not the GET stream (tarTree in the daemon
+// package), which carries real modes and times and skips special files.
 //
 // Deterministic because the canonicalizer's digest is over what comes out of
 // it, and a walk whose order depended on the filesystem would give one tree two
@@ -52,7 +54,7 @@ func (daemon *Daemon) CanonicalizeDirectory(ctx context.Context, root string) (*
 // normalized. Anything that is not a regular file, a directory or a symlink is
 // refused rather than skipped: silently dropping a device node or a socket
 // would publish a tree that is not the one the producer wrote.
-func tarDirectory(root string, out io.Writer) error {
+func tarSealedSource(root string, out io.Writer) error {
 	writer := tar.NewWriter(out)
 
 	var walk func(string) error
