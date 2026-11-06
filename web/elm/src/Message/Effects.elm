@@ -36,7 +36,8 @@ import Message.Message
 import Message.ScrollDirection exposing (ScrollDirection(..))
 import Message.Storage
     exposing
-        ( deleteFromCache
+        ( collapsedDashboardSectionsKey
+        , deleteFromCache
         , favoritedInstanceGroupsKey
         , favoritedPipelinesKey
         , jobsKey
@@ -211,6 +212,8 @@ type Effect
     | LoadFavoritedPipelines
     | SaveFavoritedInstanceGroups (Set ( Concourse.TeamName, Concourse.PipelineName ))
     | LoadFavoritedInstanceGroups
+    | SaveCollapsedDashboardSections (Set String)
+    | LoadCollapsedDashboardSections
     | GetHostname
 
 
@@ -777,6 +780,15 @@ runNonPipelineRunEffect effect key csrfToken =
         LoadFavoritedInstanceGroups ->
             loadFromLocalStorage favoritedInstanceGroupsKey
 
+        SaveCollapsedDashboardSections keys ->
+            saveToLocalStorage
+                ( collapsedDashboardSectionsKey
+                , keys |> Json.Encode.set Json.Encode.string
+                )
+
+        LoadCollapsedDashboardSections ->
+            loadFromLocalStorage collapsedDashboardSectionsKey
+
         SaveCachedTeams teams ->
             saveToCache ( teamsKey, teams |> Json.Encode.list encodeTeam )
 
@@ -946,6 +958,9 @@ toHtmlID domId =
 
         DashboardGroup teamName ->
             teamName
+
+        DashboardSectionHeader key ->
+            "dashboard-section-header-" ++ key
 
         ResourceCommentTextarea ->
             "resource_comment"

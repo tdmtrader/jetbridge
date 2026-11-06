@@ -25,7 +25,8 @@ import Json.Encode
 import Keyboard
 import Message.Storage as Storage
     exposing
-        ( favoritedInstanceGroupsKey
+        ( collapsedDashboardSectionsKey
+        , favoritedInstanceGroupsKey
         , favoritedPipelinesKey
         , jobsKey
         , pipelinesKey
@@ -114,6 +115,7 @@ type Delivery
     | CachedTeamsReceived (Result Json.Decode.Error (List Concourse.Team))
     | FavoritedPipelinesReceived (Result Json.Decode.Error (Set DatabaseID))
     | FavoritedInstanceGroupsReceived (Result Json.Decode.Error (Set ( Concourse.TeamName, Concourse.PipelineName )))
+    | CollapsedDashboardSectionsReceived (Result Json.Decode.Error (Set String))
     | ScrolledToId ( String, String )
     | GotHostname String
     | Noop
@@ -241,6 +243,10 @@ decodeStorageResponse ( key, value ) =
                             )
                     )
                     FavoritedInstanceGroupsReceived
+
+            else if key == collapsedDashboardSectionsKey then
+                decodeValue (Json.Decode.list Json.Decode.string |> Json.Decode.map Set.fromList)
+                    CollapsedDashboardSectionsReceived
 
             else
                 always Noop

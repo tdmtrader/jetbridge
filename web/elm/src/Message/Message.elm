@@ -126,6 +126,7 @@ type DomID
     | SideBarInstanceGroupFavoritedIcon Concourse.InstanceGroupIdentifier
     | Dashboard
     | DashboardGroup String
+    | DashboardSectionHeader String
 
 
 type PipelinesSection

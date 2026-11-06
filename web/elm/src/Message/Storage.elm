@@ -1,6 +1,7 @@
 port module Message.Storage exposing
     ( Key
     , Value
+    , collapsedDashboardSectionsKey
     , deleteFromCache
     , deleteFromLocalStorage
     , favoritedInstanceGroupsKey
@@ -94,3 +95,8 @@ favoritedPipelinesKey =
 favoritedInstanceGroupsKey : Key
 favoritedInstanceGroupsKey =
     "favorited_instance_groups"
+
+
+collapsedDashboardSectionsKey : Key
+collapsedDashboardSectionsKey =
+    "collapsed_dashboard_sections"

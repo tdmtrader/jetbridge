@@ -1,5 +1,6 @@
 module Dashboard.Group exposing
-    ( Section
+    ( Collapse
+    , Section
     , hdView
     , ordering
     , pipelineNotSetView
@@ -8,6 +9,7 @@ module Dashboard.Group exposing
     )
 
 import Application.Models exposing (Session)
+import Assets
 import Concourse
 import Dashboard.Grid as Grid
 import Dashboard.Grid.Constants as GridConstants
@@ -21,7 +23,7 @@ import Dict exposing (Dict)
 import HoverState
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, classList, draggable, id, style)
-import Html.Events exposing (on, preventDefaultOn, stopPropagationOn)
+import Html.Events exposing (on, onClick, preventDefaultOn, stopPropagationOn)
 import Html.Keyed
 import Json.Decode
 import Maybe.Extra
@@ -32,6 +34,7 @@ import Routes
 import Set exposing (Set)
 import Time
 import UserState exposing (UserState(..))
+import Views.Icon as Icon
 import Views.Spinner as Spinner
 import Views.Styles
 
@@ -46,7 +49,115 @@ type alias Section card =
     { teamName : String
     , header : String
     , cards : List card
+    , collapse : Maybe Collapse
     }
+
+
+{-| A section that can be collapsed: `key` names it in the stored set of
+collapsed sections, `pipelineCount` is shown in its header while collapsed.
+-}
+type alias Collapse =
+    { key : String
+    , collapsed : Bool
+    , pipelineCount : Int
+    }
+
+
+isCollapsed : Maybe Collapse -> Bool
+isCollapsed =
+    Maybe.map .collapsed >> (==) (Just True)
+
+
+collapseToggle : Maybe Collapse -> List (Html Message)
+collapseToggle collapse =
+    case collapse of
+        Just { collapsed } ->
+            [ Icon.icon
+                { sizePx = 12
+                , image =
+                    if collapsed then
+                        Assets.PlusIcon
+
+                    else
+                        Assets.MinusIcon
+                }
+                [ class "dashboard-section-toggle"
+                , style "margin-right" "10px"
+                , style "flex-shrink" "0"
+                ]
+            ]
+
+        Nothing ->
+            []
+
+
+collapsedCount : Maybe Collapse -> List (Html Message)
+collapsedCount collapse =
+    case collapse of
+        Just { collapsed, pipelineCount } ->
+            if collapsed then
+                [ Html.div
+                    [ class "dashboard-section-count"
+                    , style "margin-left" "10px"
+                    , style "opacity" "0.6"
+                    , style "font-weight" Views.Styles.fontWeightDefault
+                    ]
+                    [ Html.text <|
+                        String.fromInt pipelineCount
+                            ++ (if pipelineCount == 1 then
+                                    " pipeline"
+
+                                else
+                                    " pipelines"
+                               )
+                    ]
+                ]
+
+            else
+                []
+
+        Nothing ->
+            []
+
+
+{-| The section's name, with the collapse toggle before it and, while
+collapsed, how many pipelines it holds after it. Without a `Collapse` it is
+just the name.
+-}
+sectionTitle : List (Html.Attribute Message) -> Maybe Collapse -> Html Message -> Html Message
+sectionTitle attrs collapse name =
+    case collapse of
+        Just _ ->
+            Html.div
+                ([ class "dashboard-section-title"
+                 , style "display" "flex"
+                 , style "align-items" "center"
+                 ]
+                    ++ attrs
+                )
+                (collapseToggle collapse ++ name :: collapsedCount collapse)
+
+        Nothing ->
+            name
+
+
+collapseHandlers : Maybe Collapse -> List (Html.Attribute Message)
+collapseHandlers collapse =
+    case collapse of
+        Just { key, collapsed } ->
+            [ onClick <| Click <| DashboardSectionHeader key
+            , id <| Effects.toHtmlID <| DashboardSectionHeader key
+            , style "cursor" "pointer"
+            , attribute "aria-expanded" <|
+                if collapsed then
+                    "false"
+
+                else
+                    "true"
+            ]
+
+        Nothing ->
+            []
 
 
 view :
@@ -67,10 +178,13 @@ view :
         }
     -> Section Grid.Card
     -> Html Message
-view session params { header, teamName, cards } =
+view session params { header, teamName, cards, collapse } =
     let
         cardViews =
-            if List.isEmpty cards then
+            if isCollapsed collapse then
+                []
+
+            else if List.isEmpty cards then
                 [ ( "not-set", Pipeline.pipelineNotSetView ) ]
 
             else
@@ -132,16 +246,21 @@ view session params { header, teamName, cards } =
         , attribute "data-team-name" teamName
         ]
         [ Html.div
-            [ style "display" "flex"
-            , style "align-items" "center"
-            , style "margin-bottom" (String.fromInt GridConstants.padding ++ "px")
-            , class <| .sectionHeaderClass Effects.stickyHeaderConfig
-            ]
-            (Html.div
-                [ class "dashboard-team-name"
-                , style "font-weight" Views.Styles.fontWeightBold
-                ]
-                [ Html.text header ]
+            ([ style "display" "flex"
+             , style "align-items" "center"
+             , style "margin-bottom" (String.fromInt GridConstants.padding ++ "px")
+             , class <| .sectionHeaderClass Effects.stickyHeaderConfig
+             ]
+                ++ collapseHandlers collapse
+            )
+            (sectionTitle []
+                collapse
+                (Html.div
+                    [ class "dashboard-team-name"
+                    , style "font-weight" Views.Styles.fontWeightBold
+                    ]
+                    [ Html.text header ]
+                )
                 :: (Maybe.Extra.toList <|
                         Maybe.map (Tag.view False) (tag session teamName)
                    )
@@ -266,16 +385,22 @@ hdView :
     -> { a | hovered : HoverState.HoverState, userState : UserState, pipelineRunningKeyframes : String }
     -> Section Card
     -> List (Html Message)
-hdView { pipelinesWithResourceErrors, pipelineJobs, jobs, dashboardView, query } session { teamName, cards, header } =
+hdView { pipelinesWithResourceErrors, pipelineJobs, jobs, dashboardView, query } session { teamName, cards, header, collapse } =
     let
-        headerElement =
+        nameElement =
             Html.div
                 [ class "dashboard-team-name" ]
                 [ Html.text header ]
+
+        headerElement =
+            sectionTitle (collapseHandlers collapse) collapse nameElement
                 :: (Maybe.Extra.toList <| Maybe.map (Tag.view True) (tag session teamName))
 
         teamPipelines =
-            if List.isEmpty cards then
+            if isCollapsed collapse then
+                []
+
+            else if List.isEmpty cards then
                 [ pipelineNotSetView ]
 
             else

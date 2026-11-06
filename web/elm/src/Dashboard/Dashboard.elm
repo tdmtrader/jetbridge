@@ -25,6 +25,7 @@ import Dashboard.Group.Models
     exposing
         ( Card(..)
         , Pipeline
+        , cardIdentifier
         , cardName
         , cardTeamName
         , groupCardsWithinTeam
@@ -40,6 +41,7 @@ import Dashboard.Models as Models
         )
 import Dashboard.RequestBuffer as RequestBuffer exposing (Buffer(..))
 import Dashboard.SearchBar as SearchBar
+import Dashboard.Sections as Sections
 import Dashboard.Styles as Styles
 import Dashboard.Text as Text
 import Dict exposing (Dict)
@@ -131,6 +133,7 @@ init f =
       , scrollTop = 0
       , pipelineJobs = Dict.empty
       , effectsToRetry = []
+      , collapsedSections = Set.empty
       }
     , [ FetchAllTeams
       , PinTeamNames Message.Effects.stickyHeaderConfig
@@ -141,6 +144,7 @@ init f =
       , LoadCachedJobs
       , LoadCachedPipelines
       , LoadCachedTeams
+      , LoadCollapsedDashboardSections
       , GetViewportOf Dashboard
       ]
     )
@@ -527,13 +531,16 @@ handleDeliveryBody delivery ( model, effects ) =
         SideBarStateReceived _ ->
             ( model, effects ++ [ GetViewportOf Dashboard ] )
 
+        CollapsedDashboardSectionsReceived (Ok keys) ->
+            ( { model | collapsedSections = keys }, effects )
+
         CachedPipelinesReceived (Ok pipelines) ->
             if model.pipelines == Nothing then
                 ( { model
                     | pipelines =
-                    pipelines
-                        |> List.filter (not << Concourse.isRunPayload)
-                        |> List.map
+                        pipelines
+                            |> List.filter (not << Concourse.isRunPayload)
+                            |> List.map
                                 (toDashboardPipeline
                                     True
                                     (model.jobsError == Just Disabled)
@@ -834,6 +841,15 @@ updateBody session msg ( model, effects ) =
 
         Click SideBarIcon ->
             ( model, effects ++ [ GetViewportOf Dashboard ] )
+
+        Click (DashboardSectionHeader key) ->
+            let
+                collapsedSections =
+                    Sections.toggle key model.collapsedSections
+            in
+            ( { model | collapsedSections = collapsedSections }
+            , effects ++ [ SaveCollapsedDashboardSections collapsedSections ]
+            )
 
         Scrolled scrollState ->
             ( { model | scrollTop = scrollState.scrollTop }, effects )
@@ -1313,14 +1329,44 @@ regularCardsView session params =
                 |> Dict.toList
                 |> List.sortWith (Ordering.byFieldWith (Group.ordering session) Tuple.first)
 
+        searching =
+            not (String.isEmpty params.query)
+
         teamCards =
             filteredPipelinesByTeam
-                |> List.map
+                |> List.concatMap
                     (\( team, teamPipelines ) ->
-                        { header = team
-                        , cards = groupCardsWithinTeam teamPipelines
-                        , teamName = team
-                        }
+                        groupCardsWithinTeam teamPipelines
+                            |> Sections.sectionsWithinTeam
+                            |> List.map
+                                (\{ name, cards } ->
+                                    let
+                                        key =
+                                            Sections.collapseKey team name
+                                    in
+                                    { header =
+                                        case name of
+                                            Just n ->
+                                                team ++ " / " ++ n
+
+                                            Nothing ->
+                                                team
+                                    , cards = cards
+                                    , teamName = team
+                                    , collapse =
+                                        -- a search shows every match, so it
+                                        -- neither honours nor offers collapsing
+                                        if searching then
+                                            Nothing
+
+                                        else
+                                            Just
+                                                { key = key
+                                                , collapsed = Set.member key params.collapsedSections
+                                                , pipelineCount = List.length (ungroupCards cards)
+                                                }
+                                    }
+                                )
                     )
     in
     cardsView session params teamCards
@@ -1346,6 +1392,7 @@ instanceGroupCardsView session model =
                                     { header = team ++ " / " ++ p.name
                                     , cards = p :: ps |> List.map InstancedPipelineCard
                                     , teamName = team
+                                    , collapse = Nothing
                                     }
                                 )
                     )
@@ -1468,24 +1515,41 @@ cardsView session params teamCards =
 
                     else
                         List.foldl
-                            (\{ header, teamName, cards } ( htmlList, totalOffset ) ->
+                            (\{ header, teamName, cards, collapse } ( htmlList, totalOffset ) ->
                                 let
                                     startingOffset =
                                         totalOffset
                                             + GridConstants.groupHeaderHeight
 
+                                    collapsed =
+                                        Maybe.map .collapsed collapse == Just True
+
+                                    -- a card is only dropped among the cards
+                                    -- of its own section
+                                    holdsDraggedCard =
+                                        case params.dragState of
+                                            Dragging dragged ->
+                                                List.any (cardIdentifier >> (==) (cardIdentifier dragged)) cards
+
+                                            NotDragging ->
+                                                True
+
                                     layout =
-                                        Grid.computeLayout
-                                            { dragState = params.dragState
-                                            , dropState = params.dropState
-                                            , pipelineLayers = params.pipelineLayers
-                                            , viewportWidth = params.viewportWidth
-                                            , viewportHeight = params.viewportHeight
-                                            , scrollTop = params.scrollTop - startingOffset
-                                            , viewingInstanceGroups = viewingInstanceGroups
-                                            }
-                                            teamName
-                                            cards
+                                        if collapsed then
+                                            { cards = [], dropAreas = [], height = 0 }
+
+                                        else
+                                            Grid.computeLayout
+                                                { dragState = params.dragState
+                                                , dropState = params.dropState
+                                                , pipelineLayers = params.pipelineLayers
+                                                , viewportWidth = params.viewportWidth
+                                                , viewportHeight = params.viewportHeight
+                                                , scrollTop = params.scrollTop - startingOffset
+                                                , viewingInstanceGroups = viewingInstanceGroups
+                                                }
+                                                teamName
+                                                cards
                                 in
                                 Group.view
                                     session
@@ -1494,7 +1558,12 @@ cardsView session params teamCards =
                                     , now = params.now
                                     , pipelinesWithResourceErrors = params.pipelinesWithResourceErrors
                                     , pipelineLayers = params.pipelineLayers
-                                    , dropAreas = layout.dropAreas
+                                    , dropAreas =
+                                        if holdsDraggedCard then
+                                            layout.dropAreas
+
+                                        else
+                                            []
                                     , groupCardsHeight = layout.height
                                     , pipelineJobs = params.pipelineJobs
                                     , jobs = jobs
@@ -1505,6 +1574,7 @@ cardsView session params teamCards =
                                     { header = header
                                     , teamName = teamName
                                     , cards = layout.cards
+                                    , collapse = collapse
                                     }
                                     |> (\html ->
                                             ( html :: htmlList

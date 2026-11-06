@@ -43,6 +43,7 @@ type alias Model =
             , scrollTop : Float
             , pipelineJobs : Dict Concourse.DatabaseID (List Concourse.JobName)
             , effectsToRetry : List Effect
+            , collapsedSections : Set String
             }
         )
 

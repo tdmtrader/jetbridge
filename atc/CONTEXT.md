@@ -83,6 +83,13 @@ A paused pipeline whose job and resource configs have been cleared. Its
 cleared configs cannot be recovered; setting the pipeline again un-archives it
 under the new config.
 
+**Dashboard section**:
+A collapsible block of a team's cards on the dashboard. Display-only: a card
+is in the section its pipeline name's prefix (before the first `-` or `_`)
+names when another card shares it, otherwise in the team's own section. Which
+sections are collapsed is kept per browser.
+_Avoid_: group (a pipeline's job groups and instance groups are other things)
+
 **One-off build**:
 A build submitted directly by `fly execute`, owned by a team and no job.
 
