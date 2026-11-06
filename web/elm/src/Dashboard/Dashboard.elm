@@ -611,6 +611,7 @@ toDashboardPipeline isStale jobsDisabled p =
     , jobsDisabled = jobsDisabled
     , template = p.template == Just True
     , lastRunNumber = p.lastRunNumber
+    , dashboardSection = p.dashboardSection
     }
 
 
@@ -629,6 +630,7 @@ toConcoursePipeline p =
     , lastUpdatedAt = Time.millisToPosix 0
     , backgroundImage = Maybe.Nothing
     , backgroundFilter = Maybe.Nothing
+    , dashboardSection = p.dashboardSection
     , template = Nothing
     , runNumber = Nothing
     , runTemplateRef = Nothing

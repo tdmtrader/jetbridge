@@ -100,4 +100,5 @@ type alias Pipeline =
     , jobsDisabled : Bool
     , template : Bool
     , lastRunNumber : Maybe Int
+    , dashboardSection : Maybe String
     }

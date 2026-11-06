@@ -744,6 +744,16 @@ func validateDisplay(c atc.Config) ([]atc.ConfigWarning, error) {
 		return warnings, nil
 	}
 
+	if c.Display.Section != "" {
+		warning, err := atc.ValidateIdentifier(c.Display.Section, "display.section")
+		if err != nil {
+			return warnings, err
+		}
+		if warning != nil {
+			warnings = append(warnings, *warning)
+		}
+	}
+
 	url, err := url.Parse(c.Display.BackgroundImage)
 
 	if err != nil {

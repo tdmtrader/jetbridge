@@ -8,6 +8,7 @@ import Dashboard.Sections as Sections
 import Data
 import Expect
 import Html.Attributes as Attr
+import Json.Decode
 import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message as Msgs exposing (DomID(..))
@@ -75,6 +76,43 @@ all =
                         |> sectionNames
                         |> List.map Tuple.first
                         |> Expect.equal [ Nothing, Just "b", Just "a" ]
+            , test "puts a pipeline that sets display.section in that section, alone if need be" <|
+                \_ ->
+                    [ ( "jetbridge", Just "core" ), ( "loupe", Nothing ), ( "piano", Nothing ) ]
+                        |> explicitSectionNames
+                        |> Expect.equal
+                            [ ( Nothing, [ "loupe", "piano" ] )
+                            , ( Just "core", [ "jetbridge" ] )
+                            ]
+            , test "display.section overrides the name prefix" <|
+                \_ ->
+                    [ ( "landing-compose", Just "release" ), ( "landing-land", Nothing ), ( "loupe", Nothing ) ]
+                        |> explicitSectionNames
+                        |> Expect.equal
+                            [ ( Nothing, [ "landing-land", "loupe" ] )
+                            , ( Just "release", [ "landing-compose" ] )
+                            ]
+            , test "a prefix joins the section a pipeline sets by the same name" <|
+                \_ ->
+                    [ ( "jetbridge", Just "landing" ), ( "loupe", Nothing ), ( "landing-land", Nothing ) ]
+                        |> explicitSectionNames
+                        |> Expect.equal
+                            [ ( Nothing, [ "loupe" ] )
+                            , ( Just "landing", [ "jetbridge", "landing-land" ] )
+                            ]
+            , test "shows a section every card sets explicitly" <|
+                \_ ->
+                    [ ( "jetbridge", Just "core" ), ( "loupe", Just "core" ) ]
+                        |> explicitSectionNames
+                        |> Expect.equal [ ( Just "core", [ "jetbridge", "loupe" ] ) ]
+            , test "an instance group is in the section one of its instances sets" <|
+                \_ ->
+                    [ InstanceGroupCard (pipelineNamed 1 "hangar") [ pipelineNamed 2 "hangar" |> Data.withDashboardSection "live" ]
+                    , PipelineCard (pipelineNamed 3 "jetbridge")
+                    ]
+                        |> Sections.sectionsWithinTeam
+                        |> List.map .name
+                        |> Expect.equal [ Nothing, Just "live" ]
             , test "counts an instance group as one card" <|
                 \_ ->
                     [ InstanceGroupCard (pipelineNamed 1 "live-hangar") [ pipelineNamed 2 "live-hangar" ]
@@ -83,6 +121,43 @@ all =
                         |> Sections.sectionsWithinTeam
                         |> List.map .name
                         |> Expect.equal [ Nothing ]
+            ]
+        , describe "display.section"
+            [ test "is decoded from a pipeline's display config" <|
+                \_ ->
+                    """{"id":1,"name":"jetbridge","paused":false,"archived":false,"public":true,"team_name":"main","last_updated":0,"display":{"section":"core"}}"""
+                        |> Json.Decode.decodeString Concourse.decodePipeline
+                        |> Result.map .dashboardSection
+                        |> Expect.equal (Ok (Just "core"))
+            , test "survives the pipeline cache" <|
+                \_ ->
+                    Data.pipeline "main" 1
+                        |> Data.withDashboardSection "core"
+                        |> Concourse.encodePipeline
+                        |> Json.Decode.decodeValue Concourse.decodePipeline
+                        |> Result.map .dashboardSection
+                        |> Expect.equal (Ok (Just "core"))
+            , test "places a card on the dashboard" <|
+                \_ ->
+                    Common.init "/"
+                        |> Application.handleCallback
+                            (Callback.AllPipelinesFetched
+                                (Ok
+                                    [ Data.pipeline "team" 1 |> Data.withName "jetbridge" |> Data.withDashboardSection "core"
+                                    , Data.pipeline "team" 2 |> Data.withName "loupe"
+                                    ]
+                                )
+                            )
+                        |> Tuple.first
+                        |> Common.withAllPipelinesVisible
+                        |> Common.queryView
+                        |> Query.findAll [ class "dashboard-team-group" ]
+                        |> Expect.all
+                            [ Query.count (Expect.equal 2)
+                            , Query.index 0 >> Query.has [ pipelineCard "loupe" ]
+                            , Query.index 1 >> Query.find [ class "dashboard-team-name" ] >> Query.has [ text "team / core" ]
+                            , Query.index 1 >> Query.has [ pipelineCard "jetbridge" ]
+                            ]
             ]
         , describe "namePrefix"
             [ test "stops at the first dash or underscore" <|
@@ -232,6 +307,17 @@ sectionNames : List String -> List ( Maybe String, List String )
 sectionNames names =
     names
         |> List.indexedMap (\i n -> PipelineCard (pipelineNamed i n))
+        |> Sections.sectionsWithinTeam
+        |> List.map (\s -> ( s.name, List.map cardName s.cards ))
+
+
+explicitSectionNames : List ( String, Maybe String ) -> List ( Maybe String, List String )
+explicitSectionNames named =
+    named
+        |> List.indexedMap
+            (\i ( n, section ) ->
+                PipelineCard (pipelineNamed i n |> (\p -> { p | dashboardSection = section }))
+            )
         |> Sections.sectionsWithinTeam
         |> List.map (\s -> ( s.name, List.map cardName s.cards ))
 

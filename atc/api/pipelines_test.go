@@ -380,7 +380,7 @@ func persistPipelineListingFixture(realdb *realDB) pipelineListingFixture {
 			{Name: "resource3", Type: "mock", Source: atc.Source{"key": "three"}},
 			{Name: "resource4", Type: "mock", Source: atc.Source{"key": "four"}},
 		},
-		Display: &atc.DisplayConfig{BackgroundImage: "background.jpg"},
+		Display: &atc.DisplayConfig{BackgroundImage: "background.jpg", Section: "landing"},
 	}
 	mainPrivateConfig := atc.Config{
 		Groups: atc.GroupConfigs{{

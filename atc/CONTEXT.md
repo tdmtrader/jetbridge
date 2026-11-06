@@ -84,10 +84,11 @@ cleared configs cannot be recovered; setting the pipeline again un-archives it
 under the new config.
 
 **Dashboard section**:
-A collapsible block of a team's cards on the dashboard. Display-only: a card
-is in the section its pipeline name's prefix (before the first `-` or `_`)
-names when another card shares it, otherwise in the team's own section. Which
-sections are collapsed is kept per browser.
+A collapsible block of a team's cards on the dashboard. A pipeline is in the
+section its config's `display.section` names; failing that, in the one its
+name's prefix (before the first `-` or `_`) names when another card shares
+it; otherwise in the team's own section. Which sections are collapsed is kept
+per browser.
 _Avoid_: group (a pipeline's job groups and instance groups are other things)
 
 **One-off build**:

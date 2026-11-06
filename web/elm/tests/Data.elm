@@ -35,6 +35,7 @@ module Data exposing
     , withBuild
     , withBuildName
     , withCheckError
+    , withDashboardSection
     , withDisableManualTrigger
     , withDuration
     , withFailingToCheck
@@ -191,6 +192,7 @@ pipeline team id =
     , lastUpdatedAt = Time.millisToPosix 0
     , backgroundImage = Maybe.Nothing
     , backgroundFilter = Maybe.Nothing
+    , dashboardSection = Nothing
     , template = Nothing
     , runNumber = Nothing
     , runTemplateRef = Nothing
@@ -215,7 +217,13 @@ dashboardPipeline team id =
     , jobsDisabled = False
     , template = False
     , lastRunNumber = Nothing
+    , dashboardSection = Nothing
     }
+
+
+withDashboardSection : String -> { r | dashboardSection : Maybe String } -> { r | dashboardSection : Maybe String }
+withDashboardSection section p =
+    { p | dashboardSection = Just section }
 
 
 withPaused : Bool -> { r | paused : Bool } -> { r | paused : Bool }

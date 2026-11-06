@@ -2367,6 +2367,30 @@ var _ = Describe("ValidateConfig", func() {
 			})
 		})
 
+		Context("when the section is a valid identifier", func() {
+			BeforeEach(func() {
+				config.Display = &atc.DisplayConfig{Section: "landing"}
+			})
+
+			It("neither warns nor errors", func() {
+				Expect(errorMessages).To(BeEmpty())
+				Expect(warnings).To(BeEmpty())
+			})
+		})
+
+		Context("when the section is not a valid identifier", func() {
+			BeforeEach(func() {
+				config.Display = &atc.DisplayConfig{Section: "Landing Zone"}
+			})
+
+			It("warns, as for any other name", func() {
+				Expect(errorMessages).To(BeEmpty())
+				Expect(warnings).To(HaveLen(1))
+				Expect(warnings[0].Type).To(Equal("invalid_identifier"))
+				Expect(warnings[0].Message).To(ContainSubstring("display.section: 'Landing Zone' is not a valid identifier"))
+			})
+		})
+
 		Context("when the background image is an invalid URL", func() {
 			BeforeEach(func() {
 				config.Display = &atc.DisplayConfig{

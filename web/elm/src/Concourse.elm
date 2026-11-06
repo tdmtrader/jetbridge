@@ -1102,6 +1102,7 @@ type alias Pipeline =
     , lastUpdatedAt : Time.Posix
     , backgroundImage : Maybe String
     , backgroundFilter : Maybe String
+    , dashboardSection : Maybe String
     , template : Maybe Bool
     , runNumber : Maybe Int
     , runTemplateRef : Maybe PipelineIdentifier
@@ -1178,6 +1179,7 @@ encodePipeline pipeline =
            , Json.Encode.object
                 [ ( "background_image", pipeline.backgroundImage |> Json.Encode.Extra.maybe Json.Encode.string )
                 , ( "background_filter", pipeline.backgroundFilter |> Json.Encode.Extra.maybe Json.Encode.string )
+                , ( "section", pipeline.dashboardSection |> Json.Encode.Extra.maybe Json.Encode.string )
                 ]
            )
          ]
@@ -1239,6 +1241,7 @@ decodePipeline =
         |> andMap (Json.Decode.field "last_updated" (Json.Decode.map dateFromSeconds Json.Decode.int))
         |> andMap (Json.Decode.maybe (Json.Decode.at [ "display", "background_image" ] Json.Decode.string))
         |> andMap (Json.Decode.maybe (Json.Decode.at [ "display", "background_filter" ] Json.Decode.string))
+        |> andMap (Json.Decode.maybe (Json.Decode.at [ "display", "section" ] Json.Decode.string))
         |> andMap (Json.Decode.maybe (Json.Decode.field "template" Json.Decode.bool))
         |> andMap (Json.Decode.maybe (Json.Decode.field "run_number" Json.Decode.int))
         |> andMap (Json.Decode.maybe (Json.Decode.field "run_template_ref" decodePipelineIdentifier))
