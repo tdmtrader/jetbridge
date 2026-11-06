@@ -379,7 +379,7 @@ func TestTheCaptureRoutesHoldSealPublishAndRelease(t *testing.T) {
 		t.Errorf("the seal answered scope %q", sealed.Scope)
 	}
 
-	publication.Digest, publication.Staged = sealed.Digest, sealed.Staged
+	publication.Digest = sealed.Digest
 	status, body = fixture.publishOverHTTP(t, publication)
 	if status != http.StatusOK {
 		t.Fatalf("the sealed tree was not published: %d %s", status, body)

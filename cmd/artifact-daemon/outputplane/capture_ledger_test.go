@@ -83,8 +83,8 @@ func (fixture *captureFixture) openCapture(t *testing.T) {
 
 	// SealWait bounds each background seal (the wait for the Pod, then the
 	// canonicalization: tar, extract into scratch, verify, write the canonical
-	// tar and hash it again) and each background publish (canonicalizing again
-	// when nothing is staged, then the write to the fake store). In production
+	// tar and hash it again) and each background publish (canonicalizing again,
+	// then the write to the fake store). In production
 	// it is --capture-seal-wait, an hour by default; no test here is about its
 	// size. A tiny tree canonicalizes in a few milliseconds on an idle
 	// machine, but the CI unit-tests job runs every suite at once on one node,

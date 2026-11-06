@@ -151,7 +151,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrWarrant(t *testing.T) {
 	// ---- publish ----
 	publication := output.CapturePublishRequest{
 		ProtocolVersion: output.ProtocolVersion, Execution: identity(1), Output: testOutput,
-		Digest: sealed.Digest, Staged: sealed.Staged,
+		Digest: sealed.Digest,
 	}
 	status, body = fixture.publishOverHTTP(t, publication)
 	if status != http.StatusOK {
@@ -178,7 +178,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrWarrant(t *testing.T) {
 	// A publication for a digest the sealed tree is not: the refusal compares
 	// two digests and must name no location.
 	wrong := publication
-	wrong.Digest, wrong.Staged = hangar.Digest("sha256:"+strings.Repeat("ab", 32)), ""
+	wrong.Digest = hangar.Digest("sha256:" + strings.Repeat("ab", 32))
 	fixture.publishOverHTTP(t, wrong)
 
 	// ---- stat: one present, one absent ----

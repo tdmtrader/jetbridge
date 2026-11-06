@@ -150,16 +150,12 @@ func (request CaptureSealRequest) Validate() error {
 
 // CaptureSealResult is what the sealed tree IS. Scope and digest are the
 // daemon's: the scope from its own namespace, the digest from the bytes.
-// Staged is never set by this daemon: a seal keeps no archive in scratch past
-// its spool slot, and the publish canonicalizes the held step directory
-// again. The field stays only so the wire shape does not change.
 type CaptureSealResult struct {
 	ProtocolVersion string        `json:"protocol_version"`
 	Marker          StepMarker    `json:"marker"`
 	Scope           hangar.Scope  `json:"scope"`
 	Digest          hangar.Digest `json:"digest"`
 	LogicalBytes    int64         `json:"logical_bytes"`
-	Staged          string        `json:"staged,omitempty"`
 }
 
 func (result CaptureSealResult) Validate() error {
@@ -194,7 +190,6 @@ type CapturePublishRequest struct {
 	Execution       executioncontrol.Identity `json:"execution"`
 	Output          OutputName                `json:"output"`
 	Digest          hangar.Digest             `json:"digest"`
-	Staged          string                    `json:"staged,omitempty"`
 	Namespace       CallerNamespaceRequest    `json:"namespace"`
 }
 
