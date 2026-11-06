@@ -84,6 +84,88 @@ var _ = Describe("in-Run result inputs", func() {
 		Expect(err).To(MatchError(ContainSubstring("cannot consume its own result")))
 	})
 
+	// The order rule judges a template being set or a new Run's template;
+	// RunTaskDeclarations, which also reads retained definitions, does not.
+	Describe("the producer's place in the plan", func() {
+		job := func(steps ...atc.StepConfig) atc.Config {
+			var plan []atc.Step
+			for _, step := range steps {
+				plan = append(plan, atc.Step{Config: step})
+			}
+			return config(atc.JobConfig{Name: "implement", PlanSequence: plan})
+		}
+		do := func(steps ...atc.StepConfig) atc.StepConfig {
+			var plan []atc.Step
+			for _, step := range steps {
+				plan = append(plan, atc.Step{Config: step})
+			}
+			return &atc.DoStep{Steps: plan}
+		}
+		parallel := func(steps ...atc.StepConfig) atc.StepConfig {
+			return &atc.InParallelStep{Config: atc.InParallelConfig{Steps: do(steps...).(*atc.DoStep).Steps}}
+		}
+		order := func(steps ...atc.StepConfig) error {
+			GinkgoHelper()
+			declarations, err := atc.RunTaskDeclarations(job(steps...))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(declarations).To(HaveLen(2))
+			return atc.ValidateRunResultOrder(job(steps...))
+		}
+
+		It("refuses a consumer that comes before its producer", func() {
+			Expect(order(validate, author)).To(MatchError(`Run input "change" of task "validate" reads result "change" of task "author", which comes after it in job implement`))
+		})
+
+		It("accepts a producer that comes first across a do", func() {
+			Expect(order(do(author), validate)).To(Succeed())
+			Expect(order(author, do(validate))).To(Succeed())
+		})
+
+		It("accepts a consumer in a hook of the producer's step", func() {
+			Expect(order(&atc.OnSuccessStep{Step: author, Hook: atc.Step{Config: validate}})).To(Succeed())
+			Expect(order(&atc.EnsureStep{Step: &atc.OnSuccessStep{Step: author, Hook: atc.Step{Config: &atc.TaskStep{Name: "notify"}}}, Hook: atc.Step{Config: validate}})).To(Succeed())
+		})
+
+		It("refuses a producer in a hook of the consumer's step", func() {
+			Expect(order(&atc.EnsureStep{Step: validate, Hook: atc.Step{Config: author}})).To(MatchError(ContainSubstring("which comes after it")))
+		})
+
+		Describe("in_parallel", func() {
+			const inParallel = `Run input "change" of task "validate" reads result "change" of task "author", which runs in parallel with it in job implement`
+
+			It("refuses producer and consumer in different branches, in either listed order", func() {
+				Expect(order(parallel(author, validate))).To(MatchError(inParallel))
+				Expect(order(parallel(validate, author))).To(MatchError(inParallel))
+				Expect(order(parallel(do(&atc.TaskStep{Name: "slow"}, validate), author))).To(MatchError(inParallel))
+			})
+
+			It("refuses them in different branches of an in_parallel nested in a branch", func() {
+				Expect(order(parallel(&atc.TaskStep{Name: "lint"}, do(parallel(author, do(validate)))))).To(MatchError(inParallel))
+			})
+
+			It("judges producer and consumer in one branch by their order in it", func() {
+				Expect(order(parallel(&atc.TaskStep{Name: "lint"}, do(author, validate)))).To(Succeed())
+				Expect(order(parallel(&atc.TaskStep{Name: "lint"}, do(validate, author)))).To(MatchError(ContainSubstring("which comes after it")))
+				Expect(order(parallel(do(author, parallel(&atc.TaskStep{Name: "lint"}, validate))))).To(Succeed())
+			})
+
+			It("judges the branches of an in_parallel limited to one by their listed order", func() {
+				serial := func(steps ...atc.StepConfig) atc.StepConfig {
+					step := parallel(steps...).(*atc.InParallelStep)
+					step.Config.Limit = 1
+					return step
+				}
+				Expect(order(serial(author, validate))).To(Succeed())
+				Expect(order(serial(validate, author))).To(MatchError(ContainSubstring("which comes after it")))
+			})
+
+			It("accepts a producer before the in_parallel whose branch holds the consumer", func() {
+				Expect(order(author, parallel(&atc.TaskStep{Name: "lint"}, validate))).To(Succeed())
+				Expect(order(author, parallel(&atc.TaskStep{Name: "lint"}, do(parallel(validate))))).To(Succeed())
+			})
+		})
+	})
+
 	It("refuses a name an admission input also uses", func() {
 		validate.RunInputs[1].Name = "snapshot"
 		validate.RunInputs = validate.RunInputs[1:]

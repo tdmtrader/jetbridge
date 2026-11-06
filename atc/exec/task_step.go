@@ -74,10 +74,12 @@ type TaskDelegate interface {
 	BuildStartTime() time.Time
 }
 
-// RunTaskPreparer resolves a retained task before worker selection. It
-// reports a producer whose result was already sealed, which is not run again.
+// RunTaskPreparer resolves a retained task before worker selection.
+// TaskSealed reports a producer whose result was already sealed, which is not
+// run again.
 type RunTaskPreparer interface {
-	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, bool, error)
+	TaskSealed(context.Context, int, atc.TaskPlan) (bool, error)
+	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
 }
 
 func WithRunTaskPreparer(p RunTaskPreparer) TaskStepOption {
@@ -172,6 +174,16 @@ func (step *TaskStep) Run(ctx context.Context, state RunState) (bool, error) {
 	return ok, err
 }
 
+// finishSealed finishes a producer a re-driven build reached after its result
+// was sealed: it exited successfully and later steps read that result from
+// Hangar. Nothing of it is started again; that would be a second execution of
+// one capture.
+func (step *TaskStep) finishSealed(logger lager.Logger, delegate TaskDelegate) (bool, error) {
+	fmt.Fprintln(delegate.Stdout(), "this task's result was sealed before the build was resumed; not running it again")
+	delegate.Finished(logger, ExitStatus(0))
+	return true, nil
+}
+
 func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDelegate) (bool, error) {
 	// A Run declaration requires the owning domain's retained-task admission.
 	runTask := step.plan.TaskID != "" || step.plan.RunResult != nil || len(step.plan.RunInputs) > 0
@@ -184,6 +196,17 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		"step-name": step.plan.Name,
 		"job-id":    step.metadata.JobID,
 	})
+
+	if step.plan.RunResult != nil && step.plan.TaskID != "" {
+		sealed, err := step.runTaskPreparer.TaskSealed(ctx, step.metadata.BuildID, step.plan)
+		if err != nil {
+			return false, err
+		}
+		if sealed {
+			// Nothing of it is fetched or resolved either.
+			return step.finishSealed(logger, delegate)
+		}
+	}
 
 	var taskConfigSource TaskConfigSource
 	var taskVars []vars.Variables
@@ -340,19 +363,17 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	}
 
 	if runTask {
-		var sealed bool
-		containerSpec, sealed, err = step.runTaskPreparer.PrepareTask(ctx, step.metadata.BuildID, step.plan, containerSpec)
+		containerSpec, err = step.runTaskPreparer.PrepareTask(ctx, step.metadata.BuildID, step.plan, containerSpec)
 		if err != nil {
+			// The producer may have sealed while this step was resolving: its
+			// Pod exited and its capture moved past pending, so its capture
+			// start refuses it. Any other refusal stands.
+			if step.plan.RunResult != nil && step.plan.TaskID != "" {
+				if sealed, sealedErr := step.runTaskPreparer.TaskSealed(ctx, step.metadata.BuildID, step.plan); sealedErr == nil && sealed {
+					return step.finishSealed(logger, delegate)
+				}
+			}
 			return false, err
-		}
-		if sealed {
-			// A re-driven build reached a producer whose result is already
-			// sealed: it exited successfully and later steps read that result
-			// from Hangar. Starting it again would be a second execution of
-			// one capture.
-			fmt.Fprintln(delegate.Stdout(), "this task's result was sealed before the build was resumed; not running it again")
-			delegate.Finished(logger, ExitStatus(0))
-			return true, nil
 		}
 	}
 

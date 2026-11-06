@@ -28,6 +28,9 @@ func (resultInputSource) StatTaskInput(context.Context, string, string, hangar.T
 	return output.PublishedObject{}, nil
 }
 
+// refusingOutputSource is a node plane no sealed producer may reach.
+type refusingOutputSource struct{ runs.OutputSource }
+
 type resultInputMinter struct{}
 
 func (resultInputMinter) Sign(output.ClaimRecord, output.ReadDestination, executioncontrol.NodeUID) (string, error) {
@@ -185,6 +188,21 @@ var _ = Describe("an in-Run result input", func() {
 		Expect(err).To(MatchError(atc.ErrInvalidRunInputs))
 	})
 
+	It("is not a Run of a template that reads it before its producer", func() {
+		authorStep := &atc.TaskStep{Name: "author", TaskID: uuid.NewString(), RunResult: author.RunResult, Config: author.Config}
+		validateStep := &atc.TaskStep{Name: "validate", TaskID: uuid.NewString(), RunInputs: validate.RunInputs, Config: validate.Config}
+		// Stored before the order rule, the template's tasks still declare.
+		misordered := savePipeline(defaultTeam, "result-inputs-misordered", atc.Config{Template: true, Jobs: atc.JobConfigs{
+			{Name: "implement", PlanSequence: []atc.Step{{Config: validateStep}, {Config: authorStep}}},
+		}})
+		err := inTx(func(tx db.Tx) error {
+			_, err := runFactory.CreateRunInTx(ctx, tx, misordered, db.RunParams{}, "creator", db.RunCreationOpts{HangarOutput: true})
+			return err
+		})
+		Expect(err).To(BeAssignableToTypeOf(db.ErrPipelineTemplateInvalid{}))
+		Expect(err).To(MatchError(ContainSubstring("which comes after it in job implement")))
+	})
+
 	Describe("LoadRunTask", func() {
 		It("binds nothing while the build has no capture of the result", func() {
 			selected := load()
@@ -229,9 +247,7 @@ var _ = Describe("an in-Run result input", func() {
 
 	Describe("PrepareTask", func() {
 		prepare := func(ctx context.Context) (runtime.ContainerSpec, error) {
-			prepared, sealed, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
-			Expect(sealed).To(BeFalse())
-			return prepared, err
+			return starter.PrepareTask(ctx, build.ID(), validate, spec)
 		}
 
 		It("routes a published result to its input as a Hangar tree", func() {
@@ -299,54 +315,91 @@ var _ = Describe("an in-Run result input", func() {
 	// sealed it is reported sealed and never admitted again; the later task
 	// reads its result from Hangar, so nothing needs its container.
 	Describe("the producer on a re-driven build", func() {
-		var authorSpec runtime.ContainerSpec
-
-		BeforeEach(func() {
-			// Admission past the sealed check is refused: this output starter
-			// has no node source.
-			starter.Output = &runs.OutputStarter{}
-			authorSpec = runtime.ContainerSpec{TeamID: defaultTeam.ID(), Type: db.ContainerTypeTask, Dir: "/tmp/build/author"}
-		})
-
-		prepareAuthor := func() (bool, error) {
-			_, sealed, err := starter.PrepareTask(ctx, build.ID(), author, authorSpec)
-			return sealed, err
+		sealed := func() bool {
+			GinkgoHelper()
+			sealed, err := starter.TaskSealed(ctx, build.ID(), author)
+			Expect(err).NotTo(HaveOccurred())
+			return sealed
 		}
 
 		It("is sealed once its capture is publishing, and the later task still reads its result", func() {
 			seal()
-			Expect(prepareAuthor()).To(BeTrue())
+			Expect(sealed()).To(BeTrue())
 			Expect(publish()).To(Succeed())
-			Expect(prepareAuthor()).To(BeTrue())
-			prepared, sealed, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
+			Expect(sealed()).To(BeTrue())
+			prepared, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(sealed).To(BeFalse())
 			Expect(prepared.Inputs[0].HangarTree).To(PointTo(Equal(publishedRef())))
 		})
 
-		It("is admitted as before while it has no capture, or a pending one", func() {
-			sealed, err := prepareAuthor()
-			Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
-			Expect(sealed).To(BeFalse())
+		It("is not sealed while it has no capture, or a pending one", func() {
+			Expect(sealed()).To(BeFalse())
 			start()
-			sealed, err = prepareAuthor()
-			Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
-			Expect(sealed).To(BeFalse())
+			Expect(sealed()).To(BeFalse())
+		})
+
+		It("is not sealed once its capture was discarded", func() {
+			start()
+			Expect(inTx(func(tx db.Tx) error {
+				_, err := captures.CASPendingToDiscarded(ctx, tx, capture.Key(), output.DiscardProducerFailed)
+				return err
+			})).To(Succeed())
+			Expect(sealed()).To(BeFalse())
 		})
 
 		It("is not sealed once its capture failed", func() {
 			seal()
 			Expect(fail()).To(Succeed())
-			sealed, err := prepareAuthor()
-			Expect(err).To(MatchError(atc.ErrRunResultsUnavailable))
-			Expect(sealed).To(BeFalse())
+			Expect(sealed()).To(BeFalse())
+		})
+
+		// The capture start refuses a capture past pending; the node plane is
+		// never asked.
+		itIsRefusedWhenPrepared := func() {
+			GinkgoHelper()
+			starter.Output = runs.NewOutputStarter(dbConn, runFactory, refusingOutputSource{}, time.Hour)
+			authorSpec := runtime.ContainerSpec{
+				TeamID: defaultTeam.ID(), Type: db.ContainerTypeTask, Dir: "/tmp/build/author",
+				Outputs: runtime.OutputPaths{"change": "/tmp/build/author/change/"},
+			}
+			_, err := starter.PrepareTask(ctx, build.ID(), author, authorSpec)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err).To(MatchError(ContainSubstring("already past its start")))
+		}
+
+		It("is refused, not started again, if it is prepared anyway", func() {
+			seal()
+			itIsRefusedWhenPrepared()
+		})
+
+		It("is refused, not started again, once its capture failed", func() {
+			seal()
+			Expect(fail()).To(Succeed())
+			itIsRefusedWhenPrepared()
+		})
+
+		It("is refused, not started again, once its capture was discarded", func() {
+			start()
+			Expect(inTx(func(tx db.Tx) error {
+				_, err := captures.CASPendingToDiscarded(ctx, tx, capture.Key(), output.DiscardProducerFailed)
+				return err
+			})).To(Succeed())
+			itIsRefusedWhenPrepared()
+		})
+
+		It("is answered by the Run's start fence, not its capture, once the Run is cancelling", func() {
+			seal()
+			_, err := runFactory.RequestRunCancellation(ctx, load().RunID, "canceller", nil)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = starter.TaskSealed(ctx, build.ID(), author)
+			Expect(err).To(MatchError(db.ErrPipelineRunCancelling))
 		})
 	})
 
 	It("is admitted as a managed read of the published tree", func() {
 		seal()
 		Expect(publish()).To(Succeed())
-		prepared, _, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
+		prepared, err := starter.PrepareTask(ctx, build.ID(), validate, spec)
 		Expect(err).NotTo(HaveOccurred())
 
 		workers := db.NewWorkerFactory(dbConn, nil)

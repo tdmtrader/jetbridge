@@ -82,16 +82,25 @@ func (delegate *recordingTaskDelegate) FetchImage(
 }
 
 // runTaskPreparer answers what retained Run task preparation answers for a
-// producer, sealed when its capture already is.
+// producer, sealed when its capture already is. prepareErr refuses its
+// preparation; sealedByPrepare seals it once that has been asked.
 type runTaskPreparer struct {
-	sealed bool
-	calls  int
+	sealed          bool
+	sealedByPrepare bool
+	prepareErr      error
+	sealedCalls     int
+	calls           int
 }
 
-func (p *runTaskPreparer) PrepareTask(_ context.Context, _ int, plan atc.TaskPlan, spec runtime.ContainerSpec) (runtime.ContainerSpec, bool, error) {
+func (p *runTaskPreparer) TaskSealed(context.Context, int, atc.TaskPlan) (bool, error) {
+	p.sealedCalls++
+	return p.sealed || (p.sealedByPrepare && p.calls > 0), nil
+}
+
+func (p *runTaskPreparer) PrepareTask(_ context.Context, _ int, plan atc.TaskPlan, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
 	p.calls++
 	spec.RunTaskID = plan.TaskID
-	return spec, p.sealed, nil
+	return spec, p.prepareErr
 }
 
 func persistedFinishTasks(fixture *execDBFixture, build db.Build) []event.FinishTask {
@@ -830,19 +839,36 @@ var _ = Describe("TaskStep", func() {
 			It("runs, and registers none of its outputs as build artifacts", func() {
 				Expect(stepErr).NotTo(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
+				Expect(preparer.sealedCalls).To(Equal(1))
+				Expect(preparer.calls).To(Equal(1))
 				Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
 				Expect(repo.AsMap()).To(BeEmpty())
 			})
 
-			Context("when a re-driven build reaches it after its result was sealed", func() {
+			Context("when it declares no result", func() {
 				BeforeEach(func() {
-					preparer.sealed = true
+					taskPlan.RunResult = nil
 				})
 
-				It("finishes with the producer's successful exit without a worker, a container or a process", func() {
+				It("is prepared and run without asking whether it is sealed", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(preparer.sealedCalls).To(BeZero())
+					Expect(preparer.calls).To(Equal(1))
+					Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
+				})
+			})
+
+			Context("when a re-driven build reaches it after its result was sealed", func() {
+				itFinishesSealed := func() {
+					GinkgoHelper()
 					Expect(stepErr).NotTo(HaveOccurred())
 					Expect(stepOk).To(BeTrue())
-					Expect(preparer.calls).To(Equal(1))
+					Expect(preparer.sealedCalls).To(Equal(1))
+					Expect(preparer.calls).To(BeZero())
+					Expect(streamer.callCount).To(BeZero())
+					Expect(delegate.imageFetches).To(BeEmpty())
+					Expect(delegate.initializingCount).To(BeZero())
+					Expect(delegate.beforeSelectWorkerCount).To(BeZero())
 					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 					Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
 					Expect(repo.AsMap()).To(BeEmpty())
@@ -850,6 +876,82 @@ var _ = Describe("TaskStep", func() {
 					finished := persistedFinishTasks(fixture, dbBuild)
 					Expect(finished).To(HaveLen(1))
 					Expect(finished[0].ExitStatus).To(Equal(0))
+				}
+
+				BeforeEach(func() {
+					preparer.sealed = true
+				})
+
+				It("finishes with the producer's successful exit without a worker, a container or a process", func() {
+					itFinishesSealed()
+				})
+
+				Context("when its image fetch and a plain input would fail", func() {
+					BeforeEach(func() {
+						taskPlan.Config.ImageResource = &atc.ImageResource{Type: "docker", Source: atc.Source{"some": "source"}}
+						taskPlan.Config.Inputs = []atc.TaskInputConfig{{Name: "missing-input"}}
+						stepper = func(atc.Plan) exec.Step {
+							return stepFunc(func(context.Context, exec.RunState) (bool, error) {
+								return false, errors.New("image fetch must not run")
+							})
+						}
+					})
+
+					It("fetches no image and resolves no input", func() {
+						itFinishesSealed()
+						Expect(execBuildEventTypes(fixture, dbBuild)).NotTo(ContainElement(event.EventTypeImageGet))
+						Expect(execBuildEventTypes(fixture, dbBuild)).NotTo(ContainElement(event.EventTypeImageCheck))
+					})
+				})
+
+				Context("when its config is in a file that cannot be read", func() {
+					BeforeEach(func() {
+						taskPlan.ConfigPath = "missing-artifact/task.yml"
+					})
+
+					It("does not fetch its config", func() {
+						itFinishesSealed()
+					})
+				})
+			})
+
+			// A web restart re-drove the build while the producer's Pod ran:
+			// it was not sealed when asked, then exited and sealed, so its
+			// capture start refuses it.
+			Context("when its capture start is refused", func() {
+				var conflict error
+
+				BeforeEach(func() {
+					conflict = errors.New("Run producer capture is already past its start")
+					preparer.prepareErr = conflict
+				})
+
+				Context("because it sealed while the step was resolving", func() {
+					BeforeEach(func() {
+						preparer.sealedByPrepare = true
+					})
+
+					It("finishes with the producer's successful exit without a worker or a process", func() {
+						Expect(stepErr).NotTo(HaveOccurred())
+						Expect(stepOk).To(BeTrue())
+						Expect(preparer.sealedCalls).To(Equal(2))
+						Expect(preparer.calls).To(Equal(1))
+						Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+						Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+						Expect(execBuildLog(fixture, dbBuild, event.OriginSourceStdout)).To(ContainSubstring("result was sealed before the build was resumed"))
+						finished := persistedFinishTasks(fixture, dbBuild)
+						Expect(finished).To(HaveLen(1))
+						Expect(finished[0].ExitStatus).To(Equal(0))
+					})
+				})
+
+				Context("while it is still not sealed", func() {
+					It("returns the refusal", func() {
+						Expect(stepErr).To(Equal(conflict))
+						Expect(preparer.sealedCalls).To(Equal(2))
+						Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+						Expect(persistedFinishTasks(fixture, dbBuild)).To(BeEmpty())
+					})
 				})
 			})
 		})

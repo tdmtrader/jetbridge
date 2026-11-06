@@ -57,6 +57,9 @@ func ValidateTemplateConfig(config atc.Config) error {
 	if _, err := atc.RunTaskDeclarations(config); err != nil {
 		return err
 	}
+	if err := atc.ValidateRunResultOrder(config); err != nil {
+		return err
+	}
 	seenNames := map[string]struct{}{}
 	for _, schema := range config.Params {
 		if schema.Name == "" {
