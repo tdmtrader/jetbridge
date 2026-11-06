@@ -58,10 +58,8 @@ func sealAndPublish(in FinishWitnessed) (CaptureOutcome, error) {
 	}
 	outcome.Sealed = result
 
-	publication := source.publishRequest(result.Digest)
-	publication.Staged = result.Staged
 	published := source.Draft.Daemon.captureSettled("publish", "/capture/v1/publish",
-		source.Execution, publication)
+		source.Execution, source.publishRequest(result.Digest))
 	outcome.Answer = published
 	answer, err := decodeControl[hangaroutput.CapturePublishResult](published)
 	if err != nil {
