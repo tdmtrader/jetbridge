@@ -48,7 +48,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -431,7 +430,7 @@ func (objects liveDiskObjects) except(drop func(k8sruntime.Object) bool) liveDis
 
 func liveDiskIsDaemonObject(object k8sruntime.Object) bool {
 	switch o := object.(type) {
-	case *appsv1.DaemonSet, *corev1.ServiceAccount, *rbacv1.ClusterRole, *rbacv1.ClusterRoleBinding, *rbacv1.Role, *rbacv1.RoleBinding, *policyv1.PodDisruptionBudget:
+	case *appsv1.DaemonSet, *corev1.ServiceAccount, *rbacv1.ClusterRole, *rbacv1.ClusterRoleBinding, *rbacv1.Role, *rbacv1.RoleBinding:
 		return true
 	case *corev1.Service:
 		return strings.HasSuffix(o.Name, "-artifact-daemon")
@@ -520,7 +519,7 @@ func stripYAMLComments(doc []byte) []byte {
 // liveDiskApply creates each rendered object in the contract's namespace. It
 // accepts only the kinds these four templates render (the output plane adds a
 // namespaced Role and RoleBinding, the daemon's read of this node's task
-// pods, and the daemon's PodDisruptionBudget): a NetworkPolicy or anything
+// pods): a NetworkPolicy or anything
 // else appearing would change what the contract is proving, so it fails
 // rather than skipping it.
 func liveDiskApply(t *testing.T, ctx context.Context, client kubernetes.Interface, namespace string, objects liveDiskObjects) {
@@ -546,9 +545,6 @@ func liveDiskApply(t *testing.T, ctx context.Context, client kubernetes.Interfac
 		case *batchv1.Job:
 			o.Namespace = namespace
 			_, err = client.BatchV1().Jobs(namespace).Create(ctx, o, metav1.CreateOptions{})
-		case *policyv1.PodDisruptionBudget:
-			o.Namespace = namespace
-			_, err = client.PolicyV1().PodDisruptionBudgets(namespace).Create(ctx, o, metav1.CreateOptions{})
 		case *rbacv1.Role:
 			o.Namespace = namespace
 			_, err = client.RbacV1().Roles(namespace).Create(ctx, o, metav1.CreateOptions{})

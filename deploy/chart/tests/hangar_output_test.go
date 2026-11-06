@@ -822,8 +822,12 @@ func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
 		t.Errorf("%s has no NetworkPolicy", outputDaemonComponent)
 	}
 
-	if !hasObject(t, out, "PodDisruptionBudget", "-"+outputDaemonComponent) {
-		t.Error("the artifact daemon has no PodDisruptionBudget")
+	// No PodDisruptionBudget: policy/v1 can only compute maxUnavailable for a
+	// controller with a scale subresource, and a DaemonSet has none, so the
+	// budget sat in SyncFailed and Argo reported the release Degraded. The
+	// DaemonSet's rolling update already replaces one daemon at a time.
+	if hasObject(t, out, "PodDisruptionBudget", "-"+outputDaemonComponent) {
+		t.Error("the artifact daemon has a PodDisruptionBudget; a DaemonSet cannot back one")
 	}
 }
 

@@ -269,22 +269,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- if $base }}
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: {{ include "concourse.fullname" . }}-artifact-daemon
-  labels:
-    {{- include "concourse.commonLabels" . | nindent 4 }}
-    app.kubernetes.io/component: artifact-daemon
-spec:
-  # A node's held step directories and their step markers live on that node's
-  # disk and nowhere else, so evicting a daemon that serves the output plane is
-  # taking the only authority for its holds away. One at a time.
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: {{ include "concourse.name" . }}
-      app.kubernetes.io/component: artifact-daemon
-{{- end }}
