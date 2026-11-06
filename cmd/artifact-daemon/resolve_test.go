@@ -107,7 +107,7 @@ func TestResolveEndpoint_LocalRegistry(t *testing.T) {
 	destDir := destUnder(t, storagePath, "input")
 
 	// POST /resolve-batch
-	resolveBody := `{"key":"handle-a/out","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "handle-a/out", destDir)
 	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatalf("POST /resolve-batch: %v", err)
@@ -156,7 +156,7 @@ func TestResolveEndpoint_FilesystemFallback(t *testing.T) {
 	destDir := destUnder(t, storagePath, "resolved")
 
 	// POST /resolve-batch — should find via filesystem scan fallback.
-	resolveBody := `{"key":"handle-b/dir","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "handle-b/dir", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestResolveEndpoint_NotFound(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	destDir := destUnder(t, storagePath, "nope")
-	body := `{"key":"nonexistent","dest":"` + destDir + `"}`
+	body := resolveItem(t, "nonexistent", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -249,7 +249,7 @@ func TestResolveEndpoint_MultipleFiles(t *testing.T) {
 	resp.Body.Close()
 
 	destDir := destUnder(t, storagePath, "dest")
-	resolveBody := `{"key":"handle-c/result","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "handle-c/result", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestResolveEndpoint_RestrictivePermissionsBecomWorldReadable(t *testing.T) 
 	resp.Body.Close()
 
 	destDir := destUnder(t, storagePath, "dest-restricted")
-	resolveBody := `{"key":"handle-restricted/out","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "handle-restricted/out", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +340,7 @@ func TestResolveEndpoint_StartupScanThenResolve(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "legacy.txt"), []byte("old data"), 0644)
 
 	destDir := destUnder(t, storagePath, "legacy-dest")
-	body := `{"key":"old-handle/output","dest":"` + destDir + `"}`
+	body := resolveItem(t, "old-handle/output", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)

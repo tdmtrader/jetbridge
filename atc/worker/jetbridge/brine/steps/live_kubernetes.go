@@ -121,7 +121,7 @@ func newLiveRuntimeWorker(database JetbridgeDB, rec *brine.Recorder, podLimits .
 	if err != nil {
 		return WorkerReady{}, err
 	}
-	config := jetbridge.NewConfig(cluster.Namespace, "")
+	config := brineConfig(cluster.Namespace, "")
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 20*time.Second, 20*time.Second
 	executor := jetbridge.NewSPDYExecutor(cluster.Clientset, cluster.Config)
 	ready := WorkerReady{DB: database, DBWorker: worker, Ctx: ctx,

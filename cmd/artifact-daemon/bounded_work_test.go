@@ -36,10 +36,12 @@ func TestBoundedWork_JSONBodyCapDiscriminates(t *testing.T) {
 	}
 
 	post := func(padKiB int) int {
+		dest := destUnder(t, storagePath, fmt.Sprintf("cap-%d", padKiB))
 		body, _ := json.Marshal(map[string]string{
-			"key":  "cap/out",
-			"dest": destUnder(t, storagePath, fmt.Sprintf("cap-%d", padKiB)),
-			"pad":  string(bytes.Repeat([]byte("a"), padKiB<<10)),
+			"key":        "cap/out",
+			"dest":       dest,
+			"capability": capabilityFor(t, "cap/out", dest),
+			"pad":        string(bytes.Repeat([]byte("a"), padKiB<<10)),
 		})
 		resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 		if err != nil {
@@ -99,8 +101,7 @@ func TestBoundedWork_ArtifactStreamingIsNotCapped(t *testing.T) {
 func TestBoundedWork_OrdinaryBatchStillWorks(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
-	type item struct{ Key, Dest string }
-	var list []item
+	var list []batchItem
 	for i := 0; i < 4; i++ {
 		src := filepath.Join(storagePath, "steps", fmt.Sprintf("ok-%d", i), "out")
 		if err := os.MkdirAll(src, 0o755); err != nil {
@@ -109,7 +110,7 @@ func TestBoundedWork_OrdinaryBatchStillWorks(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte(fmt.Sprint(i)), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		list = append(list, item{fmt.Sprintf("ok-%d/out", i), destUnder(t, storagePath, fmt.Sprintf("ok-dest-%d", i))})
+		list = append(list, signedItem(t, fmt.Sprintf("ok-%d/out", i), destUnder(t, storagePath, fmt.Sprintf("ok-dest-%d", i))))
 	}
 
 	body, _ := json.Marshal(map[string]any{"items": list})
@@ -167,6 +168,7 @@ func TestBoundedWork_ConcurrentResolvesToSameDestAllSucceed(t *testing.T) {
 			defer wg.Done()
 			body, _ := json.Marshal(map[string]string{
 				"key": fmt.Sprintf("race-%d/out", i), "dest": dest,
+				"capability": capabilityFor(t, fmt.Sprintf("race-%d/out", i), dest),
 			})
 			resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 			if err != nil {

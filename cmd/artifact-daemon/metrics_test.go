@@ -49,7 +49,7 @@ func TestMetricsEndpoint_RecordsResolve(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "input")
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json",
-		strings.NewReader(`{"items":[{"key":"handle-m/out","dest":"`+destDir+`"}`+`]}`))
+		strings.NewReader(`{"items":[`+resolveItem(t, "handle-m/out", destDir)+`]}`))
 	if err != nil {
 		t.Fatalf("POST /resolve-batch: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestMetricsEndpoint_RecordsNotFound(t *testing.T) {
 
 	destDir := destUnder(t, storagePath, "input")
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json",
-		strings.NewReader(`{"items":[{"key":"does-not-exist","dest":"`+destDir+`"}`+`]}`))
+		strings.NewReader(`{"items":[`+resolveItem(t, "does-not-exist", destDir)+`]}`))
 	if err != nil {
 		t.Fatalf("POST /resolve-batch: %v", err)
 	}

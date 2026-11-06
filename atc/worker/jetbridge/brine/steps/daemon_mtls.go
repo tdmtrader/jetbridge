@@ -168,6 +168,8 @@ func (p MTLSPlan) config(port int, cert, key, ca string) jetbridge.Config {
 		ArtifactDaemonTLSCert:    cert,
 		ArtifactDaemonTLSKey:     key,
 		ArtifactDaemonTLSCACert:  ca,
+
+		ArtifactDaemonResolveCapabilityKey: brineResolveKey,
 	}
 }
 

@@ -83,7 +83,7 @@ func checkRunManagedReadBudget(in RunInputAdmission, rec *brine.Recorder, res br
 	const operationTimeout = 15 * time.Minute
 	publication := in.Source
 	publication.Start.Daemon.Output.cmd.Args = append(publication.Start.Daemon.Output.cmd.Args, "--output-timeout=15m")
-	config := jetbridge.NewConfig("default", "")
+	config := brineConfig("default", "")
 	config.OutputOperationTimeout = operationTimeout
 	config.PodStartupTimeout = 3 * time.Minute
 	config.PodSchedulingTimeout = 5 * time.Minute

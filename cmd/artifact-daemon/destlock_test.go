@@ -123,7 +123,7 @@ func TestResolveSem_BoundsBatchRequests(t *testing.T) {
 		}
 		ts := httptest.NewServer(s.Handler())
 		t.Cleanup(ts.Close)
-		return s, ts, dest, `{"key":"sem/out","dest":"` + dest + `"}`
+		return s, ts, dest, resolveItem(t, "sem/out", dest)
 	}
 
 	post := func(ctx context.Context, url, body string) (*http.Response, error) {
@@ -197,7 +197,7 @@ func TestCopyArtifact_AbortsOnDeadContext(t *testing.T) {
 // newServerT is the in-package equivalent of newDaemonServer.
 func newServerT(t *testing.T, logger lager.Logger, storagePath, nodeName string) *Server {
 	t.Helper()
-	srv, err := NewServer(logger, storagePath, nodeName)
+	srv, err := NewServer(logger, storagePath, nodeName, testResolveKey)
 	if err != nil {
 		t.Fatalf("newServerT(t, %q): %v", storagePath, err)
 	}

@@ -205,7 +205,7 @@ func (in LiveTaskPlan) interrupt(rec *brine.Recorder, failure string) (ProcessOu
 	if err != nil {
 		return ProcessOutcome{}, err
 	}
-	config := jetbridge.NewConfig(cluster.Namespace, "")
+	config := brineConfig(cluster.Namespace, "")
 	config.PodStartupTimeout = time.Minute
 	config.PodSchedulingTimeout = time.Minute
 	client, err := kubernetes.NewForConfig(trace.config(cluster.Config))

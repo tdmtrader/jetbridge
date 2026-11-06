@@ -15,8 +15,14 @@ type batchRequest struct {
 }
 
 type batchItem struct {
-	Key  string `json:"key"`
-	Dest string `json:"dest"`
+	Key        string `json:"key"`
+	Dest       string `json:"dest"`
+	Capability string `json:"capability,omitempty"`
+}
+
+// signedItem is a batch item carrying the capability the web would sign for it.
+func signedItem(t testing.TB, key, dest string) batchItem {
+	return batchItem{Key: key, Dest: dest, Capability: capabilityFor(t, key, dest)}
 }
 
 type batchResponse struct {
@@ -44,8 +50,8 @@ func TestResolveBatch_HappyPath(t *testing.T) {
 
 	body, _ := json.Marshal(batchRequest{
 		Items: []batchItem{
-			{Key: "handle-a/output", Dest: destA},
-			{Key: "handle-b/output", Dest: destB},
+			signedItem(t, "handle-a/output", destA),
+			signedItem(t, "handle-b/output", destB),
 		},
 	})
 
@@ -116,8 +122,8 @@ func TestResolveBatch_PartialFailure(t *testing.T) {
 
 	body, _ := json.Marshal(batchRequest{
 		Items: []batchItem{
-			{Key: "exists/output", Dest: destGood},
-			{Key: "missing/output", Dest: destBad},
+			signedItem(t, "exists/output", destGood),
+			signedItem(t, "missing/output", destBad),
 		},
 	})
 
@@ -185,8 +191,8 @@ func TestResolveBatch_HardFailureOutranksAMiss(t *testing.T) {
 
 	body, _ := json.Marshal(batchRequest{
 		Items: []batchItem{
-			{Key: "absent/output", Dest: destUnder(t, storagePath, "miss")},
-			{Key: "present/output", Dest: unwritable},
+			signedItem(t, "absent/output", destUnder(t, storagePath, "miss")),
+			signedItem(t, "present/output", unwritable),
 		},
 	})
 
@@ -296,8 +302,8 @@ func TestResolveBatch_RefusalIs422AndOutranksAMiss(t *testing.T) {
 
 	body, _ := json.Marshal(batchRequest{
 		Items: []batchItem{
-			{Key: "absent/output", Dest: destUnder(t, storagePath, "miss")},
-			{Key: "venv-build/output", Dest: destUnder(t, storagePath, "refused")},
+			signedItem(t, "absent/output", destUnder(t, storagePath, "miss")),
+			signedItem(t, "venv-build/output", destUnder(t, storagePath, "refused")),
 		},
 	})
 

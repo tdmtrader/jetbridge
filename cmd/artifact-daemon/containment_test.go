@@ -456,7 +456,7 @@ func TestPeerFetch_ConcurrentFetchesIntoOneDestination(t *testing.T) {
 	defer ts.Close()
 
 	destDir := destUnder(t, storagePath, "shared-dest")
-	body := `{"key":"containment-key","dest":"` + destDir + `"}`
+	body := resolveItem(t, "containment-key", destDir)
 
 	const concurrent = 8
 	var wg sync.WaitGroup

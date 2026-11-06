@@ -88,7 +88,7 @@ func routeWithDrops(address, target string, dropFirst int, alwaysDrop bool) (net
 func (r *RemoteArtifact) daemon(rec *brine.Recorder) (*jetbridge.DaemonSetVolume, error) {
 	if r.Forgotten {
 		return jetbridge.NewDaemonSetVolume(r.Key, r.Key, "k8s-worker-1", nil, "",
-			jetbridge.NewConfig("", ""), nil), nil
+			brineConfig("", ""), nil), nil
 	}
 	if !filepath.IsLocal(r.Key) || !filepath.IsLocal(r.FileName) {
 		return nil, fmt.Errorf("artifact key and member must stay inside the owned daemon root")

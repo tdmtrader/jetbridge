@@ -323,6 +323,9 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--pod-terminations-dir", filepath.Join(dir, "terminations"),
 		"--capture-seal-wait", "30s",
 		"--hangar-key", keyFile,
+		// Every daemon requires a resolve key; nothing here resolves, and the
+		// two MACs are domain-separated, so the one file serves both.
+		"--resolve-capability-key", keyFile,
 		"--execution-control",
 		"--node-uid", harnessNode,
 		"--storage-path", filepath.Join(dir, "storage"),

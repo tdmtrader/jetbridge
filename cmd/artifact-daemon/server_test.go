@@ -6,6 +6,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	"github.com/concourse/concourse/artifactcap"
+	"github.com/concourse/concourse/artifactwire"
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
 
@@ -1021,7 +1024,7 @@ func TestResolve_TouchesStepDirSoSweeperSpares(t *testing.T) {
 
 	// Resolve the artifact — this read must refresh the handle dir mtime.
 	dest := destUnder(t, storagePath, "dest")
-	body := strings.NewReader(`{"items":[{"key":"old-handle/output","dest":"` + dest + `"}]}`)
+	body := strings.NewReader(`{"items":[` + resolveItem(t, "old-handle/output", dest) + `]}`)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", body)
 	if err != nil {
 		t.Fatalf("POST /resolve-batch: %v", err)
@@ -1107,9 +1110,36 @@ func destUnder(t *testing.T, storagePath, name string) string {
 // failure mode.
 func newDaemonServer(t *testing.T, logger lager.Logger, storagePath, nodeName string) *daemon.Server {
 	t.Helper()
-	srv, err := daemon.NewServer(logger, storagePath, nodeName)
+	srv, err := daemon.NewServer(logger, storagePath, nodeName, testResolveKey)
 	if err != nil {
 		t.Fatalf("NewServer(%q): %v", storagePath, err)
 	}
 	return srv
+}
+
+// testResolveKey is the resolve capability key every test daemon is started
+// with; capabilityFor signs with it as the web does, and resolveItem is one
+// /resolve-batch item carrying that capability.
+var testResolveKey = []byte("0123456789abcdef0123456789abcdef")
+
+func capabilityFor(t testing.TB, key, dest string) string {
+	t.Helper()
+	signer, err := artifactcap.NewSigner(testResolveKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := signer.SignResolve(key, dest, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capability
+}
+
+func resolveItem(t testing.TB, key, dest string) string {
+	t.Helper()
+	item, err := json.Marshal(artifactwire.ResolveRequest{Key: key, Dest: dest, Capability: capabilityFor(t, key, dest)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(item)
 }

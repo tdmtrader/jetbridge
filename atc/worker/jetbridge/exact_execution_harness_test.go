@@ -173,6 +173,9 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--output-prefix", "harness/one",
 		"--output-tenant", "harness",
 		"--hangar-key", keyFile,
+		// Every daemon requires a resolve key; nothing here resolves, and the
+		// two MACs are domain-separated, so the one file serves both.
+		"--resolve-capability-key", keyFile,
 		"--execution-control",
 		"--node-uid", harnessNodeUID,
 		"--storage-path", filepath.Join(dir, "storage"),

@@ -200,7 +200,7 @@ func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactS
 	main := &pod.Spec.Containers[0]
 	main.Ports = []corev1.ContainerPort{{Name: "artifact-http", ContainerPort: int32(internalPort), HostPort: int32(port), HostIP: d.nodeIP, Protocol: corev1.ProtocolTCP}}
 	main.Command = append([]string{"sh", "-ec", "while [ ! -f /opt/brine/ready ]; do sleep 0.1; done; exec /opt/brine/artifact-daemon \"$@\"", "start-owned-daemon",
-		"--port", strconv.Itoa(internalPort), "--storage-path", s.root}, args...)
+		"--port", strconv.Itoa(internalPort), "--storage-path", s.root, "--resolve-capability-key", "/opt/brine/resolve.key"}, args...)
 	main.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("128Mi")
 	main.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("64Mi")
 	main.Resources.Limits[corev1.ResourceCPU] = resource.MustParse("250m")
@@ -235,6 +235,9 @@ func launchLiveDaemon(ctx context.Context, rec *brine.Recorder, s *liveArtifactS
 	fields := strings.Fields(checksum)
 	if len(fields) != 2 || fields[0] != d.binarySHA || fields[1] != liveDaemonExecutable {
 		return nil, fmt.Errorf("daemon upload checksum mismatch: %q", checksum)
+	}
+	if _, err := s.exec(ctx, ready.Name, []string{"sh", "-ec", "cat > /opt/brine/resolve.key"}, bytes.NewReader(brineResolveKey)); err != nil {
+		return nil, err
 	}
 	if _, err := s.exec(ctx, ready.Name, []string{"touch", "/opt/brine/ready"}, nil); err != nil {
 		return nil, err

@@ -87,7 +87,7 @@ func (in SidecarPlan) run(rec *brine.Recorder) (SidecarLogs, error) {
 	if err != nil {
 		return SidecarLogs{}, err
 	}
-	config := jetbridge.NewConfig(cluster.Namespace, "")
+	config := brineConfig(cluster.Namespace, "")
 	config.PodStartupTimeout = time.Minute
 	config.PodSchedulingTimeout = time.Minute
 	trace := &execObservation{}

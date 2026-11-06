@@ -32,11 +32,12 @@ import (
 
 func testDaemonConfig() Config {
 	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/artifact-store",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/artifact-store",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
 	}
 }
 

@@ -178,7 +178,7 @@ func TestRegister_ThenResolve_FullFlow(t *testing.T) {
 
 	// Resolve should find it via registry (method=registry), not filesystem.
 	destDir := destUnder(t, storagePath, "resolved")
-	resolveBody := `{"key":"reg-handle/output","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "reg-handle/output", destDir)
 	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestRegister_DuplicateOverwrites(t *testing.T) {
 
 	// Resolve should use the second registration.
 	destDir := destUnder(t, storagePath, "dup-dest")
-	resolveBody := `{"key":"dup-key","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "dup-key", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestResolve_AtomicCopy_OverwritesStaleDestination(t *testing.T) {
 	os.WriteFile(filepath.Join(destDir, "result.txt"), []byte("stale-data"), 0444) // read-only
 
 	// Resolve should succeed despite the stale destination.
-	resolveBody := `{"key":"atomic-handle/output","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "atomic-handle/output", destDir)
 	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +360,7 @@ func TestResolve_PeerFallback_EndToEnd(t *testing.T) {
 
 	// Resolve via local daemon - should fall back to peer.
 	destDir := destUnder(t, localStorage, "peer-resolved")
-	resolveBody := `{"key":"peer-handle/result","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "peer-handle/result", destDir)
 	resp, err := http.Post(localTS.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +408,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 
 	// First resolve: filesystem fallback.
 	destDir1 := destUnder(t, storagePath, "dest1")
-	body := `{"key":"auto-reg/output","dest":"` + destDir1 + `"}`
+	body := resolveItem(t, "auto-reg/output", destDir1)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestResolve_FilesystemFallback_AutoRegisters(t *testing.T) {
 
 	// Second resolve: should use registry (auto-registered by first resolve).
 	destDir2 := destUnder(t, storagePath, "dest2")
-	body = `{"key":"auto-reg/output","dest":"` + destDir2 + `"}`
+	body = resolveItem(t, "auto-reg/output", destDir2)
 	resp, err = http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +467,7 @@ func TestResolve_ResponseIncludesStructuredFields(t *testing.T) {
 	resp.Body.Close()
 
 	destDir := destUnder(t, storagePath, "struct-dest")
-	resolveBody := `{"key":"struct-handle/out","dest":"` + destDir + `"}`
+	resolveBody := resolveItem(t, "struct-handle/out", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+resolveBody+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -501,7 +501,7 @@ func TestResolve_NotFound_IncludesStructuredFields(t *testing.T) {
 	ts, storagePath := setupServer(t)
 
 	destDir := destUnder(t, storagePath, "nf-dest")
-	body := `{"key":"nonexistent-key","dest":"` + destDir + `"}`
+	body := resolveItem(t, "nonexistent-key", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)

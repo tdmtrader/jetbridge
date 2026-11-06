@@ -139,7 +139,8 @@ func (p ClosingCachePlan) cacheEndpoints(withPeer bool) *discoveryv1.EndpointSli
 func (p ClosingCachePlan) closingConfig() jetbridge.Config {
 	r := p.CacheRuntime
 	return jetbridge.Config{Namespace: r.namespace, ArtifactDaemonService: "artifact-daemon",
-		ArtifactDaemonPort: r.port, ArtifactDaemonHostPath: r.daemons[0].Root}
+		ArtifactDaemonPort: r.port, ArtifactDaemonHostPath: r.daemons[0].Root,
+		ArtifactDaemonResolveCapabilityKey: brineResolveKey}
 }
 
 func (p ClosingCachePlan) reclaimCache(key string) error {

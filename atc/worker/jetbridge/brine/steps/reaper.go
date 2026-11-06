@@ -50,7 +50,7 @@ func ReaperDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return ReaperReady{}, fmt.Errorf("create reaper namespace: %w", err)
 				}
-				cfg := jetbridge.NewConfig(ns.Name, "")
+				cfg := brineConfig(ns.Name, "")
 
 				worker, err := database.PersistNamedWorker("k8s-" + ns.Name)
 				if err != nil {

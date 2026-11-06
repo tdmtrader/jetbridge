@@ -188,10 +188,6 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
 		k8sCfg.ResourceTypeImages = imageresolver.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
 	}
-
-	if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
-		return jetbridge.Config{}, err
-	}
 	return k8sCfg, nil
 }
 
@@ -294,12 +290,8 @@ func (cmd *RunCommand) workerFactory(logger lager.Logger, dbConn db.DbConn, lock
 }
 
 // loadArtifactResolveCapabilityKey reads the shared signing key once and caches
-// it. Empty path means no signing, which the daemon accepts only if it too was
-// started without a key.
+// it. validateK8sRuntime has already refused a missing path.
 func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
-	if cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey == "" {
-		return nil, nil
-	}
 	cmd.artifactResolveCapabilityMu.Lock()
 	defer cmd.artifactResolveCapabilityMu.Unlock()
 	if len(cmd.artifactResolveCapabilityKey) != 0 {
@@ -307,7 +299,7 @@ func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
 	}
 	key, err := artifactcap.LoadKeyFile(cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("--kubernetes-artifact-daemon-resolve-capability-key: %w", err)
 	}
 	cmd.artifactResolveCapabilityKey = append([]byte(nil), key...)
 	return append([]byte(nil), key...), nil

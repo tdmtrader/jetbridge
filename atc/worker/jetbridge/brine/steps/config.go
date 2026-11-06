@@ -36,6 +36,14 @@ users:
     token: fake-token
 `
 
+// brineConfig is jetbridge.NewConfig signing with brineResolveKey, so every
+// resolve a brine worker builds is one a brine daemon accepts.
+func brineConfig(namespace, kubeconfigPath string) jetbridge.Config {
+	cfg := jetbridge.NewConfig(namespace, kubeconfigPath)
+	cfg.ArtifactDaemonResolveCapabilityKey = brineResolveKey
+	return cfg
+}
+
 func ConfigDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
@@ -46,7 +54,7 @@ func ConfigDefinitions() []brine.StepDefinition {
 				if !ok {
 					return ResolvedConfig{}, fmt.Errorf("expected a namespace parameter")
 				}
-				return ResolvedConfig{Config: jetbridge.NewConfig(ns, "")}, nil
+				return ResolvedConfig{Config: brineConfig(ns, "")}, nil
 			},
 		),
 
@@ -58,7 +66,7 @@ func ConfigDefinitions() []brine.StepDefinition {
 				if !ok {
 					return ResolvedConfig{}, fmt.Errorf("expected a namespace and a kubeconfig path")
 				}
-				return ResolvedConfig{Config: jetbridge.NewConfig(ns, path)}, nil
+				return ResolvedConfig{Config: brineConfig(ns, path)}, nil
 			},
 		),
 
@@ -76,7 +84,7 @@ func ConfigDefinitions() []brine.StepDefinition {
 				if err := os.WriteFile(path, []byte(testKubeconfig), 0o600); err != nil {
 					return ResolvedConfig{}, fmt.Errorf("write kubeconfig: %w", err)
 				}
-				return ResolvedConfig{Config: jetbridge.NewConfig("my-namespace", path)}, nil
+				return ResolvedConfig{Config: brineConfig("my-namespace", path)}, nil
 			},
 		),
 

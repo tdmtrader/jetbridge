@@ -141,9 +141,7 @@ type RunCommand struct {
 		ArtifactHelperImage                string        `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
 		ArtifactDaemonPort                 int           `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
 		ArtifactDaemonHostPath             string        `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
-		ArtifactDaemonResolveCapabilityKey string        `long:"kubernetes-artifact-daemon-resolve-capability-key" description:"Path to the raw 32-byte key used to authorize artifact resolve operations. The artifact daemon must be started with the same key."`
-		// accepted and ignored; remove after the next release — the chart stops rendering it in this change
-		ArtifactDaemonResolveCapabilityTTL time.Duration `long:"kubernetes-artifact-daemon-resolve-capability-ttl" default:"2h" description:"Accepted and ignored; capability expiry is derived from pod timeouts."`
+		ArtifactDaemonResolveCapabilityKey string        `long:"kubernetes-artifact-daemon-resolve-capability-key" description:"Path to the raw 32-byte key every artifact resolve capability is signed with. Required with --kubernetes-namespace; the artifact daemon must be started with the same key."`
 		ArtifactDaemonService              string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
 		ArtifactDaemonNamespace            string        `long:"kubernetes-artifact-daemon-namespace" description:"Namespace the artifact daemon's Service, EndpointSlices and server certificate live in. Empty means --kubernetes-namespace."`
 		ArtifactDaemonTLSCert              string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
@@ -516,6 +514,10 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 		cmd.Kubernetes.ArtifactDaemonTLSCACert,
 	); err != nil {
 		return err
+	}
+	if cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey == "" {
+		return errors.New("--kubernetes-artifact-daemon-resolve-capability-key is required when --kubernetes-namespace is set: " +
+			"the artifact daemon refuses a resolve that does not carry a capability signed with it")
 	}
 	if err := cmd.validateHangarKey(); err != nil {
 		return err

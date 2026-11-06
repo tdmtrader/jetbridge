@@ -229,8 +229,11 @@ func peerResolveDaemon(res brine.Resources, rec *brine.Recorder, key, content st
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return DaemonPlan{}, err
 	}
-	status, body, err := local.request(ctx, http.MethodPost, "/resolve-batch",
-		fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, dest))
+	requestBody, err := signedResolveBatch(key, dest)
+	if err != nil {
+		return DaemonPlan{}, err
+	}
+	status, body, err := local.request(ctx, http.MethodPost, "/resolve-batch", requestBody)
 	if err != nil || status != http.StatusOK {
 		return DaemonPlan{}, fmt.Errorf("real peer resolve must succeed: status %d, error %v, body %s", status, err, abbrev(string(body)))
 	}

@@ -105,7 +105,7 @@ func capturedServer(t *testing.T) (*Server, string) {
 	t.Helper()
 
 	storage := capturedNode(t)
-	server, err := NewServer(lagertest.NewTestLogger("capture-held"), storage, "node-1")
+	server, err := NewServer(lagertest.NewTestLogger("capture-held"), storage, "node-1", testResolveKey)
 	if err != nil {
 		t.Fatalf("building the server: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestResolveWillNotClearACaptureHeldDestinationAndStillClearsAnUnheldOne(t *
 	}
 
 	resolve := func(dest string) artifactwire.ResolveResponse {
-		body, err := json.Marshal(artifactwire.ResolveRequest{Key: "some-artifact", Dest: dest})
+		body, err := json.Marshal(artifactwire.ResolveRequest{Key: "some-artifact", Dest: dest, Capability: testCapability(t, "some-artifact", dest)})
 		if err != nil {
 			t.Fatalf("encoding: %v", err)
 		}
@@ -721,7 +721,7 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 		t.Fatalf("creating the held source: %v", err)
 	}
 
-	server, err := NewServer(lagertest.NewTestLogger("capture-held"), storage, "node-1")
+	server, err := NewServer(lagertest.NewTestLogger("capture-held"), storage, "node-1", testResolveKey)
 	if err != nil {
 		t.Fatalf("building the server: %v", err)
 	}

@@ -84,7 +84,7 @@ func newLiveArtifactNodes(ctx context.Context, rec *brine.Recorder) (*liveArtifa
 // node: the root exists on the fixture's nodes alone, and a scenario that
 // means to cross nodes says which.
 func (f *liveArtifactNodes) runtimeConfig(node string) jetbridge.Config {
-	cfg := jetbridge.NewConfig(f.cluster.Namespace, "")
+	cfg := brineConfig(f.cluster.Namespace, "")
 	cfg.ArtifactDaemonService = liveArtifactDaemonService
 	cfg.ArtifactDaemonHostPath, cfg.ArtifactDaemonPort = f.root, f.port
 	if s, err := f.store(node); err == nil {

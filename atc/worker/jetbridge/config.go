@@ -183,8 +183,8 @@ type Config struct {
 	ArtifactDaemonTLSCACert string
 
 	// ArtifactDaemonResolveCapabilityKey is the raw 32-byte key the ATC signs
-	// resolve capabilities with. The daemon verifies with the same key. Empty
-	// disables signing, and the daemon then accepts unsigned resolves.
+	// resolve capabilities with. The daemon verifies with the same key. It is
+	// required: the daemon refuses an unsigned resolve.
 	ArtifactDaemonResolveCapabilityKey []byte
 
 	// ArtifactDaemonTLSEnabled indicates whether TLS is enabled for daemon

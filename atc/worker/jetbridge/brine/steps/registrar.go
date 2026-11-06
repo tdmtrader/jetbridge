@@ -49,7 +49,7 @@ func RegistrarDefinitions() []brine.StepDefinition {
 				if err != nil && !apierrors.IsAlreadyExists(err) {
 					return RegistrarReady{}, fmt.Errorf("create registrar namespace: %w", err)
 				}
-				cfg := jetbridge.NewConfig(ns, "")
+				cfg := brineConfig(ns, "")
 				return RegistrarReady{
 					Namespace: ns,
 					Clientset: clientset,

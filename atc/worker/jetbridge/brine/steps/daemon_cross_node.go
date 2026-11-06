@@ -622,7 +622,10 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				// rather than the suite. The daemon's own peer fetch client
 				// allows three minutes.
 				client := &http.Client{Timeout: 90 * time.Second}
-				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, in.Dest)
+				body, err := signedResolveBatch(key, in.Dest)
+				if err != nil {
+					return in, err
+				}
 				resp, err := client.Post(in.Local.URL+"/resolve-batch", "application/json", strings.NewReader(body))
 				if err != nil {
 					in.Err, in.Status, in.Body = err, 0, ""

@@ -44,7 +44,7 @@ func (r Route) Pattern() string {
 	return r.Method + " " + r.Path
 }
 
-// The route table. Fourteen routes, the same fourteen the artifact daemon's mux
+// The route table. Twelve routes, the same twelve the artifact daemon's mux
 // registers, because it registers them from here. The output plane's routes
 // (the input publication in, the managed read out) are outputplane.Patterns,
 // mounted beside these.

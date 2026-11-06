@@ -25,16 +25,12 @@ import (
 // the secret and passed the flag, so the endpoint was open to anything that
 // could reach the port.
 func TestResolveCapability(t *testing.T) {
-	key := make([]byte, 32)
-	for i := range key {
-		key[i] = byte(i + 1)
-	}
-	signer, err := artifactcap.NewSigner(key)
+	signer, err := artifactcap.NewSigner(testResolveKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	setup := func(t *testing.T, withKey bool) (*httptest.Server, string, string) {
+	setup := func(t *testing.T) (*httptest.Server, string, string) {
 		t.Helper()
 		storage := t.TempDir()
 		s := newServerT(t, lagertest.NewTestLogger("cap"), storage, "node")
@@ -47,11 +43,6 @@ func TestResolveCapability(t *testing.T) {
 		}
 		if _, err := s.registry.Register("build-1/out", src); err != nil {
 			t.Fatal(err)
-		}
-		if withKey {
-			if err := s.SetResolveCapabilityKey(key); err != nil {
-				t.Fatal(err)
-			}
 		}
 		ts := httptest.NewServer(s.Handler())
 		t.Cleanup(ts.Close)
@@ -92,14 +83,14 @@ func TestResolveCapability(t *testing.T) {
 	}
 
 	t.Run("no capability is refused", func(t *testing.T) {
-		ts, k, dest := setup(t, true)
+		ts, k, dest := setup(t)
 		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest}}}); code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d", code)
 		}
 	})
 
 	t.Run("a valid capability is accepted", func(t *testing.T) {
-		ts, k, dest := setup(t, true)
+		ts, k, dest := setup(t)
 		code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest, Capability: valid(t, k, dest)}}})
 		if code != http.StatusOK {
 			t.Fatal("a validly signed capability was refused — the rule is satisfied by refusing everything")
@@ -113,7 +104,7 @@ func TestResolveCapability(t *testing.T) {
 	// a bearer token: one legitimate capability would authorize a copy of any
 	// artifact to any destination.
 	t.Run("a capability for another key is refused", func(t *testing.T) {
-		ts, k, dest := setup(t, true)
+		ts, k, dest := setup(t)
 		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{
 			Key: k, Dest: dest, Capability: valid(t, "other/key", dest),
 		}}}); code != http.StatusForbidden {
@@ -122,7 +113,7 @@ func TestResolveCapability(t *testing.T) {
 	})
 
 	t.Run("a capability for another dest is refused", func(t *testing.T) {
-		ts, k, dest := setup(t, true)
+		ts, k, dest := setup(t)
 		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{
 			Key: k, Dest: dest, Capability: valid(t, k, dest+"-elsewhere"),
 		}}}); code != http.StatusForbidden {
@@ -131,7 +122,7 @@ func TestResolveCapability(t *testing.T) {
 	})
 
 	t.Run("an expired capability is refused", func(t *testing.T) {
-		ts, k, dest := setup(t, true)
+		ts, k, dest := setup(t)
 		tok, err := signer.SignResolve(k, dest, time.Now().Add(-time.Minute))
 		if err != nil {
 			t.Fatal(err)
@@ -144,7 +135,7 @@ func TestResolveCapability(t *testing.T) {
 	// Every item is authorized BEFORE any is started, so a refused batch has no
 	// side effects — the same rule the containment checks follow.
 	t.Run("batch refuses if any item lacks a capability", func(t *testing.T) {
-		ts, k, dest := setup(t, true)
+		ts, k, dest := setup(t)
 		second := dest + "-2"
 		code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{
 			{Key: k, Dest: dest, Capability: valid(t, k, dest)},
@@ -158,22 +149,40 @@ func TestResolveCapability(t *testing.T) {
 		}
 	})
 
-	// Compatibility: a daemon started without the flag behaves exactly as this
-	// branch does today. main.go says so loudly at startup.
-	t.Run("no key configured leaves the route open", func(t *testing.T) {
-		ts, k, dest := setup(t, false)
-		if code := post(t, ts, "/resolve-batch", artifactwire.BatchResolveRequest{Items: []artifactwire.ResolveRequest{{Key: k, Dest: dest}}}); code != http.StatusOK {
-			t.Error("an unconfigured daemon refused a resolve; that breaks every existing deployment")
-		}
-	})
 }
 
 func TestResolveCapability_RejectsAShortKey(t *testing.T) {
-	s := newServerT(t, lagertest.NewTestLogger("cap"), t.TempDir(), "node")
-	if err := s.SetResolveCapabilityKey([]byte("too-short")); err == nil {
+	if _, err := NewServer(lagertest.NewTestLogger("cap"), t.TempDir(), "node", []byte("too-short")); err == nil {
 		t.Fatal("a short key was accepted; the daemon would run with a weak secret")
 	}
-	if s.resolveVerifier != nil {
-		t.Error("a rejected key still left a verifier installed")
+	if _, err := NewServer(lagertest.NewTestLogger("cap"), t.TempDir(), "node", nil); err == nil {
+		t.Fatal("a daemon without a resolve key started; its resolve route has no authentication")
 	}
+}
+
+// testResolveKey is the resolve capability key every in-package test daemon is
+// started with; testCapability signs as the web would.
+var testResolveKey = []byte("0123456789abcdef0123456789abcdef")
+
+func testCapability(t testing.TB, key, dest string) string {
+	t.Helper()
+	signer, err := artifactcap.NewSigner(testResolveKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := signer.SignResolve(key, dest, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+// resolveItem is one /resolve-batch item signed with testResolveKey.
+func resolveItem(t testing.TB, key, dest string) string {
+	t.Helper()
+	item, err := json.Marshal(artifactwire.ResolveRequest{Key: key, Dest: dest, Capability: testCapability(t, key, dest)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(item)
 }

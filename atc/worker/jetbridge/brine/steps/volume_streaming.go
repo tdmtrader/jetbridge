@@ -345,7 +345,7 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 				}
 				out.DaemonVolume = jetbridge.NewDaemonSetVolume(
 					"key", "runtime-handle", dbWorker.Name(), out.Volumes[0].DBVolume, "",
-					jetbridge.NewConfig("test-namespace", ""), nil)
+					brineConfig("test-namespace", ""), nil)
 				return out, nil
 			},
 		),

@@ -275,7 +275,7 @@ func (p *DaemonPlan) cluster(res brine.Resources, rec *brine.Recorder) (kubernet
 }
 
 func (p DaemonPlan) config() jetbridge.Config {
-	return jetbridge.Config{Namespace: p.Namespace, ArtifactDaemonPort: p.Port}
+	return jetbridge.Config{Namespace: p.Namespace, ArtifactDaemonPort: p.Port, ArtifactDaemonResolveCapabilityKey: brineResolveKey}
 }
 
 func (p DaemonPlan) daemonClient(cs kubernetes.Interface) *jetbridge.DaemonClient {

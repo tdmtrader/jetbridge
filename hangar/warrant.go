@@ -2,14 +2,16 @@ package hangar
 
 // The one warrant.
 //
-// Every authorization the node daemon verifies is a warrant: a short-lived,
-// signed, attenuated statement from the web about exactly one target. There is
-// one key (the Hangar key, a raw 32-byte secret the web signs with and every
-// daemon verifies against), one canonical encoding whose first field is the
-// purpose, one HMAC domain, and one signer and one verifier. A warrant minted
-// for one purpose is refused at every route of another, with ErrUnauthorized
-// and nothing more specific: a verifier that said which field failed would
-// tell a caller holding a forged token which byte to change next.
+// Every authorization the output plane verifies is a warrant: a short-lived,
+// signed, attenuated statement from the web about exactly one target. (A
+// resolve capability, which /resolve-batch verifies, is not a warrant; see
+// artifactcap.) There is one key (the Hangar key, a raw 32-byte secret the
+// web signs with and every daemon verifies against), one canonical encoding
+// whose first field is the purpose, one HMAC domain, and one signer and one
+// verifier. A warrant minted for one purpose is refused at every route of
+// another, with ErrUnauthorized and nothing more specific: a verifier that
+// said which field failed would tell a caller holding a forged token which
+// byte to change next.
 //
 // Three purposes:
 //

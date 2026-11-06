@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,9 @@ import (
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
+
+	"github.com/concourse/concourse/artifactcap"
+	"github.com/concourse/concourse/artifactwire"
 )
 
 // Runs the production artifact-daemon (with, for the Hangar fixtures, its
@@ -583,7 +587,11 @@ func inOwnProcessGroup(cmd *exec.Cmd) {
 // its own process group, and reports the handle plus that capture.
 func startDaemonProcess(bin, command, root, host, scheme string, port int, shared bool,
 	env []string, extraArgs []string) (*realDaemon, *daemonOutput, error) {
-	args := append(addressableArgs(port, root), extraArgs...)
+	keyFile, err := brineResolveKeyFile()
+	if err != nil {
+		return nil, nil, err
+	}
+	args := append(append(addressableArgs(port, root), "--resolve-capability-key", keyFile), extraArgs...)
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), env...)
 	// Both streams go to a bounded capture rather than to this process's own.
@@ -725,6 +733,43 @@ func (d *realDaemon) restart(ctx context.Context, client *http.Client) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// brineResolveKey is the resolve capability key every brine artifact daemon is
+// started with and every brine runtime config signs with: a daemon needs one
+// to start, and refuses a resolve that is not signed with it.
+var brineResolveKey = []byte("brine-resolve-capability-key-32b")
+
+// brineResolveKeyFile is brineResolveKey written once, under this process's
+// attributed root, for a daemon's --resolve-capability-key.
+var brineResolveKeyFile = sync.OnceValues(func() (string, error) {
+	dir, err := daemonTempDir("resolve-key")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "resolve.key")
+	return path, os.WriteFile(path, brineResolveKey, 0o600)
+})
+
+// signedResolveBatch is a /resolve-batch body for alternating key, dest
+// arguments, each item carrying the capability the web would sign for it with
+// brineResolveKey.
+func signedResolveBatch(keyDests ...string) (string, error) {
+	signer, err := artifactcap.NewSigner(brineResolveKey)
+	if err != nil {
+		return "", err
+	}
+	var batch artifactwire.BatchResolveRequest
+	for i := 0; i+1 < len(keyDests); i += 2 {
+		key, dest := keyDests[i], keyDests[i+1]
+		capability, err := signer.SignResolve(key, dest, time.Now().Add(time.Hour))
+		if err != nil {
+			return "", err
+		}
+		batch.Items = append(batch.Items, artifactwire.ResolveRequest{Key: key, Dest: dest, Capability: capability})
+	}
+	body, err := json.Marshal(batch)
+	return string(body), err
 }
 
 // addressableArgs is the artifact daemon's spelling of "listen on this port,
