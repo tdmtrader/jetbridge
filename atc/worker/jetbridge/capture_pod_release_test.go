@@ -15,12 +15,12 @@ package jetbridge
 // the evidence production's seal reads.
 //
 // Why the termination is bridged rather than read in-process: the daemon's
-// Kubernetes-backed answer (outputplane.NewNodePodTerminations) is "the Pod is
+// Kubernetes-backed answer (outputplane.NodePods.Terminated) is "the Pod is
 // gone from the node, or every container has terminated". Linking outputplane
 // here is forbidden (it is an output role package; architecture_test.go), and a
 // daemon process cannot read this test's fake API server. So the harness runs
 // the daemon in its standalone mode, and podGoneFromNode below asks the fake API
-// server the same question nodePodTerminations asks the real one, declaring the
+// server the same question NodePods.Terminated asks the real one, declaring the
 // termination file only when it answers yes. The seal completing is then the
 // daemon's own work, gated on nothing but the Pod having gone.
 
@@ -77,7 +77,7 @@ func (recorded *podDeletes) assertGraceful(t *testing.T) {
 	}
 }
 
-// podGoneFromNode is nodePodTerminations' "gone" half, asked of the fake API
+// podGoneFromNode is NodePods.Terminated's "gone" half, asked of the fake API
 // server: no Pod with this UID is scheduled to node.
 func podGoneFromNode(ctx context.Context, clientset *fake.Clientset, node string, uid types.UID) (bool, error) {
 	pods, err := clientset.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
@@ -305,7 +305,7 @@ func TestACaptureSelectedExecPodIsDeletedGracefullySoTheSealCompletes(t *testing
 		t.Fatalf("recovering the released step exec'd its command again (%d execs)", fixture.executor.count())
 	}
 
-	// The termination reaches the daemon the way nodePodTerminations would
+	// The termination reaches the daemon the way NodePods.Terminated would
 	// carry it: the Pod is gone from the node.
 	gone, err = podGoneFromNode(t.Context(), fixture.clientset, "node-1", releasePodUID)
 	if err != nil {
