@@ -33,8 +33,8 @@ type ResolveRequest struct {
 	Dest string `json:"dest"`
 
 	// Capability is a short-lived token bound to this exact Key and Dest,
-	// signed by the ATC with a key both sides share. Required whenever the
-	// daemon was started with --resolve-capability-key.
+	// signed by the ATC with a key both sides share. Required: the daemon
+	// refuses a resolve without one.
 	Capability string `json:"capability,omitempty"`
 }
 

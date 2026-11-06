@@ -25,7 +25,7 @@ import (
 // The derivation is what is at risk, so the derivation is what is asserted.
 func TestGuardKeys_ReaderAndSweeperAgree(t *testing.T) {
 	root := t.TempDir()
-	s, err := NewServer(lagertest.NewTestLogger("keys"), root, "node")
+	s, err := NewServer(lagertest.NewTestLogger("keys"), root, "node", testResolveKey)
 	if err != nil {
 		t.Fatal(err)
 	}

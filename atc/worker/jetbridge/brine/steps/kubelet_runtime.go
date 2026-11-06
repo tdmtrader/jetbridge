@@ -91,7 +91,7 @@ func disposableKubeletRuntime(ctx context.Context, rec *brine.Recorder, res brin
 	if address := daemonListenAddress(d.cmd.Args); address != "" {
 		return in, nil, fmt.Errorf("the artifact daemon holds only %s; the node's Pods dial it at %s", address, nodeIP)
 	}
-	in.Config = jetbridge.NewConfig(ns.Name, "")
+	in.Config = brineConfig(ns.Name, "")
 	in.Config.OutputPlaneEnabled = true
 	in.Config.ArtifactHelperImage = "busybox:1.37"
 	if err = outputPlaneConfig(&in.Config, d.URL, in.Start.Daemon.CertDir); err != nil {

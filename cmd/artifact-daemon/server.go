@@ -73,8 +73,7 @@ type Server struct {
 	// itself, so there is no ordering to get wrong and no name to out-think.
 	root *os.Root
 
-	// resolveVerifier authenticates the mTLS-exempt resolve route. nil
-	// means no key was configured and the route is unauthenticated.
+	// resolveVerifier authenticates the mTLS-exempt resolve route.
 	resolveVerifier *artifactcap.Verifier
 }
 
@@ -170,8 +169,13 @@ const maxJSONBodyBytes = 1 << 20
 // failure into a per-request failure and makes "every operation goes through
 // the handle" conditional on something having succeeded earlier; opening it in
 // Handler() cannot work because Mirror and Sweeper are built
-// outside it and need the same root.
-func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, error) {
+// outside it and need the same root. resolveKey is the raw resolve capability
+// key; a daemon without one cannot authorize a resolve, so it does not start.
+func NewServer(logger lager.Logger, storagePath, nodeName string, resolveKey []byte) (*Server, error) {
+	verifier, err := artifactcap.NewVerifier(resolveKey)
+	if err != nil {
+		return nil, fmt.Errorf("resolve capability key: %w", err)
+	}
 	root, err := os.OpenRoot(storagePath)
 	if err != nil {
 		return nil, fmt.Errorf("open storage root %q: %w", storagePath, err)
@@ -194,6 +198,8 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		resolveSem:  make(chan struct{}, maxConcurrentBatchResolves),
 		destLocks:   make(map[string]*destLock),
 		root:        root,
+
+		resolveVerifier: verifier,
 
 		// The classifier is always attached, and it is attached here rather
 		// than behind a flag on purpose: a node that gained an output plane
@@ -258,37 +264,17 @@ func (s *Server) Registry() *Registry {
 	return s.registry
 }
 
-// SetResolveCapabilityKey requires every resolve to carry a capability bound to
-// its exact key and destination.
+// authorizeResolve requires every resolve to carry a capability bound to its
+// exact key and destination, and fails CLOSED: a missing or unverifiable
+// capability is refused.
 //
-// /resolve-batch is mTLS-EXEMPT by design: the init container
-// dials the daemon by node IP, which cannot be a certificate SAN. This is
-// therefore the only authentication this route can have — and it takes a
-// caller-supplied dest that becomes a RemoveAll and a Rename.
-//
-// When no key is configured the route stays open, because that is how every
-// deployment without the flag behaves; main.go logs loudly in that case. The
-// chart arms it only when artifactDaemon.resolveCapability.existingSecret
-// names a Secret — deliberately, since the chart cannot generate a key that
-// survives a GitOps render — so an unconfigured deployment runs these two
-// routes unauthenticated. What must NOT depend on that switch is containment:
-// validateResolveDest refuses a destination that names the store's shape
-// whether or not a capability is required.
-func (s *Server) SetResolveCapabilityKey(key []byte) error {
-	v, err := artifactcap.NewVerifier(key)
-	if err != nil {
-		return err
-	}
-	s.resolveVerifier = v
-	return nil
-}
-
-// authorizeResolve fails CLOSED: once a key is configured, a missing or
-// unverifiable capability is refused rather than warned about.
+// /resolve-batch is mTLS-EXEMPT by design: the init container dials the
+// daemon by node IP, which cannot be a certificate SAN. The capability is
+// therefore the only authentication this route has — and it takes a
+// caller-supplied dest that becomes a RemoveAll and a Rename. Containment does
+// not rest on it: validateResolveDest refuses a destination that names the
+// store's shape before the capability is checked.
 func (s *Server) authorizeResolve(req artifactwire.ResolveRequest) bool {
-	if s.resolveVerifier == nil {
-		return true
-	}
 	if req.Capability == "" {
 		return false
 	}

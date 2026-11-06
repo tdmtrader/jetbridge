@@ -55,7 +55,7 @@ func TestResolve_LocalCopyLeavesATraversableDestination(t *testing.T) {
 	}
 
 	destDir := destUnder(t, storagePath, "perm-dest")
-	body := `{"key":"perm-handle/out","dest":"` + destDir + `"}`
+	body := resolveItem(t, "perm-handle/out", destDir)
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestResolve_BatchLeavesATraversableDestination(t *testing.T) {
 	}
 
 	destDir := destUnder(t, storagePath, "batch-perm-dest")
-	body, _ := json.Marshal(batchRequest{Items: []batchItem{{Key: "batch-perm/out", Dest: destDir}}})
+	body, _ := json.Marshal(batchRequest{Items: []batchItem{signedItem(t, "batch-perm/out", destDir)}})
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestResolve_PeerFetchLeavesATraversableDestination(t *testing.T) {
 	defer tsB.Close()
 
 	destDir := destUnder(t, storageB, "peer-perm-dest")
-	body := `{"key":"peer-perm/out","dest":"` + destDir + `"}`
+	body := resolveItem(t, "peer-perm/out", destDir)
 	resp, err := http.Post(tsB.URL+"/resolve-batch", "application/json", strings.NewReader(`{"items":[`+body+`]}`))
 	if err != nil {
 		t.Fatal(err)

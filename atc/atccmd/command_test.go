@@ -127,9 +127,21 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.NoError(err, "expected validation to pass when DaemonSet host path is set")
+}
+
+func (s *CommandSuite) TestK8sRuntimeRequiresTheResolveCapabilityKey() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	// ArtifactDaemonResolveCapabilityKey intentionally left empty.
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.Error(err, "expected validation to fail when K8s runtime is on and no resolve key is set")
+	s.Contains(err.Error(), "kubernetes-artifact-daemon-resolve-capability-key is required")
 }
 
 func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
@@ -231,6 +243,7 @@ func (s *CommandSuite) TestK8sRuntimeRefusesPartialDaemonTLSTriple() {
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 	cmd.Kubernetes.ArtifactDaemonTLSCert = "/etc/tls/client.crt"
 	// Key and CA cert intentionally left empty.
 
@@ -244,6 +257,7 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsCompleteDaemonTLSTriple() {
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 	cmd.Kubernetes.ArtifactDaemonTLSCert = "/etc/tls/client.crt"
 	cmd.Kubernetes.ArtifactDaemonTLSKey = "/etc/tls/client.key"
 	cmd.Kubernetes.ArtifactDaemonTLSCACert = "/etc/tls/ca.crt"
@@ -256,6 +270,7 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsNoDaemonTLSAtAll() {
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.NoError(err, "expected plaintext daemon traffic to remain a valid configuration")
@@ -357,6 +372,10 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			},
 			want: "artifact daemon's TLS is not configured",
 		},
+		"resolve capability key path": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "" },
+			want:      "kubernetes-artifact-daemon-resolve-capability-key",
+		},
 		"Hangar key path": {
 			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarKey = "" },
 			want:      "kubernetes-hangar-key",
@@ -376,6 +395,7 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			cmd := &atccmd.RunCommand{}
 			cmd.Kubernetes.Namespace = "concourse"
 			cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+			cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 			cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
 			cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
@@ -400,6 +420,7 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	enabled := &atccmd.RunCommand{}
 	enabled.Kubernetes.Namespace = "concourse"
 	enabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	enabled.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 	enabled.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
 	enabled.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
@@ -413,6 +434,7 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	disabled := &atccmd.RunCommand{}
 	disabled.Kubernetes.Namespace = "concourse"
 	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	disabled.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 	disabled.Kubernetes.HangarKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "a disabled output plane must not load or require the Hangar key")
 }
@@ -424,6 +446,7 @@ func (s *CommandSuite) TestHangarRuntimeRejectsWarrantTTLOutsideCoreBound() {
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.Namespace = "concourse"
 		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 		cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
 		cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
@@ -524,6 +547,7 @@ func (s *CommandSuite) TestTheOutputPlaneRequiresTheHangarKey() {
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.Namespace = "concourse"
 		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 		cmd.Kubernetes.OutputPlaneEnabled = true
 		cmd.Kubernetes.HangarKey = key
 		cmd.Kubernetes.HangarWarrantTTL = 15 * time.Minute
@@ -562,6 +586,7 @@ func (s *CommandSuite) TestTheOutputPlaneRequiresTheHangarKey() {
 	off := &atccmd.RunCommand{}
 	off.Kubernetes.Namespace = "concourse"
 	off.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	off.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 	off.Kubernetes.HangarKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(off))
 }
@@ -580,6 +605,7 @@ func (s *CommandSuite) TestCaptureAcceptsAnOperationTimeoutLongerThanAControlWar
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.Namespace = "concourse"
 		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/etc/concourse/resolve-capability/resolve.key"
 		cmd.Kubernetes.OutputPlaneEnabled = true
 		cmd.Kubernetes.OutputCaptureEnabled = true
 		cmd.Kubernetes.HangarKey = valid

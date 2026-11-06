@@ -304,7 +304,7 @@ func artifactNodeUnfit(node *corev1.Node) string {
 // so the pods are required there; on any other node their hostPath would
 // resolve to a root this fixture does not own.
 func (s *liveArtifactStore) runtimeConfig() jetbridge.Config {
-	cfg := jetbridge.NewConfig(s.cluster.Namespace, "")
+	cfg := brineConfig(s.cluster.Namespace, "")
 	s.pin(&cfg)
 	return cfg
 }

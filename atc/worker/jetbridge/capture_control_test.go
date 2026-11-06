@@ -31,11 +31,12 @@ import (
 
 func capturePodConfig(outputPlane bool) Config {
 	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactHelperImage:    "busybox:latest",
-		ArtifactDaemonPort:     7780,
-		OutputPlaneEnabled:     outputPlane,
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
+		ArtifactHelperImage:                "busybox:latest",
+		ArtifactDaemonPort:                 7780,
+		OutputPlaneEnabled:                 outputPlane,
 	}
 }
 

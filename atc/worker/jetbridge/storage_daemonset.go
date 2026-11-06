@@ -58,6 +58,7 @@ var _ StorageBackend = (*DaemonSetBackend)(nil)
 type DaemonSetBackend struct {
 	config          Config
 	resolveSigner   *artifactcap.Signer
+	resolveKeyErr   error
 	artifactLocator *ArtifactLocator
 	nodeIPResolver  *NodeIPResolver
 	daemonClient    *DaemonClient
@@ -68,21 +69,15 @@ type DaemonSetBackend struct {
 // probes and aliases through. A nil client is a backend that cannot reach the
 // daemons, not one waiting for a client to arrive.
 func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver, daemonClient *DaemonClient) *DaemonSetBackend {
-
-	// A configured key ALWAYS signs. The chart hands the key to the daemon and
-	// the web off the SAME value, so a key here means the daemon is requiring
-	// one — and quietly not signing is then not a safe degraded mode, it 403s
-	// every resolve on the node with no diagnostic.
-	// ValidateResolveCapabilityConfig rejects malformed keys at startup;
-	// expiry is derived from the effective pod timeouts and fetch budget.
-	var signer *artifactcap.Signer
-	if len(config.ArtifactDaemonResolveCapabilityKey) != 0 {
-		signer, _ = artifactcap.NewSigner(config.ArtifactDaemonResolveCapabilityKey)
-	}
+	// Every resolve is signed: the daemon refuses one without a capability.
+	// The web refuses a missing or malformed key at startup; a backend built
+	// without one refuses to build a resolve rather than build an unsigned one.
+	signer, err := artifactcap.NewSigner(config.ArtifactDaemonResolveCapabilityKey)
 
 	return &DaemonSetBackend{
 		config:          config,
 		resolveSigner:   signer,
+		resolveKeyErr:   err,
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
 		daemonClient:    daemonClient,
@@ -214,15 +209,14 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hostDestPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
 		}
 
-		item := artifactwire.ResolveRequest{Key: daemonKey, Dest: hostDestPath}
-		if b.resolveSigner != nil {
-			capability, err := b.resolveSigner.SignResolve(daemonKey, hostDestPath, resolveCapabilityExpiry(b.config))
-			if err != nil {
-				return nil, fmt.Errorf("sign resolve capability for %q: %w", daemonKey, err)
-			}
-			item.Capability = capability
+		if b.resolveKeyErr != nil {
+			return nil, fmt.Errorf("artifact resolve capability key: %w", b.resolveKeyErr)
 		}
-		items = append(items, item)
+		capability, err := b.resolveSigner.SignResolve(daemonKey, hostDestPath, resolveCapabilityExpiry(b.config))
+		if err != nil {
+			return nil, fmt.Errorf("sign resolve capability for %q: %w", daemonKey, err)
+		}
+		items = append(items, artifactwire.ResolveRequest{Key: daemonKey, Dest: hostDestPath, Capability: capability})
 
 		if !seenVolumes[volumeName] {
 			seenVolumes[volumeName] = true
@@ -865,18 +859,6 @@ func (b *DaemonSetBackend) bindProbed(cacheKey, workerName, ip string) runtime.V
 	vol.SetDaemonClient(b.daemonClient)
 
 	return vol
-}
-
-// ValidateResolveCapabilityConfig rejects a malformed signing key at startup.
-// No key means signing is off, matching a daemon started without one.
-func ValidateResolveCapabilityConfig(cfg Config) error {
-	if len(cfg.ArtifactDaemonResolveCapabilityKey) == 0 {
-		return nil
-	}
-	if _, err := artifactcap.NewSigner(cfg.ArtifactDaemonResolveCapabilityKey); err != nil {
-		return fmt.Errorf("artifact resolve capability key: %w", err)
-	}
-	return nil
 }
 
 // Capabilities are minted with the pod spec and must survive scheduling,

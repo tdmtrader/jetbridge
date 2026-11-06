@@ -32,7 +32,7 @@ func main() {
 	storagePath := flag.String("storage-path", "/var/concourse/artifacts", "Path to artifact storage directory")
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 25*time.Second, "How long SIGTERM may take: in-flight requests (an output-plane publish among them) drain first, then mirror jobs, within this. Keep it under the pod's terminationGracePeriodSeconds.")
-	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
+	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key that authorizes resolve operations. Required: every resolve carries a capability signed with it.")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
 	peerDiscovery := flag.Bool("peer-discovery", false, "Enable EndpointSlice peer discovery without node labeling; this also enables outbound mirroring (--mirror-replicas, default 2); --node-name continues to enable both")
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
@@ -138,7 +138,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := NewServer(logger, *storagePath, *nodeName)
+	server, err := NewServer(logger, *storagePath, *nodeName, resolveCapabilityKey)
 	if err != nil {
 		logger.Error("failed-to-open-storage-root", err, lager.Data{"path": *storagePath})
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -151,27 +151,6 @@ func main() {
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
 	server.Registry().SetAliasStore(aliasStore)
-
-	// /resolve-batch is mTLS-exempt by design, so this key is
-	// its only authentication. Absent, it is open to anything that can
-	// reach the port — said once, loudly, rather than left to be inferred.
-	if resolveCapabilityKey == nil {
-		logger.Info("resolve-unauthenticated", lager.Data{
-			"detail": "no --resolve-capability-key: POST /resolve-batch accepts any caller",
-		})
-	} else {
-		if err := server.SetResolveCapabilityKey(resolveCapabilityKey); err != nil {
-			// Unreachable while loadResolveCapabilityKey checks the same
-			// thing, but the node is labelled by now, so a failure here
-			// must take the label down with it.
-			logger.Error("failed-to-configure-resolve-capability", err)
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = cleanupDaemonServices(cleanupCtx, labeler, nil, closePlane)
-			cleanupCancel()
-			os.Exit(1)
-		}
-		logger.Info("resolve-capability-required")
-	}
 
 	// Scan hostPath at startup to populate registry with existing artifacts.
 	if err := server.Registry().ScanHostPath(*storagePath); err != nil {
@@ -533,20 +512,17 @@ func buildMirrorHTTPClient(logger lager.Logger, peerTLS *PeerTLSConfig, timeout 
 	}
 }
 
-// loadResolveCapabilityKey reads --resolve-capability-key and checks it is a
-// key a verifier will accept, so every way it can be wrong surfaces before the
-// daemon advertises itself. An empty path is not an error: it means resolve is
-// unauthenticated, and returns a nil key.
+// loadResolveCapabilityKey reads --resolve-capability-key and checks it is
+// exactly the raw key a verifier accepts, before the daemon advertises itself.
+// It is required: /resolve-batch is mTLS-exempt, so the capability is its only
+// authentication.
 func loadResolveCapabilityKey(path string) ([]byte, error) {
 	if path == "" {
-		return nil, nil
+		return nil, errors.New("--resolve-capability-key is required")
 	}
 	key, err := artifactcap.LoadKeyFile(path)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := artifactcap.NewVerifier(key); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read --resolve-capability-key: %w", err)
 	}
 	return key, nil
 }

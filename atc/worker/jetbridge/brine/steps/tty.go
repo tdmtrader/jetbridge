@@ -62,7 +62,7 @@ func runTerminalProbe(in LiveTaskPlan, rec *brine.Recorder, withTTY bool) (Termi
 	if err != nil {
 		return TerminalOutcome{}, err
 	}
-	config := jetbridge.NewConfig(cluster.Namespace, "")
+	config := brineConfig(cluster.Namespace, "")
 	config.PodStartupTimeout, config.PodSchedulingTimeout = time.Minute, time.Minute
 	cpu, memory := uint64(250), uint64(64*1024*1024)
 	out := TerminalOutcome{namespace: cluster.Namespace, withTTY: withTTY}

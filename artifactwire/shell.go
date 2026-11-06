@@ -14,9 +14,11 @@ import "fmt"
 // --no-check-certificate is there because an init container dials its node by
 // IP, which is not a certificate SAN, so server authentication cannot succeed
 // however correct the deployment is. What the transport buys is
-// confidentiality for the one-shot capability a request presents; the
-// AUTHORIZATION is that signed, single-use token, verified by the daemon, and
-// it is unchanged by this.
+// confidentiality for the resolve capability a request presents; the
+// AUTHORIZATION is that signed token, verified by the daemon, and it is
+// unchanged by this. The capability is not single-use: it verifies until it
+// expires, because the init retries a failed fetch with the one token it was
+// given.
 func (c *Client) ShellPrelude() string {
 	return fmt.Sprintf("PORT=%d\nDAEMON=\"%s://${HOST_IP}:${PORT}\"\nWGET_OPTS=\"%s\"\n", c.port, c.scheme, c.WgetOptions())
 }

@@ -109,10 +109,11 @@ func TestDaemonSetMode_StreamOut_FallsBackToPeer_AfterProducerDeath(t *testing.T
 	)
 
 	cfg := Config{
-		Namespace:              "concourse",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     port,
-		ArtifactDaemonService:  "artifact-daemon",
+		Namespace:                          "concourse",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
+		ArtifactDaemonPort:                 port,
+		ArtifactDaemonService:              "artifact-daemon",
 	}
 	logger := lagertest.NewTestLogger("atc")
 	resolver := NewNodeIPResolver(atcClientset)

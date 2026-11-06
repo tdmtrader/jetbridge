@@ -147,7 +147,7 @@ func configureRunReadPlane(in RunResultPublication, rec *brine.Recorder, res bri
 	if err != nil {
 		return nil, output.ReadWarrantMinter{}, jetbridge.Config{}, err
 	}
-	return configureRunReadPlaneForClient(in, rec, cluster.Clientset, jetbridge.NewConfig("default", ""))
+	return configureRunReadPlaneForClient(in, rec, cluster.Clientset, brineConfig("default", ""))
 }
 
 func configureRunReadPlaneForClient(in RunResultPublication, rec *brine.Recorder, client kubernetes.Interface, config jetbridge.Config) (*jetbridge.OutputSource, output.ReadWarrantMinter, jetbridge.Config, error) {

@@ -30,7 +30,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 	if err != nil {
 		return err
 	}
-	config := jetbridge.NewConfig("managed-input", "")
+	config := brineConfig("managed-input", "")
 	config.ArtifactDaemonHostPath = daemon.Output.Root
 	config.OutputPlaneEnabled = true
 	config.ArtifactDaemonPort = port

@@ -93,7 +93,7 @@ func TestLiveArtifactStorePersistsAndCleans(t *testing.T) {
 	}
 	fmt.Printf("real writer UID %s removed; independently mounted observer UID %s read %q\n", writer.UID, s.observer.UID, got)
 	// The writer is absent, so the artifact must arrive from the real daemon.
-	config := jetbridge.NewConfig(s.cluster.Namespace, "")
+	config := brineConfig(s.cluster.Namespace, "")
 	config.ArtifactDaemonPort = int(d.port)
 	artifact := jetbridge.NewDaemonSetVolume("steps/producer/result", "owned-artifact", "k8s-worker-1", nil, s.anchor.Spec.NodeName, config, jetbridge.NewNodeIPResolver(s.cluster.Clientset))
 	stream, err := artifact.StreamOut(ctx, ".", compression.NewGzipCompression())

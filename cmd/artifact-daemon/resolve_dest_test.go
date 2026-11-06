@@ -90,8 +90,8 @@ func TestResolveBatch_RefusesAStructuralDestination(t *testing.T) {
 
 	good := destUnder(t, storagePath, "ok-dest")
 	body, _ := json.Marshal(batchRequest{Items: []batchItem{
-		{Key: "victim-a/out", Dest: good},
-		{Key: "victim-a/out", Dest: filepath.Join(storagePath, "steps")},
+		signedItem(t, "victim-a/out", good),
+		signedItem(t, "victim-a/out", filepath.Join(storagePath, "steps")),
 	}})
 	if got := postJSON(t, ts.URL+"/resolve-batch", string(body)); got != http.StatusBadRequest {
 		t.Errorf("batch with a structural dest -> %d, want 400", got)
@@ -149,7 +149,7 @@ func TestResolve_StillAcceptsARealDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(storagePath, "steps", "consumer-handle", "input-0")
-	body := `{"key":"victim-a/out","dest":"` + dest + `"}`
+	body := resolveItem(t, "victim-a/out", dest)
 	if got := postJSON(t, ts.URL+"/resolve-batch", `{"items":[`+body+`]}`); got != http.StatusOK {
 		t.Fatalf("resolve into a real input destination -> %d, want 200", got)
 	}

@@ -277,7 +277,7 @@ func newRunOutputRuntime(rec *brine.Recorder, res brine.Resources, checks bool) 
 		return in, in.Start.Err
 	}
 	in.Start.DB.Conn.SetMaxOpenConns(1)
-	in.Config = jetbridge.NewConfig("default", "")
+	in.Config = brineConfig("default", "")
 	err = outputPlaneConfig(&in.Config, in.Start.Daemon.Output.URL, in.Start.Daemon.CertDir)
 	return in, err
 }

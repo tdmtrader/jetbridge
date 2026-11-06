@@ -360,7 +360,7 @@ func wireArtifactCluster(in ArtifactCluster, executor jetbridge.PodExecutor) (Ar
 		return ArtifactCluster{}, fmt.Errorf("create team: %w", err)
 	}
 	in.Team = team
-	cfg := jetbridge.NewConfig(in.Namespace, "")
+	cfg := brineConfig(in.Namespace, "")
 	port := 0
 	if in.Node != nil {
 		port = in.Node.port

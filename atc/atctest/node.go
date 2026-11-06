@@ -144,7 +144,9 @@ func startNode(conn db.DbConn) (n *node, err error) {
 	n.process = exec.Command(binary,
 		"--output-endpoint", n.emulator.URL(), "--output-bucket", bucket, "--output-prefix", "atctest/one", "--output-tenant", "atctest",
 		"--pod-terminations-dir", n.terminations,
-		"--hangar-key", filepath.Join(tlsDir, "hangar.key"), "--execution-control",
+		// Every daemon requires a resolve key; nothing here resolves, and the
+		// two MACs are domain-separated, so the one file serves both.
+		"--hangar-key", filepath.Join(tlsDir, "hangar.key"), "--resolve-capability-key", filepath.Join(tlsDir, "hangar.key"), "--execution-control",
 		"--node-uid", string(n.uid),
 		"--storage-path", filepath.Join(dir, "storage"), "--output-scratch-dir", filepath.Join(dir, "scratch"),
 		// The daemon binds a port of its own choosing and reports it, so no

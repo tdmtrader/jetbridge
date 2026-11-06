@@ -322,7 +322,7 @@ func TestRequestContainment_Resolve_DestOutsideRootRefused(t *testing.T) {
 	}
 	dest := filepath.Join(outside, "attacker-chosen")
 
-	body, _ := json.Marshal(map[string]string{"key": "srcbuild/out", "dest": dest})
+	body, _ := json.Marshal(map[string]string{"key": "srcbuild/out", "dest": dest, "capability": capabilityFor(t, "srcbuild/out", dest)})
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 	if err != nil {
 		t.Fatalf("POST /resolve-batch: %v", err)
@@ -358,7 +358,7 @@ func TestRequestContainment_Resolve_DestInsideRootAccepted(t *testing.T) {
 	}
 	dest := filepath.Join(storagePath, "resolved", "input")
 
-	body, _ := json.Marshal(map[string]string{"key": "srcbuild2/out", "dest": dest})
+	body, _ := json.Marshal(map[string]string{"key": "srcbuild2/out", "dest": dest, "capability": capabilityFor(t, "srcbuild2/out", dest)})
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(body)+`]}`)))
 	if err != nil {
 		t.Fatalf("POST /resolve-batch: %v", err)
@@ -504,7 +504,7 @@ func TestRequestContainment_ResolveBatch_RefusesWholeBatchBeforeAnyCopy(t *testi
 
 	body, _ := json.Marshal(map[string]any{
 		"items": []map[string]string{
-			{"key": "batchsrc2/out", "dest": good},
+			{"key": "batchsrc2/out", "dest": good, "capability": capabilityFor(t, "batchsrc2/out", good)},
 			{"key": "batchsrc2/out", "dest": bad},
 		},
 	})
@@ -705,7 +705,7 @@ func TestRequestContainment_ResolveRegistryBranchIsValidated(t *testing.T) {
 
 	os.MkdirAll(filepath.Join(storagePath, "resolved"), 0o755)
 	dest := filepath.Join(storagePath, "resolved", "d1")
-	rb, _ := json.Marshal(map[string]string{"key": "alias1", "dest": dest})
+	rb, _ := json.Marshal(map[string]string{"key": "alias1", "dest": dest, "capability": capabilityFor(t, "alias1", dest)})
 	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", bytes.NewReader([]byte(`{"items":[`+string(rb)+`]}`)))
 	if err != nil {
 		t.Fatal(err)

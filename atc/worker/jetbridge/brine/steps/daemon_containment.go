@@ -614,7 +614,10 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 					return in, err
 				}
-				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, dest)
+				body, err := signedResolveBatch(key, dest)
+				if err != nil {
+					return in, err
+				}
 				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
@@ -631,7 +634,10 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 					return in, fmt.Errorf("no directory outside the storage root was set up")
 				}
 				in.OutsideDest = filepath.Join(in.Outside, "attacker-chosen")
-				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, in.OutsideDest)
+				body, err := signedResolveBatch(key, in.OutsideDest)
+				if err != nil {
+					return in, err
+				}
 				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
@@ -649,7 +655,10 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q}]}`, key, in.root())
+				body, err := signedResolveBatch(key, in.root())
+				if err != nil {
+					return in, err
+				}
 				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
@@ -684,8 +693,10 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 					return in, err
 				}
 				in.OutsideDest = filepath.Join(in.Outside, "escaped")
-				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q},{"key":%q,"dest":%q}]}`,
-					key, first, key, in.OutsideDest)
+				body, err := signedResolveBatch(key, first, key, in.OutsideDest)
+				if err != nil {
+					return in, err
+				}
 				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),
@@ -712,8 +723,10 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 						return in, err
 					}
 				}
-				body := fmt.Sprintf(`{"items":[{"key":%q,"dest":%q},{"key":%q,"dest":%q}]}`,
-					key, first, key, second)
+				body, err := signedResolveBatch(key, first, key, second)
+				if err != nil {
+					return in, err
+				}
 				return in.answered(http.MethodPost, "/resolve-batch", []byte(body), "application/json"), nil
 			},
 		),

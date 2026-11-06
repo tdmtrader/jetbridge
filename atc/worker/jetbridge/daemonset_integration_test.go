@@ -26,11 +26,12 @@ import (
 // the pod spec includes a hostPath volume instead of a PVC volume.
 func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
 	}
 
 	backend := NewDaemonSetBackend(cfg, nil, nil, nil)
@@ -62,8 +63,9 @@ func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 // TestDaemonSetMode_HardAffinity verifies the required node affinity.
 func TestDaemonSetMode_HardAffinity(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	c := &Container{
@@ -332,8 +334,9 @@ func mountAtPath(t *testing.T, mounts []corev1.VolumeMount, path string) corev1.
 // TestDaemonSetMode_SoftAffinity verifies soft scheduling toward input source node.
 func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	locator := NewArtifactLocator()
@@ -403,11 +406,12 @@ func TestDaemonSetMode_NoAffinityForPVC(t *testing.T) {
 // TestDaemonSetMode_InitContainerResolveCommand verifies the daemon resolve command.
 func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
 	}
 
 	locator := NewArtifactLocator()
@@ -493,8 +497,9 @@ func TestDaemonSetMode_LocatorRecordLookupCleanup(t *testing.T) {
 
 func TestDaemonSetMode_UploadOutputsIsNoop(t *testing.T) {
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	c := &Container{
@@ -533,8 +538,9 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 	locator := NewArtifactLocator()
 
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	vol := NewStubVolume("output-vol", "test-worker", "/tmp/build/out")
@@ -585,8 +591,9 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 	locator := NewArtifactLocator()
 
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	vol := NewStubVolume("output-vol", "test-worker", "/tmp/build/out")
@@ -637,11 +644,12 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 
 func daemonSetConfig() Config {
 	return Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     7780,
-		ArtifactDaemonService:  "artifact-daemon",
-		ArtifactHelperImage:    "alpine:latest",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
+		ArtifactDaemonPort:                 7780,
+		ArtifactDaemonService:              "artifact-daemon",
+		ArtifactHelperImage:                "alpine:latest",
 	}
 }
 
@@ -1610,8 +1618,9 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 	locator := NewArtifactLocator()
 
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	// Only the input volume should exist — buildVolumeMountsForSpec skips
@@ -1672,8 +1681,9 @@ func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
 	locator := NewArtifactLocator()
 
 	cfg := Config{
-		Namespace:              "test-ns",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
+		Namespace:                          "test-ns",
+		ArtifactDaemonHostPath:             "/var/concourse/artifacts",
+		ArtifactDaemonResolveCapabilityKey: capKey(),
 	}
 
 	// Step 1: Producer creates output "shared"

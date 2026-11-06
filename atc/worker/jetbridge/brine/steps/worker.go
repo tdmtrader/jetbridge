@@ -1341,7 +1341,7 @@ func newWorkerReady(res brine.Resources, rec *brine.Recorder, workerName, teamNa
 		return WorkerReady{}, fmt.Errorf("create team: %w", err)
 	}
 
-	config := jetbridge.NewConfig(ns.Name, "")
+	config := brineConfig(ns.Name, "")
 	if configure != nil {
 		configure(&config)
 	}

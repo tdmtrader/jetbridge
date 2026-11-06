@@ -50,7 +50,7 @@ func TestPeerPathsVerifyThePeerByServiceNameWhenDialedByIP(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(peerStorage, "steps", "handle-x", "result", "output.txt"), []byte("peer data"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	peerServer, err := NewServer(lagertest.NewTestLogger("peer"), peerStorage, "peer-node")
+	peerServer, err := NewServer(lagertest.NewTestLogger("peer"), peerStorage, "peer-node", testResolveKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestPeerPathsVerifyThePeerByServiceNameWhenDialedByIP(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(localStorage, "steps", "handle-m", "out", "data.txt"), []byte("mirrored"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		localServer, err := NewServer(logger, localStorage, "local-node")
+		localServer, err := NewServer(logger, localStorage, "local-node", testResolveKey)
 		if err != nil {
 			t.Fatal(err)
 		}

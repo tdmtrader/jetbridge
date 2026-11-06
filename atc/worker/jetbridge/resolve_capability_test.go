@@ -98,31 +98,15 @@ func TestResolveCapability_ATCSignsWhatTheDaemonVerifies(t *testing.T) {
 	}
 }
 
-// No key configured means no capability, matching a daemon started without one.
-func TestResolveCapability_UnsignedWhenNoKey(t *testing.T) {
-	b := backendWith(t, nil)
-
-	inputs, volumes, mounts := oneInput(b)
-	inits, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range capabilitiesFrom(t, inits) {
-		if item.Capability != "" {
-			t.Errorf("signed %q with no key configured", item.Key)
+// A backend without a usable key builds no resolve at all: an unsigned one
+// would be refused by every daemon.
+func TestResolveCapability_RefusedWithoutAKey(t *testing.T) {
+	for _, key := range [][]byte{nil, []byte("short")} {
+		b := backendWith(t, key)
+		inputs, volumes, mounts := oneInput(b)
+		if _, err := b.BuildFetchInitContainers("handle-1", inputs, volumes, mounts); err == nil {
+			t.Fatalf("built a resolve with key %q; the daemon would refuse it", key)
 		}
-	}
-}
-
-// Startup keeps key validation even though expiry needs no configuration.
-func TestValidateResolveCapabilityConfig(t *testing.T) {
-	for _, key := range [][]byte{nil, capKey()} {
-		if err := ValidateResolveCapabilityConfig(Config{ArtifactDaemonResolveCapabilityKey: key}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := ValidateResolveCapabilityConfig(Config{ArtifactDaemonResolveCapabilityKey: []byte("short")}); err == nil {
-		t.Fatal("malformed signing key accepted")
 	}
 }
 

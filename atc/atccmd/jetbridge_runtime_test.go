@@ -56,6 +56,11 @@ func jetbridgeCommand(t *testing.T) *RunCommand {
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/lib/artifacts"
 	cmd.Kubernetes.ArtifactDaemonService = "artifact-daemon"
 	cmd.Kubernetes.ArtifactDaemonPort = 7780
+	resolveKey := filepath.Join(t.TempDir(), "resolve.key")
+	if err := os.WriteFile(resolveKey, bytes.Repeat([]byte{0x52}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = resolveKey
 	return cmd
 }
 
@@ -169,8 +174,6 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-artifact-daemon-port", "7790",
 		"--kubernetes-artifact-daemon-host-path", "/var/lib/jb-artifacts",
 		"--kubernetes-artifact-daemon-resolve-capability-key", resolveKey,
-		// A stale Deployment argument is accepted but cannot shorten expiry.
-		"--kubernetes-artifact-daemon-resolve-capability-ttl", "1s",
 		"--kubernetes-artifact-daemon-service", "artifacts",
 		"--kubernetes-artifact-daemon-namespace", "ci-daemons",
 		"--kubernetes-artifact-daemon-tls-cert", "/tls/artifact/cert.pem",
