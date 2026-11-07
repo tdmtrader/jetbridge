@@ -23,7 +23,7 @@ func NewTaskDelegate(
 	lockFactory lock.LockFactory,
 ) exec.TaskDelegate {
 	return &taskDelegate{
-		BuildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, atc.DisableRedactSecrets),
+		buildStepDelegate: NewBuildStepDelegate(build, planID, state, clock, atc.DisableRedactSecrets),
 
 		eventOrigin: event.Origin{ID: event.OriginID(planID)},
 		planID:      planID,
@@ -36,7 +36,7 @@ func NewTaskDelegate(
 }
 
 type taskDelegate struct {
-	exec.BuildStepDelegate
+	*buildStepDelegate
 
 	planID      atc.PlanID
 	config      atc.TaskConfig
@@ -52,18 +52,17 @@ func (d *taskDelegate) SetTaskConfig(config atc.TaskConfig) {
 	d.config = config
 }
 
+// SidecarWriter is the writer of one sidecar's output. It is build output like
+// the task's own and is redacted on the same terms, so it saves whole lines and
+// holds an unterminated one back until a newline arrives, a later write comes
+// more than a second after its last save, or it is closed. The runtime closes
+// it when the sidecar's log stream ends (runtime.ProcessIO.SidecarWriters).
 func (d *taskDelegate) SidecarWriter(sidecarName string) io.Writer {
 	sidecarPlanID := atc.SidecarPlanID(d.planID, sidecarName)
-	return newDBEventWriter(
-		d.build,
-		event.Origin{
-			Source: event.OriginSourceStdout,
-			ID:     event.OriginID(sidecarPlanID),
-		},
-		d.clock,
-		nil,  // no build output filter for sidecar logs
-		true, // skip secret redaction (avoids nil filter call)
-	)
+	return d.logWriter(event.Origin{
+		Source: event.OriginSourceStdout,
+		ID:     event.OriginID(sidecarPlanID),
+	})
 }
 
 func (d *taskDelegate) EmitSidecarPlans(logger lager.Logger, sidecars []atc.SidecarConfig) {
@@ -168,7 +167,7 @@ func (d *taskDelegate) FetchImage(
 		return runtime.ImageSpec{}, err
 	}
 
-	imageSpec, _, err := d.BuildStepDelegate.FetchImage(ctx, getPlan, checkPlan, privileged)
+	imageSpec, _, err := d.buildStepDelegate.FetchImage(ctx, getPlan, checkPlan, privileged)
 	if err != nil {
 		return runtime.ImageSpec{}, err
 	}

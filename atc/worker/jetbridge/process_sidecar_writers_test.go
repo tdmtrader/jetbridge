@@ -16,13 +16,19 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
+	restfake "k8s.io/client-go/rest/fake"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -91,6 +97,26 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
+// closeRecordingBuffer is a lockedBuffer that records being closed, as the
+// engine's build-event writer must be for its last line to be saved.
+type closeRecordingBuffer struct {
+	lockedBuffer
+	closed bool
+}
+
+func (b *closeRecordingBuffer) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	return nil
+}
+
+func (b *closeRecordingBuffer) Closed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
+}
+
 func TestExecProcessStreamsSidecarLogsToTheirDedicatedWriters(t *testing.T) {
 	const namespace = "sidecar-ns"
 	const podName = "sidecar-pod"
@@ -148,6 +174,28 @@ func TestExecProcessStreamsSidecarLogsToTheirDedicatedWriters(t *testing.T) {
 		assertSidecarLogsRequested(t, clientset, sidecarName)
 	})
 
+	// The engine's sidecar writer holds an unterminated line back until it
+	// is closed (it redacts whole lines), and the fake's body has no newline:
+	// the stream's end is the only point that knows the writer is done, so
+	// the runtime closes it there and the line is not lost.
+	t.Run("a dedicated writer is closed once its sidecar's stream ends", func(t *testing.T) {
+		dedicated := &closeRecordingBuffer{}
+		_, _, err := runWait(t, runtime.ProcessIO{
+			Stdout:         &lockedBuffer{},
+			Stderr:         &bytes.Buffer{},
+			SidecarWriters: map[string]io.Writer{sidecarName: dedicated},
+		})
+		if err != nil {
+			t.Fatalf("Wait() = %v, want no error", err)
+		}
+		if got := dedicated.String(); got != fakeSidecarLogBody {
+			t.Errorf("dedicated sidecar writer = %q, want %q", got, fakeSidecarLogBody)
+		}
+		if !dedicated.Closed() {
+			t.Errorf("dedicated sidecar writer was not closed after its stream ended")
+		}
+	})
+
 	// The removed fallback would have folded the sidecar's lines into stdout
 	// here. A step that wants output and declared a sidecar it has no writer
 	// for is a caller bug, named before anything runs.
@@ -190,4 +238,112 @@ func assertSidecarLogsRequested(t *testing.T, clientset *fake.Clientset, sidecar
 		}
 	}
 	t.Fatalf("no GetLogs request was made for sidecar %q", sidecar)
+}
+
+// followingLogsClientset serves every container's logs as a stream that sends
+// body and then follows, as a long-lived sidecar's does, ending only when
+// its request is cancelled.
+type followingLogsClientset struct {
+	*fake.Clientset
+	body string
+}
+
+func (c followingLogsClientset) CoreV1() typedcorev1.CoreV1Interface {
+	return followingLogsCoreV1{CoreV1Interface: c.Clientset.CoreV1(), body: c.body}
+}
+
+type followingLogsCoreV1 struct {
+	typedcorev1.CoreV1Interface
+	body string
+}
+
+func (c followingLogsCoreV1) Pods(namespace string) typedcorev1.PodInterface {
+	return followingLogsPods{PodInterface: c.CoreV1Interface.Pods(namespace), body: c.body}
+}
+
+type followingLogsPods struct {
+	typedcorev1.PodInterface
+	body string
+}
+
+func (p followingLogsPods) GetLogs(name string, _ *corev1.PodLogOptions) *rest.Request {
+	client := &restfake.RESTClient{
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		Client: restfake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+				Body:       &followingBody{body: strings.NewReader(p.body), done: req.Context().Done()},
+			}, nil
+		}),
+	}
+	return client.Get().Resource("pods").Name(name).SubResource("log")
+}
+
+// followingBody reads body, then blocks until done.
+type followingBody struct {
+	body io.Reader
+	done <-chan struct{}
+}
+
+func (b *followingBody) Read(p []byte) (int, error) {
+	if n, err := b.body.Read(p); n > 0 || err != io.EOF {
+		return n, err
+	}
+	<-b.done
+	return 0, context.Canceled
+}
+
+func (b *followingBody) Close() error { return nil }
+
+// A long-lived sidecar outlives the command, so its stream does not end on
+// its own. Its writer must still be closed, saving the held-back last line,
+// before Wait returns: after it, the step saves its finish event, and a line
+// saved later would follow it.
+func TestExecProcessClosesAStillFollowingSidecarWriterBeforeWaitReturns(t *testing.T) {
+	const namespace = "sidecar-ns"
+	const podName = "sidecar-pod"
+	const sidecarName = "postgres"
+	const partialLine = "ready to accept connections"
+
+	restoreGrace := execSidecarLogGrace
+	execSidecarLogGrace = 100 * time.Millisecond
+	defer func() { execSidecarLogGrace = restoreGrace }()
+
+	clientset := followingLogsClientset{
+		Clientset: fake.NewSimpleClientset(sidecarPausePod(podName, namespace, sidecarName)),
+		body:      partialLine,
+	}
+	config := NewConfig(namespace, "")
+	container := &Container{
+		handle:   "sidecar-handle",
+		podName:  podName,
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Type:     db.ContainerTypeTask,
+			Sidecars: []atc.SidecarConfig{{Name: sidecarName, Image: "postgres:16"}},
+		},
+		clientset:  clientset,
+		config:     config,
+		properties: map[string]string{},
+	}
+	dedicated := &closeRecordingBuffer{}
+	process := newExecProcess("proc-1", podName, clientset, config, container,
+		&mainOutputExecutor{line: "main command output\n"},
+		runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "echo hi"}},
+		runtime.ProcessIO{
+			Stdout:         &lockedBuffer{},
+			Stderr:         &bytes.Buffer{},
+			SidecarWriters: map[string]io.Writer{sidecarName: dedicated},
+		}, nil)
+
+	if _, err := process.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait() = %v, want no error", err)
+	}
+	if !dedicated.Closed() {
+		t.Fatalf("the still-following sidecar's writer was not closed by the time Wait returned")
+	}
+	if got := dedicated.String(); got != partialLine {
+		t.Errorf("dedicated sidecar writer = %q, want %q", got, partialLine)
+	}
 }

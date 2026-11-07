@@ -276,6 +276,29 @@ var _ = Describe("TaskDelegate", func() {
 			evJSON, _ := json.Marshal(ev)
 			Expect(evJSON).To(ContainSubstring("some-plan-id/sidecar/postgres"))
 		})
+
+		// A sidecar's lines are build output like the task's own, so a
+		// credential the build interpolated is redacted from them on the same
+		// terms.
+		It("redacts a tracked secret from the sidecar's lines", func() {
+			_, _, err := state.Get(vars.Reference{Path: "source-param"})
+			Expect(err).ToNot(HaveOccurred())
+
+			w := delegate.SidecarWriter("postgres")
+			_, writeErr := w.Write([]byte("password is super-secret-source\n"))
+			Expect(writeErr).ToNot(HaveOccurred())
+			Expect(w.(io.Closer).Close()).To(Succeed())
+
+			ev := consumeTaskDelegateBuildEvent(fixture, realBuild, 1, 0)
+			Expect(ev).To(Equal(event.Log{
+				Time:    now.Unix(),
+				Payload: "password is ((redacted))\n",
+				Origin: event.Origin{
+					Source: event.OriginSourceStdout,
+					ID:     "some-plan-id/sidecar/postgres",
+				},
+			}))
+		})
 	})
 
 	Describe("EmitSidecarPlans", func() {
