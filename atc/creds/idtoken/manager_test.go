@@ -3,6 +3,8 @@ package idtoken_test
 import (
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
+
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/go-jose/go-jose/v4"
@@ -17,7 +19,7 @@ var _ = Describe("IDToken Manager", func() {
 	var config map[string]any
 
 	BeforeEach(func() {
-		signingKeyFactory = db.NewSigningKeyFactory(dbConn)
+		signingKeyFactory = db.NewSigningKeyFactory(lagertest.NewTestLogger("idtoken"), dbConn)
 		config = map[string]any{
 			"audience":      []any{"testaud"},
 			"subject_scope": string(idtoken.SubjectScopeTeam),

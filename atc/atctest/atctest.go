@@ -276,7 +276,7 @@ func (p *Platform) api(logger lager.Logger, displayUserID atc.DisplayUserIdGener
 		concourse.Version, concourse.WorkerVersion, concourse.JetBridgeVersion, concourse.ConcourseVersion,
 		noop.Noop{}, creds.NewVarSourcePool(logger, creds.CredentialManagementConfig{}, time.Minute, time.Minute, clock.NewClock()), creds.Managers{},
 		containerserver.NewInterceptTimeoutFactory(time.Minute), time.Minute, db.NewWall(p.conn, &dbClock), clock.NewClock(),
-		db.NewSigningKeyFactory(p.conn), p.conn, nil, services)
+		db.NewSigningKeyFactory(logger, p.conn), p.conn, nil, services)
 }
 
 // runServices is atccmd's configureRunInputUploads, credentialHandoffConfig and
