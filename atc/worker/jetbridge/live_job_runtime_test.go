@@ -105,8 +105,10 @@ func TestLiveJobRuntimeTask(t *testing.T) {
 	if pod.Annotations["concourse.ci/exit-status"] != "7" {
 		t.Errorf("pod annotations %v lack the exit status", pod.Annotations)
 	}
-	if pod.Status.Phase != corev1.PodFailed {
-		t.Errorf("pod phase = %s, want Failed (exit 7)", pod.Status.Phase)
+	// The phase may still read Pending or Running an instant after main
+	// terminated; the exit is main's terminated status, not the phase.
+	if exit, done := mainExitStatus(pod); !done || exit != 7 {
+		t.Errorf("main container terminated status = %d (terminated %v), want exit 7", exit, done)
 	}
 	main := pod.Spec.Containers[0]
 	if len(main.Command) != 1 || main.Command[0] != "/jb/jb-launcher" {
@@ -201,6 +203,15 @@ func TestLiveJobRuntimeResourceCommand(t *testing.T) {
 	if want := `[{"request":` + second + `}]`; stdout.String() != want {
 		t.Errorf("second answer = %q, want %q: the old Job's pod was followed", stdout.String(), want)
 	}
+}
+
+func mainExitStatus(pod corev1.Pod) (int32, bool) {
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == "main" && status.State.Terminated != nil {
+			return status.State.Terminated.ExitCode, true
+		}
+	}
+	return 0, false
 }
 
 func jobSpecText(job *batchv1.Job) string {
