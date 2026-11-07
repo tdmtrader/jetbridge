@@ -24,6 +24,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -162,6 +163,15 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, launcherInit)
 
 	main := &pod.Spec.Containers[0]
+	// The step's command and env now reach the kubelet in the pod spec rather
+	// than through exec, and the kubelet expands $(VAR) and collapses $$ in
+	// both. Doubling every $ makes it hand the launcher the text as written.
+	for i := range main.Args {
+		main.Args[i] = escapeKubernetesExpansion(main.Args[i])
+	}
+	for i := range main.Env {
+		main.Env[i].Value = escapeKubernetesExpansion(main.Env[i].Value)
+	}
 	main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{Name: launcherVolumeName, MountPath: launcherMountPath, ReadOnly: true})
 	if hasEnvelope {
 		expiry := int64(stepTokenExpirySecond)
@@ -625,4 +635,10 @@ func WebImage(ctx context.Context, clientset kubernetes.Interface, namespace, po
 		return pod.Spec.Containers[0].Image, nil
 	}
 	return "", fmt.Errorf("pod %s/%s has no container running the web command", namespace, podName)
+}
+
+// escapeKubernetesExpansion returns s with every $ doubled, so the kubelet's
+// $(VAR) expansion of container args and env values yields s unchanged.
+func escapeKubernetesExpansion(s string) string {
+	return strings.ReplaceAll(s, "$", "$$")
 }

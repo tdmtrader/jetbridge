@@ -103,6 +103,42 @@ func TestBuildStepJobShape(t *testing.T) {
 	}
 }
 
+// Kubernetes expands $(VAR) in a container's args and env values and
+// collapses $$ to $. The exec runtime never met that: its command reached the
+// pod only through exec. A task script such as `POD="builder-$$"` must reach
+// the launcher as written, so every $ the step carries is escaped.
+func TestBuildStepJobKeepsDollarSignsLiteral(t *testing.T) {
+	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeTask, runtime.ContainerSpec{
+		Dir: "/tmp/build/task",
+		Env: []string{"FROM_CONTAINER=a$$b$(HOME)"},
+	})
+	job, err := container.buildStepJob(runtime.ProcessSpec{
+		Path: "sh",
+		Args: []string{"-exc", `POD="builder-$$"; echo "$(hostname)" $(HOME) $$$`},
+		Env:  []string{"FROM_PROCESS=$(PATH)$"},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildStepJob: %v", err)
+	}
+	main := job.Spec.Template.Spec.Containers[0]
+	wantArgs := []string{"--", "sh", "-exc", `POD="builder-$$$$"; echo "$$(hostname)" $$(HOME) $$$$$$`}
+	if strings.Join(main.Args, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Errorf("main args = %q, want %q", main.Args, wantArgs)
+	}
+	want := map[string]string{"FROM_CONTAINER": "a$$$$b$$(HOME)", "FROM_PROCESS": "$$(PATH)$$"}
+	for _, e := range main.Env {
+		if w, ok := want[e.Name]; ok {
+			if e.Value != w {
+				t.Errorf("env %s = %q, want %q", e.Name, e.Value, w)
+			}
+			delete(want, e.Name)
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("env missing: %v", want)
+	}
+}
+
 func TestBuildStepJobForAResourceCommandCarriesTokenAndAnswer(t *testing.T) {
 	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeCheck, runtime.ContainerSpec{})
 	job, err := container.buildStepJob(runtime.ProcessSpec{Path: "/opt/resource/check"}, true)
