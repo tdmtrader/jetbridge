@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/event"
+	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/runs"
 	concourse "github.com/concourse/concourse/go-concourse/concourse"
 	. "github.com/onsi/ginkgo/v2"
@@ -160,6 +162,158 @@ var _ = Describe("the run_pipeline step", func() {
 	})
 })
 
+// A caller whose step waits for its child Run. The child is the task-less
+// `entry` template, whose Run reaches succeeded on its own: its one build
+// finishes with nothing to run and the Run results component publishes the
+// Run's terminal status. No worker is involved at either end.
+var waitingCallerConfig = []byte(`
+---
+jobs:
+- name: call
+  plan:
+  - run_pipeline: template
+    wait: true
+    params:
+      environment: staging
+`)
+
+// Two waited calls, the second binding a result of the first. The template
+// declares no inputs and publishes no results, so the second admission is
+// refused: the step must fail, not error, and the build read failed.
+var forwardingCallerConfig = []byte(`
+---
+jobs:
+- name: call
+  plan:
+  - run_pipeline: template
+    wait: true
+    params:
+      environment: staging
+  - run_pipeline: template
+    wait: true
+    params:
+      environment: production
+    inputs:
+      x: {from: template, result: r}
+`)
+
+var _ = Describe("a run_pipeline step that waits", func() {
+	var (
+		owner           concourse.Client
+		callerConfig    []byte
+		observeInterval time.Duration
+	)
+
+	BeforeEach(func() {
+		callerConfig = waitingCallerConfig
+
+		// The ATC runs in this process, so the step's poll interval is this
+		// package variable. Short, so a spec waits on the child, not the
+		// ticker.
+		observeInterval = exec.RunPipelineObserveInterval
+		exec.RunPipelineObserveInterval = 500 * time.Millisecond
+	})
+
+	AfterEach(func() {
+		exec.RunPipelineObserveInterval = observeInterval
+	})
+
+	JustBeforeEach(func() {
+		givenARunnableTemplate()
+
+		owner = login(atcURL, "test", "test")
+
+		_, _, _, err := owner.Team("run-team").CreateOrUpdatePipelineConfig(
+			callerPipelineRef, "0", callerConfig, false)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = owner.Team("run-team").UnpausePipeline(callerPipelineRef)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("succeeds once the child Run has succeeded", func() {
+		build := triggerCallingJob(owner)
+		Expect(build.Status).To(Equal(atc.StatusSucceeded), buildOutput(owner, build))
+
+		Expect(queryString(fmt.Sprintf("SELECT status FROM builds WHERE id = %d", build.ID))).
+			To(Equal(string(atc.StatusSucceeded)))
+		Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+		Expect(queryString("SELECT status FROM pipeline_runs")).To(Equal(string(atc.RunStatusSucceeded)))
+
+		stdout, _ := buildStreams(owner, build)
+		Expect(stdout).To(ContainSubstring("admitted run #1 of run-team/template"))
+		Expect(stdout).To(ContainSubstring("run #1 succeeded"))
+	})
+
+	// The replay is the one a restarted web makes: the first ATC is stopped
+	// while the step waits, which releases the build and leaves it started,
+	// and the second ATC's build tracker picks it up and runs the plan again.
+	// The first boot's step is parked on a long poll interval, so the only
+	// step that can finish the build is the replayed one. In this process
+	// that goroutine outlives its ATC, as it would not in production; parked
+	// between polls it holds no connection and writes nothing.
+	It("re-attaches to the same child Run when the build is tracked again", func() {
+		exec.RunPipelineObserveInterval = time.Hour
+
+		triggered, err := owner.Team("run-team").CreateJobBuild(callerPipelineRef, "call")
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() int {
+			return countRows("SELECT count(*) FROM pipeline_runs")
+		}, 90*time.Second, 250*time.Millisecond).Should(Equal(1), "the step never admitted its child")
+
+		// Waiting: the child is admitted and the build stays started.
+		Consistently(func() string {
+			return queryString(fmt.Sprintf("SELECT status FROM builds WHERE id = %d", triggered.ID))
+		}, 2*time.Second, 250*time.Millisecond).Should(Equal(string(atc.StatusStarted)))
+
+		exec.RunPipelineObserveInterval = 500 * time.Millisecond
+		restartATC()
+		owner = login(atcURL, "test", "test")
+
+		build := awaitSettled(owner, triggered.ID)
+		Expect(build.Status).To(Equal(atc.StatusSucceeded), buildOutput(owner, build))
+		Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+
+		stdout, _ := buildStreams(owner, build)
+		Expect(stdout).To(ContainSubstring("admitted run #1 of run-team/template"))
+		Expect(stdout).To(ContainSubstring("re-attached to run #1 of run-team/template"))
+		Expect(stdout).To(ContainSubstring("run #1 succeeded"))
+	})
+
+	It("fails with the refusal on stderr when the template is paused", func() {
+		_, err := owner.Team("run-team").PausePipeline(runTemplateRef)
+		Expect(err).NotTo(HaveOccurred())
+
+		build := triggerCallingJob(owner)
+		Expect(build.Status).To(Equal(atc.StatusFailed), buildOutput(owner, build))
+
+		_, stderr := buildStreams(owner, build)
+		Expect(stderr).To(ContainSubstring(runs.ErrTemplatePaused.Error()))
+		Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(0))
+	})
+
+	Context("when a later call binds a result the first child never published", func() {
+		BeforeEach(func() {
+			callerConfig = forwardingCallerConfig
+		})
+
+		It("fails the second step with the refusal on stderr, and the build fails", func() {
+			build := triggerCallingJob(owner)
+			Expect(build.Status).To(Equal(atc.StatusFailed), buildOutput(owner, build))
+
+			stdout, stderr := buildStreams(owner, build)
+			Expect(stdout).To(ContainSubstring("run #1 succeeded"))
+			// The template declares no inputs, so the binding is refused as
+			// one it does not match before any source is looked up.
+			Expect(stderr).To(ContainSubstring(atc.ErrInvalidRunInputs.Error()))
+
+			// The first call's child, and no second one.
+			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+		})
+	})
+})
+
 // triggerCallingJob triggers the caller's job and returns the build once it
 // has reached a terminal state.
 //
@@ -171,9 +325,16 @@ func triggerCallingJob(client concourse.Client) atc.Build {
 	triggered, err := client.Team("run-team").CreateJobBuild(callerPipelineRef, "call")
 	Expect(err).NotTo(HaveOccurred())
 
+	return awaitSettled(client, triggered.ID)
+}
+
+// awaitSettled returns the build once it has reached a terminal state.
+func awaitSettled(client concourse.Client, buildID int) atc.Build {
+	GinkgoHelper()
+
 	var settled atc.Build
 	Eventually(func() string {
-		build, found, err := client.Build(strconv.Itoa(triggered.ID))
+		build, found, err := client.Build(strconv.Itoa(buildID))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 
