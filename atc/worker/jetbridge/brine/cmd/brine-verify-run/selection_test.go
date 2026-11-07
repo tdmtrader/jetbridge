@@ -59,7 +59,7 @@ func TestCoverageTiersPartitionDiscoveredSuite(t *testing.T) {
 	for _, f := range want.Files {
 		wantFiles[f.Path] = f
 	}
-	for _, tier := range []string{"local", "live"} {
+	for _, tier := range []string{"local", "live/main", "live/recovery"} {
 		s := read(filepath.Join(root, tier))
 		for _, m := range s.Manifests {
 			if _, duplicate := gotManifests[m.Path]; duplicate {

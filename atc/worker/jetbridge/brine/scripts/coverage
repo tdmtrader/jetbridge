@@ -42,7 +42,7 @@ sh scripts/build-private-network
 production_package=github.com/concourse/concourse/atc/worker/jetbridge
 minimum_percent=50
 report_dir=$(mktemp -d "${TMPDIR:-/tmp}/brine-coverage.XXXXXX")
-mkdir -p "$report_dir/raw/local" "$report_dir/raw/live" "$report_dir/raw/multinode" "$report_dir/merged"
+mkdir -p "$report_dir/raw/local" "$report_dir/raw/live" "$report_dir/raw/recovery" "$report_dir/raw/multinode" "$report_dir/merged"
 printf 'Coverage evidence: %s\n' "$report_dir"
 
 # Instrument main as well: Go installs its coverage exit hook there. Only the
@@ -53,6 +53,7 @@ printf 'Coverage evidence: %s\n' "$report_dir"
 # exactly once and the script never continues past a signal.
 local_pid=
 live_pid=
+recovery_pid=
 cleanup() {
     status=$?
     trap - 0
@@ -61,19 +62,19 @@ cleanup() {
     trap '' INT TERM HUP
     # Each CLI and adapter share a process group. On interruption, let the
     # adapters drain fixtures, including detached groups, before restoration.
-    for pid in $local_pid $live_pid; do /bin/kill -TERM -- "-$pid" 2>/dev/null || true; done
-    if [ -n "$local_pid$live_pid" ]; then
+    for pid in $local_pid $live_pid $recovery_pid; do /bin/kill -TERM -- "-$pid" 2>/dev/null || true; done
+    if [ -n "$local_pid$live_pid$recovery_pid" ]; then
         remaining=120
         while [ "$remaining" -gt 0 ]; do
             running=false
-            for pid in $local_pid $live_pid; do
+            for pid in $local_pid $live_pid $recovery_pid; do
                 if /bin/kill -0 -- "-$pid" 2>/dev/null; then running=true; fi
             done
             if [ "$running" = false ]; then break; fi
             sleep 1
             remaining=$((remaining - 1))
         done
-        for pid in $local_pid $live_pid; do
+        for pid in $local_pid $live_pid $recovery_pid; do
             /bin/kill -KILL -- "-$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
         done
@@ -90,9 +91,10 @@ go build -cover -covermode=atomic \
     -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
 
 # Build once, then execute complete manifests with the existing CLI gates.
-# The local adapter has a private network namespace; the live adapter keeps
-# the cluster route. Each process owns its databases, temporary roots and raw
-# coverage directory. No feature, assertion, budget or production wait changes.
+# The local adapter has a private network namespace; both live adapters keep
+# the cluster route. Recovery scenarios own namespaces and databases and do
+# not use the artifact-daemon host port. Each process owns its temporary roots
+# and raw coverage directory. No assertion, fixture or production wait changes.
 # Keep serial mode for matched baseline measurements and operational rollback.
 schedule=${BRINE_COVERAGE_SCHEDULE:-parallel}
 case "$schedule" in
@@ -103,6 +105,7 @@ command -v setsid >/dev/null
 printf 'Brine coverage schedule: %s\n' "$schedule"
 local_status=0
 live_status=0
+recovery_status=0
 # Bypass the persistent engine so each adapter inherits its own GOCOVERDIR.
 GOCOVERDIR="$report_dir/raw/local" setsid brine run local --no-engine --mode sync --format jsonl > "$report_dir/brine-local.log" 2>&1 &
 local_pid=$!
@@ -110,19 +113,29 @@ if [ "$schedule" = serial ]; then
     wait "$local_pid" || local_status=$?
     local_pid=
 fi
-GOCOVERDIR="$report_dir/raw/live" setsid brine run live --no-engine --mode sync --format jsonl > "$report_dir/brine-live.log" 2>&1 &
+GOCOVERDIR="$report_dir/raw/live" setsid brine run live/main --no-engine --mode sync --format jsonl > "$report_dir/brine-live.log" 2>&1 &
 live_pid=$!
-# Always join both tiers. An ordinary test failure must not interrupt the
-# other adapter's real scenarios or disposal. Any nonzero CLI verdict fails.
+if [ "$schedule" = serial ]; then
+    wait "$live_pid" || live_status=$?
+    live_pid=
+fi
+GOCOVERDIR="$report_dir/raw/recovery" setsid brine run live/recovery --no-engine --mode sync --format jsonl > "$report_dir/brine-recovery.log" 2>&1 &
+recovery_pid=$!
+# Always join every tier. An ordinary test failure must not interrupt another
+# adapter's real scenarios or disposal. Any nonzero CLI verdict fails.
 if [ -n "$local_pid" ]; then
     wait "$local_pid" || local_status=$?
     local_pid=
 fi
-wait "$live_pid" || live_status=$?
-live_pid=
-printf 'Brine CLI verdicts: local=%s live=%s\n' "$local_status" "$live_status"
-cat "$report_dir/brine-local.log" "$report_dir/brine-live.log" > "$report_dir/brine.log"
-if [ "$local_status" -ne 0 ] || [ "$live_status" -ne 0 ]; then
+if [ -n "$live_pid" ]; then
+    wait "$live_pid" || live_status=$?
+    live_pid=
+fi
+wait "$recovery_pid" || recovery_status=$?
+recovery_pid=
+printf 'Brine CLI verdicts: local=%s live=%s recovery=%s\n' "$local_status" "$live_status" "$recovery_status"
+cat "$report_dir/brine-local.log" "$report_dir/brine-live.log" "$report_dir/brine-recovery.log" > "$report_dir/brine.log"
+if [ "$local_status" -ne 0 ] || [ "$live_status" -ne 0 ] || [ "$recovery_status" -ne 0 ]; then
     # The log interleaves protocol events with every fixture's diagnostics,
     # so the last sixty lines are usually namespace chatter and say nothing
     # about WHICH scenario failed (CI build 873481). Lead with the verdict:
@@ -182,7 +195,9 @@ fi
 go run ./cmd/brine-verify-run "$report_dir/brine-local.log" \
     "$module_root/local/.brine=$module_root/local/.brine"
 go run ./cmd/brine-verify-run "$report_dir/brine-live.log" \
-    "$module_root/live/.brine=$module_root/live/.brine"
+    "$module_root/live/main/.brine=$module_root/live/main/.brine"
+go run ./cmd/brine-verify-run "$report_dir/brine-recovery.log" \
+    "$module_root/live/recovery/.brine=$module_root/live/recovery/.brine"
 
 # The cross-node tier (live-multinode/.brine, discover: false) needs two
 # approved artifact nodes up -- one of them may be a desktop that sleeps -- so
@@ -196,7 +211,7 @@ else
         -o jsonpath='{range .items[*]}{.spec.unschedulable}|{.status.conditions[?(@.type=="Ready")].status}|{.metadata.labels.concourse\.dev/artifact-cache}{"\n"}{end}' |
         grep -c '^|True|ready$' || true)
 fi
-coverage_inputs="$report_dir/raw/local,$report_dir/raw/live"
+coverage_inputs="$report_dir/raw/local,$report_dir/raw/live,$report_dir/raw/recovery"
 if [ "$approved_up" -ge 2 ]; then
     echo "cross-node tier: $approved_up approved artifact nodes up; running live-multinode/.brine" >&2
     if ! (cd live-multinode && GOCOVERDIR="$report_dir/raw/multinode" brine run --no-engine --mode sync --format jsonl) > "$report_dir/brine-multinode.log" 2>&1; then

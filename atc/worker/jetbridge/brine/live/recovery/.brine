@@ -1,0 +1,14 @@
+# Real lifecycle, task, watch and startup tests own databases and namespaces.
+# They do not use the artifact-daemon host port, so the coverage task can run
+# these complete feature files alongside the other live scenarios.
+runner:
+  name: jetbridge
+  binary: ../../scripts/run-live-cluster
+  contract: 5
+contract: 5
+features: ../../features/live/recovery/*.feature
+budgets:
+  undefined: 0
+  # Moved unchanged from the live manifest: 10 compatibility + 10 lifecycle
+  # + 16 task command + 6 pod watch + 10 startup failure scenarios.
+  scenarios_min: 52

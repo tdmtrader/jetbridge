@@ -8,7 +8,7 @@ one `WorkerReady` fixture: a real `envtest` Kubernetes API server + etcd (no
 kubelet), real PostgreSQL, and a real `artifact-daemon` subprocess — no
 recording doubles, enforced by an AST import guard and vocabulary guards in
 `steps/`. Where kubelet/exec/scheduler fidelity is required, scenarios live
-in a separate **live** tier (`live/.brine`) against a real cluster.
+in the **live** tier (`live/main/.brine` and `live/recovery/.brine`) against a real cluster.
 
 The fixture design, migration evidence, and historical coverage gaps are
 recorded in the [campaign archive][campaign]. This file covers build/run mechanics.
@@ -57,7 +57,9 @@ export BRINE_KUBE_CONTEXT=your-authorized-test-context
 There is no default context and no mock fallback. Each scenario creates and
 tears down its own namespace (baseline pod security, a resource quota,
 container limits). From the suite root, plain `brine run` discovers and runs
-both `local/.brine` and `live/.brine` together.
+`local/.brine`, `live/main/.brine` and `live/recovery/.brine` together.
+Plain `brine run live` still runs every live scenario. The coverage task selects
+the two live manifests separately so their complete feature files can overlap.
 Run only the complete local tier with `brine run local --no-engine --mode sync`.
 
 The artifact-handoff hostPath/hostPort fixture needs explicit additional
@@ -127,14 +129,23 @@ sh scripts/coverage
 ```
 
 Requires `BRINE_KUBE_CONTEXT` and the live-artifact-handoff approvals above;
-builds one instrumented adapter, runs the complete local and live manifests
+builds one instrumented adapter, runs the complete local, main live and recovery manifests
 concurrently in separate process groups, and requires at least 50% Brine-only coverage
 of `atc/worker/jetbridge` production statements — package-scoped, not
 repository-wide. Each tier must independently pass its CLI verdict and full
 manifest verification. Raw coverage is kept per tier and merged only after
-verification; cross-node work follows the live tier under the same approvals.
+verification; cross-node work follows all three under the same approvals.
 The existing pipeline job retains all cluster exclusion locks. Restores the
-normal adapter after both processes finish.
+normal adapter after all three processes finish.
+
+The recovery manifest owns the compatibility, container-lifecycle, task-command,
+pod-watch and startup-failure features. Its real eviction, OOM, replacement,
+execution, watch and startup scenarios have their own databases and namespaces
+and do not use the live artifact-daemon host port. The task's PostgreSQL sidecar
+uses only a pod-local port; watch routes allocate local ports and permission
+changes apply only to the scenario's namespace. Each manifest runs its scenarios
+serially, keeping process-local metrics and tracing isolated. Their feature
+contents, production waits and kubelet configuration are unchanged.
 
 For a matched sequential baseline or rollback, run
 `BRINE_COVERAGE_SCHEDULE=serial sh scripts/coverage`. This changes scheduling

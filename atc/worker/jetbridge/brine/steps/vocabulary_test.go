@@ -23,9 +23,8 @@ import (
 // These are cheap to check and they only get more useful as the corpus grows.
 
 // featurePaths walks every feature file under ../features, the live tier in
-// features/live included. The local/.brine manifest runs only
-// features/*.feature and live/.brine runs the rest; the guards read both, so a
-// phrase defined for one tier and said by neither is still reported dead.
+// features/live included. The manifests select separate tiers; the guards
+// read the entire corpus, so a phrase used by no tier is still reported dead.
 func featurePaths(t *testing.T) []string {
 	t.Helper()
 	var paths []string
@@ -176,25 +175,16 @@ func TestNoStepLineMatchesTwoDefinitions(t *testing.T) {
 	}
 }
 
-// TestActiveFeatureCorpus checks the local and live runner globs, rather than
-// the recursive vocabulary scan, so each active tier must contain runnable features.
+// TestActiveFeatureCorpus checks the entire feature corpus. The real-CLI
+// selection guard separately requires nonempty, disjoint manifest inventories.
 func TestActiveFeatureCorpus(t *testing.T) {
-	for _, glob := range []string{"../features/*.feature", "../features/live/*.feature"} {
-		paths, err := filepath.Glob(glob)
+	for _, path := range featurePaths(t) {
+		body, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("glob %s: %v", glob, err)
+			t.Fatalf("read %s: %v", path, err)
 		}
-		if len(paths) == 0 {
-			t.Fatalf("%s matches no active features", glob)
-		}
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			if strings.Contains(string(body), "NOT RUN YET") {
-				t.Errorf("%s is active but labelled NOT RUN YET", path)
-			}
+		if strings.Contains(string(body), "NOT RUN YET") {
+			t.Errorf("%s is active but labelled NOT RUN YET", path)
 		}
 	}
 }
