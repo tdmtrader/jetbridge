@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
@@ -180,6 +181,34 @@ func (team *team) CreatePipelineBuild(pipelineRef atc.PipelineRef, plan atc.Plan
 }
 func (team *team) DeletePipeline(pipelineRef atc.PipelineRef) (bool, error) {
 	return team.managePipeline(pipelineRef, atc.DeletePipeline)
+}
+
+func (team *team) DeletePipelineAndRunHistory(pipelineRef atc.PipelineRef) (bool, int, error) {
+	query := pipelineRef.QueryParams()
+	if query == nil {
+		query = url.Values{}
+	}
+	query.Set(atc.DestroyPipelineQueryPurgeRunHistory, "true")
+
+	var response atc.DestroyPipelineResponse
+	err := team.connection.Send(internal.Request{
+		RequestName: atc.DeletePipeline,
+		Params: rata.Params{
+			"pipeline_name": pipelineRef.Name,
+			"team_name":     team.Name(),
+		},
+		Query: query,
+	}, &internal.Response{Result: &response})
+	switch err.(type) {
+	case nil:
+		return true, response.PurgedRuns, nil
+	case internal.ResourceNotFoundError:
+		return false, 0, nil
+	}
+	if reasons, refused := refusalEnvelope(err); refused {
+		return false, 0, APIRefusalError{Errors: reasons}
+	}
+	return false, 0, err
 }
 
 func (team *team) PausePipeline(pipelineRef atc.PipelineRef) (bool, error) {

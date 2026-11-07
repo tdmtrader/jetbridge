@@ -490,6 +490,61 @@ var _ = Describe("ATC Handler Pipelines", func() {
 		})
 	})
 
+	Describe("DeletePipelineAndRunHistory", func() {
+		expectedURL := "/api/v1/teams/some-team/pipelines/mytemplate"
+		pipelineRef := atc.PipelineRef{Name: "mytemplate"}
+
+		It("asks to purge the run history and returns how many Runs went", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("DELETE", expectedURL, "purge_run_history=true"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, atc.DestroyPipelineResponse{PurgedRuns: 4}),
+				),
+			)
+			found, purged, err := team.DeletePipelineAndRunHistory(pipelineRef)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(purged).To(Equal(4))
+		})
+
+		It("keeps an instanced pipeline's vars beside the purge parameter", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("DELETE", "/api/v1/teams/some-team/pipelines/mypipeline", "purge_run_history=true&vars.branch=%22master%22"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, atc.DestroyPipelineResponse{PurgedRuns: 0}),
+				),
+			)
+			found, purged, err := team.DeletePipelineAndRunHistory(atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(purged).To(BeZero())
+		})
+
+		It("returns false and no error when the pipeline does not exist", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("DELETE", expectedURL, "purge_run_history=true"),
+					ghttp.RespondWith(http.StatusNotFound, ""),
+				),
+			)
+			found, purged, err := team.DeletePipelineAndRunHistory(pipelineRef)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(purged).To(BeZero())
+		})
+
+		It("returns the server's reason when it refuses", func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("DELETE", expectedURL, "purge_run_history=true"),
+					ghttp.RespondWithJSONEncoded(http.StatusConflict, atc.SaveConfigResponse{Errors: []string{"template has a run that is still running"}}),
+				),
+			)
+			_, _, err := team.DeletePipelineAndRunHistory(pipelineRef)
+			Expect(err).To(Equal(concourse.APIRefusalError{Errors: []string{"template has a run that is still running"}}))
+		})
+	})
+
 	Describe("RenamePipeline", func() {
 		var (
 			expectedURL         string
