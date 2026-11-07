@@ -124,7 +124,10 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 
 	// Install the handler before Start so a signal in the window between
 	// the two is queued rather than killing the launcher by default action.
-	signal.Ignore(syscall.SIGHUP)
+	// SIGHUP is left at its default: an ignored disposition is inherited
+	// across exec, and a command that inherits SIGHUP ignored behaves
+	// differently from one run from a shell (a test that traps SIGHUP, say).
+	// Nothing hangs up on a step pod's main container anyway.
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigs)
