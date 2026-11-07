@@ -33,6 +33,13 @@ saved 5m29s (25.5%), with both live groups finishing within five seconds and all
 target is shared preparation before integrations start. Evidence is in
 `output/brine-balance-20261105/evidence-bundle.tar.gz`.
 
+The [2026-11-06 preparation profile](brine-preparation-2026-11-06.md) traces
+compilation and native-test overhead on the v12 runner. Two alternating pairs
+save 17.1s (21.4%) in the native-test phase by overlapping unchanged package
+tests. Every trial passes the same 96 top-level tests and 251 test/subtest
+results. The report separates this result from current full-Brine failures
+and identifies compiler-cache reuse as the larger remaining target.
+
 Supporting evidence:
 
 - [Pipeline structure and test inventory](ci-suite-structure.md)

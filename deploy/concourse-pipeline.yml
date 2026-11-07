@@ -263,10 +263,12 @@ jobs:
           sh scripts/build-private-network
           go vet ./...
           # Root jobs do not discover this nested module. Run its native
-          # tests serially through the module-pinned Ginkgo CLI because the
-          # adapter contract tests start real database-backed resources.
+          # Go tests in separate package processes. Their real resources own
+          # ports and temporary roots; package execution can overlap while
+          # tests inside each package stay serial. Always execute, never reuse
+          # a cached test result.
           BRINE_PROTOCOL_LAUNCHER="$PWD/scripts/run-private-network" \
-            go run github.com/onsi/ginkgo/v2/ginkgo -r --timeout=5m
+            go test -v -count=1 -timeout=5m ./...
 
           # The live tier's daemon must match this source and the Linux node.
           # Build it from its owning Go module, not the nested adapter module.

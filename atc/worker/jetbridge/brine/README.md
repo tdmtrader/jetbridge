@@ -110,7 +110,7 @@ not that loopback, single, marked node. Its CI home is the
 ```sh
 go vet ./...
 BRINE_PROTOCOL_LAUNCHER="$PWD/scripts/run-private-network" \
-  go run github.com/onsi/ginkgo/v2/ginkgo -r --timeout=5m
+  go test -v -count=1 -timeout=5m ./...
 ```
 
 Runs the AST import guard (`steps/kubernetes_clients_test.go`, rejects any
@@ -119,6 +119,12 @@ client doubles in non-test sources), the vocabulary/wiring guards
 (`steps/vocabulary_test.go`: no dead step definition, no unresolved or
 ambiguous step phrase, and a nonempty active feature corpus), and the adapter's
 own black-box protocol tests.
+
+The native Go packages run in separate processes and may overlap. Tests within
+each package remain serial; their real databases, ports and temporary roots
+are owned by that process or test. `-count=1` disables reuse of test results,
+while the Go compiler may reuse build artifacts verified against the source.
+The five-minute timeout is enforced per Go test package.
 
 See [features/README.md](features/README.md) for feature tags.
 
