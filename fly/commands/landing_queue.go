@@ -66,7 +66,8 @@ func (command *SetLandingQueueCommand) run(client landingQueueClient, stdin io.R
 
 // LandCommand submits a commit to a landing queue: it pushes the commit to
 // the queue's submit ref with the user's own git, so the compose step can
-// reach it, then submits the entry.
+// reach it, then submits the entry. The queue never squashes: every commit
+// reachable from it and not from the trunk lands as its own commit.
 type LandCommand struct {
 	Queue  string               `short:"q" long:"queue" required:"true" description:"Name of the landing queue"`
 	ID     string               `long:"id" description:"Entry id (one ref component); the commit's short sha when omitted"`
@@ -74,7 +75,7 @@ type LandCommand struct {
 	Remote string               `long:"remote" default:"origin" description:"Remote to push the submit ref to"`
 	Team   flaghelpers.TeamFlag `long:"team" description:"Name of the team the queue belongs to, if different from the target default"`
 	Args   struct {
-		Commit string `positional-arg-name:"commit" description:"Commit or ref to land (default HEAD)"`
+		Commit string `positional-arg-name:"commit" description:"Commit or ref to land, with every commit before it that is not on the trunk (default HEAD)"`
 	} `positional-args:"yes"`
 }
 
