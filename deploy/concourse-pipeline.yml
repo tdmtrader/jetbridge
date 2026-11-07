@@ -610,7 +610,7 @@ jobs:
           done
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          BUILDER_POD="image-builder-$$"
+          BUILDER_POD="image-builder-$(od -An -N4 -tu4 /dev/urandom | tr -d " ")"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
           trap cleanup_builder EXIT
@@ -1190,7 +1190,7 @@ jobs:
           # --- 1. Build multi-platform fly + push to GHCR ---
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           GHCR="ghcr.io/tdmtrader/jetbridge"
-          BUILDER_POD="release-push-$$"
+          BUILDER_POD="release-push-$(od -An -N4 -tu4 /dev/urandom | tr -d " ")"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
           trap cleanup_builder EXIT

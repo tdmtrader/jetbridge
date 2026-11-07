@@ -41,7 +41,7 @@ jobs:
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           IMAGE_TAG="v36"
           IMAGE="${REGISTRY}/concourse-kind-runner:${IMAGE_TAG}"
-          BUILDER_POD="kind-runner-builder-$$"
+          BUILDER_POD="kind-runner-builder-$(od -An -N4 -tu4 /dev/urandom | tr -d " ")"
 
           cleanup_builder() { kubectl delete pod -n cicd ${BUILDER_POD} --grace-period=0 --force 2>/dev/null || true; }
           trap cleanup_builder EXIT
