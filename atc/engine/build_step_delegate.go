@@ -138,16 +138,10 @@ func (delegate *buildStepDelegate) Stdout() io.Writer {
 	if delegate.stdout != nil {
 		return delegate.stdout
 	}
-	delegate.stdout = newDBEventWriter(
-		delegate.build,
-		event.Origin{
-			Source: event.OriginSourceStdout,
-			ID:     event.OriginID(delegate.planID),
-		},
-		delegate.clock,
-		delegate.buildOutputFilter,
-		delegate.disableRedactSecrets,
-	)
+	delegate.stdout = delegate.logWriter(event.Origin{
+		Source: event.OriginSourceStdout,
+		ID:     event.OriginID(delegate.planID),
+	})
 	return delegate.stdout
 }
 
@@ -155,17 +149,24 @@ func (delegate *buildStepDelegate) Stderr() io.Writer {
 	if delegate.stderr != nil {
 		return delegate.stderr
 	}
-	delegate.stderr = newDBEventWriter(
+	delegate.stderr = delegate.logWriter(event.Origin{
+		Source: event.OriginSourceStderr,
+		ID:     event.OriginID(delegate.planID),
+	})
+	return delegate.stderr
+}
+
+// logWriter is a writer of the step's build output under origin. Every
+// stream of a step's output is redacted on the same terms, so each one is
+// made here.
+func (delegate *buildStepDelegate) logWriter(origin event.Origin) io.WriteCloser {
+	return newDBEventWriter(
 		delegate.build,
-		event.Origin{
-			Source: event.OriginSourceStderr,
-			ID:     event.OriginID(delegate.planID),
-		},
+		origin,
 		delegate.clock,
 		delegate.buildOutputFilter,
 		delegate.disableRedactSecrets,
 	)
-	return delegate.stderr
 }
 
 func (delegate *buildStepDelegate) Initializing(logger lager.Logger) {

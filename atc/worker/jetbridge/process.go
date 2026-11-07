@@ -264,6 +264,7 @@ func (p *Process) streamLogs(ctx context.Context, sidecarWriters map[string]io.W
 		sidecars.Add(1)
 		go func(name string, w io.Writer) {
 			defer sidecars.Done()
+			defer closeSidecarWriter(w)
 			p.streamContainerLogsDirect(ctx, name, w)
 		}(name, w)
 	}
@@ -284,6 +285,16 @@ func (p *Process) streamLogs(ctx context.Context, sidecarWriters map[string]io.W
 // sidecarLogGrace is how long the step will wait for sidecar log streams to
 // drain once the main container has finished.
 const sidecarLogGrace = 2 * time.Second
+
+// execSidecarLogGrace is how long an exec step waits for its sidecar log
+// streams to end on their own once the command has finished. A variable so a
+// test can shorten it.
+var execSidecarLogGrace = 5 * time.Second
+
+// sidecarFlushGrace is how long an exec step waits, once it has cancelled the
+// sidecar log streams still following, for them to end and close their
+// writers.
+const sidecarFlushGrace = time.Second
 
 // waitWithGrace waits for wg, giving up after grace. It reports whether the
 // group finished, so the bound is observable rather than implicit.
@@ -919,6 +930,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		sidecarWg.Add(1)
 		go func(name string, writer io.Writer) {
 			defer sidecarWg.Done()
+			defer closeSidecarWriter(writer)
 			p.streamSidecarLogs(sidecarCtx, name, writer)
 		}(name, writer)
 	}
@@ -1137,8 +1149,13 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		}
 	}
 
-	// Wait for sidecar log streams to finish (bounded to 5s to avoid
-	// blocking indefinitely if a sidecar hangs).
+	// Wait for sidecar log streams to finish (bounded to avoid blocking
+	// indefinitely if a sidecar hangs).
+	//
+	// A long-lived sidecar outlives the command, so its stream ends only when
+	// it is cancelled. Cancel it here and join it briefly rather than leaving
+	// it to the deferred cancel: closing the stream's writer saves its last
+	// line, and that must land inside Wait, ahead of the step's finish event.
 	sidecarDone := make(chan struct{})
 	go func() {
 		sidecarWg.Wait()
@@ -1146,7 +1163,12 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	}()
 	select {
 	case <-sidecarDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(execSidecarLogGrace):
+		cancelSidecars()
+		select {
+		case <-sidecarDone:
+		case <-time.After(sidecarFlushGrace):
+		}
 	}
 
 	if err != nil {

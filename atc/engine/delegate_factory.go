@@ -35,7 +35,7 @@ func (df DelegateFactory) configureDelegate(d any) {
 	case *putDelegate:
 		bsd, _ = v.BuildStepDelegate.(*buildStepDelegate)
 	case *taskDelegate:
-		bsd, _ = v.BuildStepDelegate.(*buildStepDelegate)
+		bsd = v.buildStepDelegate
 	case *checkDelegate:
 		bsd, _ = v.BuildStepDelegate.(*buildStepDelegate)
 	case *setPipelineStepDelegate:

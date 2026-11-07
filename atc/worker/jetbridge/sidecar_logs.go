@@ -31,3 +31,14 @@ func sidecarLogWriters(sidecars []atc.SidecarConfig, pio runtime.ProcessIO) (map
 	}
 	return writers, nil
 }
+
+// closeSidecarWriter closes a sidecar's writer, if it can be closed, once its
+// stream has ended. Only the streaming goroutine knows when that is, and it
+// is the writer's only writer, so the close cannot race a write. The engine's
+// writer redacts whole lines and holds an unterminated one back until it is
+// closed; without this a sidecar's last line would never reach the build log.
+func closeSidecarWriter(w io.Writer) {
+	if c, ok := w.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
