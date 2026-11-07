@@ -61,7 +61,7 @@ func startLiveArtifactPeer(ctx context.Context, rec *brine.Recorder, d *liveArti
 	)
 	pod.Labels["brine.dev/artifact-peer"] = s.cluster.Marker
 	main := &pod.Spec.Containers[0]
-	main.Command = []string{"sh", "-ec", "while [ ! -f /opt/brine/ready ]; do sleep 0.1; done; exec /opt/brine/artifact-daemon --port \"$1\" --storage-path /opt/brine/store --mirror-replicas=0", "start-owned-peer", fmt.Sprint(d.port)}
+	main.Command = []string{"sh", "-ec", "while [ ! -f /opt/brine/ready ]; do sleep 0.1; done; exec /opt/brine/artifact-daemon --port \"$1\" --storage-path /opt/brine/store --resolve-capability-key /opt/brine/resolve.key --mirror-replicas=0", "start-owned-peer", fmt.Sprint(d.port)}
 	main.Resources = *d.pod.Spec.Containers[0].Resources.DeepCopy()
 	main.Env = []corev1.EnvVar{{Name: "GOMEMLIMIT", Value: "96MiB"}}
 	main.Ports = []corev1.ContainerPort{{Name: "http", ContainerPort: int32(d.port)}}
@@ -97,6 +97,11 @@ func startLiveArtifactPeer(ctx context.Context, rec *brine.Recorder, d *liveArti
 	sum, err := s.exec(ctx, pod.Name, []string{"sha256sum", liveDaemonExecutable}, nil)
 	if err != nil || strings.TrimSpace(sum) != d.binarySHA+"  "+liveDaemonExecutable {
 		return "", fmt.Errorf("peer executable checksum %q: %v", sum, err)
+	}
+	// The daemon refuses to start without a resolve key (8f07fddf61), and the
+	// peer signs and checks with the same one as the daemon it mirrors.
+	if _, err := s.exec(ctx, pod.Name, []string{"sh", "-ec", "cat > /opt/brine/resolve.key"}, bytes.NewReader(brineResolveKey)); err != nil {
+		return "", err
 	}
 	if _, err := s.exec(ctx, pod.Name, []string{"touch", "/opt/brine/ready"}, nil); err != nil {
 		return "", err
