@@ -13,8 +13,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"code.cloudfoundry.org/lager/v3"
 
@@ -567,25 +569,48 @@ func (s *Server) createDestParent(dir string) (*os.Root, func(), error) {
 	return root, func() { s.removeCreated(created) }, nil
 }
 
-func (s *Server) walkDestTracked(dir string, create bool) (_ *os.Root, _ []string, err error) {
-	current := s.root
+func (s *Server) walkDestTracked(dir string, create bool) (*os.Root, []string, error) {
+	current, created, err := descendNoFollow(s.root, dir, create)
+	if err != nil {
+		// A refused request must leave nothing behind: without this, a
+		// destination that fails at its LAST component still left every
+		// earlier one on disk, so an attacker-chosen name became a permanent
+		// root-owned directory in the store on a request the daemon reported as
+		// refused — repeatable without bound.
+		s.removeCreated(created)
+		return nil, nil, err
+	}
+	if current == s.root {
+		return nil, nil, fmt.Errorf("destination parent %q is the storage root", dir)
+	}
+	return current, created, nil
+}
+
+// errSymlinkComponent marks descendNoFollow's refusal of a symlink, so a
+// caller that answers it as a refusal can tell it from a missing component.
+var errSymlinkComponent = errors.New("is a symlink")
+
+// descendNoFollow walks a path through the store from start, one component at
+// a time, each opened relative to the handle on its parent, refusing any
+// component that is a symlink and pinning each level by identity before
+// descending into it. Destinations, source trees and the locations GET and
+// HEAD serve go through it.
+//
+// os.Root alone is not this rule. It refuses a link that leaves the root but
+// follows one that stays inside it, on every method, and the store root spans
+// every build's outputs.
+//
+// With create, components that do not exist are made, and the directories
+// made are returned deepest last — on failure too, so the caller can remove
+// them. It returns start itself when dir has no components; the caller closes
+// any other handle it is given.
+func descendNoFollow(start *os.Root, dir string, create bool) (_ *os.Root, created []string, _ error) {
+	current := start
 	closeCurrent := func() {
-		if current != s.root {
+		if current != start {
 			current.Close()
 		}
 	}
-
-	// Directories this call created, deepest last. A refused request must
-	// leave nothing behind: without this, a destination that fails at its LAST
-	// component still left every earlier one on disk, so an attacker-chosen
-	// name became a permanent root-owned directory in the store on a request
-	// the daemon reported as refused — repeatable without bound.
-	var created []string
-	defer func() {
-		if err != nil {
-			s.removeCreated(created)
-		}
-	}()
 
 	var walked string
 	for _, component := range strings.Split(filepath.ToSlash(dir), "/") {
@@ -598,7 +623,7 @@ func (s *Server) walkDestTracked(dir string, create bool) (_ *os.Root, _ []strin
 		if create && errors.Is(lstatErr, fs.ErrNotExist) {
 			if mkErr := current.Mkdir(component, 0o755); mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
 				closeCurrent()
-				return nil, nil, fmt.Errorf("create %q: %w", component, mkErr)
+				return nil, created, fmt.Errorf("create %q: %w", component, mkErr)
 			} else if mkErr == nil {
 				created = append(created, walked)
 			}
@@ -606,45 +631,78 @@ func (s *Server) walkDestTracked(dir string, create bool) (_ *os.Root, _ []strin
 		}
 		if lstatErr != nil {
 			closeCurrent()
-			return nil, nil, fmt.Errorf("look up %q: %w", component, lstatErr)
+			return nil, created, fmt.Errorf("look up %q: %w", component, lstatErr)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			closeCurrent()
-			return nil, nil, fmt.Errorf(
-				"component %q is a symlink; a destination must be a real path, or the name that was authorized and the directory that is written are different places",
-				component,
+			return nil, created, fmt.Errorf(
+				"component %q %w; a path through the store must be real, or the name that was asked for and the directory that is reached are different places",
+				component, errSymlinkComponent,
 			)
 		}
 		if !info.IsDir() {
 			closeCurrent()
-			return nil, nil, fmt.Errorf("component %q is not a directory", component)
+			return nil, created, fmt.Errorf("component %q is not a directory", component)
 		}
 
-		next, openErr := current.OpenRoot(component)
-		if openErr != nil {
-			closeCurrent()
-			return nil, nil, fmt.Errorf("open %q: %w", component, openErr)
-		}
-		openedInfo, statErr := next.Stat(".")
-		if statErr != nil {
-			next.Close()
-			closeCurrent()
-			return nil, nil, fmt.Errorf("stat %q: %w", component, statErr)
-		}
-		if !os.SameFile(info, openedInfo) {
-			next.Close()
-			closeCurrent()
-			return nil, nil, fmt.Errorf("component %q changed while it was being opened", component)
-		}
-
+		next, openErr := openVerifiedDir(current, component, info)
 		closeCurrent()
+		if openErr != nil {
+			return nil, created, openErr
+		}
 		current = next
 	}
-
-	if current == s.root {
-		return nil, nil, fmt.Errorf("destination parent %q is the storage root", dir)
-	}
 	return current, created, nil
+}
+
+// openVerifiedDir opens name, a directory directly inside parent, and requires
+// the opened directory to be the inode info describes. info is the caller's
+// Lstat of name, already checked to be a real directory.
+//
+// The identity check closes the window between that Lstat and this open: if
+// name became a symlink in between, OpenRoot follows it (os.Root does, for a
+// link that stays inside it) and opens a different inode, which is refused.
+func openVerifiedDir(parent *os.Root, name string, info fs.FileInfo) (*os.Root, error) {
+	next, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, fmt.Errorf("open %q: %w", name, err)
+	}
+	opened, err := next.Stat(".")
+	if err != nil {
+		next.Close()
+		return nil, fmt.Errorf("stat %q: %w", name, err)
+	}
+	if !os.SameFile(info, opened) {
+		next.Close()
+		return nil, fmt.Errorf("component %q changed while it was being opened", name)
+	}
+	return next, nil
+}
+
+// openVerifiedFile is openVerifiedDir for a regular file: it opens name inside
+// dir for reading and requires the opened file to be the inode info, the
+// caller's Lstat of name, describes. A file replaced by a symlink after that
+// Lstat opens the link's target, a different inode, and is refused.
+//
+// O_NONBLOCK so that a fifo swapped in at the name opens at once instead of
+// waiting for a writer, and is then refused; it changes nothing for a regular
+// file. A device node swapped in is likewise opened, briefly, before the
+// refusal.
+func openVerifiedFile(dir *os.Root, name string, info fs.FileInfo) (*os.File, error) {
+	f, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		f.Close()
+		return nil, fmt.Errorf("file %q changed while it was being opened", name)
+	}
+	return f, nil
 }
 
 func (s *Server) openDestParent(dest string) (*os.Root, string, error) {
@@ -878,69 +936,252 @@ func promoteDir(parent *os.Root, tmp, base string) error {
 	return parent.Rename(tmp, base)
 }
 
+// treeEntry is one entry below the location a source-tree walk starts from.
+type treeEntry struct {
+	// rel is the entry's slash-separated path relative to the walked location.
+	rel string
+	// info is the entry's Lstat, taken through the handle on its parent
+	// directory when the walk reached it.
+	info fs.FileInfo
+	// link is a symlink's target, read through the same parent handle.
+	link string
+	// file is a regular file opened through the parent handle and pinned to
+	// info's inode. The walk closes it after visit returns.
+	file *os.File
+}
+
+// maxTreeWalkDepth bounds how many directories deep below its location a
+// source-tree walk goes. Each level holds one open handle for the rest of the
+// walk, and the depth is whatever the step pod that wrote the tree made it, so
+// without a bound a deep enough tree exhausts the daemon's descriptors. A path
+// is at most 4096 bytes on Linux, so no tree the step could itself address by
+// path is deeper than this.
+const maxTreeWalkDepth = 4096
+
+// errTreeTooDeep is the refusal of a tree deeper than maxTreeWalkDepth.
+var errTreeTooDeep = errors.New("source tree is too deep to walk")
+
+// lstatLocation reaches loc's parent with descendNoFollow and Lstats loc
+// through it. A symlink at any component of loc is a refusal (ErrRefused),
+// never followed; a missing component stays an fs.ErrNotExist. The caller
+// closes parent unless it is root.
+func lstatLocation(root *os.Root, loc string) (parent *os.Root, info fs.FileInfo, err error) {
+	parent, _, err = descendNoFollow(root, filepath.Dir(loc), false)
+	if err != nil {
+		if errors.Is(err, errSymlinkComponent) {
+			return nil, nil, refused("location %q: %w", loc, err)
+		}
+		return nil, nil, fmt.Errorf("location %q: %w", loc, err)
+	}
+	closeParent := func() {
+		if parent != root {
+			parent.Close()
+		}
+	}
+
+	info, err = parent.Lstat(filepath.Base(loc))
+	if err != nil {
+		closeParent()
+		return nil, nil, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		closeParent()
+		return nil, nil, refused("location %q is a symlink; a tree is never walked or served through one", loc)
+	}
+	return parent, info, nil
+}
+
+// statLocation is what GET and HEAD stat a location with: the walk's rule, so
+// a location tarTree would refuse is refused before a 200 goes out rather
+// than in the middle of the stream.
+func statLocation(root *os.Root, loc string) (fs.FileInfo, error) {
+	parent, info, err := lstatLocation(root, loc)
+	if err != nil {
+		return nil, err
+	}
+	if parent != root {
+		parent.Close()
+	}
+	return info, nil
+}
+
+// walkTree visits every entry below loc in root, in fs.WalkDir's order
+// (pre-order, names sorted bytewise), without ever traversing a symlink.
+//
+// It replaces fs.WalkDir over root.FS(), which classified each entry from its
+// parent's listing and then reopened it BY PATH through an adapter that follows
+// in-root symlinks. The source tree is writable by the step pod that produced
+// it, so a directory listed as a directory could be a symlink by the time it
+// was reopened, and the walk then read whatever the link named elsewhere in
+// the node-wide store as if it were that directory's contents.
+//
+// Here every directory is opened relative to the handle on its parent and
+// pinned by identity to the Lstat that classified it (descendNoFollow's rule,
+// applied to the location and then to each directory below it), and every
+// entry is classified by a fresh Lstat at the moment it is visited. A symlink
+// is reported as a symlink, never descended into; one that appears where a
+// directory or file was listed is caught by the identity check. Special files
+// are reported for the visitor to skip.
+//
+// A location whose final component is a non-directory is an empty tree, as it
+// was under fs.WalkDir. A location with a symlink at ANY component is refused.
+//
+// ctx is checked once for the location and once per entry, where fs.WalkDir's
+// callback ran.
+func walkTree(ctx context.Context, root *os.Root, loc string, visit func(treeEntry) error) error {
+	return treeWalk{}.walk(ctx, root, loc, visit)
+}
+
+// treeWalk holds a walk's test seams. The zero value is the production walk.
+type treeWalk struct {
+	// beforeOpen, when set, runs between the Lstat that classifies a
+	// directory or regular file and the open that reads it, so a test can
+	// change the entry in exactly that window.
+	beforeOpen func(rel string)
+	// maxDepth, when positive, replaces maxTreeWalkDepth.
+	maxDepth int
+}
+
+func (w treeWalk) walk(ctx context.Context, root *os.Root, loc string, visit func(treeEntry) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	parent, info, err := lstatLocation(root, loc)
+	if err != nil {
+		return err
+	}
+	if parent != root {
+		defer parent.Close()
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	dir, err := openVerifiedDir(parent, filepath.Base(loc), info)
+	if err != nil {
+		return fmt.Errorf("walk %q: %w", loc, err)
+	}
+	defer dir.Close()
+	return w.walkTreeDir(ctx, dir, "", 0, visit)
+}
+
+// walkTreeDir walks dir, which is depth directories below the walk's location.
+func (w treeWalk) walkTreeDir(ctx context.Context, dir *os.Root, rel string, depth int, visit func(treeEntry) error) error {
+	maxDepth := maxTreeWalkDepth
+	if w.maxDepth > 0 {
+		maxDepth = w.maxDepth
+	}
+
+	listing, err := dir.Open(".")
+	if err != nil {
+		return err
+	}
+	names, err := listing.Readdirnames(-1)
+	listing.Close()
+	if err != nil {
+		return err
+	}
+	slices.Sort(names)
+
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		info, err := dir.Lstat(name)
+		if err != nil {
+			return err
+		}
+		entry := treeEntry{rel: path.Join(rel, name), info: info}
+
+		switch {
+		case info.Mode()&fs.ModeSymlink != 0:
+			if entry.link, err = dir.Readlink(name); err != nil {
+				return err
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
+
+		case info.IsDir():
+			if depth+1 > maxDepth {
+				return refused("%w: %q is more than %d directories below the walked location",
+					errTreeTooDeep, entry.rel, maxDepth)
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
+			if w.beforeOpen != nil {
+				w.beforeOpen(entry.rel)
+			}
+			sub, err := openVerifiedDir(dir, name, info)
+			if err != nil {
+				return err
+			}
+			err = w.walkTreeDir(ctx, sub, entry.rel, depth+1, visit)
+			sub.Close()
+			if err != nil {
+				return err
+			}
+
+		case info.Mode().IsRegular():
+			if w.beforeOpen != nil {
+				w.beforeOpen(entry.rel)
+			}
+			if entry.file, err = openVerifiedFile(dir, name, info); err != nil {
+				return err
+			}
+			err = visit(entry)
+			entry.file.Close()
+			if err != nil {
+				return err
+			}
+
+		default:
+			if err := visit(entry); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // copyTree copies srcRoot/srcName into dstRoot, replacing an exec of `cp -R`
 // plus `chmod -R a+rX`. Modes come from plusRX rather than being preserved: the
 // daemon holds CAP_DAC_OVERRIDE but not CAP_CHOWN, and `cp -p` as root treats
 // the chown failure as fatal.
 //
+// The source is walked by walkTree, which never traverses a symlink; links are
+// copied as links.
+//
 // ctx is checked per entry: the resolve path runs this while holding a
 // node-wide semaphore slot, and a caller that has gone away must free the
 // slot rather than finish a copy nobody will read.
 func copyTree(ctx context.Context, srcRoot *os.Root, srcName string, dstRoot *os.Root) error {
-	srcFS := srcRoot.FS()
-	return fs.WalkDir(srcFS, srcName, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(srcName, p)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-
+	return walkTree(ctx, srcRoot, srcName, func(e treeEntry) error {
 		switch {
-		case d.IsDir():
-			return dstRoot.Mkdir(rel, plusRX(info.Mode().Perm(), true))
+		case e.info.IsDir():
+			return dstRoot.Mkdir(e.rel, plusRX(e.info.Mode().Perm(), true))
 
-		case d.Type()&fs.ModeSymlink != 0:
-			target, err := srcRoot.Readlink(path.Join(srcName, rel))
-			if err != nil {
-				return err
-			}
+		case e.info.Mode()&fs.ModeSymlink != 0:
 			// `cp -R` copied these verbatim. The daemon must not: dest is a
 			// container mount, so an outward link resolves against the
 			// container's filesystem, not ours. Extraction already refuses
 			// absolute targets, so anything that arrived by stream-in passes
 			// this for free; it bites only trees written straight through the
 			// hostPath mount.
-			if err := validateSymlinkTarget(rel, target); err != nil {
+			if err := validateSymlinkTarget(e.rel, e.link); err != nil {
 				return err
 			}
-			return dstRoot.Symlink(target, rel)
+			return dstRoot.Symlink(e.link, e.rel)
 
-		case !info.Mode().IsRegular():
+		case !e.info.Mode().IsRegular():
 			return nil // devices, sockets, fifos: never in an artifact
 
 		default:
-			in, err := srcFS.Open(p)
+			out, err := dstRoot.OpenFile(e.rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, plusRX(e.info.Mode().Perm(), false))
 			if err != nil {
 				return err
 			}
-			defer in.Close()
-			out, err := dstRoot.OpenFile(rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, plusRX(info.Mode().Perm(), false))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(out, in); err != nil {
+			if _, err := io.Copy(out, e.file); err != nil {
 				out.Close()
 				return err
 			}
@@ -956,6 +1197,10 @@ func copyTree(ctx context.Context, srcRoot *os.Root, srcName string, dstRoot *os
 // which is the "two pieces of code disagreeing about what a path means" shape
 // this package exists to remove.
 //
+// The tree is walked by walkTree, which never traverses a symlink: links are
+// emitted as links, and a directory that becomes a link mid-walk is not
+// descended into.
+//
 // Symlinks are VALIDATED, so the daemon refuses to emit an archive its own
 // extractor would refuse to accept. Absolute targets name the producing
 // machine's filesystem; carried into a consumer they resolve against that
@@ -964,63 +1209,37 @@ func copyTree(ctx context.Context, srcRoot *os.Root, srcName string, dstRoot *os
 // Directory entries ARE emitted, so empty directories survive transport.
 func tarTree(w io.Writer, root *os.Root, loc RelKey) error {
 	tw := tar.NewWriter(w)
-	name := osName(loc)
-	rootFS := root.FS()
 
-	err := fs.WalkDir(rootFS, name, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(name, p)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-
+	err := walkTree(context.Background(), root, osName(loc), func(e treeEntry) error {
 		hdr := &tar.Header{
-			Name:    rel,
-			Mode:    int64(info.Mode().Perm()),
-			ModTime: info.ModTime(),
+			Name:    e.rel,
+			Mode:    int64(e.info.Mode().Perm()),
+			ModTime: e.info.ModTime(),
 		}
 
 		switch {
-		case d.IsDir():
+		case e.info.IsDir():
 			hdr.Typeflag = tar.TypeDir
 			return tw.WriteHeader(hdr)
 
-		case d.Type()&fs.ModeSymlink != 0:
-			link, err := root.Readlink(p)
-			if err != nil {
-				return err
-			}
-			if err := validateSymlinkTarget(rel, link); err != nil {
+		case e.info.Mode()&fs.ModeSymlink != 0:
+			if err := validateSymlinkTarget(e.rel, e.link); err != nil {
 				return err
 			}
 			hdr.Typeflag = tar.TypeSymlink
-			hdr.Linkname = link
+			hdr.Linkname = e.link
 			return tw.WriteHeader(hdr)
 
-		case !info.Mode().IsRegular():
+		case !e.info.Mode().IsRegular():
 			return nil
 
 		default:
 			hdr.Typeflag = tar.TypeReg
-			hdr.Size = info.Size()
+			hdr.Size = e.info.Size()
 			if err := tw.WriteHeader(hdr); err != nil {
 				return err
 			}
-			f, err := rootFS.Open(p)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
+			_, err := io.Copy(tw, e.file)
 			return err
 		}
 	})
@@ -1047,6 +1266,7 @@ const (
 	reasonNotFound       = "not_found"
 	reasonNotDirectory   = "not_directory"
 	reasonClientCert     = "client_cert"
+	reasonSymlinkedPath  = "symlinked_path"
 
 	// The output plane's hold. This daemon has no output-bucket credential and
 	// no business changing a capture's state, but its destructive paths can be

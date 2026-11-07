@@ -184,8 +184,8 @@ func TestStreamIn_ChainedSymlinksAreRefused(t *testing.T) {
 	})
 
 	// Positive controls: the rule is "no entry TRAVERSES a symlink", not "no
-	// archive contains one". Our own producer (tarTree walks with fs.WalkDir,
-	// which does not descend into links) never emits a traversing entry, so
+	// archive contains one". Our own producer (tarTree walks with walkTree,
+	// which never descends into links) never emits a traversing entry, so
 	// every legitimate archive stays accepted.
 	t.Run("sibling entries next to a symlink still land", func(t *testing.T) {
 		ts, storagePath := setupServer(t)
