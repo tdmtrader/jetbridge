@@ -325,6 +325,13 @@
         "artifactHelperImage": {
           "type": "string"
         },
+        "stepRuntime": {
+          "type": "string",
+          "enum": [
+            "exec",
+            "job"
+          ]
+        },
         "imageRegistrySecret": {
           "type": "string"
         },

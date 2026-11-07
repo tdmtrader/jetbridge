@@ -189,6 +189,16 @@ spec:
             {{- if .Values.kubernetes.artifactHelperImage }}
             - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
             {{- end }}
+            - --kubernetes-step-runtime={{ .Values.kubernetes.stepRuntime }}
+            {{- if eq .Values.kubernetes.stepRuntime "job" }}
+            # The launcher init container copies jb-launcher from the jetbridge
+            # image itself, and a step pod fetches its envelope from the web's
+            # in-cluster Service, presenting its projected token. Always the
+            # plain HTTP port: the route is served there with web TLS on too,
+            # and a step pod trusts no CA the web's certificate might need.
+            - --kubernetes-launcher-image={{ include "concourse.image" . }}
+            - --kubernetes-step-envelope-url=http://{{ include "concourse.fullname" . }}-web.{{ .Release.Namespace }}.svc:{{ .Values.service.httpPort }}/runtime/v1/step-envelope
+            {{- end }}
             {{- if .Values.kubernetes.imageRegistrySecret }}
             - --kubernetes-image-registry-secret={{ .Values.kubernetes.imageRegistrySecret }}
             {{- end }}

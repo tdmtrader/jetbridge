@@ -78,6 +78,14 @@ template first, so these rules run before anything else in the chart.
 {{- fail "postgresql.host is required when postgresql.enabled=false" -}}
 {{- end -}}
 {{- /*
+  The job step runtime runs a step's sidecars as native sidecars (init
+  containers with restartPolicy Always), on by default since Kubernetes 1.29.
+  On an older cluster such a sidecar is an ordinary init that never ends.
+*/ -}}
+{{- if and (eq .Values.kubernetes.stepRuntime "job") (not (semverCompare ">=1.29-0" .Capabilities.KubeVersion.Version)) -}}
+{{- fail (printf "kubernetes.stepRuntime=job needs Kubernetes 1.29 or later (native sidecars); this cluster is %s" .Capabilities.KubeVersion.Version) -}}
+{{- end -}}
+{{- /*
   The web refuses to start without --encryption-key and migrate-db runs under
   the same key, so one source must name it: secrets.encryptionKeySecret, or,
   for a deployment that predates it, a CONCOURSE_ENCRYPTION_KEY entry in

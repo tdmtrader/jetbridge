@@ -281,6 +281,15 @@ kubernetes:
   # Docker Hub.
   artifactHelperImage: "alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4"
 
+  # -- Step runtime: how a step's command reaches its pod.
+  # exec: today's pause pod the web execs the command into (needs pods/exec).
+  # job: one suspended batch/v1 Job per step, the command in the pod spec, run
+  # under the jb-launcher copied from the jetbridge image; admission control
+  # sees every command. Needs batch/jobs and a tokenreviews grant instead.
+  # A Run-owned exact execution still uses exec in this release, so pods/exec
+  # stays granted in both modes for now.
+  stepRuntime: exec
+
   # -- Image registry pull secret name for resource type image pulls.
   # When set, this secret is added to pods that pull resource type images.
   imageRegistrySecret: ""
