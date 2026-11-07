@@ -7,6 +7,7 @@ package atccmd
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/concourse/concourse/artifactcap"
@@ -165,6 +166,9 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
 	k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
 	k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+	k8sCfg.StepRuntime = cmd.Kubernetes.StepRuntime
+	k8sCfg.LauncherImage = cmd.Kubernetes.LauncherImage
+	k8sCfg.StepEnvelopeURL = cmd.Kubernetes.StepEnvelopeURL
 	k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
 	k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 	k8sCfg.ArtifactDaemonResolveCapabilityKey = key
@@ -189,6 +193,33 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 		k8sCfg.ResourceTypeImages = imageresolver.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
 	}
 	return k8sCfg, nil
+}
+
+// stepEnvelopes is the one step envelope store of this web: every worker's
+// job runtime registers into it and the step envelope handler serves from it.
+func (cmd *RunCommand) stepEnvelopes() *jetbridge.StepEnvelopes {
+	if cmd.k8sStepEnvelopes == nil {
+		cmd.k8sStepEnvelopes = jetbridge.NewStepEnvelopes()
+	}
+	return cmd.k8sStepEnvelopes
+}
+
+// stepEnvelopeHandler serves step envelopes to step pods under the job step
+// runtime, or nil when the runtime is off.
+func (cmd *RunCommand) stepEnvelopeHandler(logger lager.Logger) (http.Handler, error) {
+	if cmd.Kubernetes.Namespace == "" || cmd.Kubernetes.StepRuntime != jetbridge.StepRuntimeJob {
+		return nil, nil
+	}
+	rt, err := cmd.jetbridgeConfig()
+	if err != nil {
+		return nil, err
+	}
+	return &jetbridge.StepEnvelopeHandler{
+		Logger:    logger.Session("step-envelope"),
+		Clientset: rt.clientset,
+		Namespace: rt.config.Namespace,
+		Envelopes: cmd.stepEnvelopes(),
+	}, nil
 }
 
 // artifactLocator is the one artifact locator of this web: every pool's worker
@@ -255,6 +286,7 @@ func (cmd *RunCommand) workerFactory(logger lager.Logger, dbConn db.DbConn, lock
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.artifactLocator()
 		factory.K8sStepPodBuilds = stepPodBuilds
+		factory.K8sStepEnvelopes = cmd.stepEnvelopes()
 		if k8sCfg.OutputPlaneEnabled && cmd.hangarSigner != nil {
 			// Both dispatch and recovery use the same node plane.
 			factory.K8sOutputControls = jetbridge.NewOutputControls(k8sCfg,
