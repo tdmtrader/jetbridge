@@ -235,3 +235,41 @@ renders unchanged.
 
 Each typed value is empty by default and then renders nothing, so the binary
 keeps its default; durations are Go durations, checked by the schema.
+
+## Security hardening (2026-11-06)
+
+A values file renders unchanged, and nothing here needs an edit to upgrade.
+Three changes can still reach a deployment that depends on what they
+remove.
+
+- **The artifact helper image is pinned.** `kubernetes.artifactHelperImage`,
+  and the binary's own default for `--kubernetes-artifact-helper-image`, are
+  `alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4`
+  instead of `alpine:latest`. A node pulls it once. A cluster that mirrors or
+  pre-caches images, or cannot reach Docker Hub, must mirror that exact image
+  (by its digest) before upgrading, or set `kubernetes.artifactHelperImage` to
+  its own copy; otherwise every step pod with an input waits on its init
+  container's image pull. A deployment that already sets the value keeps it.
+- **The web ServiceAccount is narrower.** Its pod-manager Role no longer grants
+  `apps/deployments` or `apps/daemonsets`, which the web never used, and its
+  ClusterRole grants `secrets: get` only when the Kubernetes credential manager
+  is on (`kubernetes.credentialManager.enabled`, or `CONCOURSE_KUBERNETES_IN_CLUSTER`
+  or `CONCOURSE_KUBERNETES_CONFIG_PATH` in `web.env`). Anything else that runs
+  as the web ServiceAccount loses them too: a `kubernetes.stepPodGrants` entry
+  or `kubernetes.serviceAccount` naming it, or a job that borrows its token.
+  Give such a workload its own ServiceAccount and RBAC before upgrading. The
+  chart does not refuse a grant naming the web ServiceAccount.
+- **The web's credentials are in a Secret.** The inline database password
+  (`postgresql.password`, when `postgresql.existingSecret` is unset) and
+  `web.localUsers` are rendered into `<fullname>-web-credentials` and reach
+  `migrate-db` and the web as `CONCOURSE_POSTGRES_PASSWORD` and
+  `CONCOURSE_ADD_LOCAL_USER`, not as `--postgres-password` and
+  `--add-local-user` args. Each holds what the old arg delivered, after YAML's
+  reading of the unquoted arg (a ` #` comment and trailing spaces dropped) and
+  the kubelet's `$$` -> `$`. A value holding `$(` stays an arg, rendered as
+  before, because the kubelet expanded `$(VAR)` in args and never expands a
+  Secret's value; so does every local user when one entry does, and either
+  value when a `web.env` entry names its variable. A Secret named
+  `<fullname>-web-credentials` that the chart does not own must be renamed
+  before upgrading. The bundled PostgreSQL pod still reads its password from
+  its own env.
